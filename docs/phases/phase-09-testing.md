@@ -725,3 +725,9 @@ Once Phase 9 is complete and validated:
 - Integration tests validate real-world behavior
 - Performance benchmarks prevent regressions
 - 80% code coverage ensures production quality
+
+### Security & Privacy Notes
+
+- Record/replay must support redaction (e.g., `Authorization`, cookies, API keys, PII fields) and should never check secrets into source control
+- Store recordings in a predictable location with clear docs for cleanup and sharing (team workflow matters more than the implementation details)
+- Prefer deterministic fixtures (mock transport) for most tests; use record/replay only where it adds real value

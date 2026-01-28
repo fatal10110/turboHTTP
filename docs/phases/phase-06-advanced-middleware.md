@@ -847,3 +847,9 @@ Once Phase 6 is complete and validated:
 - Token bucket is industry-standard algorithm
 - Per-host limiting respects different API rate limits
 - These features are rare in Unity HTTP libraries
+
+### Security & Privacy Notes
+
+- Be conservative by default: do not cache responses with sensitive headers (e.g., `Authorization`) unless explicitly opted in
+- Ensure cache keys partition correctly (at minimum: method + URL + relevant `Vary` headers; consider auth/session context)
+- Respect `Cache-Control`, `Pragma`, and `Set-Cookie` semantics to avoid leaking user-specific data across sessions

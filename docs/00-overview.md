@@ -28,7 +28,7 @@ TurboHTTP is built on a **modular architecture** with a required core and option
 ### Core Module (Required)
 - `TurboHTTP.Core` - Client, request/response types, basic pipeline, UnityWebRequest transport, JSON support
 
-### Optional Modules
+### Optional Runtime Modules
 1. `TurboHTTP.Retry` - Advanced retry logic with idempotency awareness
 2. `TurboHTTP.Cache` - HTTP caching with ETag support
 3. `TurboHTTP.Auth` - Authentication middleware
@@ -38,7 +38,17 @@ TurboHTTP is built on a **modular architecture** with a required core and option
 7. `TurboHTTP.Unity` - Unity asset handlers (Texture2D, AudioClip, etc.)
 8. `TurboHTTP.Testing` - Record/replay and mock transports
 9. `TurboHTTP.Performance` - Memory pooling and concurrency control
-10. `TurboHTTP.Editor` - HTTP Monitor window and debugging tools
+
+### Optional Editor Module
+- `TurboHTTP.Editor` - HTTP Monitor window and debugging tools (Editor-only)
+
+## Early Risk Spikes (Do Before Scaling Scope)
+
+These are the easiest “false assumptions” to make early and the most expensive to fix late:
+
+1. **JSON + IL2CPP/AOT reality check:** Verify `System.Text.Json` behavior under IL2CPP on target platforms. If it’s painful, introduce a small serialization abstraction so the implementation can be swapped without rewriting the client.
+2. **Transport behavior matrix:** Validate `UnityWebRequest` limitations/quirks (timeouts, headers, redirects, TLS/certs, upload/download handlers) on Editor + iOS + Android early.
+3. **Deterministic testing feasibility:** Confirm record/replay can be done safely (see Phase 9) without leaking secrets and without adding too much friction to the workflow.
 
 ## Implementation Phases
 
@@ -143,7 +153,8 @@ turboHTTP/
 
 v1.0 is ready for Unity Asset Store when:
 
-- ✓ All 10 modules implemented and tested
+- ✓ Core + 9 runtime modules implemented and tested
+- ✓ Editor module (HTTP Monitor) functional in supported Unity versions
 - ✓ Integration tests pass on Editor, Standalone, iOS, Android
 - ✓ IL2CPP builds work on all platforms
 - ✓ 80%+ code coverage

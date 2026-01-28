@@ -161,7 +161,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -180,7 +180,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -199,7 +199,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -218,7 +218,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -237,7 +237,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -256,7 +256,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -275,7 +275,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -294,7 +294,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -308,6 +308,38 @@ mkdir -p Documentation~
   "name": "TurboHTTP.Performance",
   "rootNamespace": "TurboHTTP.Performance",
   "references": ["TurboHTTP.Core"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
+```
+
+**Optional Convenience (Recommended):** If you want a “batteries included” experience while keeping modules truly optional, add a meta-assembly that references everything and is auto-referenced.
+
+**File:** `Runtime/TurboHTTP.Complete.asmdef`
+
+```json
+{
+  "name": "TurboHTTP.Complete",
+  "rootNamespace": "TurboHTTP",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.Retry",
+    "TurboHTTP.Cache",
+    "TurboHTTP.Auth",
+    "TurboHTTP.RateLimit",
+    "TurboHTTP.Observability",
+    "TurboHTTP.Files",
+    "TurboHTTP.Unity",
+    "TurboHTTP.Testing",
+    "TurboHTTP.Performance"
+  ],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
@@ -334,7 +366,7 @@ mkdir -p Documentation~
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],
-  "autoReferenced": true,
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
@@ -592,7 +624,8 @@ Once Phase 1 is complete and validated:
 
 ## Notes
 
-- All assembly definitions set `autoReferenced: true` for convenience
-- Users can disable specific modules by excluding them from builds
+- `TurboHTTP.Core` should be `autoReferenced: true`
+- Optional modules should default to `autoReferenced: false` to preserve modularity (users only compile what they reference)
+- `TurboHTTP.Complete` provides an `autoReferenced: true` “all-in” entry point without forcing every module on all users
 - No code exists yet - just structure and configuration
 - This phase is quick but critical - foundation for everything else

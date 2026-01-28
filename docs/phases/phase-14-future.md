@@ -408,6 +408,24 @@ client.RegisterPlugin(new SentryPlugin());
 
 ---
 
+### 13. Security & Privacy Hardening (High Priority)
+
+**Goal:** Make “safe by default” behavior explicit and configurable
+
+**Focus Areas:**
+- **Record/replay redaction:** redact `Authorization`, cookies, API keys, and user identifiers by default
+- **Logging controls:** ensure sensitive headers/body fields are never logged unless explicitly enabled
+- **Cache safety:** partition cache correctly and avoid caching user-specific responses by default
+- **TLS controls (advanced):** optional certificate pinning / custom validation hooks (platform constraints apply)
+
+**Estimated Effort:** 1-2 weeks
+
+**Complexity:** Medium
+
+**Value:** High (reduces support burden and prevents real-world incidents)
+
+---
+
 ## Prioritization Matrix
 
 | Feature | Priority | Effort | Complexity | Value | Version |
@@ -419,6 +437,7 @@ client.RegisterPlugin(new SentryPlugin());
 | GraphQL | Medium | 1-2w | Low | Medium | v1.3 |
 | HTTP/2 | Medium | 3-4w | High | Medium | v1.3 |
 | Request Interceptors | Medium | 1w | Low | Medium | v1.1 |
+| Security & Privacy | High | 1-2w | Medium | High | v1.1 |
 | Advanced Content | Low | 1-2w each | Medium | Medium | v1.x |
 | gRPC | Low | 4-6w | Very High | Low | v2.0? |
 | Mock Server | Medium | 2w | Medium | Medium | v1.x |
@@ -431,6 +450,7 @@ client.RegisterPlugin(new SentryPlugin());
 - WebGL support
 - Adaptive network policies
 - Request/response interceptors
+- Security & privacy hardening (redaction + safe defaults)
 - Bug fixes from v1.0 feedback
 
 ### v1.2 (Q2)

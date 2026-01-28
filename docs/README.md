@@ -41,14 +41,14 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 - **Unity Version:** 2021.3 LTS minimum (.NET Standard 2.1)
 - **Platforms (v1.0):** Editor, Standalone (Win/Mac/Linux), iOS, Android
 - **JSON:** System.Text.Json (built-in)
-- **Architecture:** Modular - 1 Core + 9 optional modules
+- **Architecture:** Modular - 1 Core + 9 optional runtime modules (+ optional Editor module)
 
 ## Module Structure
 
 ### Core Module (Required)
 `TurboHTTP.Core` - Client, request/response, pipeline, transport, JSON
 
-### Optional Modules
+### Optional Runtime Modules
 - `TurboHTTP.Retry` - Advanced retry with idempotency
 - `TurboHTTP.Cache` - HTTP caching with ETag
 - `TurboHTTP.Auth` - Authentication middleware
@@ -58,7 +58,9 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 - `TurboHTTP.Unity` - Unity asset handlers
 - `TurboHTTP.Testing` - Record/replay, mocking
 - `TurboHTTP.Performance` - Memory pooling, concurrency
-- `TurboHTTP.Editor` - HTTP Monitor window
+
+### Optional Editor Module
+- `TurboHTTP.Editor` - HTTP Monitor window (Editor-only)
 
 ## Implementation Workflow
 
