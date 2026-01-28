@@ -44,11 +44,24 @@ TurboHTTP is built on a **modular architecture** with a required core and option
 
 ## Early Risk Spikes (Do Before Scaling Scope)
 
-These are the easiest “false assumptions” to make early and the most expensive to fix late:
+These are the easiest "false assumptions" to make early and the most expensive to fix late:
 
-1. **JSON + IL2CPP/AOT reality check:** Verify `System.Text.Json` behavior under IL2CPP on target platforms. If it’s painful, introduce a small serialization abstraction so the implementation can be swapped without rewriting the client.
+1. **JSON + IL2CPP/AOT reality check:** Verify `System.Text.Json` behavior under IL2CPP on target platforms. If it's painful, introduce a small serialization abstraction so the implementation can be swapped without rewriting the client.
 2. **Transport behavior matrix:** Validate `UnityWebRequest` limitations/quirks (timeouts, headers, redirects, TLS/certs, upload/download handlers) on Editor + iOS + Android early.
 3. **Deterministic testing feasibility:** Confirm record/replay can be done safely (see Phase 9) without leaking secrets and without adding too much friction to the workflow.
+
+## Review Notes
+
+> **TODO: Missing Offline/Connectivity Handling** - The current plan lacks explicit handling for offline scenarios and network connectivity detection:
+> - **Network reachability detection**: No utility to check device connectivity before making requests (Unity's `Application.internetReachability` is unreliable and doesn't detect captive portals)
+> - **Graceful offline behavior**: No strategy for queuing requests when offline or returning cached responses automatically in offline-first patterns
+> - **Connection quality awareness**: No mechanism to detect poor connectivity and adjust timeouts/retry behavior accordingly
+>
+> Consider adding to Phase 7 (Unity Integration) or creating a dedicated `TurboHTTP.Connectivity` module that provides:
+> - `IConnectivityMonitor` interface with platform-specific implementations
+> - Offline request queuing with automatic retry when connectivity returns
+> - Integration with `CacheMiddleware` for offline-first patterns
+> - Network quality estimation for adaptive timeout/retry policies
 
 ## Implementation Phases
 

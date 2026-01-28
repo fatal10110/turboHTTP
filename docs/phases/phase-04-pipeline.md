@@ -875,3 +875,13 @@ Once Phase 4 is complete and validated:
 - Each middleware is self-contained and testable
 - Phase 6 will add more advanced middleware (Cache, RateLimit)
 - M1 milestone is reached after this phase
+
+## Review Notes
+
+> **TODO: No Retry Budget / Circuit Breaker** - The current `RetryMiddleware` implements exponential backoff and idempotency awareness, but lacks:
+> - **Retry budget**: A global or per-host limit on total retries across all requests to prevent retry storms under widespread failures
+> - **Circuit breaker pattern**: Automatically "open" the circuit after N consecutive failures to a host, failing fast for a cooldown period before attempting again
+>
+> Without these, a degraded backend could cause all clients to simultaneously retry, amplifying load and delaying recovery. Consider adding:
+> - `CircuitBreakerMiddleware` with configurable failure thresholds and half-open states
+> - A `retryBudget` option in `RetryPolicy` (e.g., "max 20% of requests can be retries")

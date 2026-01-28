@@ -848,6 +848,18 @@ Once Phase 6 is complete and validated:
 - Per-host limiting respects different API rate limits
 - These features are rare in Unity HTTP libraries
 
+## Review Notes
+
+> **TODO: Phase 6 Complexity** - This phase has high implementation complexity that may warrant splitting:
+> - **Cache storage backends**: Memory cache with LRU is straightforward, but disk-based caching (not yet specified) adds significant complexity (serialization, file locking, corruption handling, platform-specific paths)
+> - **Cache key generation**: Current implementation uses URL only; production needs to include `Vary` headers, authentication context, and potentially request body hashes for POST caching
+> - **Cache invalidation**: No explicit invalidation API or support for cache tags/groups
+>
+> Consider splitting into sub-phases:
+> 1. Phase 6a: Memory cache with basic ETag/Last-Modified support
+> 2. Phase 6b: Disk cache storage backend (defer to post-M2 if needed)
+> 3. Phase 6c: Advanced cache features (Vary headers, invalidation API, cache tags)
+
 ### Security & Privacy Notes
 
 - Be conservative by default: do not cache responses with sensitive headers (e.g., `Authorization`) unless explicitly opted in
