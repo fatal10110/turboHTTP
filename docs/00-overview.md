@@ -67,6 +67,58 @@ These are the easiest "false assumptions" to make early and the most expensive t
 > - Integration with `CacheMiddleware` for offline-first patterns
 > - Network quality estimation for adaptive timeout/retry policies
 
+> **TODO: Platform-Specific Networking Requirements** - Phase 11 (Platform Compatibility) needs expanded validation criteria for platform-specific networking constraints:
+> - **iOS App Transport Security (ATS)**: Cleartext HTTP blocked by default, requires Info.plist exceptions or HTTPS enforcement
+> - **iOS IPv6 Requirement**: App Store requires IPv6 support on cellular networks (NAT64/DNS64)
+> - **Android Network Security Config**: Android 9+ blocks cleartext traffic by default, requires network_security_config.xml
+> - **Mobile Background Limitations**: iOS/Android aggressively suspend background network tasks, need handling for app pause/resume
+> - **Certificate Validation Differences**: Each platform has different root CA stores and validation behaviors
+>
+> Add to Phase 11 validation:
+> - Test ATS compliance on iOS, document cleartext workarounds
+> - Verify IPv6-only network functionality (use iOS simulator IPv6 mode)
+> - Test Android Network Security Config scenarios
+> - Implement connection draining on application pause/resume events
+> - Document platform-specific certificate trust behavior
+
+> **TODO: Missing Critical Security & Enterprise Features** - Several features essential for production games and enterprise customers are not in scope:
+> - **Certificate Pinning**: No strategy for pinning server certificates (critical for games handling payments or sensitive data)
+> - **Proxy Support**: No HTTP/HTTPS/SOCKS proxy support (required for enterprise networks and some testing scenarios)
+> - **IPv6 Support**: Not explicitly addressed (iOS App Store requirement)
+> - **Connection Draining**: No graceful shutdown strategy when app suspends or closes
+>
+> Consider adding:
+> - `TurboHTTP.Security` module with certificate pinning (Phase 6 or 7)
+> - Proxy configuration in Transport layer (Phase 3 or defer to v1.1)
+> - IPv6 dual-stack support in TCP connection pool (Phase 3)
+> - Connection lifecycle management for app suspend/resume (Phase 7)
+
+> **TODO: Memory Management Strategy Needs Earlier Definition** - Phase 10 (Performance & Hardening) defers memory pooling too late. Buffer management is architectural and affects Phase 3 (Transport) design:
+> - **ArrayPool vs MemoryPool**: Need decision on buffer pooling strategy before implementing HTTP/1.1 parser and HTTP/2 framing
+> - **HPACK Dynamic Table**: HTTP/2 compression state can consume significant memory (default 4KB per connection)
+> - **Stream Buffer Management**: HTTP/2 multiplexing requires per-stream buffers, needs pooling strategy
+> - **GC Target**: "<1KB GC per request" is achievable but requires pooling from day one, not as a Phase 10 optimization
+>
+> Recommendation:
+> - Move memory architecture spike to Phase 3 (before transport implementation)
+> - Define pooling abstractions (`IBufferPool`, `IObjectPool`) in Core module
+> - Implement basic `ArrayPool<byte>` integration in Phase 3
+> - Phase 10 can then optimize pool sizing and add advanced features (pre-warming, metrics)
+
+> **TODO: Testing Strategy Gaps - Load, Concurrency, and Chaos Testing** - Phase 9 (Testing Infrastructure) focuses on record/replay and unit tests but lacks:
+> - **Concurrency Testing**: HTTP/2 multiplexing with 100+ concurrent streams needs validation
+> - **Connection Pool Testing**: Race conditions, connection reuse, timeout edge cases
+> - **Load Testing**: Sustained request rates, memory stability over time
+> - **Chaos Testing**: Network failures, partial responses, slow servers, connection drops mid-stream
+> - **HTTP/2 Flow Control**: Deadlock scenarios, window exhaustion, priority starvation
+>
+> Consider adding Phase 9B (Load & Stress Testing) or expanding Phase 9:
+> - Load test harness using realistic game traffic patterns (burst requests, background downloads)
+> - HTTP/2 stream concurrency tests (spawn 200 streams, verify flow control, measure memory)
+> - Chaos test suite with network failure injection (drop connections, delay packets, corrupt frames)
+> - Soak tests for memory leak detection (run 10K+ requests, verify GC stability)
+> - Add to M3 success criteria: "Passes 1 hour soak test with <10MB memory growth"
+
 ## Implementation Phases
 
 The implementation is organized into 14 phases, progressing from foundation to production release:
