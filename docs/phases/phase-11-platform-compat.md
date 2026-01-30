@@ -7,7 +7,7 @@
 
 ## Overview
 
-Validate TurboHTTP works correctly on all target platforms: Editor, Standalone (Windows/Mac/Linux), iOS, and Android. Ensure IL2CPP compatibility and handle platform-specific quirks. Document known limitations and workarounds.
+Validate TurboHTTP works correctly on all target platforms: Editor, Standalone (Windows/Mac/Linux), iOS, and Android. Since TurboHTTP uses raw TCP sockets and `SslStream` for TLS (rather than UnityWebRequest), this phase is critical — the transport layer must be validated against platform-specific socket and TLS behavior, especially under IL2CPP. Key areas: `SslStream` with ALPN for HTTP/2 negotiation, certificate validation, socket connection pooling, and platform threading models.
 
 ## Goals
 
@@ -15,10 +15,11 @@ Validate TurboHTTP works correctly on all target platforms: Editor, Standalone (
 2. Test on Standalone builds (Windows, Mac, Linux)
 3. Test on iOS (device and simulator)
 4. Test on Android (multiple devices)
-5. Validate IL2CPP builds work correctly
-6. Document platform-specific limitations
-7. Create platform-specific test builds
-8. Fix any platform-specific bugs
+5. Validate IL2CPP builds work correctly (especially `SslStream` + ALPN)
+6. Validate HTTP/2 via ALPN on all platforms
+7. Document platform-specific limitations
+8. Create platform-specific test builds
+9. Fix any platform-specific bugs
 
 ## Tasks
 
@@ -142,20 +143,21 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Check if TLS 1.2+ is available on current platform.
+        /// Check if TLS 1.2+ is available via SslStream on current platform.
         /// </summary>
         public static bool IsTLS12Available()
         {
-            // iOS 9+, Android 5+, all desktop platforms support TLS 1.2
+            // SslStream supports TLS 1.2 on iOS 9+, Android 5+, all desktop platforms
             return true;
         }
 
         /// <summary>
-        /// Check if certificate validation can be customized.
+        /// Check if SslStream certificate validation callback can be customized.
         /// </summary>
         public static bool CanCustomizeCertificateValidation()
         {
-            // iOS restricts certificate validation customization
+            // SslStream's RemoteCertificateValidationCallback works on most platforms
+            // iOS restricts some certificate validation customization at OS level
             return !PlatformInfo.IsIOS;
         }
 
@@ -428,62 +430,77 @@ TurboHTTP v1.0 officially supports:
 ### iOS
 
 **Supported:**
-- HTTPS requests
-- HTTP/1.1
-- TLS 1.2+
+- HTTPS requests via `SslStream` + raw TCP sockets
+- HTTP/1.1 with connection keep-alive
+- HTTP/2 via ALPN negotiation (requires `SslStream` ALPN support under IL2CPP — validate early)
+- TLS 1.2+ via `SslStream`
 - Background downloads (with limitations)
 
 **Limitations:**
-- Custom certificate validation is restricted by iOS
+- `SslStream` certificate validation callback behavior may differ under IL2CPP — test thoroughly
 - App Transport Security (ATS) requires HTTPS by default
 - Background requests limited to 30 seconds in background mode
+- ALPN support in `SslStream` under IL2CPP is the critical risk for HTTP/2 on iOS
 
 **Recommendations:**
 - Use HTTPS for all requests
-- Configure ATS exceptions in Info.plist if HTTP is needed
+- Configure ATS exceptions in Info.plist if cleartext HTTP is needed
 - Set longer timeouts (60s) for mobile networks
+- **Run the SslStream + ALPN IL2CPP spike (risk spike #2) on iOS before full implementation**
 
 ### Android
 
 **Supported:**
-- HTTPS requests
-- HTTP/1.1
-- TLS 1.2+ (Android 5.0+)
-- Custom certificate validation
+- HTTPS requests via `SslStream` + raw TCP sockets
+- HTTP/1.1 with connection keep-alive
+- HTTP/2 via ALPN negotiation
+- TLS 1.2+ (Android 5.0+) via `SslStream`
+- Custom certificate validation via `RemoteCertificateValidationCallback`
 
 **Limitations:**
 - Cleartext (HTTP) traffic disabled by default on Android 9+
 - Network permissions required in manifest
+- `SslStream` ALPN behavior should be verified on older Android versions (5.0-7.0)
 
 **Recommendations:**
 - Add `android.permission.INTERNET` to AndroidManifest.xml
-- For HTTP, configure `android:usesCleartextTraffic="true"` in manifest
-- Test on multiple Android versions (5.0 through 13+)
+- For cleartext HTTP, configure `android:usesCleartextTraffic="true"` in manifest
+- Test on multiple Android versions (5.0 through 14+)
+- **Run the SslStream + ALPN IL2CPP spike on Android before full implementation**
 
 ### IL2CPP
 
 **Compatibility:**
-- Full support for IL2CPP scripting backend
-- System.Text.Json works correctly
+- Raw TCP sockets (`System.Net.Sockets.Socket`) work correctly under IL2CPP
+- `SslStream` basic TLS works under IL2CPP
+- **ALPN negotiation in `SslStream` must be validated** — this is the critical unknown for HTTP/2
+- `System.Text.Json` works correctly under IL2CPP
 - Async/await fully supported
 - Reflection used minimally (only for JSON serialization)
 
+**Critical Validation:**
+- `SslStream.AuthenticateAsClientAsync(SslClientAuthenticationOptions)` with `ApplicationProtocols` set — does ALPN work?
+- `SslStream.NegotiatedApplicationProtocol` — does it return the correct value?
+- If ALPN fails under IL2CPP: HTTP/2 will fall back to HTTP/1.1 automatically (no breakage, but no h2)
+- If `SslStream` itself fails under IL2CPP: consider BouncyCastle as a fallback TLS provider
+
 **Tested Configurations:**
-- iOS + IL2CPP ✓
-- Android + IL2CPP ✓
+- iOS + IL2CPP: `SslStream` basic ✓, ALPN ⚠️ (must validate)
+- Android + IL2CPP: `SslStream` basic ✓, ALPN ⚠️ (must validate)
 - Standalone + IL2CPP ✓
 
 ### WebGL
 
 **Status:** NOT SUPPORTED in v1.0
 
-WebGL support is planned for v1.x (see Phase 14 roadmap).
+WebGL support is planned for v1.1 (see Phase 14 roadmap).
 
 **Reason:**
-- UnityWebRequest works differently in WebGL
-- Requires JavaScript interop
-- CORS restrictions
-- Different threading model
+- Raw TCP sockets are not available in WebGL (browser sandbox)
+- Requires a separate transport using browser `fetch()` API via `.jslib` interop (same approach as BestHTTP)
+- CORS restrictions apply (browser-enforced)
+- Different threading model (single-threaded)
+- HTTP/2 is handled transparently by the browser — no client-side protocol choice
 
 ## Performance Characteristics
 
@@ -509,22 +526,28 @@ WebGL support is planned for v1.x (see Phase 14 roadmap).
 
 Before releasing on a platform, verify:
 
-- [ ] Basic GET/POST requests work
-- [ ] HTTPS/SSL works correctly
+- [ ] Raw TCP socket connections work
+- [ ] `SslStream` TLS handshake completes (HTTPS)
+- [ ] `SslStream` ALPN negotiation returns "h2" on HTTP/2-capable servers
+- [ ] HTTP/1.1 requests work (GET, POST)
+- [ ] HTTP/2 requests work (multiplexed)
+- [ ] Connection pooling and keep-alive work
 - [ ] JSON serialization/deserialization works
 - [ ] File downloads work
 - [ ] Texture/AudioClip loading works (if applicable)
-- [ ] Error handling works correctly
+- [ ] Error handling works correctly (socket errors, TLS errors, timeouts)
 - [ ] Timeline events are captured
 - [ ] No crashes or memory leaks
 - [ ] Performance is acceptable
 
 ## Troubleshooting
 
-### iOS: "An SSL error has occurred"
+### iOS: "An SSL error has occurred" / `AuthenticationException`
 - Ensure using HTTPS
 - Check ATS configuration in Info.plist
 - Verify certificate is valid
+- If `SslStream.AuthenticateAsClientAsync` fails under IL2CPP, check if `SslClientAuthenticationOptions` is fully supported
+- Try removing ALPN protocols to test if basic TLS works without h2 negotiation
 
 ### Android: "Cleartext HTTP traffic not permitted"
 - Add `android:usesCleartextTraffic="true"` to manifest

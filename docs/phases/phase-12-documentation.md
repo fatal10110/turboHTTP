@@ -16,7 +16,7 @@ Create comprehensive documentation and sample projects that enable users to quic
 3. Write module-specific guides
 4. Create 5 complete sample projects
 5. Write troubleshooting guide
-6. Create migration guide (from UnityWebRequest)
+6. Create migration guide (from UnityWebRequest and BestHTTP)
 7. Add inline code documentation (XML comments)
 8. Create video tutorials (optional)
 
@@ -442,7 +442,7 @@ using TurboHTTP.Testing;
 
 // Record mode
 var transport = new RecordReplayTransport(
-    new UnityWebRequestTransport(),
+    new RawSocketTransport(),
     RecordReplayMode.Record,
     "recordings.json"
 );
@@ -453,7 +453,7 @@ transport.SaveRecordings();
 
 // Replay mode
 var transport = new RecordReplayTransport(
-    new UnityWebRequestTransport(),
+    new RawSocketTransport(),
     RecordReplayMode.Replay,
     "recordings.json"
 );

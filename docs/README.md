@@ -14,7 +14,8 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 #### Foundation (M0 Spike)
 1. **[Project Foundation](phases/phase-01-project-foundation.md)** - Package structure, assembly definitions
 2. **[Core Type System](phases/phase-02-core-types.md)** - Request/Response types, error handling
-3. **[Client API & Request Builder](phases/phase-03-client-api.md)** - UHttpClient, fluent API, transport
+3. **[Client API & Raw Socket Transport](phases/phase-03-client-api.md)** - UHttpClient, fluent API, TCP/TLS, HTTP/1.1 transport
+3B. **[HTTP/2 Protocol](phases/phase-03b-http2.md)** - Binary framing, HPACK, stream multiplexing, flow control, ALPN
 
 #### Core Features (M1 Usable)
 4. **[Pipeline Infrastructure](phases/phase-04-pipeline.md)** - Middleware system, basic middlewares
@@ -41,12 +42,14 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 - **Unity Version:** 2021.3 LTS minimum (.NET Standard 2.1)
 - **Platforms (v1.0):** Editor, Standalone (Win/Mac/Linux), iOS, Android
 - **JSON:** System.Text.Json (built-in)
-- **Architecture:** Modular - 1 Core + 9 optional runtime modules (+ optional Editor module)
+- **Transport:** Raw TCP sockets with HTTP/1.1 and HTTP/2 (no UnityWebRequest dependency)
+- **Architecture:** Modular - Core + Transport + 9 optional runtime modules (+ optional Editor module)
 
 ## Module Structure
 
-### Core Module (Required)
-`TurboHTTP.Core` - Client, request/response, pipeline, transport, JSON
+### Core Modules (Required)
+- `TurboHTTP.Core` - Client, request/response, pipeline, JSON
+- `TurboHTTP.Transport` - Raw TCP sockets, HTTP/1.1, HTTP/2, TLS/SslStream, connection pooling
 
 ### Optional Runtime Modules
 - `TurboHTTP.Retry` - Advanced retry with idempotency
@@ -71,6 +74,8 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 
 ## Key Differentiators
 
+- **HTTP/2:** Native multiplexing, HPACK compression, flow control — not available in UnityWebRequest
+- **Raw Sockets:** Full control over TCP, TLS, and protocol negotiation
 - **Modular:** Use only what you need
 - **Observable:** Timeline tracing for every request
 - **Testable:** Record/replay mode for deterministic testing

@@ -302,8 +302,9 @@ namespace TurboHTTP.Unity
     public static class AudioClipHandler
     {
         /// <summary>
-        /// Load AudioClip from response using UnityWebRequestMultimedia.
-        /// This is necessary because AudioClip cannot be created from raw bytes directly.
+        /// Load AudioClip from response bytes.
+        /// Uses UnityWebRequestMultimedia internally for audio decoding only (not HTTP transport).
+        /// This is necessary because Unity does not expose a public API to create AudioClip from raw bytes.
         /// </summary>
         public static async Task<AudioClip> AsAudioClipAsync(
             this UHttpResponse response,

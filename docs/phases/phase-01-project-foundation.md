@@ -91,7 +91,10 @@ Establish the Unity Package Manager (UPM) structure, modular assembly definition
 **Execute:**
 ```bash
 mkdir -p Runtime/Core
-mkdir -p Runtime/Transport
+mkdir -p Runtime/Transport/Tcp
+mkdir -p Runtime/Transport/Tls
+mkdir -p Runtime/Transport/Http1
+mkdir -p Runtime/Transport/Http2
 mkdir -p Runtime/Pipeline/Middlewares
 mkdir -p Runtime/Retry
 mkdir -p Runtime/Cache
@@ -147,7 +150,34 @@ mkdir -p Documentation~
 - No platform restrictions - works everywhere Unity supports
 - No unsafe code needed
 
-### Task 1.4: Create Optional Module Assembly Definitions
+### Task 1.4: Create Transport Assembly Definition
+
+**File:** `Runtime/Transport/TurboHTTP.Transport.asmdef`
+
+```json
+{
+  "name": "TurboHTTP.Transport",
+  "rootNamespace": "TurboHTTP.Transport",
+  "references": ["TurboHTTP.Core"],
+  "includePlatforms": [],
+  "excludePlatforms": ["WebGL"],
+  "allowUnsafeCode": true,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": true
+}
+```
+
+**Notes:**
+- `excludePlatforms`: `["WebGL"]` — raw sockets are not available in WebGL; WebGL will use a browser `fetch()` transport via `.jslib` interop in v1.1
+- `allowUnsafeCode`: true — needed for high-performance buffer operations and HPACK encoding
+- `noEngineReferences`: true — pure C# transport layer with no Unity engine dependency
+- References only `TurboHTTP.Core` for shared types (`IHttpTransport`, `UHttpRequest`, `UHttpResponse`, etc.)
+
+### Task 1.5: Create Optional Module Assembly Definitions
 
 **File:** `Runtime/Retry/TurboHTTP.Retry.asmdef`
 
@@ -330,6 +360,7 @@ mkdir -p Documentation~
   "rootNamespace": "TurboHTTP",
   "references": [
     "TurboHTTP.Core",
+    "TurboHTTP.Transport",
     "TurboHTTP.Retry",
     "TurboHTTP.Cache",
     "TurboHTTP.Auth",
@@ -387,6 +418,7 @@ mkdir -p Documentation~
   "rootNamespace": "TurboHTTP.Tests",
   "references": [
     "TurboHTTP.Core",
+    "TurboHTTP.Transport",
     "TurboHTTP.Retry",
     "TurboHTTP.Cache",
     "TurboHTTP.Auth",
@@ -566,7 +598,7 @@ For questions about licensing, contact: support@yourcompany.com
 
 - [ ] `package.json` exists and has correct metadata
 - [ ] All directory structure created
-- [ ] All 10 runtime module .asmdef files created
+- [ ] All 11 runtime module .asmdef files created (Core + Transport + 9 optional)
 - [ ] Editor .asmdef file created
 - [ ] Test .asmdef files created (runtime and editor)
 - [ ] README.md created with quick start
@@ -595,7 +627,7 @@ For questions about licensing, contact: support@yourcompany.com
    - All 5 samples listed (not importable yet, but listed)
 
 5. **Check Structure:**
-   - Runtime folder has 10 module folders
+   - Runtime folder has 11 module folders (including Transport with Tcp/Tls/Http1/Http2 subdirs)
    - Editor folder exists
    - Tests folder exists with Runtime/Editor subfolders
    - Samples~ folder exists (hidden in Unity, visible in file system)

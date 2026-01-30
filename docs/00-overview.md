@@ -9,7 +9,9 @@
 - **Licensing:** Closed source, commercial package for Unity Asset Store (per-seat licensing)
 - **Minimum Unity Version:** Unity 2021.3 LTS (.NET Standard 2.1)
 - **Target Platforms (v1.0):** Editor, Standalone (Windows/Mac/Linux), Mobile (iOS/Android)
-- **WebGL Support:** Deferred to v1.x
+- **WebGL Support:** Deferred to v1.1 (browser `fetch()` API via `.jslib` interop)
+- **Transport Layer:** Raw TCP sockets with custom HTTP/1.1 and HTTP/2 implementation (no UnityWebRequest dependency)
+- **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation
 - **JSON Library:** System.Text.Json (built-in for Unity 2021.3+)
 - **Distribution:** Unity Asset Store
 
@@ -26,7 +28,8 @@ TurboHTTP is built on a **modular architecture** with a required core and option
 ## Module Structure
 
 ### Core Module (Required)
-- `TurboHTTP.Core` - Client, request/response types, basic pipeline, UnityWebRequest transport, JSON support
+- `TurboHTTP.Core` - Client, request/response types, basic pipeline, JSON support
+- `TurboHTTP.Transport` - Raw socket transport: TCP connection pool, HTTP/1.1 serializer/parser, HTTP/2 framing + HPACK + multiplexing, TLS via SslStream with ALPN
 
 ### Optional Runtime Modules
 1. `TurboHTTP.Retry` - Advanced retry logic with idempotency awareness
@@ -47,8 +50,9 @@ TurboHTTP is built on a **modular architecture** with a required core and option
 These are the easiest "false assumptions" to make early and the most expensive to fix late:
 
 1. **JSON + IL2CPP/AOT reality check:** Verify `System.Text.Json` behavior under IL2CPP on target platforms. If it's painful, introduce a small serialization abstraction so the implementation can be swapped without rewriting the client.
-2. **Transport behavior matrix:** Validate `UnityWebRequest` limitations/quirks (timeouts, headers, redirects, TLS/certs, upload/download handlers) on Editor + iOS + Android early.
-3. **Deterministic testing feasibility:** Confirm record/replay can be done safely (see Phase 9) without leaking secrets and without adding too much friction to the workflow.
+2. **SslStream + ALPN under IL2CPP:** Validate that `System.Net.Security.SslStream` with ALPN protocol negotiation works on iOS and Android IL2CPP builds. This is the critical path for HTTP/2 — if `SslStream` or ALPN fails under IL2CPP, a native TLS plugin or BouncyCastle fallback is required, which changes the architecture. Test this before writing any transport code.
+3. **HTTP/2 flow control correctness:** Getting stream multiplexing, window updates, and HPACK right is subtle. Build a compliance test suite against known HTTP/2 servers (e.g., `nghttp2`, httpbin.org) early. Broken flow control causes silent failures under load.
+4. **Deterministic testing feasibility:** Confirm record/replay can be done safely (see Phase 9) without leaking secrets and without adding too much friction to the workflow.
 
 ## Review Notes
 
@@ -67,10 +71,11 @@ These are the easiest "false assumptions" to make early and the most expensive t
 
 The implementation is organized into 14 phases, progressing from foundation to production release:
 
-### Foundation (Phases 1-3)
+### Foundation (Phases 1-3B)
 - **[Phase 1](phases/phase-01-project-foundation.md):** Project Foundation & Structure
 - **[Phase 2](phases/phase-02-core-types.md):** Core Type System
-- **[Phase 3](phases/phase-03-client-api.md):** Client API & Request Builder
+- **[Phase 3](phases/phase-03-client-api.md):** Client API, Request Builder & HTTP/1.1 Raw Socket Transport
+- **[Phase 3B](phases/phase-03b-http2.md):** HTTP/2 Protocol Implementation
 
 ### Core Features (Phases 4-5)
 - **[Phase 4](phases/phase-04-pipeline.md):** Pipeline Infrastructure
@@ -97,8 +102,8 @@ The implementation is organized into 14 phases, progressing from foundation to p
 
 ## Development Milestones
 
-### M0 — Spike (Phases 1-3)
-Basic request/response model, UnityWebRequest transport, simple GET/POST
+### M0 — Spike (Phases 1-3B)
+Core types, raw TCP socket transport, HTTP/1.1 serializer/parser, TLS via SslStream, HTTP/2 framing + HPACK + stream multiplexing, ALPN negotiation, connection pooling, simple GET/POST
 
 ### M1 — v0.1 "usable" (Phases 4-5)
 Middleware pipeline, retry + logging + metrics, JSON helper, file download
@@ -110,20 +115,22 @@ Cache middleware, trace timeline, editor monitor window, upload support
 Hardening, testing, record/replay, documentation, platform validation, Asset Store release
 
 ### M4 — v1.x "differentiators" (Phase 14)
-WebGL support, faster transports, adaptive network policies, more content handlers
+WebGL support (browser fetch API via .jslib), adaptive network policies, WebSocket support, more content handlers
 
 ## Key Differentiators
 
 TurboHTTP stands out from competitors through:
 
-1. **Modular Architecture:** Use only what you need
-2. **Superior Observability:** Timeline tracing for every request
-3. **Record/Replay Testing:** Deterministic offline testing
-4. **Editor Monitor:** In-editor HTTP traffic inspection
-5. **Adaptive Retry:** Intelligent retry with idempotency awareness
-6. **Unity-First Design:** Native support for Texture2D, AudioClip, AssetBundles
-7. **Platform Realistic:** Documented limitations and workarounds for each platform
-8. **Production Ready:** Comprehensive testing, documentation, and samples
+1. **HTTP/2 Support:** Native HTTP/2 with multiplexing, HPACK compression, and flow control — not available in UnityWebRequest
+2. **Raw Socket Transport:** Full control over TCP connections, TLS, and protocol negotiation — no UnityWebRequest dependency
+3. **Modular Architecture:** Use only what you need
+4. **Superior Observability:** Timeline tracing for every request, including connection-level metrics
+5. **Record/Replay Testing:** Deterministic offline testing
+6. **Editor Monitor:** In-editor HTTP traffic inspection
+7. **Adaptive Retry:** Intelligent retry with idempotency awareness
+8. **Unity-First Design:** Native support for Texture2D, AudioClip, AssetBundles
+9. **Platform Realistic:** Documented limitations and workarounds for each platform
+10. **Production Ready:** Comprehensive testing, documentation, and samples
 
 ## Directory Structure
 
@@ -141,6 +148,11 @@ turboHTTP/
 ├── LICENSE.md
 ├── Runtime/
 │   ├── Core/                      # Core module (required)
+│   ├── Transport/                 # Raw socket transport (TCP, TLS, HTTP/1.1, HTTP/2)
+│   │   ├── Tcp/                   # Connection pool, socket management
+│   │   ├── Tls/                   # SslStream wrapper, ALPN, cert validation
+│   │   ├── Http1/                 # HTTP/1.1 request serializer, response parser, chunked encoding
+│   │   └── Http2/                 # HTTP/2 framing, HPACK, stream multiplexing, flow control
 │   ├── Retry/                     # Retry module
 │   ├── Cache/                     # Cache module
 │   ├── Auth/                      # Auth module
@@ -166,10 +178,13 @@ turboHTTP/
 
 v1.0 is ready for Unity Asset Store when:
 
-- ✓ Core + 9 runtime modules implemented and tested
+- ✓ Core + Transport + 9 runtime modules implemented and tested
+- ✓ Raw socket transport with HTTP/1.1 and HTTP/2 support
+- ✓ TLS/SslStream with ALPN negotiation working on all target platforms
+- ✓ Connection pooling with keep-alive for HTTP/1.1 and multiplexing for HTTP/2
 - ✓ Editor module (HTTP Monitor) functional in supported Unity versions
 - ✓ Integration tests pass on Editor, Standalone, iOS, Android
-- ✓ IL2CPP builds work on all platforms
+- ✓ IL2CPP builds work on all platforms (SslStream validated)
 - ✓ 80%+ code coverage
 - ✓ Performance benchmarks met (<1KB GC per request)
 - ✓ Documentation complete (QuickStart, API, platform notes)

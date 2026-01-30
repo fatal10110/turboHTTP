@@ -15,69 +15,49 @@ This phase outlines the roadmap for TurboHTTP beyond v1.0. These features will d
 
 **Goal:** Make TurboHTTP work in WebGL builds
 
-**Challenges:**
-- UnityWebRequest behaves differently in WebGL
-- JavaScript interop required
-- CORS restrictions
-- No true async in WebGL (must use coroutines)
-- Different error handling
+**Approach:** Implement a `.jslib` JavaScript plugin that wraps the browser `fetch()` API, with a C# `WebGLBrowserTransport : IHttpTransport` that calls into it via `[DllImport("__Internal")]`. This is the same proven approach used by BestHTTP (which uses `XMLHttpRequest`), but using the modern `fetch()` API which additionally supports `ReadableStream` for streaming responses.
+
+**Architecture:**
+```
+IHttpTransport
+├── RawSocketTransport          ← Desktop/Mobile (Phase 3/3B)
+└── WebGLBrowserTransport       ← WebGL: fetch() API via .jslib
+```
 
 **Implementation:**
-```csharp
-// WebGL-specific transport
-public class WebGLTransport : IHttpTransport
-{
-    // Use UnityWebRequest with different configuration
-    // Handle CORS preflight
-    // Bridge to JavaScript if needed
-}
-```
+- `Plugins/WebGL/TurboHTTP_WebFetch.jslib` — ~200 lines of JS wrapping `fetch()`
+  - `WebFetch_Create(method, url)` — create a fetch request
+  - `WebFetch_SetHeader(id, name, value)` — set request headers
+  - `WebFetch_Send(id, bodyPtr, bodyLen)` — send request, marshal body from Emscripten heap
+  - `WebFetch_GetStatus(id)` / `WebFetch_GetResponseHeaders(id)` / `WebFetch_GetResponseBody(id)` — retrieve response data
+  - `WebFetch_Abort(id)` / `WebFetch_Release(id)` — cleanup
+- `Runtime/Transport/WebGL/WebGLBrowserTransport.cs` — C# side calling jslib via `[DllImport("__Internal")]`
+
+**WebGL Limitations (accepted, same as BestHTTP):**
+- Cookies: browser-managed only
+- Caching: browser cache only (no TurboHTTP cache middleware)
+- Streaming: partial support via `ReadableStream` (improvement over BestHTTP's XHR approach)
+- Proxy: unavailable
+- Custom certificate validation: unavailable (browser handles TLS)
+- Redirect control: unavailable (browser follows automatically)
+- HTTP/2: browser decides protocol transparently (no client-side choice)
+- Connection pooling: browser-managed
 
 **Estimated Effort:** 2-3 weeks
 
-**Complexity:** High
+**Complexity:** Medium
 
-**Value:** Medium-High (expands platform support)
+**Value:** High (expands platform support)
 
 ---
 
-### 2. HTTP/2 Support (Medium Priority)
+### ~~2. HTTP/2 Support~~ ✅ Implemented in Phase 3B
 
-**Goal:** Support HTTP/2 for improved performance
+HTTP/2 support is now part of the core v1.0 implementation. See [Phase 3B](phase-03b-http2.md) for details.
 
-**Benefits:**
-- Multiplexing (multiple requests over single connection)
-- Header compression
-- Server push
-- Better performance
-
-**Challenges:**
-- UnityWebRequest doesn't support HTTP/2
-- Need alternative transport (HttpClient wrapper?)
-- Platform compatibility varies
-
-**Implementation:**
-```csharp
-// HTTP/2 transport using System.Net.Http.HttpClient
-public class Http2Transport : IHttpTransport
-{
-    private readonly HttpClient _httpClient;
-
-    public Http2Transport()
-    {
-        _httpClient = new HttpClient(new SocketsHttpHandler
-        {
-            PooledConnectionLifetime = TimeSpan.FromMinutes(2)
-        });
-    }
-}
-```
-
-**Estimated Effort:** 3-4 weeks
-
-**Complexity:** High
-
-**Value:** Medium (performance improvement)
+- Binary framing layer, HPACK header compression, stream multiplexing, flow control
+- ALPN negotiation during TLS handshake to select h2 vs http/1.1
+- Automatic fallback to HTTP/1.1 if server doesn't support h2
 
 ---
 
@@ -430,12 +410,12 @@ client.RegisterPlugin(new SentryPlugin());
 
 | Feature | Priority | Effort | Complexity | Value | Version |
 |---------|----------|--------|------------|-------|---------|
-| WebGL Support | High | 2-3w | High | High | v1.1 |
+| ~~HTTP/2~~ | ~~High~~ | — | — | — | **v1.0** (Phase 3B) |
+| WebGL Support | High | 2-3w | Medium | High | v1.1 |
 | Adaptive Network | Medium | 2w | Medium | High | v1.1 |
 | OAuth 2.0 | High | 3-4w | High | High | v1.2 |
 | WebSocket | High | 2-3w | Medium | High | v1.2 |
 | GraphQL | Medium | 1-2w | Low | Medium | v1.3 |
-| HTTP/2 | Medium | 3-4w | High | Medium | v1.3 |
 | Request Interceptors | Medium | 1w | Low | Medium | v1.1 |
 | Security & Privacy | High | 1-2w | Medium | High | v1.1 |
 | Advanced Content | Low | 1-2w each | Medium | Medium | v1.x |
@@ -447,7 +427,7 @@ client.RegisterPlugin(new SentryPlugin());
 ## Recommended Roadmap
 
 ### v1.1 (Q1 after v1.0)
-- WebGL support
+- WebGL support (browser `fetch()` API via `.jslib` interop)
 - Adaptive network policies
 - Request/response interceptors
 - Security & privacy hardening (redaction + safe defaults)
@@ -460,7 +440,6 @@ client.RegisterPlugin(new SentryPlugin());
 
 ### v1.3 (Q3)
 - GraphQL client
-- HTTP/2 support
 - Additional content handlers
 
 ### v2.0 (Q4+)

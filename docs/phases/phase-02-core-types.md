@@ -626,8 +626,8 @@ namespace TurboHTTP.Core
 {
     /// <summary>
     /// Abstraction for the underlying HTTP transport layer.
-    /// Default implementation uses UnityWebRequest.
-    /// Can be replaced for testing (mock transport) or alternative backends.
+    /// Default implementation uses raw TCP sockets with HTTP/1.1 and HTTP/2 support.
+    /// Can be replaced for testing (mock transport) or platform-specific backends (e.g., WebGL browser fetch).
     /// </summary>
     public interface IHttpTransport
     {
@@ -649,7 +649,7 @@ namespace TurboHTTP.Core
 **Notes:**
 - Simple interface allows multiple transport implementations
 - `context` parameter enables timeline tracking at transport level
-- Will implement `UnityWebRequestTransport` in Phase 3
+- `RawSocketTransport` is implemented in Phase 3 (HTTP/1.1) and Phase 3B (HTTP/2)
 
 ### Task 2.8: Transport Factory
 
@@ -668,7 +668,7 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Get or set the default transport.
-        /// If not set, returns a new UnityWebRequestTransport instance.
+        /// If not set, returns a new RawSocketTransport instance.
         /// </summary>
         public static IHttpTransport Default
         {
@@ -677,7 +677,7 @@ namespace TurboHTTP.Core
                 if (_defaultTransport == null)
                 {
                     // Will be implemented in Phase 3
-                    _defaultTransport = new UnityWebRequestTransport();
+                    _defaultTransport = new RawSocketTransport();
                 }
                 return _defaultTransport;
             }
@@ -689,15 +689,15 @@ namespace TurboHTTP.Core
         /// </summary>
         public static IHttpTransport Create()
         {
-            return new UnityWebRequestTransport();
+            return new RawSocketTransport();
         }
     }
 }
 ```
 
 **Notes:**
-- Placeholder for `UnityWebRequestTransport` (implemented in Phase 3)
-- Allows swapping transports globally for testing
+- `RawSocketTransport` is implemented in Phase 3 (HTTP/1.1) and Phase 3B (HTTP/2)
+- Allows swapping transports globally for testing or platform-specific backends
 
 ## Validation Criteria
 
@@ -873,7 +873,7 @@ Once Phase 2 is complete and validated:
 1. Move to [Phase 3: Client API & Request Builder](phase-03-client-api.md)
 2. Implement the fluent request builder API
 3. Create the `UHttpClient` class
-4. Implement `UnityWebRequestTransport`
+4. Implement `RawSocketTransport` (TCP, TLS, HTTP/1.1)
 
 ## Notes
 

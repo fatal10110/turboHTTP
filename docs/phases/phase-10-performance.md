@@ -9,16 +9,19 @@
 
 Optimize TurboHTTP for production use with memory pooling, backpressure handling, concurrency control, and comprehensive error handling. Ensure the library performs well under load and handles edge cases gracefully.
 
+**Note:** TCP connection pooling and HTTP/2 stream multiplexing are already implemented in the Transport layer (Phase 3/3B). This phase focuses on higher-level performance concerns: memory allocation, request queuing, and middleware-level concurrency control.
+
 ## Goals
 
-1. Implement memory pooling for byte arrays
+1. Implement memory pooling for byte arrays (reduce GC pressure in Transport layer)
 2. Add backpressure handling for concurrent requests
-3. Implement concurrency limits per host
+3. Implement concurrency limits per host (middleware level, complements Transport connection pool)
 4. Optimize timeline event allocation
 5. Add request queuing system
 6. Implement proper disposal patterns
-7. Add stress testing
-8. Profile and optimize hot paths
+7. Add stress testing (including HTTP/2 multiplexing under load)
+8. Profile and optimize hot paths (HTTP/1.1 parser, HPACK encoder/decoder, frame codec)
+9. Optimize `Http11ResponseParser.ReadLineAsync` with buffered reader (currently byte-by-byte)
 
 ## Tasks
 
