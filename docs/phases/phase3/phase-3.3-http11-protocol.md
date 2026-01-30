@@ -47,7 +47,10 @@ All awaits use `.ConfigureAwait(false)`.
 
 7. **Write to stream:**
    ```csharp
-   var headerBytes = Encoding.ASCII.GetBytes(sb.ToString());
+   // Use Latin-1 (ISO-8859-1), NOT ASCII. ASCII silently replaces non-ASCII bytes with '?'.
+   // Most HTTP clients (including .NET HttpClient) use Latin-1 internally for header encoding.
+   // For truly non-ASCII filenames, users should use RFC 5987 encoding (filename*=UTF-8''...).
+   var headerBytes = Encoding.GetEncoding("iso-8859-1").GetBytes(sb.ToString());
    await stream.WriteAsync(headerBytes, 0, headerBytes.Length, ct).ConfigureAwait(false);
    ```
 
@@ -59,7 +62,7 @@ All awaits use `.ConfigureAwait(false)`.
 
 9. `await stream.FlushAsync(ct).ConfigureAwait(false);`
 
-**Performance note:** StringBuilder + `Encoding.ASCII.GetBytes` allocates ~600-700 bytes per request. Document as GC hotspot for Phase 10 rewrite with `ArrayPool<byte>`.
+**Performance note:** StringBuilder + `Encoding.GetEncoding("iso-8859-1").GetBytes` allocates ~600-700 bytes per request. Document as GC hotspot for Phase 10 rewrite with `ArrayPool<byte>`. Combined with parser allocations, Phase 3 targets <2KB GC per request (see CLAUDE.md).
 
 ---
 
@@ -154,13 +157,25 @@ Byte-by-byte CRLF reader with **max length limit**:
 #### `ReadChunkedBodyAsync(Stream stream, CancellationToken ct)`
 
 ```
+MaxResponseBodySize = 100 * 1024 * 1024  // 100MB configurable limit
+totalBodyBytes = 0
+
 loop:
-  read chunk size line (hex)
+  read chunk size line
+  // Strip chunk extensions per RFC 9112 Section 7.1.1: "1A; ext=value\r\n"
+  strip everything after first ';' or space before parsing hex
+  parse hex with int.TryParse(..., NumberStyles.HexNumber, ...)
+  if parse fails: throw FormatException("Invalid chunk size")
   if size == 0: break (last chunk)
+  totalBodyBytes += size
+  if totalBodyBytes > MaxResponseBodySize:
+      throw IOException("Response body exceeds maximum size")
   read exactly `size` bytes into MemoryStream
   read trailing CRLF
 end loop
 // Read trailers (zero or more header lines until empty line)
+// TODO Phase 6: Parse trailer headers and merge into response.Headers
+// For now, we just consume them to reach the end of the message
 loop:
   read line
   if empty: break
@@ -170,13 +185,15 @@ return ms.ToArray()
 
 **Critical:** After the zero-length terminating chunk, read lines in a loop until empty line (not just one line). Servers may send trailer headers.
 
+**Chunk size validation:** Must handle chunk extensions (strip after `;`), validate hex digits, and enforce maximum body size to prevent `OutOfMemoryException` from malicious servers.
+
 #### `ReadFixedBodyAsync(Stream stream, int length, CancellationToken ct)`
 
-Read exactly `length` bytes using `ReadExactAsync`.
+Validate `length <= MaxResponseBodySize` before allocating — throw `IOException("Response body exceeds maximum size")` if exceeded. Then read exactly `length` bytes using `ReadExactAsync`.
 
 #### `ReadToEndAsync(Stream stream, CancellationToken ct)`
 
-Read into `MemoryStream` with 8KB buffer until `read == 0`.
+Read into `MemoryStream` with 8KB buffer until `read == 0`. **Enforce the same `MaxResponseBodySize` limit** as chunked reading — throw `IOException("Response body exceeds maximum size")` if exceeded. Without this limit, a server could send an infinite stream causing unbounded memory growth.
 
 #### `ReadExactAsync(Stream stream, byte[] buffer, int offset, int count, CancellationToken ct)`
 

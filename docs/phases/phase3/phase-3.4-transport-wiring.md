@@ -12,16 +12,47 @@
 
 Default `IHttpTransport` implementation that wires together the connection pool, TLS, serializer, and parser.
 
-### Static Constructor (Transport Registration)
+### Transport Registration (Bootstrap Problem)
+
+The static constructor approach has a **circular dependency**: `HttpTransportFactory.Default` calls `_factory()`, but `_factory` is set by `RawSocketTransport`'s static constructor, which only runs when `RawSocketTransport` is first referenced. Nothing references it before `Default` is called — the factory is null and throws.
+
+Since Transport assembly has `noEngineReferences: true`, `[RuntimeInitializeOnLoadMethod]` cannot be used directly.
+
+**Solution:** Provide both a static constructor (for direct usage) AND an explicit registration method. The `TurboHTTP.Unity` bootstrap module (already planned in the module system) will handle automatic registration:
 
 ```csharp
+// In RawSocketTransport.cs:
 static RawSocketTransport()
 {
     HttpTransportFactory.Register(() => new RawSocketTransport());
 }
+
+/// <summary>
+/// Call to ensure the static constructor has run and transport is registered.
+/// Typically called by the TurboHTTP.Unity bootstrap module.
+/// </summary>
+public static void EnsureRegistered() { /* Static constructor does the work */ }
 ```
 
-Since Transport assembly has `noEngineReferences: true`, we cannot use `[RuntimeInitializeOnLoadMethod]`. The static constructor runs when `RawSocketTransport` is first referenced — which happens when `HttpTransportFactory.Default` getter calls the registered factory.
+```csharp
+// In a separate TurboHTTP.Unity assembly (autoReferenced: true, references Core + Transport):
+// File: Runtime/Unity/TransportBootstrap.cs
+namespace TurboHTTP.Unity
+{
+    internal static class TransportBootstrap
+    {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void Initialize()
+        {
+            RawSocketTransport.EnsureRegistered();
+        }
+    }
+}
+```
+
+**Fallback for non-Unity contexts (tests, manual setup):** Users can call `RawSocketTransport.EnsureRegistered()` explicitly or set `HttpTransportFactory.Default = new RawSocketTransport()` directly.
+
+**Note:** The `TurboHTTP.Unity` module is already part of the planned module system. This bootstrap class is its first file — it will grow in later phases (main thread dispatcher, coroutine helpers, etc.).
 
 ### Constructor
 
@@ -44,7 +75,11 @@ Required using: `using System.Security.Authentication;` for `AuthenticationExcep
    timeoutCts.CancelAfter(request.Timeout);
    var ct = timeoutCts.Token;
 
-2. Extract connection params:
+2. Extract and validate connection params:
+   scheme = request.Uri.Scheme.ToLowerInvariant()
+   if (scheme != "http" && scheme != "https")
+       throw new UHttpException(new UHttpError(UHttpErrorType.InvalidRequest,
+           $"Unsupported URI scheme: {scheme}. Only http and https are supported."))
    host = request.Uri.Host
    port = request.Uri.Port (default 443 for https, 80 for http)
    secure = scheme == "https"
@@ -135,9 +170,9 @@ public void Dispose()
 
 ## Verification
 
-1. File compiles in `TurboHTTP.Transport` assembly
-2. Static constructor registers factory with `HttpTransportFactory`
-3. `HttpTransportFactory.Default` returns `RawSocketTransport` instance
+1. `RawSocketTransport.cs` compiles in `TurboHTTP.Transport` assembly
+2. `TransportBootstrap.cs` compiles in `TurboHTTP.Unity` assembly (new assembly def needed)
+3. After `TransportBootstrap.Initialize()` (or `RawSocketTransport.EnsureRegistered()`), `HttpTransportFactory.Default` returns `RawSocketTransport` instance
 4. Timeout enforcement works (linked CancellationTokenSource)
 5. Retry-on-stale: IOException on first write → retry with fresh connection
 6. Exception mapping correctly distinguishes timeout / cancelled / network / TLS / unknown

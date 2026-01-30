@@ -15,7 +15,7 @@
 Represents a single pooled TCP connection:
 - Properties: `Socket` (Socket), `Stream` (Stream), `Host` (string), `Port` (int), `IsSecure` (bool)
 - `LastUsed` — stored as `long _lastUsedTicks` with `Interlocked.Read/Exchange` for thread-safe 32-bit access
-- `IsAlive` — detects server-closed connections, wrapped in try-catch for disposed sockets:
+- `IsAlive` — **best-effort** detection of server-closed connections. For TLS connections, `Socket.Available` does not reflect SslStream's internal buffering, so this check may miss some states. The retry-on-stale mechanism in `RawSocketTransport` (Phase 3.4) is the true safety net. Wrapped in try-catch for disposed sockets:
   ```csharp
   public bool IsAlive
   {
@@ -49,22 +49,53 @@ Thread-safe pool keyed by `host:port:secure`:
    - If stale/dead: dispose and try next
 4. If no reusable connection, create new:
    - **DNS resolution:** `var addresses = await Dns.GetHostAddressesAsync(host).ConfigureAwait(false)`
-   - **Note:** `Dns.GetHostAddressesAsync` has no CancellationToken in .NET Standard 2.1. DNS resolution is not cancellable — timeout is enforced after DNS completes.
-   - Pick first address (supports IPv6 — use `address.AddressFamily` not hardcoded `InterNetwork`)
+   - **Note:** `Dns.GetHostAddressesAsync` has no CancellationToken in .NET Standard 2.1. DNS resolution is not cancellable — timeout is enforced after DNS completes. On mobile networks (captive portals, WiFi↔cellular transitions), DNS can hang for 30+ seconds consuming the entire request timeout. **Known limitation** — see CLAUDE.md "Critical Risk Areas".
+   - **Address selection with fallback:** Try addresses in order. If `ConnectAsync` fails with `SocketException` on the first address, try the next (supports IPv6 — use `address.AddressFamily` not hardcoded `InterNetwork`). This is a "Happy Eyeballs lite" approach — full RFC 8305 deferred to Phase 10.
+     ```csharp
+     SocketException lastException = null;
+     foreach (var address in addresses)
+     {
+         try
+         {
+             var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+             socket.NoDelay = true;
+             await socket.ConnectAsync(new IPEndPoint(address, port)).ConfigureAwait(false);
+             return socket; // success
+         }
+         catch (SocketException ex)
+         {
+             lastException = ex;
+         }
+     }
+     throw lastException;
+     ```
    - `new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)`
    - `socket.NoDelay = true`
    - `await socket.ConnectAsync(new IPEndPoint(address, port)).ConfigureAwait(false)`
    - `Stream stream = new NetworkStream(socket, ownsSocket: true)`
-   - If secure: `stream = await TlsStreamWrapper.WrapAsync(stream, host, ct).ConfigureAwait(false)`
+   - If secure: wrap in try-catch to prevent socket leak on TLS handshake failure:
+     ```csharp
+     try
+     {
+         stream = await TlsStreamWrapper.WrapAsync(stream, host, ct).ConfigureAwait(false);
+     }
+     catch
+     {
+         stream.Dispose(); // Cascades to NetworkStream → Socket
+         throw;
+     }
+     ```
 5. Return `new PooledConnection(socket, stream, host, port, secure)`
 6. On exception: release semaphore, rethrow
 
 #### `ReturnConnection(connection)`
 
+**Critical ordering:** Enqueue MUST happen BEFORE semaphore release. Otherwise a waiting thread can wake up, find an empty queue, and create a new connection — exceeding the per-host limit.
+
 1. If `_disposed` or connection null/dead → dispose connection, release semaphore, return
 2. Update `connection.LastUsed`
-3. Enqueue to idle pool
-4. Release semaphore
+3. **Enqueue to idle pool** ← must be before step 4
+4. **Release semaphore** ← only after connection is available in queue
 
 #### `Dispose()`
 
@@ -75,8 +106,19 @@ Thread-safe pool keyed by `host:port:secure`:
 
 #### Configuration
 
+Constructor parameters (allow tuning without waiting for Phase 10):
+```csharp
+public TcpConnectionPool(int maxConnectionsPerHost = 6, TimeSpan? connectionIdleTimeout = null)
+{
+    _maxConnectionsPerHost = maxConnectionsPerHost;
+    _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
+}
+```
+
 - `maxConnectionsPerHost` (default 6, matches browser convention)
 - `connectionIdleTimeout` (default 2 min)
+
+**Known limitation:** `ConcurrentDictionary<string, SemaphoreSlim>` creates a semaphore per unique host:port:secure key and never removes them. For apps making requests to many unique hostnames (e.g., CDN subdomains), this is a slow memory leak. Cleanup deferred to Phase 10 background idle task.
 
 ---
 
@@ -99,9 +141,13 @@ await sslStream.AuthenticateAsClientAsync(
 
 Phase 3B will upgrade to `SslClientAuthenticationOptions` with ALPN for HTTP/2 negotiation.
 
-### Post-handshake enforcement
+### Post-handshake enforcement (defensive only)
 
-After handshake, check `sslStream.SslProtocol`. If lower than TLS 1.2, throw `System.Security.SecurityException("TLS 1.2 or higher required")`.
+Since `AuthenticateAsClientAsync` is called with `SslProtocols.Tls12 | SslProtocols.Tls13`, the handshake itself rejects TLS 1.0/1.1 — the server gets `AuthenticationException`, not a downgrade. The post-handshake check is **redundant** but kept as a defensive assertion:
+
+After handshake, check `sslStream.SslProtocol`. If lower than TLS 1.2, throw `System.Security.SecurityException("TLS 1.2 or higher required")`. This should never trigger in practice.
+
+**Platform note:** Consider using `SslProtocols.None` (OS negotiates best available) as the safer cross-platform default, with the post-handshake TLS 1.2 minimum check as the enforcement mechanism. This is the Microsoft-recommended approach and avoids issues with `SslProtocols.Tls13` availability on older macOS/iOS versions. See WARNING-1 in review notes.
 
 ### `GetNegotiatedProtocol(SslStream)`
 

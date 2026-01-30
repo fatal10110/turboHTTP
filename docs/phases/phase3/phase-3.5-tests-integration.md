@@ -33,6 +33,8 @@ Test cases:
 - Client_ImplementsIDisposable
 - HttpTransportFactory_Default_ReturnsRawSocketTransport
 - HttpTransportFactory_Default_CalledTwice_ReturnsSameInstance
+- RequestBuilder_WithJsonBodyString_SetsContentTypeAndBody
+- ClientOptions_SnapshotAtConstruction_MutationsDoNotAffectClient
 ```
 
 Uses a mock `IHttpTransport` to isolate Core from Transport.
@@ -90,6 +92,11 @@ Test cases:
 - Parse_TotalHeaderSize_ExceedsLimit_ThrowsFormatException
 - Parse_TransferEncodingGzipChunked_ThrowsNotSupportedException
 - Parse_EmptyBody_ReturnsEmptyArray
+- Parse_ChunkedBody_WithExtensions_StripsExtensionsBeforeParsing
+- Parse_ChunkedBody_ExceedsMaxBodySize_ThrowsIOException
+- Parse_ContentLength_ExceedsMaxBodySize_ThrowsIOException
+- Parse_ReadToEnd_ExceedsMaxBodySize_ThrowsIOException
+- Parse_MultipleSetCookieHeaders_AllPreservedViaAdd
 ```
 
 ---
@@ -126,20 +133,33 @@ public class TestHttpClient : MonoBehaviour
 {
     private UHttpClient _client;
 
+    // Note: async void is unavoidable for MonoBehaviour Start().
+    // Wrap entire body in try-catch to prevent silent exception swallowing.
     async void Start()
     {
-        _client = new UHttpClient();
+        try
+        {
+            _client = new UHttpClient();
 
-        await TestBasicGet();
-        await TestPostJson();
-        await TestCustomHeaders();
-        await TestTimeout();
-        await TestConnectionReuse();
-        await TestHeadRequest();
-        await TestTlsVersion();
+            await TestBasicGet();
+            await TestPostJson();
+            await TestPostJsonString();  // IL2CPP-safe overload
+            await TestCustomHeaders();
+            await TestTimeout();
+            await TestConnectionReuse();
+            await TestHeadRequest();
+            await TestTlsVersion();
+            await TestUnsupportedScheme();
+            await MeasureLatencyBaseline();
 
-        _client.Dispose();
-        Debug.Log("=== All tests complete ===");
+            _client.Dispose();
+            Debug.Log("=== All tests complete ===");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogException(ex);
+            Debug.LogError("=== TEST FAILURE ===");
+        }
     }
 }
 ```
@@ -166,6 +186,17 @@ public class TestHttpClient : MonoBehaviour
 
 7. **TestTlsVersion** — Verify TLS 1.2+ was negotiated
    - Assert: negotiated protocol >= TLS 1.2 (not just log)
+
+8. **TestPostJsonString** — `POST https://httpbin.org/post` with `WithJsonBody("{\"key\":\"value\"}")`
+   - Assert: status 200, echoed body contains sent data
+   - Tests the IL2CPP-safe `WithJsonBody(string)` overload
+
+9. **TestUnsupportedScheme** — Construct request with `ftp://` scheme
+   - Assert: throws `UHttpException` with appropriate error message
+
+10. **MeasureLatencyBaseline** — 5 sequential GET requests to `https://httpbin.org/get`
+    - Log: average latency per request, total GC allocations (if measurable via `GC.GetTotalMemory`)
+    - Purpose: establish Phase 3 baseline for Phase 10 comparison. No pass/fail threshold — informational only.
 
 ---
 
@@ -215,4 +246,4 @@ Fix any issues found, re-review until clean.
 - [ ] TLS 1.2+ asserted (not just logged)
 - [ ] Both specialist agent reviews pass
 - [ ] CLAUDE.md updated
-- [ ] IL2CPP smoke test (if possible): build for iOS sim or Android, verify basic HTTPS GET
+- [ ] **MANDATORY** IL2CPP smoke test: build for iOS simulator or Android emulator, verify basic HTTPS GET completes. The SslStream ALPN risk (CLAUDE.md Critical Risk Area #1) makes this a blocking requirement for Phase 3 completion. If device testing is not possible, document explicitly as deferred risk with rationale.

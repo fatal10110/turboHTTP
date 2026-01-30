@@ -51,13 +51,20 @@ Properties:
 
 Fluent builder:
 - `internal` constructor: `(UHttpClient client, HttpMethod method, string url)`
-- Methods: `WithHeader`, `WithHeaders`, `WithBody(byte[])`, `WithBody(string)`, `WithJsonBody<T>`, `WithJsonBody<T>(T, JsonSerializerOptions)`, `WithTimeout`, `WithMetadata`, `WithBearerToken`, `Accept`, `ContentType`
+- Methods: `WithHeader`, `WithHeaders`, `WithBody(byte[])`, `WithBody(string)`, `WithJsonBody(string)`, `WithJsonBody<T>`, `WithJsonBody<T>(T, JsonSerializerOptions)`, `WithTimeout`, `WithMetadata`, `WithBearerToken`, `Accept`, `ContentType`
 - `Build()` — resolves relative URLs against `BaseUrl`, merges default + request headers, returns `UHttpRequest`
 - `SendAsync(ct)` — calls `Build()` then `_client.SendAsync()`
 
 **Critical fixes from review:**
 - **Multi-value headers in `WithHeaders`:** Iterate `headers.Names` + `GetValues()` to copy ALL values, not just first via enumerator
 - **`WithJsonBody<T>` IL2CPP safety:** Add overload accepting `JsonSerializerOptions` for source-generated contexts. Document that default overload uses reflection (may fail under IL2CPP for complex types).
+- **`WithJsonBody(string json)` overload (IL2CPP-recommended):** Accepts pre-serialized JSON string. This is the **recommended** approach for IL2CPP builds — users can serialize with their own IL2CPP-safe serializer (Unity's JsonUtility, Newtonsoft with AOT, or source-generated System.Text.Json). Sets `Content-Type: application/json` and converts to UTF-8 bytes.
+  ```csharp
+  public UHttpRequestBuilder WithJsonBody(string json)
+  {
+      return WithBody(Encoding.UTF8.GetBytes(json)).ContentType("application/json");
+  }
+  ```
 
 ---
 
@@ -67,7 +74,8 @@ Fluent builder:
 
 Main client:
 - Constructor: optional `UHttpClientOptions` (defaults to new)
-- Resolves transport: `options.Transport ?? HttpTransportFactory.Default`
+- **Snapshot options at construction:** `_options = options?.Clone() ?? new UHttpClientOptions()` — prevents mutation after client creation
+- Resolves transport: `_options.Transport ?? HttpTransportFactory.Default`
 - Tracks `_ownsTransport` bool: `true` when from factory, `false` when user-provided
 - Verb methods: `Get`, `Post`, `Put`, `Delete`, `Patch`, `Head`, `Options` → return `UHttpRequestBuilder`
 - `SendAsync(UHttpRequest, CancellationToken)`:
@@ -100,7 +108,16 @@ public static IHttpTransport Default
     get
     {
         if (_defaultTransport == null && _factory != null)
-            _defaultTransport = _factory();
+        {
+            // Thread-safe lazy initialization — prevent duplicate transport creation
+            var transport = _factory();
+            var existing = Interlocked.CompareExchange(ref _defaultTransport, transport, null);
+            if (existing != null)
+            {
+                // Another thread won the race — dispose our duplicate
+                (transport as IDisposable)?.Dispose();
+            }
+        }
         if (_defaultTransport == null)
             throw new InvalidOperationException("No default transport configured...");
         return _defaultTransport;

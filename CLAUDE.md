@@ -65,7 +65,11 @@ Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md`
 1. **SslStream ALPN under IL2CPP** — Must validate HTTP/2 negotiation on physical iOS/Android devices before scaling past Phase 3B
 2. **System.Text.Json + IL2CPP/AOT** — Serialization behavior needs early validation
 3. **HTTP/2 flow control** — Stream multiplexing, window updates, HPACK correctness require rigorous testing
-4. **Memory target:** <1KB GC per request requires buffer pooling from Phase 3, not deferred to Phase 10
+4. **Memory target (phased):**
+   - Phase 3: <2KB GC per request (correctness focus; measured via profiler snapshot in Phase 3.5)
+   - Phase 10: <500 bytes GC per request (zero-alloc patterns, ArrayPool, buffered I/O)
+   - Phase 3 uses StringBuilder + Encoding for serialization (~600–700 bytes) and byte-by-byte ReadLineAsync (~600 Task allocations per response). Both are documented GC hotspots for Phase 10 rewrite.
+5. **DNS resolution on mobile:** `Dns.GetHostAddressesAsync` has no CancellationToken in .NET Standard 2.1. DNS hangs on mobile networks can consume the entire request timeout. Documented as known limitation; consider Task.Run wrapper if mobile timeout reliability is critical.
 
 ## Testing
 
