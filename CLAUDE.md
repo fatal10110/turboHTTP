@@ -61,6 +61,15 @@ Both use `defineConstraints: ["UNITY_INCLUDE_TESTS"]` and `precompiledReferences
 - Assembly definitions use GUID-less string references (e.g., `"TurboHTTP.Core"`)
 - Optional modules must remain independently includable — never add cross-module references
 
+## Post-Implementation Review
+
+After completing each implementation step (phase task, new type, transport change, middleware, etc.), invoke both specialist agents for review before marking the step as done:
+
+- **unity-infrastructure-architect** (`.claude/agents/unity-infrastructure-architect.md`) — Reviews architecture, memory efficiency, thread safety, IL2CPP/AOT concerns, module dependency rules, and resource disposal.
+- **unity-network-architect** (`.claude/agents/unity-network-architect.md`) — Reviews platform compatibility, protocol correctness, TLS/security, zero-allocation patterns, and validates against relevant RFCs.
+
+Both reviews must pass before proceeding to the next step.
+
 ## Keeping This File Current
 
 This file must be updated whenever a phase is completed, a new module is implemented, conventions change, or architectural decisions are made. After each significant step — new types, new middleware, transport changes, test infrastructure, etc. — update the relevant sections here (especially Development Status, Architecture, and Conventions) so the next Claude Code session starts with accurate context.
