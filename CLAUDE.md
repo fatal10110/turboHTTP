@@ -19,6 +19,16 @@ TurboHTTP is a commercial, closed-source HTTP client package for Unity (Asset St
 
 All optional modules depend only on `TurboHTTP.Core`, never on each other. Transport is the sole assembly with unsafe code permission.
 
+**Core types (Phase 2):**
+- `HttpMethod` — Enum (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS) + zero-alloc extensions (`IsIdempotent`, `HasBody`, `ToUpperString`)
+- `HttpHeaders` — Case-insensitive multi-value header collection (`Set`, `Add`, `Get`, `GetValues`, `Clone`)
+- `UHttpRequest` — Immutable request (defensive header cloning, `With*` builder pattern, `Metadata` dictionary)
+- `UHttpResponse` — Response (`IsSuccessStatusCode`, `GetBodyAsString`, `EnsureSuccessStatusCode`)
+- `UHttpError` / `UHttpException` — Error taxonomy with `IsRetryable()` logic (network/timeout retryable, 5xx retryable, 4xx not)
+- `RequestContext` — Thread-safe execution context (timeline events, state dictionary, stopwatch)
+- `IHttpTransport` — Transport interface (`SendAsync` + `IDisposable`)
+- `HttpTransportFactory` — Static factory (throws until Phase 3 registers transport)
+
 ## Key Technical Decisions
 
 - **Transport:** Raw `System.Net.Sockets.Socket` with connection pooling (not UnityWebRequest)
@@ -27,10 +37,21 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - **HTTP/2:** Native binary framing, HPACK compression, stream multiplexing, flow control
 - **Middleware:** ASP.NET Core-style pipeline pattern for request/response interception
 - **Namespaces:** Each module uses `TurboHTTP.<ModuleName>` (e.g., `TurboHTTP.Core`, `TurboHTTP.Transport`)
+- **Transport Factory:** `HttpTransportFactory` throws `InvalidOperationException` if no transport is configured. Phase 3 registers `RawSocketTransport` as the default. This avoids Core → Transport circular dependency.
+- **Headers:** `HttpHeaders` uses `Dictionary<string, List<string>>` for multi-value support (RFC 9110 Section 5.3, Set-Cookie per RFC 6265).
+- **Immutability:** `UHttpRequest` defensively clones headers in constructor. `byte[]` body uses shared ownership (documented, not copied). Migration to `ReadOnlyMemory<byte>` deferred to Phase 3.
+- **Thread Safety:** `RequestContext` uses lock-based synchronization for timeline and state access. Required for HTTP/2 async continuations.
+- **IHttpTransport:** Extends `IDisposable` for connection pool cleanup.
 
 ## Development Status
 
-Implementation follows 14 phases documented in `docs/phases/`. The current state is scaffolding only — directory structure and assembly definitions exist but no C# source files yet. Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
+Implementation follows 14 phases documented in `docs/phases/`.
+
+- **Phase 1 (Project Foundation):** COMPLETE — Directory structure, assembly definitions, package files.
+- **Phase 2 (Core Type System):** COMPLETE — All 8 core types implemented in `Runtime/Core/`, 3 test files in `Tests/Runtime/Core/`. Reviewed by both specialist agents.
+- **Phases 3–14:** Not started.
+
+Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
 
 ## Implementation Milestones
 
@@ -68,7 +89,7 @@ After completing each implementation step (phase task, new type, transport chang
 - **unity-infrastructure-architect** (`.claude/agents/unity-infrastructure-architect.md`) — Reviews architecture, memory efficiency, thread safety, IL2CPP/AOT concerns, module dependency rules, and resource disposal.
 - **unity-network-architect** (`.claude/agents/unity-network-architect.md`) — Reviews platform compatibility, protocol correctness, TLS/security, zero-allocation patterns, and validates against relevant RFCs.
 
-Both reviews must pass before proceeding to the next step.
+Both reviews must pass before proceeding to the next step. When a review identifies issues that require code changes, fix the issues and then run both reviews again as a verification pass. Repeat until all issues are resolved or explicitly deferred with documented rationale and target phase.
 
 ## Keeping This File Current
 

@@ -1419,3 +1419,13 @@ Once Phase 3 is complete and validated:
 - Cancellation token support enables aborting requests at any stage
 - Timeline events recorded at connection, send, and receive stages
 - **Critical risk:** SslStream with ALPN must be validated on IL2CPP before Phase 3B (see risk spikes)
+
+## Deferred Items from Phase 2
+
+The following items were identified during Phase 2 review and should be addressed in this phase:
+
+1. **`byte[]` body → `ReadOnlyMemory<byte>`** — Evaluate migrating `UHttpRequest.Body` and `UHttpResponse.Body` from `byte[]` to `ReadOnlyMemory<byte>` to enable `ArrayPool<byte>` integration. This is an architectural decision that affects the transport layer's buffer management and the <1KB GC target. Decide during Task 3.8 (RawSocketTransport) implementation.
+
+2. **Register `RawSocketTransport` as default transport** — `HttpTransportFactory.Default` currently throws `InvalidOperationException`. Phase 3 must set it during initialization (e.g., via a static constructor or `RuntimeInitializeOnLoadMethod`).
+
+3. **`CONNECT` / `TRACE` HTTP methods** — Consider adding to the `HttpMethod` enum if proxy tunneling is needed. Not blocking but avoids a breaking change later.

@@ -860,6 +860,10 @@ Once Phase 6 is complete and validated:
 > 2. Phase 6b: Disk cache storage backend (defer to post-M2 if needed)
 > 3. Phase 6c: Advanced cache features (Vary headers, invalidation API, cache tags)
 
+## Deferred Items from Phase 2
+
+1. **HTTP 429 retryability** — `UHttpError.IsRetryable()` currently treats all 4xx as non-retryable. HTTP 429 (Too Many Requests, RFC 6585) is a 4xx code that is explicitly retryable. The rate limit middleware and/or retry middleware should handle 429 + `Retry-After` header parsing. Either special-case 429 in `IsRetryable()` or override in middleware.
+
 ### Security & Privacy Notes
 
 - Be conservative by default: do not cache responses with sensitive headers (e.g., `Authorization`) unless explicitly opted in

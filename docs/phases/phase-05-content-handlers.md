@@ -750,3 +750,7 @@ Once Phase 5 is complete and validated:
 - Checksum verification ensures file integrity
 - Multipart form data is standard for file uploads
 - Progress tracking enables UI updates during downloads
+
+## Deferred Items from Phase 2
+
+1. **`GetBodyAsString()` charset awareness** — `UHttpResponse.GetBodyAsString()` currently hardcodes UTF-8. Add a `GetBodyAsString(Encoding encoding)` overload and consider auto-detecting charset from `Content-Type` header (RFC 9110 Section 8.3.1) as part of content handling work in this phase.

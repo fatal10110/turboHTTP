@@ -883,3 +883,30 @@ Once Phase 2 is complete and validated:
 - Immutability prevents bugs in concurrent scenarios
 - Error taxonomy enables intelligent error handling
 - Timeline tracking is foundation for observability
+
+## Implementation Notes (Post-Review)
+
+The following changes were made during implementation based on specialist agent reviews:
+
+### Applied Fixes
+1. **`ToUpperString()`** uses pre-allocated string array instead of `Enum.ToString().ToUpperInvariant()` — zero GC, IL2CPP-safe.
+2. **`UHttpRequest` immutability** — constructor clones headers via `headers?.Clone()` to prevent shared mutation.
+3. **`UHttpException` null-check** — moved before `base()` call to throw `ArgumentNullException` correctly.
+4. **`RequestContext` thread safety** — lock-based synchronization on `_timeline` and `_state`. `Timeline` and `State` properties return snapshots.
+5. **`IHttpTransport`** — extends `IDisposable` for connection pool resource cleanup.
+6. **`HttpHeaders` multi-value support** — backing store changed to `Dictionary<string, List<string>>` with `Add()` and `GetValues()` methods (RFC 9110, RFC 6265).
+7. **`HttpTransportFactory`** — throws `InvalidOperationException` if `Default` accessed before configuration (avoids Core → Transport dependency).
+
+### Deferred Items
+Items identified during review but intentionally deferred to later phases:
+
+| Item | Deferred To | Rationale |
+|------|-------------|-----------|
+| `byte[]` body → `ReadOnlyMemory<byte>` | Phase 3 | Architectural decision needed alongside buffer pooling strategy |
+| `CONNECT` / `TRACE` HTTP methods | Phase 3 or later | Not needed until proxy support; adding later won't break API |
+| `GetBodyAsString()` charset awareness | Phase 5 | Requires Content-Type parsing; add `GetBodyAsString(Encoding)` overload |
+| HTTP 429 special-case in `IsRetryable()` | Phase 6 (Retry) | Retry middleware should handle 429 + `Retry-After` header logic |
+| `ResponseContext` type | Evaluate in Phase 4 | Phase spec goal mentioned it but no task defined; `RequestContext` may suffice |
+| Extended test coverage | Phase 9 | Add UHttpRequest/UHttpResponse/RequestContext/HttpTransportFactory tests |
+| Timeline opt-in flag | Phase 7 or 10 | `RequestContext.TimelineEnabled` to skip allocations in production builds |
+| `RequestContext : IDisposable` | Phase 4 | Enable cleanup and pooling in middleware pipeline |
