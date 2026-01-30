@@ -135,13 +135,13 @@ These are the easiest "false assumptions" to make early and the most expensive t
 > **TODO: Missing Quality of Life Features** - The plan lacks several standard features expected in a commercial library:
 >
 > - **Decompression**: No automatic handling of Gzip/Brotli content encoding (essential for JSON APIs).
-> - **Multipart/Form-Data**: No builder for complex file uploads (Phase 3 mentions bytes/JSON but not multipart).
+> - **Multipart/Form-Data**: Ensure there is a first-class builder + examples + tests for file uploads (covered in Phase 5, but should be treated as a v1.0 expectation).
 > - **Cookie Management**: No "Cookie Jar" middleware for persisting session cookies (stateless by default).
 >
 > Recommendation:
 >
 > - Add `DecompressionMiddleware` to Phase 4 (Pipeline).
-> - Add `MultipartFormDataBuilder` to Phase 3 (Client API) or Phase 5 (Content Handlers).
+> - Keep `MultipartFormDataBuilder` in Phase 5 (Content Handlers) and add validation + sample coverage; optionally add a thin convenience API in Phase 3.
 > - Add `CookieMiddleware` to Phase 4 or 6.
 
 ## Implementation Phases

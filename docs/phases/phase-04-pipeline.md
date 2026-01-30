@@ -95,11 +95,13 @@ namespace TurboHTTP.Core
     {
         private readonly IReadOnlyList<IHttpMiddleware> _middlewares;
         private readonly IHttpTransport _transport;
+        private readonly HttpPipelineDelegate _pipeline;
 
         public HttpPipeline(IEnumerable<IHttpMiddleware> middlewares, IHttpTransport transport)
         {
             _middlewares = middlewares?.ToList() ?? new List<IHttpMiddleware>();
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+            _pipeline = BuildPipeline();
         }
 
         /// <summary>
@@ -115,11 +117,8 @@ namespace TurboHTTP.Core
             if (context == null)
                 throw new ArgumentNullException(nameof(context));
 
-            // Build the pipeline chain
-            HttpPipelineDelegate pipeline = BuildPipeline();
-
             // Execute the pipeline
-            return pipeline(request, context, cancellationToken);
+            return _pipeline(request, context, cancellationToken);
         }
 
         private HttpPipelineDelegate BuildPipeline()
@@ -149,13 +148,16 @@ namespace TurboHTTP.Core
 
 **Notes:**
 
-- Pipeline is built once and reused
+- Pipeline delegate chain is built once per `HttpPipeline` instance and reused across requests
 - Middleware executes in order for requests, reverse order for responses
 - Transport is the final step in the pipeline
 
 ### Task 4.3: Integrate Pipeline into UHttpClient
 
 **File:** `Runtime/Core/UHttpClient.cs` (update `SendAsync` method)
+
+**Note:** Construct `_pipeline` once in the `UHttpClient` constructor (or lazily on first use) after options are finalized:
+`_pipeline = new HttpPipeline(Options.Middlewares, _transport);`. Treat `Options.Middlewares` as immutable after the client is created.
 
 ```csharp
 /// <summary>
@@ -174,9 +176,8 @@ public async Task<UHttpResponse> SendAsync(
 
     try
     {
-        // Build and execute pipeline
-        var pipeline = new HttpPipeline(Options.Middlewares, _transport);
-        var response = await pipeline.ExecuteAsync(request, context, cancellationToken);
+        // Execute a cached pipeline (construct once per client, not per request)
+        var response = await _pipeline.ExecuteAsync(request, context, cancellationToken);
 
         context.RecordEvent("RequestComplete");
         context.Stop();
@@ -217,7 +218,6 @@ public async Task<UHttpResponse> SendAsync(
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using UnityEngine;
 
 namespace TurboHTTP.Core
 {
@@ -226,6 +226,7 @@ namespace TurboHTTP.Core
     /// </summary>
     public class LoggingMiddleware : IHttpMiddleware
     {
+        private readonly Action<string> _log;
         private readonly LogLevel _logLevel;
         private readonly bool _logHeaders;
         private readonly bool _logBody;
@@ -239,10 +240,12 @@ namespace TurboHTTP.Core
         }
 
         public LoggingMiddleware(
+            Action<string> log = null,
             LogLevel logLevel = LogLevel.Standard,
             bool logHeaders = false,
             bool logBody = false)
         {
+            _log = log ?? (_ => { });
             _logLevel = logLevel;
             _logHeaders = logHeaders;
             _logBody = logBody;
@@ -314,7 +317,7 @@ namespace TurboHTTP.Core
                 message += $"\n  Body: {bodyPreview}";
             }
 
-            Debug.Log($"[TurboHTTP] {message}");
+            _log($"[TurboHTTP] {message}");
         }
 
         private void LogResponse(UHttpRequest request, UHttpResponse response)
@@ -340,18 +343,18 @@ namespace TurboHTTP.Core
 
             if (response.IsSuccessStatusCode)
             {
-                Debug.Log($"[TurboHTTP] {message}");
+                _log($"[TurboHTTP] {message}");
             }
             else
             {
-                Debug.LogWarning($"[TurboHTTP] {message}");
+                _log($"[TurboHTTP][WARN] {message}");
             }
         }
 
         private void LogError(UHttpRequest request, Exception exception, TimeSpan elapsed)
         {
             var message = $"✗ {request.Method} {request.Uri} → ERROR ({elapsed.TotalMilliseconds:F0}ms)\n  {exception.Message}";
-            Debug.LogError($"[TurboHTTP] {message}");
+            _log($"[TurboHTTP][ERROR] {message}");
         }
     }
 }
@@ -468,14 +471,13 @@ namespace TurboHTTP.Core
 **File:** `Runtime/Retry/RetryMiddleware.cs`
 
 ```csharp
-using System;
-using System.Threading;
-using System.Threading.Tasks;
-using TurboHTTP.Core;
-using UnityEngine;
+	using System;
+	using System.Threading;
+	using System.Threading.Tasks;
+	using TurboHTTP.Core;
 
-namespace TurboHTTP.Retry
-{
+	namespace TurboHTTP.Retry
+	{
     /// <summary>
     /// Configuration for retry behavior.
     /// </summary>
@@ -493,14 +495,16 @@ namespace TurboHTTP.Retry
     /// <summary>
     /// Middleware that automatically retries failed requests.
     /// </summary>
-    public class RetryMiddleware : IHttpMiddleware
-    {
-        private readonly RetryPolicy _policy;
+	public class RetryMiddleware : IHttpMiddleware
+	{
+	    private readonly Action<string> _log;
+	    private readonly RetryPolicy _policy;
 
-        public RetryMiddleware(RetryPolicy policy = null)
-        {
-            _policy = policy ?? RetryPolicy.Default;
-        }
+	    public RetryMiddleware(RetryPolicy policy = null, Action<string> log = null)
+	    {
+	        _policy = policy ?? RetryPolicy.Default;
+	        _log = log ?? (_ => { });
+	    }
 
         public async Task<UHttpResponse> InvokeAsync(
             UHttpRequest request,
@@ -547,12 +551,12 @@ namespace TurboHTTP.Retry
                         return response; // Return last response
                     }
 
-                    // Wait before retry
-                    Debug.Log($"[RetryMiddleware] Attempt {attempt} failed, retrying in {delay.TotalSeconds:F1}s...");
-                    await Task.Delay(delay, cancellationToken);
-                    delay = TimeSpan.FromMilliseconds(delay.TotalMilliseconds * _policy.BackoffMultiplier);
-                }
-                catch (UHttpException ex) when (ex.HttpError.IsRetryable())
+	                    // Wait before retry
+	                    _log($"[RetryMiddleware] Attempt {attempt} failed, retrying in {delay.TotalSeconds:F1}s...");
+	                    await Task.Delay(delay, cancellationToken);
+	                    delay = TimeSpan.FromMilliseconds(delay.TotalMilliseconds * _policy.BackoffMultiplier);
+	                }
+	                catch (UHttpException ex) when (ex.HttpError.IsRetryable())
                 {
                     if (attempt > _policy.MaxRetries)
                     {
@@ -560,10 +564,10 @@ namespace TurboHTTP.Retry
                         throw;
                     }
 
-                    Debug.Log($"[RetryMiddleware] Attempt {attempt} failed with {ex.HttpError.Type}, retrying in {delay.TotalSeconds:F1}s...");
-                    await Task.Delay(delay, cancellationToken);
-                    delay = TimeSpan.FromMilliseconds(delay.TotalMilliseconds * _policy.BackoffMultiplier);
-                }
+	                    _log($"[RetryMiddleware] Attempt {attempt} failed with {ex.HttpError.Type}, retrying in {delay.TotalSeconds:F1}s...");
+	                    await Task.Delay(delay, cancellationToken);
+	                    delay = TimeSpan.FromMilliseconds(delay.TotalMilliseconds * _policy.BackoffMultiplier);
+	                }
             }
         }
 

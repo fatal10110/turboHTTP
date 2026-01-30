@@ -81,7 +81,7 @@ namespace TurboHTTP.Testing
             EnqueueResponse(new MockResponse { Error = error });
         }
 
-        public Task<UHttpResponse> SendAsync(
+        public async Task<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default)
@@ -98,7 +98,7 @@ namespace TurboHTTP.Testing
             // Simulate delay if configured
             if (mockResponse.Delay.HasValue)
             {
-                Thread.Sleep(mockResponse.Delay.Value);
+                await Task.Delay(mockResponse.Delay.Value, cancellationToken);
             }
 
             var response = new UHttpResponse(
@@ -110,7 +110,7 @@ namespace TurboHTTP.Testing
                 mockResponse.Error
             );
 
-            return Task.FromResult(response);
+            return response;
         }
 
         /// <summary>
@@ -263,16 +263,13 @@ namespace TurboHTTP.Testing
 
             var recording = _recordings[_replayIndex++];
 
-            // Validate request matches recording
+            // Validate request matches recording (plan recommendation)
+            // - In production code prefer strict matching by a stable request key (method + normalized URL + selected headers + body hash)
+            // - Make mismatch behavior configurable: Strict (throw), Warn (log), or Relaxed (best-effort)
             if (recording.RequestMethod != request.Method.ToString())
-            {
                 Debug.LogWarning($"[RecordReplay] Method mismatch: Expected {recording.RequestMethod}, Got {request.Method}");
-            }
-
             if (recording.RequestUrl != request.Uri.ToString())
-            {
                 Debug.LogWarning($"[RecordReplay] URL mismatch: Expected {recording.RequestUrl}, Got {request.Uri}");
-            }
 
             // Build response from recording
             var headers = new HttpHeaders();
@@ -336,6 +333,7 @@ namespace TurboHTTP.Testing
     [Serializable]
     public class RecordedInteraction
     {
+        // Consider adding: RecordingFormatVersion, RecordedAtUtc, and a stable RequestKey for deterministic matching.
         public string RequestMethod { get; set; }
         public string RequestUrl { get; set; }
         public Dictionary<string, string> RequestHeaders { get; set; }
@@ -553,7 +551,9 @@ namespace TurboHTTP.Tests.Integration
 {
     /// <summary>
     /// Integration tests using real HTTP endpoints.
-    /// These tests require internet connectivity.
+    /// These tests require internet connectivity and can be flaky.
+    /// Plan recommendation: keep most "integration" tests against a deterministic local in-process test server,
+    /// and keep real-internet tests (e.g., httpbin) as an optional category that can be disabled in CI.
     /// </summary>
     public class IntegrationTests
     {
@@ -737,5 +737,7 @@ Once Phase 9 is complete and validated:
 ### Security & Privacy Notes
 
 - Record/replay must support redaction (e.g., `Authorization`, cookies, API keys, PII fields) and should never check secrets into source control
+- Prefer a configurable redaction policy (headers + query params + JSON field paths) rather than hard-coding only `Authorization`
+- Add recording format versioning so the on-disk schema can evolve without breaking older cassettes
 - Store recordings in a predictable location with clear docs for cleanup and sharing (team workflow matters more than the implementation details)
 - Prefer deterministic fixtures (mock transport) for most tests; use record/replay only where it adds real value

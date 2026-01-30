@@ -95,7 +95,7 @@ mkdir -p Runtime/Transport/Tcp
 mkdir -p Runtime/Transport/Tls
 mkdir -p Runtime/Transport/Http1
 mkdir -p Runtime/Transport/Http2
-mkdir -p Runtime/Pipeline/Middlewares
+mkdir -p Runtime/Core/Pipeline/Middlewares
 mkdir -p Runtime/Retry
 mkdir -p Runtime/Cache
 mkdir -p Runtime/Auth
@@ -109,6 +109,7 @@ mkdir -p Runtime/Utils
 mkdir -p Editor/Monitor
 mkdir -p Editor/Settings
 mkdir -p Tests/Runtime/Core
+mkdir -p Tests/Runtime/Pipeline
 mkdir -p Tests/Runtime/Retry
 mkdir -p Tests/Runtime/Cache
 mkdir -p Tests/Runtime/Integration
