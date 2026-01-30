@@ -1,0 +1,54 @@
+{
+  "name": "com.turbohttp.complete",
+  "displayName": "TurboHTTP - Complete HTTP Client",
+  "version": "1.0.0",
+  "unity": "2021.3",
+  "description": "Production-grade modular HTTP client for Unity with advanced features: retry logic, caching, observability, file downloads, and Unity asset handlers. Designed for games and applications requiring reliable network communication.",
+  "keywords": [
+    "http",
+    "networking",
+    "rest",
+    "api",
+    "download",
+    "upload",
+    "json",
+    "cache",
+    "retry",
+    "middleware"
+  ],
+  "category": "Network",
+  "author": {
+    "name": "Your Name/Company",
+    "email": "support@yourcompany.com",
+    "url": "https://yourcompany.com"
+  },
+  "license": "Proprietary",
+  "dependencies": {},
+  "samples": [
+    {
+      "displayName": "Basic Usage",
+      "description": "Simple GET and POST requests",
+      "path": "Samples~/01-BasicUsage"
+    },
+    {
+      "displayName": "JSON API Integration",
+      "description": "Working with REST APIs and JSON",
+      "path": "Samples~/02-JsonApi"
+    },
+    {
+      "displayName": "File Downloads",
+      "description": "Large file downloads with resume support",
+      "path": "Samples~/03-FileDownload"
+    },
+    {
+      "displayName": "Authentication",
+      "description": "Token-based authentication and refresh",
+      "path": "Samples~/04-Authentication"
+    },
+    {
+      "displayName": "Advanced Features",
+      "description": "Using all modules together",
+      "path": "Samples~/05-AdvancedFeatures"
+    }
+  ]
+}

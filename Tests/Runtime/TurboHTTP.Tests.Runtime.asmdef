@@ -1,0 +1,30 @@
+{
+  "name": "TurboHTTP.Tests.Runtime",
+  "rootNamespace": "TurboHTTP.Tests",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.Transport",
+    "TurboHTTP.Retry",
+    "TurboHTTP.Cache",
+    "TurboHTTP.Auth",
+    "TurboHTTP.RateLimit",
+    "TurboHTTP.Observability",
+    "TurboHTTP.Files",
+    "TurboHTTP.Unity",
+    "TurboHTTP.Testing",
+    "TurboHTTP.Performance",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

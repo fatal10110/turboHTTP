@@ -1,0 +1,14 @@
+{
+  "name": "TurboHTTP.RateLimit",
+  "rootNamespace": "TurboHTTP.RateLimit",
+  "references": ["TurboHTTP.Core"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

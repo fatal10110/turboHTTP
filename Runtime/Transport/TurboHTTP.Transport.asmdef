@@ -1,0 +1,14 @@
+{
+  "name": "TurboHTTP.Transport",
+  "rootNamespace": "TurboHTTP.Transport",
+  "references": ["TurboHTTP.Core"],
+  "includePlatforms": [],
+  "excludePlatforms": ["WebGL"],
+  "allowUnsafeCode": true,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": true
+}

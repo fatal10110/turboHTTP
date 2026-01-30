@@ -1,0 +1,26 @@
+{
+  "name": "TurboHTTP.Complete",
+  "rootNamespace": "TurboHTTP",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.Transport",
+    "TurboHTTP.Retry",
+    "TurboHTTP.Cache",
+    "TurboHTTP.Auth",
+    "TurboHTTP.RateLimit",
+    "TurboHTTP.Observability",
+    "TurboHTTP.Files",
+    "TurboHTTP.Unity",
+    "TurboHTTP.Testing",
+    "TurboHTTP.Performance"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
