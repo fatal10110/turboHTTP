@@ -233,7 +233,15 @@ namespace TurboHTTP.Testing
 
             foreach (var header in request.Headers)
             {
-                interaction.RequestHeaders[header.Key] = header.Value;
+                // Redact sensitive headers
+                if (header.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
+                {
+                    interaction.RequestHeaders[header.Key] = "[REDACTED]";
+                }
+                else
+                {
+                    interaction.RequestHeaders[header.Key] = header.Value;
+                }
             }
 
             foreach (var header in response.Headers)

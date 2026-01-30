@@ -20,6 +20,8 @@ Implement the middleware pipeline architecture that allows request/response inte
 7. Create `RetryMiddleware` (basic retry logic in TurboHTTP.Retry module)
 8. Create `AuthMiddleware` (basic auth in TurboHTTP.Auth module)
 9. Create `MetricsMiddleware` (basic metrics in TurboHTTP.Observability module)
+10. Create `DecompressionMiddleware` (Gzip/Deflate support)
+11. Create `CookieMiddleware` (Cookie jar support)
 
 ## Tasks
 
@@ -66,6 +68,7 @@ namespace TurboHTTP.Core
 ```
 
 **Notes:**
+
 - Middleware pattern similar to ASP.NET Core
 - Each middleware must call `next()` to continue pipeline
 - Middleware can transform request before calling `next()`
@@ -145,6 +148,7 @@ namespace TurboHTTP.Core
 ```
 
 **Notes:**
+
 - Pipeline is built once and reused
 - Middleware executes in order for requests, reverse order for responses
 - Transport is the final step in the pipeline
@@ -588,6 +592,7 @@ namespace TurboHTTP.Retry
 ```
 
 **Notes:**
+
 - Exponential backoff with configurable multiplier
 - Only retries idempotent methods by default (GET, PUT, DELETE, HEAD, OPTIONS)
 - Respects `UHttpError.IsRetryable()` logic
@@ -879,9 +884,11 @@ Once Phase 4 is complete and validated:
 ## Review Notes
 
 > **TODO: No Retry Budget / Circuit Breaker** - The current `RetryMiddleware` implements exponential backoff and idempotency awareness, but lacks:
+>
 > - **Retry budget**: A global or per-host limit on total retries across all requests to prevent retry storms under widespread failures
 > - **Circuit breaker pattern**: Automatically "open" the circuit after N consecutive failures to a host, failing fast for a cooldown period before attempting again
 >
 > Without these, a degraded backend could cause all clients to simultaneously retry, amplifying load and delaying recovery. Consider adding:
+>
 > - `CircuitBreakerMiddleware` with configurable failure thresholds and half-open states
 > - A `retryBudget` option in `RetryPolicy` (e.g., "max 20% of requests can be retries")
