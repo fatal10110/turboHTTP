@@ -75,7 +75,7 @@ Test cases:
 - Serialize_AutoAddsUserAgent
 - Serialize_UserSetUserAgent_NotOverridden
 - Serialize_TransferEncodingSet_NoAutoContentLength (RFC 9110 §8.6 mutual exclusion)
-- Serialize_TransferEncodingChunked_WithBody_ThrowsArgumentException (not implemented)
+- Serialize_TransferEncodingAny_WithBody_ThrowsArgumentException (any TE value, not just chunked)
 - Serialize_EmptyHeaderName_ThrowsArgumentException
 - Serialize_PathAndQuery_EmptyFallsBackToSlash
 ```
@@ -127,6 +127,8 @@ Test cases:
 - Parse_ReadToEnd_ExceedsMaxBodySize_ThrowsIOException
 - Parse_MultipleSetCookieHeaders_AllPreservedViaAdd
 - Parse_ReadToEnd_ForcesKeepAliveFalse (no Content-Length, no chunked → KeepAlive must be false)
+- Parse_ChunkedBody_SingleChunkExceedsMaxBodySize_ThrowsIOException (individual chunk > MaxResponseBodySize caught before int narrowing)
+- Parse_ContentLength_NarrowedToInt_AfterMaxBodySizeCheck (long Content-Length safely narrowed to int after validation)
 ```
 
 ---
@@ -145,7 +147,10 @@ Test cases:
 - MaxConnectionsPerHost_WaitThenProceed (7th request waits, returns after 1 freed)
 - DisposedPool_ReturnConnection_DisposesConnection
 - CaseInsensitiveHostKey_SharesPool
-- RawSocketTransport_StaleConnection_RetriesOnce
+- RawSocketTransport_StaleConnection_RetriesOnce (verify IsReused=true triggers retry)
+- RawSocketTransport_FreshConnection_IOException_NoRetry (verify IsReused=false does not retry)
+- PooledConnection_IsReused_FalseForNewConnection
+- PooledConnection_IsReused_TrueAfterPoolDequeue
 - ConnectionLease_Dispose_AlwaysReleasesSemaphore (even without ReturnToPool)
 - ConnectionLease_ReturnToPool_ThenDispose_DoesNotDisposeConnection
 - ConnectionLease_NoReturnToPool_ThenDispose_DisposesConnection
@@ -161,6 +166,9 @@ Test cases:
 - EnqueueConnection_AfterPoolDispose_DisposesConnection
 - SemaphoreCapEviction_DoesNotDisposeSemaphores (only drains connections)
 - PooledConnection_NegotiatedTlsVersion_SetAfterTlsHandshake
+- RawSocketTransport_StaleConnection_NonIdempotent_NoRetry (POST on IsReused=true throws, does not retry)
+- TlsStreamWrapper_WrapAsync_ReturnsTlsResult_WithNegotiatedProtocol
+- TlsStreamWrapper_TlsBelowMinimum_ThrowsAuthenticationException (not SecurityException)
 ```
 
 Note: Some tests may require a local TCP listener or mock. If testing against real sockets is impractical in Unity Test Runner, test the pool logic with mock streams and verify integration in Step 5.
@@ -317,4 +325,16 @@ Fix any issues found, re-review until clean.
 - [ ] Pool.GetConnectionAsync throws ObjectDisposedException after pool Dispose()
 - [ ] Both specialist agent reviews pass
 - [ ] CLAUDE.md updated
+- [ ] `link.xml` present in `Runtime/Transport/` preserving SslStream, SslClientAuthenticationOptions, and codepage encodings
+- [ ] `EncodingHelper.Latin1` shared between serializer and parser (no duplicate initialization)
+- [ ] `ParsedResponse` is `internal class` (not `public`)
+- [ ] `FormatException` from parser mapped to `UHttpException(NetworkError)` in transport
+- [ ] `PooledConnection.IsReused` set correctly (false for new, true for dequeued)
+- [ ] Retry-on-stale only fires when `IsReused == true` AND `request.Method.IsIdempotent()`
+- [ ] Non-idempotent methods (POST, PATCH) on stale connections throw without retry
+- [ ] `TlsStreamWrapper.WrapAsync` returns `TlsResult` struct (stream + negotiated protocol)
+- [ ] TLS minimum enforcement throws `AuthenticationException` (not `SecurityException`)
+- [ ] `PooledConnection.NegotiatedTlsVersion` set from `TlsResult.NegotiatedProtocol` in pool
+- [ ] Chunk size validated against `MaxResponseBodySize` before `long`-to-`int` narrowing
+- [ ] Content-Length validated against `MaxResponseBodySize` before `long`-to-`int` narrowing
 - [ ] **MANDATORY** IL2CPP smoke test: build for iOS simulator or Android emulator, verify basic HTTPS GET completes. Also verify: `[ModuleInitializer]` fires, `Encoding.GetEncoding(28591)` works, SslStream handshake succeeds, **byte-by-byte SslStream reads work correctly with multi-header responses** (not just minimal responses — validate that SslStream internal buffering handles the 16KB-record-per-byte-read pattern under IL2CPP). The SslStream ALPN risk (CLAUDE.md Critical Risk Area #1) makes this a blocking requirement for Phase 3 completion. If device testing is not possible, document explicitly as deferred risk with rationale.

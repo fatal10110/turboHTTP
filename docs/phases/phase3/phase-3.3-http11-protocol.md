@@ -57,9 +57,9 @@ All awaits use `.ConfigureAwait(false)`.
    ```
    This correctly emits one header line per value (critical for Set-Cookie, Via, etc.) and validates each for injection.
 
-4. **Transfer-Encoding / Content-Length mutual exclusion (RFC 9110 §8.6):** If user set `Transfer-Encoding` header, do NOT auto-add `Content-Length` (a message MUST NOT contain both). If the user set `Transfer-Encoding: chunked` but provides a `byte[]` body, throw `ArgumentException("Transfer-Encoding: chunked is set but chunked body encoding is not implemented in Phase 3. Remove the Transfer-Encoding header or defer to Phase 5.")`.
+5. **Transfer-Encoding / Content-Length mutual exclusion (RFC 9110 §8.6):** If user set ANY `Transfer-Encoding` header (not just `chunked` — includes `gzip`, `deflate`, `identity`, etc.), do NOT auto-add `Content-Length` (a message MUST NOT contain both). Additionally, if the user set ANY `Transfer-Encoding` value and provides a `byte[]` body, throw `ArgumentException("Transfer-Encoding is set but the client does not support transfer-coded request bodies in Phase 3. Remove the Transfer-Encoding header or pre-encode the body.")`. This is a blanket rejection — Phase 3 only supports raw `byte[]` bodies with `Content-Length`.
 
-5. **Auto-add `Content-Length`** for bodies (if not already set by user, and `Transfer-Encoding` is NOT present). **If user manually set `Content-Length`, validate it matches `request.Body.Length`** — throw `ArgumentException` on mismatch to prevent server hangs:
+6. **Auto-add `Content-Length`** for bodies (if not already set by user, and `Transfer-Encoding` is NOT present). **If user manually set `Content-Length`, validate it matches `request.Body.Length`** — throw `ArgumentException` on mismatch to prevent server hangs:
    ```csharp
    if (request.Body != null && request.Body.Length > 0)
    {
@@ -79,13 +79,13 @@ All awaits use `.ConfigureAwait(false)`.
    }
    ```
 
-5. **Auto-add `User-Agent: TurboHTTP/1.0`** (unless user explicitly set a `User-Agent` header). Many servers and CDNs block or behave differently for requests without a User-Agent.
+7. **Auto-add `User-Agent: TurboHTTP/1.0`** (unless user explicitly set a `User-Agent` header). Many servers and CDNs block or behave differently for requests without a User-Agent.
 
-6. **Auto-add `Connection: keep-alive`** (unless user explicitly set a `Connection` header)
+8. **Auto-add `Connection: keep-alive`** (unless user explicitly set a `Connection` header)
 
-6. **End of headers:** `\r\n`
+9. **End of headers:** `\r\n`
 
-7. **Write to stream:**
+10. **Write to stream:**
    ```csharp
    // Use Latin-1 (ISO-8859-1), NOT ASCII. ASCII silently replaces non-ASCII bytes with '?'.
    // Most HTTP clients (including .NET HttpClient) use Latin-1 internally for header encoding.
@@ -99,7 +99,22 @@ All awaits use `.ConfigureAwait(false)`.
    await stream.WriteAsync(headerBytes, 0, headerBytes.Length, ct).ConfigureAwait(false);
    ```
 
-   **Latin-1 encoding resolution (static field):**
+   **Latin-1 encoding resolution (shared static field):**
+
+   **IMPORTANT:** Both the serializer and parser MUST use the same `Latin1` static field. Extract to a shared internal static class `EncodingHelper` in `Runtime/Transport/Internal/EncodingHelper.cs` to avoid duplicating the initialization logic and the `Latin1Encoding` fallback class:
+   ```csharp
+   // File: Runtime/Transport/Internal/EncodingHelper.cs
+   namespace TurboHTTP.Transport.Internal
+   {
+       internal static class EncodingHelper
+       {
+           internal static readonly Encoding Latin1 = InitLatin1();
+           // ... InitLatin1() and Latin1Encoding fallback class here
+       }
+   }
+   ```
+   Both `Http11RequestSerializer` and `Http11ResponseParser` reference `EncodingHelper.Latin1`.
+
    ```csharp
    // Try Encoding.GetEncoding(28591) first. If IL2CPP strips codepage data,
    // fall back to a minimal custom implementation.
@@ -167,13 +182,13 @@ All awaits use `.ConfigureAwait(false)`.
    }
    ```
 
-8. **Write body** (if present):
+11. **Write body** (if present):
    ```csharp
    if (request.Body != null && request.Body.Length > 0)
        await stream.WriteAsync(request.Body, 0, request.Body.Length, ct).ConfigureAwait(false);
    ```
 
-9. `await stream.FlushAsync(ct).ConfigureAwait(false);`
+12. `await stream.FlushAsync(ct).ConfigureAwait(false);`
 
 **Performance note:** StringBuilder + `Encoding.Latin1.GetBytes` allocates ~600-700 bytes per request. Document as GC hotspot for Phase 10 rewrite with `ArrayPool<byte>`. Combined with parser allocations (byte-by-byte ReadAsync ~29KB), Phase 3 targets ~50KB GC per request (see overview.md GC Target section).
 
@@ -186,7 +201,7 @@ All awaits use `.ConfigureAwait(false)`.
 ### `ParsedResponse` (internal class)
 
 ```csharp
-public class ParsedResponse
+internal class ParsedResponse
 {
     /// <summary>
     /// HTTP status code. May be cast from a non-standard int (e.g., 451, 425).
@@ -270,7 +285,7 @@ Accepts `requestMethod` to correctly handle HEAD responses. All awaits use `.Con
 
    Otherwise, **Transfer-Encoding takes precedence over Content-Length** per RFC 9112 Section 6.1. If both are present, `Content-Length` is ignored:
    - `Transfer-Encoding` ends with `chunked` → `ReadChunkedBodyAsync`
-   - No `Transfer-Encoding`, but `Content-Length` header present → parse with `long.TryParse` (Content-Length can exceed `int.MaxValue` per RFC 9110 Section 8.6), validate no conflicting values (if multiple `Content-Length` values differ, throw `FormatException`), check `contentLength > MaxResponseBodySize` before casting to int for allocation, then `ReadFixedBodyAsync`
+   - No `Transfer-Encoding`, but `Content-Length` header present → parse with `long.TryParse` (Content-Length can exceed `int.MaxValue` per RFC 9110 Section 8.6), validate no conflicting values (if multiple `Content-Length` values differ, throw `FormatException`), check `contentLength > MaxResponseBodySize` before narrowing: `int length = (int)contentLength` (safe because `MaxResponseBodySize` is 100MB which fits in `int`), then `ReadFixedBodyAsync(stream, length, ct)`
    - Neither → `ReadToEndAsync` (read until connection closes)
 
 6. **Keep-alive detection:**
@@ -288,8 +303,8 @@ Accepts `requestMethod` to correctly handle HEAD responses. All awaits use `.Con
 #### `ReadLineAsync(Stream stream, CancellationToken ct, int maxLength = 8192)`
 
 Byte-by-byte CRLF reader with **max length limit** and **explicit Latin-1 encoding**:
-- Reads one byte at a time into a `MemoryStream` or `byte[]` buffer (NOT directly into StringBuilder)
-- Tracks `lastWasCR` for CRLF detection
+- Reads one byte at a time via `stream.ReadAsync(singleByteBuf, 0, 1, ct)` into a `MemoryStream` buffer (NOT directly into StringBuilder, NOT `byte[]` — MemoryStream handles dynamic growth without manual resizing)
+- Tracks `lastWasCR` (`bool`) for CRLF detection
 - If `buffer.Length > maxLength` → throw `FormatException("HTTP header line exceeds maximum length")`
 - **Converts raw bytes to string using the same `Latin1` encoding used by the serializer** (NOT implicit char cast, NOT UTF-8). HTTP/1.1 status lines and headers are Latin-1 encoded (ISO 8859-1). Using UTF-8 would corrupt non-ASCII header values.
   ```csharp
@@ -312,10 +327,15 @@ loop:
   parse hex with long.TryParse(..., NumberStyles.HexNumber, ...) — int would overflow for chunks > 2GB
   if parse fails: throw FormatException("Invalid chunk size")
   if size == 0: break (last chunk)
-  totalBodyBytes += size
+  // Guard: individual chunk size must fit in int for MemoryStream/array operations.
+  // MaxResponseBodySize (100MB) already fits in int, so this also serves as a sanity check.
+  if size > MaxResponseBodySize:
+      throw IOException("Response body exceeds maximum size")
+  int chunkSize = (int)size;  // Safe: validated <= MaxResponseBodySize (100MB) which fits in int
+  totalBodyBytes += chunkSize
   if totalBodyBytes > MaxResponseBodySize:
       throw IOException("Response body exceeds maximum size")
-  read exactly `size` bytes into MemoryStream
+  read exactly `chunkSize` bytes into MemoryStream
   read trailing CRLF
 end loop
 // Read trailers (zero or more header lines until empty line)

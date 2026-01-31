@@ -14,7 +14,8 @@
 
 Represents a single pooled TCP connection:
 - Properties: `Socket` (Socket), `Stream` (Stream), `Host` (string), `Port` (int), `IsSecure` (bool)
-- `LastUsed` — stored as `volatile long _lastUsedTicks`. Using `volatile` instead of `Interlocked.Read/Exchange` because: (1) `Interlocked.Read(ref long)` may not be available on ARM32 IL2CPP, (2) tearing on `LastUsed` is non-critical — worst case, a connection is evicted slightly early/late, (3) modern Unity 2021.3 Mono/IL2CPP guarantees atomic 64-bit reads/writes on aligned fields even on 32-bit ARM
+- `LastUsed` — stored as `long _lastUsedTicks`, accessed via `Interlocked.Read(ref _lastUsedTicks)` and `Interlocked.Exchange(ref _lastUsedTicks, value)`. **C# does not allow `volatile` on `long` fields** (CS0677 — only types with atomic reads/writes by spec can be volatile, and `long` is not guaranteed atomic on 32-bit platforms). `Interlocked` provides both atomicity and memory ordering on all platforms including ARM32 IL2CPP. Tearing on `LastUsed` is non-critical (worst case: connection evicted slightly early/late), but `Interlocked` avoids the compilation error entirely.
+- `IsReused` (bool) — set to `true` when a connection is dequeued from the idle pool (i.e., it was previously used and returned). New connections have `IsReused = false`. Used by `RawSocketTransport` retry-on-stale logic to distinguish fresh connections from pooled reused ones — retry is only attempted on reused connections (stale socket from server close).
 - `NegotiatedTlsVersion` (SslProtocols?, nullable) — set after TLS handshake from `sslStream.SslProtocol`. Null for non-TLS connections. Allows tests to assert TLS 1.2+ was negotiated in the success case (not just failure enforcement).
 - `IsAlive` — **best-effort** detection of server-closed connections. **MUST NOT be relied upon for correctness** — the retry-on-stale mechanism in `RawSocketTransport` (Phase 3.4) is the true safety net. For TLS connections, `Socket.Available` does not reflect SslStream's internal buffering — if SslStream has buffered decrypted data, `Socket.Available == 0 && Socket.Poll(0, SelectRead)` would incorrectly report the connection as dead. Also consider checking `Stream.CanRead` as an additional guard. Returns `false` after disposal (guards against `ObjectDisposedException`). **Must never be called after `Dispose()` in normal flow** — the `ConnectionLease` class ensures `ReturnToPool()` (which calls `IsAlive`) is always called before `Dispose()`.
   ```csharp
@@ -196,9 +197,12 @@ Thread-safe pool keyed by `host:port:secure`:
    - `Stream stream = new NetworkStream(socket, ownsSocket: true)`
    - If secure: wrap in try-catch to prevent socket leak on TLS handshake failure:
      ```csharp
+     SslProtocols? negotiatedTls = null;
      try
      {
-         stream = await TlsStreamWrapper.WrapAsync(stream, host, ct).ConfigureAwait(false);
+         var tlsResult = await TlsStreamWrapper.WrapAsync(stream, host, ct).ConfigureAwait(false);
+         stream = tlsResult.Stream;
+         negotiatedTls = tlsResult.NegotiatedProtocol;
      }
      catch
      {
@@ -206,7 +210,13 @@ Thread-safe pool keyed by `host:port:secure`:
          throw;
      }
      ```
-6. Return `new ConnectionLease(this, semaphore, new PooledConnection(socket, stream, host, port, secure))`
+6. Create connection and set TLS version:
+   ```csharp
+   var connection = new PooledConnection(socket, stream, host, port, secure);
+   if (negotiatedTls.HasValue)
+       connection.NegotiatedTlsVersion = negotiatedTls.Value;
+   ```
+   Return `new ConnectionLease(this, semaphore, connection)`
 7. On exception (before lease is created): release semaphore, rethrow:
    ```csharp
    catch
@@ -320,7 +330,27 @@ if (_semaphores.Count > MaxSemaphoreEntries)
 
 Static utility for TLS handshake:
 
-### `WrapAsync(Stream innerStream, string host, CancellationToken ct, string[] alpnProtocols = null)`
+### `TlsResult` (return type)
+
+`WrapAsync` returns a struct containing both the wrapped stream and the negotiated TLS version:
+
+```csharp
+internal readonly struct TlsResult
+{
+    public Stream Stream { get; }
+    public SslProtocols NegotiatedProtocol { get; }
+
+    public TlsResult(Stream stream, SslProtocols negotiatedProtocol)
+    {
+        Stream = stream;
+        NegotiatedProtocol = negotiatedProtocol;
+    }
+}
+```
+
+This allows `TcpConnectionPool` to set `PooledConnection.NegotiatedTlsVersion` from the result without needing access to the `SslStream` instance (which is hidden behind the `Stream` type).
+
+### `WrapAsync(Stream innerStream, string host, CancellationToken ct, string[] alpnProtocols = null)` → returns `TlsResult`
 
 Use `SslClientAuthenticationOptions` overload if available (provides `CancellationToken` support and ALPN). This overload was added in .NET 5.0 and is NOT part of .NET Standard 2.1 spec — Unity 2021.3 Mono may or may not expose it. **A runtime probe with fallback is required.**
 
@@ -411,23 +441,32 @@ else
 
 ### Post-handshake: TLS version surfacing + minimum enforcement (REQUIRED)
 
-After a successful handshake (both primary and fallback paths), store the negotiated TLS version on the `PooledConnection` for testability:
-```csharp
-// Called by TcpConnectionPool after TlsStreamWrapper.WrapAsync returns:
-connection.NegotiatedTlsVersion = sslStream.SslProtocol;
-```
-
-With `SslProtocols.None`, the OS could negotiate TLS 1.0 or 1.1 on very old servers. Enforce a minimum of TLS 1.2 after the handshake:
+After a successful handshake (both primary and fallback paths), the `sslStream` variable is in scope and accessible. Enforce TLS 1.2 minimum and capture the negotiated version:
 
 ```csharp
+// Post-handshake check — sslStream is in scope from the top of WrapAsync
 #pragma warning disable SYSLIB0039 // SslProtocol property is obsolete in .NET 7+ but needed here
-if (sslStream.SslProtocol < SslProtocols.Tls12)
+var negotiatedProtocol = sslStream.SslProtocol;
+#pragma warning restore SYSLIB0039
+
+if (negotiatedProtocol < SslProtocols.Tls12)
 {
     sslStream.Dispose(); // Close connection negotiated at insecure protocol
-    throw new SecurityException(
-        $"Server negotiated {sslStream.SslProtocol}, but minimum TLS 1.2 is required");
+    throw new AuthenticationException(
+        $"Server negotiated {negotiatedProtocol}, but minimum TLS 1.2 is required");
 }
-#pragma warning restore SYSLIB0039
+
+return new TlsResult(sslStream, negotiatedProtocol);
+```
+
+**Why `AuthenticationException` (not `SecurityException`):** The exception must be caught by `RawSocketTransport`'s exception mapping (Phase 3.4). `AuthenticationException` is already caught and mapped to `UHttpErrorType.CertificateError`. `SecurityException` is NOT caught — it would fall through to the generic `Exception` handler and be incorrectly reported as `Unknown`. Using `AuthenticationException` also aligns semantically: TLS version negotiation is part of the authentication handshake.
+
+**Caller-side (in `TcpConnectionPool.GetConnectionAsync`):**
+```csharp
+var tlsResult = await TlsStreamWrapper.WrapAsync(stream, host, ct).ConfigureAwait(false);
+stream = tlsResult.Stream;
+// Set on connection after construction:
+connection.NegotiatedTlsVersion = tlsResult.NegotiatedProtocol;
 ```
 
 This check is **not redundant** — with `SslProtocols.None`, it is the sole enforcement of the TLS 1.2 minimum.
@@ -445,6 +484,26 @@ Returns `"h2"`, `"http/1.1"`, or `null` based on `sslStream.NegotiatedApplicatio
 ### Certificate Revocation (Known Limitation)
 
 Certificate revocation checking is disabled on all TLS paths (`checkCertificateRevocation: false` on the fallback path; default `X509RevocationMode.NoCheck` on the primary path). Revoked certificates will be accepted. This is a deliberate trade-off: CRL distribution points can be unreachable (especially on mobile networks), causing connection failures. CRL/OCSP support deferred to Phase 9 (security hardening).
+
+### IL2CPP Stripping Protection (`link.xml`)
+
+**File:** `Runtime/Transport/link.xml`
+
+The reflection probe for `SslStream.AuthenticateAsClientAsync(SslClientAuthenticationOptions, CancellationToken)` uses `typeof(SslStream).GetMethod(...)`. Under IL2CPP managed code stripping, unreferenced overloads may be stripped, causing the `MethodInfo` to be `null` even when the overload exists in the BCL. A `link.xml` file preserves the necessary types:
+
+```xml
+<linker>
+  <assembly fullname="System.Net.Security">
+    <type fullname="System.Net.Security.SslStream" preserve="all"/>
+    <type fullname="System.Net.Security.SslClientAuthenticationOptions" preserve="all"/>
+  </assembly>
+  <assembly fullname="System.Text.Encoding.CodePages">
+    <type fullname="System.Text.Encoding.CodePages.*" preserve="all"/>
+  </assembly>
+</linker>
+```
+
+This also preserves codepage encodings for `Encoding.GetEncoding(28591)` (Latin-1). Place in `Runtime/Transport/` — Unity's build pipeline automatically discovers `link.xml` files in any directory.
 
 ---
 

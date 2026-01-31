@@ -167,7 +167,7 @@ Required using: `using System.Security.Authentication;` for `AuthenticationExcep
 /// Execute a single send attempt on the given lease. Returns the parsed response.
 /// Caller is responsible for lease disposal.
 /// </summary>
-private async Task<(ParsedResponse parsed, bool keepAlive)> SendOnLeaseAsync(
+private async Task<ParsedResponse> SendOnLeaseAsync(
     ConnectionLease lease, UHttpRequest request, RequestContext context, CancellationToken ct)
 {
     context.RecordEvent("TransportSending");
@@ -179,32 +179,49 @@ private async Task<(ParsedResponse parsed, bool keepAlive)> SendOnLeaseAsync(
         .ConfigureAwait(false);
 
     context.RecordEvent("TransportComplete");
-    return (parsed, parsed.KeepAlive);
+    return parsed;
 }
 ```
 
 **In `SendAsync`:**
-```
+```csharp
 using var lease = await _pool.GetConnectionAsync(host, port, secure, ct);
 try
 {
-    var (parsed, keepAlive) = await SendOnLeaseAsync(lease, request, context, ct);
-    if (keepAlive) lease.ReturnToPool();
-    return BuildResponse(parsed, request, context);
+    var parsed = await SendOnLeaseAsync(lease, request, context, ct);
+    if (parsed.KeepAlive) lease.ReturnToPool();
+    return new UHttpResponse(
+        statusCode: parsed.StatusCode,
+        headers: parsed.Headers,
+        body: parsed.Body,
+        elapsedTime: context.Elapsed,
+        request: request);
 }
-catch (IOException) when (lease.Connection was reused from pool)
+catch (IOException) when (lease.Connection.IsReused && request.Method.IsIdempotent())
 {
-    // Stale connection — dispose and retry once
+    // Stale connection — dispose and retry once.
+    // ONLY retry idempotent methods (GET, HEAD, PUT, DELETE, OPTIONS).
+    // Retrying POST/PATCH on a stale connection could cause duplicate side effects
+    // if the server received and processed the request before closing the connection.
+    // For non-idempotent methods, the IOException propagates to the caller who can
+    // decide whether to retry based on application-level idempotency knowledge.
     lease.Dispose(); // Idempotent — using var will call again at exit (no-op)
 
     using var freshLease = await _pool.GetConnectionAsync(host, port, secure, ct);
-    var (parsed, keepAlive) = await SendOnLeaseAsync(freshLease, request, context, ct);
-    if (keepAlive) freshLease.ReturnToPool();
-    return BuildResponse(parsed, request, context);
+    var parsed = await SendOnLeaseAsync(freshLease, request, context, ct);
+    if (parsed.KeepAlive) freshLease.ReturnToPool();
+    return new UHttpResponse(
+        statusCode: parsed.StatusCode,
+        headers: parsed.Headers,
+        body: parsed.Body,
+        elapsedTime: context.Elapsed,
+        request: request);
 }
 ```
 
 This structure ensures each lease variable is used only within its own scope, preventing accidental cross-reference.
+
+**Idempotency guard:** Retry-on-stale only fires for idempotent methods (`IsIdempotent()` returns true for GET, HEAD, PUT, DELETE, OPTIONS — already implemented in Phase 2 `HttpMethod` extensions). Non-idempotent methods (POST, PATCH) are not retried because the server may have received and processed the request before closing the connection. The `IOException` propagates as `UHttpException(NetworkError)` and the caller can implement application-level retry logic if the operation is known to be idempotent (e.g., a POST with an idempotency key).
 
 **Semaphore re-acquisition note:** Between disposing the stale lease (releases semaphore) and acquiring a fresh lease (acquires semaphore), the permit is released back to the pool. Under high concurrency with `maxConnectionsPerHost` other requests waiting, the retry request competes with all waiters for the permit. This can cause unexpected latency spikes for the retrying request. This is technically correct but worth documenting. A permit-preserving retry path (creating a fresh connection without going through the semaphore) is deferred to Phase 10 as an optimization. Phase 3.5 should include a latency test under semaphore saturation to quantify this.
 
@@ -238,6 +255,12 @@ catch (IOException ex)
 catch (SocketException ex)
 {
     throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
+}
+catch (FormatException ex)
+{
+    // Malformed HTTP response (e.g., invalid chunk size, bad status line, header size exceeded)
+    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+        $"Malformed HTTP response: {ex.Message}", ex));
 }
 catch (AuthenticationException ex)
 {

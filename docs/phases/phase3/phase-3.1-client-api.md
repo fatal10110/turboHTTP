@@ -119,6 +119,13 @@ public static void Register(Func<IHttpTransport> factory)
     if (factory == null) throw new ArgumentNullException(nameof(factory));
     lock (_lock)
     {
+        // NOTE: Re-registration is intentionally allowed (no-op guard).
+        // ModuleInitializer and EnsureRegistered() may both call Register()
+        // with the same factory — this is safe because Lazy<T> is recreated
+        // each time, and the previous singleton (if materialized) becomes
+        // eligible for GC. If the old singleton is still referenced by
+        // existing UHttpClient instances, they continue using it.
+        // New clients get the new singleton via the fresh Lazy<T>.
         _factory = factory;
         _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
     }
