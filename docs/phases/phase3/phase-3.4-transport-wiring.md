@@ -105,7 +105,11 @@ Required using: `using System.Security.Authentication;` for `AuthenticationExcep
    timeoutCts.CancelAfter(request.Timeout);
    var ct = timeoutCts.Token;
 
-2. Extract and validate connection params:
+2. Validate URI and extract connection params:
+   // Absolute URI validation — relative URIs have no Host/Port
+   if (!request.Uri.IsAbsoluteUri)
+       throw new UHttpException(new UHttpError(UHttpErrorType.InvalidRequest,
+           "Request URI must be absolute (include scheme and host)."))
    scheme = request.Uri.Scheme.ToLowerInvariant()
    if (scheme != "http" && scheme != "https")
        throw new UHttpException(new UHttpError(UHttpErrorType.InvalidRequest,
@@ -142,26 +146,75 @@ Required using: `using System.Security.Authentication;` for `AuthenticationExcep
    // If an exception occurred: lease.Dispose() will dispose the connection AND release semaphore.
    // NO PERMIT LEAK IS POSSIBLE.
 
-7. Return UHttpResponse with body intact (even for 4xx/5xx)
+7. Return UHttpResponse with body intact (even for 4xx/5xx):
+   return new UHttpResponse(
+       statusCode: parsed.StatusCode,
+       headers: parsed.Headers,
+       body: parsed.Body,
+       elapsedTime: context.Elapsed,  // from RequestContext's Stopwatch
+       request: request               // original UHttpRequest passed through
+   );
 
 // No finally block needed — `using var lease` handles all cleanup.
 ```
 
 ### Retry-on-Stale Connection
 
-If the first write to a reused connection throws `IOException`:
-1. Dispose the stale lease (`lease.Dispose()` — releases semaphore + disposes connection). **Note:** The original `using var lease` will also call `Dispose()` at method exit, but `ConnectionLease.Dispose()` is idempotent (second call is a no-op).
-2. Get a fresh lease: `using var freshLease = await _pool.GetConnectionAsync(host, port, secure, ct)`
-3. Retry the serialize + parse once using `freshLease.Connection.Stream`
-4. If it fails again, let the exception propagate (freshLease.Dispose() still runs, releasing semaphore)
+**Restructured to avoid variable scoping issues:** Extract the single-attempt logic into a private helper method. The original approach using `using var lease` then manually disposing and declaring `using var freshLease` in the same scope is error-prone — it's easy to accidentally reference `lease.Connection.Stream` instead of `freshLease.Connection.Stream`.
 
-This handles the common case where a server closed an idle keep-alive connection. The `ConnectionLease` pattern ensures semaphore permits are never leaked, even during retry.
+```csharp
+/// <summary>
+/// Execute a single send attempt on the given lease. Returns the parsed response.
+/// Caller is responsible for lease disposal.
+/// </summary>
+private async Task<(ParsedResponse parsed, bool keepAlive)> SendOnLeaseAsync(
+    ConnectionLease lease, UHttpRequest request, RequestContext context, CancellationToken ct)
+{
+    context.RecordEvent("TransportSending");
+    await Http11RequestSerializer.SerializeAsync(request, lease.Connection.Stream, ct)
+        .ConfigureAwait(false);
 
-**Semaphore re-acquisition note:** Between disposing the stale lease (step 1, releases semaphore) and acquiring a fresh lease (step 2, acquires semaphore), the permit is released back to the pool. Under high concurrency with `maxConnectionsPerHost` other requests waiting, the retry request competes with all waiters for the permit. This can cause unexpected latency spikes for the retrying request. This is technically correct but worth documenting. A permit-preserving retry path (creating a fresh connection without going through the semaphore) is deferred to Phase 10 as an optimization.
+    context.RecordEvent("TransportReceiving");
+    var parsed = await Http11ResponseParser.ParseAsync(lease.Connection.Stream, request.Method, ct)
+        .ConfigureAwait(false);
+
+    context.RecordEvent("TransportComplete");
+    return (parsed, parsed.KeepAlive);
+}
+```
+
+**In `SendAsync`:**
+```
+using var lease = await _pool.GetConnectionAsync(host, port, secure, ct);
+try
+{
+    var (parsed, keepAlive) = await SendOnLeaseAsync(lease, request, context, ct);
+    if (keepAlive) lease.ReturnToPool();
+    return BuildResponse(parsed, request, context);
+}
+catch (IOException) when (lease.Connection was reused from pool)
+{
+    // Stale connection — dispose and retry once
+    lease.Dispose(); // Idempotent — using var will call again at exit (no-op)
+
+    using var freshLease = await _pool.GetConnectionAsync(host, port, secure, ct);
+    var (parsed, keepAlive) = await SendOnLeaseAsync(freshLease, request, context, ct);
+    if (keepAlive) freshLease.ReturnToPool();
+    return BuildResponse(parsed, request, context);
+}
+```
+
+This structure ensures each lease variable is used only within its own scope, preventing accidental cross-reference.
+
+**Semaphore re-acquisition note:** Between disposing the stale lease (releases semaphore) and acquiring a fresh lease (acquires semaphore), the permit is released back to the pool. Under high concurrency with `maxConnectionsPerHost` other requests waiting, the retry request competes with all waiters for the permit. This can cause unexpected latency spikes for the retrying request. This is technically correct but worth documenting. A permit-preserving retry path (creating a fresh connection without going through the semaphore) is deferred to Phase 10 as an optimization. Phase 3.5 should include a latency test under semaphore saturation to quantify this.
 
 ### Exception Mapping (throws, does NOT return error responses)
 
+**CRITICAL: Catch order is load-bearing.** The `UHttpException` handler MUST remain the FIRST catch clause. If moved below `IOException` or `Exception`, pool-thrown `UHttpException` (e.g., DNS timeout) would be double-wrapped as `NetworkError` or `Unknown`, losing the original error type. Add a code comment in the implementation marking this ordering constraint.
+
 ```csharp
+// IMPORTANT: UHttpException MUST be the first catch handler. Moving it will
+// cause double-wrapping of pool/TLS-thrown exceptions. See error model in overview.md.
 catch (UHttpException)
 {
     // Already mapped by pool/TLS layer (e.g., DNS timeout) — pass through, do NOT re-wrap.

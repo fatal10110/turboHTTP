@@ -14,8 +14,9 @@
 
 Represents a single pooled TCP connection:
 - Properties: `Socket` (Socket), `Stream` (Stream), `Host` (string), `Port` (int), `IsSecure` (bool)
-- `LastUsed` — stored as `long _lastUsedTicks` with `Interlocked.Read/Exchange` for thread-safe 64-bit atomicity (required on 32-bit platforms where `long` read/write is NOT atomic without `Interlocked`)
-- `IsAlive` — **best-effort** detection of server-closed connections. For TLS connections, `Socket.Available` does not reflect SslStream's internal buffering, so this check may miss some states. The retry-on-stale mechanism in `RawSocketTransport` (Phase 3.4) is the true safety net. Returns `false` after disposal (guards against `ObjectDisposedException`). **Must never be called after `Dispose()` in normal flow** — the `ConnectionLease` class ensures `ReturnToPool()` (which calls `IsAlive`) is always called before `Dispose()`.
+- `LastUsed` — stored as `volatile long _lastUsedTicks`. Using `volatile` instead of `Interlocked.Read/Exchange` because: (1) `Interlocked.Read(ref long)` may not be available on ARM32 IL2CPP, (2) tearing on `LastUsed` is non-critical — worst case, a connection is evicted slightly early/late, (3) modern Unity 2021.3 Mono/IL2CPP guarantees atomic 64-bit reads/writes on aligned fields even on 32-bit ARM
+- `NegotiatedTlsVersion` (SslProtocols?, nullable) — set after TLS handshake from `sslStream.SslProtocol`. Null for non-TLS connections. Allows tests to assert TLS 1.2+ was negotiated in the success case (not just failure enforcement).
+- `IsAlive` — **best-effort** detection of server-closed connections. **MUST NOT be relied upon for correctness** — the retry-on-stale mechanism in `RawSocketTransport` (Phase 3.4) is the true safety net. For TLS connections, `Socket.Available` does not reflect SslStream's internal buffering — if SslStream has buffered decrypted data, `Socket.Available == 0 && Socket.Poll(0, SelectRead)` would incorrectly report the connection as dead. Also consider checking `Stream.CanRead` as an additional guard. Returns `false` after disposal (guards against `ObjectDisposedException`). **Must never be called after `Dispose()` in normal flow** — the `ConnectionLease` class ensures `ReturnToPool()` (which calls `IsAlive`) is always called before `Dispose()`.
   ```csharp
   private bool _disposed;
 
@@ -64,16 +65,27 @@ public sealed class ConnectionLease : IDisposable
     /// Must be called BEFORE Dispose() for the connection to be reused.
     /// If not called, Dispose() will destroy the connection (but still release the semaphore).
     /// Thread-safe: synchronized with Dispose() to prevent races on async continuations.
+    /// IsAlive check is performed OUTSIDE the lock to avoid holding the lock during Socket.Poll() syscall.
     /// </summary>
     public void ReturnToPool()
     {
+        bool shouldReturn = false;
         lock (_lock)
         {
-            if (!_released && !_disposed && Connection.IsAlive)
+            if (!_released && !_disposed)
             {
-                _pool.EnqueueConnection(Connection);
-                _released = true;
+                shouldReturn = true;
+                _released = true; // Mark released INSIDE lock to prevent Dispose() from disposing
             }
+        }
+
+        if (shouldReturn)
+        {
+            // IsAlive check OUTSIDE lock — Socket.Poll(0, ...) is a syscall
+            if (Connection.IsAlive)
+                _pool.EnqueueConnection(Connection);
+            else
+                Connection.Dispose(); // Stale connection, discard
         }
     }
 
@@ -148,7 +160,7 @@ Thread-safe pool keyed by `host:port:secure`:
 
      var addresses = await dnsTask.ConfigureAwait(false);
      ```
-     **Note:** The background DNS task continues running after timeout (unavoidable in .NET Std 2.1). But the user-facing request fails fast instead of hanging indefinitely.
+     **Note:** The background DNS task continues running after timeout (unavoidable in .NET Std 2.1). But the user-facing request fails fast instead of hanging indefinitely. If DNS completes later, the `IPAddress[]` result is GC'd. If DNS hangs indefinitely, the ThreadPool thread is blocked until OS timeout (~30s). Under pathological DNS failure scenarios (mobile network loss), there can be a buildup of background DNS tasks — this is inherent to .NET Standard 2.1's lack of cancellable DNS resolution. Consider caching DNS results in Phase 10 to amortize cost.
    - **Socket.ConnectAsync timeout:** Uses `cancellationToken.Register(() => socket.Dispose())` pattern for best-effort cancellation.
    - **Address selection with fallback (IPv6-safe):** Try addresses in DNS order. Use `address.AddressFamily` (NOT hardcoded `InterNetwork`). This is "Happy Eyeballs lite" — full RFC 8305 deferred to Phase 10.
      ```csharp
@@ -214,11 +226,30 @@ Called by `ConnectionLease.ReturnToPool()`. Enqueues a live connection for reuse
 
 **Note on ordering:** Since the semaphore is released by `ConnectionLease.Dispose()` (which runs after `ReturnToPool()`), there is no race between enqueue and semaphore release — the connection is available in the queue before the permit is released.
 
+#### `GetConnectionAsync` — Dispose guard
+
+At the top of `GetConnectionAsync`, check `_disposed` and throw:
+```csharp
+if (_disposed)
+    throw new ObjectDisposedException(nameof(TcpConnectionPool));
+```
+
+#### `EnqueueConnection` — Dispose guard
+
+At the top of `EnqueueConnection`, check `_disposed` and dispose the connection instead of enqueuing:
+```csharp
+if (_disposed || connection == null || !connection.IsAlive)
+{
+    connection?.Dispose();
+    return;
+}
+```
+
 #### `Dispose()`
 
 1. Set `_disposed = true` (volatile bool)
 2. Drain all queues, dispose each connection
-3. Dispose all semaphores
+3. Dispose all semaphores (safe — no new `GetConnectionAsync` calls will reference them after `_disposed` guard)
 4. Clear dictionaries
 
 #### Configuration
@@ -244,7 +275,13 @@ if (_semaphores.Count > MaxSemaphoreEntries)
 {
     // Evict idle entries (keys with no active connections and no queued waiters).
     // CRITICAL: Never evict the key we are actively using in this call.
-    // CRITICAL: Drain and dispose all queued connections before removing — otherwise sockets leak.
+    // CRITICAL: Drain and dispose all queued connections BEFORE removing semaphore entry.
+    // CRITICAL: Do NOT dispose semaphores during eviction — other threads may still
+    //   reference them via GetOrAdd. Between the CurrentCount check and TryRemove,
+    //   another thread could call GetConnectionAsync for the same key and WaitAsync on
+    //   the semaphore. Disposing it would cause ObjectDisposedException.
+    //   Semaphores are only disposed in TcpConnectionPool.Dispose() when all references
+    //   are known to be gone. Memory cost is trivial (~100 bytes per orphaned semaphore).
     foreach (var kvp in _semaphores)
     {
         if (string.Equals(kvp.Key, key, StringComparison.OrdinalIgnoreCase))
@@ -252,19 +289,18 @@ if (_semaphores.Count > MaxSemaphoreEntries)
 
         if (kvp.Value.CurrentCount == _maxConnectionsPerHost) // No connections in use
         {
-            if (_semaphores.TryRemove(kvp.Key, out var removedSemaphore))
+            // Step 1: Remove idle connections FIRST to prevent new enqueues
+            if (_idleConnections.TryRemove(kvp.Key, out var removedQueue))
             {
-                removedSemaphore.Dispose();
-
-                // Drain and dispose all idle connections for this key
-                if (_idleConnections.TryRemove(kvp.Key, out var removedQueue))
+                while (removedQueue.TryDequeue(out var conn))
                 {
-                    while (removedQueue.TryDequeue(out var conn))
-                    {
-                        conn.Dispose();
-                    }
+                    conn.Dispose();
                 }
             }
+
+            // Step 2: Remove semaphore from dictionary but do NOT dispose it
+            _semaphores.TryRemove(kvp.Key, out _);
+
             if (_semaphores.Count <= MaxSemaphoreEntries)
                 break;
         }
@@ -274,7 +310,7 @@ if (_semaphores.Count > MaxSemaphoreEntries)
     // alternative (blocking) could deadlock. Phase 10 LRU cleanup handles this better.
 }
 ```
-**Note:** This is a basic cap, not a full LRU. Phase 10 will implement proper background idle cleanup with time-based eviction.
+**Note:** This is a basic cap, not a full LRU. Semaphores are NOT disposed during eviction (race-safe). Phase 10 will implement proper background idle cleanup with time-based eviction and quiescence checks for safe semaphore disposal.
 
 ---
 
@@ -291,21 +327,15 @@ Use `SslClientAuthenticationOptions` overload if available (provides `Cancellati
 ```csharp
 var sslStream = new SslStream(innerStream, leaveInnerStreamOpen: false, ValidateServerCertificate);
 
-// Probe for SslClientAuthenticationOptions overload availability at startup.
-// Cache result in a static bool to avoid reflection on every handshake.
-private static readonly bool _hasSslOptionsOverload = CheckSslOptionsOverload();
+// Single cached MethodInfo probe for SslClientAuthenticationOptions overload.
+// One-time reflection cost at startup. MethodInfo is null if overload is unavailable.
+// NOTE: The previous plan had a redundant `_hasSslOptionsOverload` bool field — removed.
+//       Only one probe mechanism is needed: the cached MethodInfo itself.
+private static readonly MethodInfo _sslOptionsMethod = typeof(SslStream).GetMethod(
+    "AuthenticateAsClientAsync",
+    new[] { typeof(SslClientAuthenticationOptions), typeof(CancellationToken) });
 
-private static bool CheckSslOptionsOverload()
-{
-    try
-    {
-        // Check if the SslClientAuthenticationOptions overload exists
-        var method = typeof(SslStream).GetMethod("AuthenticateAsClientAsync",
-            new[] { typeof(SslClientAuthenticationOptions), typeof(CancellationToken) });
-        return method != null;
-    }
-    catch { return false; }
-}
+private static bool HasSslOptionsOverload => _sslOptionsMethod != null;
 ```
 
 **Primary path (SslClientAuthenticationOptions available):**
@@ -313,12 +343,6 @@ private static bool CheckSslOptionsOverload()
 **IMPORTANT:** The `AuthenticateAsClientAsync(SslClientAuthenticationOptions, CancellationToken)` overload is a .NET 5+ API — it does NOT exist in .NET Standard 2.1 at compile time. A direct call will fail to compile. The primary path MUST use reflection invocation via the cached `MethodInfo`. The `SslClientAuthenticationOptions` type itself exists in .NET Standard 2.1 (`System.Net.Security` namespace), so creating the options object is safe.
 
 ```csharp
-// Cache the MethodInfo at startup (one-time reflection cost)
-private static readonly MethodInfo _sslOptionsMethod = typeof(SslStream).GetMethod(
-    "AuthenticateAsClientAsync",
-    new[] { typeof(SslClientAuthenticationOptions), typeof(CancellationToken) });
-
-private static bool HasSslOptionsOverload => _sslOptionsMethod != null;
 
 if (HasSslOptionsOverload)
 {
@@ -385,7 +409,13 @@ else
 
 **Why `SslProtocols.None`:** Explicitly specifying `SslProtocols.Tls13` can cause `AuthenticationException` on older macOS (pre-10.15) and iOS (pre-13) where the OS does not support TLS 1.3. `SslProtocols.None` lets the OS negotiate the best available protocol. This is the Microsoft-recommended approach for cross-platform libraries.
 
-### Post-handshake TLS minimum enforcement (REQUIRED)
+### Post-handshake: TLS version surfacing + minimum enforcement (REQUIRED)
+
+After a successful handshake (both primary and fallback paths), store the negotiated TLS version on the `PooledConnection` for testability:
+```csharp
+// Called by TcpConnectionPool after TlsStreamWrapper.WrapAsync returns:
+connection.NegotiatedTlsVersion = sslStream.SslProtocol;
+```
 
 With `SslProtocols.None`, the OS could negotiate TLS 1.0 or 1.1 on very old servers. Enforce a minimum of TLS 1.2 after the handshake:
 

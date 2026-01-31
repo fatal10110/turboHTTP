@@ -35,8 +35,13 @@ Test cases:
 - HttpTransportFactory_Default_CalledTwice_ReturnsSameInstance
 - RequestBuilder_WithJsonBodyString_SetsContentTypeAndBody
 - ClientOptions_SnapshotAtConstruction_MutationsDoNotAffectClient
-- SendAsync_TransportThrowsUHttpException_NotDoubleWrapped (verify no re-wrapping)
+- SendAsync_TransportThrowsUHttpException_NotDoubleWrapped (verify no re-wrapping — validates catch-order invariant)
 - SendAsync_TransportThrowsIOException_WrappedInUHttpException (safety net path)
+- Client_Dispose_DoesNotDisposeFactoryTransport (factory singleton survives client disposal)
+- Client_Dispose_DisposesUserTransport_WhenDisposeTransportTrue
+- Client_Dispose_DoesNotDisposeUserTransport_WhenDisposeTransportFalse (default)
+- RequestBuilder_WithoutWithTimeout_UsesOptionsDefaultTimeout (not hardcoded 30s)
+- SendAsync_RelativeUri_ThrowsUHttpException (absolute URI validation)
 ```
 
 Uses a mock `IHttpTransport` to isolate Core from Transport.
@@ -69,6 +74,10 @@ Test cases:
 - Serialize_UserSetContentLength_Correct_Preserved
 - Serialize_AutoAddsUserAgent
 - Serialize_UserSetUserAgent_NotOverridden
+- Serialize_TransferEncodingSet_NoAutoContentLength (RFC 9110 §8.6 mutual exclusion)
+- Serialize_TransferEncodingChunked_WithBody_ThrowsArgumentException (not implemented)
+- Serialize_EmptyHeaderName_ThrowsArgumentException
+- Serialize_PathAndQuery_EmptyFallsBackToSlash
 ```
 
 ---
@@ -148,6 +157,10 @@ Test cases:
 - SemaphoreCapEviction_NeverEvictsCurrentKey
 - ConnectionLease_Dispose_AfterPoolDispose_DoesNotThrow (ObjectDisposedException caught)
 - ConnectionLease_ConcurrentReturnAndDispose_NoRace (lock prevents enqueue-of-disposed)
+- GetConnectionAsync_AfterPoolDispose_ThrowsObjectDisposedException
+- EnqueueConnection_AfterPoolDispose_DisposesConnection
+- SemaphoreCapEviction_DoesNotDisposeSemaphores (only drains connections)
+- PooledConnection_NegotiatedTlsVersion_SetAfterTlsHandshake
 ```
 
 Note: Some tests may require a local TCP listener or mock. If testing against real sockets is impractical in Unity Test Runner, test the pool logic with mock streams and verify integration in Step 5.
@@ -220,7 +233,7 @@ public class TestHttpClient : MonoBehaviour
    - Assert: status 200, does NOT hang, body is null/empty
 
 7. **TestTlsVersion** — Verify TLS 1.2+ was negotiated
-   - Assert: negotiated protocol >= TLS 1.2 (not just log)
+   - Assert: negotiated protocol >= TLS 1.2 via `PooledConnection.NegotiatedTlsVersion` property (not just log). The post-handshake enforcement throws on TLS < 1.2, so a successful HTTPS request implicitly proves this. But explicit assertion via the stored property provides confidence.
 
 8. **TestPostJsonString** — `POST https://httpbin.org/post` with `WithJsonBody("{\"key\":\"value\"}")`
    - Assert: status 200, echoed body contains sent data
@@ -297,7 +310,11 @@ Fix any issues found, re-review until clean.
 - [ ] User-Agent auto-added unless user sets one
 - [ ] ConnectionLease is a class with idempotent Dispose
 - [ ] DNS timeout wrapper fires within ~5 seconds
-- [ ] Semaphore cap eviction works when > 1000 entries
+- [ ] Semaphore cap eviction works when > 1000 entries (drains connections, does NOT dispose semaphores)
+- [ ] Factory-provided transport NOT disposed by client Dispose()
+- [ ] Absolute URI validation at transport entry
+- [ ] Transfer-Encoding / Content-Length mutual exclusion in serializer
+- [ ] Pool.GetConnectionAsync throws ObjectDisposedException after pool Dispose()
 - [ ] Both specialist agent reviews pass
 - [ ] CLAUDE.md updated
-- [ ] **MANDATORY** IL2CPP smoke test: build for iOS simulator or Android emulator, verify basic HTTPS GET completes. Also verify: `[ModuleInitializer]` fires, `Encoding.GetEncoding(28591)` works, SslStream handshake succeeds. The SslStream ALPN risk (CLAUDE.md Critical Risk Area #1) makes this a blocking requirement for Phase 3 completion. If device testing is not possible, document explicitly as deferred risk with rationale.
+- [ ] **MANDATORY** IL2CPP smoke test: build for iOS simulator or Android emulator, verify basic HTTPS GET completes. Also verify: `[ModuleInitializer]` fires, `Encoding.GetEncoding(28591)` works, SslStream handshake succeeds, **byte-by-byte SslStream reads work correctly with multi-header responses** (not just minimal responses — validate that SslStream internal buffering handles the 16KB-record-per-byte-read pattern under IL2CPP). The SslStream ALPN risk (CLAUDE.md Critical Risk Area #1) makes this a blocking requirement for Phase 3 completion. If device testing is not possible, document explicitly as deferred risk with rationale.

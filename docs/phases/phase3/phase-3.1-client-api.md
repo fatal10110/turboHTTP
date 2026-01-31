@@ -41,7 +41,8 @@ Properties:
 - `Middlewares` (List<IHttpMiddleware>) — Phase 4 placeholder
 - `FollowRedirects` (bool, default true) — **NOT enforced; document as Phase 4**
 - `MaxRedirects` (int, default 10) — **NOT enforced; document as Phase 4**
-- `Clone()` — deep-copies headers/middleware list; **Transport is a shared reference** (NOT snapshotted). Documented in XML comment: "Users must not mutate or dispose a Transport instance passed to UHttpClientOptions after constructing a client that uses those options."
+- `DisposeTransport` (bool, default false) — when `true` and `Transport` is set, the client will dispose the transport on `UHttpClient.Dispose()`. Has no effect when using the factory-provided default transport (singleton, never disposed by clients).
+- `Clone()` — deep-copies headers/middleware list; **Transport is a shared reference** (NOT snapshotted). **Middleware instances are also shared references** (typically stateless services — mutable middleware shared across cloned options may have thread-safety issues). Documented in XML comment: "Users must not mutate or dispose a Transport instance passed to UHttpClientOptions after constructing a client that uses those options."
 
 ---
 
@@ -52,7 +53,7 @@ Properties:
 Fluent builder:
 - `internal` constructor: `(UHttpClient client, HttpMethod method, string url)`
 - Methods: `WithHeader`, `WithHeaders`, `WithBody(byte[])`, `WithBody(string)`, `WithJsonBody(string)`, `WithJsonBody<T>`, `WithJsonBody<T>(T, JsonSerializerOptions)`, `WithTimeout`, `WithMetadata`, `WithBearerToken`, `Accept`, `ContentType`
-- `Build()` — resolves relative URLs against `BaseUrl`, merges default + request headers, returns `UHttpRequest`
+- `Build()` — resolves relative URLs against `BaseUrl`, merges default + request headers, uses `_client._options.DefaultTimeout` as the timeout unless `WithTimeout()` was explicitly called (overrides the hardcoded 30s default in `UHttpRequest` constructor), returns `UHttpRequest`
 - `SendAsync(ct)` — calls `Build()` then `_client.SendAsync()`
 
 **Critical fixes from review:**
@@ -76,7 +77,11 @@ Main client:
 - Constructor: optional `UHttpClientOptions` (null allowed, defaults to new `UHttpClientOptions()`)
 - **Snapshot options at construction:** `_options = options?.Clone() ?? new UHttpClientOptions()` — prevents mutation after client creation. **Note:** Transport is a shared reference (not cloned). Users must not dispose a Transport instance passed via options while the client is alive.
 - Resolves transport: `_options.Transport ?? HttpTransportFactory.Default` (factory uses `Lazy<T>` for thread-safe singleton)
-- Tracks `_ownsTransport` bool: `true` when from factory, `false` when user-provided
+- Tracks `_ownsTransport` bool: `true` **only** when user explicitly provides a transport via `UHttpClientOptions.Transport` **and** sets `DisposeTransport = true`. Factory-provided transport is a shared singleton — **never disposed by any individual client**.
+  ```csharp
+  _transport = _options.Transport ?? HttpTransportFactory.Default;
+  _ownsTransport = (_options.Transport != null && _options.DisposeTransport);
+  ```
 - Verb methods: `Get`, `Post`, `Put`, `Delete`, `Patch`, `Head`, `Options` → return `UHttpRequestBuilder`
 - `SendAsync(UHttpRequest, CancellationToken)`:
   1. Create `RequestContext`, record "RequestStart"
@@ -86,7 +91,7 @@ Main client:
      - `catch (UHttpException) { throw; }` — transport already mapped the error, do NOT re-wrap
      - `catch (Exception ex) { throw new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)); }` — safety net for unexpected non-transport exceptions only
   5. **Does NOT use `ConfigureAwait(false)`** — continuations return to the caller's `SynchronizationContext` (typically Unity main thread). The transport layer internally uses `ConfigureAwait(false)`.
-- **Implements `IDisposable`** — dispose transport only if `_ownsTransport`
+- **Implements `IDisposable`** — dispose transport only if `_ownsTransport`. **Factory-provided transports are shared singletons and are NEVER disposed by clients.** Only user-provided transports with `DisposeTransport = true` are disposed.
 - Error model: transport maps platform exceptions to `UHttpException`; client passes them through. HTTP 4xx/5xx are normal responses with body intact.
 
 ---
@@ -106,7 +111,7 @@ The Phase 2 implementation had a simple `_defaultTransport` field with a public 
 
 ```csharp
 private static volatile Func<IHttpTransport> _factory;
-private static Lazy<IHttpTransport> _lazy;
+private static volatile Lazy<IHttpTransport> _lazy; // volatile for lock-free reads
 private static readonly object _lock = new object();
 
 public static void Register(Func<IHttpTransport> factory)
@@ -119,22 +124,21 @@ public static void Register(Func<IHttpTransport> factory)
     }
 }
 
+// LOCK-FREE read path: Lazy<T>.Value is already thread-safe.
+// The lock is only needed during Register() to prevent concurrent registration.
+// This avoids lock contention on every request under high concurrency.
 public static IHttpTransport Default
 {
     get
     {
-        Lazy<IHttpTransport> currentLazy;
-        lock (_lock)
-        {
-            currentLazy = _lazy;
-        }
-        if (currentLazy == null)
+        var lazy = _lazy; // Single volatile read
+        if (lazy == null)
             throw new InvalidOperationException(
                 "No default transport configured. " +
                 "Ensure TurboHTTP.Transport is included in your project. " +
                 "If using IL2CPP and the module initializer did not fire, " +
                 "call RawSocketTransport.EnsureRegistered() at startup.");
-        return currentLazy.Value;
+        return lazy.Value; // Lazy<T> handles thread-safe initialization internally
     }
 }
 

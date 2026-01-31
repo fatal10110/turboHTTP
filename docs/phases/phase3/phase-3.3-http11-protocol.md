@@ -18,6 +18,7 @@ All awaits use `.ConfigureAwait(false)`.
 
 1. **Request line:** `METHOD /path HTTP/1.1\r\n`
    - `request.Method.ToUpperString()` + space + `request.Uri.PathAndQuery` + ` HTTP/1.1\r\n`
+   - **PathAndQuery guard:** `var path = request.Uri.PathAndQuery; if (string.IsNullOrEmpty(path)) path = "/";` — defensive fallback for URIs like `https://example.com` (should return `"/"` but guard against edge cases)
 
 2. **Host header** (required by HTTP/1.1):
    - If user did not set `Host`: auto-add `Host: hostname` (with `:port` for non-default ports)
@@ -27,9 +28,11 @@ All awaits use `.ConfigureAwait(false)`.
    Per RFC 9110 Section 5.5, field values must not contain CR or LF. Validate all header names and values before serialization to prevent HTTP response splitting / header injection attacks:
    ```csharp
    // TODO Phase 10: Validate header names against full RFC 9110 token grammar (1*tchar).
-   // Currently only checks for CRLF and colon (sufficient for security — prevents injection).
+   // Currently only checks for CRLF, colon, and empty/whitespace (sufficient for security — prevents injection).
    private static void ValidateHeader(string name, string value)
    {
+       if (string.IsNullOrWhiteSpace(name))
+           throw new ArgumentException("Header name cannot be null or empty");
        if (name.AsSpan().IndexOfAny('\r', '\n', ':') >= 0)
            throw new ArgumentException($"Header name contains invalid characters: {name}");
        if (value.AsSpan().IndexOfAny('\r', '\n') >= 0)
@@ -54,7 +57,9 @@ All awaits use `.ConfigureAwait(false)`.
    ```
    This correctly emits one header line per value (critical for Set-Cookie, Via, etc.) and validates each for injection.
 
-4. **Auto-add `Content-Length`** for bodies (if not already set by user). **If user manually set `Content-Length`, validate it matches `request.Body.Length`** — throw `ArgumentException` on mismatch to prevent server hangs:
+4. **Transfer-Encoding / Content-Length mutual exclusion (RFC 9110 §8.6):** If user set `Transfer-Encoding` header, do NOT auto-add `Content-Length` (a message MUST NOT contain both). If the user set `Transfer-Encoding: chunked` but provides a `byte[]` body, throw `ArgumentException("Transfer-Encoding: chunked is set but chunked body encoding is not implemented in Phase 3. Remove the Transfer-Encoding header or defer to Phase 5.")`.
+
+5. **Auto-add `Content-Length`** for bodies (if not already set by user, and `Transfer-Encoding` is NOT present). **If user manually set `Content-Length`, validate it matches `request.Body.Length`** — throw `ArgumentException` on mismatch to prevent server hangs:
    ```csharp
    if (request.Body != null && request.Body.Length > 0)
    {
@@ -183,6 +188,12 @@ All awaits use `.ConfigureAwait(false)`.
 ```csharp
 public class ParsedResponse
 {
+    /// <summary>
+    /// HTTP status code. May be cast from a non-standard int (e.g., 451, 425).
+    /// Consumers should use integer range checks (>= 200 && < 300) rather than
+    /// enum comparisons for robustness. ToString() returns the numeric string
+    /// for non-standard codes.
+    /// </summary>
     public HttpStatusCode StatusCode { get; set; }
     public HttpHeaders Headers { get; set; }
     public byte[] Body { get; set; }
@@ -276,10 +287,14 @@ Accepts `requestMethod` to correctly handle HEAD responses. All awaits use `.Con
 
 #### `ReadLineAsync(Stream stream, CancellationToken ct, int maxLength = 8192)`
 
-Byte-by-byte CRLF reader with **max length limit**:
-- Reads one byte at a time into `StringBuilder`
+Byte-by-byte CRLF reader with **max length limit** and **explicit Latin-1 encoding**:
+- Reads one byte at a time into a `MemoryStream` or `byte[]` buffer (NOT directly into StringBuilder)
 - Tracks `lastWasCR` for CRLF detection
-- If `sb.Length > maxLength` → throw `FormatException("HTTP header line exceeds maximum length")`
+- If `buffer.Length > maxLength` → throw `FormatException("HTTP header line exceeds maximum length")`
+- **Converts raw bytes to string using the same `Latin1` encoding used by the serializer** (NOT implicit char cast, NOT UTF-8). HTTP/1.1 status lines and headers are Latin-1 encoded (ISO 8859-1). Using UTF-8 would corrupt non-ASCII header values.
+  ```csharp
+  return Latin1.GetString(buffer, 0, length); // Same static Latin1 field as serializer
+  ```
 - Returns line content (without CRLF)
 
 **Phase 10 optimization:** Replace with buffered reader (4KB+ chunks from stream).

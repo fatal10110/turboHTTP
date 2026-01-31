@@ -38,26 +38,34 @@ Assembly defs: `TurboHTTP.Core.asmdef` (no refs), `TurboHTTP.Transport.asmdef` (
 
 ## Cross-Cutting Design Decisions
 
-1. **Error model:** Transport maps platform exceptions to `UHttpException` (it has the best context to distinguish DNS timeout vs socket error vs TLS failure). Client re-throws `UHttpException` as-is (`catch (UHttpException) { throw; }`). Client only wraps unexpected non-`UHttpException` exceptions as a safety net. HTTP 4xx/5xx returned as normal responses with body intact.
+1. **Error model:** Transport maps platform exceptions to `UHttpException` (it has the best context to distinguish DNS timeout vs socket error vs TLS failure). Client re-throws `UHttpException` as-is (`catch (UHttpException) { throw; }`). Client only wraps unexpected non-`UHttpException` exceptions as a safety net. HTTP 4xx/5xx returned as normal responses with body intact. **CRITICAL: The `catch (UHttpException) { throw; }` handler MUST be the first catch clause in both `RawSocketTransport.SendAsync` and `UHttpClient.SendAsync`. Reordering will cause double-wrapping.**
 2. **`ConfigureAwait(false)`** on all transport-layer awaits.
 3. **IPv6:** Explicit DNS resolution, use resolved address's `AddressFamily` (NOT hardcoded `InterNetwork`). Required for Apple App Store (IPv6-only network test).
 4. **Multi-value headers:** Serializer iterates `Names` + `GetValues()`. Parser uses `Add()` not `Set()`.
 5. **No `ReadOnlyMemory<byte>`** yet — keep `byte[]`, document for Phase 10.
 6. **Redirect following:** Options defined but NOT enforced — deferred to Phase 4.
-7. **Connection lifecycle:** `ConnectionLease` (IDisposable **class**, not struct — mutable structs break dispose semantics due to value-type copy) wraps connection + semaphore to guarantee per-host permit is always released. Idempotent `Dispose()` prevents double semaphore release. Prevents deadlock on non-keepalive responses, exceptions, and cancellation paths.
-8. **Header injection validation:** ALL header names and values validated for CRLF injection during serialization (not just Host). Prevents HTTP response splitting attacks.
+7. **Connection lifecycle:** `ConnectionLease` (IDisposable **class**, not struct — mutable structs break dispose semantics due to value-type copy) wraps connection + semaphore to guarantee per-host permit is always released. Idempotent `Dispose()` prevents double semaphore release. Prevents deadlock on non-keepalive responses, exceptions, and cancellation paths. `IsAlive` check performed outside the lock to avoid holding locks during `Socket.Poll()` syscalls.
+8. **Header injection validation:** ALL header names and values validated for CRLF injection during serialization (not just Host). Header names also validated for empty/whitespace. Prevents HTTP response splitting attacks.
 9. **Response body size limit:** `MaxResponseBodySize = 100MB` enforced in chunked, fixed-length, and read-to-end body readers. Prevents `OutOfMemoryException` from malicious/misconfigured servers.
-10. **TLS strategy:** `SslProtocols.None` (OS-negotiated, Microsoft-recommended) with post-handshake TLS 1.2 minimum enforcement. Avoids `SslProtocols.Tls13` crashes on older iOS/macOS.
-11. **Encoding:** `Encoding.GetEncoding(28591)` cached in static field, with custom `Latin1Encoding` fallback for IL2CPP code stripping. `Encoding.Latin1` static property is .NET 5+ only, NOT .NET Standard 2.1.
+10. **TLS strategy:** `SslProtocols.None` (OS-negotiated, Microsoft-recommended) with post-handshake TLS 1.2 minimum enforcement. Avoids `SslProtocols.Tls13` crashes on older iOS/macOS. Negotiated TLS version stored on `PooledConnection.NegotiatedTlsVersion` for testability.
+11. **Encoding:** `Encoding.GetEncoding(28591)` cached in static field, with custom `Latin1Encoding` fallback for IL2CPP code stripping. `Encoding.Latin1` static property is .NET 5+ only, NOT .NET Standard 2.1. **Both serializer and parser use the same `Latin1` static field** — parser's `ReadLineAsync` reads raw bytes and converts via `Latin1.GetString()`, NOT implicit char cast or UTF-8.
 12. **KeepAlive on ReadToEnd:** Forced `false` when body was read via `ReadToEndAsync` (no Content-Length, no chunked). Connection read to EOF is dead and cannot be reused.
 13. **Timeout enforcement is best-effort for certain operations:** See "Known Limitations" below.
 14. **Transport registration:** C# 9 `[ModuleInitializer]` in `TurboHTTP.Transport` assembly — auto-registers `RawSocketTransport` when assembly loads. No Unity bootstrap assembly needed; `TurboHTTP.Unity` stays optional and Core-only. **IL2CPP note:** Module initializer timing is implementation-defined under IL2CPP. `RawSocketTransport.EnsureRegistered()` fallback documented. IL2CPP build test is Phase 3.5 mandatory gate.
-15. **Transport factory:** Uses `Lazy<T>` with `LazyThreadSafetyMode.ExecutionAndPublication` for thread-safe singleton initialization. No race conditions on concurrent first access. `Register()` replaces public `Default { set; }` from Phase 2.
-16. **TLS handshake:** Runtime probe (cached `MethodInfo`) for `SslClientAuthenticationOptions` overload (`.NET 5+`), invoked via reflection to avoid compile-time dependency. Falls back to 4-arg overload with `Task.WhenAny`-based cancellation if unavailable (avoids dispose-on-cancel race). ALPN requires the primary path.
-17. **DNS timeout:** 5-second `Task.WhenAny` wrapper around `Dns.GetHostAddressesAsync`. Background task continues after timeout (unavoidable in .NET Std 2.1).
+15. **Transport factory:** Uses `Lazy<T>` with `LazyThreadSafetyMode.ExecutionAndPublication` for thread-safe singleton initialization. `Default` getter is **lock-free** (volatile read + `Lazy<T>.Value` handles thread safety internally). Lock is only taken during `Register()`. No race conditions on concurrent first access.
+16. **TLS handshake:** Single cached `MethodInfo` probe for `SslClientAuthenticationOptions` overload (`.NET 5+`), invoked via reflection to avoid compile-time dependency. Falls back to 4-arg overload with `Task.WhenAny`-based cancellation if unavailable (avoids dispose-on-cancel race). ALPN requires the primary path.
+17. **DNS timeout:** 5-second `Task.WhenAny` wrapper around `Dns.GetHostAddressesAsync`. Background task continues after timeout (unavoidable in .NET Std 2.1). Under pathological DNS failures (mobile network loss), background DNS tasks can accumulate — inherent .NET Standard 2.1 limitation.
 18. **User-Agent:** Auto-added `User-Agent: TurboHTTP/1.0` unless user sets one. Many CDNs/servers block requests without it.
 19. **Content-Length validation:** Serializer validates user-set `Content-Length` matches `request.Body.Length`. Mismatch throws `ArgumentException`.
 20. **Transfer-Encoding precedence:** Per RFC 9112 §6.1, `Transfer-Encoding` takes precedence over `Content-Length`. `gzip, chunked` accepted (returns raw compressed chunks). Multiple conflicting `Content-Length` values throw `FormatException`.
+21. **Transfer-Encoding / Content-Length mutual exclusion (request serializer):** Per RFC 9110 §8.6, if user sets `Transfer-Encoding` header, serializer does NOT auto-add `Content-Length`. If user sets `Transfer-Encoding: chunked` with a `byte[]` body, throws `ArgumentException` (chunked body encoding not implemented in Phase 3).
+22. **Transport ownership:** Factory-provided transports are **shared singletons** — never disposed by any individual `UHttpClient`. Only user-provided transports with `UHttpClientOptions.DisposeTransport = true` are disposed by the client. This prevents the first client's `Dispose()` from breaking all other clients sharing the factory singleton.
+23. **URI validation:** `RawSocketTransport.SendAsync` validates `request.Uri.IsAbsoluteUri` before processing. Relative URIs throw `UHttpException(InvalidRequest)`.
+24. **Retry-on-stale architecture:** Single-attempt logic extracted into `SendOnLeaseAsync` helper method. Retry wrapper disposes stale lease, acquires fresh lease, calls helper again. Prevents variable scoping bugs between original and fresh leases.
+25. **Pool disposal safety:** `GetConnectionAsync` and `EnqueueConnection` check `_disposed` flag at entry. Prevents post-dispose operations from creating orphaned connections or throwing unexpected exceptions.
+26. **Semaphore eviction safety:** Eviction drains idle connections but does NOT dispose semaphores (race-safe). Other threads may still reference evicted semaphores via `GetOrAdd`. Semaphores are only disposed in `TcpConnectionPool.Dispose()`. Memory cost is trivial (~100 bytes per orphaned semaphore).
+27. **Connection liveness (`IsAlive`):** Best-effort only — MUST NOT be relied upon for correctness. For TLS connections, `Socket.Available` does not reflect SslStream's internal buffering. Retry-on-stale is the true safety net.
+28. **Builder timeout propagation:** `UHttpRequestBuilder.Build()` uses `_client._options.DefaultTimeout` as timeout unless `WithTimeout()` was explicitly called. The hardcoded 30s in `UHttpRequest` constructor only applies when constructing requests directly (without builder).
 
 ## Known Limitations (deferred)
 
@@ -85,14 +93,18 @@ Assembly defs: `TurboHTTP.Core.asmdef` (no refs), `TurboHTTP.Transport.asmdef` (
 | System.Text.Json availability in Unity 2021.3 | Documented | Depends on Unity version's BCL. If unavailable, only `WithJsonBody(string)` overload works. Users can bring their own serializer. |
 | `[ModuleInitializer]` IL2CPP timing | Phase 3 (mitigated) | `RawSocketTransport.EnsureRegistered()` fallback documented. IL2CPP build test is Phase 3.5 gate. |
 | `ModuleInitializerAttribute` not in .NET Std 2.1 BCL | Phase 3 (mitigated) | Polyfill in `Runtime/Transport/Internal/ModuleInitializerAttribute.cs`. `internal` + `#if !NET5_0_OR_GREATER` guard prevents conflicts. |
-| Retry-on-stale releases semaphore, re-competes | Phase 10 | Under high concurrency, retry request competes with waiters. Permit-preserving retry deferred. |
-| `HttpStatusCode` enum range gaps | Documented | Status codes not in enum (e.g., 451, 425) stored as raw int cast. Consumers should use int range checks. |
+| Retry-on-stale releases semaphore, re-competes | Phase 10 | Under high concurrency, retry request competes with waiters. Permit-preserving retry deferred. Phase 3.5 should measure P99 latency under saturation. |
+| `HttpStatusCode` enum range gaps | Documented | Status codes not in enum (e.g., 451, 425) stored as raw int cast. Consumers should use int range checks. `ParsedResponse.StatusCode` and `UHttpResponse.StatusCode` document this behavior. |
+| Certificate revocation disabled (security risk) | Phase 9 | TLS handshake accepts revoked certificates (no CRL/OCSP). Rationale: CRL endpoints unreachable on mobile. Risk: MITM with compromised-but-not-expired certs. Phase 9 adds opt-in OCSP stapling + certificate pinning. |
+| Byte-by-byte SslStream reads under IL2CPP | Phase 3.5 (validate) / Phase 10 (fix) | Forces 16KB TLS record decryption per byte. SslStream internal buffering may differ under IL2CPP. Phase 3.5 IL2CPP gate must include multi-header response validation. Phase 10 replaces with buffered reader. |
+| Semaphore eviction leaves orphaned SemaphoreSlim | Phase 10 | Evicted semaphores are not disposed (race-safe). ~100 bytes each. Phase 10 implements quiescence-checked disposal. |
+| DNS background task accumulation | Documented | Under pathological DNS failures, timed-out DNS tasks continue in background. Inherent .NET Std 2.1 limitation. Phase 10 DNS caching amortizes cost. |
 
 ## GC Target
 
-Phase 3 targets **~50KB GC per request** (correctness focus). The dominant cost is byte-by-byte `ReadAsync` in the response parser, which creates ~400 `Task<int>` allocations (~29KB) per response for headers alone. Combined with StringBuilder serialization (~600-700 bytes), header string parsing (~400 bytes), and other allocations, the realistic total is 30-50KB per request.
+Phase 3 targets **~50KB GC per request** (correctness focus, **NOT performance optimized yet** — intentionally high). The dominant cost is byte-by-byte `ReadAsync` in the response parser, which creates ~400 `Task<int>` allocations (~29KB) per response for headers alone. Combined with StringBuilder serialization (~600-700 bytes), header string parsing (~400 bytes), and other allocations, the realistic total is 30-50KB per request.
 
-The previous target of <2KB was based on an underestimate that did not account for Task allocations from byte-by-byte reading. Phase 10 targets **<500 bytes** with buffered reader (4KB+ chunks), ArrayPool, and zero-alloc patterns. See CLAUDE.md "Critical Risk Areas" for details.
+The previous target of <2KB was based on an underestimate that did not account for Task allocations from byte-by-byte reading. **Phase 10 targets <500 bytes** with buffered reader (4KB+ chunks), ArrayPool, and zero-alloc patterns — this is the production target. The 50KB Phase 3 budget is temporary and will be eliminated. See CLAUDE.md "Critical Risk Areas" for details.
 
 ## Post-Phase Review
 
