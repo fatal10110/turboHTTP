@@ -41,7 +41,7 @@ Properties:
 - `Middlewares` (List<IHttpMiddleware>) — Phase 4 placeholder
 - `FollowRedirects` (bool, default true) — **NOT enforced; document as Phase 4**
 - `MaxRedirects` (int, default 10) — **NOT enforced; document as Phase 4**
-- `Clone()` — deep-copies headers/middleware list; Transport is shared reference (documented in XML comment)
+- `Clone()` — deep-copies headers/middleware list; **Transport is a shared reference** (NOT snapshotted). Documented in XML comment: "Users must not mutate or dispose a Transport instance passed to UHttpClientOptions after constructing a client that uses those options."
 
 ---
 
@@ -73,60 +73,100 @@ Fluent builder:
 **File:** `Runtime/Core/UHttpClient.cs`
 
 Main client:
-- Constructor: optional `UHttpClientOptions` (defaults to new)
-- **Snapshot options at construction:** `_options = options?.Clone() ?? new UHttpClientOptions()` — prevents mutation after client creation
-- Resolves transport: `_options.Transport ?? HttpTransportFactory.Default`
+- Constructor: optional `UHttpClientOptions` (null allowed, defaults to new `UHttpClientOptions()`)
+- **Snapshot options at construction:** `_options = options?.Clone() ?? new UHttpClientOptions()` — prevents mutation after client creation. **Note:** Transport is a shared reference (not cloned). Users must not dispose a Transport instance passed via options while the client is alive.
+- Resolves transport: `_options.Transport ?? HttpTransportFactory.Default` (factory uses `Lazy<T>` for thread-safe singleton)
 - Tracks `_ownsTransport` bool: `true` when from factory, `false` when user-provided
 - Verb methods: `Get`, `Post`, `Put`, `Delete`, `Patch`, `Head`, `Options` → return `UHttpRequestBuilder`
 - `SendAsync(UHttpRequest, CancellationToken)`:
   1. Create `RequestContext`, record "RequestStart"
   2. Call `_transport.SendAsync(request, context, ct)`
   3. Record "RequestComplete", stop context
-  4. On exception: record "RequestFailed", wrap in `UHttpException`
+  4. On exception: record "RequestFailed", then:
+     - `catch (UHttpException) { throw; }` — transport already mapped the error, do NOT re-wrap
+     - `catch (Exception ex) { throw new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)); }` — safety net for unexpected non-transport exceptions only
+  5. **Does NOT use `ConfigureAwait(false)`** — continuations return to the caller's `SynchronizationContext` (typically Unity main thread). The transport layer internally uses `ConfigureAwait(false)`.
 - **Implements `IDisposable`** — dispose transport only if `_ownsTransport`
-- Error model: transport-level errors are exceptions; HTTP 4xx/5xx are normal responses with body
+- Error model: transport maps platform exceptions to `UHttpException`; client passes them through. HTTP 4xx/5xx are normal responses with body intact.
 
 ---
 
-## Step 5: Update `HttpTransportFactory`
+## Step 5: Replace `HttpTransportFactory`
 
-**File:** `Runtime/Core/HttpTransportFactory.cs` (modify existing)
+**File:** `Runtime/Core/HttpTransportFactory.cs` (**full replacement** of existing Phase 2 implementation)
 
-Add lazy factory registration:
+The Phase 2 implementation had a simple `_defaultTransport` field with a public setter. Phase 3 replaces it entirely with a `Lazy<T>`-based factory pattern for thread-safe lazy initialization. The public `set` accessor is removed to prevent conflicts between `Register()` and direct assignment.
+
+**Design decisions:**
+- `Register(Func<IHttpTransport>)` sets the factory and creates a new `Lazy<T>` instance
+- `Default` getter returns `_lazy.Value` (thread-safe, guaranteed single construction)
+- `Default` setter is removed — use `Register()` for factory registration or `SetForTesting()` for direct assignment in tests
+- `Reset()` clears both `_factory` and `_lazy` (for testing only)
+- `SetForTesting(IHttpTransport)` provides direct assignment for test mocks without going through factory
 
 ```csharp
 private static volatile Func<IHttpTransport> _factory;
-private static volatile IHttpTransport _defaultTransport;
+private static Lazy<IHttpTransport> _lazy;
+private static readonly object _lock = new object();
 
 public static void Register(Func<IHttpTransport> factory)
 {
-    _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+    if (factory == null) throw new ArgumentNullException(nameof(factory));
+    lock (_lock)
+    {
+        _factory = factory;
+        _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
+    }
 }
 
 public static IHttpTransport Default
 {
     get
     {
-        if (_defaultTransport == null && _factory != null)
+        Lazy<IHttpTransport> currentLazy;
+        lock (_lock)
         {
-            // Thread-safe lazy initialization — prevent duplicate transport creation
-            var transport = _factory();
-            var existing = Interlocked.CompareExchange(ref _defaultTransport, transport, null);
-            if (existing != null)
-            {
-                // Another thread won the race — dispose our duplicate
-                (transport as IDisposable)?.Dispose();
-            }
+            currentLazy = _lazy;
         }
-        if (_defaultTransport == null)
-            throw new InvalidOperationException("No default transport configured...");
-        return _defaultTransport;
+        if (currentLazy == null)
+            throw new InvalidOperationException(
+                "No default transport configured. " +
+                "Ensure TurboHTTP.Transport is included in your project. " +
+                "If using IL2CPP and the module initializer did not fire, " +
+                "call RawSocketTransport.EnsureRegistered() at startup.");
+        return currentLazy.Value;
     }
-    set => _defaultTransport = value;
+}
+
+/// <summary>
+/// Set a transport directly for testing (bypasses factory).
+/// </summary>
+public static void SetForTesting(IHttpTransport transport)
+{
+    lock (_lock)
+    {
+        _lazy = new Lazy<IHttpTransport>(() => transport, LazyThreadSafetyMode.ExecutionAndPublication);
+    }
+}
+
+/// <summary>
+/// Reset to initial state. For testing only.
+/// Clears both the factory and any created transport.
+/// </summary>
+public static void Reset()
+{
+    lock (_lock)
+    {
+        _factory = null;
+        _lazy = null;
+    }
 }
 ```
 
-Keep existing `Reset()` method (clears both `_factory` and `_defaultTransport`).
+**Migration from Phase 2:**
+- Remove: `public static IHttpTransport Default { set; }` — replaced by `SetForTesting()`
+- Remove: `public static IHttpTransport Create()` — redundant, just use `Default`
+- Phase 2 tests using `HttpTransportFactory.Default = mockTransport` → change to `HttpTransportFactory.SetForTesting(mockTransport)`
 
 ---
 

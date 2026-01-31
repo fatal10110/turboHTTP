@@ -37,11 +37,15 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - **HTTP/2:** Native binary framing, HPACK compression, stream multiplexing, flow control
 - **Middleware:** ASP.NET Core-style pipeline pattern for request/response interception
 - **Namespaces:** Each module uses `TurboHTTP.<ModuleName>` (e.g., `TurboHTTP.Core`, `TurboHTTP.Transport`)
-- **Transport Factory:** `HttpTransportFactory` throws `InvalidOperationException` if no transport is configured. Phase 3 registers `RawSocketTransport` as the default. This avoids Core → Transport circular dependency.
-- **Headers:** `HttpHeaders` uses `Dictionary<string, List<string>>` for multi-value support (RFC 9110 Section 5.3, Set-Cookie per RFC 6265).
-- **Immutability:** `UHttpRequest` defensively clones headers in constructor. `byte[]` body uses shared ownership (documented, not copied). Migration to `ReadOnlyMemory<byte>` deferred to Phase 3.
+- **Transport Factory:** `HttpTransportFactory` uses `Register(Func<IHttpTransport>)` pattern with `Lazy<T>` thread-safe initialization. Phase 3 registers `RawSocketTransport` via C# 9 `[ModuleInitializer]` in the Transport assembly — auto-runs when assembly loads, no Unity bootstrap needed. `RawSocketTransport.EnsureRegistered()` fallback for IL2CPP timing issues. This avoids Core → Transport circular dependency while keeping `TurboHTTP.Unity` optional.
+- **Headers:** `HttpHeaders` uses `Dictionary<string, List<string>>` for multi-value support (RFC 9110 Section 5.3, Set-Cookie per RFC 6265). All header names/values validated for CRLF injection during serialization.
+- **Immutability:** `UHttpRequest` defensively clones headers in constructor. `byte[]` body uses shared ownership (documented, not copied). Migration to `ReadOnlyMemory<byte>` deferred to Phase 10.
 - **Thread Safety:** `RequestContext` uses lock-based synchronization for timeline and state access. Required for HTTP/2 async continuations.
 - **IHttpTransport:** Extends `IDisposable` for connection pool cleanup.
+- **Connection Lifecycle:** `ConnectionLease` (IDisposable **class**, not struct) wraps connection + semaphore to guarantee per-host permit is always released. Idempotent `Dispose()` prevents double semaphore release. Prevents deadlock on non-keepalive, exception, and cancellation paths.
+- **TLS Strategy:** `SslProtocols.None` (OS-negotiated, Microsoft-recommended) with post-handshake TLS 1.2 minimum enforcement. Runtime probe for `SslClientAuthenticationOptions` overload (.NET 5+); falls back to 4-arg overload with dispose-on-cancel pattern if unavailable.
+- **Encoding:** `Encoding.GetEncoding(28591)` cached in static field with custom `Latin1Encoding` fallback for IL2CPP code stripping. `Encoding.Latin1` static property is .NET 5+ only.
+- **Error Model:** Transport throws exceptions (`UHttpException`). Client catches and wraps. HTTP 4xx/5xx are normal responses with body intact (not exceptions).
 
 ## Development Status
 
@@ -49,7 +53,8 @@ Implementation follows 14 phases documented in `docs/phases/`.
 
 - **Phase 1 (Project Foundation):** COMPLETE — Directory structure, assembly definitions, package files.
 - **Phase 2 (Core Type System):** COMPLETE — All 8 core types implemented in `Runtime/Core/`, 3 test files in `Tests/Runtime/Core/`. Reviewed by both specialist agents.
-- **Phases 3–14:** Not started.
+- **Phase 3 (Client API & HTTP/1.1 Transport):** PLANNED — Detailed sub-plans in `docs/phases/phase3/` (5 sub-phases). The old summary at `docs/phases/phase-03-client-api.md` is **deprecated** and must not be used for implementation. External reviews (GPT, Gemini) and specialist agent reviews incorporated.
+- **Phases 4–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
 
@@ -66,10 +71,13 @@ Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md`
 2. **System.Text.Json + IL2CPP/AOT** — Serialization behavior needs early validation
 3. **HTTP/2 flow control** — Stream multiplexing, window updates, HPACK correctness require rigorous testing
 4. **Memory target (phased):**
-   - Phase 3: <2KB GC per request (correctness focus; measured via profiler snapshot in Phase 3.5)
+   - Phase 3: ~50KB GC per request (correctness focus; measured via profiler snapshot in Phase 3.5). Dominated by byte-by-byte ReadAsync Task allocations (~29KB for headers alone).
    - Phase 10: <500 bytes GC per request (zero-alloc patterns, ArrayPool, buffered I/O)
-   - Phase 3 uses StringBuilder + Encoding for serialization (~600–700 bytes) and byte-by-byte ReadLineAsync (~600 Task allocations per response). Both are documented GC hotspots for Phase 10 rewrite.
-5. **DNS resolution on mobile:** `Dns.GetHostAddressesAsync` has no CancellationToken in .NET Standard 2.1. DNS hangs on mobile networks can consume the entire request timeout. Documented as known limitation; consider Task.Run wrapper if mobile timeout reliability is critical.
+   - Phase 3 uses StringBuilder + Encoding for serialization (~600–700 bytes) and byte-by-byte ReadLineAsync (~400 Task allocations per response, ~29KB). Both are documented GC hotspots for Phase 10 rewrite.
+5. **Timeout enforcement is best-effort for some operations (.NET Standard 2.1):**
+   - `Dns.GetHostAddressesAsync` has no CancellationToken — DNS hangs on mobile networks can consume the entire request timeout. Known limitation.
+   - `Socket.ConnectAsync` has no CancellationToken — mitigated with `ct.Register(() => socket.Dispose())` pattern (abrupt close, may throw `ObjectDisposedException`).
+   - `SslStream.AuthenticateAsClientAsync(SslClientAuthenticationOptions, CancellationToken)` — fully cancellable (correct overload used since Phase 3).
 
 ## Testing
 

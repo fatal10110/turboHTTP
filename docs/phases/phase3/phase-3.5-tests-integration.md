@@ -11,7 +11,7 @@
 
 ```
 Test cases:
-- Constructor_WithNullOptions_ThrowsArgumentNullException
+- Constructor_WithNullOptions_UsesDefaults (null is allowed, creates default options)
 - Constructor_WithDefaultOptions_Succeeds
 - Get_ReturnsBuilder
 - Post_ReturnsBuilder
@@ -35,6 +35,8 @@ Test cases:
 - HttpTransportFactory_Default_CalledTwice_ReturnsSameInstance
 - RequestBuilder_WithJsonBodyString_SetsContentTypeAndBody
 - ClientOptions_SnapshotAtConstruction_MutationsDoNotAffectClient
+- SendAsync_TransportThrowsUHttpException_NotDoubleWrapped (verify no re-wrapping)
+- SendAsync_TransportThrowsIOException_WrappedInUHttpException (safety net path)
 ```
 
 Uses a mock `IHttpTransport` to isolate Core from Transport.
@@ -59,7 +61,14 @@ Test cases:
 - SerializePost_WritesBody
 - Serialize_MultiValueHeaders_EmitsSeparateLines
 - Serialize_HostHeaderWithCRLF_ThrowsArgumentException
+- Serialize_AnyHeaderValueWithCRLF_ThrowsArgumentException
+- Serialize_HeaderNameWithColon_ThrowsArgumentException
+- Serialize_HeaderNameWithCRLF_ThrowsArgumentException
 - Serialize_NoBody_NoContentLength
+- Serialize_UserSetContentLength_Mismatch_ThrowsArgumentException
+- Serialize_UserSetContentLength_Correct_Preserved
+- Serialize_AutoAddsUserAgent
+- Serialize_UserSetUserAgent_NotOverridden
 ```
 
 ---
@@ -90,13 +99,25 @@ Test cases:
 - Parse_MultipleSetCookieHeaders_AllPreserved (Add not Set)
 - Parse_ReadLineAsync_ExceedsMaxLength_ThrowsFormatException
 - Parse_TotalHeaderSize_ExceedsLimit_ThrowsFormatException
-- Parse_TransferEncodingGzipChunked_ThrowsNotSupportedException
+- Parse_TransferEncodingGzipChunked_ReturnsRawCompressedChunks
+- Parse_TransferEncodingOnlyGzip_ThrowsNotSupportedException
+- Parse_TransferEncoding_TakesPrecedenceOverContentLength
+- Parse_MultipleContentLength_Conflicting_ThrowsFormatException
+- Parse_MultipleContentLength_Same_Accepted
 - Parse_EmptyBody_ReturnsEmptyArray
+- Parse_TransferEncodingIdentity_TreatedAsAbsent
+- Parse_StatusLine_NoReasonPhrase_Parses
+- Parse_StatusLine_EmptyReasonPhrase_Parses
+- Parse_StatusLine_MultiWordReasonPhrase_Parses
+- Parse_ContentLength_ParsedAsLong (values > int.MaxValue rejected by MaxResponseBodySize, not by parse failure)
+- Parse_ChunkedBody_LargeChunkSizeHex_ParsedAsLong
+- Parse_1xxResponses_ExceedsMaxIterations_ThrowsFormatException
 - Parse_ChunkedBody_WithExtensions_StripsExtensionsBeforeParsing
 - Parse_ChunkedBody_ExceedsMaxBodySize_ThrowsIOException
 - Parse_ContentLength_ExceedsMaxBodySize_ThrowsIOException
 - Parse_ReadToEnd_ExceedsMaxBodySize_ThrowsIOException
 - Parse_MultipleSetCookieHeaders_AllPreservedViaAdd
+- Parse_ReadToEnd_ForcesKeepAliveFalse (no Content-Length, no chunked → KeepAlive must be false)
 ```
 
 ---
@@ -116,9 +137,22 @@ Test cases:
 - DisposedPool_ReturnConnection_DisposesConnection
 - CaseInsensitiveHostKey_SharesPool
 - RawSocketTransport_StaleConnection_RetriesOnce
+- ConnectionLease_Dispose_AlwaysReleasesSemaphore (even without ReturnToPool)
+- ConnectionLease_ReturnToPool_ThenDispose_DoesNotDisposeConnection
+- ConnectionLease_NoReturnToPool_ThenDispose_DisposesConnection
+- ConnectionLease_ExceptionPath_SemaphoreReleased (simulate error after GetConnectionAsync)
+- NonKeepAlive_Response_SemaphoreReleased (Connection: close does not leak permit)
+- ConnectionLease_DoubleDispose_Idempotent (second Dispose is no-op)
+- PooledConnection_IsAlive_AfterDispose_ReturnsFalse (guard against ObjectDisposedException)
+- SemaphoreCapEviction_DrainsIdleConnections_BeforeRemoval (no socket leak)
+- SemaphoreCapEviction_NeverEvictsCurrentKey
+- ConnectionLease_Dispose_AfterPoolDispose_DoesNotThrow (ObjectDisposedException caught)
+- ConnectionLease_ConcurrentReturnAndDispose_NoRace (lock prevents enqueue-of-disposed)
 ```
 
 Note: Some tests may require a local TCP listener or mock. If testing against real sockets is impractical in Unity Test Runner, test the pool logic with mock streams and verify integration in Step 5.
+
+**Note on httpbin.org dependency:** All integration tests hit `httpbin.org`. This service has had reliability issues and rate limits. Acceptable for Phase 3 manual integration tests, but Phase 9 (testing infrastructure) should stand up a local test server or Docker-based httpbin for CI.
 
 ---
 
@@ -150,6 +184,7 @@ public class TestHttpClient : MonoBehaviour
             await TestHeadRequest();
             await TestTlsVersion();
             await TestUnsupportedScheme();
+            TestPlatformApiAvailability();  // Verify Latin1, SslStream overload, ModuleInitializer
             await MeasureLatencyBaseline();
 
             _client.Dispose();
@@ -194,7 +229,13 @@ public class TestHttpClient : MonoBehaviour
 9. **TestUnsupportedScheme** — Construct request with `ftp://` scheme
    - Assert: throws `UHttpException` with appropriate error message
 
-10. **MeasureLatencyBaseline** — 5 sequential GET requests to `https://httpbin.org/get`
+10. **TestPlatformApiAvailability** — Synchronous verification of platform APIs:
+    - Verify `Encoding.GetEncoding(28591)` succeeds (Latin-1 availability)
+    - Log which SslStream overload is available (`SslClientAuthenticationOptions` or 4-arg fallback)
+    - Verify `[ModuleInitializer]` fired: `HttpTransportFactory.Default` should return `RawSocketTransport` without explicit registration
+    - Log results for each check. **On IL2CPP builds, failures here are critical blockers.**
+
+11. **MeasureLatencyBaseline** — 5 sequential GET requests to `https://httpbin.org/get`
     - Log: average latency per request, total GC allocations (if measurable via `GC.GetTotalMemory`)
     - Purpose: establish Phase 3 baseline for Phase 10 comparison. No pass/fail threshold — informational only.
 
@@ -236,6 +277,7 @@ Fix any issues found, re-review until clean.
 
 - [ ] All files compile in both assemblies (Core + Transport)
 - [ ] No circular dependencies (Core does not reference Transport)
+- [ ] `[ModuleInitializer]` in Transport auto-registers `RawSocketTransport` (no Unity bootstrap needed)
 - [ ] Phase 2 tests still pass (no regressions)
 - [ ] New unit tests pass (Core + Transport)
 - [ ] Integration test: GET over HTTPS succeeds
@@ -243,7 +285,19 @@ Fix any issues found, re-review until clean.
 - [ ] Integration test: Timeout actually fires
 - [ ] Integration test: HEAD does not hang
 - [ ] Integration test: Connection reuse works (keep-alive)
-- [ ] TLS 1.2+ asserted (not just logged)
+- [ ] Integration test: Non-keepalive response does NOT deadlock pool (semaphore released via ConnectionLease)
+- [ ] TLS 1.2+ asserted via post-handshake check (SslProtocols.None + minimum enforcement)
+- [ ] Header CRLF injection throws for all headers (not just Host)
+- [ ] ReadToEnd forces KeepAlive=false
+- [ ] Latin-1 encoding resolved via `Encoding.GetEncoding(28591)` with custom fallback (NOT `Encoding.Latin1`)
+- [ ] SslStream overload probe works (logs which path is taken)
+- [ ] Content-Length mismatch validated in serializer
+- [ ] Transfer-Encoding takes precedence over Content-Length
+- [ ] `gzip, chunked` accepted (returns raw compressed chunks)
+- [ ] User-Agent auto-added unless user sets one
+- [ ] ConnectionLease is a class with idempotent Dispose
+- [ ] DNS timeout wrapper fires within ~5 seconds
+- [ ] Semaphore cap eviction works when > 1000 entries
 - [ ] Both specialist agent reviews pass
 - [ ] CLAUDE.md updated
-- [ ] **MANDATORY** IL2CPP smoke test: build for iOS simulator or Android emulator, verify basic HTTPS GET completes. The SslStream ALPN risk (CLAUDE.md Critical Risk Area #1) makes this a blocking requirement for Phase 3 completion. If device testing is not possible, document explicitly as deferred risk with rationale.
+- [ ] **MANDATORY** IL2CPP smoke test: build for iOS simulator or Android emulator, verify basic HTTPS GET completes. Also verify: `[ModuleInitializer]` fires, `Encoding.GetEncoding(28591)` works, SslStream handshake succeeds. The SslStream ALPN risk (CLAUDE.md Critical Risk Area #1) makes this a blocking requirement for Phase 3 completion. If device testing is not possible, document explicitly as deferred risk with rationale.

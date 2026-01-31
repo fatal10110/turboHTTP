@@ -1,4 +1,12 @@
-# Phase 3: Client API, Request Builder & HTTP/1.1 Raw Socket Transport
+# ⛔ DEPRECATED — DO NOT USE FOR IMPLEMENTATION
+
+> **This document is superseded by the detailed sub-phase plans in [`docs/phases/phase3/`](phase3/).** This file was the original Phase 3 summary but has diverged from the sub-plans in 10+ areas (error model, ConfigureAwait, multi-value headers, body size limits, 1xx handling, HEAD handling, transport factory wiring, IPv6, header validation, connection lifecycle). **Implementers must follow the sub-plans exclusively.**
+>
+> Retained for historical reference only. See [`docs/phases/phase3/overview.md`](phase3/overview.md) for the authoritative index.
+
+---
+
+# Phase 3: Client API, Request Builder & HTTP/1.1 Raw Socket Transport (DEPRECATED)
 
 **Milestone:** M0 (Spike)
 **Dependencies:** Phase 2 (Core Type System)
