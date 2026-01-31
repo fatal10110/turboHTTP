@@ -46,6 +46,23 @@ Test cases:
 
 Uses a mock `IHttpTransport` to isolate Core from Transport.
 
+**Test setup for factory tests:** Tests that exercise `HttpTransportFactory` (e.g., `HttpTransportFactory_Default_ReturnsRawSocketTransport`) must call `RawSocketTransport.EnsureRegistered()` in `[SetUp]` after any `HttpTransportFactory.Reset()` calls. The module initializer fires once at assembly load — after `Reset()`, the factory is cleared and the module initializer will NOT re-fire. Tests that use `HttpTransportFactory.SetForTesting(mockTransport)` should call `HttpTransportFactory.Reset()` in `[TearDown]` to clean up, then rely on `EnsureRegistered()` in the next test's `[SetUp]` if needed.
+
+```csharp
+[TearDown]
+public void TearDown()
+{
+    HttpTransportFactory.Reset(); // Clean slate for next test
+}
+
+[SetUp]
+public void SetUp()
+{
+    // Tests using mock transport: HttpTransportFactory.SetForTesting(mock)
+    // Tests verifying real factory: RawSocketTransport.EnsureRegistered()
+}
+```
+
 ---
 
 ## Step 2: HTTP/1.1 Serializer Tests
@@ -78,6 +95,8 @@ Test cases:
 - Serialize_TransferEncodingAny_WithBody_ThrowsArgumentException (any TE value, not just chunked)
 - Serialize_EmptyHeaderName_ThrowsArgumentException
 - Serialize_PathAndQuery_EmptyFallsBackToSlash
+- Serialize_IPv6Host_WrappedInBrackets (Host: [::1] not Host: ::1)
+- Serialize_IPv6Host_NonDefaultPort_IncludesPortAfterBrackets (Host: [::1]:8080)
 ```
 
 ---
@@ -129,6 +148,8 @@ Test cases:
 - Parse_ReadToEnd_ForcesKeepAliveFalse (no Content-Length, no chunked → KeepAlive must be false)
 - Parse_ChunkedBody_SingleChunkExceedsMaxBodySize_ThrowsIOException (individual chunk > MaxResponseBodySize caught before int narrowing)
 - Parse_ContentLength_NarrowedToInt_AfterMaxBodySizeCheck (long Content-Length safely narrowed to int after validation)
+- Parse_ContentLength_Negative_ThrowsFormatException
+- Parse_ContentLength_NonNumeric_ThrowsFormatException
 ```
 
 ---
@@ -173,7 +194,7 @@ Test cases:
 
 Note: Some tests may require a local TCP listener or mock. If testing against real sockets is impractical in Unity Test Runner, test the pool logic with mock streams and verify integration in Step 5.
 
-**Note on httpbin.org dependency:** All integration tests hit `httpbin.org`. This service has had reliability issues and rate limits. Acceptable for Phase 3 manual integration tests, but Phase 9 (testing infrastructure) should stand up a local test server or Docker-based httpbin for CI.
+**Note on httpbin.org dependency:** All integration tests hit `httpbin.org`. This service has had reliability issues and rate limits. **These are manual/opt-in tests only — do NOT include in automated CI.** Use `[Category("Integration")]` NUnit attribute on all httpbin-dependent tests so they can be filtered out of automated runs via `--where "cat != Integration"`. Phase 9 (testing infrastructure) should stand up a local test server or Docker-based httpbin for CI reliability.
 
 ---
 
@@ -337,4 +358,13 @@ Fix any issues found, re-review until clean.
 - [ ] `PooledConnection.NegotiatedTlsVersion` set from `TlsResult.NegotiatedProtocol` in pool
 - [ ] Chunk size validated against `MaxResponseBodySize` before `long`-to-`int` narrowing
 - [ ] Content-Length validated against `MaxResponseBodySize` before `long`-to-`int` narrowing
+- [ ] ALPN wiring uses reflection (no direct `SslApplicationProtocol` or `ApplicationProtocols` compile-time references)
+- [ ] ALPN silently skips if `SslApplicationProtocol` type not found at runtime
+- [ ] IPv6 Host header wrapped in brackets (`Host: [::1]` not `Host: ::1`)
+- [ ] Test `[SetUp]`/`[TearDown]` handles `HttpTransportFactory.Reset()` + `EnsureRegistered()` correctly
+- [ ] Primary TLS path sets `CertificateRevocationCheckMode = NoCheck` explicitly
+- [ ] `ReadLineAsync` uses `MemoryStream.TryGetBuffer()` (avoids extra allocation from `ToArray()`)
+- [ ] Negative and non-numeric Content-Length values throw `FormatException`
+- [ ] Integration tests annotated with `[Category("Integration")]` for CI filtering
+- [ ] `GetNegotiatedProtocol` uses reflection to access `NegotiatedApplicationProtocol`
 - [ ] **MANDATORY** IL2CPP smoke test: build for iOS simulator or Android emulator, verify basic HTTPS GET completes. Also verify: `[ModuleInitializer]` fires, `Encoding.GetEncoding(28591)` works, SslStream handshake succeeds, **byte-by-byte SslStream reads work correctly with multi-header responses** (not just minimal responses — validate that SslStream internal buffering handles the 16KB-record-per-byte-read pattern under IL2CPP). The SslStream ALPN risk (CLAUDE.md Critical Risk Area #1) makes this a blocking requirement for Phase 3 completion. If device testing is not possible, document explicitly as deferred risk with rationale.

@@ -22,6 +22,19 @@ All awaits use `.ConfigureAwait(false)`.
 
 2. **Host header** (required by HTTP/1.1):
    - If user did not set `Host`: auto-add `Host: hostname` (with `:port` for non-default ports)
+   - **IPv6 literal formatting:** `Uri.Host` returns bare IPv6 addresses without brackets (e.g., `::1`). HTTP/1.1 requires `Host: [::1]` (RFC 9112 Section 3.2). Detect IPv6 via `Uri.HostNameType == UriHostNameType.IPv6` and wrap in brackets:
+     ```csharp
+     string hostValue;
+     if (request.Uri.HostNameType == UriHostNameType.IPv6)
+         hostValue = $"[{request.Uri.Host}]";
+     else
+         hostValue = request.Uri.Host;
+
+     bool isDefaultPort = (request.Uri.Scheme == "https" && request.Uri.Port == 443)
+                       || (request.Uri.Scheme == "http" && request.Uri.Port == 80);
+     if (!isDefaultPort)
+         hostValue = $"{hostValue}:{request.Uri.Port}";
+     ```
    - If user set `Host`: validated via the general header validation below
 
 3. **Header injection validation (ALL headers, not just Host):**
@@ -285,7 +298,14 @@ Accepts `requestMethod` to correctly handle HEAD responses. All awaits use `.Con
 
    Otherwise, **Transfer-Encoding takes precedence over Content-Length** per RFC 9112 Section 6.1. If both are present, `Content-Length` is ignored:
    - `Transfer-Encoding` ends with `chunked` → `ReadChunkedBodyAsync`
-   - No `Transfer-Encoding`, but `Content-Length` header present → parse with `long.TryParse` (Content-Length can exceed `int.MaxValue` per RFC 9110 Section 8.6), validate no conflicting values (if multiple `Content-Length` values differ, throw `FormatException`), check `contentLength > MaxResponseBodySize` before narrowing: `int length = (int)contentLength` (safe because `MaxResponseBodySize` is 100MB which fits in `int`), then `ReadFixedBodyAsync(stream, length, ct)`
+   - No `Transfer-Encoding`, but `Content-Length` header present → parse with `long.TryParse` (Content-Length can exceed `int.MaxValue` per RFC 9110 Section 8.6). **Validation steps:**
+     1. If `long.TryParse` fails → throw `FormatException("Invalid Content-Length value")`
+     2. If `contentLength < 0` → throw `FormatException("Negative Content-Length")` (malformed response)
+     3. If multiple `Content-Length` values exist and differ → throw `FormatException("Conflicting Content-Length values")`
+     4. If multiple `Content-Length` values are identical → accept (RFC 9110 Section 8.6 allows this)
+     5. If `contentLength > MaxResponseBodySize` → throw `IOException("Response body exceeds maximum size")`
+     6. Narrow to int: `int length = (int)contentLength` (safe — validated ≤ MaxResponseBodySize which fits in `int`)
+     7. Call `ReadFixedBodyAsync(stream, length, ct)`
    - Neither → `ReadToEndAsync` (read until connection closes)
 
 6. **Keep-alive detection:**
@@ -308,9 +328,16 @@ Byte-by-byte CRLF reader with **max length limit** and **explicit Latin-1 encodi
 - If `buffer.Length > maxLength` → throw `FormatException("HTTP header line exceeds maximum length")`
 - **Converts raw bytes to string using the same `Latin1` encoding used by the serializer** (NOT implicit char cast, NOT UTF-8). HTTP/1.1 status lines and headers are Latin-1 encoded (ISO 8859-1). Using UTF-8 would corrupt non-ASCII header values.
   ```csharp
-  return Latin1.GetString(buffer, 0, length); // Same static Latin1 field as serializer
+  // Extract bytes from MemoryStream — use GetBuffer() + Length to avoid
+  // the extra allocation from ToArray(). GetBuffer() returns the internal
+  // array (may be larger than Length), so pass (0, ms.Length) explicitly.
+  // If GetBuffer() is not available (shouldn't happen for default MemoryStream),
+  // fall back to ToArray().
+  if (!ms.TryGetBuffer(out var segment))
+      segment = new ArraySegment<byte>(ms.ToArray());
+  return EncodingHelper.Latin1.GetString(segment.Array, segment.Offset, (int)ms.Length);
   ```
-- Returns line content (without CRLF)
+- Returns line content (without CRLF, stripped before conversion)
 
 **Phase 10 optimization:** Replace with buffered reader (4KB+ chunks from stream).
 

@@ -84,6 +84,8 @@ public static void EnsureRegistered()
 
 **Note:** The `TurboHTTP.Unity` module is NOT used for bootstrap. It remains optional and will be used in later phases for Unity-specific functionality (main thread dispatcher, coroutine helpers, etc.).
 
+**Test determinism:** The module initializer fires once per assembly load. After `HttpTransportFactory.Reset()` in tests, the module initializer will NOT re-fire — the factory remains empty. Tests must call `RawSocketTransport.EnsureRegistered()` explicitly in `[SetUp]` when they need the real transport, or `HttpTransportFactory.SetForTesting(mock)` when isolating with mocks. See Phase 3.5 test setup guidance.
+
 ### Constructor
 
 ```csharp

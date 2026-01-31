@@ -379,21 +379,56 @@ if (HasSslOptionsOverload)
     var sslOptions = new SslClientAuthenticationOptions
     {
         TargetHost = host,
-        EnabledSslProtocols = SslProtocols.None  // OS negotiates best available
+        EnabledSslProtocols = SslProtocols.None,  // OS negotiates best available
+        CertificateRevocationCheckMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck
+        // Explicitly disable CRL/OCSP to match fallback path behavior.
+        // Without this, the default may differ per platform (Unity's Mono vs IL2CPP,
+        // macOS vs iOS), causing inconsistent revocation checking behavior.
+        // See Certificate Revocation (Known Limitation) section below.
     };
 
-    // ALPN negotiation — prepared for Phase 3B
+    // ALPN negotiation — prepared for Phase 3B.
+    // COMPILE-TIME GUARD: SslClientAuthenticationOptions.ApplicationProtocols property
+    // and SslApplicationProtocol struct are .NET 5+ additions — they do NOT exist in
+    // .NET Standard 2.1 at compile time. Direct use will cause CS0117/CS0246.
+    // Must use reflection to set ALPN, similar to how the overload itself is invoked.
     if (alpnProtocols != null && alpnProtocols.Length > 0)
     {
-        sslOptions.ApplicationProtocols = new List<SslApplicationProtocol>();
-        foreach (var proto in alpnProtocols)
-        {
-            if (proto == "h2")
-                sslOptions.ApplicationProtocols.Add(SslApplicationProtocol.Http2);
-            else if (proto == "http/1.1")
-                sslOptions.ApplicationProtocols.Add(SslApplicationProtocol.Http11);
-        }
+        SetAlpnViaReflection(sslOptions, alpnProtocols);
     }
+    // ...
+    // Helper method (called only when ALPN protocols are requested):
+    // private static readonly PropertyInfo _applicationProtocolsProp =
+    //     typeof(SslClientAuthenticationOptions).GetProperty("ApplicationProtocols");
+    // private static readonly Type _sslAppProtocolType =
+    //     Type.GetType("System.Net.Security.SslApplicationProtocol, System.Net.Security");
+    //
+    // private static void SetAlpnViaReflection(SslClientAuthenticationOptions options, string[] protocols)
+    // {
+    //     if (_applicationProtocolsProp == null || _sslAppProtocolType == null)
+    //         return; // ALPN not available on this platform — silently skip
+    //
+    //     // Create List<SslApplicationProtocol> via reflection
+    //     var listType = typeof(List<>).MakeGenericType(_sslAppProtocolType);
+    //     var list = Activator.CreateInstance(listType);
+    //     var addMethod = listType.GetMethod("Add");
+    //
+    //     // SslApplicationProtocol has static fields Http2 and Http11
+    //     foreach (var proto in protocols)
+    //     {
+    //         var fieldName = proto == "h2" ? "Http2" : proto == "http/1.1" ? "Http11" : null;
+    //         if (fieldName == null) continue;
+    //         var field = _sslAppProtocolType.GetField(fieldName, BindingFlags.Public | BindingFlags.Static);
+    //         if (field != null)
+    //             addMethod.Invoke(list, new[] { field.GetValue(null) });
+    //     }
+    //
+    //     _applicationProtocolsProp.SetValue(options, list);
+    // }
+    //
+    // NOTE: If SslApplicationProtocol type is not found (Unity 2021.3 may not have it),
+    // the method silently returns — ALPN is simply not negotiated. This is safe for
+    // HTTP/1.1 (Phase 3). Phase 3B (HTTP/2) must verify ALPN availability as a gate.
 
     // Invoke via reflection — the overload may not exist at compile time (.NET Std 2.1)
     // Boxing overhead (new object[]) is one-time per connection — acceptable.
@@ -473,7 +508,7 @@ This check is **not redundant** — with `SslProtocols.None`, it is the sole enf
 
 ### `GetNegotiatedProtocol(SslStream)`
 
-Returns `"h2"`, `"http/1.1"`, or `null` based on `sslStream.NegotiatedApplicationProtocol`. Prepared for Phase 3B.
+Returns `"h2"`, `"http/1.1"`, or `null`. Prepared for Phase 3B. **Must use reflection** to access `sslStream.NegotiatedApplicationProtocol` — this property is .NET 5+ and may not exist at compile time in Unity 2021.3's .NET Standard 2.1 profile. If the property is unavailable, returns `null` (ALPN not negotiated).
 
 ### `ValidateServerCertificate` callback
 
