@@ -100,6 +100,7 @@ namespace TurboHTTP.Core
 ```
 
 **Notes:**
+
 - `BaseUrl` simplifies working with REST APIs
 - `DefaultHeaders` useful for API keys, User-Agent, etc.
 - `Middlewares` is placeholder for Phase 4
@@ -288,6 +289,7 @@ namespace TurboHTTP.Core
 ```
 
 **Notes:**
+
 - Fluent API allows chaining: `client.Get(url).WithHeader(...).WithTimeout(...).SendAsync()`
 - `WithJsonBody()` uses `System.Text.Json` (available in Unity 2021.3+)
 - Automatic URL resolution (relative vs absolute)
@@ -433,6 +435,7 @@ namespace TurboHTTP.Core
 ```
 
 **Notes:**
+
 - Single instance can be reused for multiple requests
 - Middleware pipeline placeholder for Phase 4
 - Timeline events recorded in `RequestContext`
@@ -524,11 +527,42 @@ namespace TurboHTTP.Transport.Tcp
                 }
             }
 
-            // Create new TCP connection
-            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            socket.NoDelay = true; // Disable Nagle's algorithm for lower latency
+            // DNS Resolution (Note: Dns.GetHostAddressesAsync is not cancellable in .NET Std 2.1)
+            var addresses = await Dns.GetHostAddressesAsync(host);
 
-            await socket.ConnectAsync(host, port);
+            Socket socket = null;
+            Exception lastException = null;
+
+            // Happy Eyeballs lite: Try addresses (IPv6/IPv4) in order
+            foreach (var address in addresses)
+            {
+                try
+                {
+                    socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                    socket.NoDelay = true;
+
+                    // Workaround for non-cancellable ConnectAsync in .NET Std 2.1
+                    using (cancellationToken.Register(() => socket.Dispose()))
+                    {
+                        await socket.ConnectAsync(new IPEndPoint(address, port));
+                    }
+
+                    lastException = null;
+                    break; // Success
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
+                    socket?.Dispose();
+                    socket = null;
+
+                    if (cancellationToken.IsCancellationRequested)
+                        throw new OperationCanceledException("Connection cancelled", ex, cancellationToken);
+                }
+            }
+
+            if (socket == null)
+                throw lastException ?? new SocketException((int)SocketError.HostNotFound);
 
             Stream stream = new NetworkStream(socket, ownsSocket: false);
 
@@ -571,6 +605,7 @@ namespace TurboHTTP.Transport.Tcp
 ```
 
 **Notes:**
+
 - Connections keyed by `host:port:secure` for proper isolation
 - `NoDelay = true` disables Nagle's algorithm for lower request latency
 - Idle timeout evicts stale connections (default 2 minutes)
@@ -668,6 +703,7 @@ namespace TurboHTTP.Transport.Tls
 ```
 
 **Notes:**
+
 - Uses `SslClientAuthenticationOptions` for modern TLS configuration
 - TLS 1.2 and TLS 1.3 only (TLS 1.0/1.1 are deprecated)
 - ALPN support is included but only used in Phase 3B when HTTP/2 is added
@@ -764,6 +800,7 @@ namespace TurboHTTP.Transport.Http1
 ```
 
 **Notes:**
+
 - Automatically adds `Host` header if not provided (required by HTTP/1.1)
 - Automatically adds `Content-Length` for request bodies
 - Uses ASCII encoding for headers (per HTTP spec)
@@ -981,6 +1018,7 @@ namespace TurboHTTP.Transport.Http1
 ```
 
 **Notes:**
+
 - Supports both `Content-Length` and `chunked` transfer encoding
 - Falls back to read-to-end for responses without either (connection close)
 - `IsKeepAlive()` determines whether to return the connection to the pool
@@ -1109,6 +1147,7 @@ namespace TurboHTTP.Transport
 ```
 
 **Notes:**
+
 - Orchestrates connection pool, HTTP/1.1 serializer, and response parser
 - Maps socket/TLS/IO exceptions to the `UHttpError` taxonomy
 - Returns connections to the pool when `Connection: keep-alive` (HTTP/1.1 default)
@@ -1318,6 +1357,7 @@ public class TestHttpClient : MonoBehaviour
 ```
 
 **Expected Results:**
+
 1. Basic GET: Returns 200 via raw socket + SslStream TLS handshake
 2. POST JSON: Returns 200, echoes back the JSON data
 3. Custom Headers: Returns 200, shows headers in response

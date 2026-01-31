@@ -69,9 +69,6 @@ Thread-safe pool keyed by `host:port:secure`:
      }
      throw lastException;
      ```
-   - `new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)`
-   - `socket.NoDelay = true`
-   - `await socket.ConnectAsync(new IPEndPoint(address, port)).ConfigureAwait(false)`
    - `Stream stream = new NetworkStream(socket, ownsSocket: true)`
    - If secure: wrap in try-catch to prevent socket leak on TLS handshake failure:
      ```csharp
