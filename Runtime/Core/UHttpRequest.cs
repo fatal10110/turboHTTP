@@ -38,6 +38,27 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Internal constructor that takes ownership of headers without cloning.
+        /// Used by <see cref="UHttpRequestBuilder"/> which already builds a fresh headers instance.
+        /// </summary>
+        internal UHttpRequest(
+            HttpMethod method,
+            Uri uri,
+            HttpHeaders headers,
+            byte[] body,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, object> metadata,
+            bool ownsHeaders)
+        {
+            Method = method;
+            Uri = uri ?? throw new ArgumentNullException(nameof(uri));
+            Headers = headers ?? new HttpHeaders();
+            Body = body;
+            Timeout = timeout;
+            Metadata = metadata ?? new Dictionary<string, object>();
+        }
+
+        /// <summary>
         /// Create a copy of this request with modified properties.
         /// Useful for middleware that needs to transform requests.
         /// </summary>

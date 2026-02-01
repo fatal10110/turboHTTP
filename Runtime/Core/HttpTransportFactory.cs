@@ -1,52 +1,79 @@
 using System;
+using System.Threading;
 
 namespace TurboHTTP.Core
 {
     /// <summary>
-    /// Factory for creating HTTP transport instances.
-    /// Allows dependency injection and testing.
+    /// Thread-safe factory for HTTP transport instances.
+    /// Uses Lazy&lt;T&gt; for lock-free singleton reads after initialization.
+    /// Register a factory via <see cref="Register"/> (typically called by
+    /// RawSocketTransport's [ModuleInitializer] in the Transport assembly).
     /// </summary>
     public static class HttpTransportFactory
     {
-        private static volatile IHttpTransport _defaultTransport;
+        private static volatile Func<IHttpTransport> _factory;
+        private static volatile Lazy<IHttpTransport> _lazy;
+        private static readonly object _lock = new object();
 
         /// <summary>
-        /// Get or set the default transport.
-        /// Must be set before first use (Phase 3 provides RawSocketTransport).
+        /// Register a transport factory function. Creates a new Lazy&lt;T&gt; instance
+        /// for thread-safe lazy initialization. Re-registration is allowed — the
+        /// previous singleton (if materialized) becomes eligible for GC. Existing
+        /// UHttpClient instances continue using the old singleton; new clients get
+        /// the new one via the fresh Lazy&lt;T&gt;.
+        /// </summary>
+        public static void Register(Func<IHttpTransport> factory)
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            lock (_lock)
+            {
+                _factory = factory;
+                _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
+            }
+        }
+
+        /// <summary>
+        /// Get the default transport singleton. Lock-free read path — Lazy&lt;T&gt;.Value
+        /// is already thread-safe. The lock is only needed during Register().
         /// </summary>
         public static IHttpTransport Default
         {
             get
             {
-                if (_defaultTransport == null)
-                {
+                var lazy = _lazy;
+                if (lazy == null)
                     throw new InvalidOperationException(
                         "No default transport configured. " +
-                        "Set HttpTransportFactory.Default to a transport instance, " +
-                        "or ensure TurboHTTP.Transport is included in your project.");
-                }
-                return _defaultTransport;
+                        "Ensure TurboHTTP.Transport is included in your project. " +
+                        "If using IL2CPP and the module initializer did not fire, " +
+                        "call RawSocketTransport.EnsureRegistered() at startup.");
+                return lazy.Value;
             }
-            set => _defaultTransport = value;
         }
 
         /// <summary>
-        /// Create a new transport instance using the registered factory.
+        /// Set a transport directly for testing (bypasses factory).
         /// </summary>
-        public static IHttpTransport Create()
+        public static void SetForTesting(IHttpTransport transport)
         {
-            // Returns the default transport instance.
-            // Phase 3 will register the concrete RawSocketTransport.
-            return Default;
+            if (transport == null) throw new ArgumentNullException(nameof(transport));
+            lock (_lock)
+            {
+                _lazy = new Lazy<IHttpTransport>(() => transport, LazyThreadSafetyMode.ExecutionAndPublication);
+            }
         }
 
         /// <summary>
-        /// Reset the factory to its initial state.
-        /// Primarily used for testing.
+        /// Reset to initial state. For testing only.
+        /// Clears both the factory and any created transport.
         /// </summary>
         public static void Reset()
         {
-            _defaultTransport = null;
+            lock (_lock)
+            {
+                _factory = null;
+                _lazy = null;
+            }
         }
     }
 }
