@@ -17,7 +17,7 @@ namespace TurboHTTP.Transport.Tcp
     public sealed class PooledConnection : IDisposable
     {
         private long _lastUsedTicks;
-        private bool _disposed;
+        private int _disposeFlag;
 
         public Socket Socket { get; }
         public Stream Stream { get; }
@@ -54,7 +54,7 @@ namespace TurboHTTP.Transport.Tcp
         {
             get
             {
-                if (_disposed) return false;
+                if (Volatile.Read(ref _disposeFlag) != 0) return false;
                 try
                 {
                     if (Socket == null || !Socket.Connected) return false;
@@ -83,8 +83,7 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
+            if (Interlocked.CompareExchange(ref _disposeFlag, 1, 0) != 0) return;
             try { Stream?.Dispose(); }
             catch { /* Best effort cleanup */ }
         }
@@ -162,6 +161,11 @@ namespace TurboHTTP.Transport.Tcp
             {
                 // Pool was disposed while connection was in flight — safe to ignore.
             }
+            catch (SemaphoreFullException)
+            {
+                // Defensive: should never happen if permit tracking is correct.
+                // Swallow to prevent Dispose() from throwing (violates .NET guidelines).
+            }
         }
     }
 
@@ -189,6 +193,11 @@ namespace TurboHTTP.Transport.Tcp
         /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 2 minutes).</param>
         public TcpConnectionPool(int maxConnectionsPerHost = 6, TimeSpan? connectionIdleTimeout = null)
         {
+            if (maxConnectionsPerHost <= 0)
+                throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
+            if (connectionIdleTimeout.HasValue && connectionIdleTimeout.Value <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(connectionIdleTimeout), "Must be positive");
+
             _maxConnectionsPerHost = maxConnectionsPerHost;
             _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
         }
@@ -300,11 +309,13 @@ namespace TurboHTTP.Transport.Tcp
             var timeoutTask = Task.Delay(DnsTimeoutMs, ct);
             var completed = await Task.WhenAny(dnsTask, timeoutTask).ConfigureAwait(false);
 
-            ct.ThrowIfCancellationRequested();
-
             if (completed == timeoutTask)
+            {
+                // Check cancellation FIRST — distinguish user cancellation from DNS timeout.
+                ct.ThrowIfCancellationRequested();
                 throw new UHttpException(new UHttpError(UHttpErrorType.Timeout,
                     $"DNS resolution for '{host}' timed out after {DnsTimeoutMs}ms"));
+            }
 
             return await dnsTask.ConfigureAwait(false);
         }
@@ -327,6 +338,15 @@ namespace TurboHTTP.Transport.Tcp
                     using (ct.Register(() => socket.Dispose()))
                     {
                         await socket.ConnectAsync(new IPEndPoint(address, port)).ConfigureAwait(false);
+                    }
+
+                    // Guard against race: if ct fired just after ConnectAsync completed
+                    // but before the Register callback was unsubscribed, the socket may
+                    // have been disposed. Check and throw to avoid returning a dead socket.
+                    if (ct.IsCancellationRequested)
+                    {
+                        socket.Dispose();
+                        throw new OperationCanceledException("Connection cancelled", ct);
                     }
 
                     lastException = null;
@@ -370,7 +390,15 @@ namespace TurboHTTP.Transport.Tcp
                         }
                     }
 
-                    // Remove semaphore from dictionary but do NOT dispose it (race-safe)
+                    // Remove semaphore from dictionary but do NOT dispose it — a racing thread
+                    // may still hold a reference from GetOrAdd. The orphaned semaphore is valid
+                    // and will be GC'd when that thread completes.
+                    //
+                    // KNOWN RACE: If another thread grabbed this semaphore reference just before
+                    // TryRemove, future calls for the same host will create a NEW semaphore via
+                    // GetOrAdd, temporarily allowing 2x the per-host limit until the old semaphore's
+                    // waiters drain. This is an accepted best-effort tradeoff — the cap is advisory,
+                    // not a hard guarantee. Proper LRU with quiescence checks deferred to Phase 10.
                     _semaphores.TryRemove(kvp.Key, out _);
 
                     if (_semaphores.Count <= MaxSemaphoreEntries)

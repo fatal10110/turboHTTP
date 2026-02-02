@@ -2,6 +2,7 @@
   <assembly fullname="System.Net.Security">
     <type fullname="System.Net.Security.SslStream" preserve="all"/>
     <type fullname="System.Net.Security.SslClientAuthenticationOptions" preserve="all"/>
+    <type fullname="System.Net.Security.SslApplicationProtocol" preserve="all"/>
   </assembly>
   <assembly fullname="System.Text.Encoding.CodePages">
     <type fullname="System.Text.Encoding.CodePages.*" preserve="all"/>

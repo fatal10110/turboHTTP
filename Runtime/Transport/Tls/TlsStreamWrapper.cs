@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Security;
 using System.Reflection;
@@ -46,6 +47,10 @@ namespace TurboHTTP.Transport.Tls
         private static readonly Type _sslAppProtocolType =
             Type.GetType("System.Net.Security.SslApplicationProtocol, System.Net.Security");
 
+        // Cached PropertyInfo for NegotiatedApplicationProtocol (.NET 5+ only)
+        private static readonly PropertyInfo _negotiatedAppProtocolProp =
+            typeof(SslStream).GetProperty("NegotiatedApplicationProtocol");
+
         /// <summary>
         /// Perform TLS handshake on the given stream, returning the wrapped SslStream and negotiated protocol.
         /// Uses SslClientAuthenticationOptions overload if available (supports CancellationToken and ALPN),
@@ -74,7 +79,6 @@ namespace TurboHTTP.Transport.Tls
 
                 if (negotiatedProtocol < SslProtocols.Tls12)
                 {
-                    sslStream.Dispose();
                     throw new AuthenticationException(
                         $"Server negotiated {negotiatedProtocol}, but minimum TLS 1.2 is required");
                 }
@@ -107,8 +111,19 @@ namespace TurboHTTP.Transport.Tls
                 SetAlpnViaReflection(sslOptions, alpnProtocols);
             }
 
-            // Invoke via reflection — the overload may not exist at compile time (.NET Std 2.1)
-            var task = (Task)_sslOptionsMethod.Invoke(sslStream, new object[] { sslOptions, ct });
+            // Invoke via reflection — the overload may not exist at compile time (.NET Std 2.1).
+            // MethodInfo.Invoke wraps synchronous argument errors in TargetInvocationException;
+            // unwrap to preserve the original exception type for correct error mapping upstream.
+            Task task;
+            try
+            {
+                task = (Task)_sslOptionsMethod.Invoke(sslStream, new object[] { sslOptions, ct });
+            }
+            catch (TargetInvocationException tie) when (tie.InnerException != null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
+                throw; // Unreachable, but satisfies compiler
+            }
             await task.ConfigureAwait(false);
         }
 
@@ -132,8 +147,8 @@ namespace TurboHTTP.Transport.Tls
 
             if (completedTask != handshakeTask)
             {
-                // Cancellation fired before handshake completed
-                sslStream.Dispose();
+                // Cancellation fired before handshake completed.
+                // Do NOT dispose sslStream here — the caller's catch block in WrapAsync handles it.
                 ct.ThrowIfCancellationRequested();
             }
 
@@ -154,6 +169,7 @@ namespace TurboHTTP.Transport.Tls
             var listType = typeof(List<>).MakeGenericType(_sslAppProtocolType);
             var list = Activator.CreateInstance(listType);
             var addMethod = listType.GetMethod("Add");
+            if (addMethod == null) return; // BCL broken, ALPN unavailable
 
             foreach (var proto in protocols)
             {
@@ -180,14 +196,11 @@ namespace TurboHTTP.Transport.Tls
         /// </summary>
         public static string GetNegotiatedProtocol(SslStream sslStream)
         {
-            if (sslStream == null) return null;
+            if (sslStream == null || _negotiatedAppProtocolProp == null) return null;
 
             try
             {
-                var prop = typeof(SslStream).GetProperty("NegotiatedApplicationProtocol");
-                if (prop == null) return null;
-
-                var value = prop.GetValue(sslStream);
+                var value = _negotiatedAppProtocolProp.GetValue(sslStream);
                 if (value == null) return null;
 
                 var toStringMethod = value.GetType().GetMethod("ToString", Type.EmptyTypes);
@@ -211,7 +224,17 @@ namespace TurboHTTP.Transport.Tls
             X509Chain chain,
             SslPolicyErrors sslPolicyErrors)
         {
-            return sslPolicyErrors == SslPolicyErrors.None;
+            if (sslPolicyErrors != SslPolicyErrors.None)
+            {
+                // Log diagnostics for TLS failures — critical for debugging on-device issues.
+                // Debug.WriteLine is stripped from release builds (conditional on DEBUG).
+                // Phase 8 (Observability) will replace this with structured logging.
+                Debug.WriteLine($"[TurboHTTP.TLS] Certificate validation failed: {sslPolicyErrors}");
+                if (certificate != null)
+                    Debug.WriteLine($"[TurboHTTP.TLS]   Subject: {certificate.Subject}, Issuer: {certificate.Issuer}");
+                return false;
+            }
+            return true;
         }
     }
 }

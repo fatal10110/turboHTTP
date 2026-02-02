@@ -103,6 +103,20 @@ After completing each implementation step (phase task, new type, transport chang
 
 Both reviews must pass before proceeding to the next step. When a review identifies issues that require code changes, fix the issues and then run both reviews again as a verification pass. Repeat until all issues are resolved or explicitly deferred with documented rationale and target phase.
 
+After reviews pass, **update the implementation journal** (`docs/implementation-journal/`) with a session file documenting the completed step, then update this file's Development Status section.
+
+## Implementation Journal
+
+An implementation journal is maintained in the `docs/implementation-journal/` folder. Each implementation session gets its own file in this folder. After completing each implementation step (phase task, new type, transport change, middleware, test, etc.), you **must** create or update a session file in the journal folder before marking the step as done. Each session file should include:
+
+- **What** was implemented (brief description)
+- **Files created/modified** (paths + what each file contains)
+- **Decisions made** (architectural choices, trade-offs, deferred items)
+
+File naming convention: `YYYY-MM-<short-description>.md` (e.g., `2025-04-phase3.2-tcp-tls.md`).
+
+This journal serves as a cumulative record of all work done on the project. Read the journal folder at the start of each session to understand the full implementation history.
+
 ## Keeping This File Current
 
 This file must be updated whenever a phase is completed, a new module is implemented, conventions change, or architectural decisions are made. After each significant step — new types, new middleware, transport changes, test infrastructure, etc. — update the relevant sections here (especially Development Status, Architecture, and Conventions) so the next Claude Code session starts with accurate context.
