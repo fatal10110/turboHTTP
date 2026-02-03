@@ -57,8 +57,8 @@ Implementation follows 14 phases documented in `docs/phases/`.
   - **Phase 3.1 (Client API):** COMPLETE
   - **Phase 3.2 (TCP Connection Pool & TLS):** COMPLETE
   - **Phase 3.3 (HTTP/1.1 Serializer & Parser):** COMPLETE
-  - **Phase 3.4 (RawSocketTransport & Wiring):** NEXT
-  - **Phase 3.5 (Tests & Integration):** Not started
+  - **Phase 3.4 (RawSocketTransport & Wiring):** COMPLETE
+  - **Phase 3.5 (Tests & Integration):** NEXT
 - **Phases 4–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
