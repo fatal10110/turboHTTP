@@ -53,7 +53,12 @@ Implementation follows 14 phases documented in `docs/phases/`.
 
 - **Phase 1 (Project Foundation):** COMPLETE — Directory structure, assembly definitions, package files.
 - **Phase 2 (Core Type System):** COMPLETE — All 8 core types implemented in `Runtime/Core/`, 3 test files in `Tests/Runtime/Core/`. Reviewed by both specialist agents.
-- **Phase 3 (Client API & HTTP/1.1 Transport):** PLANNED — Detailed sub-plans in `docs/phases/phase3/` (5 sub-phases). The old summary at `docs/phases/phase-03-client-api.md` is **deprecated** and must not be used for implementation. External reviews (GPT, Gemini) and specialist agent reviews incorporated.
+- **Phase 3 (Client API & HTTP/1.1 Transport):** IN PROGRESS — Detailed sub-plans in `docs/phases/phase3/` (5 sub-phases). The old summary at `docs/phases/phase-03-client-api.md` is **deprecated** and must not be used for implementation. External reviews (GPT, Gemini) and specialist agent reviews incorporated.
+  - **Phase 3.1 (Client API):** COMPLETE
+  - **Phase 3.2 (TCP Connection Pool & TLS):** COMPLETE
+  - **Phase 3.3 (HTTP/1.1 Serializer & Parser):** COMPLETE
+  - **Phase 3.4 (RawSocketTransport & Wiring):** NEXT
+  - **Phase 3.5 (Tests & Integration):** Not started
 - **Phases 4–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
