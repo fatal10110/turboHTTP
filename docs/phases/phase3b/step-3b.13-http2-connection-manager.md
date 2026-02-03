@@ -79,8 +79,14 @@ public async Task<Http2Connection> GetOrCreateAsync(
     string key = $"{host}:{port}";
 
     // Fast path: existing alive connection
+    // REVIEW FIX [R2-9]: Return bool via out param indicating if stream was consumed
     if (_connections.TryGetValue(key, out var existing) && existing.IsAlive)
+    {
+        // Existing connection found — caller's tlsStream is NOT consumed.
+        // Caller must dispose it.
+        tlsStream.Dispose();
         return existing;
+    }
 
     // Slow path: create new connection with per-key lock to prevent thundering herd
     var initLock = _initLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
@@ -89,7 +95,12 @@ public async Task<Http2Connection> GetOrCreateAsync(
     {
         // Double-check after acquiring lock
         if (_connections.TryGetValue(key, out existing) && existing.IsAlive)
+        {
+            // Another thread created the connection while we waited.
+            // Caller's tlsStream is NOT consumed — dispose it.
+            tlsStream.Dispose();
             return existing;
+        }
 
         // Remove stale connection if present
         if (existing != null)
@@ -98,7 +109,7 @@ public async Task<Http2Connection> GetOrCreateAsync(
             existing.Dispose();
         }
 
-        // Create and initialize new connection
+        // Create and initialize new connection (consumes tlsStream)
         var conn = new Http2Connection(tlsStream, host, port);
         await conn.InitializeAsync(ct);
         _connections[key] = conn;
@@ -192,3 +203,5 @@ Without this protection, N concurrent requests would create N TCP connections an
 - [ ] Stale connection replaced by new one on next `GetOrCreateAsync`
 - [ ] `Dispose` disposes all connections
 - [ ] Case-insensitive host keys (`www.Google.com:443` == `www.google.com:443`)
+- [ ] REVIEW R2: Orphaned TLS stream disposed when existing connection found (thundering herd)
+- [ ] REVIEW R2: MAX_CONCURRENT_STREAMS not enforced in Phase 3 (documented deferral to Phase 10)

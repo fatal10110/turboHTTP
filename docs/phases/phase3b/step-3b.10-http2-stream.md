@@ -49,8 +49,26 @@ namespace TurboHTTP.Transport.Http2
         public List<byte> HeaderBlockBuffer { get; }
         public bool HeadersReceived { get; set; }
 
+        // REVIEW FIX [R2-7]: Track END_STREAM from HEADERS for deferred completion
+        // When headers span CONTINUATION frames, END_STREAM is only on the HEADERS frame.
+        // Completion is deferred until END_HEADERS is received on the final CONTINUATION.
+        public bool PendingEndStream { get; set; }
+
         // Flow control
-        public int WindowSize { get; set; }
+        // REVIEW FIX [GPT-6]: Use Interlocked for thread-safe access.
+        // Read loop increments via WINDOW_UPDATE, write thread decrements during DATA send.
+        private int _windowSize;
+        public int WindowSize
+        {
+            get => Interlocked.CompareExchange(ref _windowSize, 0, 0);
+            set => Interlocked.Exchange(ref _windowSize, value);
+        }
+        /// <summary>
+        /// Atomically adjust the window size by delta. Used by Http2Connection for
+        /// DATA frame sends (negative delta) and WINDOW_UPDATE/SETTINGS changes (positive delta).
+        /// REVIEW FIX [P2-2]: Exposes atomic adjustment without exposing the private field.
+        /// </summary>
+        public int AdjustWindowSize(int delta) => Interlocked.Add(ref _windowSize, delta);
 
         // Completion signal
         public TaskCompletionSource<UHttpResponse> ResponseTcs { get; }
@@ -195,11 +213,11 @@ The flow control blocking/signaling logic lives in `Http2Connection`, not in `Ht
 
 ## Thread Safety
 
-`Http2Stream` is NOT independently thread-safe, but access is coordinated by `Http2Connection`:
-- **Write-side fields** (State during send, WindowSize during DATA): accessed under `_writeLock`.
+`Http2Stream` fields have mixed thread-safety requirements, coordinated by `Http2Connection`:
+- **Write-side fields** (State during send): accessed under `_writeLock`.
 - **Read-side fields** (ResponseHeaders, ResponseBody, HeaderBlockBuffer, State during receive): accessed from the single read loop thread.
 - **ResponseTcs**: Thread-safe by design (`TrySetResult`/`TrySetException` are thread-safe).
-- **WindowSize**: May be read by write thread and written by read thread (WINDOW_UPDATE). Use `Interlocked` or explicit synchronization in `Http2Connection`.
+- **WindowSize**: **REVIEW FIX [GPT-6]:** Uses `Interlocked` for atomic access. Read loop increments (WINDOW_UPDATE), write thread decrements (DATA send). Both use `Interlocked.Add(ref _windowSize, delta)` for atomic operations.
 
 ## `TaskCreationOptions.RunContinuationsAsynchronously` — Why It Matters
 
@@ -219,3 +237,4 @@ With `RunContinuationsAsynchronously`, the continuation is posted to the ThreadP
 - [ ] `Dispose()` disposes `MemoryStream` and `CancellationTokenRegistration`
 - [ ] Header block accumulation works across multiple appends
 - [ ] WindowSize is initialized from settings
+- [ ] REVIEW R2: `PendingEndStream` tracks END_STREAM from HEADERS for deferred CONTINUATION completion

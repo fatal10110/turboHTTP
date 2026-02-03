@@ -105,16 +105,41 @@ if (_cts.IsCancellationRequested)
 
 ### Step 2: Allocate stream ID
 
+**REVIEW FIX [R2-6]:** Guard against stream ID overflow (max 2^31-1 per RFC 7540 Section 5.1.1).
+
 ```csharp
 var streamId = Interlocked.Add(ref _nextStreamId, 2) - 2;
 // Stream IDs: 1, 3, 5, 7, ... (client = odd)
+if (streamId < 0 || streamId > int.MaxValue)
+    throw new UHttpException(UHttpErrorType.NetworkError, "Stream ID space exhausted, close and reopen connection");
 ```
 
 ### Step 3: Create stream object
 
+**REVIEW FIX [A6]:** Check if already cancelled before registering callback. Dispose stream on cancellation.
+
 ```csharp
 var stream = new Http2Stream(streamId, request, context, _remoteSettings.InitialWindowSize);
 _activeStreams[streamId] = stream;
+
+// REVIEW FIX [R2-4]: Re-check shutdown after adding to _activeStreams
+// (FailAllStreams sets _goawayReceived before clearing, preventing race)
+if (_goawayReceived || _cts.IsCancellationRequested)
+{
+    _activeStreams.TryRemove(streamId, out _);
+    stream.Fail(new UHttpException(UHttpErrorType.NetworkError, "Connection closed during stream creation"));
+    stream.Dispose();
+    throw new UHttpException(UHttpErrorType.NetworkError, "Connection is closed");
+}
+
+// REVIEW FIX [A6]: Check if already cancelled before registering
+if (ct.IsCancellationRequested)
+{
+    _activeStreams.TryRemove(streamId, out _);
+    stream.Cancel();
+    stream.Dispose();
+    throw new OperationCanceledException(ct);
+}
 
 // Register per-request cancellation
 stream.CancellationRegistration = ct.Register(() =>
@@ -122,6 +147,7 @@ stream.CancellationRegistration = ct.Register(() =>
     _ = SendRstStreamAsync(streamId, Http2ErrorCode.Cancel);
     stream.Cancel();
     _activeStreams.TryRemove(streamId, out _);
+    stream.Dispose();  // REVIEW FIX [A6]: dispose after removal
 });
 ```
 
@@ -159,9 +185,12 @@ if (!request.Headers.Contains("user-agent"))
 - `upgrade`
 - `host` (replaced by `:authority`)
 
-### Step 5: HPACK encode headers
+### Step 5: HPACK encode headers + send HEADERS
+
+**REVIEW FIX [R2-1] (Critical):** The write lock is held only for HEADERS frame(s), NOT across the entire body send. `SendDataAsync` acquires/releases `_writeLock` per DATA frame. This prevents deadlock: if the send window is exhausted and the sender blocks in `WaitForWindowUpdateAsync`, the read loop can still acquire `_writeLock` to send PING ACK, SETTINGS ACK, or WINDOW_UPDATE frames.
 
 ```csharp
+// Acquire write lock for HPACK encoding + HEADERS (must be atomic to protect encoder state)
 await _writeLock.WaitAsync(ct);
 try
 {
@@ -171,16 +200,24 @@ try
     // Step 6: Send HEADERS frame(s)
     await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct);
 
-    // Step 7: Send DATA frames (if body present)
-    if (hasBody)
-        await SendDataAsync(streamId, request.Body, stream, ct);
-
-    // Update stream state
-    stream.State = hasBody ? Http2StreamState.HalfClosedLocal : Http2StreamState.HalfClosedLocal;
+    // REVIEW FIX [R2-GPT8]: Update state IMMEDIATELY after HEADERS
+    // If no body: HEADERS had END_STREAM → HalfClosedLocal
+    // If body: HEADERS did NOT have END_STREAM → Open
+    stream.State = hasBody ? Http2StreamState.Open : Http2StreamState.HalfClosedLocal;
 }
 finally
 {
     _writeLock.Release();
+}
+
+// Step 7: Send DATA frames OUTSIDE the write lock (if body present)
+// SendDataAsync acquires/releases _writeLock per-frame internally.
+bool hasBody2 = request.Body != null && request.Body.Length > 0;
+if (hasBody2)
+{
+    await SendDataAsync(streamId, request.Body, stream, ct);
+    // After final DATA with END_STREAM: Open → HalfClosedLocal
+    stream.State = Http2StreamState.HalfClosedLocal;
 }
 
 context.RecordEvent("TransportH2RequestSent");
@@ -265,13 +302,15 @@ private async Task SendHeadersAsync(int streamId, byte[] headerBlock, bool endSt
 
 ### Sending DATA Frames with Flow Control
 
+**REVIEW FIX [R2-1]:** `SendDataAsync` acquires and releases `_writeLock` per DATA frame, NOT for the entire body. This allows the read loop to interleave control frame writes (PING ACK, SETTINGS ACK, WINDOW_UPDATE) between DATA frames, preventing deadlock when the send window is exhausted.
+
 ```csharp
 private async Task SendDataAsync(int streamId, byte[] body, Http2Stream stream, CancellationToken ct)
 {
     int offset = 0;
     while (offset < body.Length)
     {
-        // Wait for flow control window availability
+        // Wait for flow control window availability (OUTSIDE write lock)
         int available = Math.Min(
             Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0), // read
             stream.WindowSize);
@@ -280,7 +319,7 @@ private async Task SendDataAsync(int streamId, byte[] body, Http2Stream stream, 
 
         if (available <= 0)
         {
-            // Block until WINDOW_UPDATE received
+            // Block until WINDOW_UPDATE received — NOT holding _writeLock
             await WaitForWindowUpdateAsync(ct);
             continue;
         }
@@ -289,25 +328,70 @@ private async Task SendDataAsync(int streamId, byte[] body, Http2Stream stream, 
         var payload = new byte[available];
         Array.Copy(body, offset, payload, 0, available);
 
-        await _codec.WriteFrameAsync(new Http2Frame
+        // Acquire write lock per-frame (allows read loop to interleave control frames)
+        await _writeLock.WaitAsync(ct);
+        // REVIEW FIX [P3-1]: Track lock ownership to prevent double-release.
+        // The early bail-out path (actualAvailable <= 0) releases in-line and sets
+        // lockHeld = false so the finally block does not release again.
+        bool lockHeld = true;
+        try
         {
-            Type = Http2FrameType.Data,
-            Flags = isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,
-            StreamId = streamId,
-            Payload = payload,
-            Length = available
-        }, ct);
+            // REVIEW FIX [P2-1]: Re-read windows after acquiring lock — other senders
+            // may have consumed window between our read and lock acquisition.
+            int connWindow = Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0);
+            int streamWindow = stream.WindowSize;
+            int actualAvailable = Math.Min(connWindow, streamWindow);
+            actualAvailable = Math.Min(actualAvailable, _remoteSettings.MaxFrameSize);
+            actualAvailable = Math.Min(actualAvailable, body.Length - offset);
+
+            if (actualAvailable <= 0)
+            {
+                // Window consumed by another sender — release lock and retry
+                _writeLock.Release();
+                lockHeld = false;
+                await WaitForWindowUpdateAsync(ct);
+                continue;
+            }
+
+            // Rebuild payload if size changed
+            if (actualAvailable != available)
+            {
+                payload = new byte[actualAvailable];
+                Array.Copy(body, offset, payload, 0, actualAvailable);
+                available = actualAvailable;
+                isLast = (offset + available) >= body.Length;
+            }
+
+            // Decrement windows atomically before sending
+            Interlocked.Add(ref _connectionSendWindow, -available);
+            stream.AdjustWindowSize(-available); // REVIEW FIX [P2-2]: use public helper
+
+            await _codec.WriteFrameAsync(new Http2Frame
+            {
+                Type = Http2FrameType.Data,
+                Flags = isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,
+                StreamId = streamId,
+                Payload = payload,
+                Length = available
+            }, ct);
+        }
+        finally
+        {
+            if (lockHeld) _writeLock.Release();
+        }
 
         offset += available;
-        Interlocked.Add(ref _connectionSendWindow, -available);
-        stream.WindowSize -= available; // Under write lock, safe
     }
 }
 ```
 
 ## `ReadLoopAsync` — Background Frame Dispatch
 
+**REVIEW FIX [A3]:** Track `_continuationStreamId` to enforce CONTINUATION frame ordering per RFC 7540 Section 6.10. When expecting CONTINUATION, reject any other frame type (connection error PROTOCOL_ERROR).
+
 ```csharp
+private int _continuationStreamId = 0; // 0 = not expecting CONTINUATION
+
 private async Task ReadLoopAsync(CancellationToken ct)
 {
     try
@@ -316,9 +400,16 @@ private async Task ReadLoopAsync(CancellationToken ct)
         {
             var frame = await _codec.ReadFrameAsync(_remoteSettings.MaxFrameSize, ct);
 
+            // REVIEW FIX [A3]: Enforce CONTINUATION ordering
+            if (_continuationStreamId != 0 && frame.Type != Http2FrameType.Continuation)
+            {
+                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    $"Expected CONTINUATION for stream {_continuationStreamId}, got {frame.Type}");
+            }
+
             switch (frame.Type)
             {
-                case Http2FrameType.Data:         HandleDataFrame(frame); break;
+                case Http2FrameType.Data:         await HandleDataFrameAsync(frame, ct); break;
                 case Http2FrameType.Headers:      HandleHeadersFrame(frame); break;
                 case Http2FrameType.Continuation:  HandleContinuationFrame(frame); break;
                 case Http2FrameType.Settings:     await HandleSettingsFrameAsync(frame, ct); break;
@@ -345,60 +436,125 @@ private async Task ReadLoopAsync(CancellationToken ct)
 
 ## Frame Handlers
 
-### `HandleDataFrame(Http2Frame frame)`
+### `HandleDataFrameAsync(Http2Frame frame, CancellationToken ct)`
+
+**REVIEW FIX [GPT-4]:** Validate DATA doesn't exceed recv window (FLOW_CONTROL_ERROR).
+**REVIEW FIX [GPT-5]:** Validate padding bounds.
+**REVIEW FIX [GPT-1]:** Acquire `_writeLock` before sending WINDOW_UPDATE.
+
+Note: Renamed to async because it sends WINDOW_UPDATE frames (which need write lock).
 
 ```
 1. Validate frame.StreamId != 0 (connection error PROTOCOL_ERROR if 0)
-2. Look up stream in _activeStreams
-3. If stream not found: send RST_STREAM(STREAM_CLOSED) — may be a late frame after stream closed
-4. Append frame.Payload to stream.ResponseBody
-5. Decrement _connectionRecvWindow by frame.Payload.Length
-6. If _connectionRecvWindow < DefaultInitialWindowSize / 2:
-   Send WINDOW_UPDATE on stream 0 to replenish (increment = DefaultInitialWindowSize - _connectionRecvWindow)
+
+2. REVIEW FIX [GPT-5]: Handle padding
+   If Padded flag:
+     padLength = frame.Payload[0]
+     if padLength >= frame.Length → PROTOCOL_ERROR
+     dataPayload = frame.Payload[1 .. frame.Length - padLength]
+   Else:
+     dataPayload = frame.Payload
+
+3. REVIEW FIX [GPT-4]: Validate connection-level flow control
+   dataLength = dataPayload.Length
+   if dataLength > _connectionRecvWindow → FLOW_CONTROL_ERROR (connection error via GOAWAY)
+
+4. Look up stream in _activeStreams
+   If stream not found: send RST_STREAM(STREAM_CLOSED) — late frame after close
+
+5. REVIEW FIX [P2-4]: Validate stream-level flow control
+   if dataLength > stream recv window → FLOW_CONTROL_ERROR (stream error via RST_STREAM)
+
+6. Append dataPayload to stream.ResponseBody
+
+7. Decrement _connectionRecvWindow by dataLength
+   Decrement stream recv window by dataLength
+8. If _connectionRecvWindow < DefaultInitialWindowSize / 2:
+   REVIEW FIX [GPT-1]: Acquire _writeLock before sending WINDOW_UPDATE
+   await _writeLock.WaitAsync(ct);
+   try { Send WINDOW_UPDATE on stream 0 (increment = consumed amount) } finally { _writeLock.Release(); }
    Reset _connectionRecvWindow
-7. Similarly for stream-level window
-8. If END_STREAM flag:
+
+9. Similarly for stream-level recv window (with write lock for WINDOW_UPDATE)
+
+10. If END_STREAM flag:
    If stream.HeadersReceived: stream.Complete()
    Remove from _activeStreams, dispose stream
 ```
 
 ### `HandleHeadersFrame(Http2Frame frame)`
 
+**REVIEW FIX [GPT-5]:** Validate padding bounds (pad length >= frame length → PROTOCOL_ERROR).
+**REVIEW FIX [A3]:** Track `_continuationStreamId` for CONTINUATION enforcement.
+
 ```
 1. Validate frame.StreamId != 0
-2. Look up stream in _activeStreams
-3. Parse payload:
-   - If HasPriority flag: skip 5 bytes (4 bytes stream dependency + 1 byte weight)
-   - If Padded flag: read pad length from first byte, strip padding from end
-4. Append remaining payload to stream.HeaderBlockBuffer
-5. If END_HEADERS flag:
+2. REVIEW FIX [A3]: If _continuationStreamId != 0 → PROTOCOL_ERROR (already caught in read loop)
+3. Look up stream in _activeStreams
+
+4. Parse payload with bounds validation:
+   int payloadStart = 0;
+   int payloadLength = frame.Length;
+
+   REVIEW FIX [GPT-5]: Padding handling with bounds check
+   If Padded flag:
+     if frame.Length < 1 → PROTOCOL_ERROR
+     byte padLength = frame.Payload[0]
+     payloadStart = 1
+     payloadLength -= (1 + padLength)
+     if payloadLength < 0 → PROTOCOL_ERROR ("Pad length exceeds frame")
+
+   If HasPriority flag:
+     if payloadLength < 5 → PROTOCOL_ERROR
+     payloadStart += 5  (skip 4 bytes dependency + 1 byte weight)
+     payloadLength -= 5
+
+5. Append frame.Payload[payloadStart .. payloadStart+payloadLength] to stream.HeaderBlockBuffer
+   REVIEW FIX [R2-7]: Track END_STREAM on HEADERS for deferred completion (when headers span CONTINUATION)
+   if END_STREAM flag: stream.PendingEndStream = true
+
+6. If END_HEADERS flag:
    - Decode header block: _hpackDecoder.Decode(stream.GetHeaderBlock())
    - Extract :status pseudo-header → stream.StatusCode
    - Build HttpHeaders from remaining headers
    - Set stream.ResponseHeaders
    - Set stream.HeadersReceived = true
    - Clear stream.HeaderBlockBuffer
-6. If END_STREAM flag AND HeadersReceived:
+   Else:
+   - REVIEW FIX [A3]: _continuationStreamId = frame.StreamId
+
+7. If END_STREAM flag AND HeadersReceived:
    - stream.Complete()
    - Remove from _activeStreams
 ```
 
 ### `HandleContinuationFrame(Http2Frame frame)`
 
+**REVIEW FIX [A3]:** Enforce CONTINUATION must match expected stream ID.
+
 ```
-1. Look up stream in _activeStreams
-2. Validate this follows a HEADERS or CONTINUATION for the same stream
+1. REVIEW FIX [A3]: Validate _continuationStreamId == frame.StreamId
+   If _continuationStreamId == 0 → PROTOCOL_ERROR ("Unexpected CONTINUATION")
+   If _continuationStreamId != frame.StreamId → PROTOCOL_ERROR ("Wrong stream")
+
+2. Look up stream in _activeStreams
 3. Append frame.Payload to stream.HeaderBlockBuffer
 4. If END_HEADERS flag:
+   - _continuationStreamId = 0  // REVIEW FIX [A3]: Sequence complete
    - Decode header block (same as HEADERS END_HEADERS handling)
-5. If stream had END_STREAM on its HEADERS frame AND now HeadersReceived:
+5. REVIEW FIX [R2-7]: If stream.PendingEndStream AND now HeadersReceived:
    - stream.Complete()
+   - Remove from _activeStreams, dispose stream
 ```
 
 ### `HandleSettingsFrameAsync(Http2Frame frame, CancellationToken ct)`
 
+**REVIEW FIX [GPT-7]:** Validate SETTINGS ACK has zero payload.
+**REVIEW FIX [GPT-1]:** Acquire `_writeLock` before sending SETTINGS ACK.
+
 ```
 1. If ACK flag:
+   - REVIEW FIX [GPT-7]: if frame.Length != 0 → FRAME_SIZE_ERROR
    - Signal _settingsAckTcs.TrySetResult(true)
    - Return
 2. Validate frame.StreamId == 0 (connection error if not)
@@ -407,27 +563,40 @@ private async Task ReadLoopAsync(CancellationToken ct)
 5. Apply each setting to _remoteSettings
 6. If InitialWindowSize changed:
    - delta = newInitialWindowSize - oldInitialWindowSize
-   - For each active stream: stream.WindowSize += delta
-   - Check overflow (> 2^31-1 → FLOW_CONTROL_ERROR)
+   - REVIEW FIX [R2-3]: For each active stream:
+     long newWindow = (long)stream.WindowSize + delta
+     if newWindow > int.MaxValue || newWindow < 0 → FLOW_CONTROL_ERROR (stream error)
+     stream.AdjustWindowSize(delta)  // REVIEW FIX [P2-2]: use public helper
 7. If HeaderTableSize changed:
    - _hpackEncoder.SetMaxDynamicTableSize(newSize)
-8. Send SETTINGS ACK (empty payload, ACK flag, stream 0)
+8. REVIEW FIX [GPT-1]: Acquire _writeLock before sending SETTINGS ACK
+   await _writeLock.WaitAsync(CancellationToken.None);
+   try { Send SETTINGS ACK (empty payload, ACK flag, stream 0) }
+   finally { _writeLock.Release(); }
 ```
 
 ### `HandlePingFrameAsync(Http2Frame frame, CancellationToken ct)`
+
+**REVIEW FIX [GPT-1]:** Acquire `_writeLock` before sending PING ACK.
 
 ```
 1. Validate frame.StreamId == 0
 2. Validate frame.Payload.Length == 8 (FRAME_SIZE_ERROR if not)
 3. If ACK flag: ignore (we don't send PINGs proactively in Phase 3)
 4. If not ACK: echo back with ACK flag:
-   await _codec.WriteFrameAsync(new Http2Frame
+   REVIEW FIX [GPT-1]: Acquire _writeLock to prevent wire interleaving
+   await _writeLock.WaitAsync(CancellationToken.None);
+   try
    {
-       Type = Http2FrameType.Ping,
-       Flags = Http2FrameFlags.Ack,
-       StreamId = 0,
-       Payload = frame.Payload  // Same 8 bytes
-   }, ct);
+       await _codec.WriteFrameAsync(new Http2Frame
+       {
+           Type = Http2FrameType.Ping,
+           Flags = Http2FrameFlags.Ack,
+           StreamId = 0,
+           Payload = frame.Payload  // Same 8 bytes
+       }, CancellationToken.None);
+   }
+   finally { _writeLock.Release(); }
 ```
 
 ### `HandleGoAwayFrame(Http2Frame frame)`
@@ -447,19 +616,23 @@ private async Task ReadLoopAsync(CancellationToken ct)
 
 ### `HandleWindowUpdateFrame(Http2Frame frame)`
 
+**REVIEW FIX [R2-3] (Critical):** Overflow check MUST use `long` arithmetic BEFORE the atomic add to prevent signed integer overflow. Signal `_windowWaiter` to wake blocked senders.
+
 ```
 1. Validate frame.Payload.Length == 4 (FRAME_SIZE_ERROR)
 2. Parse window increment (31-bit, mask reserved bit)
 3. If increment == 0: PROTOCOL_ERROR (RFC 7540 Section 6.9.1)
 4. If frame.StreamId == 0:
-   - Add to _connectionSendWindow (Interlocked)
-   - Check overflow (> 2^31-1 → FLOW_CONTROL_ERROR)
-   - Signal flow control waiters
+   - long newWindow = (long)Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0) + increment
+   - if newWindow > int.MaxValue → FLOW_CONTROL_ERROR (connection error via GOAWAY)
+   - Interlocked.Add(ref _connectionSendWindow, increment)
+   - _windowWaiter.Release()  // Wake one blocked sender
 5. If frame.StreamId > 0:
    - Look up stream
-   - Add to stream.WindowSize
-   - Check overflow
-   - Signal flow control waiters
+   - long newWindow = (long)stream.WindowSize + increment
+   - if newWindow > int.MaxValue → FLOW_CONTROL_ERROR (stream error via RST_STREAM)
+   - stream.AdjustWindowSize(increment)  // REVIEW FIX [P2-2]: use public helper
+   - _windowWaiter.Release()  // Wake one blocked sender
 ```
 
 ### `HandleRstStreamFrame(Http2Frame frame)`
@@ -515,15 +688,49 @@ private static bool IsHttp2ForbiddenHeader(string name)
 
 ### `WaitForWindowUpdateAsync(CancellationToken ct)`
 
-Block until a WINDOW_UPDATE frame is received. Use `SemaphoreSlim` or `TaskCompletionSource` signaled by `HandleWindowUpdateFrame`.
+**REVIEW FIX [R2-2]:** Fully specified signaling mechanism. Uses `SemaphoreSlim _windowWaiter(0)`. When a sender finds no available window, it calls `await _windowWaiter.WaitAsync(ct)`. When `HandleWindowUpdateFrame` processes a WINDOW_UPDATE, it calls `_windowWaiter.Release(Math.Max(1, _windowWaiter.CurrentCount == 0 ? 1 : 0))` to wake at least one waiting sender. Multiple concurrent senders will re-check windows in a loop and re-wait if still insufficient.
+
+```csharp
+private async Task WaitForWindowUpdateAsync(CancellationToken ct)
+{
+    // Blocks until HandleWindowUpdateFrame signals via _windowWaiter.Release()
+    // NOT holding _writeLock — allows read loop to process frames freely.
+    await _windowWaiter.WaitAsync(ct);
+}
+```
 
 ### `SendRstStreamAsync(int streamId, Http2ErrorCode errorCode)`
 
-Build and send RST_STREAM frame (4-byte payload = error code, big-endian).
+**REVIEW FIX [GPT-1]:** Must acquire `_writeLock` before writing. Called from read loop (on protocol errors) and from cancellation callbacks (from arbitrary threads).
+
+**REVIEW FIX [R2-5]:** When called fire-and-forget from cancellation callbacks, wrap in try/catch to swallow `ObjectDisposedException` during connection disposal.
+
+```csharp
+private async Task SendRstStreamAsync(int streamId, Http2ErrorCode errorCode)
+{
+    try
+    {
+        await _writeLock.WaitAsync(CancellationToken.None);
+        try
+        {
+            // ... build and send RST_STREAM frame ...
+        }
+        finally { _writeLock.Release(); }
+    }
+    catch (ObjectDisposedException) { /* Connection being disposed, ignore */ }
+}
+```
 
 ### `FailAllStreams(Exception ex)`
 
-Iterate `_activeStreams`, call `Fail` on each, clear the dictionary.
+**REVIEW FIX [R2-4]:** Set `_goawayReceived = true` BEFORE iterating to prevent new streams from being added by concurrent `SendRequestAsync` callers. `SendRequestAsync` checks `_goawayReceived` in step 1 (pre-flight) and also re-checks after adding to `_activeStreams`.
+
+```
+1. _goawayReceived = true  // Prevent new streams
+2. _cts.Cancel()           // Signal shutdown
+3. Iterate _activeStreams: for each stream, call stream.Fail(ex)
+4. Clear _activeStreams
+```
 
 ## `Dispose()` — Graceful Shutdown
 
@@ -560,7 +767,10 @@ public void Dispose()
     _cts?.Dispose();
     _windowWaiter?.Dispose();
 
-    // Do NOT dispose _stream — owned by the connection manager/pool
+    // REVIEW FIX [A4]: Http2Connection owns the stream after TransferOwnership.
+    // Dispose it here. The connection manager called TransferOwnership on the lease,
+    // so the pool won't try to dispose it.
+    _stream?.Dispose();
 }
 ```
 
@@ -579,7 +789,7 @@ public bool IsAlive =>
 | Component | Thread Safety | Accessed By |
 |-----------|--------------|-------------|
 | `_codec.ReadFrameAsync` | Single-threaded | Read loop only |
-| `_codec.WriteFrameAsync` | `_writeLock` serializes | Multiple streams + read loop (PING ACK, SETTINGS ACK) |
+| `_codec.WriteFrameAsync` | `_writeLock` serializes **ALL writes** | Multiple streams + read loop (PING ACK, SETTINGS ACK, WINDOW_UPDATE, RST_STREAM) — REVIEW FIX [GPT-1] |
 | `_activeStreams` | `ConcurrentDictionary` | Read loop + send callers |
 | `_nextStreamId` | `Interlocked.Add` | Send callers |
 | `_connectionSendWindow` | `Interlocked` | Read loop (WINDOW_UPDATE) + send (DATA) |
@@ -606,3 +816,21 @@ public bool IsAlive =>
 - [ ] Connection-level and stream-level windows tracked independently
 - [ ] `IsAlive` returns false after GOAWAY or disposal
 - [ ] Dispose sends best-effort GOAWAY and fails all streams
+- [ ] REVIEW: All frame writes acquire `_writeLock` (including control frames from read loop)
+- [ ] REVIEW: DATA exceeding recv window triggers FLOW_CONTROL_ERROR
+- [ ] REVIEW: Padding bounds validated (pad length < frame length)
+- [ ] REVIEW: SETTINGS ACK with non-zero payload triggers FRAME_SIZE_ERROR
+- [ ] REVIEW: CONTINUATION only accepted when expected, on correct stream
+- [ ] REVIEW: Non-CONTINUATION frame while expecting CONTINUATION → PROTOCOL_ERROR
+- [ ] REVIEW: Stream state correctly transitions Idle → Open for body-bearing requests
+- [ ] REVIEW: Early cancellation (ct already cancelled) doesn't leak stream
+- [ ] REVIEW: Dispose disposes `_stream` (owned after TransferOwnership)
+- [ ] REVIEW R2: Write lock released between HEADERS and DATA sends (prevents deadlock)
+- [ ] REVIEW R2: SendDataAsync acquires/releases _writeLock per DATA frame
+- [ ] REVIEW R2: WaitForWindowUpdateAsync does NOT hold _writeLock
+- [ ] REVIEW R2: Window overflow checked with long arithmetic before Interlocked.Add
+- [ ] REVIEW R2: FailAllStreams sets _goawayReceived before clearing (race prevention)
+- [ ] REVIEW R2: SendRequestAsync re-checks shutdown after adding to _activeStreams
+- [ ] REVIEW R2: Stream ID overflow guarded (> int.MaxValue)
+- [ ] REVIEW R2: HEADERS END_STREAM tracked via _pendingEndStream for CONTINUATION
+- [ ] REVIEW R2: SendRstStreamAsync handles ObjectDisposedException in fire-and-forget path

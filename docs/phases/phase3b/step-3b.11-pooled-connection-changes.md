@@ -128,3 +128,18 @@ public void TransferOwnership()
 - [ ] `TransferOwnership()` + `Dispose()` = semaphore released exactly once
 - [ ] Non-TLS connections have `NegotiatedAlpnProtocol == null`
 - [ ] Existing HTTP/1.1 behavior is unchanged
+- [ ] REVIEW R2: ALPN reflection verified on physical iOS/Android device with IL2CPP build
+- [ ] REVIEW R2: If ALPN reflection returns null on IL2CPP, graceful degradation to HTTP/1.1 (no crash)
+
+## IL2CPP ALPN Risk (REVIEW FIX [R2-8])
+
+`TlsStreamWrapper.GetNegotiatedProtocol` uses reflection to access `SslStream.NegotiatedApplicationProtocol` (a .NET 5+ API). Under IL2CPP with aggressive code stripping, `SslApplicationProtocol` struct and its `ToString` method may be stripped. If reflection fails, `GetNegotiatedProtocol` returns `null` and all connections fall back to HTTP/1.1 — graceful degradation, no crash.
+
+**Required validation:** Test ALPN negotiation on a physical iOS device with IL2CPP build before marking Phase 3B complete. If ALPN fails under IL2CPP, add a `link.xml` entry:
+```xml
+<linker>
+  <assembly fullname="System.Net.Security">
+    <type fullname="System.Net.Security.SslApplicationProtocol" preserve="all"/>
+  </assembly>
+</linker>
+```

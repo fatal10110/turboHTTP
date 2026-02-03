@@ -199,6 +199,12 @@ public class HpackEncoderDecoderTests
 
     // Dynamic table size update
     [Test] void DynamicTableSizeUpdate_DecodedCorrectly()
+
+    // REVIEW FIX tests: identified by external + infrastructure review
+    [Test] void Decode_StringBoundsCheckUsesHeaderBlockEnd_NotDataLength()  // [GPT-2]
+    [Test] void Decode_DynamicTableSizeUpdate_ExceedsSettingsLimit_Throws() // [GPT-3]
+    [Test] void Decode_Latin1_PreservesObsTextBytes()                       // [Q1]
+    [Test] void Encode_Latin1_PreservesObsTextBytes()                       // [R2-10]
 }
 ```
 
@@ -240,6 +246,27 @@ public class Http2ConnectionTests
     // Cleanup
     [Test] void Dispose_FailsAllActiveStreams()
     [Test] void Dispose_SendsBestEffortGoaway()
+    [Test] void Dispose_DisposesUnderlyingStream()                          // [A4]
+
+    // REVIEW FIX tests: identified by external + infrastructure review
+    [Test] void SettingsAck_NonZeroPayload_FrameSizeError()                 // [GPT-7]
+    [Test] void ContinuationFrame_WrongStream_ProtocolError()               // [A3]
+    [Test] void ContinuationFrame_Unexpected_ProtocolError()                // [A3]
+    [Test] void NonContinuation_WhileExpectingContinuation_ProtocolError()   // [A3]
+    [Test] void DataFrame_PaddingLengthExceedsPayload_ProtocolError()       // [GPT-5]
+    [Test] void HeadersFrame_PaddingLengthExceedsPayload_ProtocolError()    // [GPT-5]
+    [Test] void SendRequest_AlreadyCancelled_DoesNotLeakStream()             // [A6]
+    [Test] void PostRequest_StreamStateIsOpen_ThenHalfClosedLocal()          // [GPT-8]
+    [Test] void ControlFrameWrites_AcquireWriteLock()                       // [GPT-1]
+
+    // REVIEW R2 tests: identified by second review pass
+    [Test] void SendDataAsync_ReleasesWriteLockBetweenFrames()                // [R2-1]
+    [Test] void ReadLoopCanSendPingAck_WhileSendDataBlocked()                 // [R2-1]
+    [Test] void FailAllStreams_PreventsNewStreamCreation()                     // [R2-4]
+    [Test] void SendRequest_ReChecksShutdownAfterAddingToActiveStreams()       // [R2-4]
+    [Test] void StreamIdExhaustion_ThrowsOnOverflow()                         // [R2-6]
+    [Test] void ContinuationFrame_WithEndStreamOnHeaders_CompletesStream()    // [R2-7]
+    [Test] void GoAwayWithNoError_InFlightStreamsComplete()                    // [R2-sugg]
 }
 ```
 
@@ -259,6 +286,13 @@ public class Http2FlowControlTests
     [Test] void WindowUpdate_UnblocksPendingSend()
     [Test] void DataReceiving_SendsWindowUpdate()
     [Test] void ConnectionAndStreamWindows_Independent()
+
+    // REVIEW FIX tests: identified by external + infrastructure review
+    [Test] void DataReceiving_ExceedsConnectionWindow_FlowControlError()    // [GPT-4]
+    [Test] void DataReceiving_ExceedsStreamWindow_FlowControlError()        // [GPT-4]
+    [Test] void WindowSize_AtomicAccessFromMultipleThreads()                // [GPT-6]
+    [Test] void WindowUpdate_OverflowCheckedBeforeAdd()                       // [R2-3]
+    [Test] void InitialWindowSizeDelta_OverflowCheckedPerStream()             // [R2-3]
 }
 ```
 
@@ -332,4 +366,19 @@ Not included as automated tests (require network), but documented for manual ver
 - [ ] Http2Connection handles full request/response lifecycle
 - [ ] Flow control blocking and unblocking works
 - [ ] GOAWAY, RST_STREAM, PING handlers tested
+- [ ] REVIEW: Flow control underflow (DATA exceeding window) tested
+- [ ] REVIEW: Padding bounds validation tested
+- [ ] REVIEW: SETTINGS ACK payload length tested
+- [ ] REVIEW: CONTINUATION ordering enforcement tested
+- [ ] REVIEW: Write lock serialization for control frames tested
+- [ ] REVIEW: Stream leak on early cancellation tested
+- [ ] REVIEW: Dynamic table size update exceeding SETTINGS limit tested
+- [ ] REVIEW: Latin-1 string encoding preservation tested
+- [ ] REVIEW R2: Write lock not held across WaitForWindowUpdateAsync (deadlock prevention)
+- [ ] REVIEW R2: Window overflow checked with long arithmetic before Interlocked.Add
+- [ ] REVIEW R2: FailAllStreams race with concurrent SendRequestAsync tested
+- [ ] REVIEW R2: Orphaned TLS stream disposed in thundering herd scenario
+- [ ] REVIEW R2: Stream ID overflow tested
+- [ ] REVIEW R2: CONTINUATION with END_STREAM on HEADERS completes correctly
+- [ ] REVIEW R2: Encoder uses Latin-1 (matching decoder)
 - [ ] `InternalsVisibleTo` configured if needed for test access

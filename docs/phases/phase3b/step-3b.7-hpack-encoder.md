@@ -122,7 +122,9 @@ For each string (name or value):
 ```csharp
 private void EncodeString(string s, List<byte> output)
 {
-    byte[] raw = Encoding.ASCII.GetBytes(s);
+    // REVIEW FIX [R2-10]: Use Latin-1 (not ASCII) for round-trip fidelity with decoder (Q1 fix).
+    // ASCII replaces 0x80-0xFF with '?', breaking obs-text header values.
+    byte[] raw = EncodingHelper.Latin1.GetBytes(s);
     int huffmanLength = HpackHuffman.GetEncodedLength(raw, 0, raw.Length);
 
     if (huffmanLength < raw.Length)

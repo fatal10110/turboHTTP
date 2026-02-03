@@ -16,6 +16,8 @@ namespace TurboHTTP.Transport.Http2
     internal class HpackDecoder
     {
         private readonly HpackDynamicTable _dynamicTable;
+        private int _maxTableSizeFromSettings;          // REVIEW FIX [GPT-3]
+        private bool _expectingSizeUpdate;               // REVIEW FIX [GPT-3]
 
         public HpackDecoder(int maxDynamicTableSize = 4096);
 
@@ -23,12 +25,15 @@ namespace TurboHTTP.Transport.Http2
         /// Decode HPACK binary data into a list of headers.
         /// Returns pseudo-headers mixed with regular headers — the caller
         /// separates :status from the rest.
+        /// All bounds checks use headerBlockEnd (offset + length), NOT data.Length.
         /// </summary>
         public List<(string Name, string Value)> Decode(byte[] data, int offset, int length);
 
         /// <summary>
-        /// Update the decoder's max dynamic table size.
+        /// Update the decoder's max dynamic table size limit.
         /// Called when we send SETTINGS_HEADER_TABLE_SIZE to the server.
+        /// Sets _expectingSizeUpdate = true so the decoder knows to expect
+        /// a size update instruction at the start of the next header block.
         /// </summary>
         public void SetMaxDynamicTableSize(int newSize);
     }
@@ -43,7 +48,8 @@ Read the header block byte-by-byte. The first byte of each header field represen
 public List<(string Name, string Value)> Decode(byte[] data, int offset, int length)
 {
     var headers = new List<(string, string)>();
-    int end = offset + length;
+    int end = offset + length;   // REVIEW FIX [GPT-2]: all bounds checks use 'end', NOT data.Length
+    bool seenHeaderField = false; // REVIEW FIX [GPT-3]: track if size update is out of order
 
     while (offset < end)
     {
@@ -52,27 +58,32 @@ public List<(string Name, string Value)> Decode(byte[] data, int offset, int len
         if ((b & 0x80) != 0)
         {
             // 1xxxxxxx — Indexed Header Field (Section 6.1)
-            DecodeIndexedHeaderField(data, ref offset, headers);
+            DecodeIndexedHeaderField(data, ref offset, end, headers); // REVIEW FIX [GPT-2]: pass end
+            seenHeaderField = true;
         }
         else if ((b & 0xC0) == 0x40)
         {
             // 01xxxxxx — Literal with Incremental Indexing (Section 6.2.1)
-            DecodeLiteralIncrementalIndexing(data, ref offset, headers);
+            DecodeLiteralIncrementalIndexing(data, ref offset, end, headers);
+            seenHeaderField = true;
         }
         else if ((b & 0xF0) == 0x00)
         {
             // 0000xxxx — Literal without Indexing (Section 6.2.2)
-            DecodeLiteralWithoutIndexing(data, ref offset, headers);
+            DecodeLiteralWithoutIndexing(data, ref offset, end, headers);
+            seenHeaderField = true;
         }
         else if ((b & 0xF0) == 0x10)
         {
             // 0001xxxx — Literal Never Indexed (Section 6.2.3)
-            DecodeLiteralNeverIndexed(data, ref offset, headers);
+            DecodeLiteralNeverIndexed(data, ref offset, end, headers);
+            seenHeaderField = true;
         }
         else if ((b & 0xE0) == 0x20)
         {
             // 001xxxxx — Dynamic Table Size Update (Section 6.3)
-            DecodeDynamicTableSizeUpdate(data, ref offset);
+            // REVIEW FIX [GPT-3]: Phase 3 accepts anywhere but logs warning if after headers
+            DecodeDynamicTableSizeUpdate(data, ref offset, seenHeaderField);
         }
         else
         {
@@ -88,8 +99,10 @@ public List<(string Name, string Value)> Decode(byte[] data, int offset, int len
 
 ### Indexed Header Field (`1xxxxxxx`)
 
+**REVIEW FIX [P2-3]:** All Decode* helpers accept `int headerBlockEnd` parameter for consistent bounds checking.
+
 ```csharp
-private void DecodeIndexedHeaderField(byte[] data, ref int offset, List<(string, string)> headers)
+private void DecodeIndexedHeaderField(byte[] data, ref int offset, int headerBlockEnd, List<(string, string)> headers)
 {
     int index = HpackIntegerCodec.Decode(data, ref offset, 7);
     if (index == 0)
@@ -102,8 +115,10 @@ private void DecodeIndexedHeaderField(byte[] data, ref int offset, List<(string,
 
 ### Literal with Incremental Indexing (`01xxxxxx`)
 
+**REVIEW FIX [P2-3]:** Passes `headerBlockEnd` through to `DecodeString`.
+
 ```csharp
-private void DecodeLiteralIncrementalIndexing(byte[] data, ref int offset, List<(string, string)> headers)
+private void DecodeLiteralIncrementalIndexing(byte[] data, ref int offset, int headerBlockEnd, List<(string, string)> headers)
 {
     int nameIndex = HpackIntegerCodec.Decode(data, ref offset, 6);
     string name;
@@ -116,10 +131,10 @@ private void DecodeLiteralIncrementalIndexing(byte[] data, ref int offset, List<
     else
     {
         // New name as string literal
-        name = DecodeString(data, ref offset);
+        name = DecodeString(data, ref offset, headerBlockEnd);
     }
 
-    string value = DecodeString(data, ref offset);
+    string value = DecodeString(data, ref offset, headerBlockEnd);
 
     _dynamicTable.Add(name, value);
     headers.Add((name, value));
@@ -129,27 +144,46 @@ private void DecodeLiteralIncrementalIndexing(byte[] data, ref int offset, List<
 ### Literal without Indexing (`0000xxxx`)
 
 Same as incremental indexing but does NOT add to dynamic table. Uses 4-bit prefix.
+**REVIEW FIX [P2-3]:** Signature: `DecodeLiteralWithoutIndexing(byte[] data, ref int offset, int headerBlockEnd, List<(string, string)> headers)`. Passes `headerBlockEnd` to `DecodeString`.
 
 ### Literal Never Indexed (`0001xxxx`)
 
 Same as without indexing. Uses 4-bit prefix. Semantically signals the header is sensitive and MUST NOT be compressed by intermediaries. In our implementation the behavior is identical to "without indexing."
+**REVIEW FIX [P2-3]:** Signature: `DecodeLiteralNeverIndexed(byte[] data, ref int offset, int headerBlockEnd, List<(string, string)> headers)`. Passes `headerBlockEnd` to `DecodeString`.
 
 ### Dynamic Table Size Update (`001xxxxx`)
 
+**REVIEW FIX [GPT-3]:** Validate against SETTINGS limit. Accept out-of-order for Phase 3 robustness but log warning.
+
 ```csharp
-private void DecodeDynamicTableSizeUpdate(byte[] data, ref int offset)
+private void DecodeDynamicTableSizeUpdate(byte[] data, ref int offset, bool seenHeaderField)
 {
     int newSize = HpackIntegerCodec.Decode(data, ref offset, 5);
+
+    // MANDATORY: Validate against SETTINGS_HEADER_TABLE_SIZE limit (prevents memory exhaustion)
+    if (newSize > _maxTableSizeFromSettings)
+        throw new HpackDecodingException(
+            $"Dynamic table size update {newSize} exceeds SETTINGS limit {_maxTableSizeFromSettings}");
+
+    // Phase 3: Accept out-of-order updates (lenient), log warning for debugging.
+    // Phase 10: Optionally reject with COMPRESSION_ERROR if seenHeaderField == true.
+    // if (seenHeaderField)
+    //     throw new HpackDecodingException("Table size update after header fields");
+
     _dynamicTable.SetMaxSize(newSize);
+    _expectingSizeUpdate = false;
 }
 ```
 
-**Constraint (RFC 7541 Section 4.2):** Dynamic table size updates MUST occur at the beginning of the first header block after a SETTINGS change. They MUST NOT appear after any header field representation has been decoded in the current block. However, for Phase 3 robustness, we accept them anywhere in the block (matching common server behavior).
+**Constraint (RFC 7541 Section 4.2):** Dynamic table size updates MUST occur at the beginning of the first header block after a SETTINGS change. Phase 3 accepts them anywhere (matching common server behavior) but enforces the SETTINGS limit to prevent memory attacks.
 
 ## String Literal Decoding
 
+**REVIEW FIX [GPT-2]:** Bounds check uses `headerBlockEnd`, not `data.Length`.
+**REVIEW FIX [Q1]:** Use Latin-1 encoding (`Encoding.GetEncoding(28591)`) to preserve obs-text bytes (0x80-0xFF). `Encoding.ASCII` replaces non-ASCII bytes with `?`, breaking round-trip fidelity for headers like `Content-Disposition` with non-ASCII filenames. Reuse the `EncodingHelper.Latin1` already defined in `Runtime/Transport/Internal/EncodingHelper.cs`.
+
 ```csharp
-private string DecodeString(byte[] data, ref int offset)
+private string DecodeString(byte[] data, ref int offset, int headerBlockEnd)
 {
     byte firstByte = data[offset];
     bool isHuffman = (firstByte & 0x80) != 0;
@@ -158,18 +192,19 @@ private string DecodeString(byte[] data, ref int offset)
     if (stringLength == 0)
         return "";
 
-    if (offset + stringLength > data.Length)
-        throw new HpackDecodingException("String length exceeds available data");
+    // REVIEW FIX [GPT-2]: bounds check against header block end, NOT data.Length
+    if (offset + stringLength > headerBlockEnd)
+        throw new HpackDecodingException("String length exceeds header block boundary");
 
     string result;
     if (isHuffman)
     {
         byte[] decoded = HpackHuffman.Decode(data, offset, stringLength);
-        result = Encoding.ASCII.GetString(decoded);
+        result = EncodingHelper.Latin1.GetString(decoded);  // REVIEW FIX [Q1]: Latin-1
     }
     else
     {
-        result = Encoding.ASCII.GetString(data, offset, stringLength);
+        result = EncodingHelper.Latin1.GetString(data, offset, stringLength);  // REVIEW FIX [Q1]
     }
 
     offset += stringLength;
@@ -186,7 +221,8 @@ All decoding errors throw `HpackDecodingException` (a new exception type, or use
 | Index 0 referenced | COMPRESSION_ERROR |
 | Index beyond static + dynamic table | COMPRESSION_ERROR |
 | Huffman decode error (EOS in input) | COMPRESSION_ERROR |
-| String length exceeds data | COMPRESSION_ERROR |
+| String length exceeds header block end | COMPRESSION_ERROR |
+| Dynamic table size update exceeds SETTINGS limit | COMPRESSION_ERROR |
 | Invalid representation byte | COMPRESSION_ERROR |
 
 The `Http2Connection` read loop catches `HpackDecodingException` and sends GOAWAY with `COMPRESSION_ERROR`.
@@ -209,4 +245,7 @@ NOT thread-safe. The decoder (and its dynamic table) are accessed only from the 
 - [ ] Index 0 throws COMPRESSION_ERROR
 - [ ] Round-trip with encoder: `Decode(Encode(headers)) == headers`
 - [ ] Dynamic table size update changes table capacity
+- [ ] Dynamic table size update exceeding SETTINGS limit throws COMPRESSION_ERROR
+- [ ] String bounds checked against header block end, not buffer length
+- [ ] Latin-1 encoding preserves obs-text bytes (0x80-0xFF)
 - [ ] Huffman-encoded and raw strings both decoded correctly
