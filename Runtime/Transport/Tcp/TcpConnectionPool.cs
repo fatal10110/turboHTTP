@@ -37,6 +37,12 @@ namespace TurboHTTP.Transport.Tcp
         public SslProtocols? NegotiatedTlsVersion { get; internal set; }
 
         /// <summary>
+        /// The ALPN-negotiated protocol ("h2", "http/1.1", or null if no ALPN).
+        /// Set after TLS handshake completes.
+        /// </summary>
+        public string NegotiatedAlpnProtocol { get; internal set; }
+
+        /// <summary>
         /// Last time this connection was used. Stored as ticks for atomic access via Interlocked.
         /// </summary>
         public DateTime LastUsed
@@ -109,6 +115,27 @@ namespace TurboHTTP.Transport.Tcp
             _pool = pool;
             _semaphore = semaphore;
             Connection = connection;
+        }
+
+        /// <summary>
+        /// Transfer ownership of the underlying connection to another owner (e.g., Http2ConnectionManager).
+        /// The connection will NOT be disposed or returned to the idle pool when this lease is disposed.
+        /// The semaphore permit IS still released.
+        /// </summary>
+        public void TransferOwnership()
+        {
+            lock (_lock)
+            {
+                if (_released)
+                    return;
+                _released = true;
+            }
+            try
+            {
+                _semaphore.Release();
+            }
+            catch (ObjectDisposedException) { }
+            catch (SemaphoreFullException) { }
         }
 
         /// <summary>
@@ -283,7 +310,8 @@ namespace TurboHTTP.Transport.Tcp
             {
                 try
                 {
-                    var tlsResult = await TlsStreamWrapper.WrapAsync(stream, host, ct).ConfigureAwait(false);
+                    var tlsResult = await TlsStreamWrapper.WrapAsync(stream, host, ct,
+                        new[] { "h2", "http/1.1" }).ConfigureAwait(false);
                     stream = tlsResult.Stream;
                     negotiatedTls = tlsResult.NegotiatedProtocol;
                 }
@@ -297,6 +325,12 @@ namespace TurboHTTP.Transport.Tcp
             var connection = new PooledConnection(socket, stream, host, port, secure);
             if (negotiatedTls.HasValue)
                 connection.NegotiatedTlsVersion = negotiatedTls.Value;
+
+            // Store ALPN result
+            if (secure && stream is System.Net.Security.SslStream sslStream)
+            {
+                connection.NegotiatedAlpnProtocol = TlsStreamWrapper.GetNegotiatedProtocol(sslStream);
+            }
 
             return connection;
         }

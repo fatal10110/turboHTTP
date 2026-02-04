@@ -137,8 +137,10 @@ namespace TurboHTTP.Transport.Http1
                     if (string.Equals(te, "identity", StringComparison.OrdinalIgnoreCase))
                     {
                         // identity is a no-op — fall through to Content-Length or read-to-end
-                        body = await ReadBodyByContentLengthOrEnd(
-                            stream, headers, ct, out usedReadToEnd).ConfigureAwait(false);
+                        var result = await ReadBodyByContentLengthOrEnd(
+                            stream, headers, ct).ConfigureAwait(false);
+                        body = result.Body;
+                        usedReadToEnd = result.UsedReadToEnd;
                     }
                     else if (te.EndsWith("chunked", StringComparison.OrdinalIgnoreCase))
                     {
@@ -152,8 +154,10 @@ namespace TurboHTTP.Transport.Http1
                 }
                 else
                 {
-                    body = await ReadBodyByContentLengthOrEnd(
-                        stream, headers, ct, out usedReadToEnd).ConfigureAwait(false);
+                    var result = await ReadBodyByContentLengthOrEnd(
+                        stream, headers, ct).ConfigureAwait(false);
+                    body = result.Body;
+                    usedReadToEnd = result.UsedReadToEnd;
                 }
             }
 
@@ -171,10 +175,9 @@ namespace TurboHTTP.Transport.Http1
             };
         }
 
-        private static async Task<byte[]> ReadBodyByContentLengthOrEnd(
-            Stream stream, HttpHeaders headers, CancellationToken ct, out bool usedReadToEnd)
+        private static async Task<(byte[] Body, bool UsedReadToEnd)> ReadBodyByContentLengthOrEnd(
+            Stream stream, HttpHeaders headers, CancellationToken ct)
         {
-            usedReadToEnd = false;
             var contentLengthStr = headers.Get("Content-Length");
 
             if (contentLengthStr != null)
@@ -202,15 +205,14 @@ namespace TurboHTTP.Transport.Http1
                     throw new IOException("Response body exceeds maximum size");
 
                 if (contentLength == 0)
-                    return Array.Empty<byte>();
+                    return (Array.Empty<byte>(), false);
 
                 int length = (int)contentLength;
-                return await ReadFixedBodyAsync(stream, length, ct).ConfigureAwait(false);
+                return (await ReadFixedBodyAsync(stream, length, ct).ConfigureAwait(false), false);
             }
 
             // Neither Transfer-Encoding nor Content-Length — read to end
-            usedReadToEnd = true;
-            return await ReadToEndAsync(stream, ct).ConfigureAwait(false);
+            return (await ReadToEndAsync(stream, ct).ConfigureAwait(false), true);
         }
 
         // TODO Phase 10: Handle multi-token Connection header (e.g., "close, Upgrade")

@@ -39,7 +39,7 @@ namespace TurboHTTP.Transport.Internal
                 for (int i = 0; i < charCount; i++)
                 {
                     char c = chars[charIndex + i];
-                    bytes[byteIndex + i] = (byte)(c < 256 ? c : (byte)'?');
+                    bytes[byteIndex + i] = c < 256 ? (byte)c : (byte)'?';
                 }
                 return charCount;
             }
@@ -70,7 +70,7 @@ namespace TurboHTTP.Transport.Internal
                 for (int i = 0; i < s.Length; i++)
                 {
                     char c = s[i];
-                    bytes[i] = (byte)(c < 256 ? c : (byte)'?');
+                    bytes[i] = c < 256 ? (byte)c : (byte)'?';
                 }
                 return bytes;
             }

@@ -18,7 +18,7 @@ namespace TurboHTTP.Core
         /// <summary>
         /// The snapshotted options for this client (read-only access for builder).
         /// </summary>
-        internal UHttpClientOptions Options => _options;
+        internal UHttpClientOptions ClientOptions => _options;
 
         /// <summary>
         /// Create a new HTTP client with optional configuration.

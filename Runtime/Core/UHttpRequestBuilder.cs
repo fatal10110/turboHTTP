@@ -139,7 +139,7 @@ namespace TurboHTTP.Core
         {
             var uri = ResolveUri(_url);
             var mergedHeaders = MergeHeaders();
-            var timeout = _timeout ?? _client.Options.DefaultTimeout;
+            var timeout = _timeout ?? _client.ClientOptions.DefaultTimeout;
 
             var metadata = _metadata != null
                 ? new Dictionary<string, object>(_metadata)
@@ -169,7 +169,7 @@ namespace TurboHTTP.Core
             if (Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
                 return absoluteUri;
 
-            var baseUrl = _client.Options.BaseUrl;
+            var baseUrl = _client.ClientOptions.BaseUrl;
             if (string.IsNullOrEmpty(baseUrl))
             {
                 throw new InvalidOperationException(
@@ -186,7 +186,7 @@ namespace TurboHTTP.Core
         /// </summary>
         private HttpHeaders MergeHeaders()
         {
-            var defaultHeaders = _client.Options.DefaultHeaders;
+            var defaultHeaders = _client.ClientOptions.DefaultHeaders;
             if (defaultHeaders == null || defaultHeaders.Count == 0)
                 return _headers.Clone();
 

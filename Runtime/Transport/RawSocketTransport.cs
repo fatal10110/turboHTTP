@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Transport.Http1;
+using TurboHTTP.Transport.Http2;
 using TurboHTTP.Transport.Tcp;
 
 namespace TurboHTTP.Transport
@@ -19,6 +20,7 @@ namespace TurboHTTP.Transport
     public sealed class RawSocketTransport : IHttpTransport
     {
         private readonly TcpConnectionPool _pool;
+        private readonly Http2ConnectionManager _h2Manager = new Http2ConnectionManager();
         private volatile bool _disposed;
 
         public RawSocketTransport(TcpConnectionPool pool = null)
@@ -74,11 +76,45 @@ namespace TurboHTTP.Transport
 
             try
             {
-                // 4. Get connection lease (semaphore permit owned by lease)
+                // 4a. HTTP/2 fast path (TLS only)
+                if (secure)
+                {
+                    var h2Conn = _h2Manager.GetIfExists(host, port);
+                    if (h2Conn != null)
+                    {
+                        try
+                        {
+                            context.RecordEvent("TransportH2Reuse");
+                            return await h2Conn.SendRequestAsync(request, context, ct)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception) when (!ct.IsCancellationRequested && request.Method.IsIdempotent())
+                        {
+                            // Stale h2 connection — remove and fall through to pool path.
+                            // Only retry idempotent methods to avoid duplicating non-idempotent requests.
+                            _h2Manager.Remove(host, port);
+                            context.RecordEvent("TransportH2StaleRetry");
+                        }
+                    }
+                }
+
+                // 4b. Get connection lease (semaphore permit owned by lease)
                 context.RecordEvent("TransportConnecting");
                 using var lease = await _pool.GetConnectionAsync(host, port, secure, ct)
                     .ConfigureAwait(false);
 
+                // 4c. Protocol routing based on ALPN
+                if (lease.Connection.NegotiatedAlpnProtocol == "h2")
+                {
+                    context.RecordEvent("TransportH2Init");
+                    lease.TransferOwnership();
+                    var h2Conn = await _h2Manager.GetOrCreateAsync(
+                        host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                    return await h2Conn.SendRequestAsync(request, context, ct)
+                        .ConfigureAwait(false);
+                }
+
+                // 4d. HTTP/1.1 path
                 try
                 {
                     var parsed = await SendOnLeaseAsync(lease, request, context, ct)
@@ -88,17 +124,25 @@ namespace TurboHTTP.Transport
                 }
                 catch (IOException) when (lease.Connection.IsReused && request.Method.IsIdempotent())
                 {
-                    // Stale connection — dispose and retry once.
-                    // ONLY retry idempotent methods (GET, HEAD, PUT, DELETE, OPTIONS).
-                    // Retrying POST/PATCH on a stale connection could cause duplicate side effects
-                    // if the server received and processed the request before closing the connection.
-                    lease.Dispose(); // Idempotent — using var will call again at exit (no-op)
+                    lease.Dispose();
 
                     context.RecordEvent("TransportRetryStale");
                     context.RecordEvent("TransportConnecting");
 
                     using var freshLease = await _pool.GetConnectionAsync(host, port, secure, ct)
                         .ConfigureAwait(false);
+
+                    // Check ALPN on fresh connection too
+                    if (freshLease.Connection.NegotiatedAlpnProtocol == "h2")
+                    {
+                        context.RecordEvent("TransportH2Init");
+                        freshLease.TransferOwnership();
+                        var h2Conn = await _h2Manager.GetOrCreateAsync(
+                            host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
+                        return await h2Conn.SendRequestAsync(request, context, ct)
+                            .ConfigureAwait(false);
+                    }
+
                     var parsed = await SendOnLeaseAsync(freshLease, request, context, ct)
                         .ConfigureAwait(false);
                     if (parsed.KeepAlive) freshLease.ReturnToPool();
@@ -191,6 +235,7 @@ namespace TurboHTTP.Transport
         public void Dispose()
         {
             _disposed = true;
+            _h2Manager?.Dispose();
             _pool?.Dispose();
         }
     }
