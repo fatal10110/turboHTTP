@@ -54,16 +54,24 @@ namespace TurboHTTP.Transport.Http1
                 sb.Append("\r\n");
             }
 
-            // 3. Reject Transfer-Encoding entirely — Phase 3 only supports raw byte[] bodies
-            // with Content-Length. TE without a body can still produce malformed requests
-            // (e.g., chunked with no terminating 0\r\n\r\n), and TE/CL mutual exclusion
-            // (RFC 9110 §8.6) must be enforced regardless of body presence.
+            // 3. Handle Transfer-Encoding (RFC 9110 §8.6 mutual exclusion with Content-Length)
+            // Phase 3 does not implement chunked body encoding, but allows the header to pass
+            // through for pre-encoded bodies or bodyless requests (e.g., 100-continue probing).
             bool hasTransferEncoding = request.Headers.Contains("Transfer-Encoding");
             if (hasTransferEncoding)
             {
-                throw new ArgumentException(
-                    "Transfer-Encoding is set but the client does not support transfer-coded request bodies in Phase 3. " +
-                    "Remove the Transfer-Encoding header or pre-encode the body.");
+                var te = request.Headers.Get("Transfer-Encoding");
+                bool hasBody = request.Body != null && request.Body.Length > 0;
+
+                // Reject chunked with a body — we can't encode it (Phase 3 limitation)
+                if (hasBody && te != null &&
+                    te.IndexOf("chunked", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    throw new ArgumentException(
+                        "Transfer-Encoding: chunked is set with a body, but chunked body encoding " +
+                        "is not implemented in Phase 3. Pre-encode the body or remove the header.");
+                }
+                // TE without body is allowed — passes through for protocol signaling
             }
 
             // 4. User headers — one line per value (multi-value support)
@@ -80,20 +88,24 @@ namespace TurboHTTP.Transport.Http1
                 }
             }
 
-            // 5. Auto-add Content-Length (if body present, no Transfer-Encoding, not already set)
-            if (request.Body != null && request.Body.Length > 0 && !hasTransferEncoding)
+            // 5. Validate/auto-add Content-Length (unless Transfer-Encoding is set)
+            if (!hasTransferEncoding)
             {
                 var userCL = request.Headers.Get("Content-Length");
+                int actualBodyLength = request.Body?.Length ?? 0;
+
                 if (userCL != null)
                 {
-                    if (!long.TryParse(userCL, out var clValue) || clValue != request.Body.Length)
+                    // Validate user-provided Content-Length matches actual body size
+                    if (!long.TryParse(userCL, out var clValue) || clValue != actualBodyLength)
                         throw new ArgumentException(
-                            $"Content-Length header ({userCL}) does not match body size ({request.Body.Length})");
+                            $"Content-Length header ({userCL}) does not match body size ({actualBodyLength})");
                 }
-                else
+                else if (actualBodyLength > 0)
                 {
+                    // Auto-add Content-Length only when body is present
                     sb.Append("Content-Length: ");
-                    sb.Append(request.Body.Length);
+                    sb.Append(actualBodyLength);
                     sb.Append("\r\n");
                 }
             }

@@ -149,3 +149,82 @@ Issues identified by test execution and external review:
   - `HpackDecodingError_SendsGoAwayCompressionError`
   - `Dispose_FailsAllActiveStreams`
 - **[R6-flowcontrol]** `DataReceiving_SendsWindowUpdate` and `StreamLevelRecvWindow_SendsStreamWindowUpdate` timed out — WINDOW_UPDATE threshold condition is `< 65535/2 = 32767` (strict less-than), so 32768 bytes was not enough. Updated tests to send 49152 bytes (3 × 16384) to ensure window drops below threshold.
+
+## External Review Fixes (R7)
+
+Issues identified by external reviewer:
+
+- **[R7-data-before-headers]** `HandleDataFrameAsync` accepted DATA frames even if HEADERS hadn't been received. Per RFC 7540 Section 8.1, a response MUST start with HEADERS. If DATA arrives before HEADERS, this is a protocol error. Added validation in `HandleDataFrameAsync` to check `stream.HeadersReceived` — if false, fails the stream with `Http2ProtocolException(ProtocolError)`, sends RST_STREAM, removes from `_activeStreams`, and disposes the stream. Connection recv window is still decremented to maintain flow control accounting.
+- **[R7-test]** Added `DataFrame_BeforeHeaders_SendsRstStream` test to verify DATA before HEADERS results in RST_STREAM with PROTOCOL_ERROR (0x1).
+- **[R7-huffman-overflow]** `HpackHuffman.Encode` had `bitBuffer` overflow on long inputs. After emitting each byte, the high bits remained in `bitBuffer`. For 256+ byte inputs, `bitBuffer << bitLength` would overflow `long`, corrupting the encoded stream. Fixed by masking `bitBuffer &= (1L << bitCount) - 1` after each byte emit to keep only the remaining bits.
+- **[R7-race-fix]** Infrastructure agent identified race condition in DATA-before-HEADERS fix: `Fail()` triggers user continuations which could call `Dispose()` concurrently, leading to double-dispose. Fixed by reordering to `TryRemove()` before `Fail()` with `if` guard, matching the safe pattern used elsewhere in the codebase.
+
+## Post-R7 Review Fixes (R8)
+
+- **[R8-settings-overflow]** Guarded HTTP/2 SETTINGS values that are defined as `uint` to prevent `int` overflow. `HeaderTableSize`, `MaxConcurrentStreams`, and `MaxHeaderListSize` now clamp to `int.MaxValue` when peers send values above `int.MaxValue`.
+
+## Memory and Performance Fixes (R9)
+
+Issues identified from codebase review for memory efficiency and performance:
+
+### R9-1: Frame Codec Memory Allocations
+
+**Problem:** `Http2FrameCodec` allocated new 9-byte arrays for every frame read/write operation, causing high GC pressure in hot paths.
+
+**Fix:** Added reusable pre-allocated buffers:
+- `_readHeaderBuffer` (9 bytes) - reused by single-threaded read loop
+- `_writeHeaderBuffer` (9 bytes) - reused by write operations under lock
+
+For payload buffers > 256 bytes, now uses `ArrayPool<byte>.Shared` to rent buffers, reducing allocations for large DATA/HEADERS frames.
+
+**Files modified:** `Runtime/Transport/Http2/Http2FrameCodec.cs`
+
+### R9-2: HeaderBlockBuffer Byte-by-Byte Copying
+
+**Problem:** `Http2Stream.AppendHeaderBlock()` used `List<byte>.Add()` in a loop, causing O(n) individual Add operations with List growth overhead.
+
+**Fix:** Changed `HeaderBlockBuffer` from `List<byte>` to `MemoryStream`:
+- `AppendHeaderBlock()` now uses `MemoryStream.Write()` for bulk copy
+- Added `ClearHeaderBlock()` helper method that uses `SetLength(0)`
+- Added disposal in `Http2Stream.Dispose()`
+
+**Files modified:** `Runtime/Transport/Http2/Http2Stream.cs`, `Runtime/Transport/Http2/Http2Connection.cs`
+
+### R9-3: Unbounded Response Body Growth
+
+**Problem:** `Http2Stream.ResponseBody` (MemoryStream) had no size limit, allowing malicious or misconfigured servers to cause unbounded memory growth.
+
+**Fix:** Added `MaxResponseBodySize` setting to `Http2Settings`:
+- Default: 100 MB (configurable)
+- Set to 0 for unlimited
+- Enforced in `HandleDataFrameAsync()` - exceeding limit fails stream with RST_STREAM(CANCEL)
+
+**Files modified:** `Runtime/Transport/Http2/Http2Settings.cs`, `Runtime/Transport/Http2/Http2Connection.cs`
+
+### R9-4: MAX_CONCURRENT_STREAMS Race Documentation
+
+**Issue:** Non-atomic check between `_activeStreams.Count` check and stream creation allows brief limit exceedance under high concurrency.
+
+**Status:** Already documented in code comments (lines 131-135 in Http2Connection.cs). Deferred to Phase 10 for proper SemaphoreSlim-based gating. Server handles gracefully with REFUSED_STREAM.
+
+### R9-5: Phase 3C Plan (BouncyCastle TLS Fallback)
+
+**Issue:** SslStream ALPN negotiation via reflection may fail on IL2CPP/AOT platforms (iOS, Android) due to code stripping or platform TLS differences.
+
+**Resolution:** Created `docs/phases/phase-03c-bouncy-castle-tls.md` documenting:
+- Optional BouncyCastle TLS fallback module (pure C#, no reflection)
+- `ITlsProvider` abstraction for pluggable TLS backends
+- `TlsProviderSelector` with Auto/SslStream/BouncyCastle modes
+- Platform validation matrix
+- Integration approach following BestHTTP pattern
+
+## Summary of R9 Changes
+
+| Category | Issue | Severity | Resolution |
+|----------|-------|----------|------------|
+| Memory | Frame header allocations | Medium | Reusable buffers |
+| Memory | Payload allocations | Medium | ArrayPool for large payloads |
+| Memory | Byte-by-byte header copy | High | MemoryStream bulk write |
+| Security | Unbounded response body | Medium | MaxResponseBodySize limit |
+| Docs | MAX_CONCURRENT_STREAMS race | High | Documented, deferred to Phase 10 |
+| Platform | ALPN on IL2CPP | High | Phase 3C plan with BouncyCastle fallback |

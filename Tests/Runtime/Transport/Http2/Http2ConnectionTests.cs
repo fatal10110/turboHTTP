@@ -1225,6 +1225,55 @@ namespace TurboHTTP.Tests.Transport.Http2
 
             conn.Dispose();
         }
+
+        // --- R7: DATA before HEADERS is protocol error ---
+
+        [Test]
+        public async Task DataFrame_BeforeHeaders_SendsRstStream()
+        {
+            // RFC 7540 Section 8.1: Response MUST start with HEADERS.
+            // DATA before HEADERS should result in RST_STREAM with PROTOCOL_ERROR.
+            using var cts = new CancellationTokenSource(10000);
+            var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+            var serverCodec = new Http2FrameCodec(serverStream);
+
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
+            var context = new RequestContext(request);
+            var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+            var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+            int streamId = headersFrame.StreamId;
+
+            // Send DATA without sending HEADERS first (protocol violation)
+            await serverCodec.WriteFrameAsync(new Http2Frame
+            {
+                Type = Http2FrameType.Data,
+                Flags = Http2FrameFlags.EndStream,
+                StreamId = streamId,
+                Payload = new byte[] { 0x01, 0x02, 0x03 },
+                Length = 3
+            }, cts.Token);
+
+            // The request should fail
+            try
+            {
+                await responseTask;
+                Assert.Fail("Expected exception");
+            }
+            catch (Http2ProtocolException) { /* expected */ }
+            catch (UHttpException) { /* also acceptable */ }
+
+            // Read RST_STREAM from client — should have PROTOCOL_ERROR (0x1)
+            var rstStream = await serverCodec.ReadFrameAsync(16384, cts.Token);
+            Assert.AreEqual(Http2FrameType.RstStream, rstStream.Type);
+            Assert.AreEqual(streamId, rstStream.StreamId);
+
+            uint errorCode = ((uint)rstStream.Payload[0] << 24) | ((uint)rstStream.Payload[1] << 16) |
+                             ((uint)rstStream.Payload[2] << 8) | rstStream.Payload[3];
+            Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, errorCode);
+
+            conn.Dispose();
+        }
     }
 }
 

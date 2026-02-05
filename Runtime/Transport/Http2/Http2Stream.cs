@@ -33,7 +33,11 @@ namespace TurboHTTP.Transport.Http2
         public HttpHeaders ResponseHeaders { get; set; }
         public MemoryStream ResponseBody { get; }
 
-        public List<byte> HeaderBlockBuffer { get; }
+        /// <summary>
+    /// Buffer for accumulating HEADERS + CONTINUATION header blocks.
+    /// Uses MemoryStream instead of List&lt;byte&gt; for efficient bulk appending.
+    /// </summary>
+    public MemoryStream HeaderBlockBuffer { get; }
         public bool HeadersReceived { get; set; }
         public bool PendingEndStream { get; set; }
 
@@ -66,7 +70,7 @@ namespace TurboHTTP.Transport.Http2
             State = Http2StreamState.Idle;
             StatusCode = 0;
             ResponseBody = new MemoryStream();
-            HeaderBlockBuffer = new List<byte>();
+            HeaderBlockBuffer = new MemoryStream();
             HeadersReceived = false;
             SendWindowSize = initialSendWindowSize;
             RecvWindowSize = initialRecvWindowSize;
@@ -77,13 +81,18 @@ namespace TurboHTTP.Transport.Http2
 
         public void AppendHeaderBlock(byte[] data, int offset, int length)
         {
-            for (int i = offset; i < offset + length; i++)
-                HeaderBlockBuffer.Add(data[i]);
+            // Use MemoryStream.Write for efficient bulk copy instead of byte-by-byte
+            HeaderBlockBuffer.Write(data, offset, length);
         }
 
         public byte[] GetHeaderBlock()
         {
             return HeaderBlockBuffer.ToArray();
+        }
+
+        public void ClearHeaderBlock()
+        {
+            HeaderBlockBuffer.SetLength(0);
         }
 
         public void Complete()
@@ -118,6 +127,7 @@ namespace TurboHTTP.Transport.Http2
         {
             CancellationRegistration.Dispose();
             ResponseBody?.Dispose();
+            HeaderBlockBuffer?.Dispose();
         }
     }
 }

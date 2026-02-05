@@ -191,6 +191,13 @@ namespace TurboHTTP.Transport
                     UHttpErrorType.NetworkError,
                     $"Malformed HTTP response: {ex.Message}", ex));
             }
+            catch (NotSupportedException ex)
+            {
+                // Unsupported Transfer-Encoding or other protocol feature — treat as broken response
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    $"Unsupported HTTP response: {ex.Message}", ex));
+            }
             catch (AuthenticationException ex)
             {
                 throw new UHttpException(new UHttpError(
@@ -240,6 +247,7 @@ namespace TurboHTTP.Transport
 
         public void Dispose()
         {
+            if (_disposed) return;
             _disposed = true;
             _h2Manager?.Dispose();
             _pool?.Dispose();

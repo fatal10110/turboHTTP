@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,11 @@ namespace TurboHTTP.Transport.Http2
     {
         private readonly Stream _stream;
 
+        // Reusable buffer for 9-byte frame headers (single-threaded read loop)
+        private readonly byte[] _readHeaderBuffer = new byte[Http2Constants.FrameHeaderSize];
+        // Reusable buffer for 9-byte frame headers (write operations under lock)
+        private readonly byte[] _writeHeaderBuffer = new byte[Http2Constants.FrameHeaderSize];
+
         public Http2FrameCodec(Stream stream)
         {
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
@@ -21,27 +27,44 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// Read a single HTTP/2 frame from the stream.
+        /// Uses reusable header buffer; payload uses ArrayPool for frames > threshold.
         /// </summary>
         public async Task<Http2Frame> ReadFrameAsync(int maxFrameSize, CancellationToken ct)
         {
-            var header = new byte[Http2Constants.FrameHeaderSize];
-            await ReadExactAsync(header, Http2Constants.FrameHeaderSize, ct);
+            // Reuse pre-allocated header buffer (single-threaded read loop)
+            await ReadExactAsync(_readHeaderBuffer, Http2Constants.FrameHeaderSize, ct);
 
-            int length = (header[0] << 16) | (header[1] << 8) | header[2];
-            var type = (Http2FrameType)header[3];
-            var flags = (Http2FrameFlags)header[4];
-            int streamId = ((header[5] & 0x7F) << 24) | (header[6] << 16) |
-                           (header[7] << 8) | header[8];
+            int length = (_readHeaderBuffer[0] << 16) | (_readHeaderBuffer[1] << 8) | _readHeaderBuffer[2];
+            var type = (Http2FrameType)_readHeaderBuffer[3];
+            var flags = (Http2FrameFlags)_readHeaderBuffer[4];
+            int streamId = ((_readHeaderBuffer[5] & 0x7F) << 24) | (_readHeaderBuffer[6] << 16) |
+                           (_readHeaderBuffer[7] << 8) | _readHeaderBuffer[8];
 
             if (length > maxFrameSize)
                 throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
                     $"Frame length {length} exceeds maximum {maxFrameSize}");
 
             byte[] payload;
+            byte[] rentedBuffer = null;
             if (length > 0)
             {
-                payload = new byte[length];
-                await ReadExactAsync(payload, length, ct);
+                // Use ArrayPool for larger payloads to reduce GC pressure
+                // Threshold: 256 bytes - small control frames allocate directly,
+                // larger DATA/HEADERS frames use pool
+                if (length > 256)
+                {
+                    rentedBuffer = ArrayPool<byte>.Shared.Rent(length);
+                    await ReadExactAsync(rentedBuffer, length, ct);
+                    // Copy to exact-size array since callers retain the payload
+                    payload = new byte[length];
+                    Buffer.BlockCopy(rentedBuffer, 0, payload, 0, length);
+                    ArrayPool<byte>.Shared.Return(rentedBuffer);
+                }
+                else
+                {
+                    payload = new byte[length];
+                    await ReadExactAsync(payload, length, ct);
+                }
             }
             else
             {
@@ -60,23 +83,24 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// Write a single HTTP/2 frame to the stream.
+        /// Uses reusable header buffer (writes are serialized under lock).
         /// </summary>
         public async Task WriteFrameAsync(Http2Frame frame, CancellationToken ct)
         {
             int payloadLength = frame.Payload?.Length ?? 0;
 
-            var header = new byte[Http2Constants.FrameHeaderSize];
-            header[0] = (byte)((payloadLength >> 16) & 0xFF);
-            header[1] = (byte)((payloadLength >> 8) & 0xFF);
-            header[2] = (byte)(payloadLength & 0xFF);
-            header[3] = (byte)frame.Type;
-            header[4] = (byte)frame.Flags;
-            header[5] = (byte)((frame.StreamId >> 24) & 0x7F); // mask reserved bit
-            header[6] = (byte)((frame.StreamId >> 16) & 0xFF);
-            header[7] = (byte)((frame.StreamId >> 8) & 0xFF);
-            header[8] = (byte)(frame.StreamId & 0xFF);
+            // Reuse pre-allocated header buffer (writes serialized by _writeLock)
+            _writeHeaderBuffer[0] = (byte)((payloadLength >> 16) & 0xFF);
+            _writeHeaderBuffer[1] = (byte)((payloadLength >> 8) & 0xFF);
+            _writeHeaderBuffer[2] = (byte)(payloadLength & 0xFF);
+            _writeHeaderBuffer[3] = (byte)frame.Type;
+            _writeHeaderBuffer[4] = (byte)frame.Flags;
+            _writeHeaderBuffer[5] = (byte)((frame.StreamId >> 24) & 0x7F); // mask reserved bit
+            _writeHeaderBuffer[6] = (byte)((frame.StreamId >> 16) & 0xFF);
+            _writeHeaderBuffer[7] = (byte)((frame.StreamId >> 8) & 0xFF);
+            _writeHeaderBuffer[8] = (byte)(frame.StreamId & 0xFF);
 
-            await _stream.WriteAsync(header, 0, Http2Constants.FrameHeaderSize, ct);
+            await _stream.WriteAsync(_writeHeaderBuffer, 0, Http2Constants.FrameHeaderSize, ct);
 
             if (payloadLength > 0)
                 await _stream.WriteAsync(frame.Payload, 0, payloadLength, ct);

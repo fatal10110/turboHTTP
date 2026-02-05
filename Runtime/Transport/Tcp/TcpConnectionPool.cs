@@ -159,10 +159,19 @@ namespace TurboHTTP.Transport.Tcp
 
             if (shouldReturn)
             {
-                if (Connection.IsAlive)
-                    _pool.EnqueueConnection(Connection);
-                else
-                    Connection.Dispose();
+                try
+                {
+                    if (Connection.IsAlive)
+                        _pool.EnqueueConnection(Connection);
+                    else
+                        Connection.Dispose();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Connection was disposed by racing Dispose() call on another thread.
+                    // This can occur if Dispose() is called between setting _released = true
+                    // and the IsAlive check. Safe to ignore — connection is already cleaned up.
+                }
             }
         }
 

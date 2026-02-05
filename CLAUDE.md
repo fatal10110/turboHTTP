@@ -29,6 +29,12 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - `IHttpTransport` — Transport interface (`SendAsync` + `IDisposable`)
 - `HttpTransportFactory` — Static factory (throws until Phase 3 registers transport)
 
+**Phase 3 components:**
+- `UHttpClient` / `UHttpRequestBuilder` — Fluent request building, default header merging, timeout resolution, and transport dispatch
+- `RawSocketTransport` — Default transport wiring pool, serializer, parser, and retry-on-stale
+- `TcpConnectionPool` / `TlsStreamWrapper` — Per-host pooling, DNS/Connect timeouts, TLS handshake + ALPN
+- `Http11RequestSerializer` / `Http11ResponseParser` — HTTP/1.1 wire formatting and parsing
+
 ## Key Technical Decisions
 
 - **Transport:** Raw `System.Net.Sockets.Socket` with connection pooling (not UnityWebRequest)
@@ -53,12 +59,14 @@ Implementation follows 14 phases documented in `docs/phases/`.
 
 - **Phase 1 (Project Foundation):** COMPLETE — Directory structure, assembly definitions, package files.
 - **Phase 2 (Core Type System):** COMPLETE — All 8 core types implemented in `Runtime/Core/`, 3 test files in `Tests/Runtime/Core/`. Reviewed by both specialist agents.
-- **Phase 3 (Client API & HTTP/1.1 Transport):** IN PROGRESS — Detailed sub-plans in `docs/phases/phase3/` (5 sub-phases). The old summary at `docs/phases/phase-03-client-api.md` is **deprecated** and must not be used for implementation. External reviews (GPT, Gemini) and specialist agent reviews incorporated.
+- **Phase 3 (Client API & HTTP/1.1 Transport):** COMPLETE — Detailed sub-plans in `docs/phases/phase3/` (5 sub-phases). The old summary at `docs/phases/phase-03-client-api.md` is **deprecated** and must not be used for implementation. External reviews (GPT, Gemini) and specialist agent reviews incorporated.
   - **Phase 3.1 (Client API):** COMPLETE
   - **Phase 3.2 (TCP Connection Pool & TLS):** COMPLETE
   - **Phase 3.3 (HTTP/1.1 Serializer & Parser):** COMPLETE
   - **Phase 3.4 (RawSocketTransport & Wiring):** COMPLETE
-  - **Phase 3.5 (Tests & Integration):** NEXT
+  - **Phase 3.5 (Tests & Integration):** COMPLETE — Added Core/HTTP1/Pool unit tests and manual integration harness.
+- **Phase 3B (HTTP/2 Protocol):** COMPLETE — Full HTTP/2 support with binary framing, HPACK compression, stream multiplexing, and flow control. R9 fixes: reusable frame header buffers, ArrayPool for payloads, MemoryStream for header block accumulation, MaxResponseBodySize limit. See `docs/implementation-journal/2026-02-phase3b-http2.md`.
+- **Phase 3C (BouncyCastle TLS Fallback):** PLANNED — Optional BouncyCastle TLS module for IL2CPP platforms where SslStream ALPN may fail. See `docs/phases/phase-03c-bouncy-castle-tls.md`.
 - **Phases 4–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
@@ -72,7 +80,7 @@ Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md`
 
 ## Critical Risk Areas
 
-1. **SslStream ALPN under IL2CPP** — Must validate HTTP/2 negotiation on physical iOS/Android devices before scaling past Phase 3B
+1. **SslStream ALPN under IL2CPP** — Must validate HTTP/2 negotiation on physical iOS/Android devices before scaling past Phase 3B. Phase 3C defines BouncyCastle TLS fallback if SslStream ALPN fails on mobile platforms.
 2. **System.Text.Json + IL2CPP/AOT** — Serialization behavior needs early validation
 3. **HTTP/2 flow control** — Stream multiplexing, window updates, HPACK correctness require rigorous testing
 4. **Memory target (phased):**
@@ -86,9 +94,13 @@ Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md`
 
 ## Testing
 
-Tests use Unity Test Runner with NUnit. Test assemblies:
+Tests use Unity Test Runner with NUnit. Test assemblies and key suites:
 - `Tests/Runtime/` — Runtime tests (`TurboHTTP.Tests.Runtime.asmdef`), references all modules
 - `Tests/Editor/` — Editor tests (`TurboHTTP.Tests.Editor.asmdef`), Editor-only
+- HTTP/1.1 serializer/parser tests: `Tests/Runtime/Transport/Http11SerializerTests.cs`, `Tests/Runtime/Transport/Http11ResponseParserTests.cs`
+- Core client/factory tests: `Tests/Runtime/Core/UHttpClientTests.cs`
+- TCP pool + transport behavior tests: `Tests/Runtime/Transport/TcpConnectionPoolTests.cs`, `Tests/Runtime/Transport/Http1/RawSocketTransportTests.cs`
+- Manual integration harness (Editor/Play Mode): `Tests/Runtime/TestHttpClient.cs`
 
 Both use `defineConstraints: ["UNITY_INCLUDE_TESTS"]` and `precompiledReferences: ["nunit.framework.dll"]`.
 

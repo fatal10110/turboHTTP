@@ -479,10 +479,42 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
+            // RFC 7540 Section 8.1: Response MUST start with HEADERS.
+            // DATA before HEADERS is a protocol error — send RST_STREAM.
+            if (!stream.HeadersReceived)
+            {
+                _connectionRecvWindow -= flowControlledLength;
+                // Remove from active streams BEFORE Fail() to prevent race with Dispose().
+                // Fail() triggers user continuations which could call Dispose() concurrently.
+                if (_activeStreams.TryRemove(frame.StreamId, out _))
+                {
+                    stream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                        $"DATA received before HEADERS on stream {frame.StreamId}"));
+                    await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError);
+                    stream.Dispose();
+                }
+                return;
+            }
+
             // Validate stream-level flow control (Fix 1)
             if (flowControlledLength > stream.RecvWindowSize)
                 throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
                     $"DATA exceeds stream {frame.StreamId} receive window");
+
+            // Enforce MaxResponseBodySize limit to prevent unbounded MemoryStream growth
+            long maxBodySize = _localSettings.MaxResponseBodySize;
+            if (maxBodySize > 0 && stream.ResponseBody.Length + dataPayload.Length > maxBodySize)
+            {
+                _connectionRecvWindow -= flowControlledLength;
+                if (_activeStreams.TryRemove(frame.StreamId, out _))
+                {
+                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        $"Response body exceeds maximum size limit ({maxBodySize} bytes)")));
+                    await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
+                    stream.Dispose();
+                }
+                return;
+            }
 
             // Write to response body (only the actual data, not padding)
             stream.ResponseBody.Write(dataPayload, 0, dataPayload.Length);
@@ -666,7 +698,7 @@ namespace TurboHTTP.Transport.Http2
 
             stream.ResponseHeaders = responseHeaders;
             stream.HeadersReceived = true;
-            stream.HeaderBlockBuffer.Clear();
+            stream.ClearHeaderBlock();
         }
 
         private async Task HandleSettingsFrameAsync(Http2Frame frame, CancellationToken ct)

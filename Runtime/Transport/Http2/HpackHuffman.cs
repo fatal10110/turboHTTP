@@ -347,6 +347,9 @@ namespace TurboHTTP.Transport.Http2
                 {
                     bitCount -= 8;
                     output[outIndex++] = (byte)(bitBuffer >> bitCount);
+                    // Mask off emitted bits to prevent overflow on long inputs.
+                    // Keep only the lower bitCount bits.
+                    bitBuffer &= (1L << bitCount) - 1;
                 }
             }
 

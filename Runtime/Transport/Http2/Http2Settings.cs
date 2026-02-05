@@ -16,6 +16,13 @@ namespace TurboHTTP.Transport.Http2
         public int MaxHeaderListSize { get; private set; } = int.MaxValue;
 
         /// <summary>
+        /// Maximum response body size in bytes. Prevents unbounded MemoryStream growth
+        /// from malicious or misconfigured servers. Default 100 MB. Set to 0 for unlimited.
+        /// This is a client-side limit, not part of the HTTP/2 protocol.
+        /// </summary>
+        public long MaxResponseBodySize { get; set; } = 100 * 1024 * 1024; // 100 MB default
+
+        /// <summary>
         /// Apply a single setting received from the server.
         /// Validates per RFC 7540 Section 6.5.2.
         /// </summary>
@@ -24,7 +31,7 @@ namespace TurboHTTP.Transport.Http2
             switch (id)
             {
                 case Http2SettingId.HeaderTableSize:
-                    HeaderTableSize = (int)value;
+                    HeaderTableSize = ClampToIntMax(value);
                     break;
 
                 case Http2SettingId.EnablePush:
@@ -35,7 +42,7 @@ namespace TurboHTTP.Transport.Http2
                     break;
 
                 case Http2SettingId.MaxConcurrentStreams:
-                    MaxConcurrentStreams = (int)value;
+                    MaxConcurrentStreams = ClampToIntMax(value);
                     break;
 
                 case Http2SettingId.InitialWindowSize:
@@ -53,13 +60,22 @@ namespace TurboHTTP.Transport.Http2
                     break;
 
                 case Http2SettingId.MaxHeaderListSize:
-                    MaxHeaderListSize = (int)value;
+                    MaxHeaderListSize = ClampToIntMax(value);
                     break;
 
                 default:
                     // Unknown settings MUST be ignored (RFC 7540 Section 6.5.2)
                     break;
             }
+        }
+
+        /// <summary>
+        /// Clamp 32-bit unsigned SETTINGS values to int.MaxValue to avoid overflow.
+        /// HTTP/2 SETTINGS use uint32; values above int.MaxValue are treated as "very large".
+        /// </summary>
+        private static int ClampToIntMax(uint value)
+        {
+            return value > int.MaxValue ? int.MaxValue : (int)value;
         }
 
         /// <summary>
