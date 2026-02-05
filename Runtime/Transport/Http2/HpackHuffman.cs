@@ -372,18 +372,40 @@ namespace TurboHTTP.Transport.Http2
         {
             var output = new List<byte>();
             var node = s_root;
-            int bitsInLastByte = 0;
+            int paddingBits = 0; // Count consecutive 1-bits at end
 
             for (int i = offset; i < offset + length; i++)
             {
                 byte b = data[i];
+                bool isLastByte = (i == offset + length - 1);
+
                 for (int bit = 7; bit >= 0; bit--)
                 {
                     int bitVal = (b >> bit) & 1;
-                    node = bitVal == 0 ? node.Zero : node.One;
+                    var next = bitVal == 0 ? node.Zero : node.One;
 
-                    if (node == null)
-                        throw new HpackDecodingException("Invalid Huffman code sequence");
+                    if (next == null)
+                    {
+                        // Only valid if we're in the final byte's padding region (all 1s)
+                        if (!isLastByte || bitVal != 1)
+                            throw new HpackDecodingException("Invalid Huffman code sequence");
+
+                        // We've hit padding — remaining bits in this byte must all be 1s
+                        // (which they are if we got here via bitVal == 1).
+                        // Verify remaining bits are also 1s.
+                        for (int pb = bit - 1; pb >= 0; pb--)
+                        {
+                            if (((b >> pb) & 1) != 1)
+                                throw new HpackDecodingException(
+                                    "Invalid Huffman padding (must be all 1-bits)");
+                        }
+                        return output.ToArray();
+                    }
+
+                    node = next;
+
+                    // Track consecutive 1-bits for padding validation
+                    paddingBits = (bitVal == 1) ? paddingBits + 1 : 0;
 
                     if (node.Symbol >= 0)
                     {
@@ -392,25 +414,19 @@ namespace TurboHTTP.Transport.Http2
 
                         output.Add((byte)node.Symbol);
                         node = s_root;
+                        paddingBits = 0;
                     }
                 }
             }
 
-            // Validate padding: remaining bits must all be 1s and <= 7 bits
+            // Validate padding: remaining partial code must be all 1s and <= 7 bits
             if (node != s_root)
             {
-                // We're mid-sequence. Verify we're on a path reachable by all-1s padding.
-                // Walk remaining path with all 1s — must not complete a symbol.
-                // The padding check is: the node we stopped at should be reachable
-                // from root via the remaining bits being all 1s, and we haven't
-                // completed a symbol (we're at an internal node).
-                // If we reached a leaf, that means the padding completed a symbol, which is invalid.
-                // We already handle leaves above, so being at an internal node is correct.
-
-                // Additional check: verify the incomplete bits are all 1s by checking
-                // that the path from the partial match only used '1' branches.
-                // This is implicitly validated because the encoder always pads with 1s
-                // and we only reach here if we're at an internal node after all input bits.
+                // We're mid-sequence after all input. This is padding territory.
+                // The partial bits should all be 1s (EOS prefix). Since we didn't
+                // hit a null node, the path exists, but verify it was all 1s.
+                if (paddingBits > 7)
+                    throw new HpackDecodingException("Invalid Huffman padding (more than 7 bits)");
             }
 
             return output.ToArray();

@@ -259,7 +259,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                 BuildResponseHeadersFrame(streamId, 200), cts.Token);
 
             // Send DATA that consumes > half the connection window (> 32767 bytes)
-            // Send in chunks of 16384 (max frame size)
+            // The threshold for WINDOW_UPDATE is when recv window < 65535/2 = 32767
+            // So we need to consume 65535 - 32767 + 1 = 32769 bytes to go below threshold
+            // Send 3 chunks of 16384 for 49152 total to be safely over threshold
             var chunk = new byte[16384];
             await serverCodec.WriteFrameAsync(new Http2Frame
             {
@@ -279,7 +281,16 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Length = chunk.Length
             }, cts.Token);
 
-            // Now we've sent 32768 bytes, which is > 65535/2 = 32767
+            await serverCodec.WriteFrameAsync(new Http2Frame
+            {
+                Type = Http2FrameType.Data,
+                Flags = Http2FrameFlags.None,
+                StreamId = streamId,
+                Payload = chunk,
+                Length = chunk.Length
+            }, cts.Token);
+
+            // Now we've sent 49152 bytes, window is 65535-49152=16383 which is < 32767
             // The client should send a WINDOW_UPDATE for the connection
             var windowUpdate = await serverCodec.ReadFrameAsync(16384, cts.Token);
             Assert.AreEqual(Http2FrameType.WindowUpdate, windowUpdate.Type);
@@ -460,7 +471,10 @@ namespace TurboHTTP.Tests.Transport.Http2
             await serverCodec.WriteFrameAsync(
                 BuildResponseHeadersFrame(streamId, 200), cts.Token);
 
-            // Send DATA that consumes > half the stream window (> 32767 bytes)
+            // Send DATA that consumes > half the window to trigger WINDOW_UPDATEs
+            // The threshold is when recv window < 65535/2 = 32767
+            // So we need to consume 65535 - 32767 + 1 = 32769 bytes to go below threshold
+            // Send 3 chunks of 16384 for 49152 total to be safely over threshold
             var chunk = new byte[16384];
             await serverCodec.WriteFrameAsync(new Http2Frame
             {
@@ -480,8 +494,17 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Length = chunk.Length
             }, cts.Token);
 
-            // Now > 32768 bytes consumed. Client should send WINDOW_UPDATEs.
-            // We expect both connection-level and stream-level WINDOW_UPDATEs.
+            await serverCodec.WriteFrameAsync(new Http2Frame
+            {
+                Type = Http2FrameType.Data,
+                Flags = Http2FrameFlags.None,
+                StreamId = streamId,
+                Payload = chunk,
+                Length = chunk.Length
+            }, cts.Token);
+
+            // Now 49152 bytes consumed, window is 65535-49152=16383 which is < 32767
+            // Client should send WINDOW_UPDATEs for both connection and stream.
             var updates = new List<Http2Frame>();
             for (int i = 0; i < 2; i++)
             {

@@ -88,11 +88,17 @@ namespace TurboHTTP.Transport
                             return await h2Conn.SendRequestAsync(request, context, ct)
                                 .ConfigureAwait(false);
                         }
-                        catch (Exception) when (!ct.IsCancellationRequested && request.Method.IsIdempotent())
+                        catch (Exception) when (!ct.IsCancellationRequested)
                         {
-                            // Stale h2 connection — remove and fall through to pool path.
-                            // Only retry idempotent methods to avoid duplicating non-idempotent requests.
+                            // Stale h2 connection — always remove from manager to avoid
+                            // subsequent requests hitting the same dead connection.
                             _h2Manager.Remove(host, port);
+
+                            // Only retry idempotent methods to avoid duplicating side effects.
+                            // Non-idempotent requests re-throw to fail the request.
+                            if (!request.Method.IsIdempotent())
+                                throw;
+
                             context.RecordEvent("TransportH2StaleRetry");
                         }
                     }

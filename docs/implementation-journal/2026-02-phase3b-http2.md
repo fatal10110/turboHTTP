@@ -134,3 +134,18 @@ Issues identified by R4 verification review agents and compilation fixes:
 - **[R5-compile-2]** Test files used `HttpMethod.Get`/`HttpMethod.Post` instead of `HttpMethod.GET`/`HttpMethod.POST` — fixed in `Http2FlowControlTests.cs` and `Http2ConnectionTests.cs`.
 - **[R5-compile-3]** Test files used `new RequestContext()` but constructor requires `UHttpRequest` — fixed all test callsites to pass the request object.
 - **[R5-test-1]** Added `HpackDecodingError_SendsGoAwayCompressionError` test — verifies HPACK index-0 error triggers GOAWAY with COMPRESSION_ERROR (0x9).
+
+## Test Fixes and Refinements (R6)
+
+Issues identified by test execution and external review:
+
+- **[R6-P2]** Stale H2 connection only removed from manager on idempotent retry — restructured `RawSocketTransport.cs` stale connection handling: now removes from manager on ANY failure (not just idempotent), then only retries if `request.Method.IsIdempotent()`. Non-idempotent requests re-throw after removing dead connection.
+- **[R6-link.xml]** Removed `System.Text.Encoding.CodePages` preserve from `link.xml` — unnecessary bundle size overhead since `EncodingHelper` already has custom `Latin1Encoding` fallback for IL2CPP code stripping.
+- **[R6-huffman]** `HpackHuffman.Decode` threw "Invalid Huffman code sequence" on RoundTrip_AllByteValues — decoder hit null node during final byte's padding bits (EOS prefix). Fixed by detecting when we're in the final byte's padding region: if `node == null && isLastByte && bitVal == 1`, return early after verifying remaining bits are all 1s.
+- **[R6-test-exceptions]** Tests using `Assert.ThrowsAsync<Exception>` failed in Unity NUnit (exact type matching) — replaced with try-catch patterns allowing specific exception types (`Http2ProtocolException`, `ObjectDisposedException`, `OperationCanceledException`) in:
+  - `ContinuationFrame_WrongStream_ConnectionDies`
+  - `NonContinuation_WhileExpectingContinuation_ConnectionDies`
+  - `DataFrame_PaddingLengthExceedsPayload_ConnectionDies`
+  - `HpackDecodingError_SendsGoAwayCompressionError`
+  - `Dispose_FailsAllActiveStreams`
+- **[R6-flowcontrol]** `DataReceiving_SendsWindowUpdate` and `StreamLevelRecvWindow_SendsStreamWindowUpdate` timed out — WINDOW_UPDATE threshold condition is `< 65535/2 = 32767` (strict less-than), so 32768 bytes was not enough. Updated tests to send 49152 bytes (3 × 16384) to ensure window drops below threshold.

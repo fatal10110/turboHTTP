@@ -637,7 +637,14 @@ namespace TurboHTTP.Tests.Transport.Http2
             }, cts.Token);
 
             // The request should fail because the connection dies
-            Assert.ThrowsAsync<Exception>(async () => await responseTask);
+            try
+            {
+                await responseTask;
+                Assert.Fail("Expected exception");
+            }
+            catch (Http2ProtocolException) { /* expected */ }
+            catch (ObjectDisposedException) { /* also acceptable */ }
+
             await Task.Delay(200);
             Assert.IsFalse(conn.IsAlive);
 
@@ -681,7 +688,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Length = 1
             }, cts.Token);
 
-            Assert.ThrowsAsync<Exception>(async () => await responseTask);
+            try
+            {
+                await responseTask;
+                Assert.Fail("Expected exception");
+            }
+            catch (Http2ProtocolException) { /* expected */ }
+            catch (ObjectDisposedException) { /* also acceptable */ }
+
             await Task.Delay(200);
             Assert.IsFalse(conn.IsAlive);
 
@@ -718,7 +732,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Length = 3
             }, cts.Token);
 
-            Assert.ThrowsAsync<Exception>(async () => await responseTask);
+            try
+            {
+                await responseTask;
+                Assert.Fail("Expected exception");
+            }
+            catch (Http2ProtocolException) { /* expected */ }
+            catch (ObjectDisposedException) { /* also acceptable */ }
+
             await Task.Delay(200);
             Assert.IsFalse(conn.IsAlive);
 
@@ -801,8 +822,15 @@ namespace TurboHTTP.Tests.Transport.Http2
             // Dispose the connection without responding
             conn.Dispose();
 
-            // The response task should fail
-            Assert.ThrowsAsync<Exception>(async () => await responseTask);
+            // The response task should fail — can be ObjectDisposedException or OperationCanceledException
+            // depending on timing (CTS cancel vs FailAllStreams)
+            try
+            {
+                await responseTask;
+                Assert.Fail("Expected exception");
+            }
+            catch (ObjectDisposedException) { /* expected */ }
+            catch (OperationCanceledException) { /* also acceptable - CTS cancelled first */ }
         }
 
         [Test]
@@ -1177,8 +1205,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Length = 1
             }, cts.Token);
 
-            // The request should fail
-            Assert.ThrowsAsync<Exception>(async () => await responseTask);
+            // The request should fail with Http2ProtocolException (CompressionError)
+            try
+            {
+                await responseTask;
+                Assert.Fail("Expected exception");
+            }
+            catch (Http2ProtocolException) { /* expected */ }
+            catch (ObjectDisposedException) { /* also acceptable */ }
 
             // Read GOAWAY from client — should have COMPRESSION_ERROR (0x9)
             var goaway = await serverCodec.ReadFrameAsync(16384, cts.Token);
