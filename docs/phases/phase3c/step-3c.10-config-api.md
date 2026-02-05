@@ -65,6 +65,9 @@ namespace TurboHTTP.Core
         /// - Auto: Try SslStream first, fall back to BouncyCastle if ALPN unavailable
         /// - SslStream: Force use of System.Net.Security.SslStream (may not support ALPN on all platforms)
         /// - BouncyCastle: Force use of BouncyCastle TLS (guaranteed ALPN support everywhere)
+        /// 
+        /// Note: Advanced security features (certificate pinning, custom validation callbacks)
+        /// are planned for Phase 6 (Advanced Middleware) and not yet available.
         /// </remarks>
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 

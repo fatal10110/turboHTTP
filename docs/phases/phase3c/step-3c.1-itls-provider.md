@@ -73,7 +73,10 @@ namespace TurboHTTP.Transport.Tls
 
 ### Method Signature
 
-- **`innerStream`**: The raw TCP socket stream. Provider takes ownership and wraps it. Caller should no longer use `innerStream` directly after calling `WrapAsync`.
+- **`innerStream`**: The raw TCP socket stream. **Provider takes ownership** and wraps it.
+  - **On success**: The returned `SecureStream` takes ownership of `innerStream`. Caller must NOT dispose `innerStream`.
+  - **On failure**: Provider closes `innerStream` before throwing. Caller must NOT dispose `innerStream`.
+  - **Summary**: Once `WrapAsync()` is called, caller should never access or dispose `innerStream` regardless of success/failure.
 - **`host`**: Used for:
   - SNI (Server Name Indication) in the TLS ClientHello
   - Certificate validation (verify server cert matches hostname)

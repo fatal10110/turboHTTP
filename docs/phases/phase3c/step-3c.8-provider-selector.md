@@ -81,6 +81,7 @@ namespace TurboHTTP.Transport.Tls
         {
             // Use reflection to check if BouncyCastle assembly is available
             // This allows the BouncyCastle module to be optional
+            // Note: Requires [Preserve] attribute on BouncyCastleTlsProvider for IL2CPP
             var bcType = Type.GetType(
                 "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
                 throwOnError: false);
@@ -126,9 +127,15 @@ namespace TurboHTTP.Transport.Tls
                 {
                     // BouncyCastle not available, use SslStream anyway
                     // (ALPN will be null, HTTP/1.1 fallback)
-                    UnityEngine.Debug.LogWarning(
-                        "BouncyCastle TLS provider not available. " +
-                        "ALPN negotiation may not work. HTTP/2 will be unavailable.");
+                    #if UNITY_2017_1_OR_NEWER
+                        UnityEngine.Debug.LogWarning(
+                            "BouncyCastle TLS provider not available. " +
+                            "ALPN negotiation may not work. HTTP/2 will be unavailable.");
+                    #else
+                        System.Diagnostics.Debug.WriteLine(
+                            "[TurboHTTP] WARNING: BouncyCastle TLS provider not available. " +
+                            "ALPN negotiation may not work. HTTP/2 will be unavailable.");
+                    #endif
                     return sslStreamProvider;
                 }
             }

@@ -1,6 +1,6 @@
 # Phase 3C Implementation Plan — Overview
 
-Phase 3C implements BouncyCastle TLS as a fallback for IL2CPP/AOT platforms where SslStream ALPN may not work reliably. All new code goes under `Runtime/Transport/Tls/` and `Runtime/Transport/BouncyCastle/`. Two existing files are modified.
+Phase 3C implements BouncyCastle TLS as a fallback for IL2CPP/AOT platforms where SslStream ALPN may not work reliably. New runtime code goes under `Runtime/Transport/Tls/` and `Runtime/Transport/BouncyCastle/` (including repackaged BouncyCastle source in `Lib/`). One Editor repackaging script is added. Two existing runtime files are modified.
 
 ## Step Index
 
@@ -9,7 +9,7 @@ Phase 3C implements BouncyCastle TLS as a fallback for IL2CPP/AOT platforms wher
 | [3C.1](step-3c.1-itls-provider.md) | ITlsProvider Interface | 1 new | — |
 | [3C.2](step-3c.2-tls-result.md) | TlsResult Model | 1 new | — |
 | [3C.3](step-3c.3-sslstream-provider.md) | SslStream TLS Provider | 1 new | 3C.1, 3C.2 |
-| [3C.4](step-3c.4-bouncycastle-package.md) | BouncyCastle Package Integration | 1 new (asmdef) | — |
+| [3C.4](step-3c.4-bouncycastle-package.md) | BouncyCastle Package Integration | 1 asmdef + ~150 BC source files in Lib/ + 1 Editor script | — |
 | [3C.5](step-3c.5-turbo-tls-client.md) | BouncyCastle TurboTlsClient | 1 new | 3C.4 |
 | [3C.6](step-3c.6-tls-authentication.md) | BouncyCastle TlsAuthentication | 1 new | 3C.4 |
 | [3C.7](step-3c.7-bouncycastle-provider.md) | BouncyCastle TLS Provider | 1 new | 3C.1, 3C.2, 3C.4, 3C.5, 3C.6 |
@@ -61,6 +61,19 @@ Runtime/Transport/BouncyCastle/
     TurboTlsClient.cs            — Step 3C.5
     TurboTlsAuthentication.cs    — Step 3C.6
     BouncyCastleTlsProvider.cs   — Step 3C.7
+    Lib/                         — Step 3C.4 (repackaged BC source)
+        Org/
+            BouncyCastle/
+                Tls/             # ~150 C# files
+                Crypto/
+                Asn1/
+                X509/
+                Math/
+                Security/
+                Utilities/
+
+Editor/
+    RepackageBouncyCastle.cs     — Step 3C.4 (one-time setup script)
 ```
 
 ## Modified Files
@@ -82,7 +95,7 @@ Runtime/Transport/BouncyCastle/
 ## Implementation Notes
 
 - **Optional module:** The BouncyCastle assembly should be optional. Projects targeting only desktop can exclude it.
-- **Automatic fallback:** `TlsBackend.Auto` mode automatically selects the best provider for the platform.
+- **Automatic fallback:** `TlsBackend.Auto` mode uses **static platform detection** at runtime to select the best provider (SslStream on desktop, BouncyCastle on mobile/IL2CPP). It does NOT retry handshakes; provider selection happens once before the first TLS attempt.
 - **No breaking changes:** Existing code continues to work; this phase only adds new capabilities.
 - **IL2CPP safe:** All BouncyCastle code is AOT-friendly with no reflection.
 

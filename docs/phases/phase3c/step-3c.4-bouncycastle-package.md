@@ -173,16 +173,31 @@ This allows:
 - Desktop-only projects to exclude BouncyCastle entirely
 - Mobile projects to include it for ALPN support
 
-### `overrideReferences: true`
+### IL2CPP Code Stripping Prevention
 
-Allows manual control of precompiled DLL references.
+> [!IMPORTANT]
+> **Prevent IL2CPP from stripping BouncyCastleTlsProvider**
 
-### `precompiledReferences`
+Since the provider is loaded via reflection in `TlsProviderSelector`, add the `[Preserve]` attribute:
 
-References the BouncyCastle DLL. Unity will search for this DLL in:
-1. The same directory as the `.asmdef`
-2. `Plugins/` subdirectories
-3. Other assembly definition folders
+```csharp
+using UnityEngine.Scripting;
+
+[Preserve]
+internal sealed class BouncyCastleTlsProvider : ITlsProvider
+{
+    // ... implementation ...
+}
+```
+
+Alternatively, create a `link.xml` file:
+```xml
+<linker>
+  <assembly fullname="TurboHTTP.Transport.BouncyCastle">
+    <type fullname="TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider" preserve="all"/>
+  </assembly>
+</linker>
+```
 
 ## Namespace
 

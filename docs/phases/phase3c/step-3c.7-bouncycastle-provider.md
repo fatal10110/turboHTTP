@@ -21,6 +21,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC;
 using TurboHTTP.Transport.Tls;
+using UnityEngine.Scripting;
 
 namespace TurboHTTP.Transport.BouncyCastle
 {
@@ -28,6 +29,7 @@ namespace TurboHTTP.Transport.BouncyCastle
     /// TLS provider using BouncyCastle pure C# implementation.
     /// Guaranteed to work on all platforms, including IL2CPP/AOT builds.
     /// </summary>
+    [Preserve]  // Prevent IL2CPP from stripping (loaded via reflection)
     internal sealed class BouncyCastleTlsProvider : ITlsProvider
     {
         public static readonly BouncyCastleTlsProvider Instance = new();
@@ -54,7 +56,7 @@ namespace TurboHTTP.Transport.BouncyCastle
 
             // BouncyCastle handshake is blocking; run on thread pool to avoid blocking Unity main thread
             return await Task.Run(() => PerformHandshake(innerStream, host, alpnProtocols, ct), ct)
-                .ConfigureAwait(false);
+                .ConfigureAwait(false);  // Don't capture SynchronizationContext
         }
 
         private TlsResult PerformHandshake(
@@ -63,9 +65,14 @@ namespace TurboHTTP.Transport.BouncyCastle
             string[] alpnProtocols,
             CancellationToken ct)
         {
+            // Check cancellation before expensive operations
+            ct.ThrowIfCancellationRequested();
+            
             // Create crypto provider
             var secureRandom = new SecureRandom();
             var crypto = new BcTlsCrypto(secureRandom);
+            
+            ct.ThrowIfCancellationRequested();
 
             // Create TLS protocol handler
             var protocol = new TlsClientProtocol(innerStream);
@@ -123,9 +130,18 @@ namespace TurboHTTP.Transport.BouncyCastle
 BouncyCastle's `TlsClientProtocol.Connect()` is **blocking** (synchronous). To avoid blocking Unity's main thread:
 1. Wrap the handshake in `Task.Run()`
 2. Run on thread pool
-3. Respect `CancellationToken` (task will be cancelled if token fires)
+3. Check `CancellationToken` before expensive operations
 
-**Note:** BouncyCastle itself doesn't support async I/O. The blocking call is unavoidable.
+> [!WARNING]
+> **CancellationToken Limitation**
+> 
+> The `CancellationToken` is checked **before** the handshake begins, but once `protocol.Connect()` starts, it **cannot be interrupted**. This is a BouncyCastle API limitation. The handshake will complete or fail on its own (typically 100-500ms).
+> 
+> If cancellation is critical, consider wrapping with a timeout:
+> ```csharp
+> var cts = CancellationTokenSource.CreateLinkedTokenSource(userToken);
+> cts.CancelAfter(TimeSpan.FromSeconds(30));  // 30s handshake timeout
+> ```
 
 ### Handshake Flow
 

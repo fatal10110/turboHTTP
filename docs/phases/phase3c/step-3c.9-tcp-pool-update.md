@@ -45,7 +45,8 @@ var tlsResult = await tlsProvider.WrapAsync(
     tcpStream,
     host,
     alpnProtocols: new[] { "h2", "http/1.1" },
-    cancellationToken);
+    cancellationToken)
+    .ConfigureAwait(false);  // Don't capture SynchronizationContext
 
 // Store TLS result for protocol routing
 var secureStream = tlsResult.SecureStream;
