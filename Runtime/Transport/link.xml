@@ -1,7 +1,24 @@
 <linker>
+  <!-- SslStream types for reflection-based ALPN -->
   <assembly fullname="System.Net.Security">
     <type fullname="System.Net.Security.SslStream" preserve="all"/>
     <type fullname="System.Net.Security.SslClientAuthenticationOptions" preserve="all"/>
     <type fullname="System.Net.Security.SslApplicationProtocol" preserve="all"/>
   </assembly>
+
+  <!-- BouncyCastle TLS provider - loaded via reflection by TlsProviderSelector -->
+  <assembly fullname="TurboHTTP.Transport.BouncyCastle" preserve="all">
+    <!-- Explicitly preserve the entry point class -->
+    <type fullname="TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider" preserve="all"/>
+  </assembly>
+
+  <!-- BouncyCastle crypto primitives - required for TLS handshake -->
+  <assembly fullname="TurboHTTP.Transport.BouncyCastle">
+    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls" preserve="all"/>
+    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto" preserve="all"/>
+    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC" preserve="all"/>
+    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.Security" preserve="all"/>
+    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.X509" preserve="all"/>
+  </assembly>
 </linker>
+

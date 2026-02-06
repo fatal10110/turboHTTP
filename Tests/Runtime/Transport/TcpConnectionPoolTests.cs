@@ -464,21 +464,21 @@ namespace TurboHTTP.Tests.Transport
 
         [Test]
         [Explicit("Requires local TLS test server and certificate")]
-        public void PooledConnection_NegotiatedTlsVersion_SetAfterTlsHandshake()
+        public void PooledConnection_TlsVersion_SetAfterTlsHandshake()
         {
             Assert.Inconclusive("Requires TLS server setup.");
         }
 
         [Test]
         [Explicit("Requires local TLS test server and certificate")]
-        public void TlsStreamWrapper_WrapAsync_ReturnsTlsResult_WithNegotiatedProtocol()
+        public void ITlsProvider_WrapAsync_ReturnsTlsResult_WithNegotiatedProtocol()
         {
             Assert.Inconclusive("Requires TLS server setup.");
         }
 
         [Test]
         [Explicit("Requires TLS 1.0/1.1 test server")]
-        public void TlsStreamWrapper_TlsBelowMinimum_ThrowsAuthenticationException()
+        public void ITlsProvider_TlsBelowMinimum_ThrowsAuthenticationException()
         {
             Assert.Inconclusive("Requires TLS server setup.");
         }

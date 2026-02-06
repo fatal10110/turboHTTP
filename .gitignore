@@ -1,0 +1,25 @@
+.vscode/
+.vs/
+.DS_Store
+
+# Unity generated
+Library/
+Logs/
+Temp/
+Obj/
+Build/
+Builds/
+UserSettings/
+MemoryCaptures/
+
+# Visual Studio / Rider / Unity
+*.csproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.unityproj
+*.svd
+*.pdb

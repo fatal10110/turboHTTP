@@ -1,0 +1,19 @@
+{
+    "name": "TurboHTTP.Transport.BouncyCastle",
+    "rootNamespace": "TurboHTTP.Transport.BouncyCastle",
+    "references": [
+        "TurboHTTP.Core",
+        "TurboHTTP.Transport"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [
+        "WebGL"
+    ],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

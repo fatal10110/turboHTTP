@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Net.Security;
-using System.Security.Authentication;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -153,9 +151,10 @@ namespace TurboHTTP.Tests.Runtime
 
                 if (kvp.Value.TryPeek(out var conn))
                 {
-                    var tls = conn.NegotiatedTlsVersion;
-                    Ensure(tls.HasValue && tls.Value >= SslProtocols.Tls12, "TLS version below 1.2");
-                    Debug.Log($"TestTlsVersion passed: {tls.Value}");
+                    var tlsVersion = conn.TlsVersion;
+                    var providerName = conn.TlsProviderName;
+                    Ensure(!string.IsNullOrEmpty(tlsVersion) && (tlsVersion == "1.2" || tlsVersion == "1.3"), "TLS version below 1.2 or invalid");
+                    Debug.Log($"TestTlsVersion passed: TLS {tlsVersion} (provider: {providerName})");
                     return;
                 }
             }

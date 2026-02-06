@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Security.Authentication;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -32,9 +31,16 @@ namespace TurboHTTP.Transport.Tcp
         public bool IsReused { get; internal set; }
 
         /// <summary>
-        /// Set after TLS handshake from sslStream.SslProtocol. Null for non-TLS connections.
+        /// TLS version negotiated (e.g., "1.2", "1.3"). Null for non-TLS connections.
+        /// Set after TLS handshake completes via ITlsProvider.
         /// </summary>
-        public SslProtocols? NegotiatedTlsVersion { get; internal set; }
+        public string TlsVersion { get; internal set; }
+
+        /// <summary>
+        /// Name of the TLS provider that performed the handshake (e.g., "SslStream", "BouncyCastle").
+        /// Null for non-TLS connections. Useful for diagnostics.
+        /// </summary>
+        public string TlsProviderName { get; internal set; }
 
         /// <summary>
         /// The ALPN-negotiated protocol ("h2", "http/1.1", or null if no ALPN).
@@ -217,6 +223,7 @@ namespace TurboHTTP.Transport.Tcp
 
         private readonly int _maxConnectionsPerHost;
         private readonly TimeSpan _connectionIdleTimeout;
+        private readonly TlsBackend _tlsBackend;
         private volatile bool _disposed;
 
         private readonly ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>> _idleConnections
@@ -227,7 +234,11 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <param name="maxConnectionsPerHost">Maximum concurrent connections per host (default 6, matches browser convention).</param>
         /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 2 minutes).</param>
-        public TcpConnectionPool(int maxConnectionsPerHost = 6, TimeSpan? connectionIdleTimeout = null)
+        /// <param name="tlsBackend">TLS backend selection strategy (default Auto).</param>
+        public TcpConnectionPool(
+            int maxConnectionsPerHost = 6,
+            TimeSpan? connectionIdleTimeout = null,
+            TlsBackend tlsBackend = TlsBackend.Auto)
         {
             if (maxConnectionsPerHost <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
@@ -236,6 +247,7 @@ namespace TurboHTTP.Transport.Tcp
 
             _maxConnectionsPerHost = maxConnectionsPerHost;
             _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
+            _tlsBackend = tlsBackend;
         }
 
         /// <summary>
@@ -313,16 +325,23 @@ namespace TurboHTTP.Transport.Tcp
             var socket = await ConnectSocketAsync(addresses, port, ct).ConfigureAwait(false);
 
             Stream stream = new NetworkStream(socket, ownsSocket: true);
-            SslProtocols? negotiatedTls = null;
+            string negotiatedAlpn = null;
+            string tlsVersion = null;
+            string tlsProviderName = null;
 
             if (secure)
             {
                 try
                 {
-                    var tlsResult = await TlsStreamWrapper.WrapAsync(stream, host, ct,
-                        new[] { "h2", "http/1.1" }).ConfigureAwait(false);
-                    stream = tlsResult.Stream;
-                    negotiatedTls = tlsResult.NegotiatedProtocol;
+                    // Use ITlsProvider abstraction for TLS handshake
+                    var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
+                    var tlsResult = await tlsProvider.WrapAsync(
+                        stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
+                    
+                    stream = tlsResult.SecureStream;
+                    negotiatedAlpn = tlsResult.NegotiatedAlpn;
+                    tlsVersion = tlsResult.TlsVersion;
+                    tlsProviderName = tlsResult.ProviderName;
                 }
                 catch
                 {
@@ -332,14 +351,9 @@ namespace TurboHTTP.Transport.Tcp
             }
 
             var connection = new PooledConnection(socket, stream, host, port, secure);
-            if (negotiatedTls.HasValue)
-                connection.NegotiatedTlsVersion = negotiatedTls.Value;
-
-            // Store ALPN result
-            if (secure && stream is System.Net.Security.SslStream sslStream)
-            {
-                connection.NegotiatedAlpnProtocol = TlsStreamWrapper.GetNegotiatedProtocol(sslStream);
-            }
+            connection.NegotiatedAlpnProtocol = negotiatedAlpn;
+            connection.TlsVersion = tlsVersion;
+            connection.TlsProviderName = tlsProviderName;
 
             return connection;
         }
