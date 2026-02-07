@@ -13,6 +13,7 @@
     "TurboHTTP.Unity",
     "TurboHTTP.Testing",
     "TurboHTTP.Performance",
+    "TurboHTTP.JSON",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"
   ],

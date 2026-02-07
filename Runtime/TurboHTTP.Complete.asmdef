@@ -12,7 +12,8 @@
     "TurboHTTP.Files",
     "TurboHTTP.Unity",
     "TurboHTTP.Testing",
-    "TurboHTTP.Performance"
+    "TurboHTTP.Performance",
+    "TurboHTTP.JSON"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
