@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
@@ -53,10 +54,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
             this.digest = digest;
         }
 
-        public virtual string AlgorithmName
-        {
-            get { return "SM2Sign"; }
-        }
+        public virtual string AlgorithmName => "SM2Sign";
 
         public virtual void Init(bool forSigning, ICipherParameters parameters)
         {
@@ -68,6 +66,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
                 baseParam = withID.Parameters;
                 userID = withID.GetID();
 
+                // The length in bits must be expressible in two bytes
                 if (userID.Length >= 8192)
                     throw new ArgumentException("SM2 user ID must be less than 2^16 bits long");
             }
@@ -80,30 +79,27 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
 
             if (forSigning)
             {
-                SecureRandom random = null;
-                if (baseParam is ParametersWithRandom rParam)
-                {
-                    ecKey = (ECKeyParameters)rParam.Parameters;
-                    ecParams = ecKey.Parameters;
-                    random = rParam.Random;
-                }
-                else
-                {
-                    ecKey = (ECKeyParameters)baseParam;
-                    ecParams = ecKey.Parameters;
-                }
-                if (!kCalculator.IsDeterministic)
-                {
-                    random = CryptoServicesRegistrar.GetSecureRandom(random);
-                }
-                kCalculator.Init(ecParams.N, random);
-                pubPoint = CreateBasePointMultiplier().Multiply(ecParams.G, ((ECPrivateKeyParameters)ecKey).D).Normalize();
+                var ecPrivateKey = (ECPrivateKeyParameters)ParameterUtilities.GetRandom(baseParam, out var random);
+
+                ecKey = ecPrivateKey;
+                ecParams = ecPrivateKey.Parameters;
+
+                BigInteger d = ecPrivateKey.D;
+                BigInteger n = ecParams.N;
+
+                if (d.CompareTo(BigInteger.One) < 0 || d.CompareTo(n.Subtract(BigInteger.One)) >= 0)
+                    throw new ArgumentException("SM2 private key out of range");
+
+                kCalculator.Init(n, CryptoServicesRegistrar.GetSecureRandom(random));
+                pubPoint = CreateBasePointMultiplier().Multiply(ecParams.G, d).Normalize();
             }
             else
             {
-                ecKey = (ECKeyParameters)baseParam;
-                ecParams = ecKey.Parameters;
-                pubPoint = ((ECPublicKeyParameters)ecKey).Q;
+                var ecPublicKey = (ECPublicKeyParameters)baseParam;
+
+                ecKey = ecPublicKey;
+                ecParams = ecPublicKey.Parameters;
+                pubPoint = ecPublicKey.Q;
             }
 
             digest.Reset();
@@ -293,18 +289,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
             return DigestUtilities.DoFinal(digest);
         }
 
-        private void AddUserID(IDigest digest, byte[] userID)
+        private static void AddUserID(IDigest digest, byte[] userID)
         {
-            int len = userID.Length * 8;
+            uint len = (uint)(userID.Length * 8);
+            Debug.Assert(len >> 16 == 0);
+
             digest.Update((byte)(len >> 8));
             digest.Update((byte)len);
             digest.BlockUpdate(userID, 0, userID.Length);
         }
 
-        private void AddFieldElement(IDigest digest, ECFieldElement v)
+        private static void AddFieldElement(IDigest digest, ECFieldElement v)
         {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Span<byte> buf = stackalloc byte[v.GetEncodedLength()];
+            v.EncodeTo(buf);
+            digest.BlockUpdate(buf);
+#else
             byte[] p = v.GetEncoded();
             digest.BlockUpdate(p, 0, p.Length);
+#endif
         }
 
         protected virtual BigInteger CalculateE(BigInteger n, byte[] message)

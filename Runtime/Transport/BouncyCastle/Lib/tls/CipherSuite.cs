@@ -452,10 +452,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public const int TLS_SM4_CCM_SM3 = 0x00C7;
 
         /*
-         * RFC 9189
+         * RFC 9150
          */
-        public const int TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC = 0xC100;
-        public const int TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC = 0xC101;
-        public const int TLS_GOSTR341112_256_WITH_28147_CNT_IMIT = 0xC102;
+        public const int TLS_SHA256_SHA256 = 0xC0B4;
+        public const int TLS_SHA384_SHA384 = 0xC0B5;
+
     }
 }

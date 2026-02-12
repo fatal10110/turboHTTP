@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Pqc.Crypto.Crystals.Dilithium;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers.MLDsa;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Collections;
 
@@ -32,7 +32,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
             m_mode = mode;
         }
 
-        internal DilithiumEngine GetEngine(SecureRandom random) => new DilithiumEngine(m_mode, random, usingAes: false);
+        internal MLDsaEngine GetEngine(SecureRandom random) => new MLDsaEngine(m_mode, random);
 
         public string Name => m_name;
 
@@ -47,7 +47,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
                 case 5: return 4896;
                 default:
                     throw new InvalidOperationException();
-                };
+                }
             }
         }
 
@@ -62,11 +62,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
                 case 5: return 2592;
                 default:
                     throw new InvalidOperationException();
-                };
+                }
             }
         }
 
-        internal int SeedLength => DilithiumEngine.SeedBytes;
+        internal int SeedLength => MLDsaEngine.SeedBytes;
 
         public override string ToString() => Name;
     }

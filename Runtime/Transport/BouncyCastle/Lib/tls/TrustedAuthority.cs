@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
@@ -15,31 +15,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public TrustedAuthority(short identifierType, object identifier)
         {
             if (!IsCorrectType(identifierType, identifier))
-                throw new ArgumentException("not an instance of the correct type", "identifier");
+                throw new ArgumentException("not an instance of the correct type", nameof(identifier));
 
-            this.m_identifierType = identifierType;
-            this.m_identifier = identifier;
+            m_identifierType = identifierType;
+            m_identifier = identifier;
         }
 
-        public short IdentifierType
-        {
-            get { return m_identifierType; }
-        }
+        public short IdentifierType => m_identifierType;
 
-        public object Identifier
-        {
-            get { return m_identifier; }
-        }
+        public object Identifier => m_identifier;
 
-        public byte[] GetCertSha1Hash()
-        {
-            return Arrays.Clone((byte[])m_identifier);
-        }
+        public byte[] GetCertSha1Hash() => Arrays.Clone((byte[])m_identifier);
 
-        public byte[] GetKeySha1Hash()
-        {
-            return Arrays.Clone((byte[])m_identifier);
-        }
+        public byte[] GetKeySha1Hash() => Arrays.Clone((byte[])m_identifier);
 
         public X509Name X509Name
         {
@@ -107,10 +95,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case Tls.IdentifierType.x509_name:
             {
                 byte[] derEncoding = TlsUtilities.ReadOpaque16(input, 1);
-                Asn1Object asn1 = TlsUtilities.ReadAsn1Object(derEncoding);
-                X509Name x509Name = X509Name.GetInstance(asn1);
-                TlsUtilities.RequireDerEncoding(x509Name, derEncoding);
-                identifier = x509Name;
+                identifier = TlsUtilities.ReadDerEncoding(derEncoding, X509Name.GetOptional);
                 break;
             }
             default:
@@ -139,13 +124,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case Tls.IdentifierType.x509_name:
                 return identifier is X509Name;
             default:
-                throw new ArgumentException("unsupported IdentifierType", "identifierType");
+                throw new ArgumentException("unsupported IdentifierType", nameof(identifierType));
             }
         }
 
-        private static bool IsSha1Hash(object identifier)
-        {
-            return identifier is byte[] && ((byte[])identifier).Length == 20;
-        }
+        private static bool IsSha1Hash(object identifier) => identifier is byte[] bytes && bytes.Length == 20;
     }
 }

@@ -1,6 +1,4 @@
-﻿using System;
-
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
+﻿using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Agreement.JPake
 {
@@ -28,7 +26,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Agreement.JPake
         /// <summary>
         /// The value of MacTag, as computed by round 3.
         /// 
-        /// See JPAKEUtil#calculateMacTag(string, string, BigInteger, BigInteger, BigInteger, BigInteger, BigInteger, Org.BouncyCastle.Crypto.Digest)
+        /// See JPAKEUtil#calculateMacTag(string, string, BigInteger, BigInteger, BigInteger, BigInteger, BigInteger, TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digest)
         /// </summary>
         private readonly BigInteger macTag;
 
@@ -38,14 +36,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Agreement.JPake
             this.macTag = magTag;
         }
 
-        public virtual string ParticipantId
-        {
-            get { return participantId; }
-        }
+        public virtual string ParticipantId => participantId;
 
-        public virtual BigInteger MacTag
-        {
-            get { return macTag; }
-        }
+        public virtual BigInteger MacTag => macTag;
     }
 }

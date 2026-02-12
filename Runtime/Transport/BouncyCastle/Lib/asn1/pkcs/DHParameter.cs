@@ -41,7 +41,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs
 
 			if (l != 0)
             {
-                m_l = new DerInteger(l);
+                m_l = DerInteger.ValueOf(l);
             }
         }
 

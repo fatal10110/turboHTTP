@@ -36,12 +36,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public const short ecdsa_brainpoolP384r1tls13_sha384 = 27;
         public const short ecdsa_brainpoolP512r1tls13_sha512 = 28;
 
-        /*
-         * RFC 9189
-         */
-        public const short gostr34102012_256 = 64;
-        public const short gostr34102012_512 = 65;
-
         public static short GetClientCertificateType(short signatureAlgorithm)
         {
             switch (signatureAlgorithm)
@@ -62,12 +56,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case SignatureAlgorithm.ed25519:
             case SignatureAlgorithm.ed448:
                 return ClientCertificateType.ecdsa_sign;
-
-            case SignatureAlgorithm.gostr34102012_256:
-                return ClientCertificateType.gost_sign256;
-
-            case SignatureAlgorithm.gostr34102012_512:
-                return ClientCertificateType.gost_sign512;
 
             default:
                 return -1;
@@ -108,10 +96,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return "ecdsa_brainpoolP384r1tls13_sha384";
             case ecdsa_brainpoolP512r1tls13_sha512:
                 return "ecdsa_brainpoolP512r1tls13_sha512";
-            case gostr34102012_256:
-                return "gostr34102012_256";
-            case gostr34102012_512:
-                return "gostr34102012_512";
             default:
                 return "UNKNOWN";
             }
@@ -141,8 +125,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case ecdsa_brainpoolP256r1tls13_sha256:
             case ecdsa_brainpoolP384r1tls13_sha384:
             case ecdsa_brainpoolP512r1tls13_sha512:
-            case gostr34102012_256:
-            case gostr34102012_512:
                 return true;
             default:
                 return false;

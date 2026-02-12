@@ -9,7 +9,6 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Misc;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Utilities;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Operators;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security.Certificates;
@@ -62,8 +61,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
         private readonly BasicConstraints basicConstraints;
         private readonly bool[] keyUsage;
 
-        private string m_sigAlgName = null;
-
         private AsymmetricKeyParameter publicKeyValue;
         private CachedEncoding cachedEncoding;
 
@@ -96,11 +93,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
 
             try
             {
-                Asn1OctetString str = GetExtensionValue(X509Extensions.BasicConstraints);
-                if (str != null)
-                {
-                    basicConstraints = BasicConstraints.GetInstance(X509ExtensionUtilities.FromExtensionValue(str));
-                }
+                basicConstraints = this.GetExtension(X509Extensions.BasicConstraints, BasicConstraints.GetInstance);
             }
             catch (Exception e)
             {
@@ -109,11 +102,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
 
             try
             {
-                Asn1OctetString str = GetExtensionValue(X509Extensions.KeyUsage);
-                if (str != null)
+                DerBitString bits = this.GetExtension(X509Extensions.KeyUsage, DerBitString.GetInstance);
+                if (bits != null)
                 {
-                    DerBitString bits = DerBitString.GetInstance(X509ExtensionUtilities.FromExtensionValue(str));
-
                     byte[] bytes = bits.GetBytes();
                     int length = (bytes.Length * 8) - bits.PadBits;
 
@@ -219,7 +210,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
         }
 
         /// <summary>
-        /// Return a <see cref="Org.BouncyCastle.Math.BigInteger">BigInteger</see> containing the serial number.
+        /// Return a <see cref="TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.BigInteger">BigInteger</see> containing the serial number.
         /// </summary>
         /// <returns>The Serial number.</returns>
         public virtual BigInteger SerialNumber
@@ -291,8 +282,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
 		/// A meaningful version of the Signature Algorithm. (e.g. SHA1WITHRSA)
 		/// </summary>
 		/// <returns>A string representing the signature algorithm.</returns>
-		public virtual string SigAlgName => Objects.EnsureSingletonInitialized(ref m_sigAlgName, SignatureAlgorithm,
-            X509SignatureUtilities.GetSignatureName);
+		public virtual string SigAlgName => c.SignatureAlgorithm.Algorithm.Id;
 
         /// <summary>
         /// Get the Signature Algorithms Object ID.
@@ -343,14 +333,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
 
         public virtual IList<DerObjectIdentifier> GetExtendedKeyUsage()
         {
-            Asn1OctetString str = GetExtensionValue(X509Extensions.ExtendedKeyUsage);
-
-            if (str == null)
-                return null;
-
             try
             {
-                Asn1Sequence seq = Asn1Sequence.GetInstance(X509ExtensionUtilities.FromExtensionValue(str));
+                // TODO Use ExtendedKeyUsage type?
+                Asn1Sequence seq = this.GetExtension(X509Extensions.ExtendedKeyUsage, Asn1Sequence.GetInstance);
+                if (seq == null)
+                    return null;
 
                 var result = new List<DerObjectIdentifier>();
                 foreach (var element in seq)
@@ -377,37 +365,23 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
             return pathLenConstraint.IntPositiveValueExact;
         }
 
-        public virtual GeneralNames GetIssuerAlternativeNameExtension()
-        {
-            return GetAlternativeNameExtension(X509Extensions.IssuerAlternativeName);
-        }
+        public virtual GeneralNames GetIssuerAlternativeNameExtension() =>
+            GetAlternativeNameExtension(X509Extensions.IssuerAlternativeName);
 
-        public virtual GeneralNames GetSubjectAlternativeNameExtension()
-        {
-            return GetAlternativeNameExtension(X509Extensions.SubjectAlternativeName);
-        }
+        public virtual GeneralNames GetSubjectAlternativeNameExtension() =>
+            GetAlternativeNameExtension(X509Extensions.SubjectAlternativeName);
 
-        public virtual IList<IList<object>> GetIssuerAlternativeNames()
-        {
-            return GetAlternativeNames(X509Extensions.IssuerAlternativeName);
-        }
+        public virtual IList<IList<object>> GetIssuerAlternativeNames() =>
+            GetAlternativeNames(X509Extensions.IssuerAlternativeName);
 
-        public virtual IList<IList<object>> GetSubjectAlternativeNames()
-        {
-            return GetAlternativeNames(X509Extensions.SubjectAlternativeName);
-        }
+        public virtual IList<IList<object>> GetSubjectAlternativeNames() =>
+            GetAlternativeNames(X509Extensions.SubjectAlternativeName);
 
-        protected virtual GeneralNames GetAlternativeNameExtension(DerObjectIdentifier oid)
-        {
-            Asn1OctetString altNames = GetExtensionValue(oid);
-            if (altNames == null)
-                return null;
+        // TODO[api] Remove protected access
+        protected virtual GeneralNames GetAlternativeNameExtension(DerObjectIdentifier oid) =>
+            this.GetExtension(oid, GeneralNames.GetInstance);
 
-            Asn1Object asn1Object = X509ExtensionUtilities.FromExtensionValue(altNames);
-
-            return GeneralNames.GetInstance(asn1Object);
-        }
-
+        // TODO[api] Remove protected access
         protected virtual IList<IList<object>> GetAlternativeNames(DerObjectIdentifier oid)
         {
             var generalNames = GetAlternativeNameExtension(oid);
@@ -634,39 +608,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
 
         // TODO[api] Rename 'key' to 'publicKey'
         public virtual bool IsSignatureValid(AsymmetricKeyParameter key) =>
-            CheckSignatureValid(new Asn1VerifierFactory(c.SignatureAlgorithm, key));
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
         public virtual bool IsSignatureValid(IVerifierFactoryProvider verifierProvider) =>
-            CheckSignatureValid(verifierProvider.CreateVerifierFactory(c.SignatureAlgorithm));
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
         public virtual bool IsAlternativeSignatureValid(AsymmetricKeyParameter publicKey) =>
-            IsAlternativeSignatureValid(new Asn1VerifierFactoryProvider(publicKey));
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
-        public virtual bool IsAlternativeSignatureValid(IVerifierFactoryProvider verifierProvider)
-        {
-            var tbsCertificate = c.TbsCertificate;
-            var extensions = tbsCertificate.Extensions;
-
-            AltSignatureAlgorithm altSigAlg = AltSignatureAlgorithm.FromExtensions(extensions);
-            AltSignatureValue altSigValue = AltSignatureValue.FromExtensions(extensions);
-
-            var verifier = verifierProvider.CreateVerifierFactory(altSigAlg.Algorithm);
-
-            Asn1Sequence tbsSeq = Asn1Sequence.GetInstance(tbsCertificate.ToAsn1Object());
-            Asn1EncodableVector v = new Asn1EncodableVector();
-
-            for (int i = 0; i < tbsSeq.Count - 1; i++)
-            {
-                if (i != 2) // signature field - must be ver 3 so version always present
-                {
-                    v.Add(tbsSeq[i]);
-                }
-            }
-
-            v.Add(new DerTaggedObject(true, 3, extensions.ToAsn1ObjectTrimmed()));
-
-            return X509Utilities.VerifySignature(verifier, new DerSequence(v), altSigValue.Signature);
-        }
+        public virtual bool IsAlternativeSignatureValid(IVerifierFactoryProvider verifierProvider) =>
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
         /// <summary>
         /// Verify the certificate's signature using the nominated public key.
@@ -675,10 +626,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
         /// <returns>True if the signature is valid.</returns>
         /// <exception cref="Exception">If key submitted is not of the above nominated types.</exception>
         // TODO[api] Rename 'key' to 'publicKey'
-        public virtual void Verify(AsymmetricKeyParameter key)
-        {
-            CheckSignature(new Asn1VerifierFactory(c.SignatureAlgorithm, key));
-        }
+        public virtual void Verify(AsymmetricKeyParameter key) =>
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
         /// <summary>
         /// Verify the certificate's signature using a verifier created using the passed in verifier provider.
@@ -686,10 +635,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
         /// <param name="verifierProvider">An appropriate provider for verifying the certificate's signature.</param>
         /// <exception cref="Exception">If verifier provider is not appropriate or the certificate signature algorithm
         /// is invalid.</exception>
-        public virtual void Verify(IVerifierFactoryProvider verifierProvider)
-        {
-            CheckSignature(verifierProvider.CreateVerifierFactory(c.SignatureAlgorithm));
-        }
+        public virtual void Verify(IVerifierFactoryProvider verifierProvider) =>
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
         /// <summary>Verify the certificate's alternative signature using a verifier created using the passed in
         /// verifier provider.</summary>
@@ -697,27 +644,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
         /// signature.</param>
         /// <exception cref="Exception">If verifier provider is not appropriate or the certificate alternative signature
         /// algorithm is invalid.</exception>
-        public virtual void VerifyAltSignature(IVerifierFactoryProvider verifierProvider)
-        {
-            if (!IsAlternativeSignatureValid(verifierProvider))
-                throw new InvalidKeyException("Public key presented not for certificate alternative signature");
-        }
+        public virtual void VerifyAltSignature(IVerifierFactoryProvider verifierProvider) =>
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
-        protected virtual void CheckSignature(IVerifierFactory verifier)
-        {
-            if (!CheckSignatureValid(verifier))
-                throw new InvalidKeyException("Public key presented not for certificate signature");
-        }
+        protected virtual void CheckSignature(IVerifierFactory verifier) =>
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
-        protected virtual bool CheckSignatureValid(IVerifierFactory verifier)
-        {
-            var tbsCertificate = c.TbsCertificate;
-
-            if (!X509Utilities.AreEquivalentAlgorithms(c.SignatureAlgorithm, tbsCertificate.Signature))
-                throw new CertificateException("signature algorithm in TBS cert not same as outer cert");
-
-            return X509Utilities.VerifySignature(verifier, tbsCertificate, c.Signature);
-        }
+        protected virtual bool CheckSignatureValid(IVerifierFactory verifier) =>
+            throw new NotSupportedException("Signature validation is not available in this stripped build.");
 
         internal byte[] GetEncodedInternal() => GetCachedEncoding().GetEncoded();
 

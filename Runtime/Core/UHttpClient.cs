@@ -28,8 +28,24 @@ namespace TurboHTTP.Core
         public UHttpClient(UHttpClientOptions options = null)
         {
             _options = options?.Clone() ?? new UHttpClientOptions();
-            _transport = _options.Transport ?? HttpTransportFactory.Default;
-            _ownsTransport = (_options.Transport != null && _options.DisposeTransport);
+
+            if (_options.Transport != null)
+            {
+                _transport = _options.Transport;
+                _ownsTransport = _options.DisposeTransport;
+            }
+            else if (_options.TlsBackend != TlsBackend.Auto)
+            {
+                // Non-default TLS backend requires a dedicated transport instance
+                // because the shared default singleton is always TlsBackend.Auto.
+                _transport = HttpTransportFactory.CreateWithBackend(_options.TlsBackend);
+                _ownsTransport = true;
+            }
+            else
+            {
+                _transport = HttpTransportFactory.Default;
+                _ownsTransport = false;
+            }
         }
 
         public UHttpRequestBuilder Get(string url)

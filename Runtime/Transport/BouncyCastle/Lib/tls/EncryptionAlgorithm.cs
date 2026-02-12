@@ -7,6 +7,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
     /// Note that the values here are implementation-specific and arbitrary. It is recommended not to depend on the
     /// particular values (e.g. serialization).
     /// </remarks>
+    // TODO[api] Make static
     public abstract class EncryptionAlgorithm
     {
         public const int NULL = 0;
@@ -80,10 +81,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public const int SM4_CBC = 28;
 
         /*
-         * RFC 9189
+         * RFC 9150
          */
-        public const int KUZNYECHIK_CTR_OMAC = 29;
-        public const int MAGMA_CTR_OMAC = 30;
-        public const int cls_28147_CNT_IMIT = 31;
+        public const int NULL_HMAC_SHA256 = 32;
+        public const int NULL_HMAC_SHA384 = 33;
     }
 }

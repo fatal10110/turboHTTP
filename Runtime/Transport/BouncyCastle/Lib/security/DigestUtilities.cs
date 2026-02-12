@@ -2,13 +2,11 @@ using System;
 using System.Collections.Generic;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.CryptoPro;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.GM;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Misc;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Rosstandart;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.TeleTrust;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.UA;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
@@ -28,8 +26,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             BLAKE2S_128, BLAKE2S_160, BLAKE2S_224, BLAKE2S_256,
             BLAKE3_256,
             DSTU7564_256, DSTU7564_384, DSTU7564_512,
-            GOST3411,
-            GOST3411_2012_256, GOST3411_2012_512,
             KECCAK_224, KECCAK_256, KECCAK_288, KECCAK_384, KECCAK_512,
             MD2, MD4, MD5,
             NONE,
@@ -39,7 +35,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             SHA3_224, SHA3_256, SHA3_384, SHA3_512,
             SHAKE128_256, SHAKE256_512,
             SM3,
-            TIGER,
             WHIRLPOOL,
         };
 
@@ -98,8 +93,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AlgorithmMap["RIPEMD-320"] = "RIPEMD320";
             //AlgorithmOidMap[TeleTrusTObjectIdentifiers.RipeMD320] = "RIPEMD320";
 
-            AlgorithmOidMap[CryptoProObjectIdentifiers.GostR3411] = "GOST3411";
-
             AlgorithmMap["KECCAK224"] = "KECCAK-224";
             AlgorithmMap["KECCAK256"] = "KECCAK-256";
             AlgorithmMap["KECCAK288"] = "KECCAK-288";
@@ -133,9 +126,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AlgorithmOidMap[MiscObjectIdentifiers.id_blake2s256] = "BLAKE2S-256";
             AlgorithmOidMap[MiscObjectIdentifiers.blake3_256] = "BLAKE3-256";
 
-            AlgorithmOidMap[RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256] = "GOST3411-2012-256";
-            AlgorithmOidMap[RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512] = "GOST3411-2012-512";
-
             AlgorithmOidMap[UAObjectIdentifiers.dstu7564digest_256] = "DSTU7564-256";
             AlgorithmOidMap[UAObjectIdentifiers.dstu7564digest_384] = "DSTU7564-384";
             AlgorithmOidMap[UAObjectIdentifiers.dstu7564digest_512] = "DSTU7564-512";
@@ -159,7 +149,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             Oids["RIPEMD128"] = TeleTrusTObjectIdentifiers.RipeMD128;
             Oids["RIPEMD160"] = TeleTrusTObjectIdentifiers.RipeMD160;
             Oids["RIPEMD256"] = TeleTrusTObjectIdentifiers.RipeMD256;
-            Oids["GOST3411"] = CryptoProObjectIdentifiers.GostR3411;
             Oids["SM3"] = GMObjectIdentifiers.sm3;
             Oids["BLAKE2B-160"] = MiscObjectIdentifiers.id_blake2b160;
             Oids["BLAKE2B-256"] = MiscObjectIdentifiers.id_blake2b256;
@@ -170,8 +159,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             Oids["BLAKE2S-224"] = MiscObjectIdentifiers.id_blake2s224;
             Oids["BLAKE2S-256"] = MiscObjectIdentifiers.id_blake2s256;
             Oids["BLAKE3-256"] = MiscObjectIdentifiers.blake3_256;
-            Oids["GOST3411-2012-256"] = RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256;
-            Oids["GOST3411-2012-512"] = RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512;
             Oids["DSTU7564-256"] = UAObjectIdentifiers.dstu7564digest_256;
             Oids["DSTU7564-384"] = UAObjectIdentifiers.dstu7564digest_384;
             Oids["DSTU7564-512"] = UAObjectIdentifiers.dstu7564digest_512;
@@ -312,9 +299,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             case DigestAlgorithm.DSTU7564_256: return new Dstu7564Digest(256);
             case DigestAlgorithm.DSTU7564_384: return new Dstu7564Digest(384);
             case DigestAlgorithm.DSTU7564_512: return new Dstu7564Digest(512);
-            case DigestAlgorithm.GOST3411: return new Gost3411Digest();
-            case DigestAlgorithm.GOST3411_2012_256: return new Gost3411_2012_256Digest();
-            case DigestAlgorithm.GOST3411_2012_512: return new Gost3411_2012_512Digest();
             case DigestAlgorithm.KECCAK_224: return new KeccakDigest(224);
             case DigestAlgorithm.KECCAK_256: return new KeccakDigest(256);
             case DigestAlgorithm.KECCAK_288: return new KeccakDigest(288);
@@ -342,7 +326,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             case DigestAlgorithm.SHAKE128_256: return new ShakeDigest(128);
             case DigestAlgorithm.SHAKE256_512: return new ShakeDigest(256);
             case DigestAlgorithm.SM3: return new SM3Digest();
-            case DigestAlgorithm.TIGER: return new TigerDigest();
             case DigestAlgorithm.WHIRLPOOL: return new WhirlpoolDigest();
             default:
                 throw new NotImplementedException();

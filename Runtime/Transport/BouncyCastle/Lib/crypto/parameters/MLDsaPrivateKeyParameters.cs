@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Pqc.Crypto.Crystals.Dilithium;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers.MLDsa;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
@@ -10,6 +10,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
         : MLDsaKeyParameters
     {
         public enum Format { SeedOnly, EncodingOnly, SeedAndEncoding };
+
+        /*
+         * RFC 9881 8.1. [..] the seed format is RECOMMENDED for storage efficiency.
+         */
+        public static readonly Format DefaultFormat = Format.SeedOnly;
 
         public static MLDsaPrivateKeyParameters FromEncoding(MLDsaParameters parameters, byte[] encoding)
         {
@@ -24,14 +29,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 
             int index = 0;
 
-            byte[] rho = Arrays.CopyOfRange(encoding, 0, DilithiumEngine.SeedBytes);
-            index += DilithiumEngine.SeedBytes;
+            byte[] rho = Arrays.CopyOfRange(encoding, 0, MLDsaEngine.SeedBytes);
+            index += MLDsaEngine.SeedBytes;
 
-            byte[] k = Arrays.CopyOfRange(encoding, index, index + DilithiumEngine.SeedBytes);
-            index += DilithiumEngine.SeedBytes;
+            byte[] k = Arrays.CopyOfRange(encoding, index, index + MLDsaEngine.SeedBytes);
+            index += MLDsaEngine.SeedBytes;
 
-            byte[] tr = Arrays.CopyOfRange(encoding, index, index + DilithiumEngine.TrBytes);
-            index += DilithiumEngine.TrBytes;
+            byte[] tr = Arrays.CopyOfRange(encoding, index, index + MLDsaEngine.TrBytes);
+            index += MLDsaEngine.TrBytes;
 
             int delta = engine.L * engine.PolyEtaPackedBytes;
             byte[] s1 = Arrays.CopyOfRange(encoding, index, index + delta);
@@ -41,7 +46,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
             byte[] s2 = Arrays.CopyOfRange(encoding, index, index + delta);
             index += delta;
 
-            delta = engine.K * DilithiumEngine.PolyT0PackedBytes;
+            delta = engine.K * MLDsaEngine.PolyT0PackedBytes;
             byte[] t0 = Arrays.CopyOfRange(encoding, index, index + delta);
             //index += delta;
 
@@ -52,7 +57,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
         }
 
         public static MLDsaPrivateKeyParameters FromSeed(MLDsaParameters parameters, byte[] seed) =>
-            FromSeed(parameters, seed, preferredFormat: Format.SeedOnly);
+            FromSeed(parameters, seed, preferredFormat: DefaultFormat);
 
         public static MLDsaPrivateKeyParameters FromSeed(MLDsaParameters parameters, byte[] seed,
             Format preferredFormat)
@@ -68,8 +73,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 
             var engine = parameters.ParameterSet.GetEngine(random: null);
 
-            engine.GenerateKeyPairInternal(seed, legacy: false, out var rho, out var k, out var tr, out var s1,
-                out var s2, out var t0, out var t1);
+            engine.GenerateKeyPairInternal(seed, out var rho, out var k, out var tr, out var s1, out var s2, out var t0,
+                out var t1);
 
             return new MLDsaPrivateKeyParameters(parameters, rho, k, tr, s1, s2, t0, t1, seed, format);
         }
@@ -114,13 +119,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 
         internal byte[] Seed => m_seed;
 
+        // NB: Don't remove - needed by commented-out test cases
         internal byte[] SignInternal(byte[] rnd, byte[] msg, int msgOff, int msgLen)
         {
             var engine = Parameters.ParameterSet.GetEngine(random: null);
 
             byte[] sig = new byte[engine.CryptoBytes];
-            engine.SignInternal(sig, sig.Length, msg, msgOff, msgLen, m_rho, m_k, m_tr, m_t0, m_s1, m_s2, rnd,
-                legacy: false);
+            engine.SignInternal(sig, sig.Length, msg, msgOff, msgLen, m_rho, m_k, m_tr, m_t0, m_s1, m_s2, rnd);
             return sig;
         }
 

@@ -21,7 +21,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
 	 *     AttributeValue ::= ANY DEFINED BY AttributeType
 	 * </pre>
 	 *
-	 * @see Org.BouncyCastle.Asn1.X509.X509Name for AttributeType ObjectIdentifiers.
+	 * @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509.X509Name for AttributeType ObjectIdentifiers.
 	 */
     public class SubjectDirectoryAttributes
 		: Asn1Encodable

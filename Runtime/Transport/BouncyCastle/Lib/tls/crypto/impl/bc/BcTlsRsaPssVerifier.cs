@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines;
@@ -17,7 +17,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
             : base(crypto, publicKey)
         {
             if (!SignatureScheme.IsRsaPss(signatureScheme))
-                throw new ArgumentException("signatureScheme");
+                throw new ArgumentException(nameof(signatureScheme));
 
             this.m_signatureScheme = signatureScheme;
         }

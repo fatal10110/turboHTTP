@@ -16,9 +16,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
     {
         /**
          * some providers fail to include the leading zero in PKCS1 encoded blocks. If you need to
-         * work with one of these set the system property Org.BouncyCastle.Pkcs1.Strict to false.
+         * work with one of these set the system property TurboHTTP.SecureProtocol.Org.BouncyCastle.Pkcs1.Strict to false.
          */
-        public const string StrictLengthEnabledProperty = "Org.BouncyCastle.Pkcs1.Strict";
+        public const string StrictLengthEnabledProperty = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Pkcs1.Strict";
 
         private const int HeaderLength = 10;
 
@@ -104,12 +104,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
         {
             engine.Init(forEncryption, parameters);
 
-            SecureRandom providedRandom = null;
-            if (parameters is ParametersWithRandom withRandom)
-            {
-                providedRandom = withRandom.Random;
-                parameters = withRandom.Parameters;
-            }
+            parameters = ParameterUtilities.GetRandom(parameters, out var providedRandom);
 
             AsymmetricKeyParameter kParam = (AsymmetricKeyParameter)parameters;
 

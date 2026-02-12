@@ -8,6 +8,7 @@ using TurboHTTP.Core;
 using TurboHTTP.Transport.Http1;
 using TurboHTTP.Transport.Http2;
 using TurboHTTP.Transport.Tcp;
+using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Transport
 {
@@ -23,9 +24,9 @@ namespace TurboHTTP.Transport
         private readonly Http2ConnectionManager _h2Manager = new Http2ConnectionManager();
         private volatile bool _disposed;
 
-        public RawSocketTransport(TcpConnectionPool pool = null)
+        public RawSocketTransport(TcpConnectionPool pool = null, TlsBackend tlsBackend = TlsBackend.Auto)
         {
-            _pool = pool ?? new TcpConnectionPool();
+            _pool = pool ?? new TcpConnectionPool(tlsBackend: tlsBackend);
         }
 
         /// <summary>
@@ -35,7 +36,9 @@ namespace TurboHTTP.Transport
         /// </summary>
         public static void EnsureRegistered()
         {
-            HttpTransportFactory.Register(() => new RawSocketTransport());
+            HttpTransportFactory.Register(
+                () => new RawSocketTransport(),
+                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend));
         }
 
         public async Task<UHttpResponse> SendAsync(

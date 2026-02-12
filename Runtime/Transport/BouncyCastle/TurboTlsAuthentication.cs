@@ -1,13 +1,3 @@
-// Step 3C.6: TurboTlsAuthentication
-//
-// This file implements BouncyCastle's TlsAuthentication interface for server certificate validation.
-// REQUIRES: BouncyCastle source to be repackaged in the Lib/ directory first.
-//
-// To enable this implementation:
-// 1. Download BouncyCastle source from https://github.com/bcgit/bc-csharp (v2.2.1+)
-// 2. Extract to Assets/TurboHTTP/ThirdParty/BouncyCastle-Source
-// 3. Run Tools > TurboHTTP > Repackage BouncyCastle in Unity Editor
-// 4. Rename this file to TurboTlsAuthentication.cs and remove the .stub extension
 
 
 using System;
@@ -15,12 +5,21 @@ using System.Linq;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.X509;
 
 namespace TurboHTTP.Transport.BouncyCastle
 {
     /// <summary>
     /// TLS authentication handler for server certificate validation.
     /// </summary>
+    /// <remarks>
+    /// <b>SECURITY WARNING — NON-PRODUCTION:</b> This implementation performs hostname and
+    /// validity-period checks only. Certificate chain validation (signature verification,
+    /// trust anchor matching, revocation) is NOT implemented. This means any self-signed or
+    /// forged certificate with correct hostname/dates will be accepted, leaving connections
+    /// vulnerable to MITM attacks. Full chain validation is deferred to Phase 6.
+    /// Do NOT use BouncyCastle TLS backend in production until Phase 6 is complete.
+    /// </remarks>
     internal sealed class TurboTlsAuthentication : TlsAuthentication
     {
         private readonly string _targetHost;
@@ -65,11 +64,14 @@ namespace TurboHTTP.Transport.BouncyCastle
                     "Certificate chain is empty");
             }
             // TODO: Full chain validation deferred to Phase 6
+#pragma warning disable CS0168
+#warning "Phase 3C: Certificate chain validation is NOT implemented — accepting any chain with valid hostname/dates. See Phase 6."
+#pragma warning restore CS0168
         }
 
         private void ValidateHostname(TlsCertificate tlsCertificate, string hostname)
         {
-            var cert = tlsCertificate.GetX509Certificate();
+            var cert = new X509Certificate(tlsCertificate.GetEncoded());
             
             var sans = GetSubjectAlternativeNames(cert);
             
@@ -92,7 +94,7 @@ namespace TurboHTTP.Transport.BouncyCastle
 
         private void ValidateValidity(TlsCertificate tlsCertificate)
         {
-            var cert = tlsCertificate.GetX509Certificate();
+            var cert = new X509Certificate(tlsCertificate.GetEncoded());
             var now = DateTime.UtcNow;
 
             if (now < cert.NotBefore)
@@ -108,7 +110,7 @@ namespace TurboHTTP.Transport.BouncyCastle
             }
         }
 
-        private string[] GetSubjectAlternativeNames(TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.X509Certificate cert)
+        private string[] GetSubjectAlternativeNames(X509Certificate cert)
         {
             try
             {
@@ -117,7 +119,7 @@ namespace TurboHTTP.Transport.BouncyCastle
                     return Array.Empty<string>();
 
                 var result = new System.Collections.Generic.List<string>();
-                foreach (System.Collections.IList san in sans)
+                foreach (var san in sans)
                 {
                     if (san.Count >= 2 && san[0] is int type && type == 2)
                     {

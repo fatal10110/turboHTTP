@@ -30,9 +30,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             Vector128.Create((byte)15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
 
         private static bool IsFourWaySupported =>
-            Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled &&
-            Org.BouncyCastle.Runtime.Intrinsics.X86.Ssse3.IsEnabled &&
-            Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked;
+            TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled &&
+            TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Ssse3.IsEnabled &&
+            TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked;
 #endif
 
         internal static IGcmMultiplier CreateGcmMultiplier()
@@ -144,7 +144,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             else if (parameters is ParametersWithIV withIV)
             {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                newNonce = withIV.IV;
+                newNonce = withIV.InternalIV;
 #else
                 newNonce = withIV.GetIV();
 #endif
@@ -1095,8 +1095,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 
             GetNextCtrBlock(ctrBlock);
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
             {
                 var t0 = MemoryMarshal.Read<Vector128<byte>>(input);
                 var t1 = MemoryMarshal.Read<Vector128<byte>>(ctrBlock);
@@ -1143,8 +1143,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 
             GetNextCtrBlock(ctrBlock);
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
             {
                 var t0 = MemoryMarshal.Read<Vector128<byte>>(input);
                 var t1 = MemoryMarshal.Read<Vector128<byte>>(ctrBlock);
@@ -1189,8 +1189,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 
             GetNextCtrBlock(ctrBlock);
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
             {
                 var t0 = MemoryMarshal.Read<Vector128<byte>>(input);
                 var t1 = MemoryMarshal.Read<Vector128<byte>>(ctrBlock);
@@ -1321,8 +1321,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 
             GetNextCtrBlock(ctrBlock);
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
             {
                 var t0 = MemoryMarshal.Read<Vector128<byte>>(input);
                 var t1 = MemoryMarshal.Read<Vector128<byte>>(ctrBlock);
@@ -1369,8 +1369,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             GetNextCtrBlocks2(ctrBlocks);
 
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
             {
                 var t0 = MemoryMarshal.Read<Vector128<byte>>(input);
                 var t1 = MemoryMarshal.Read<Vector128<byte>>(ctrBlocks);
@@ -1415,8 +1415,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             ctrBlocks = ctrBlocks[BlockSize..];
 
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
             {
                 var t0 = MemoryMarshal.Read<Vector128<byte>>(input);
                 var t1 = MemoryMarshal.Read<Vector128<byte>>(ctrBlocks);

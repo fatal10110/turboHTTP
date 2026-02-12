@@ -324,8 +324,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Custom.Sec
         private static void ImplMultiply(ReadOnlySpan<ulong> x, ReadOnlySpan<ulong> y, Span<ulong> zz)
         {
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
                 var X01 = Vector128.Create(x[0], x[1]);
                 var X2_ = Vector128.CreateScalar(x[2]);
@@ -626,7 +626,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Custom.Sec
             zz[4] = Interleave.Expand8to16((byte)x[2]);
 
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Bmi2.X64.IsEnabled)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Bmi2.X64.IsEnabled)
             {
                 zz[3] = Bmi2.X64.ParallelBitDeposit(x[1] >> 32, 0x5555555555555555UL);
                 zz[2] = Bmi2.X64.ParallelBitDeposit(x[1]      , 0x5555555555555555UL);

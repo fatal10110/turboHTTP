@@ -654,7 +654,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Custom.Sec
 #endif
         {
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled)
             {
                 var X = Vector128.CreateScalar(x);
                 var Y = Vector128.CreateScalar(y);
@@ -711,7 +711,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Custom.Sec
 #endif
         {
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Bmi2.X64.IsEnabled)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Bmi2.X64.IsEnabled)
             {
                 zz[17] = Bmi2.X64.ParallelBitDeposit(x[8] >> 32, 0x5555555555555555UL);
                 zz[16] = Bmi2.X64.ParallelBitDeposit(x[8]      , 0x5555555555555555UL);

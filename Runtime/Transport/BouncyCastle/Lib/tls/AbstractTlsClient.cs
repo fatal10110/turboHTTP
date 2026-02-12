@@ -100,12 +100,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         public virtual TlsDHGroupVerifier GetDHGroupVerifier()
         {
-            return new DefaultTlsDHGroupVerifier();
+            return null;
         }
 
         public virtual TlsSrpConfigVerifier GetSrpConfigVerifier()
         {
-            return new DefaultTlsSrpConfigVerifier();
+            return null;
         }
 
         protected virtual IList<X509Name> GetCertificateAuthorities()
@@ -149,7 +149,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (namedGroupRoles.Contains(NamedGroupRole.ecdh))
             {
                 TlsUtilities.AddIfSupported(supportedGroups, crypto,
-                    new int[]{ NamedGroup.x25519, NamedGroup.x448 });
+                    new int[]{ NamedGroup.x25519 });
             }
 
             if (namedGroupRoles.Contains(NamedGroupRole.ecdh) ||
@@ -157,12 +157,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             {
                 TlsUtilities.AddIfSupported(supportedGroups, crypto,
                     new int[]{ NamedGroup.secp256r1, NamedGroup.secp384r1 });
-            }
-
-            if (namedGroupRoles.Contains(NamedGroupRole.dh))
-            {
-                TlsUtilities.AddIfSupported(supportedGroups, crypto,
-                    new int[]{ NamedGroup.ffdhe2048, NamedGroup.ffdhe3072, NamedGroup.ffdhe4096 });
             }
 
             return supportedGroups;

@@ -133,7 +133,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
             {
                 key = withIV.Parameters as KeyParameter;
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                npub = withIV.IV;
+                npub = withIV.InternalIV;
 #else
                 npub = withIV.GetIV();
 #endif
@@ -150,7 +150,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
                 throw new ArgumentException(asconParameters + " requires exactly " + CRYPTO_ABYTES + " bytes of IV");
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            var k = key.Key;
+            var k = key.InternalKey;
 #else
             byte[] k = key.GetKey();
 #endif

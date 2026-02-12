@@ -77,22 +77,32 @@ namespace TurboHTTP.Transport.Tls
                 throwOnError: true);
 
             // Get singleton instance via reflection
-            var instanceProperty = bcType.GetProperty("Instance",
+            // Note: Instance is a 'static readonly' field, not a property
+            var instanceField = bcType.GetField("Instance",
                 System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
 
-            if (instanceProperty == null)
+            if (instanceField == null)
             {
                 throw new InvalidOperationException(
-                    $"BouncyCastle TLS provider type '{bcType.FullName}' does not have a public static 'Instance' property. " +
+                    $"BouncyCastle TLS provider type '{bcType.FullName}' does not have a public static 'Instance' field. " +
                     "This indicates a version mismatch or corrupted assembly.");
             }
 
-            return (ITlsProvider)instanceProperty.GetValue(null);
+            return (ITlsProvider)instanceField.GetValue(null);
         }
 
+        /// <summary>
+        /// Platform-specific auto-selection logic.
+        /// 
+        /// IMPORTANT: This selector checks API presence (IsAlpnSupported), not runtime behavior.
+        /// On IL2CPP/AOT where ALPN APIs exist but MakeGenericType fails at runtime,
+        /// SslStreamTlsProvider.WrapAsync handles this internally — it wraps the ALPN path
+        /// in try/catch and falls back to non-ALPN authentication. This is by-design:
+        /// the selector picks the provider, the provider handles runtime edge cases.
+        /// For guaranteed ALPN on all platforms, use TlsBackend.BouncyCastle explicitly.
+        /// </summary>
         private static ITlsProvider GetAutoProvider()
         {
-            // Platform-specific auto-selection logic
 #if UNITY_EDITOR || UNITY_STANDALONE_WIN || UNITY_STANDALONE_OSX
             // Desktop platforms: SslStream works reliably
             return GetSslStreamProvider();
@@ -116,15 +126,9 @@ namespace TurboHTTP.Transport.Tls
                 {
                     // BouncyCastle not available, use SslStream anyway
                     // (ALPN will be null, HTTP/1.1 fallback)
-#if UNITY_2017_1_OR_NEWER
-                    UnityEngine.Debug.LogWarning(
-                        "BouncyCastle TLS provider not available. " +
-                        "ALPN negotiation may not work. HTTP/2 will be unavailable.");
-#else
                     System.Diagnostics.Debug.WriteLine(
                         "[TurboHTTP] WARNING: BouncyCastle TLS provider not available. " +
                         "ALPN negotiation may not work. HTTP/2 will be unavailable.");
-#endif
                     return sslStreamProvider;
                 }
             }

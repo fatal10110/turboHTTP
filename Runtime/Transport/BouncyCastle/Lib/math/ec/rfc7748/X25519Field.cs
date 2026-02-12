@@ -35,8 +35,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc7748
         public static void Add(int[] x, int[] y, int[] z)
         {
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
                 var X = MemoryMarshal.AsBytes(x.AsSpan(0, 8));
                 var Y = MemoryMarshal.AsBytes(y.AsSpan(0, 8));
@@ -59,8 +59,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc7748
                 return;
             }
 
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
                 var X = MemoryMarshal.AsBytes(x.AsSpan(0, 8));
                 var Y = MemoryMarshal.AsBytes(y.AsSpan(0, 8));
@@ -119,8 +119,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc7748
         public static void Apm(int[] x, int[] y, int[] zp, int[] zm)
         {
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
                 var X = MemoryMarshal.AsBytes(x.AsSpan(0, 8));
                 var Y = MemoryMarshal.AsBytes(y.AsSpan(0, 8));
@@ -152,8 +152,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc7748
                 return;
             }
 
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
                 var X = MemoryMarshal.AsBytes(x.AsSpan(0, 8));
                 var Y = MemoryMarshal.AsBytes(y.AsSpan(0, 8));
@@ -1132,8 +1132,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc7748
         public static void Sub(int[] x, int[] y, int[] z)
         {
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
                 var X = MemoryMarshal.AsBytes(x.AsSpan(0, 8));
                 var Y = MemoryMarshal.AsBytes(y.AsSpan(0, 8));
@@ -1156,8 +1156,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc7748
                 return;
             }
 
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
                 var X = MemoryMarshal.AsBytes(x.AsSpan(0, 8));
                 var Y = MemoryMarshal.AsBytes(y.AsSpan(0, 8));

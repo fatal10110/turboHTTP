@@ -10,15 +10,11 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 {
-    /// <summary>
-    /// Ascon-AEAD128 was introduced as part of the NIST Lightweight Cryptography
-    /// competition and descriLEd in the NIST Special Publication SP 800-232 (Initial
-    /// Public Draft).
-    /// </summary>
+    /// <summary>Ascon-AEAD128, from NIST Special Publication (SP) 800-232.</summary>
     /// <remarks>
     /// For additional details, see:
     /// <list type="bullet">
-    /// <item><a href="https://csrc.nist.gov/pubs/sp/800/232/ipd">NIST SP 800-232 (Initial Public Draft)</a>.</item>
+    /// <item><a href="https://csrc.nist.gov/pubs/sp/800/232/final">NIST SP 800-232</a>.</item>
     /// <item><a href="https://github.com/ascon/ascon-c">Reference, highly optimized, masked C and ASM implementations
     /// of Ascon (NIST SP 800-232)</a>.</item>
     /// </list>
@@ -93,7 +89,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             {
                 key = withIV.Parameters as KeyParameter;
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                npub = withIV.IV;
+                npub = withIV.InternalIV;
 #else
                 npub = withIV.GetIV();
 #endif
@@ -110,7 +106,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
                 throw new ArgumentException($"{AlgorithmName} requires exactly {CryptoABytes} bytes of IV");
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            var k = key.Key;
+            var k = key.InternalKey;
 #else
             byte[] k = key.GetKey();
 #endif

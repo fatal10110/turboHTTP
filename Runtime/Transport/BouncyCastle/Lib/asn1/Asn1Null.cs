@@ -19,7 +19,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
             internal override Asn1Object FromImplicitPrimitive(DerOctetString octetString)
             {
-                return CreatePrimitive(octetString.GetOctets());
+                CheckContentsLength(octetString.GetOctetsLength());
+                return CreatePrimitive();
             }
         }
 
@@ -53,7 +54,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         public static Asn1Null GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
         {
-            return (Asn1Null)Meta.Instance.GetContextInstance(taggedObject, declaredExplicit);
+            return (Asn1Null)Meta.Instance.GetContextTagged(taggedObject, declaredExplicit);
         }
 
         public static Asn1Null GetOptional(Asn1Encodable element)
@@ -81,12 +82,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return "NULL";
         }
 
-        internal static Asn1Null CreatePrimitive(byte[] contents)
+        internal static void CheckContentsLength(int contentsLength)
         {
-            if (0 != contents.Length)
+            if (0 != contentsLength)
                 throw new InvalidOperationException("malformed NULL encoding encountered");
-
-            return DerNull.Instance;
         }
+
+        internal static Asn1Null CreatePrimitive() => DerNull.Instance;
     }
 }

@@ -50,6 +50,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         internal Certificate m_localCertificate = null;
         internal Certificate m_peerCertificate = null;
         internal ProtocolVersion m_negotiatedVersion = null;
+        internal int m_negotiatedGroup = -1;
         internal int m_statusRequestVersion = 0;
         internal short m_clientCertificateType = CertificateType.X509;
         internal short m_serverCertificateType = CertificateType.X509;
@@ -59,9 +60,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         internal byte[] m_peerVerifyData = null;
 
         /// <summary>Connection ID we use during communication to the peer.</summary>
-        internal byte[] m_connectionIDLocal;
+        internal byte[] m_connectionIDLocal = null;
         /// <summary>Connection ID our peer uses for communication to us.</summary>
-        internal byte[] m_connectionIDPeer;
+        internal byte[] m_connectionIDPeer = null;
 
         internal void Clear()
         {
@@ -229,6 +230,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         {
             get { return m_maxFragmentLength; }
         }
+
+        /// <summary>
+        /// The named group selected by the server for key exchange (if any), or -1 when not negotiated.
+        /// </summary>
+        /// <remarks>
+        /// See <see cref="NamedGroup"/> for group constants. Currently not set (i.e. -1) when pre-1.3 version
+        /// negotiated. Not all TLS 1.3 key exchanges negotiate a group (e.g. PskKeyExchangeMode.psk_ke).
+        /// </remarks>
+        public int NegotiatedGroup => m_negotiatedGroup;
 
         public ProtocolVersion NegotiatedVersion
         {

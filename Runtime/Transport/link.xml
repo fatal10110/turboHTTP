@@ -1,24 +1,35 @@
 <linker>
-  <!-- SslStream types for reflection-based ALPN -->
+  <!--
+    SslStream types for reflection-based ALPN (SslStreamTlsProvider).
+    Preserves internal APIs accessed via reflection to enable HTTP/2 ALPN
+    negotiation on platforms where public APIs aren't exposed.
+    If stripped, AuthenticateWithAlpnAsync falls back to non-ALPN auth;
+    BouncyCastle provides ALPN on those platforms.
+  -->
   <assembly fullname="System.Net.Security">
     <type fullname="System.Net.Security.SslStream" preserve="all"/>
     <type fullname="System.Net.Security.SslClientAuthenticationOptions" preserve="all"/>
     <type fullname="System.Net.Security.SslApplicationProtocol" preserve="all"/>
   </assembly>
 
-  <!-- BouncyCastle TLS provider - loaded via reflection by TlsProviderSelector -->
-  <assembly fullname="TurboHTTP.Transport.BouncyCastle" preserve="all">
-    <!-- Explicitly preserve the entry point class -->
-    <type fullname="TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider" preserve="all"/>
+  <!--
+    Generic instantiation hint for IL2CPP/AOT.
+    MakeGenericType(typeof(SslApplicationProtocol)) in SslStreamTlsProvider
+    needs the open generic List<> template preserved.
+  -->
+  <assembly fullname="mscorlib">
+    <type fullname="System.Collections.Generic.List`1" preserve="all"/>
   </assembly>
 
-  <!-- BouncyCastle crypto primitives - required for TLS handshake -->
-  <assembly fullname="TurboHTTP.Transport.BouncyCastle">
-    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls" preserve="all"/>
-    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto" preserve="all"/>
-    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC" preserve="all"/>
-    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.Security" preserve="all"/>
-    <namespace fullname="TurboHTTP.SecureProtocol.Org.BouncyCastle.X509" preserve="all"/>
-  </assembly>
+  <!--
+    BouncyCastle TLS provider (repackaged source).
+    Preserve the entire assembly because:
+    1. Entry point (BouncyCastleTlsProvider) is loaded via reflection
+    2. BC internally resolves algorithms by string OIDs (e.g. "AES/GCM/NoPadding"),
+       so the linker can't statically trace all code paths
+    3. Can be narrowed to specific ciphers later for size optimization
+  -->
+  <assembly fullname="TurboHTTP.Transport.BouncyCastle" preserve="all"/>
 </linker>
+
 

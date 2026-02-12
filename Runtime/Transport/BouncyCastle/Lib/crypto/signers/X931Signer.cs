@@ -2,6 +2,7 @@
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
@@ -71,14 +72,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
 
         public virtual void Init(bool forSigning, ICipherParameters parameters)
         {
-            if (parameters is ParametersWithRandom withRandom)
-            {
-                kParam = (RsaKeyParameters)withRandom.Parameters;
-            }
-            else
-            {
-                kParam = (RsaKeyParameters)parameters;
-            }
+            kParam = (RsaKeyParameters)ParameterUtilities.IgnoreRandom(parameters);
 
             cipher.Init(forSigning, parameters);
 

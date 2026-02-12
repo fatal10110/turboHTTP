@@ -18,7 +18,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Abc
         private static readonly BigInteger MinusOne = BigInteger.One.Negate();
         private static readonly BigInteger MinusTwo = BigInteger.Two.Negate();
         private static readonly BigInteger MinusThree = BigInteger.Three.Negate();
-        private static readonly BigInteger Four = BigInteger.ValueOf(4);
+        private static readonly BigInteger Four = BigInteger.Four;
 
         private static readonly string PRECOMP_NAME = "bc_tnaf_partmod";
 
@@ -614,7 +614,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Abc
         }
 
         /**
-        * Multiplies a {@link Org.BouncyCastle.Math.EC.AbstractF2mPoint AbstractF2mPoint}
+        * Multiplies a {@link TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.AbstractF2mPoint AbstractF2mPoint}
         * by a <code>BigInteger</code> using the reduced <code>&#964;</code>-adic
         * NAF (RTNAF) method.
         * @param p The AbstractF2mPoint to Multiply.
@@ -633,7 +633,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Abc
         }
 
         /**
-        * Multiplies a {@link Org.BouncyCastle.Math.EC.AbstractF2mPoint AbstractF2mPoint}
+        * Multiplies a {@link TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.AbstractF2mPoint AbstractF2mPoint}
         * by an element <code>&#955;</code> of <code><b>Z</b>[&#964;]</code>
         * using the <code>&#964;</code>-adic NAF (TNAF) method.
         * @param p The AbstractF2mPoint to Multiply.
@@ -652,7 +652,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Abc
         }
 
         /**
-        * Multiplies a {@link Org.BouncyCastle.Math.EC.AbstractF2mPoint AbstractF2mPoint}
+        * Multiplies a {@link TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.AbstractF2mPoint AbstractF2mPoint}
         * by an element <code>&#955;</code> of <code><b>Z</b>[&#964;]</code>
         * using the <code>&#964;</code>-adic NAF (TNAF) method, given the TNAF
         * of <code>&#955;</code>.

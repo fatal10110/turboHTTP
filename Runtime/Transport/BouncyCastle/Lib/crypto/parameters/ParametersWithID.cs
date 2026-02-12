@@ -1,7 +1,6 @@
 ﻿using System;
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-using System.Buffers;
-#endif
+
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 {
@@ -10,12 +9,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
     {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public static ParametersWithID Create<TState>(ICipherParameters parameters, int idLength, TState state,
-            SpanAction<byte, TState> action)
+            System.Buffers.SpanAction<byte, TState> action)
         {
             if (action == null)
                 throw new ArgumentNullException(nameof(action));
-            if (idLength < 0)
-                throw new ArgumentOutOfRangeException(nameof(idLength));
 
             ParametersWithID result = new ParametersWithID(parameters, idLength);
             action(result.m_id, state);
@@ -23,31 +20,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
         }
 #endif
 
-        internal static ICipherParameters ApplyOptionalID(ICipherParameters parameters, byte[] id) =>
-            id == null ? parameters : new ParametersWithIV(parameters, id);
-
         private readonly ICipherParameters m_parameters;
         private readonly byte[] m_id;
 
         public ParametersWithID(ICipherParameters parameters, byte[] id)
         {
             // NOTE: 'parameters' may be null to imply key re-use
-            if (id == null)
-                throw new ArgumentNullException(nameof(id));
-
             m_parameters = parameters;
-            m_id = (byte[])id.Clone();
+            m_id = Arrays.CopyBuffer(id);
         }
 
         public ParametersWithID(ICipherParameters parameters, byte[] id, int idOff, int idLen)
         {
             // NOTE: 'parameters' may be null to imply key re-use
-            if (id == null)
-                throw new ArgumentNullException(nameof(id));
-
             m_parameters = parameters;
-            m_id = new byte[idLen];
-            Array.Copy(id, idOff, m_id, 0, idLen);
+            m_id = Arrays.CopySegment(id, idOff, idLen);
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
@@ -59,32 +46,25 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
         }
 #endif
 
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         private ParametersWithID(ICipherParameters parameters, int idLength)
         {
-            if (idLength < 0)
-                throw new ArgumentOutOfRangeException(nameof(idLength));
-
             // NOTE: 'parameters' may be null to imply key re-use
             m_parameters = parameters;
-            m_id = new byte[idLength];
+            m_id = Arrays.CreateBuffer<byte>(idLength);
         }
+#endif
 
-        public void CopyIDTo(byte[] buf, int off, int len)
-        {
-            if (m_id.Length != len)
-                throw new ArgumentOutOfRangeException(nameof(len));
+        public void CopyIDTo(byte[] buf, int off, int len) => Arrays.CopyBufferToSegment(m_id, buf, off, len);
 
-            Array.Copy(m_id, 0, buf, off, len);
-        }
-
-        public byte[] GetID() => (byte[])m_id.Clone();
+        public byte[] GetID() => Arrays.InternalCopyBuffer(m_id);
 
         public int IDLength => m_id.Length;
 
-        public ICipherParameters Parameters => m_parameters;
-
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        internal ReadOnlySpan<byte> ID => m_id;
+        internal ReadOnlySpan<byte> InternalID => m_id;
 #endif
+
+        public ICipherParameters Parameters => m_parameters;
     }
 }

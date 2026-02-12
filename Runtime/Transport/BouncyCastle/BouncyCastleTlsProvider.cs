@@ -1,14 +1,3 @@
-// Step 3C.7: BouncyCastleTlsProvider
-//
-// This file implements ITlsProvider using BouncyCastle's pure C# TLS implementation.
-// REQUIRES: BouncyCastle source to be repackaged in the Lib/ directory first.
-//
-// To enable this implementation:
-// 1. Download BouncyCastle source from https://github.com/bcgit/bc-csharp (v2.2.1+)
-// 2. Extract to Assets/TurboHTTP/ThirdParty/BouncyCastle-Source
-// 3. Run Tools > TurboHTTP > Repackage BouncyCastle in Unity Editor
-// 4. Rename this file to BouncyCastleTlsProvider.cs and remove the .stub extension
-// 5. Rename TurboTlsClient.cs.stub and TurboTlsAuthentication.cs.stub as well
 
 
 using System;
@@ -31,6 +20,12 @@ namespace TurboHTTP.Transport.BouncyCastle
     internal sealed class BouncyCastleTlsProvider : ITlsProvider
     {
         public static readonly BouncyCastleTlsProvider Instance = new();
+
+        /// <summary>
+        /// Limits concurrent TLS handshakes to avoid ThreadPool starvation on mobile,
+        /// where handshakes are blocking and run on thread pool threads.
+        /// </summary>
+        private static readonly SemaphoreSlim HandshakeSemaphore = new SemaphoreSlim(4);
 
         public string ProviderName => "BouncyCastle";
 
@@ -71,9 +66,17 @@ namespace TurboHTTP.Transport.BouncyCastle
             if (string.IsNullOrEmpty(host))
                 throw new ArgumentNullException(nameof(host));
 
-            // BouncyCastle handshake is blocking; run on thread pool
-            return await Task.Run(() => PerformHandshake(innerStream, host, alpnProtocols, ct), ct)
-                .ConfigureAwait(false);
+            // BouncyCastle handshake is blocking; run on thread pool with concurrency limit
+            await HandshakeSemaphore.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                return await Task.Run(() => PerformHandshake(innerStream, host, alpnProtocols, ct), ct)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                HandshakeSemaphore.Release();
+            }
         }
 
         private TlsResult PerformHandshake(
@@ -106,6 +109,8 @@ namespace TurboHTTP.Transport.BouncyCastle
             }
             catch (Exception ex)
             {
+                // Close protocol to release resources — protocol.Stream may not
+                // cascade disposal back to TlsClientProtocol.
                 try { protocol.Close(); } catch { }
                 
                 if (ex is TlsFatalAlert alert)

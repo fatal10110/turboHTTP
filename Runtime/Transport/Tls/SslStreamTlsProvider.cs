@@ -59,26 +59,57 @@ namespace TurboHTTP.Transport.Tls
 
             try
             {
+                bool alpnAttempted = false;
+
                 // Authenticate as client
                 if (_alpnSupported && alpnProtocols != null && alpnProtocols.Length > 0)
                 {
-                    await AuthenticateWithAlpnAsync(sslStream, host, alpnProtocols, ct).ConfigureAwait(false);
+                    try
+                    {
+                        await AuthenticateWithAlpnAsync(sslStream, host, alpnProtocols, ct).ConfigureAwait(false);
+                        alpnAttempted = true;
+                    }
+                    catch (Exception ex) when (!(ex is OperationCanceledException))
+                    {
+                        // ALPN reflection failed (e.g. MakeGenericType under IL2CPP/AOT).
+                        // Since BouncyCastle is available as a fallback TLS provider with
+                        // guaranteed ALPN support, we fall back to non-ALPN authentication
+                        // here. TlsProviderSelector.Auto will route to BouncyCastle on
+                        // platforms where this path consistently fails.
+                        alpnAttempted = false;
+                    }
                 }
-                else
+
+                if (!alpnAttempted)
                 {
-                    // Fallback: no ALPN
+                    // Non-ALPN path. The 4-param AuthenticateAsClientAsync overload does NOT
+                    // accept a CancellationToken. We use Task.WhenAny with a cancellation-
+                    // aware delay to abandon the await when the outer timeout fires.
+                    // The underlying handshake may continue to completion on its thread,
+                    // but the SslStream will be disposed by the caller (catch block below).
 #pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
-                    await sslStream.AuthenticateAsClientAsync(
+                    var authTask = sslStream.AuthenticateAsClientAsync(
                         host,
                         clientCertificates: null,
-                        enabledSslProtocols: SslProtocols.Tls12 | SslProtocols.Tls13,
-                        checkCertificateRevocation: false).ConfigureAwait(false);
+                        enabledSslProtocols: SslProtocols.Tls12 | (SslProtocols)0x3000 /* Tls13 */,
+                        checkCertificateRevocation: false);
 #pragma warning restore SYSLIB0039
+
+                    var cancelTask = Task.Delay(Timeout.Infinite, ct);
+                    var completed = await Task.WhenAny(authTask, cancelTask).ConfigureAwait(false);
+
+                    if (completed == cancelTask || ct.IsCancellationRequested)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    // Observe auth result (propagate exceptions)
+                    await authTask.ConfigureAwait(false);
                 }
 
                 // Extract ALPN result
                 string negotiatedAlpn = null;
-                if (_alpnSupported)
+                if (alpnAttempted && _alpnSupported)
                 {
                     negotiatedAlpn = ExtractAlpnResult(sslStream);
                 }
@@ -108,16 +139,26 @@ namespace TurboHTTP.Transport.Tls
                 "System.Net.Security.SslClientAuthenticationOptions");
             var options = Activator.CreateInstance(optionsType);
 
-            // Set TargetHost
-            optionsType.GetProperty("TargetHost").SetValue(options, host);
+            // Set TargetHost — null guard for platforms missing the property
+            var targetHostProp = optionsType.GetProperty("TargetHost");
+            if (targetHostProp == null)
+                throw new PlatformNotSupportedException("SslClientAuthenticationOptions.TargetHost not found");
+            targetHostProp.SetValue(options, host);
 
             // Set EnabledSslProtocols
+            var enabledProtocolsProp = optionsType.GetProperty("EnabledSslProtocols");
+            if (enabledProtocolsProp != null)
+            {
 #pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
-            optionsType.GetProperty("EnabledSslProtocols").SetValue(
-                options, SslProtocols.Tls12 | SslProtocols.Tls13);
+                enabledProtocolsProp.SetValue(
+                    options, SslProtocols.Tls12 | (SslProtocols)0x3000 /* Tls13 */);
 #pragma warning restore SYSLIB0039
+            }
 
             // Set ApplicationProtocols (List<SslApplicationProtocol>)
+            // NOTE: MakeGenericType can fail under IL2CPP/AOT if the generic instantiation
+            // List<SslApplicationProtocol> was not preserved. The caller catches this and
+            // falls back to non-ALPN auth. BouncyCastle provides ALPN on those platforms.
             var alpnListType = typeof(SslStream).Assembly.GetType(
                 "System.Net.Security.SslApplicationProtocol");
 
@@ -155,6 +196,9 @@ namespace TurboHTTP.Transport.Tls
             var authMethod = typeof(SslStream).GetMethod(
                 "AuthenticateAsClientAsync",
                 new[] { optionsType, typeof(CancellationToken) });
+
+            if (authMethod == null)
+                throw new PlatformNotSupportedException("SslStream.AuthenticateAsClientAsync(options, ct) not found");
 
             var task = (Task)authMethod.Invoke(sslStream, new[] { options, ct });
             await task.ConfigureAwait(false);
@@ -198,12 +242,11 @@ namespace TurboHTTP.Transport.Tls
 #pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
         private string FormatTlsVersion(SslProtocols protocol)
         {
-            return protocol switch
-            {
-                SslProtocols.Tls12 => "1.2",
-                SslProtocols.Tls13 => "1.3",
-                _ => protocol.ToString()
-            };
+            if (protocol == SslProtocols.Tls12)
+                return "1.2";
+            if (protocol == (SslProtocols)0x3000) // Tls13
+                return "1.3";
+            return protocol.ToString();
         }
 #pragma warning restore SYSLIB0039
     }

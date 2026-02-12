@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Sockets;
@@ -10,10 +10,8 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.EdEC;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Rosstandart;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X9;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Collections;
@@ -28,8 +26,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         private static readonly byte[] DowngradeTlsV11 = Hex.DecodeStrict("444F574E47524400");
         private static readonly byte[] DowngradeTlsV12 = Hex.DecodeStrict("444F574E47524401");
 
-        private static readonly IDictionary<string, SignatureAndHashAlgorithm> CertSigAlgOids = CreateCertSigAlgOids();
-        private static readonly IList<SignatureAndHashAlgorithm> DefaultSupportedSigAlgs = CreateDefaultSupportedSigAlgs();
+        private static readonly Dictionary<string, SignatureAndHashAlgorithm> CertSigAlgOids = CreateCertSigAlgOids();
+        private static readonly List<SignatureAndHashAlgorithm> DefaultSupportedSigAlgs = CreateDefaultSupportedSigAlgs();
 
         private static void AddCertSigAlgOid(IDictionary<string, SignatureAndHashAlgorithm> d, DerObjectIdentifier oid,
             SignatureAndHashAlgorithm sigAndHash)
@@ -43,7 +41,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             AddCertSigAlgOid(d, oid, SignatureAndHashAlgorithm.GetInstance(hashAlgorithm, signatureAlgorithm));
         }
 
-        private static IDictionary<string, SignatureAndHashAlgorithm> CreateCertSigAlgOids()
+        private static Dictionary<string, SignatureAndHashAlgorithm> CreateCertSigAlgOids()
         {
             var d = new Dictionary<string, SignatureAndHashAlgorithm>();
 
@@ -85,10 +83,22 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             AddCertSigAlgOid(d, EdECObjectIdentifiers.id_Ed25519, SignatureAndHashAlgorithm.ed25519);
             AddCertSigAlgOid(d, EdECObjectIdentifiers.id_Ed448, SignatureAndHashAlgorithm.ed448);
 
-            AddCertSigAlgOid(d, RosstandartObjectIdentifiers.id_tc26_signwithdigest_gost_3410_12_256,
-                SignatureAndHashAlgorithm.gostr34102012_256);
-            AddCertSigAlgOid(d, RosstandartObjectIdentifiers.id_tc26_signwithdigest_gost_3410_12_512,
-                SignatureAndHashAlgorithm.gostr34102012_512);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_ml_dsa_44, SignatureAndHashAlgorithm.mldsa44);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_ml_dsa_65, SignatureAndHashAlgorithm.mldsa65);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_ml_dsa_87, SignatureAndHashAlgorithm.mldsa87);
+
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_sha2_128s, SignatureAndHashAlgorithm.slhdsa_sha2_128s);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_sha2_128f, SignatureAndHashAlgorithm.slhdsa_sha2_128f);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_sha2_192s, SignatureAndHashAlgorithm.slhdsa_sha2_192s);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_sha2_192f, SignatureAndHashAlgorithm.slhdsa_sha2_192f);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_sha2_256s, SignatureAndHashAlgorithm.slhdsa_sha2_256s);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_sha2_256f, SignatureAndHashAlgorithm.slhdsa_sha2_256f);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_shake_128s, SignatureAndHashAlgorithm.slhdsa_shake_128s);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_shake_128f, SignatureAndHashAlgorithm.slhdsa_shake_128f);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_shake_192s, SignatureAndHashAlgorithm.slhdsa_shake_192s);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_shake_192f, SignatureAndHashAlgorithm.slhdsa_shake_192f);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_shake_256s, SignatureAndHashAlgorithm.slhdsa_shake_256s);
+            AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_shake_256f, SignatureAndHashAlgorithm.slhdsa_shake_256f);
 
             // TODO[RFC 8998]
             //AddCertSigAlgOid(d, GMObjectIdentifiers.sm2sign_with_sm3, HashAlgorithm.sm3, SignatureAlgorithm.sm2);
@@ -96,7 +106,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return d;
         }
 
-        private static IList<SignatureAndHashAlgorithm> CreateDefaultSupportedSigAlgs()
+        private static List<SignatureAndHashAlgorithm> CreateDefaultSupportedSigAlgs()
         {
             var result = new List<SignatureAndHashAlgorithm>();
             result.Add(SignatureAndHashAlgorithm.ed25519);
@@ -104,12 +114,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             result.Add(SignatureAndHashAlgorithm.GetInstance(HashAlgorithm.sha256, SignatureAlgorithm.ecdsa));
             result.Add(SignatureAndHashAlgorithm.GetInstance(HashAlgorithm.sha384, SignatureAlgorithm.ecdsa));
             result.Add(SignatureAndHashAlgorithm.GetInstance(HashAlgorithm.sha512, SignatureAlgorithm.ecdsa));
-            result.Add(SignatureAndHashAlgorithm.rsa_pss_rsae_sha256);
-            result.Add(SignatureAndHashAlgorithm.rsa_pss_rsae_sha384);
-            result.Add(SignatureAndHashAlgorithm.rsa_pss_rsae_sha512);
             result.Add(SignatureAndHashAlgorithm.rsa_pss_pss_sha256);
             result.Add(SignatureAndHashAlgorithm.rsa_pss_pss_sha384);
             result.Add(SignatureAndHashAlgorithm.rsa_pss_pss_sha512);
+            result.Add(SignatureAndHashAlgorithm.rsa_pss_rsae_sha256);
+            result.Add(SignatureAndHashAlgorithm.rsa_pss_rsae_sha384);
+            result.Add(SignatureAndHashAlgorithm.rsa_pss_rsae_sha512);
+            result.Add(SignatureAndHashAlgorithm.mldsa44);
+            result.Add(SignatureAndHashAlgorithm.mldsa65);
+            result.Add(SignatureAndHashAlgorithm.mldsa87);
             result.Add(SignatureAndHashAlgorithm.GetInstance(HashAlgorithm.sha256, SignatureAlgorithm.rsa));
             result.Add(SignatureAndHashAlgorithm.GetInstance(HashAlgorithm.sha384, SignatureAlgorithm.rsa));
             result.Add(SignatureAndHashAlgorithm.GetInstance(HashAlgorithm.sha512, SignatureAlgorithm.rsa));
@@ -125,11 +138,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return result;
         }
 
-        public static readonly byte[] EmptyBytes = new byte[0];
-        public static readonly short[] EmptyShorts = new short[0];
-        public static readonly int[] EmptyInts = new int[0];
-        public static readonly long[] EmptyLongs = new long[0];
-        public static readonly string[] EmptyStrings = new string[0];
+        public static readonly byte[] EmptyBytes = Array.Empty<byte>();
+        public static readonly short[] EmptyShorts = Array.Empty<short>();
+        public static readonly int[] EmptyInts = Array.Empty<int>();
+        public static readonly long[] EmptyLongs = Array.Empty<long>();
+        public static readonly string[] EmptyStrings = Array.Empty<string>();
 
         internal static short MinimumHashStrict = HashAlgorithm.sha1;
         internal static short MinimumHashPreferred = HashAlgorithm.sha256;
@@ -533,10 +546,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             WriteUint16Array(u16s, buf, offset + 2);
         }
 
-        public static byte[] DecodeOpaque8(byte[] buf)
-        {
-            return DecodeOpaque8(buf, 0);
-        }
+        public static byte[] DecodeOpaque8(byte[] buf) => DecodeOpaque8(buf, 0);
 
         public static byte[] DecodeOpaque8(byte[] buf, int minLength)
         {
@@ -552,10 +562,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return CopyOfRangeExact(buf, 1, buf.Length);
         }
 
-        public static byte[] DecodeOpaque16(byte[] buf)
-        {
-            return DecodeOpaque16(buf, 0);
-        }
+        public static byte[] DecodeOpaque16(byte[] buf) => DecodeOpaque16(buf, 0);
 
         public static byte[] DecodeOpaque16(byte[] buf, int minLength)
         {
@@ -960,10 +967,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return uints;
         }
 
-        public static ProtocolVersion ReadVersion(byte[] buf, int offset)
-        {
-            return ProtocolVersion.Get(buf[offset], buf[offset + 1]);
-        }
+        public static ProtocolVersion ReadVersion(byte[] buf, int offset) =>
+            ProtocolVersion.Get(buf[offset], buf[offset + 1]);
 
         public static ProtocolVersion ReadVersion(Stream input)
         {
@@ -986,6 +991,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     throw new TlsFatalAlert(AlertDescription.decode_error);
                 return result;
             }
+        }
+
+        public static T ReadBerEncoding<T>(byte[] berEncoding, Func<Asn1Encodable, T> optionalConstructor)
+            where T : Asn1Encodable
+        {
+            var asn1Object = ReadAsn1Object(berEncoding);
+            return optionalConstructor(asn1Object) ?? throw new TlsFatalAlert(AlertDescription.decode_error);
+        }
+
+        public static T ReadDerEncoding<T>(byte[] derEncoding, Func<Asn1Encodable, T> optionalConstructor)
+            where T : Asn1Encodable
+        {
+            T t = ReadBerEncoding(derEncoding, optionalConstructor);
+            RequireDerEncoding(t, derEncoding);
+            return t;
         }
 
         /// <exception cref="IOException"/>
@@ -1032,7 +1052,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         public static void AddIfSupported(IList<int> supportedGroups, TlsCrypto crypto, int namedGroup)
         {
-            if (crypto.HasNamedGroup(namedGroup))
+            if (IsSupportedNamedGroup(crypto, namedGroup))
             {
                 supportedGroups.Add(namedGroup);
             }
@@ -1056,20 +1076,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return result;
         }
 
-        public static IList<SignatureAndHashAlgorithm> GetDefaultDssSignatureAlgorithms()
-        {
-            return GetDefaultSignatureAlgorithms(SignatureAlgorithm.dsa);
-        }
+        public static IList<SignatureAndHashAlgorithm> GetDefaultDssSignatureAlgorithms() =>
+            GetDefaultSignatureAlgorithms(SignatureAlgorithm.dsa);
 
-        public static IList<SignatureAndHashAlgorithm> GetDefaultECDsaSignatureAlgorithms()
-        {
-            return GetDefaultSignatureAlgorithms(SignatureAlgorithm.ecdsa);
-        }
+        public static IList<SignatureAndHashAlgorithm> GetDefaultECDsaSignatureAlgorithms() =>
+            GetDefaultSignatureAlgorithms(SignatureAlgorithm.ecdsa);
 
-        public static IList<SignatureAndHashAlgorithm> GetDefaultRsaSignatureAlgorithms()
-        {
-            return GetDefaultSignatureAlgorithms(SignatureAlgorithm.rsa);
-        }
+        public static IList<SignatureAndHashAlgorithm> GetDefaultRsaSignatureAlgorithms() =>
+            GetDefaultSignatureAlgorithms(SignatureAlgorithm.rsa);
 
         public static SignatureAndHashAlgorithm GetDefaultSignatureAlgorithm(short signatureAlgorithm)
         {
@@ -1105,10 +1119,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return null == sigAndHashAlg ? new List<SignatureAndHashAlgorithm>() : VectorOfOne(sigAndHashAlg);
         }
 
-        public static IList<SignatureAndHashAlgorithm> GetDefaultSupportedSignatureAlgorithms(TlsContext context)
-        {
-            return GetSupportedSignatureAlgorithms(context, DefaultSupportedSigAlgs);
-        }
+        public static IList<SignatureAndHashAlgorithm> GetDefaultSupportedSignatureAlgorithms(TlsContext context) =>
+            GetSupportedSignatureAlgorithms(context, DefaultSupportedSigAlgs);
 
         public static IList<SignatureAndHashAlgorithm> GetSupportedSignatureAlgorithms(TlsContext context,
             IList<SignatureAndHashAlgorithm> candidates)
@@ -1162,10 +1174,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return true;
         }
 
-        public static TlsSession ImportSession(byte[] sessionID, SessionParameters sessionParameters)
-        {
-            return new TlsSessionImpl(sessionID, sessionParameters);
-        }
+        public static TlsSession ImportSession(byte[] sessionID, SessionParameters sessionParameters) =>
+            new TlsSessionImpl(sessionID, sessionParameters);
 
         internal static bool IsExtendedMasterSecretOptional(ProtocolVersion protocolVersion)
         {
@@ -1203,20 +1213,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return false;
         }
 
-        public static bool IsNullOrEmpty<T>(T[] array)
-        {
-            return null == array || array.Length < 1;
-        }
+        public static bool IsNullOrEmpty<T>(T[] array) => null == array || array.Length < 1;
 
-        public static bool IsNullOrEmpty(string s)
-        {
-            return null == s || s.Length < 1;
-        }
+        public static bool IsNullOrEmpty(string s) => null == s || s.Length < 1;
 
-        public static bool IsNullOrEmpty<T>(IList<T> v)
-        {
-            return null == v || v.Count < 1;
-        }
+        public static bool IsNullOrEmpty<T>(IList<T> v) => null == v || v.Count < 1;
 
         public static bool IsSignatureAlgorithmsExtensionAllowed(ProtocolVersion version)
         {
@@ -1385,6 +1386,23 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 
         /// <exception cref="IOException"/>
+        internal static void Verify12SignatureAlgorithm(SignatureAndHashAlgorithm signatureAlgorithm, short alertDescription)
+        {
+            if (signatureAlgorithm != null)
+            {
+                int signatureScheme = SignatureScheme.From(signatureAlgorithm);
+
+                // TODO In future there might be more cases, so we'd need a more general method.
+                if (SignatureScheme.IsMLDsaScheme(signatureScheme) ||
+                    SignatureScheme.IsSlhDsa(signatureScheme))
+                {
+                    throw new TlsFatalAlert(alertDescription);
+                }
+            }
+        }
+
+        /// <exception cref="IOException"/>
+        [Obsolete("Will be removed")]
         public static void VerifySupportedSignatureAlgorithm(
             IList<SignatureAndHashAlgorithm> supportedSignatureAlgorithms, SignatureAndHashAlgorithm signatureAlgorithm)
         {
@@ -1451,25 +1469,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 #endif
 
-        public static byte[] Clone(byte[] data)
-        {
-            return null == data ? null : data.Length == 0 ? EmptyBytes : (byte[])data.Clone();
-        }
+        public static byte[] Clone(byte[] data) =>
+            null == data ? null : data.Length == 0 ? EmptyBytes : (byte[])data.Clone();
 
-        public static string[] Clone(string[] s)
-        {
-            return null == s ? null : s.Length < 1 ? EmptyStrings : (string[])s.Clone();
-        }
+        public static string[] Clone(string[] s) =>
+            null == s ? null : s.Length < 1 ? EmptyStrings : (string[])s.Clone();
 
-        public static bool ConstantTimeAreEqual(int len, byte[] a, int aOff, byte[] b, int bOff)
-        {
-            int d = 0;
-            for (int i = 0; i < len; ++i)
-            {
-                d |= a[aOff + i] ^ b[bOff + i];
-            }
-            return 0 == d;
-        }
+        [Obsolete("Use 'Arrays.FixedTimeEquals' instead")]
+        public static bool ConstantTimeAreEqual(int len, byte[] a, int aOff, byte[] b, int bOff) =>
+            Arrays.FixedTimeEquals(len, a, aOff, b, bOff);
 
         public static byte[] CopyOfRangeExact(byte[] original, int from, int to)
         {
@@ -1488,10 +1496,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 
         /// <exception cref="IOException"/>
-        internal static byte[] CalculateEndPointHash(TlsContext context, TlsCertificate certificate, byte[] enc)
-        {
-            return CalculateEndPointHash(context, certificate, enc, 0, enc.Length);
-        }
+        internal static byte[] CalculateEndPointHash(TlsContext context, TlsCertificate certificate, byte[] enc) =>
+            CalculateEndPointHash(context, certificate, enc, 0, enc.Length);
 
         /// <exception cref="IOException"/>
         internal static byte[] CalculateEndPointHash(TlsContext context, TlsCertificate certificate, byte[] enc,
@@ -1652,9 +1658,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
 
             if (negotiatedVersion.IsSsl)
-            {
                 return Ssl3Utilities.CalculateVerifyData(handshakeHash, isServer);
-            }
 
             string asciiLabel = isServer ? ExporterLabel.server_finished : ExporterLabel.client_finished;
             byte[] prfHash = GetCurrentPrfHash(handshakeHash);
@@ -1767,15 +1771,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             securityParameters.m_baseKeyServer = securityParameters.TrafficSecretServer;
         }
 
-        internal static void Update13TrafficSecretLocal(TlsContext context)
-        {
+        internal static void Update13TrafficSecretLocal(TlsContext context) =>
             Update13TrafficSecret(context, context.IsServer);
-        }
 
-        internal static void Update13TrafficSecretPeer(TlsContext context)
-        {
+        internal static void Update13TrafficSecretPeer(TlsContext context) =>
             Update13TrafficSecret(context, !context.IsServer);
-        }
 
         private static void Update13TrafficSecret(TlsContext context, bool forServer)
         {
@@ -1843,6 +1843,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_AES_128_CCM_8_SHA256:
             case CipherSuite.TLS_AES_128_GCM_SHA256:
             case CipherSuite.TLS_CHACHA20_POLY1305_SHA256:
+            case CipherSuite.TLS_SHA256_SHA256:
             {
                 if (isTlsV13)
                     return PrfAlgorithm.tls13_hkdf_sha256;
@@ -1851,6 +1852,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
 
             case CipherSuite.TLS_AES_256_GCM_SHA384:
+            case CipherSuite.TLS_SHA384_SHA384:
             {
                 if (isTlsV13)
                     return PrfAlgorithm.tls13_hkdf_sha384;
@@ -2059,16 +2061,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 throw new TlsFatalAlert(AlertDescription.illegal_parameter);
             }
 
-            case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
-            case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
-            case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
-            {
-                if (isTlsV12Exactly)
-                    return PrfAlgorithm.tls_prf_gostr3411_2012_256;
-
-                throw new TlsFatalAlert(AlertDescription.illegal_parameter);
-            }
-
             case CipherSuite.TLS_DHE_PSK_WITH_AES_256_CBC_SHA384:
             case CipherSuite.TLS_DHE_PSK_WITH_CAMELLIA_256_CBC_SHA384:
             case CipherSuite.TLS_DHE_PSK_WITH_NULL_SHA384:
@@ -2119,9 +2111,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_AES_128_CCM_8_SHA256:
             case CipherSuite.TLS_AES_128_GCM_SHA256:
             case CipherSuite.TLS_CHACHA20_POLY1305_SHA256:
+            case CipherSuite.TLS_SHA256_SHA256:
                 return PrfAlgorithm.tls13_hkdf_sha256;
 
             case CipherSuite.TLS_AES_256_GCM_SHA384:
+            case CipherSuite.TLS_SHA384_SHA384:
                 return PrfAlgorithm.tls13_hkdf_sha384;
 
             case CipherSuite.TLS_SM4_CCM_SM3:
@@ -2151,7 +2145,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 
         internal static byte[] CalculateSignatureHash(TlsContext context, SignatureAndHashAlgorithm algorithm,
-            byte[] extraSignatureInput, DigestInputBuffer buf)
+            DigestInputBuffer buf)
         {
             TlsCrypto crypto = context.Crypto;
 
@@ -2164,28 +2158,17 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             byte[] randoms = Arrays.Concatenate(sp.ClientRandom, sp.ServerRandom);
             h.Update(randoms, 0, randoms.Length);
 
-            if (null != extraSignatureInput)
-            {
-                h.Update(extraSignatureInput, 0, extraSignatureInput.Length);
-            }
-
             buf.UpdateDigest(h);
 
             return h.CalculateHash();
         }
 
-        internal static void SendSignatureInput(TlsContext context, byte[] extraSignatureInput, DigestInputBuffer buf,
-            Stream output)
+        internal static void SendSignatureInput(TlsContext context, DigestInputBuffer buf, Stream output)
         {
             SecurityParameters sp = context.SecurityParameters;
             // NOTE: The implicit copy here is intended (and important)
             byte[] randoms = Arrays.Concatenate(sp.ClientRandom, sp.ServerRandom);
             output.Write(randoms, 0, randoms.Length);
-
-            if (null != extraSignatureInput)
-            {
-                output.Write(extraSignatureInput, 0, extraSignatureInput.Length);
-            }
 
             buf.CopyInputTo(output);
         }
@@ -2204,7 +2187,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             byte[] signature;
             if (clientAuthStreamSigner != null)
             {
-                handshakeHash.CopyBufferTo(clientAuthStreamSigner.Stream);
+                using (var output = clientAuthStreamSigner.Stream)
+                {
+                    handshakeHash.CopyBufferTo(output);
+                }
+
                 signature = clientAuthStreamSigner.GetSignature();
             }
             else
@@ -2252,9 +2239,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             if (null != streamSigner)
             {
-                Stream output = streamSigner.Stream;
-                output.Write(header, 0, header.Length);
-                output.Write(prfHash, 0, prfHash.Length);
+                using (var output = streamSigner.Stream)
+                {
+                    output.Write(header, 0, header.Length);
+                    output.Write(prfHash, 0, prfHash.Length);
+                }
+
                 return streamSigner.GetSignature();
             }
 
@@ -2283,7 +2273,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
             else
             {
-                VerifySupportedSignatureAlgorithm(securityParameters.ServerSigAlgs, sigAndHashAlg);
+                Verify12SignatureAlgorithm(sigAndHashAlg, AlertDescription.illegal_parameter);
+
+                VerifySupportedSignatureAlgorithm(securityParameters.ServerSigAlgs, sigAndHashAlg,
+                    AlertDescription.illegal_parameter);
 
                 signatureAlgorithm = sigAndHashAlg.Signature;
 
@@ -2300,7 +2293,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
                 if (streamVerifier != null)
                 {
-                    handshakeHash.CopyBufferTo(streamVerifier.Stream);
+                    using (var output = streamVerifier.Stream)
+                    {
+                        handshakeHash.CopyBufferTo(output);
+                    }
+
                     verified = streamVerifier.IsVerified();
                 }
                 else
@@ -2318,7 +2315,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     verified = verifier.VerifyRawSignature(certificateVerify, hash);
                 }
             }
-            catch (TlsFatalAlert )
+            catch (TlsFatalAlert)
             {
                 throw;
             }
@@ -2328,9 +2325,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
 
             if (!verified)
-            {
                 throw new TlsFatalAlert(AlertDescription.decrypt_error);
-            }
         }
 
         /// <exception cref="IOException"/>
@@ -2371,16 +2366,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 int signatureScheme = certificateVerify.Algorithm;
 
                 SignatureAndHashAlgorithm algorithm = SignatureScheme.GetSignatureAndHashAlgorithm(signatureScheme);
-                VerifySupportedSignatureAlgorithm(supportedAlgorithms, algorithm);
+                VerifySupportedSignatureAlgorithm(supportedAlgorithms, algorithm, AlertDescription.illegal_parameter);
 
                 Tls13Verifier verifier = certificate.CreateVerifier(signatureScheme);
 
                 byte[] header = GetCertificateVerifyHeader(contextString);
                 byte[] prfHash = GetCurrentPrfHash(handshakeHash);
 
-                Stream output = verifier.Stream;
-                output.Write(header, 0, header.Length);
-                output.Write(prfHash, 0, prfHash.Length);
+                using (var output = verifier.Stream)
+                {
+                    output.Write(header, 0, header.Length);
+                    output.Write(prfHash, 0, prfHash.Length);
+                }
+
                 verified = verifier.VerifySignature(certificateVerify.Signature);
             }
             catch (TlsFatalAlert)
@@ -2393,9 +2391,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
 
             if (!verified)
-            {
                 throw new TlsFatalAlert(AlertDescription.decrypt_error);
-            }
         }
 
         private static byte[] GetCertificateVerifyHeader(string contextString)
@@ -2417,7 +2413,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         /// <exception cref="IOException"/>
         internal static void GenerateServerKeyExchangeSignature(TlsContext context, TlsCredentialedSigner credentials,
-            byte[] extraSignatureInput, DigestInputBuffer digestBuffer)
+            DigestInputBuffer digestBuffer)
         {
             /*
              * RFC 5246 4.7. digitally-signed element needs SignatureAndHashAlgorithm from TLS 1.2
@@ -2430,13 +2426,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             {
                 using (var output = streamSigner.Stream)
                 {
-                    SendSignatureInput(context, extraSignatureInput, digestBuffer, output);
+                    SendSignatureInput(context, digestBuffer, output);
                 }
                 signature = streamSigner.GetSignature();
             }
             else
             {
-                byte[] hash = CalculateSignatureHash(context, algorithm, extraSignatureInput, digestBuffer);
+                byte[] hash = CalculateSignatureHash(context, algorithm, digestBuffer);
                 signature = credentials.GenerateRawSignature(hash);
             }
 
@@ -2447,7 +2443,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         /// <exception cref="IOException"/>
         internal static void VerifyServerKeyExchangeSignature(TlsContext context, Stream signatureInput,
-            TlsCertificate serverCertificate, byte[] extraSignatureInput, DigestInputBuffer digestBuffer)
+            TlsCertificate serverCertificate, DigestInputBuffer digestBuffer)
         {
             DigitallySigned digitallySigned = DigitallySigned.Parse(context, signatureInput);
 
@@ -2468,7 +2464,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 if (!IsValidSignatureAlgorithmForServerKeyExchange(signatureAlgorithm, keyExchangeAlgorithm))
                     throw new TlsFatalAlert(AlertDescription.illegal_parameter);
 
-                VerifySupportedSignatureAlgorithm(securityParameters.ClientSigAlgs, sigAndHashAlg);
+                Verify12SignatureAlgorithm(sigAndHashAlg, AlertDescription.illegal_parameter);
+
+                VerifySupportedSignatureAlgorithm(securityParameters.ClientSigAlgs, sigAndHashAlg,
+                    AlertDescription.illegal_parameter);
             }
 
             TlsVerifier verifier = serverCertificate.CreateVerifier(signatureAlgorithm);
@@ -2479,20 +2478,18 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             {
                 using (var output = streamVerifier.Stream)
                 {
-                    SendSignatureInput(context, null, digestBuffer, output);
+                    SendSignatureInput(context, digestBuffer, output);
                 }
                 verified = streamVerifier.IsVerified();
             }
             else
             {
-                byte[] hash = CalculateSignatureHash(context, sigAndHashAlg, null, digestBuffer);
+                byte[] hash = CalculateSignatureHash(context, sigAndHashAlg, digestBuffer);
                 verified = verifier.VerifyRawSignature(digitallySigned, hash);
             }
 
             if (!verified)
-            {
                 throw new TlsFatalAlert(AlertDescription.decrypt_error);
-            }
         }
 
         internal static void TrackHashAlgorithmClient(TlsHandshakeHash handshakeHash,
@@ -2535,12 +2532,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
         }
 
-        public static IList<T> VectorOfOne<T>(T obj)
-        {
-            var v = new List<T>(1);
-            v.Add(obj);
-            return v;
-        }
+        public static IList<T> VectorOfOne<T>(T obj) => new List<T>{ obj };
 
         public static int GetCipherType(int cipherSuite)
         {
@@ -2553,9 +2545,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         {
             switch (cipherSuite)
             {
-            case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
-                return EncryptionAlgorithm.cls_28147_CNT_IMIT;
-
             case CipherSuite.TLS_DH_anon_WITH_3DES_EDE_CBC_SHA:
             case CipherSuite.TLS_DH_DSS_WITH_3DES_EDE_CBC_SHA:
             case CipherSuite.TLS_DH_RSA_WITH_3DES_EDE_CBC_SHA:
@@ -2856,12 +2845,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_RSA_PSK_WITH_CHACHA20_POLY1305_SHA256:
                 return EncryptionAlgorithm.CHACHA20_POLY1305;
 
-            case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
-                return EncryptionAlgorithm.KUZNYECHIK_CTR_OMAC;
-
-            case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
-                return EncryptionAlgorithm.MAGMA_CTR_OMAC;
-
             case CipherSuite.TLS_DHE_PSK_WITH_NULL_SHA:
             case CipherSuite.TLS_ECDH_anon_WITH_NULL_SHA:
             case CipherSuite.TLS_ECDH_ECDSA_WITH_NULL_SHA:
@@ -2886,6 +2869,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_PSK_WITH_NULL_SHA384:
             case CipherSuite.TLS_RSA_PSK_WITH_NULL_SHA384:
                 return EncryptionAlgorithm.NULL;
+
+            case CipherSuite.TLS_SHA256_SHA256:
+                return EncryptionAlgorithm.NULL_HMAC_SHA256;
+
+            case CipherSuite.TLS_SHA384_SHA384:
+                return EncryptionAlgorithm.NULL_HMAC_SHA384;
 
             case CipherSuite.TLS_RSA_WITH_RC4_128_MD5:
             case CipherSuite.TLS_RSA_WITH_RC4_128_SHA:
@@ -2925,6 +2914,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case EncryptionAlgorithm.CAMELLIA_128_GCM:
             case EncryptionAlgorithm.CAMELLIA_256_GCM:
             case EncryptionAlgorithm.CHACHA20_POLY1305:
+            case EncryptionAlgorithm.NULL_HMAC_SHA256:
+            case EncryptionAlgorithm.NULL_HMAC_SHA384:
             case EncryptionAlgorithm.SM4_CCM:
             case EncryptionAlgorithm.SM4_GCM:
                 return CipherType.aead;
@@ -2944,9 +2935,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case EncryptionAlgorithm.SM4_CBC:
                 return CipherType.block;
 
-            case EncryptionAlgorithm.cls_28147_CNT_IMIT:
-            case EncryptionAlgorithm.KUZNYECHIK_CTR_OMAC:
-            case EncryptionAlgorithm.MAGMA_CTR_OMAC:
             case EncryptionAlgorithm.NULL:
             case EncryptionAlgorithm.RC4_40:
             case EncryptionAlgorithm.RC4_128:
@@ -3194,16 +3182,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_ECDHE_RSA_WITH_NULL_SHA:
                 return KeyExchangeAlgorithm.ECDHE_RSA;
 
-            case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
-            case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
-            case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
-                return KeyExchangeAlgorithm.GOSTR341112_256;
-
             case CipherSuite.TLS_AES_128_CCM_8_SHA256:
             case CipherSuite.TLS_AES_128_CCM_SHA256:
             case CipherSuite.TLS_AES_128_GCM_SHA256:
             case CipherSuite.TLS_AES_256_GCM_SHA384:
             case CipherSuite.TLS_CHACHA20_POLY1305_SHA256:
+            case CipherSuite.TLS_SHA256_SHA256:
+            case CipherSuite.TLS_SHA384_SHA384:
             case CipherSuite.TLS_SM4_CCM_SM3:
             case CipherSuite.TLS_SM4_GCM_SM3:
                 return KeyExchangeAlgorithm.NULL;
@@ -3434,6 +3419,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_RSA_WITH_ARIA_256_GCM_SHA384:
             case CipherSuite.TLS_RSA_WITH_CAMELLIA_128_GCM_SHA256:
             case CipherSuite.TLS_RSA_WITH_CAMELLIA_256_GCM_SHA384:
+            case CipherSuite.TLS_SHA256_SHA256:
+            case CipherSuite.TLS_SHA384_SHA384:
             case CipherSuite.TLS_SM4_CCM_SM3:
             case CipherSuite.TLS_SM4_GCM_SM3:
                 return MacAlgorithm.cls_null;
@@ -3637,6 +3624,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_AES_128_GCM_SHA256:
             case CipherSuite.TLS_AES_256_GCM_SHA384:
             case CipherSuite.TLS_CHACHA20_POLY1305_SHA256:
+            case CipherSuite.TLS_SHA256_SHA256:
+            case CipherSuite.TLS_SHA384_SHA384:
             case CipherSuite.TLS_SM4_CCM_SM3:
             case CipherSuite.TLS_SM4_GCM_SM3:
                 return ProtocolVersion.TLSv13;
@@ -3778,9 +3767,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_ECDHE_RSA_WITH_CAMELLIA_256_CBC_SHA384:
             case CipherSuite.TLS_ECDHE_RSA_WITH_CAMELLIA_256_GCM_SHA384:
             case CipherSuite.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
-            case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
-            case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
-            case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
             case CipherSuite.TLS_PSK_DHE_WITH_AES_128_CCM_8:
             case CipherSuite.TLS_PSK_DHE_WITH_AES_256_CCM_8:
             case CipherSuite.TLS_PSK_WITH_AES_128_CCM:
@@ -3829,10 +3815,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
         }
 
-        public static IList<int> GetNamedGroupRoles(int[] cipherSuites)
-        {
-            return GetNamedGroupRoles(GetKeyExchangeAlgorithms(cipherSuites));
-        }
+        public static IList<int> GetNamedGroupRoles(int[] cipherSuites) =>
+            GetNamedGroupRoles(GetKeyExchangeAlgorithms(cipherSuites));
 
         public static IList<int> GetNamedGroupRoles(IList<int> keyExchangeAlgorithms)
         {
@@ -3883,22 +3867,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 
         /// <exception cref="IOException"/>
-        public static bool IsAeadCipherSuite(int cipherSuite)
-        {
-            return CipherType.aead == GetCipherType(cipherSuite);
-        }
+        public static bool IsAeadCipherSuite(int cipherSuite) => CipherType.aead == GetCipherType(cipherSuite);
 
         /// <exception cref="IOException"/>
-        public static bool IsBlockCipherSuite(int cipherSuite)
-        {
-            return CipherType.block == GetCipherType(cipherSuite);
-        }
+        public static bool IsBlockCipherSuite(int cipherSuite) => CipherType.block == GetCipherType(cipherSuite);
 
         /// <exception cref="IOException"/>
-        public static bool IsStreamCipherSuite(int cipherSuite)
-        {
-            return CipherType.stream == GetCipherType(cipherSuite);
-        }
+        public static bool IsStreamCipherSuite(int cipherSuite) => CipherType.stream == GetCipherType(cipherSuite);
 
         /// <returns>Whether a server can select the specified cipher suite given the available signature algorithms
         /// for ServerKeyExchange.</returns>
@@ -3987,7 +3962,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case KeyExchangeAlgorithm.NULL:
                 return SignatureAlgorithm.anonymous != signatureAlgorithm;
 
-            case KeyExchangeAlgorithm.GOSTR341112_256:
             default:
                 return false;
             }
@@ -4150,10 +4124,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return candidates;
         }
 
-        public static int[] GetSupportedCipherSuites(TlsCrypto crypto, int[] suites)
-        {
-            return GetSupportedCipherSuites(crypto, suites, 0, suites.Length);
-        }
+        public static int[] GetSupportedCipherSuites(TlsCrypto crypto, int[] suites) =>
+            GetSupportedCipherSuites(crypto, suites, 0, suites.Length);
 
         public static int[] GetSupportedCipherSuites(TlsCrypto crypto, int[] suites, int suitesOff, int suitesCount)
         {
@@ -4250,12 +4222,18 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return crypto.HasSrpAuthentication()
                     && HasAnyRsaSigAlgs(crypto);
 
-            // TODO[RFC 9189]
-            case KeyExchangeAlgorithm.GOSTR341112_256:
-
             default:
                 return false;
             }
+        }
+
+        public static bool IsSupportedNamedGroup(TlsCrypto crypto, int namedGroup)
+        {
+            if (!NamedGroup.RefersToASpecificHybrid(namedGroup))
+                return crypto.HasNamedGroup(namedGroup);
+
+            return crypto.HasNamedGroup(NamedGroup.GetHybridFirst(namedGroup))
+                && crypto.HasNamedGroup(NamedGroup.GetHybridSecond(namedGroup));
         }
 
         internal static bool HasAnyRsaSigAlgs(TlsCrypto crypto)
@@ -4269,20 +4247,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 || crypto.HasSignatureAlgorithm(SignatureAlgorithm.rsa_pss_pss_sha512);
         }
 
-        internal static byte[] GetCurrentPrfHash(TlsHandshakeHash handshakeHash)
-        {
-            return handshakeHash.ForkPrfHash().CalculateHash();
-        }
+        internal static byte[] GetCurrentPrfHash(TlsHandshakeHash handshakeHash) =>
+            handshakeHash.ForkPrfHash().CalculateHash();
 
-        private static TlsHash CreateHash(TlsCrypto crypto, short hashAlgorithm)
-        {
-            return crypto.CreateHash(TlsCryptoUtilities.GetHash(hashAlgorithm));
-        }
+        private static TlsHash CreateHash(TlsCrypto crypto, short hashAlgorithm) =>
+            crypto.CreateHash(TlsCryptoUtilities.GetHash(hashAlgorithm));
 
-        private static TlsHash CreateHash(TlsCrypto crypto, SignatureAndHashAlgorithm signatureAndHashAlgorithm)
-        {
-            return crypto.CreateHash(SignatureScheme.GetCryptoHashAlgorithm(signatureAndHashAlgorithm));
-        }
+        private static TlsHash CreateHash(TlsCrypto crypto, SignatureAndHashAlgorithm signatureAndHashAlgorithm) =>
+            crypto.CreateHash(SignatureScheme.GetCryptoHashAlgorithm(signatureAndHashAlgorithm));
 
         /// <exception cref="IOException"/>
         private static TlsKeyExchange CreateKeyExchangeClient(TlsClient client, int keyExchange)
@@ -4569,7 +4541,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (tlsFeatures != null)
             {
                 // TODO[tls] Proper ASN.1 type class for this extension?
-                Asn1Sequence tlsFeaturesSeq = (Asn1Sequence)ReadAsn1Object(tlsFeatures);
+                Asn1Sequence tlsFeaturesSeq = ReadDerEncoding(derEncoding: tlsFeatures, Asn1Sequence.GetOptional);
+
                 for (int i = 0; i < tlsFeaturesSeq.Count; ++i)
                 {
                     if (!(tlsFeaturesSeq[i] is DerInteger))
@@ -4577,15 +4550,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                             "Server certificate has invalid TLS Features extension");
                 }
 
-                RequireDerEncoding(tlsFeaturesSeq, tlsFeatures);
-
-                foreach (DerInteger tlsExtensionElement in tlsFeaturesSeq)
+                foreach (DerInteger tlsFeature in tlsFeaturesSeq)
                 {
-                    BigInteger tlsExtension = tlsExtensionElement.PositiveValue;
-                    if (tlsExtension.BitLength <= 16)
+                    if (tlsFeature.TryGetIntValueExact(out int extensionType) && IsValidUint16(extensionType))
                     {
-                        int extensionType = tlsExtension.IntValueExact;
-
                         if (clientExtensions.ContainsKey(extensionType) && !serverExtensions.ContainsKey(extensionType))
                             throw new TlsFatalAlert(AlertDescription.certificate_unknown,
                                 "Server extensions missing TLS Feature " + extensionType);
@@ -4806,28 +4774,28 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         /// <exception cref="IOException"/>
         internal static TlsCredentialedAgreement RequireAgreementCredentials(TlsCredentials credentials)
         {
-            if (!(credentials is TlsCredentialedAgreement))
-                throw new TlsFatalAlert(AlertDescription.internal_error);
+            if (credentials is TlsCredentialedAgreement credentialedAgreement)
+                return credentialedAgreement;
 
-            return (TlsCredentialedAgreement)credentials;
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         /// <exception cref="IOException"/>
         internal static TlsCredentialedDecryptor RequireDecryptorCredentials(TlsCredentials credentials)
         {
-            if (!(credentials is TlsCredentialedDecryptor))
-                throw new TlsFatalAlert(AlertDescription.internal_error);
+            if (credentials is TlsCredentialedDecryptor credentialedDecryptor)
+                return credentialedDecryptor;
 
-            return (TlsCredentialedDecryptor)credentials;
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         /// <exception cref="IOException"/>
         internal static TlsCredentialedSigner RequireSignerCredentials(TlsCredentials credentials)
         {
-            if (!(credentials is TlsCredentialedSigner))
-                throw new TlsFatalAlert(AlertDescription.internal_error);
+            if (credentials is TlsCredentialedSigner credentialedSigner)
+                return credentialedSigner;
 
-            return (TlsCredentialedSigner)credentials;
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         /// <exception cref="IOException"/>
@@ -4844,7 +4812,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         private static void CheckDowngradeMarker(byte[] randomBlock, byte[] downgradeMarker)
         {
             int len = downgradeMarker.Length;
-            if (ConstantTimeAreEqual(len, downgradeMarker, 0, randomBlock, randomBlock.Length - len))
+            if (Arrays.FixedTimeEquals(len, downgradeMarker, 0, randomBlock, randomBlock.Length - len))
                 throw new TlsFatalAlert(AlertDescription.illegal_parameter);
         }
 
@@ -4884,7 +4852,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 
         internal static TlsAuthentication ReceiveServerCertificate(TlsClientContext clientContext, TlsClient client,
-            MemoryStream buf, IDictionary<int, byte[]> serverExtensions)
+            MemoryStream buf)
         {
             SecurityParameters securityParameters = clientContext.SecurityParameters;
             if (KeyExchangeAlgorithm.IsAnonymous(securityParameters.KeyExchangeAlgorithm)
@@ -4919,7 +4887,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 
         internal static TlsAuthentication Receive13ServerCertificate(TlsClientContext clientContext, TlsClient client,
-            MemoryStream buf, IDictionary<int, byte[]> serverExtensions)
+            MemoryStream buf)
         {
             SecurityParameters securityParameters = clientContext.SecurityParameters;
             if (null != securityParameters.PeerCertificate)
@@ -5034,7 +5002,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 
         private static void CollectKeyShares(TlsCrypto crypto, int[] supportedGroups, IList<int> keyShareGroups,
-            IDictionary<int, TlsAgreement> clientAgreements, IList<KeyShareEntry> clientShares)
+            Dictionary<int, TlsAgreement> clientAgreements, List<KeyShareEntry> clientShares)
         {
             if (IsNullOrEmpty(supportedGroups))
                 return;
@@ -5042,121 +5010,139 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (null == keyShareGroups || keyShareGroups.Count < 1)
                 return;
 
-            for (int i = 0; i < supportedGroups.Length; ++i)
+            foreach (int supportedGroup in supportedGroups)
             {
-                int supportedGroup = supportedGroups[i];
-
-                if (!keyShareGroups.Contains(supportedGroup)
-                    || clientAgreements.ContainsKey(supportedGroup)
-                    || !crypto.HasNamedGroup(supportedGroup))
+                if (!keyShareGroups.Contains(supportedGroup) ||
+                    clientAgreements.ContainsKey(supportedGroup))
                 {
                     continue;
                 }
 
-                TlsAgreement agreement = null;
-                if (NamedGroup.RefersToAnECDHCurve(supportedGroup))
-                {
-                    if (crypto.HasECDHAgreement())
-                    {
-                        agreement = crypto.CreateECDomain(new TlsECConfig(supportedGroup)).CreateECDH();
-                    }
-                }
-                else if (NamedGroup.RefersToASpecificFiniteField(supportedGroup))
-                {
-                    if (crypto.HasDHAgreement())
-                    {
-                        agreement = crypto.CreateDHDomain(new TlsDHConfig(supportedGroup, true)).CreateDH();
-                    }
-                }
-                else if (NamedGroup.RefersToASpecificKem(supportedGroup))
-                {
-                    if (crypto.HasKemAgreement())
-                    {
-                        agreement = crypto.CreateKemDomain(new TlsKemConfig(supportedGroup, isServer: false)).CreateKem();
-                    }
-                }
-
-                if (null != agreement)
+                TlsAgreement agreement = CreateKeyShare(crypto, supportedGroup, isServer: false);
+                if (agreement != null)
                 {
                     byte[] key_exchange = agreement.GenerateEphemeral();
                     KeyShareEntry clientShare = new KeyShareEntry(supportedGroup, key_exchange);
 
                     clientShares.Add(clientShare);
-                    clientAgreements[supportedGroup] = agreement;
+                    clientAgreements.Add(supportedGroup, agreement);
                 }
             }
         }
 
-        internal static KeyShareEntry SelectKeyShare(IList<KeyShareEntry> clientShares, int keyShareGroup)
+        internal static TlsAgreement CreateKeyShare(TlsCrypto crypto, int keyShareGroup, bool isServer)
+        {
+            if (!NamedGroup.RefersToASpecificHybrid(keyShareGroup))
+                return CreateKeyShareSimple(crypto, keyShareGroup, isServer);
+
+            int hybridFirst = NamedGroup.GetHybridFirst(keyShareGroup);
+            TlsAgreement firstAgreement = CreateKeyShareSimple(crypto, hybridFirst, isServer);
+            if (firstAgreement == null)
+                return null;
+
+            int hybridSecond = NamedGroup.GetHybridSecond(keyShareGroup);
+            TlsAgreement secondAgreement = CreateKeyShareSimple(crypto, hybridSecond, isServer);
+            if (secondAgreement == null)
+                return null;
+
+            int peerValueSplit = isServer
+                ? NamedGroup.GetHybridSplitClientShare(hybridFirst)
+                : NamedGroup.GetHybridSplitServerShare(hybridFirst);
+
+            return new TlsHybridAgreement(crypto, firstAgreement, secondAgreement, peerValueSplit);
+        }
+
+        private static TlsAgreement CreateKeyShareSimple(TlsCrypto crypto, int keyShareGroup, bool isServer)
+        {
+            if (crypto.HasNamedGroup(keyShareGroup))
+            {
+                if (NamedGroup.RefersToAnECDHCurve(keyShareGroup))
+                {
+                    if (crypto.HasECDHAgreement())
+                        return crypto.CreateECDomain(new TlsECConfig(keyShareGroup)).CreateECDH();
+                }
+                else if (NamedGroup.RefersToASpecificFiniteField(keyShareGroup))
+                {
+                    if (crypto.HasDHAgreement())
+                        return crypto.CreateDHDomain(new TlsDHConfig(keyShareGroup, padded: true)).CreateDH();
+                }
+                else if (NamedGroup.RefersToASpecificKem(keyShareGroup))
+                {
+                    if (crypto.HasKemAgreement())
+                        return crypto.CreateKemDomain(new TlsKemConfig(keyShareGroup, isServer)).CreateKem();
+                }
+            }
+            return null;
+        }
+
+        internal static KeyShareEntry FindEarlyKeyShare(IList<KeyShareEntry> clientShares, int keyShareGroup)
+        {
+            if (null != clientShares)
+            {
+                foreach (KeyShareEntry clientShare in clientShares)
+                {
+                    if (null != clientShare && clientShare.NamedGroup == keyShareGroup)
+                        return clientShare;
+                }
+            }
+            return null;
+        }
+
+        internal static KeyShareEntry GetRetryKeyShare(IList<KeyShareEntry> clientShares, int keyShareGroup)
         {
             if (null != clientShares && 1 == clientShares.Count)
             {
                 KeyShareEntry clientShare = clientShares[0];
                 if (null != clientShare && clientShare.NamedGroup == keyShareGroup)
-                {
                     return clientShare;
-                }
-            }
-            return null;
-        }
-
-        internal static KeyShareEntry SelectKeyShare(TlsCrypto crypto, ProtocolVersion negotiatedVersion,
-            IList<KeyShareEntry> clientShares, int[] clientSupportedGroups, int[] serverSupportedGroups)
-        {
-            if (null != clientShares && !IsNullOrEmpty(clientSupportedGroups) && !IsNullOrEmpty(serverSupportedGroups))
-            {
-                foreach (KeyShareEntry clientShare in clientShares)
-                {
-                    int group = clientShare.NamedGroup;
-
-                    if (!NamedGroup.CanBeNegotiated(group, negotiatedVersion))
-                        continue;
-
-                    if (!Arrays.Contains(serverSupportedGroups, group) ||
-                        !Arrays.Contains(clientSupportedGroups, group))
-                    {
-                        continue;
-                    }
-
-                    if (!crypto.HasNamedGroup(group))
-                        continue;
-
-                    if ((NamedGroup.RefersToAnECDHCurve(group) && crypto.HasECDHAgreement()) ||
-                        (NamedGroup.RefersToASpecificFiniteField(group) && crypto.HasDHAgreement()) ||
-                        (NamedGroup.RefersToASpecificKem(group) && crypto.HasKemAgreement()))
-                    {
-                        return clientShare;
-                    }
-                }
             }
             return null;
         }
 
         internal static int SelectKeyShareGroup(TlsCrypto crypto, ProtocolVersion negotiatedVersion,
-            int[] clientSupportedGroups, int[] serverSupportedGroups)
+            int[] clientSupportedGroups, int[] serverSupportedGroups, bool useServerOrder)
         {
             if (!IsNullOrEmpty(clientSupportedGroups) && !IsNullOrEmpty(serverSupportedGroups))
             {
-                foreach (int group in clientSupportedGroups)
+                int[] ordered = useServerOrder ? serverSupportedGroups : clientSupportedGroups;
+                int[] unordered = useServerOrder ? clientSupportedGroups : serverSupportedGroups;
+
+                foreach (int candidate in ordered)
                 {
-                    if (!NamedGroup.CanBeNegotiated(group, negotiatedVersion))
-                        continue;
-
-                    if (!Arrays.Contains(serverSupportedGroups, group))
-                        continue;
-
-                    if (!crypto.HasNamedGroup(group))
-                        continue;
-
-                    if ((NamedGroup.RefersToAnECDHCurve(group) && crypto.HasECDHAgreement()) ||
-                        (NamedGroup.RefersToASpecificFiniteField(group) && crypto.HasDHAgreement()) ||
-                        (NamedGroup.RefersToASpecificKem(group) && crypto.HasKemAgreement()))
+                    if (Arrays.Contains(unordered, candidate) &&
+                        NamedGroup.CanBeNegotiated(candidate, negotiatedVersion) &&
+                        SupportsKeyShareGroup(crypto, candidate))
                     {
-                        return group;
+                        return candidate;
                     }
                 }
             }
             return -1;
+        }
+
+        private static bool SupportsKeyShareGroup(TlsCrypto crypto, int keyShareGroup)
+        {
+            if (!NamedGroup.RefersToASpecificHybrid(keyShareGroup))
+                return SupportsKeyShareGroupSimple(crypto, keyShareGroup);
+
+            return SupportsKeyShareGroupSimple(crypto, NamedGroup.GetHybridFirst(keyShareGroup))
+                && SupportsKeyShareGroupSimple(crypto, NamedGroup.GetHybridSecond(keyShareGroup));
+        }
+
+        private static bool SupportsKeyShareGroupSimple(TlsCrypto crypto, int keyShareGroup)
+        {
+            if (crypto.HasNamedGroup(keyShareGroup))
+            {
+                if (NamedGroup.RefersToAnECDHCurve(keyShareGroup))
+                    return crypto.HasECDHAgreement();
+
+                if (NamedGroup.RefersToASpecificFiniteField(keyShareGroup))
+                    return crypto.HasDHAgreement();
+
+                if (NamedGroup.RefersToASpecificKem(keyShareGroup))
+                    return crypto.HasKemAgreement();
+            }
+            return false;
         }
 
         internal static byte[] ReadEncryptedPms(TlsContext context, Stream input)
@@ -5231,15 +5217,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 clientExtensions);
         }
 
-        internal static TlsCredentials EstablishServerCredentials(TlsServer server)
-        {
-            return ValidateCredentials(server.GetCredentials());
-        }
+        internal static TlsCredentials EstablishServerCredentials(TlsServer server) =>
+            ValidateCredentials(server.GetCredentials());
 
-        internal static TlsCredentialedSigner Establish13ServerCredentials(TlsServer server)
-        {
-            return Validate13Credentials(server.GetCredentials());
-        }
+        internal static TlsCredentialedSigner Establish13ServerCredentials(TlsServer server) =>
+            Validate13Credentials(server.GetCredentials());
 
         internal static void EstablishServerSigAlgs(SecurityParameters securityParameters,
             CertificateRequest certificateRequest)
@@ -5273,10 +5255,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (null == credentials)
                 return null;
 
-            if (!(credentials is TlsCredentialedSigner))
-                throw new TlsFatalAlert(AlertDescription.internal_error);
+            if (credentials is TlsCredentialedSigner credentialedSigner)
+                return credentialedSigner;
 
-            return (TlsCredentialedSigner)credentials;
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         internal static void NegotiatedCipherSuite(SecurityParameters securityParameters, int cipherSuite)
@@ -5321,26 +5303,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
             else
             {
-                /*
-                 * RFC 9189 4.2.6. The verify_data_length value is equal to 32 for the CTR_OMAC cipher
-                 * suites and is equal to 12 for the CNT_IMIT cipher suite.
-                 */
-                switch (cipherSuite)
-                {
-                case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
-                case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
-                {
-                    securityParameters.m_verifyDataLength = 32;
-                    break;
-                }
-
-                case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
-                default:
-                {
-                    securityParameters.m_verifyDataLength = 12;
-                    break;
-                }
-                }
+                securityParameters.m_verifyDataLength = 12;
             }
         }
 
@@ -5594,10 +5557,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return preMasterSecret;
         }
 
-        public static bool IsTimeout(SocketException e)
-        {
-            return SocketError.TimedOut == e.SocketErrorCode;
-        }
+        public static bool IsTimeout(SocketException e) => SocketError.TimedOut == e.SocketErrorCode;
 
         /// <exception cref="IOException"/>
         internal static void AddPreSharedKeyToClientExtensions(TlsPsk[] psks, IDictionary<int, byte[]> clientExtensions)
@@ -5684,8 +5644,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             IDictionary<int, byte[]> clientHelloExtensions, HandshakeMessageInput clientHelloMessage,
             TlsHandshakeHash handshakeHash, bool afterHelloRetryRequest)
         {
-            bool handshakeHashUpdated = false;
-
             OfferedPsks offeredPsks = TlsExtensionsUtilities.GetPreSharedKeyClientHello(clientHelloExtensions);
             if (null != offeredPsks)
             {
@@ -5694,8 +5652,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 if (IsNullOrEmpty(pskKeyExchangeModes))
                     throw new TlsFatalAlert(AlertDescription.missing_extension);
 
+                // TODO[tls13] Fetch these from 'server'
+                short[] serverSupportedModes = { PskKeyExchangeMode.psk_dhe_ke };
+                bool useServerOrder = false;
+
+                short selectedMode = SelectPreSharedKeyMode(pskKeyExchangeModes, serverSupportedModes, useServerOrder);
+
                 // TODO[tls13] Add support for psk_ke?
-                if (Arrays.Contains(pskKeyExchangeModes, PskKeyExchangeMode.psk_dhe_ke))
+                if (PskKeyExchangeMode.psk_dhe_ke == selectedMode)
                 {
                     // TODO[tls13] Prefer to get the exact index from the server?
                     TlsPskExternal psk = server.GetExternalPsk(offeredPsks.Identities);
@@ -5704,6 +5668,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                         int index = offeredPsks.GetIndexOfIdentity(new PskIdentity(psk.Identity, 0L));
                         if (index >= 0)
                         {
+                            /*
+                             * RFC 8446 4.2.11. Prior to accepting PSK key establishment, the server MUST validate the
+                             * corresponding binder value [..]. If this value is not present or does not validate, the
+                             * server MUST abort the handshake.  Servers SHOULD NOT attempt to validate multiple
+                             * binders; rather, they SHOULD select a single PSK and validate solely the binder that
+                             * corresponds to that PSK.
+                             */
+
                             byte[] binder = offeredPsks.Binders[index];
 
                             TlsCrypto crypto = serverContext.Crypto;
@@ -5715,7 +5687,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
                             byte[] transcriptHash;
                             {
-                                handshakeHashUpdated = true;
                                 int bindersSize = offeredPsks.BindersSize;
                                 clientHelloMessage.UpdateHashPrefix(handshakeHash, bindersSize);
 
@@ -5736,19 +5707,37 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                             byte[] calculatedBinder = CalculatePskBinder(crypto, isExternalPsk, pskCryptoHashAlgorithm,
                                 earlySecret, transcriptHash);
 
-                            if (Arrays.FixedTimeEquals(calculatedBinder, binder))
-                                return new OfferedPsks.SelectedConfig(index, psk, pskKeyExchangeModes, earlySecret);
+                            if (!Arrays.FixedTimeEquals(calculatedBinder, binder))
+                                throw new TlsFatalAlert(AlertDescription.decrypt_error, "Invalid PSK binder");
+
+                            return new OfferedPsks.SelectedConfig(index, psk, pskKeyExchangeModes, earlySecret);
                         }
                     }
                 }
             }
 
-            if (!handshakeHashUpdated)
-            {
-                clientHelloMessage.UpdateHash(handshakeHash);
-            }
-
+            clientHelloMessage.UpdateHash(handshakeHash);
             return null;
+        }
+
+        private static short SelectPreSharedKeyMode(short[] clientSupportedModes, short[] serverSupportedModes,
+            bool useServerOrder)
+        {
+            if (!IsNullOrEmpty(clientSupportedModes) && !IsNullOrEmpty(serverSupportedModes))
+            {
+                short[] ordered = useServerOrder ? serverSupportedModes : clientSupportedModes;
+                short[] unordered = useServerOrder ? clientSupportedModes : serverSupportedModes;
+
+                foreach (short candidate in ordered)
+                {
+                    if (Arrays.Contains(unordered, candidate) &&
+                        PskKeyExchangeMode.IsRecognized(candidate))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+            return -1;
         }
 
         internal static TlsSecret GetPskEarlySecret(TlsCrypto crypto, TlsPsk psk)
@@ -5785,8 +5774,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             for (int i = 0; i < count; ++i)
             {
-                TlsPskExternal pskExternal = externalPsks[i] as TlsPskExternal;
-                if (null == pskExternal)
+                if (!(externalPsks[i] is TlsPskExternal pskExternal))
                     throw new TlsFatalAlert(AlertDescription.internal_error,
                         "External PSKs element is not a TlsPSKExternal");
 
@@ -5920,6 +5908,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return abstractTlsClient.ShouldUseCompatibilityMode();
 
             return true;
+        }
+
+        // TODO[api] Not needed once PreferLocalSupportedGroups() has been added to TlsServer
+        internal static bool PreferLocalSupportedGroups(TlsServer tlsServer)
+        {
+            return false;
         }
     }
 }

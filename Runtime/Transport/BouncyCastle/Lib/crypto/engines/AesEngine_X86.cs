@@ -16,7 +16,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
     public struct AesEngine_X86
         : IBlockCipher
     {
-        public static bool IsSupported => Org.BouncyCastle.Runtime.Intrinsics.X86.Aes.IsEnabled;
+        public static bool IsSupported => TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Aes.IsEnabled;
 
         private static Vector128<byte>[] CreateRoundKeys(ReadOnlySpan<byte> key, bool forEncryption)
         {
@@ -163,7 +163,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
                 throw new ArgumentException("invalid type: " + Platform.GetTypeName(parameters), nameof(parameters));
             }
 
-            m_roundKeys = CreateRoundKeys(keyParameter.Key, forEncryption);
+            m_roundKeys = CreateRoundKeys(keyParameter.InternalKey, forEncryption);
 
             if (m_roundKeys.Length == 11)
             {
@@ -798,7 +798,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static Vector128<byte> Load128(ReadOnlySpan<byte> t)
         {
-            if (Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
                 return MemoryMarshal.Read<Vector128<byte>>(t);
 
             return Vector128.Create(
@@ -810,7 +810,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static Vector64<byte> Load64(ReadOnlySpan<byte> t)
         {
-            if (Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
                 return MemoryMarshal.Read<Vector64<byte>>(t);
 
             return Vector64.Create(
@@ -821,7 +821,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void Store128(Vector128<byte> s, Span<byte> t)
         {
-            if (Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
 #if NET8_0_OR_GREATER
                 MemoryMarshal.Write(t, in s);

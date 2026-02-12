@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -60,7 +60,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public virtual void Connect(TlsClient tlsClient)
         {
             if (tlsClient == null)
-                throw new ArgumentNullException("tlsClient");
+                throw new ArgumentNullException(nameof(tlsClient));
             if (m_tlsClient != null)
                 throw new InvalidOperationException("'Connect' can only be called once");
 
@@ -90,14 +90,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         {
             base.CleanupHandshake();
 
-            this.m_clientAgreements = null;
-            this.m_clientBinders = null;
-            this.m_clientHello = null;
-            this.m_keyExchange = null;
-            this.m_authentication = null;
+            m_clientAgreements = null;
+            m_clientBinders = null;
+            m_clientHello = null;
+            m_keyExchange = null;
+            m_authentication = null;
 
-            this.m_certificateStatus = null;
-            this.m_certificateRequest = null;
+            m_certificateStatus = null;
+            m_certificateRequest = null;
         }
 
         protected override TlsContext Context
@@ -380,8 +380,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                      * NOTE: Certificate processing (including authentication) is delayed to allow for a
                      * possible CertificateStatus message.
                      */
-                    m_authentication = TlsUtilities.ReceiveServerCertificate(m_tlsClientContext, m_tlsClient, buf,
-                        m_serverExtensions);
+                    m_authentication = TlsUtilities.ReceiveServerCertificate(m_tlsClientContext, m_tlsClient, buf);
                     break;
                 }
                 default:
@@ -453,22 +452,34 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     {
                         Process13HelloRetryRequest(serverHello);
                         m_handshakeHash.NotifyPrfDetermined();
-                        m_handshakeHash.SealHashAlgorithms();
+
                         TlsUtilities.AdjustTranscriptForRetry(m_handshakeHash);
+
                         buf.UpdateHash(m_handshakeHash);
                         this.m_connectionState = CS_SERVER_HELLO_RETRY_REQUEST;
 
                         Send13ClientHelloRetry();
                         this.m_connectionState = CS_CLIENT_HELLO_RETRY;
+
+                        /*
+                         * PSK binders (if any) when retrying ClientHello currently require handshakeHash buffering
+                         */
+                        m_handshakeHash.SealHashAlgorithms();
                     }
                     else
                     {
                         ProcessServerHello(serverHello);
                         m_handshakeHash.NotifyPrfDetermined();
+
                         if (TlsUtilities.IsTlsV13(securityParameters.NegotiatedVersion))
                         {
                             m_handshakeHash.SealHashAlgorithms();
                         }
+                        else
+                        {
+                            // For pre-1.3 wait until ServerHelloDone is received
+                        }
+
                         buf.UpdateHash(m_handshakeHash);
                         this.m_connectionState = CS_SERVER_HELLO;
 
@@ -546,12 +557,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                         {
                             clientAuthCertificate = clientAuthCredentials.Certificate;
 
-                            if (clientAuthCredentials is TlsCredentialedSigner)
+                            if (clientAuthCredentials is TlsCredentialedSigner credentialedSigner)
                             {
-                                clientAuthSigner = (TlsCredentialedSigner)clientAuthCredentials;
+                                clientAuthSigner = credentialedSigner;
                                 clientAuthAlgorithm = TlsUtilities.GetSignatureAndHashAlgorithm(
                                     securityParameters.NegotiatedVersion, clientAuthSigner);
                                 clientAuthStreamSigner = clientAuthSigner.GetStreamSigner();
+
+                                TlsUtilities.Verify12SignatureAlgorithm(clientAuthAlgorithm,
+                                    AlertDescription.internal_error);
 
                                 if (ProtocolVersion.TLSv12.Equals(securityParameters.NegotiatedVersion))
                                 {
@@ -613,6 +627,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                         // NOTE: For (D)TLS, session hash potentially needed for extended_master_secret
                         EstablishMasterSecret(m_tlsClientContext, m_keyExchange);
                     }
+
+                    m_keyExchange = null;
 
                     m_recordStream.SetPendingCipher(TlsUtilities.InitCipher(m_tlsClientContext));
 
@@ -775,9 +791,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         protected virtual void HandleSupplementalData(IList<SupplementalDataEntry> serverSupplementalData)
         {
             m_tlsClient.ProcessServerSupplementalData(serverSupplementalData);
-            this.m_connectionState = CS_SERVER_SUPPLEMENTAL_DATA;
+            m_connectionState = CS_SERVER_SUPPLEMENTAL_DATA;
 
-            this.m_keyExchange = TlsUtilities.InitKeyExchangeClient(m_tlsClientContext, m_tlsClient);
+            m_keyExchange = TlsUtilities.InitKeyExchangeClient(m_tlsClientContext, m_tlsClient);
         }
 
         /// <exception cref="IOException"/>
@@ -828,7 +844,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     if (null == TlsUtilities.GetExtensionData(m_clientExtensions, extensionType))
                     {
                         throw new TlsFatalAlert(AlertDescription.unsupported_extension,
-                            "received unrequested extension response: " + ExtensionType.GetText(extensionType));
+                            "Unrequested extension in HelloRetryRequest: " + ExtensionType.GetText(extensionType));
                     }
                 }
             }
@@ -863,7 +879,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 }
             }
 
-            int selected_group = TlsExtensionsUtilities.GetKeyShareHelloRetryRequest(extensions);
+            int selectedGroup = TlsExtensionsUtilities.GetKeyShareHelloRetryRequest(extensions);
 
             /*
              * TODO[tls:psk_ke]
@@ -871,7 +887,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
              * RFC 8446 4.2.8. Servers [..] MUST NOT send a KeyShareEntry when using the "psk_ke"
              * PskKeyExchangeMode.
              */
-            if (selected_group < 0)
+            if (selectedGroup < 0)
             {
                 throw new TlsFatalAlert(AlertDescription.missing_extension,
                     "missing extension response: " + ExtensionType.GetText(ExtensionType.key_share));
@@ -886,7 +902,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
              * MUST abort the handshake with an "illegal_parameter" alert.
              */
             if (!TlsUtilities.IsValidKeyShareSelection(server_version, securityParameters.ClientSupportedGroups,
-                m_clientAgreements, selected_group))
+                m_clientAgreements, selectedGroup))
             {
                 throw new TlsFatalAlert(AlertDescription.illegal_parameter, "invalid key_share selected");
             }
@@ -905,9 +921,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             TlsUtilities.NegotiatedCipherSuite(securityParameters, cipherSuite);
             m_tlsClient.NotifySelectedCipherSuite(cipherSuite);
 
+            securityParameters.m_negotiatedGroup = selectedGroup;
+
             this.m_clientAgreements = null;
             this.m_retryCookie = cookie;
-            this.m_retryGroup = selected_group;
+            this.m_retryGroup = selectedGroup;
         }
 
         /// <exception cref="IOException"/>
@@ -1007,29 +1025,36 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             TlsSecret sharedSecret = null;
             {
-                KeyShareEntry keyShareEntry = TlsExtensionsUtilities.GetKeyShareServerHello(extensions);
-                if (null == keyShareEntry)
+                KeyShareEntry serverShare = TlsExtensionsUtilities.GetKeyShareServerHello(extensions);
+                if (null == serverShare)
                 {
-                    if (afterHelloRetryRequest
-                        || null == pskEarlySecret
-                        || !Arrays.Contains(m_clientBinders.m_pskKeyExchangeModes, PskKeyExchangeMode.psk_ke))
+                    if (afterHelloRetryRequest ||
+                        pskEarlySecret == null ||
+                        !Arrays.Contains(m_clientBinders.m_pskKeyExchangeModes, PskKeyExchangeMode.psk_ke))
                     {
                         throw new TlsFatalAlert(AlertDescription.illegal_parameter);
                     }
                 }
                 else
                 {
-                    if (null != pskEarlySecret
-                        && !Arrays.Contains(m_clientBinders.m_pskKeyExchangeModes, PskKeyExchangeMode.psk_dhe_ke))
+                    if (pskEarlySecret != null &&
+                        !Arrays.Contains(m_clientBinders.m_pskKeyExchangeModes, PskKeyExchangeMode.psk_dhe_ke))
                     {
                         throw new TlsFatalAlert(AlertDescription.illegal_parameter);
                     }
 
-                    if (!m_clientAgreements.TryGetValue(keyShareEntry.NamedGroup, out var agreement))
+                    int namedGroup = serverShare.NamedGroup;
+
+                    if (!m_clientAgreements.TryGetValue(namedGroup, out var agreement))
                         throw new TlsFatalAlert(AlertDescription.illegal_parameter);
 
-                    agreement.ReceivePeerValue(keyShareEntry.KeyExchange);
+                    agreement.ReceivePeerValue(serverShare.KeyExchange);
                     sharedSecret = agreement.CalculateSecret();
+
+                    if (!afterHelloRetryRequest)
+                    {
+                        securityParameters.m_negotiatedGroup = namedGroup;
+                    }
                 }
             }
 
@@ -1072,6 +1097,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         /// <exception cref="IOException"/>
         protected virtual void ProcessServerHello(ServerHello serverHello)
         {
+            var clientHelloExtensions = m_clientHello.Extensions;
             var serverHelloExtensions = serverHello.Extensions;
 
             ProtocolVersion legacy_version = serverHello.Version;
@@ -1195,8 +1221,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                      * associated ClientHello, it MUST abort the handshake with an unsupported_extension
                      * fatal alert.
                      */
-                    if (null == TlsUtilities.GetExtensionData(m_clientExtensions, extType))
-                        throw new TlsFatalAlert(AlertDescription.unsupported_extension);
+                    if (null == TlsUtilities.GetExtensionData(clientHelloExtensions, extType))
+                    {
+                        throw new TlsFatalAlert(AlertDescription.unsupported_extension,
+                            "Unrequested extension in ServerHello: " + ExtensionType.GetText(extType));
+                    }
 
                     /*
                      * RFC 3546 2.3. If [...] the older session is resumed, then the server MUST ignore
@@ -1257,7 +1286,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             {
                 bool negotiatedEms = false;
 
-                if (TlsExtensionsUtilities.HasExtendedMasterSecretExtension(m_clientExtensions))
+                if (TlsExtensionsUtilities.HasExtendedMasterSecretExtension(clientHelloExtensions))
                 {
                     negotiatedEms = TlsExtensionsUtilities.HasExtendedMasterSecretExtension(serverHelloExtensions);
 
@@ -1299,7 +1328,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 serverHelloExtensions);
             securityParameters.m_applicationProtocolSet = true;
 
-            var sessionClientExtensions = m_clientExtensions;
+            var sessionClientExtensions = clientHelloExtensions;
             var sessionServerExtensions = serverHelloExtensions;
 
             if (securityParameters.IsResumedSession)
@@ -1421,13 +1450,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 foreach (int extType in m_serverExtensions.Keys)
                 {
                     if (null == TlsUtilities.GetExtensionData(m_clientExtensions, extType))
-                        throw new TlsFatalAlert(AlertDescription.unsupported_extension);
+                    {
+                        throw new TlsFatalAlert(AlertDescription.unsupported_extension,
+                            "Unrequested extension in EncryptedExtensions: " + ExtensionType.GetText(extType));
+                    }
                 }
             }
 
 
             SecurityParameters securityParameters = m_tlsClientContext.SecurityParameters;
-            ProtocolVersion negotiatedVersion = securityParameters.NegotiatedVersion;
 
             securityParameters.m_applicationProtocol = TlsExtensionsUtilities.GetAlpnExtensionServer(
                 m_serverExtensions);
@@ -1504,8 +1535,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (m_selectedPsk13)
                 throw new TlsFatalAlert(AlertDescription.unexpected_message);
 
-            m_authentication = TlsUtilities.Receive13ServerCertificate(m_tlsClientContext, m_tlsClient, buf,
-                m_serverExtensions);
+            m_authentication = TlsUtilities.Receive13ServerCertificate(m_tlsClientContext, m_tlsClient, buf);
 
             // NOTE: In TLS 1.3 we don't have to wait for a possible CertificateStatus message.
             HandleServerCertificate();
@@ -1691,9 +1721,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             TlsSession sessionToResume = offeringTlsV12Minus ? m_tlsClient.GetSessionToResume() : null;
 
-            bool fallback = m_tlsClient.IsFallback();
-
+            // NOTE: Client is free to modify the cipher suites up until GetSessionToResume 
             int[] offeredCipherSuites = m_tlsClient.GetCipherSuites();
+
+            bool fallback = m_tlsClient.IsFallback();
 
             this.m_clientExtensions = TlsExtensionsUtilities.EnsureExtensionsInitialised(m_tlsClient.GetClientExtensions());
 
@@ -1795,6 +1826,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
 
             // NOT renegotiating
+            if (offeringTlsV12Minus)
             {
                 /*
                  * RFC 5746 3.4. Client Behavior: Initial Handshake (both full and session-resumption)
@@ -1811,8 +1843,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
                 if (noRenegExt && noRenegScsv)
                 {
-                    // TODO[tls13] Probably want to not add this if no pre-TLSv13 versions offered?
-                    offeredCipherSuites = Arrays.Append(offeredCipherSuites, CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
+                    offeredCipherSuites = Arrays.Append(offeredCipherSuites,
+                        CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
                 }
             }
 

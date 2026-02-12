@@ -5,16 +5,13 @@ using System.Runtime.CompilerServices;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests
 {
-    /// <summary>
-    /// Ascon-CXOF128 was introduced in NIST Special Publication (SP) 800-232 (Initial Public Draft).
-    /// </summary>
+    /// <summary>Ascon-CXOF128, from NIST Special Publication (SP) 800-232.</summary>
     /// <remarks>
     /// Additional details and the specification can be found in:
-    /// <a href="https://csrc.nist.gov/pubs/sp/800/232/ipd">NIST SP 800-232 (Initial Public Draft)</a>.
+    /// <a href="https://csrc.nist.gov/pubs/sp/800/232/final">NIST SP 800-232</a>.
     /// For reference source code and implementation details, please see:
     /// <a href="https://github.com/ascon/ascon-c">Reference, highly optimized, masked C and
     /// ASM implementations of Ascon (NIST SP 800-232)</a>.
@@ -46,7 +43,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests
             Arrays.ValidateSegment(z, zOff, zLen);
 
             if (zLen > 256)
-                throw new ArgumentOutOfRangeException("customization string too long");
+                throw new ArgumentOutOfRangeException(nameof(zLen), "customization string too long");
 
             InitState(z, zOff, zLen);
 

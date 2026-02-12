@@ -1,17 +1,12 @@
 using System;
-
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.CryptoPro;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.EdEC;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Rosstandart;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X9;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
@@ -68,60 +63,20 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
             {
                 var q = ecKey.Q;
 
-                if (ecKey.Parameters is ECGost3410Parameters gostParams)
-                {
-                    int fieldSize = ecKey.Parameters.Curve.FieldElementEncodingLength;
-                    var algOid = fieldSize > 32
-                        ? RosstandartObjectIdentifiers.id_tc26_gost_3410_12_512
-                        : RosstandartObjectIdentifiers.id_tc26_gost_3410_12_256;
-                    var algParams = new Gost3410PublicKeyAlgParameters(gostParams.PublicKeyParamSet,
-                        gostParams.DigestParamSet, gostParams.EncryptionParamSet);
-                    var algID = new AlgorithmIdentifier(algOid, algParams);
-                    return new SubjectPublicKeyInfo(algID, CreateECGost3410PublicKey(fieldSize, q));
-                }
-
-                if (ecKey.AlgorithmName == "ECGOST3410")
-                {
-                    if (ecKey.PublicKeyParamSet == null)
-                        throw new NotImplementedException("Not a CryptoPro parameter set");
-
-                    int fieldSize = ecKey.Parameters.Curve.FieldElementEncodingLength;
-                    var algParams = new Gost3410PublicKeyAlgParameters(ecKey.PublicKeyParamSet,
-                        CryptoProObjectIdentifiers.GostR3411x94CryptoProParamSet);
-                    var algID = new AlgorithmIdentifier(CryptoProObjectIdentifiers.GostR3410x2001, algParams);
-                    return new SubjectPublicKeyInfo(algID, CreateECGost3410PublicKey(fieldSize, q));
-                }
-                else
-                {
-                    var algParams = ecKey.Parameters.ToX962Parameters();
+                var algParams = ecKey.Parameters.ToX962Parameters();
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                    int encodedLength = q.GetEncodedLength(false);
-                    Span<byte> pubKey = encodedLength <= 512
-                        ? stackalloc byte[encodedLength]
-                        : new byte[encodedLength];
-                    q.EncodeTo(false, pubKey);
+                int encodedLength = q.GetEncodedLength(false);
+                Span<byte> pubKey = encodedLength <= 512
+                    ? stackalloc byte[encodedLength]
+                    : new byte[encodedLength];
+                q.EncodeTo(false, pubKey);
 #else
-                    byte[] pubKey = q.GetEncoded(false);
+                byte[] pubKey = q.GetEncoded(false);
 #endif
 
-                    var algID = new AlgorithmIdentifier(X9ObjectIdentifiers.IdECPublicKey, algParams);
-                    return new SubjectPublicKeyInfo(algID, pubKey);
-                }
-            }
-
-            if (publicKey is Gost3410PublicKeyParameters gost3410Key)
-            {
-                if (gost3410Key.PublicKeyParamSet == null)
-                    throw new NotImplementedException("Not a CryptoPro parameter set");
-
-                // must be little endian
-                byte[] keyEnc = Arrays.ReverseInPlace(gost3410Key.Y.ToByteArrayUnsigned());
-
-                var algParams = new Gost3410PublicKeyAlgParameters(gost3410Key.PublicKeyParamSet,
-                    CryptoProObjectIdentifiers.GostR3411x94CryptoProParamSet);
-                var algID = new AlgorithmIdentifier(CryptoProObjectIdentifiers.GostR3410x94, algParams);
-                return new SubjectPublicKeyInfo(algID, new DerOctetString(keyEnc));
+                var algID = new AlgorithmIdentifier(X9ObjectIdentifiers.IdECPublicKey, algParams);
+                return new SubjectPublicKeyInfo(algID, pubKey);
             }
 
             if (publicKey is X448PublicKeyParameters x448Key)
@@ -181,21 +136,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509
             }
 
             throw new ArgumentException("Class provided no convertible: " + Platform.GetTypeName(publicKey));
-        }
-
-        private static Asn1OctetString CreateECGost3410PublicKey(int fieldSize, ECPoint q)
-        {
-            byte[] encoding = new byte[fieldSize * 2];
-            EncodeECGost3410FieldElement(q.AffineXCoord.ToBigInteger(), encoding, 0, fieldSize);
-            EncodeECGost3410FieldElement(q.AffineYCoord.ToBigInteger(), encoding, fieldSize, fieldSize);
-            return DerOctetString.WithContents(encoding);
-        }
-
-        private static void EncodeECGost3410FieldElement(BigInteger bi, byte[] buf, int off, int len)
-        {
-            // TODO Add a little-endian option to do this in one go
-            BigIntegers.AsUnsignedByteArray(bi, buf, off, len);
-            Array.Reverse(buf, off, len);
         }
     }
 }

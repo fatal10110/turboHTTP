@@ -113,6 +113,7 @@ namespace TurboHTTP.Transport.Tcp
         private readonly object _lock = new object();
         private bool _released;
         private bool _disposed;
+        private bool _semaphoreReleased;
 
         public PooledConnection Connection { get; }
 
@@ -136,12 +137,7 @@ namespace TurboHTTP.Transport.Tcp
                     return;
                 _released = true;
             }
-            try
-            {
-                _semaphore.Release();
-            }
-            catch (ObjectDisposedException) { }
-            catch (SemaphoreFullException) { }
+            ReleaseSemaphoreOnce();
         }
 
         /// <summary>
@@ -194,7 +190,20 @@ namespace TurboHTTP.Transport.Tcp
                 }
             }
             // Release semaphore OUTSIDE the lock to avoid holding lock during Release().
-            // ALWAYS release semaphore — this is the critical invariant.
+            // Only release if not already released by TransferOwnership or ReturnToPool.
+            ReleaseSemaphoreOnce();
+        }
+
+        /// <summary>
+        /// Releases the semaphore permit exactly once, regardless of how many times called.
+        /// </summary>
+        private void ReleaseSemaphoreOnce()
+        {
+            lock (_lock)
+            {
+                if (_semaphoreReleased) return;
+                _semaphoreReleased = true;
+            }
             try
             {
                 _semaphore.Release();
@@ -202,11 +211,6 @@ namespace TurboHTTP.Transport.Tcp
             catch (ObjectDisposedException)
             {
                 // Pool was disposed while connection was in flight — safe to ignore.
-            }
-            catch (SemaphoreFullException)
-            {
-                // Defensive: should never happen if permit tracking is correct.
-                // Swallow to prevent Dispose() from throwing (violates .NET guidelines).
             }
         }
     }

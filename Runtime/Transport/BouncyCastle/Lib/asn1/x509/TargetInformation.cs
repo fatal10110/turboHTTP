@@ -95,7 +95,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
 		 * According to RFC 3281 only one targets element must be produced. If
 		 * multiple targets are given in the constructor they are merged into one
 		 * targets element. If this was produced from a
-		 * {@link Org.BouncyCastle.Asn1.Asn1Sequence} the encoding is kept.</p>
+		 * {@link TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Asn1Sequence} the encoding is kept.</p>
 		 * 
 		 * @return an Asn1Object
 		 */

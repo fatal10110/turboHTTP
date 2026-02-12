@@ -197,7 +197,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             else if (cipherParameters is ParametersWithIV myParms)
             {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                myNonce = myParms.IV;
+                myNonce = myParms.InternalIV;
 #else
                 myNonce = myParms.GetIV();
 #endif
@@ -255,10 +255,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             }
 
             /* Make sure that we haven't breached AEAD data limit */
-            if ((long)theAEADHasher.getBytesProcessed() + long.MinValue > (MAX_DATALEN - pLen) + long.MinValue)
-            {
+            if (theAEADHasher.getBytesProcessed() > (ulong)(MAX_DATALEN - pLen))
                 throw new InvalidOperationException("AEAD byte count exceeded");
-            }
         }
 
         /**
@@ -288,10 +286,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
                 dataLimit += BUFLEN;
                 currBytes = theEncData.Length;
             }
-            if (currBytes + long.MinValue > (dataLimit - pLen) + long.MinValue)
-            {
+
+            if (Longs.CompareUnsigned(currBytes, dataLimit - pLen) > 0)
                 throw new InvalidOperationException("byte count exceeded");
-            }
         }
 
         public virtual void ProcessAadByte(byte pByte)

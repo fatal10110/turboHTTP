@@ -10,12 +10,27 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Ocsp
             if (obj == null)
                 return null;
             if (obj is OcspResponse ocspResponse)
-				return ocspResponse;
+                return ocspResponse;
             return new OcspResponse(Asn1Sequence.GetInstance(obj));
-		}
+        }
 
         public static OcspResponse GetInstance(Asn1TaggedObject obj, bool explicitly) =>
             new OcspResponse(Asn1Sequence.GetInstance(obj, explicitly));
+
+        public static OcspResponse GetOptional(Asn1Encodable element)
+        {
+            if (element == null)
+                throw new ArgumentNullException(nameof(element));
+
+            if (element is OcspResponse ocspResponse)
+                return ocspResponse;
+
+            Asn1Sequence asn1Sequence = Asn1Sequence.GetOptional(element);
+            if (asn1Sequence != null)
+                return new OcspResponse(asn1Sequence);
+
+            return null;
+        }
 
         public static OcspResponse GetTagged(Asn1TaggedObject taggedObject, bool declaredExplicit) =>
             new OcspResponse(Asn1Sequence.GetTagged(taggedObject, declaredExplicit));
@@ -25,7 +40,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Ocsp
 
         public OcspResponse(OcspResponseStatus responseStatus, ResponseBytes responseBytes)
         {
-			m_responseStatus = responseStatus ?? throw new ArgumentNullException(nameof(responseStatus));
+            m_responseStatus = responseStatus ?? throw new ArgumentNullException(nameof(responseStatus));
             m_responseBytes = responseBytes;
         }
 
@@ -48,7 +63,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Ocsp
 
         public ResponseBytes ResponseBytes => m_responseBytes;
 
-		/**
+        /**
          * Produce an object suitable for an Asn1OutputStream.
          * <pre>
          * OcspResponse ::= Sequence {

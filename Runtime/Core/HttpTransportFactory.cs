@@ -12,22 +12,25 @@ namespace TurboHTTP.Core
     public static class HttpTransportFactory
     {
         private static volatile Func<IHttpTransport> _factory;
+        private static volatile Func<TlsBackend, IHttpTransport> _backendFactory;
         private static volatile Lazy<IHttpTransport> _lazy;
         private static readonly object _lock = new object();
 
         /// <summary>
-        /// Register a transport factory function. Creates a new Lazy&lt;T&gt; instance
-        /// for thread-safe lazy initialization. Re-registration is allowed — the
-        /// previous singleton (if materialized) becomes eligible for GC. Existing
-        /// UHttpClient instances continue using the old singleton; new clients get
-        /// the new one via the fresh Lazy&lt;T&gt;.
+        /// Register transport factory functions. Creates a new Lazy&lt;T&gt; instance
+        /// for thread-safe lazy initialization.
         /// </summary>
-        public static void Register(Func<IHttpTransport> factory)
+        /// <param name="factory">Factory for the default (Auto) transport singleton.</param>
+        /// <param name="backendFactory">Optional factory for creating transport instances with a specific TLS backend.</param>
+        public static void Register(
+            Func<IHttpTransport> factory,
+            Func<TlsBackend, IHttpTransport> backendFactory = null)
         {
             if (factory == null) throw new ArgumentNullException(nameof(factory));
             lock (_lock)
             {
                 _factory = factory;
+                _backendFactory = backendFactory;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
             }
         }
@@ -52,6 +55,27 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Create a new transport instance with the specified TLS backend.
+        /// Unlike <see cref="Default"/>, this creates a fresh (non-singleton) instance
+        /// that the caller owns and must dispose.
+        /// Falls back to the default factory if no backend-specific factory was registered.
+        /// </summary>
+        public static IHttpTransport CreateWithBackend(TlsBackend tlsBackend)
+        {
+            var backendFactory = _backendFactory;
+            if (backendFactory != null)
+                return backendFactory(tlsBackend);
+
+            // Fallback: no backend-aware factory registered, use default
+            var factory = _factory;
+            if (factory == null)
+                throw new InvalidOperationException(
+                    "No transport factory configured. " +
+                    "Ensure TurboHTTP.Transport is included in your project.");
+            return factory();
+        }
+
+        /// <summary>
         /// Set a transport directly for testing (bypasses factory).
         /// </summary>
         public static void SetForTesting(IHttpTransport transport)
@@ -72,6 +96,7 @@ namespace TurboHTTP.Core
             lock (_lock)
             {
                 _factory = null;
+                _backendFactory = null;
                 _lazy = null;
             }
         }

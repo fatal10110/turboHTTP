@@ -53,7 +53,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         public static DerExternal GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
         {
-            return (DerExternal)Meta.Instance.GetContextInstance(taggedObject, declaredExplicit);
+            return (DerExternal)Meta.Instance.GetContextTagged(taggedObject, declaredExplicit);
         }
 
         public static DerExternal GetOptional(Asn1Encodable element)
@@ -273,9 +273,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             case 0:
                 return encoding.GetExplicitBaseObject().ToAsn1Object();
             case 1:
-                return Asn1OctetString.GetInstance(encoding, false);
+                return Asn1OctetString.GetTagged(encoding, false);
             case 2:
-                return DerBitString.GetInstance(encoding, false);
+                return DerBitString.GetTagged(encoding, false);
             default:
                 throw new ArgumentException("unknown tag: " + Asn1Utilities.GetTagText(encoding), nameof(encoding));
             }

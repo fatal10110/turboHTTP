@@ -1914,8 +1914,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Raw
         public static void Xor(ReadOnlySpan<uint> x, ReadOnlySpan<uint> y, Span<uint> z)
         {
 #if NETCOREAPP3_0_OR_GREATER
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
             {
                 var X = MemoryMarshal.AsBytes(x[..8]);
                 var Y = MemoryMarshal.AsBytes(y[..8]);
@@ -1934,8 +1934,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Raw
                 return;
             }
 
-            if (Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
-                Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
             {
                 var X = MemoryMarshal.AsBytes(x[..8]);
                 var Y = MemoryMarshal.AsBytes(y[..8]);

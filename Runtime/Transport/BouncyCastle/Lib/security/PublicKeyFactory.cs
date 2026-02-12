@@ -1,23 +1,19 @@
 using System;
-using System.Diagnostics;
 using System.IO;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Cryptlib;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.CryptoPro;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.EdEC;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Gnu;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Rosstandart;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.UA;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X9;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Pqc.Crypto.Crystals.Dilithium;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
@@ -122,64 +118,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
                 ECPoint q = domainParameters.Curve.DecodePoint(keyInfo.PublicKey.GetBytes());
                 return new ECPublicKeyParameters("EC", q, domainParameters);
             }
-            else if (algOid.Equals(CryptoProObjectIdentifiers.GostR3410x2001))
-            {
-                Gost3410PublicKeyAlgParameters gostParams = Gost3410PublicKeyAlgParameters.GetInstance(algID.Parameters);
-                DerObjectIdentifier publicKeyParamSet = gostParams.PublicKeyParamSet;
-
-                X9ECParameters ecP = ECGost3410NamedCurves.GetByOid(publicKeyParamSet);
-                if (ecP == null)
-                    return null;
-
-                Asn1OctetString key;
-                try
-                {
-                    key = (Asn1OctetString)keyInfo.ParsePublicKey();
-                }
-                catch (IOException e)
-                {
-                    throw new ArgumentException("error recovering GOST3410_2001 public key", e);
-                }
-
-                int fieldSize = 32;
-                int keySize = 2 * fieldSize;
-
-                byte[] keyEnc = key.GetOctets();
-                if (keyEnc.Length != keySize)
-                    throw new ArgumentException("invalid length for GOST3410_2001 public key");
-
-                byte[] x9Encoding = new byte[1 + keySize];
-                x9Encoding[0] = 0x04;
-                for (int i = 1; i <= fieldSize; ++i)
-                {
-                    x9Encoding[i] = keyEnc[fieldSize - i];
-                    x9Encoding[i + fieldSize] = keyEnc[keySize - i];
-                }
-
-                ECPoint q = ecP.Curve.DecodePoint(x9Encoding);
-
-                return new ECPublicKeyParameters("ECGOST3410", q, publicKeyParamSet);
-            }
-            else if (algOid.Equals(CryptoProObjectIdentifiers.GostR3410x94))
-            {
-                Gost3410PublicKeyAlgParameters algParams = Gost3410PublicKeyAlgParameters.GetInstance(algID.Parameters);
-
-                Asn1OctetString key;
-                try
-                {
-                    key = (Asn1OctetString)keyInfo.ParsePublicKey();
-                }
-                catch (IOException e)
-                {
-                    throw new ArgumentException("error recovering GOST3410_94 public key", e);
-                }
-
-                byte[] keyBytes = key.GetOctets();
-
-                BigInteger y = new BigInteger(1, keyBytes, bigEndian: false);
-
-                return new Gost3410PublicKeyParameters(y, algParams.PublicKeyParamSet);
-            }
             else if (algOid.Equals(EdECObjectIdentifiers.id_X25519)
                 || algOid.Equals(CryptlibObjectIdentifiers.curvey25519))
             {
@@ -198,53 +136,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             {
                 return new Ed448PublicKeyParameters(GetRawKey(keyInfo));
             }
-            else if (algOid.Equals(RosstandartObjectIdentifiers.id_tc26_gost_3410_12_256)
-                ||   algOid.Equals(RosstandartObjectIdentifiers.id_tc26_gost_3410_12_512)
-                ||   algOid.Equals(RosstandartObjectIdentifiers.id_tc26_agreement_gost_3410_12_256)
-                ||   algOid.Equals(RosstandartObjectIdentifiers.id_tc26_agreement_gost_3410_12_512))
-            {
-                Gost3410PublicKeyAlgParameters gostParams = Gost3410PublicKeyAlgParameters.GetInstance(algID.Parameters);
-                DerObjectIdentifier publicKeyParamSet = gostParams.PublicKeyParamSet;
-
-                ECGost3410Parameters ecDomainParameters =new ECGost3410Parameters(
-                    new ECNamedDomainParameters(publicKeyParamSet, ECGost3410NamedCurves.GetByOid(publicKeyParamSet)),
-                    publicKeyParamSet,
-                    gostParams.DigestParamSet,
-                    gostParams.EncryptionParamSet);
-
-                Asn1OctetString key;
-                try
-                {
-                    key = (Asn1OctetString)keyInfo.ParsePublicKey();
-                }
-                catch (IOException e)
-                {
-                    throw new ArgumentException("error recovering GOST3410_2012 public key", e);
-                }
-
-                int fieldSize = 32;
-                if (algOid.Equals(RosstandartObjectIdentifiers.id_tc26_gost_3410_12_512))
-                {
-                    fieldSize = 64;
-                }
-                int keySize = 2 * fieldSize;
-
-                byte[] keyEnc = key.GetOctets();
-                if (keyEnc.Length != keySize)
-                    throw new ArgumentException("invalid length for GOST3410_2012 public key");
-
-                byte[] x9Encoding = new byte[1 + keySize];
-                x9Encoding[0] = 0x04;
-                for (int i = 1; i <= fieldSize; ++i)
-                {
-                    x9Encoding[i] = keyEnc[fieldSize - i];
-                    x9Encoding[i + fieldSize] = keyEnc[keySize - i];
-                }
-
-                ECPoint q = ecDomainParameters.Curve.DecodePoint(x9Encoding);
-
-                return new ECPublicKeyParameters(q, ecDomainParameters);
-            }
             else if (MLDsaParameters.ByOid.TryGetValue(algOid, out MLDsaParameters mlDsaParameters))
             {
                 return GetMLDsaPublicKey(mlDsaParameters, keyInfo.PublicKey);
@@ -256,6 +147,55 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             else if (SlhDsaParameters.ByOid.TryGetValue(algOid, out SlhDsaParameters slhDsaParameters))
             {
                 return GetSlhDsaPublicKey(slhDsaParameters, keyInfo.PublicKey);
+            }
+            else if (UAObjectIdentifiers.dstu4145be.Equals(algOid)
+                ||   UAObjectIdentifiers.dstu4145le.Equals(algOid))
+            {
+                bool isLE = UAObjectIdentifiers.dstu4145le.Equals(algOid);
+                Dstu4145Params dstuParams = Dstu4145Params.GetInstance(algID.Parameters);
+
+                Asn1OctetString key;
+                try
+                {
+                    key = (Asn1OctetString)keyInfo.ParsePublicKey();
+                }
+                catch (Exception)
+                {
+                    throw new ArgumentException("error recovering DSTU public key");
+                }
+
+                byte[] keyOctets = key.GetOctets();
+                if (isLE)
+                {
+                    keyOctets = Arrays.Reverse(keyOctets);
+                }
+
+                ECDomainParameters ecDomain;
+                if (dstuParams.IsNamedCurve)
+                {
+                    ecDomain = Dstu4145NamedCurves.GetByOid(dstuParams.NamedCurve);
+                }
+                else
+                {
+                    Dstu4145ECBinary ecBinary = dstuParams.ECBinary;
+                    BigInteger b = new BigInteger(1, ecBinary.B.GetOctets(), bigEndian: !isLE);
+
+                    Dstu4145BinaryField field = ecBinary.Field;
+                    ECCurve curve = new F2mCurve(field.M, field.K, field.J, field.L, ecBinary.A.Value, b, null, null);
+
+                    byte[] bpOctets = ecBinary.BP.GetOctets();
+                    if (isLE)
+                    {
+                        bpOctets = Arrays.Reverse(bpOctets);
+                    }
+
+                    ECPoint g = Dstu4145PointEncoder.DecodePoint(curve, bpOctets);
+                    ecDomain = new ECDomainParameters(curve, g, ecBinary.N.Value);
+                }
+
+                ECPoint q = Dstu4145PointEncoder.DecodePoint(ecDomain.Curve, keyOctets);
+
+                return new ECPublicKeyParameters(q, ecDomain);
             }
             else
             {

@@ -15,7 +15,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities
     public class AlgorithmIdentifierFactory
     {
         public static readonly DerObjectIdentifier IDEA_CBC = MiscObjectIdentifiers.as_sys_sec_alg_ideaCBC;
-        public static readonly DerObjectIdentifier CAST5_CBC = MiscObjectIdentifiers.cast5CBC;
 
         private static readonly short[] rc2Table = {
             0xbd, 0x56, 0xea, 0xf2, 0xa2, 0xf1, 0xac, 0x2a, 0xb0, 0x93, 0xd1, 0x9c, 0x1b, 0x33, 0xfd, 0xd0,
@@ -72,16 +71,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities
                 random.NextBytes(iv);
 
                 return new AlgorithmIdentifier(encryptionOID, new DerOctetString(iv));
-            }
-            else if (encryptionOID.Equals(CAST5_CBC))
-            {
-                byte[] iv = new byte[8];
-
-                random.NextBytes(iv);
-
-                Cast5CbcParameters cbcParams = new Cast5CbcParameters(iv, keySize);
-
-                return new AlgorithmIdentifier(encryptionOID, cbcParams);
             }
             else if (encryptionOID.Equals(PkcsObjectIdentifiers.rc4))
             {

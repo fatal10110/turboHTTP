@@ -3,7 +3,6 @@ using System.Collections.Generic;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Cms;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.CryptoPro;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Kisa;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Misc;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
@@ -110,9 +109,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AddAlgorithm("CAMELLIA256",
                 NttObjectIdentifiers.IdCamellia256Cbc,
                 NttObjectIdentifiers.IdCamellia256Wrap);
-            AddAlgorithm("CAST5",
-                MiscObjectIdentifiers.cast5CBC);
-            AddAlgorithm("CAST6");
             AddAlgorithm("CHACHA");
             AddAlgorithm("CHACHA7539",
                 "CHACHA20",
@@ -130,10 +126,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
                 PkcsObjectIdentifiers.IdAlgCms3DesWrap);
             AddAlgorithm("DESEDE3",
                 PkcsObjectIdentifiers.DesEde3Cbc);
-            AddAlgorithm("GOST28147",
-                "GOST",
-                "GOST-28147",
-                CryptoProObjectIdentifiers.GostR28147Gcfb);
             AddAlgorithm("HC128");
             AddAlgorithm("HC256");
             AddAlgorithm("IDEA",
@@ -158,9 +150,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AddAlgorithm("SKIPJACK");
             AddAlgorithm("SM4");
             AddAlgorithm("TEA");
-            AddAlgorithm("THREEFISH-256");
-            AddAlgorithm("THREEFISH-512");
-            AddAlgorithm("THREEFISH-1024");
             AddAlgorithm("TNEPRES");
             AddAlgorithm("TWOFISH");
             AddAlgorithm("VMPC");
@@ -304,10 +293,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
                 {
                     iv = Asn1OctetString.GetInstance(asn1Params);
                 }
-                else if (canonical == "CAST5")
-                {
-                    iv = Cast5CbcParameters.GetInstance(asn1Params).IV;
-                }
                 else if (canonical == "IDEA")
                 {
                     iv = IdeaCbcPar.GetInstance(asn1Params).IV;
@@ -357,9 +342,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             if (basicIVKeySize != -1)
                 return CreateIVOctetString(random, basicIVKeySize);
 
-            if (canonical == "CAST5")
-                return new Cast5CbcParameters(CreateIV(random, 8), 128);
-
             if (canonical == "IDEA")
                 return new IdeaCbcPar(CreateIV(random, 8));
 
@@ -367,6 +349,38 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
                 return new RC2CbcParameter(CreateIV(random, 8));
 
             throw new SecurityUtilityException("Algorithm " + algorithm + " not recognised.");
+        }
+
+        public static ICipherParameters GetContext(ICipherParameters cipherParameters, int minLen, int maxLen,
+            out byte[] context)
+        {
+            if (cipherParameters is ParametersWithContext withContext)
+            {
+                int len = withContext.ContextLength;
+                if (len < minLen || len > maxLen)
+                {
+                    var message = $"Context length must be in range [{minLen}, {maxLen}]";
+                    throw new ArgumentOutOfRangeException(nameof(cipherParameters), len, message);
+                }
+
+                context = withContext.GetContext();
+                return withContext.Parameters;
+            }
+
+            context = null;
+            return cipherParameters;
+        }
+
+        public static ICipherParameters GetRandom(ICipherParameters cipherParameters, out SecureRandom random)
+        {
+            if (cipherParameters is ParametersWithRandom withRandom)
+            {
+                random = withRandom.Random;
+                return withRandom.Parameters;
+            }
+
+            random = null;
+            return cipherParameters;
         }
 
         public static ICipherParameters IgnoreRandom(ICipherParameters cipherParameters)

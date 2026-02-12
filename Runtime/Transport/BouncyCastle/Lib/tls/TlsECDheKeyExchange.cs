@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto;
@@ -19,12 +19,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case KeyExchangeAlgorithm.ECDHE_RSA:
                 return keyExchange;
             default:
-                throw new ArgumentException("unsupported key exchange algorithm", "keyExchange");
+                throw new ArgumentException("unsupported key exchange algorithm", nameof(keyExchange));
             }
         }
 
         protected TlsECConfig m_ecConfig;
-
         protected TlsCredentialedSigner m_serverCredentials = null;
         protected TlsCertificate m_serverCertificate = null;
         protected TlsAgreement m_agreement;
@@ -64,7 +63,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             GenerateEphemeral(digestBuffer);
 
-            TlsUtilities.GenerateServerKeyExchangeSignature(m_context, m_serverCredentials, null, digestBuffer);
+            TlsUtilities.GenerateServerKeyExchangeSignature(m_context, m_serverCredentials, digestBuffer);
 
             return digestBuffer.ToArray();
         }
@@ -78,7 +77,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             byte[] point = TlsUtilities.ReadOpaque8(teeIn, 1);
 
-            TlsUtilities.VerifyServerKeyExchangeSignature(m_context, input, m_serverCertificate, null, digestBuffer);
+            TlsUtilities.VerifyServerKeyExchangeSignature(m_context, input, m_serverCertificate, digestBuffer);
 
             m_agreement = m_context.Crypto.CreateECDomain(m_ecConfig).CreateECDH();
 

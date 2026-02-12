@@ -2,7 +2,6 @@
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Kisa;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Misc;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Ntt;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
@@ -87,12 +86,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities
                     cipher.Init(forEncryption, new ParametersWithIV(encKey,
                         Asn1OctetString.GetInstance(sParams).GetOctets()));
                 }
-                else if (encAlg.Equals(AlgorithmIdentifierFactory.CAST5_CBC))
-                {
-                    Cast5CbcParameters cbcParams = Cast5CbcParameters.GetInstance(sParams);
-
-                    cipher.Init(forEncryption, new ParametersWithIV(encKey, cbcParams.GetIV()));
-                }
                 else if (encAlg.Equals(PkcsObjectIdentifiers.RC2Cbc))
                 {
                     var rc2CbcParameter = RC2CbcParameter.GetInstance(sParams);
@@ -110,8 +103,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities
             else
             {
                 if (encAlg.Equals(PkcsObjectIdentifiers.DesEde3Cbc)
-                    || encAlg.Equals(AlgorithmIdentifierFactory.IDEA_CBC)
-                    || encAlg.Equals(AlgorithmIdentifierFactory.CAST5_CBC))
+                    || encAlg.Equals(AlgorithmIdentifierFactory.IDEA_CBC))
                 {
                     cipher.Init(forEncryption, new ParametersWithIV(encKey, new byte[8]));
                 }
@@ -145,10 +137,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities
             else if (PkcsObjectIdentifiers.RC2Cbc.Equals(algorithm))
             {
                 cipher = new CbcBlockCipher(new RC2Engine());
-            }
-            else if (MiscObjectIdentifiers.cast5CBC.Equals(algorithm))
-            {
-                cipher = new CbcBlockCipher(new Cast5Engine());
             }
             else
             {

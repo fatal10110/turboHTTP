@@ -22,15 +22,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems
 
         public void Init(ICipherParameters parameters)
         {
-            SecureRandom providedRandom = null;
-            if (parameters is ParametersWithRandom withRandom)
-            {
-                providedRandom = withRandom.Random;
-                parameters = withRandom.Parameters;
-            }
+            parameters = ParameterUtilities.GetRandom(parameters, out var providedRandom);
 
             if (!(parameters is MLKemPublicKeyParameters publicKey))
-                throw new ArgumentException($"{nameof(MLKemDecapsulator)} expects {nameof(MLKemPublicKeyParameters)}");
+                throw new ArgumentException($"{nameof(MLKemEncapsulator)} expects {nameof(MLKemPublicKeyParameters)}");
 
             m_publicKey = publicKey;
             m_engine = GetEngine(m_publicKey.Parameters, CryptoServicesRegistrar.GetSecureRandom(providedRandom));
@@ -54,8 +49,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems
                 throw new ArgumentException(nameof(secLen));
 
             byte[] r = new byte[32];
-            m_engine.RandomBytes(r, r.Length);
-            m_engine.KemEncrypt(encBuf, encOff, secBuf, secOff, m_publicKey.GetEncoded(), r);
+            m_engine.Random.NextBytes(r);
+            m_engine.KemEncrypt(encBuf, encOff, secBuf, secOff, m_publicKey, r);
 #endif
         }
 
@@ -67,9 +62,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems
             if (SecretLength != secret.Length)
                 throw new ArgumentException(nameof(secret));
 
-            byte[] r = new byte[32];
-            m_engine.RandomBytes(r, r.Length);
-            m_engine.KemEncrypt(encapsulation, secret, m_publicKey.GetEncoded(), r);
+            Span<byte> r = stackalloc byte[32];
+            m_engine.Random.NextBytes(r);
+            m_engine.KemEncrypt(encapsulation, secret, m_publicKey, r);
         }
 #endif
 
@@ -77,7 +72,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems
         {
             var keyParameterSet = keyParameters.ParameterSet;
 
-            if (keyParameters.ParameterSet != m_parameters.ParameterSet)
+            if (keyParameterSet != m_parameters.ParameterSet)
                 throw new ArgumentException("Mismatching key parameter set", nameof(keyParameters));
 
             return keyParameterSet.GetEngine(random);

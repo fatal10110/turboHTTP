@@ -99,7 +99,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             {
                 initKeyParam = (KeyParameter)ivParams.Parameters;
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                initNonce = ivParams.IV;
+                initNonce = ivParams.InternalIV;
 #else
                 initNonce = ivParams.GetIV();
 #endif
@@ -141,7 +141,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 
             if (null != initKeyParam)
             {
-                initKeyParam.CopyTo(mKey, 0, KeySize);
+                initKeyParam.CopyKeyTo(mKey, 0, KeySize);
             }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER

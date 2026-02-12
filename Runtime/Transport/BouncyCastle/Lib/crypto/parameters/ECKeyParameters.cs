@@ -19,7 +19,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
             { "ECDSA", "ECDSA" },
             { "ECDH", "ECDH" },
             { "ECDHC", "ECDHC" },
-            { "ECGOST3410", "ECGOST3410" },
             { "ECMQV", "ECMQV" },
         };
 

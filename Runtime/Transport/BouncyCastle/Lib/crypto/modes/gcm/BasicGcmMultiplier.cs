@@ -10,7 +10,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes.Gcm
         : IGcmMultiplier
     {
 #if NETCOREAPP3_0_OR_GREATER
-        internal static bool IsHardwareAccelerated => Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled;
+        internal static bool IsHardwareAccelerated => TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled;
 #else
         internal static bool IsHardwareAccelerated => false;
 #endif

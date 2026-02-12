@@ -1,6 +1,6 @@
 ﻿using System;
 
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Pqc.Crypto.SphincsPlus;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers.SlhDsa;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
@@ -30,50 +30,43 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
             m_pk = pk;
         }
 
-        public byte[] GetEncoded() => Arrays.Concatenate(m_pk.seed, m_pk.root);
+        public byte[] GetEncoded() => Arrays.Concatenate(m_pk.Seed, m_pk.Root);
 
         internal PK PK => m_pk;
 
         internal bool VerifyInternal(byte[] msg, int msgOff, int msgLen, byte[] signature)
         {
-            //# Input: Message M, signature SIG, public key PK
-            //# Output: bool
-
             var engine = Parameters.ParameterSet.GetEngine();
 
             if (engine.SignatureLength != signature.Length)
                 return false;
 
-            // init
-            engine.Init(PK.seed);
-
-            Adrs adrs = new Adrs();
-            SIG sig = new SIG(engine.N, engine.K, engine.A, engine.D, engine.H_PRIME, engine.WOTS_LEN, signature);
-
-            byte[] R = sig.R;
-            SIG_FORS[] sig_fors = sig.SIG_FORS;
-            SIG_XMSS[] SIG_HT = sig.SIG_HT;
+            engine.Init(PK.Seed);
 
             // compute message digest and index
-            IndexedDigest idxDigest = engine.H_msg(R, PK.seed, PK.root, msg, msgOff, msgLen);
-            byte[] mHash = idxDigest.digest;
-            ulong idx_tree = idxDigest.idx_tree;
-            uint idx_leaf = idxDigest.idx_leaf;
+            IndexedDigest idxDigest = engine.HMsg(signature, 0, PK.Seed, PK.Root, msg, msgOff, msgLen);
+
+            byte[] digest = idxDigest.Digest;
+            ulong idxTree = idxDigest.IdxTree;
+            uint idxLeaf = idxDigest.IdxLeaf;
 
             // compute FORS public key
-            adrs.SetTypeAndClear(Adrs.FORS_TREE);
+            Adrs adrs = new Adrs(Adrs.ForsTree);
             adrs.SetLayerAddress(0);
-            adrs.SetTreeAddress(idx_tree);
-            adrs.SetKeyPairAddress(idx_leaf);
-            byte[] PK_FORS = new Fors(engine).PKFromSig(sig_fors, mHash, PK.seed, adrs, legacy: false);
+            adrs.SetTreeAddress(idxTree);
+            adrs.SetKeyPairAddress(idxLeaf);
+
+            byte[] PK_FORS = new byte[engine.N];
+            Fors.PKFromSig(engine, signature, digest, adrs, PK_FORS, 0);
 
             // verify HT signature
-            adrs.SetTypeAndClear(Adrs.TREE);
+            adrs.SetTypeAndClear(Adrs.Tree);
             adrs.SetLayerAddress(0);
-            adrs.SetTreeAddress(idx_tree);
-            adrs.SetKeyPairAddress(idx_leaf);
-            HT ht = new HT(engine, null, PK.seed);
-            return ht.Verify(PK_FORS, SIG_HT, PK.seed, idx_tree, idx_leaf, PK.root);
+            adrs.SetTreeAddress(idxTree);
+            adrs.SetKeyPairAddress(idxLeaf);
+
+            HT ht = new HT(engine, null, PK.Seed);
+            return ht.Verify(PK_FORS, signature, PK.Seed, idxTree, idxLeaf, PK.Root);
         }
     }
 }

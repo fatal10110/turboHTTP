@@ -760,7 +760,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
         private static void ImplCheckQ(BigInteger q)
         {
-            int maxBitLength = ImplGetInteger("Org.BouncyCastle.EC.Fp_MaxSize", 1042); // 2 * 521
+            int maxBitLength = ImplGetInteger("TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.Fp_MaxSize", 1042); // 2 * 521
             if (q.BitLength > maxBitLength)
                 throw new ArgumentException("Fp q value out of range");
 
@@ -805,7 +805,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             if (Primes.HasAnySmallFactors(q))
                 return false;
 
-            int certainty = ImplGetInteger("Org.BouncyCastle.EC.Fp_Certainty", 100);
+            int certainty = ImplGetInteger("TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.Fp_Certainty", 100);
             int iterations = ImplGetIterations(q.BitLength, certainty);
 
             return Primes.IsMRProbablePrime(q, SecureRandom.ArbitraryRandom, iterations);
@@ -970,7 +970,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
         private static IFiniteField BuildField(int m, int k1, int k2, int k3)
         {
-            int maxM = ImplGetInteger("Org.BouncyCastle.EC.F2m_MaxSize", 1142); // 2 * 571
+            int maxM = ImplGetInteger("TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.F2m_MaxSize", 1142); // 2 * 571
             if (m > maxM)
                 throw new ArgumentException("F2m m value out of range");
 

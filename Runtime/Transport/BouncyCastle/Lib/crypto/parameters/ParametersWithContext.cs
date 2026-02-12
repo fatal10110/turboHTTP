@@ -1,7 +1,6 @@
 ﻿using System;
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-using System.Buffers;
-#endif
+
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 {
@@ -10,12 +9,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
     {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public static ParametersWithContext Create<TState>(ICipherParameters parameters, int contextLength,
-            TState state, SpanAction<byte, TState> action)
+            TState state, System.Buffers.SpanAction<byte, TState> action)
         {
             if (action == null)
                 throw new ArgumentNullException(nameof(action));
-            if (contextLength < 0)
-                throw new ArgumentOutOfRangeException(nameof(contextLength));
 
             ParametersWithContext result = new ParametersWithContext(parameters, contextLength);
             action(result.m_context, state);
@@ -23,31 +20,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
         }
 #endif
 
-        internal static ICipherParameters ApplyOptionalContext(ICipherParameters parameters, byte[] context) =>
-            context == null ? parameters : new ParametersWithContext(parameters, context);
-
         private readonly ICipherParameters m_parameters;
         private readonly byte[] m_context;
 
         public ParametersWithContext(ICipherParameters parameters, byte[] context)
         {
             // NOTE: 'parameters' may be null to imply key re-use
-            if (context == null)
-                throw new ArgumentNullException(nameof(context));
-
             m_parameters = parameters;
-            m_context = (byte[])context.Clone();
+            m_context = Arrays.CopyBuffer(context);
         }
 
         public ParametersWithContext(ICipherParameters parameters, byte[] context, int contextOff, int contextLen)
         {
             // NOTE: 'parameters' may be null to imply key re-use
-            if (context == null)
-                throw new ArgumentNullException(nameof(context));
-
             m_parameters = parameters;
-            m_context = new byte[contextLen];
-            Array.Copy(context, contextOff, m_context, 0, contextLen);
+            m_context = Arrays.CopySegment(context, contextOff, contextLen);
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
@@ -59,32 +46,25 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
         }
 #endif
 
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         private ParametersWithContext(ICipherParameters parameters, int contextLength)
         {
-            if (contextLength < 0)
-                throw new ArgumentOutOfRangeException(nameof(contextLength));
-
             // NOTE: 'parameters' may be null to imply key re-use
             m_parameters = parameters;
-            m_context = new byte[contextLength];
+            m_context = Arrays.CreateBuffer<byte>(contextLength);
         }
-
-        public void CopyContextTo(byte[] buf, int off, int len)
-        {
-            if (m_context.Length != len)
-                throw new ArgumentOutOfRangeException(nameof(len));
-
-            Array.Copy(m_context, 0, buf, off, len);
-        }
-
-        public byte[] GetContext() => (byte[])m_context.Clone();
+#endif
 
         public int ContextLength => m_context.Length;
 
-        public ICipherParameters Parameters => m_parameters;
+        public void CopyContextTo(byte[] buf, int off, int len) => Arrays.CopyBufferToSegment(m_context, buf, off, len);
+
+        public byte[] GetContext() => Arrays.InternalCopyBuffer(m_context);
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        internal ReadOnlySpan<byte> Context => m_context;
+        internal ReadOnlySpan<byte> InternalContext => m_context;
 #endif
+
+        public ICipherParameters Parameters => m_parameters;
     }
 }

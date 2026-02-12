@@ -1,5 +1,5 @@
 ﻿using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Pqc.Crypto.SphincsPlus;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers.SlhDsa;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators
@@ -29,7 +29,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators
             engine.Init(pkSeed);
 
             // TODO
-            PK pk = new PK(pkSeed, new HT(engine, sk.seed, pkSeed).HTPubKey);
+            PK pk = new PK(pkSeed, new HT(engine, sk.Seed, pkSeed).HTPubKey);
 
             return new AsymmetricCipherKeyPair(
                 new SlhDsaPublicKeyParameters(m_parameters, pk),

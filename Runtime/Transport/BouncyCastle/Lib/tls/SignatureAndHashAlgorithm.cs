@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
@@ -12,14 +12,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             Create(SignatureScheme.ecdsa_brainpoolP384r1tls13_sha384);
         public static readonly SignatureAndHashAlgorithm ecdsa_brainpoolP512r1tls13_sha512 =
             Create(SignatureScheme.ecdsa_brainpoolP512r1tls13_sha512);
-        public static readonly SignatureAndHashAlgorithm ed25519 =
-            Create(SignatureScheme.ed25519);
-        public static readonly SignatureAndHashAlgorithm ed448 =
-            Create(SignatureScheme.ed448);
-        public static readonly SignatureAndHashAlgorithm gostr34102012_256 =
-            Create(HashAlgorithm.Intrinsic, SignatureAlgorithm.gostr34102012_256);
-        public static readonly SignatureAndHashAlgorithm gostr34102012_512 =
-            Create(HashAlgorithm.Intrinsic, SignatureAlgorithm.gostr34102012_512);
+        public static readonly SignatureAndHashAlgorithm ed25519 = Create(SignatureScheme.ed25519);
+        public static readonly SignatureAndHashAlgorithm ed448 = Create(SignatureScheme.ed448);
+        public static readonly SignatureAndHashAlgorithm mldsa44 = Create(SignatureScheme.mldsa44);
+        public static readonly SignatureAndHashAlgorithm mldsa65 = Create(SignatureScheme.mldsa65);
+        public static readonly SignatureAndHashAlgorithm mldsa87 = Create(SignatureScheme.mldsa87);
         public static readonly SignatureAndHashAlgorithm rsa_pss_rsae_sha256 =
             Create(SignatureScheme.rsa_pss_rsae_sha256);
         public static readonly SignatureAndHashAlgorithm rsa_pss_rsae_sha384 =
@@ -32,6 +29,18 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             Create(SignatureScheme.rsa_pss_pss_sha384);
         public static readonly SignatureAndHashAlgorithm rsa_pss_pss_sha512 =
             Create(SignatureScheme.rsa_pss_pss_sha512);
+        public static readonly SignatureAndHashAlgorithm slhdsa_sha2_128s = Create(SignatureScheme.slhdsa_sha2_128s);
+        public static readonly SignatureAndHashAlgorithm slhdsa_sha2_128f = Create(SignatureScheme.slhdsa_sha2_128f);
+        public static readonly SignatureAndHashAlgorithm slhdsa_sha2_192s = Create(SignatureScheme.slhdsa_sha2_192s);
+        public static readonly SignatureAndHashAlgorithm slhdsa_sha2_192f = Create(SignatureScheme.slhdsa_sha2_192f);
+        public static readonly SignatureAndHashAlgorithm slhdsa_sha2_256s = Create(SignatureScheme.slhdsa_sha2_256s);
+        public static readonly SignatureAndHashAlgorithm slhdsa_sha2_256f = Create(SignatureScheme.slhdsa_sha2_256f);
+        public static readonly SignatureAndHashAlgorithm slhdsa_shake_128s = Create(SignatureScheme.slhdsa_shake_128s);
+        public static readonly SignatureAndHashAlgorithm slhdsa_shake_128f = Create(SignatureScheme.slhdsa_shake_128f);
+        public static readonly SignatureAndHashAlgorithm slhdsa_shake_192s = Create(SignatureScheme.slhdsa_shake_192s);
+        public static readonly SignatureAndHashAlgorithm slhdsa_shake_192f = Create(SignatureScheme.slhdsa_shake_192f);
+        public static readonly SignatureAndHashAlgorithm slhdsa_shake_256s = Create(SignatureScheme.slhdsa_shake_256s);
+        public static readonly SignatureAndHashAlgorithm slhdsa_shake_256f = Create(SignatureScheme.slhdsa_shake_256f);
 
         public static SignatureAndHashAlgorithm GetInstance(short hashAlgorithm, short signatureAlgorithm)
         {
@@ -52,10 +61,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return ed25519;
             case SignatureAlgorithm.ed448:
                 return ed448;
-            case SignatureAlgorithm.gostr34102012_256:
-                return gostr34102012_256;
-            case SignatureAlgorithm.gostr34102012_512:
-                return gostr34102012_512;
             case SignatureAlgorithm.rsa_pss_rsae_sha256:
                 return rsa_pss_rsae_sha256;
             case SignatureAlgorithm.rsa_pss_rsae_sha384:

@@ -29,8 +29,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
 		/**
 		* Initializes this algorithm. Must be called before all other Functions.
 		*
-		* @see Org.BouncyCastle.Crypto.AsymmetricBlockCipher#init(bool,
-		*      Org.BouncyCastle.Crypto.CipherParameters)
+		* @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.AsymmetricBlockCipher#init(bool,
+		*      TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.CipherParameters)
 		*/
 		public virtual void Init(bool forEncryption, ICipherParameters parameters)
 		{
@@ -68,7 +68,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
 		/**
 		* Returns the input block size of this algorithm.
 		*
-		* @see Org.BouncyCastle.Crypto.AsymmetricBlockCipher#GetInputBlockSize()
+		* @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.AsymmetricBlockCipher#GetInputBlockSize()
 		*/
         public virtual int GetInputBlockSize()
 		{
@@ -88,7 +88,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
 		/**
 		* Returns the output block size of this algorithm.
 		*
-		* @see Org.BouncyCastle.Crypto.AsymmetricBlockCipher#GetOutputBlockSize()
+		* @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.AsymmetricBlockCipher#GetOutputBlockSize()
 		*/
         public virtual int GetOutputBlockSize()
 		{
@@ -108,7 +108,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines
 		/**
 		* Process a single Block using the Naccache-Stern algorithm.
 		*
-		* @see Org.BouncyCastle.Crypto.AsymmetricBlockCipher#ProcessBlock(byte[],
+		* @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.AsymmetricBlockCipher#ProcessBlock(byte[],
 		*      int, int)
 		*/
         public virtual byte[] ProcessBlock(byte[] inBytes, int inOff, int length)

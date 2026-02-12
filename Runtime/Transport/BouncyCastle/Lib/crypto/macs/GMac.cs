@@ -47,8 +47,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Macs
         }
 
         /// <summary>
-        /// Initialises the GMAC - requires a <see cref="Org.BouncyCastle.Crypto.Parameters.ParametersWithIV"/> 
-        /// providing a <see cref="Org.BouncyCastle.Crypto.Parameters.KeyParameter"/> and a nonce.
+        /// Initialises the GMAC - requires a <see cref="TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters.ParametersWithIV"/> 
+        /// providing a <see cref="TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters.KeyParameter"/> and a nonce.
         /// </summary>
         public void Init(ICipherParameters parameters)
         {

@@ -17,8 +17,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Fpe
 	 */
     internal static class SP80038G
     {
-        internal static readonly string FPE_DISABLED = "Org.BouncyCastle.Fpe.Disable";
-        internal static readonly string FF1_DISABLED = "Org.BouncyCastle.Fpe.Disable_Ff1";
+        internal static readonly string FPE_DISABLED = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Fpe.Disable";
+        internal static readonly string FF1_DISABLED = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Fpe.Disable_Ff1";
 
         private static readonly int BLOCK_SIZE = 16;
         private static readonly double LOG2 = System.Math.Log(2.0);

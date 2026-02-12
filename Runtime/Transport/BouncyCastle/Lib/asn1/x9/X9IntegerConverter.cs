@@ -5,6 +5,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X9
 {
+    // TODO[api] Make static
     public abstract class X9IntegerConverter
     {
         public static int GetByteLength(ECFieldElement fe) => fe.GetEncodedLength();

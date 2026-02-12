@@ -7,7 +7,6 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Misc;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Rosstandart;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Macs;
@@ -32,7 +31,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AlgorithmOidMap[IanaObjectIdentifiers.HmacMD5] = "HMAC-MD5";
             AlgorithmOidMap[IanaObjectIdentifiers.HmacRipeMD160] = "HMAC-RIPEMD160";
             AlgorithmOidMap[IanaObjectIdentifiers.HmacSha1] = "HMAC-SHA1";
-            AlgorithmOidMap[IanaObjectIdentifiers.HmacTiger] = "HMAC-TIGER";
 
             AlgorithmOidMap[PkcsObjectIdentifiers.IdHmacWithSha1] = "HMAC-SHA1";
             AlgorithmOidMap[MiscObjectIdentifiers.HMAC_SHA1] = "HMAC-SHA1";
@@ -47,9 +45,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AlgorithmOidMap[NistObjectIdentifiers.IdHMacWithSha3_256] = "HMAC-SHA3-256";
             AlgorithmOidMap[NistObjectIdentifiers.IdHMacWithSha3_384] = "HMAC-SHA3-384";
             AlgorithmOidMap[NistObjectIdentifiers.IdHMacWithSha3_512] = "HMAC-SHA3-512";
-
-            AlgorithmOidMap[RosstandartObjectIdentifiers.id_tc26_hmac_gost_3411_12_256] = "HMAC-GOST3411-2012-256";
-            AlgorithmOidMap[RosstandartObjectIdentifiers.id_tc26_hmac_gost_3411_12_512] = "HMAC-GOST3411-2012-512";
 
             // TODO AESMAC?
 
@@ -77,7 +72,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AlgorithmMap["RC2/CFB8"] = "RC2MAC/CFB8";
             AlgorithmMap["RC5"] = "RC5MAC";
             AlgorithmMap["RC5/CFB8"] = "RC5MAC/CFB8";
-            AlgorithmMap["GOST28147"] = "GOST28147MAC";
             AlgorithmMap["VMPC"] = "VMPCMAC";
             AlgorithmMap["VMPC-MAC"] = "VMPCMAC";
             AlgorithmMap["SIPHASH"] = "SIPHASH-2-4";
@@ -265,10 +259,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             if (mechanism == "RC5MAC/CFB8")
             {
                 return new CfbBlockCipherMac(new RC532Engine());
-            }
-            if (mechanism == "GOST28147MAC")
-            {
-                return new Gost28147Mac();
             }
             if (mechanism == "VMPCMAC")
             {

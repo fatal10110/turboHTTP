@@ -20,8 +20,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
 	 *            }
 	 * </pre>
 	 * 
-	 * @see Org.BouncyCastle.Asn1.X509.Target
-	 * @see Org.BouncyCastle.Asn1.X509.TargetInformation
+	 * @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509.Target
+	 * @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509.TargetInformation
 	 */
     public class Targets
 		: Asn1Encodable

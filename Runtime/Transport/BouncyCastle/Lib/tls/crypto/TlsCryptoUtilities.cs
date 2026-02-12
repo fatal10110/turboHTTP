@@ -4,7 +4,6 @@ using System.IO;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Rosstandart;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto
@@ -69,8 +68,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto
                 return CryptoHashAlgorithm.sha384;
             case PrfAlgorithm.tls13_hkdf_sm3:
                 return CryptoHashAlgorithm.sm3;
-            case PrfAlgorithm.tls_prf_gostr3411_2012_256:
-                return CryptoHashAlgorithm.gostr3411_2012_256;
             default:
                 throw new ArgumentException("unknown PrfAlgorithm: " + PrfAlgorithm.GetText(prfAlgorithm));
             }
@@ -85,7 +82,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto
             case CryptoHashAlgorithm.sha224:
             case CryptoHashAlgorithm.sha256:
             case CryptoHashAlgorithm.sm3:
-            case CryptoHashAlgorithm.gostr3411_2012_256:
                 return 64;
             case CryptoHashAlgorithm.sha384:
             case CryptoHashAlgorithm.sha512:
@@ -107,7 +103,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto
                 return 28;
             case CryptoHashAlgorithm.sha256:
             case CryptoHashAlgorithm.sm3:
-            case CryptoHashAlgorithm.gostr3411_2012_256:
                 return 32;
             case CryptoHashAlgorithm.sha384:
                 return 48;
@@ -137,8 +132,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto
             // TODO[RFC 8998]
             //case CryptoHashAlgorithm.sm3:
             //    return GMObjectIdentifiers.sm3;
-            case CryptoHashAlgorithm.gostr3411_2012_256:
-                return RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256;
             default:
                 throw new ArgumentException();
             }
@@ -176,10 +169,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto
                 return CryptoSignatureAlgorithm.ecdsa_brainpoolP384r1tls13_sha384;
             case SignatureAlgorithm.ecdsa_brainpoolP512r1tls13_sha512:
                 return CryptoSignatureAlgorithm.ecdsa_brainpoolP512r1tls13_sha512;
-            case SignatureAlgorithm.gostr34102012_256:
-                return CryptoSignatureAlgorithm.gostr34102012_256;
-            case SignatureAlgorithm.gostr34102012_512:
-                return CryptoSignatureAlgorithm.gostr34102012_512;
             default:
                 throw new ArgumentException("specified SignatureAlgorithm invalid: "
                     + SignatureAlgorithm.GetText(signatureAlgorithm));

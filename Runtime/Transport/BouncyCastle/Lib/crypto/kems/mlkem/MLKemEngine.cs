@@ -1,7 +1,8 @@
 using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Pqc.Crypto.SphincsPlus;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
@@ -88,6 +89,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems.MLKem
             m_random = random;
         }
 
+        internal SecureRandom Random => m_random;
+
+        internal bool CheckModulus(byte[] t) => PolyVec.CheckModulus(this, t) < 0;
+
         internal void GenerateKemKeyPair(out byte[] t, out byte[] rho, out byte[] s, out byte[] hpk, out byte[] nonce,
             out byte[] seed)
         {
@@ -119,8 +124,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems.MLKem
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        internal void KemDecrypt(Span<byte> secret, ReadOnlySpan<byte> encapsulation, byte[] secretKey)
+        internal void KemDecrypt(Span<byte> secret, ReadOnlySpan<byte> encapsulation,
+            MLKemPrivateKeyParameters privateKey)
         {
+            byte[] secretKey = privateKey.GetEncoded();
+
             // TODO do input validation
             Span<byte> kr = stackalloc byte[2 * SymBytes];
             Span<byte> buf = stackalloc byte[2 * SymBytes];
@@ -135,7 +143,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems.MLKem
 
             m_indCpa.Encrypt(cmp, buf[..SymBytes], pk, kr[SymBytes..]);
 
-            bool fail = !Arrays.FixedTimeEquals(cmp, encapsulation);
+            int fail = ~FixedTimeEquals(cmp, encapsulation);
 
             Symmetric.Hash_h(encapsulation, kr[SymBytes..]);
             secretKey.AsSpan(SecretKeyBytes - SymBytes, SymBytes).CopyTo(implicit_rejection);
@@ -147,28 +155,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems.MLKem
             kr[..SharedSecretBytes].CopyTo(secret);
         }
 
-        internal void KemEncrypt(Span<byte> encapsulation, Span<byte> secret, ReadOnlySpan<byte> pk,
+        internal void KemEncrypt(Span<byte> encapsulation, Span<byte> secret, MLKemPublicKeyParameters publicKey,
             ReadOnlySpan<byte> randBytes)
         {
-            //TODO: do input validation elsewhere?
-            // Input validation (6.2 ML-KEM Encaps)
-            // Type Check
-            if (pk.Length != IndCpaPublicKeyBytes)
-                throw new ArgumentException("Input validation Error: Type check failed for ml-kem encapsulation");
+            ReadOnlySpan<byte> pk = publicKey.GetEncoded();
 
-            // Modulus Check
-            PolyVec polyVec = new PolyVec(this);
-            byte[] seed = m_indCpa.UnpackPublicKey(polyVec, pk);
-            byte[] ek = m_indCpa.PackPublicKey(polyVec, seed);
-            if (!pk.SequenceEqual(ek))
-                throw new ArgumentException("Input validation: Modulus check failed for ml-kem encapsulation");
-
-            KemEncryptInternal(encapsulation, secret, pk, randBytes);
-        }
-
-        internal void KemEncryptInternal(Span<byte> encapsulation, Span<byte> secret, ReadOnlySpan<byte> pk,
-            ReadOnlySpan<byte> randBytes)
-        {
             Span<byte> buf = stackalloc byte[2 * SymBytes];
             Span<byte> kr = stackalloc byte[2 * SymBytes];
 
@@ -183,20 +174,37 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems.MLKem
             kr[..SharedSecretBytes].CopyTo(secret);
         }
 
-        private static void CMov(Span<byte> r, ReadOnlySpan<byte> x, int len, bool b)
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        private static void CMov(Span<byte> r, ReadOnlySpan<byte> x, int xLen, int cond)
         {
-            if (b)
+            Debug.Assert(0 == cond || -1 == cond);
+
+            for (int i = 0; i < xLen; ++i)
             {
-                x[..len].CopyTo(r);
-            }
-            else
-            {
-                r[..len].CopyTo(r);
+                int r_i = r[i], diff = r_i ^ x[i];
+                r_i ^= diff & cond;
+                r[i] = (byte)r_i;
             }
         }
-#else
-        internal void KemDecrypt(byte[] secBuf, int secOff, byte[] encBuf, int encOff, byte[] secretKey)
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        public static int FixedTimeEquals(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
         {
+            int d = 0;
+            for (int i = 0, len = a.Length; i < len; ++i)
+            {
+                d |= a[i] ^ b[i];
+            }
+            d |= d >> 16;
+            d &= 0xFFFF;
+            return (d - 1) >> 31;
+        }
+#else
+        internal void KemDecrypt(byte[] secBuf, int secOff, byte[] encBuf, int encOff,
+            MLKemPrivateKeyParameters privateKey)
+        {
+            byte[] secretKey = privateKey.GetEncoded();
+
             //TODO do input validation
             byte[] buf = new byte[2 * SymBytes], kr = new byte[2 * SymBytes], cmp = new byte[CipherTextBytes];
             byte[] pk = Arrays.CopyOfRange(secretKey, IndCpaSecretKeyBytes, secretKey.Length);
@@ -208,7 +216,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems.MLKem
 
             m_indCpa.Encrypt(cmp, 0, Arrays.CopyOf(buf, SymBytes), pk, Arrays.CopyOfRange(kr, SymBytes, kr.Length));
 
-            bool fail = !Arrays.FixedTimeEquals(cmp.Length, cmp, 0, encBuf, encOff);
+            int fail = ~FixedTimeEquals(cmp.Length, cmp, 0, encBuf, encOff);
 
             Symmetric.Hash_h(encBuf, encOff, CipherTextBytes, kr, SymBytes);
             Array.Copy(secretKey, SecretKeyBytes - SymBytes, implicit_rejection, 0, SymBytes);
@@ -220,26 +228,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems.MLKem
             Array.Copy(kr, 0, secBuf, secOff, SharedSecretBytes);
         }
 
-        internal void KemEncrypt(byte[] encBuf, int encOff, byte[] secBuf, int secOff, byte[] pk, byte[] randBytes)
+        internal void KemEncrypt(byte[] encBuf, int encOff, byte[] secBuf, int secOff,
+            MLKemPublicKeyParameters publicKey, byte[] randBytes)
         {
-            //TODO: do input validation elsewhere?
-            // Input validation (6.2 ML-KEM Encaps)
-            // Type Check
-            if (pk.Length != IndCpaPublicKeyBytes)
-                throw new ArgumentException("Input validation Error: Type check failed for ml-kem encapsulation");
+            byte[] pk = publicKey.GetEncoded();
 
-            // Modulus Check
-            PolyVec polyVec = new PolyVec(this);
-            byte[] seed = m_indCpa.UnpackPublicKey(polyVec, pk);
-            byte[] ek = m_indCpa.PackPublicKey(polyVec, seed);
-            if (!Arrays.AreEqual(ek, pk))
-                throw new ArgumentException("Input validation: Modulus check failed for ml-kem encapsulation");
-
-            KemEncryptInternal(encBuf, encOff, secBuf, secOff, pk, randBytes);
-        }
-
-        internal void KemEncryptInternal(byte[] encBuf, int encOff, byte[] secBuf, int secOff, byte[] pk, byte[] randBytes)
-        {
             byte[] buf = new byte[2 * SymBytes];
             byte[] kr = new byte[2 * SymBytes];
 
@@ -255,22 +248,31 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Kems.MLKem
             Array.Copy(kr, 0, secBuf, secOff, SharedSecretBytes);
         }
 
-        private static void CMov(byte[] r, byte[] x, int len, bool b)
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        private static void CMov(byte[] r, byte[] x, int xLen, int cond)
         {
-            if (b)
+            Debug.Assert(0 == cond || -1 == cond);
+
+            for (int i = 0; i < xLen; ++i)
             {
-                Array.Copy(x, 0, r, 0, len);
+                int r_i = r[i], diff = r_i ^ x[i];
+                r_i ^= diff & cond;
+                r[i] = (byte)r_i;
             }
-            else
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        public static int FixedTimeEquals(int len, byte[] a, int aOff, byte[] b, int bOff)
+        {
+            int d = 0;
+            for (int i = 0; i < len; ++i)
             {
-                Array.Copy(r, 0, r, 0, len);
+                d |= a[aOff + i] ^ b[bOff + i];
             }
+            d |= d >> 16;
+            d &= 0xFFFF;
+            return (d - 1) >> 31;
         }
 #endif
-
-        internal void RandomBytes(byte[] buf, int len)
-        {
-            m_random.NextBytes(buf, 0, len);
-        }
     }
 }

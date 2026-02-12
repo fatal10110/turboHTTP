@@ -133,8 +133,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
         private const long IMASK = 0xFFFFFFFFL;
         private const ulong UIMASK = 0xFFFFFFFFUL;
 
-        private static readonly uint[] ZeroMagnitude = new uint[0];
-        private static readonly byte[] ZeroEncoding = new byte[0];
+        private static readonly uint[] ZeroMagnitude = Array.Empty<uint>();
+        private static readonly byte[] ZeroEncoding = Array.Empty<byte>();
 
         private static readonly BigInteger[] SMALL_CONSTANTS = new BigInteger[17];
         public static readonly BigInteger Zero;
@@ -144,6 +144,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
         public static readonly BigInteger Four;
         public static readonly BigInteger Five;
         public static readonly BigInteger Six;
+        public static readonly BigInteger Seven;
+        public static readonly BigInteger Eight;
+        public static readonly BigInteger Nine;
         public static readonly BigInteger Ten;
 
 #if !NETCOREAPP3_0_OR_GREATER
@@ -205,18 +208,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
             Four = SMALL_CONSTANTS[4];
             Five = SMALL_CONSTANTS[5];
             Six = SMALL_CONSTANTS[6];
+            Seven = SMALL_CONSTANTS[7];
+            Eight = SMALL_CONSTANTS[8];
+            Nine = SMALL_CONSTANTS[9];
             Ten = SMALL_CONSTANTS[10];
 
             radix2 = Two;
             radix2E = radix2.Pow(chunk2);
 
-            radix8 = ValueOf(8);
+            radix8 = Eight;
             radix8E = radix8.Pow(chunk8);
 
             radix10 = Ten;
             radix10E = radix10.Pow(chunk10);
 
-            radix16 = ValueOf(16);
+            radix16 = SMALL_CONSTANTS[16];
             radix16E = radix16.Pow(chunk16);
 
             primeProducts = new int[primeLists.Length];
@@ -235,7 +241,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
 
         private readonly uint[] magnitude; // array of uints with [0] being the most significant
         private readonly int sign; // -1 means -ve; +1 means +ve; 0 means 0;
-
+ 
         [NonSerialized]
         private int nBits = -1; // cache BitCount() value
         [NonSerialized]
@@ -1230,7 +1236,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
          * return z = x / y - done in place (z value preserved, x contains the
          * remainder)
          */
-        private uint[] Divide(uint[] x, uint[] y)
+        private static uint[] Divide(uint[] x, uint[] y)
         {
             int xStart = 0;
             while (xStart < x.Length && x[xStart] == 0U)
@@ -1781,8 +1787,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
             }
 
             BigInteger d = this.Remainder(m);
-            BigInteger x;
-            BigInteger gcd = ExtEuclid(d, m, out x);
+            BigInteger gcd = ExtEuclid(d, m, out BigInteger x);
 
             if (!gcd.Equals(One))
                 throw new ArithmeticException("Numbers not relatively prime.");

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 {
@@ -13,7 +13,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public UseSrtpData(int[] protectionProfiles, byte[] mki)
         {
             if (TlsUtilities.IsNullOrEmpty(protectionProfiles) || protectionProfiles.Length >= (1 << 15))
-                throw new ArgumentException("must have length from 1 to (2^15 - 1)", "protectionProfiles");
+                throw new ArgumentException("must have length from 1 to (2^15 - 1)", nameof(protectionProfiles));
 
             if (mki == null)
             {
@@ -21,23 +21,17 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
             else if (mki.Length > 255)
             {
-                throw new ArgumentException("cannot be longer than 255 bytes", "mki");
+                throw new ArgumentException("cannot be longer than 255 bytes", nameof(mki));
             }
 
-            this.m_protectionProfiles = protectionProfiles;
-            this.m_mki = mki;
+            m_protectionProfiles = protectionProfiles;
+            m_mki = mki;
         }
 
         /// <returns>see <see cref="SrtpProtectionProfile"/> for valid constants.</returns>
-        public int[] ProtectionProfiles
-        {
-            get { return m_protectionProfiles; }
-        }
+        public int[] ProtectionProfiles => m_protectionProfiles;
 
         /// <returns>valid lengths from 0 to 255.</returns>
-        public byte[] Mki
-        {
-            get { return m_mki; }
-        }
+        public byte[] Mki => m_mki;
     }
 }

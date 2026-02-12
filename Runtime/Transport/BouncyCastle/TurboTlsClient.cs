@@ -1,16 +1,3 @@
-// Step 3C.5: TurboTlsClient
-//
-// This file implements BouncyCastle's TlsClient interface for client-side TLS negotiation.
-// REQUIRES: BouncyCastle source to be repackaged in the Lib/ directory first.
-//
-// To enable this implementation:
-// 1. Download BouncyCastle source from https://github.com/bcgit/bc-csharp (v2.2.1+)
-// 2. Extract to Assets/TurboHTTP/ThirdParty/BouncyCastle-Source
-// 3. Run Tools > TurboHTTP > Repackage BouncyCastle in Unity Editor
-// 4. Rename this file to TurboTlsClient.cs and remove the .stub extension
-//
-// The repackaging script will modify all namespaces from Org.BouncyCastle to
-// TurboHTTP.SecureProtocol.Org.BouncyCastle to prevent conflicts with other plugins.
 
 
 using System;
@@ -72,23 +59,14 @@ namespace TurboHTTP.Transport.BouncyCastle
             }
 
             // Add SNI (Server Name Indication) extension
+            var hostBytes = System.Text.Encoding.UTF8.GetBytes(_targetHost);
             var serverNames = new List<ServerName>
             {
-                new ServerName(NameType.host_name, _targetHost)
+                new ServerName(NameType.host_name, hostBytes)
             };
-            TlsExtensionsUtilities.AddServerNameExtension(extensions, serverNames);
+            TlsExtensionsUtilities.AddServerNameExtensionClient(extensions, serverNames);
 
             return extensions;
-        }
-
-        public override void NotifyAlpnProtocol(ProtocolName protocolName)
-        {
-            base.NotifyAlpnProtocol(protocolName);
-
-            if (protocolName != null)
-            {
-                NegotiatedAlpn = protocolName.GetUtf8Decoding();
-            }
         }
 
         public override void NotifyHandshakeComplete()
@@ -102,10 +80,16 @@ namespace TurboHTTP.Transport.BouncyCastle
                 var version = context.ServerVersion;
                 NegotiatedVersion = FormatTlsVersion(version);
 
-                // Capture cipher suite
+                // Capture negotiated ALPN and cipher suite from SecurityParameters
                 var securityParams = context.SecurityParameters;
                 if (securityParams != null)
                 {
+                    var alpnProtocol = securityParams.ApplicationProtocol;
+                    if (alpnProtocol != null)
+                    {
+                        NegotiatedAlpn = alpnProtocol.GetUtf8Decoding();
+                    }
+
                     NegotiatedCipherSuite = FormatCipherSuite(securityParams.CipherSuite);
                 }
             }

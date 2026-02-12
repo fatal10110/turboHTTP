@@ -36,6 +36,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.IO
             }
         }
 
+        public Stream Stream => m_stream;
+
         public IBufferedCipher ReadCipher => m_readCipher;
 
         public IBufferedCipher WriteCipher => m_writeCipher;

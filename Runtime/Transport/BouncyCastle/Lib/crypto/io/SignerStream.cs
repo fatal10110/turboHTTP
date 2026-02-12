@@ -23,6 +23,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.IO
             m_writeSigner = writeSigner;
         }
 
+        public Stream Stream => m_stream;
+
         public ISigner ReadSigner => m_readSigner;
 
         public ISigner WriteSigner => m_writeSigner;

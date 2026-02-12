@@ -12,7 +12,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests
 
     public static class Haraka256_X86
     {
-        public static bool IsSupported => Org.BouncyCastle.Runtime.Intrinsics.X86.Aes.IsEnabled;
+        public static bool IsSupported => TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Aes.IsEnabled;
 
         public static void Hash(ReadOnlySpan<byte> input, Span<byte> output)
         {
@@ -117,7 +117,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static Vector128<byte> Load128(ReadOnlySpan<byte> t)
         {
-            if (Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
                 return MemoryMarshal.Read<Vector128<byte>>(t);
 
             return Vector128.Create(
@@ -129,7 +129,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void Store128(Vector128<byte> s, Span<byte> t)
         {
-            if (Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPackedLittleEndian)
             {
 #if NET8_0_OR_GREATER
                 MemoryMarshal.Write(t, in s);

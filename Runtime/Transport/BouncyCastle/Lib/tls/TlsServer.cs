@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -10,6 +10,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
     public interface TlsServer
         : TlsPeer
     {
+        // TODO[api]
+        //bool PreferLocalSupportedGroups();
+
         void Init(TlsServerContext context);
 
         /// <summary>Return the specified session, if available.</summary>

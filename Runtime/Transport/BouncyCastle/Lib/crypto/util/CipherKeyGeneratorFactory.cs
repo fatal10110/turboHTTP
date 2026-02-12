@@ -57,10 +57,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities
             {
                 return CreateCipherKeyGenerator(random, 128);
             }
-            else if (AlgorithmIdentifierFactory.CAST5_CBC.Equals(algorithm))
-            {
-                return CreateCipherKeyGenerator(random, 128);
-            }
             else if (OiwObjectIdentifiers.DesCbc.Equals(algorithm))
             {
                 DesKeyGenerator keyGen = new DesKeyGenerator();

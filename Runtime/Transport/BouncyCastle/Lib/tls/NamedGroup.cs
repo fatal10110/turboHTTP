@@ -3,6 +3,7 @@
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 {
     /// <summary>RFC 7919</summary>
+    // TODO[api] Make static
     public abstract class NamedGroup
     {
         /*
@@ -61,17 +62,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public const int brainpoolP512r1tls13 = 33;
 
         /*
-         * RFC 9189
-         */
-        public const int GC256A = 34;
-        public const int GC256B = 35;
-        public const int GC256C = 36;
-        public const int GC256D = 37;
-        public const int GC512A = 38;
-        public const int GC512B = 39;
-        public const int GC512C = 40;
-
-        /*
          * RFC 8998
          */
         public const int curveSM2 = 41;
@@ -109,15 +99,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public const int MLKEM768 = 0x0201;
         public const int MLKEM1024 = 0x0202;
 
+        /*
+         * draft-ietf-tls-ecdhe-mlkem-00
+         */
+        public const int SecP256r1MLKEM768 = 0x11EB;
+        public const int X25519MLKEM768 = 0x11EC;
+        public const int SecP384r1MLKEM1024 = 0x11ED;
+
+        /*
+         * draft-yang-tls-hybrid-sm2-mlkem-03
+         */
+        public const int curveSM2MLKEM768 = 0x11EE;
+
         /* Names of the actual underlying elliptic curves (not necessarily matching the NamedGroup names). */
         private static readonly string[] CurveNames = new string[]{ "sect163k1", "sect163r1", "sect163r2", "sect193r1",
             "sect193r2", "sect233k1", "sect233r1", "sect239k1", "sect283k1", "sect283r1", "sect409k1", "sect409r1",
             "sect571k1", "sect571r1", "secp160k1", "secp160r1", "secp160r2", "secp192k1", "secp192r1", "secp224k1",
             "secp224r1", "secp256k1", "secp256r1", "secp384r1", "secp521r1", "brainpoolP256r1", "brainpoolP384r1",
-            "brainpoolP512r1", "X25519", "X448", "brainpoolP256r1", "brainpoolP384r1", "brainpoolP512r1",
-            "Tc26-Gost-3410-12-256-paramSetA", "GostR3410-2001-CryptoPro-A", "GostR3410-2001-CryptoPro-B",
-            "GostR3410-2001-CryptoPro-C", "Tc26-Gost-3410-12-512-paramSetA", "Tc26-Gost-3410-12-512-paramSetB",
-            "Tc26-Gost-3410-12-512-paramSetC", "sm2p256v1" };
+            "brainpoolP512r1", "X25519", "X448", "brainpoolP256r1", "brainpoolP384r1", "brainpoolP512r1" };
+
+        private const string CurveNameSm2 = "sm2p256v1";
 
         private static readonly string[] FiniteFieldNames = new string[]{ "ffdhe2048", "ffdhe3072", "ffdhe4096",
             "ffdhe6144", "ffdhe8192" };
@@ -154,7 +155,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 }
             }
 
-            if (RefersToASpecificKem(namedGroup))
+            if (RefersToASpecificHybrid(namedGroup) || RefersToASpecificKem(namedGroup))
                 return isTlsV13;
 
             if (namedGroup >= arbitrary_explicit_prime_curves && namedGroup <= arbitrary_explicit_char2_curves)
@@ -202,10 +203,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case brainpoolP256r1:
             case brainpoolP256r1tls13:
             case curveSM2:
-            case GC256A:
-            case GC256B:
-            case GC256C:
-            case GC256D:
             case secp256k1:
             case secp256r1:
                 return 256;
@@ -228,9 +225,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             case brainpoolP512r1:
             case brainpoolP512r1tls13:
-            case GC512A:
-            case GC512B:
-            case GC512C:
                 return 512;
 
             case secp521r1:
@@ -247,8 +241,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         public static string GetCurveName(int namedGroup)
         {
-            if (RefersToASpecificCurve(namedGroup))
+            if (namedGroup >= sect163k1 && namedGroup <= brainpoolP512r1tls13)
                 return CurveNames[namedGroup - sect163k1];
+            if (namedGroup == curveSM2)
+                return CurveNameSm2;
 
             return null;
         }
@@ -280,6 +276,72 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
 
             return null;
+        }
+
+        public static int GetHybridFirst(int namedGroup)
+        {
+            switch (namedGroup)
+            {
+            case SecP256r1MLKEM768:
+                return secp256r1;
+            case X25519MLKEM768:
+                return MLKEM768;
+            case SecP384r1MLKEM1024:
+                return secp384r1;
+            case curveSM2MLKEM768:
+                return curveSM2;
+            default:
+                return -1;
+            }
+        }
+
+        public static int GetHybridSecond(int namedGroup)
+        {
+            switch (namedGroup)
+            {
+            case SecP256r1MLKEM768:
+                return MLKEM768;
+            case X25519MLKEM768:
+                return x25519;
+            case SecP384r1MLKEM1024:
+                return MLKEM1024;
+            case curveSM2MLKEM768:
+                return MLKEM768;
+            default:
+                return -1;
+            }
+        }
+
+        // TODO Temporary until crypto implementations become more self-documenting around lengths
+        internal static int GetHybridSplitClientShare(int namedGroup)
+        {
+            switch (namedGroup)
+            {
+            case curveSM2:
+            case secp256r1:
+                return 65;
+            case secp384r1:
+                return 97;
+            case MLKEM768:
+                return 1184;
+            }
+            return -1;
+        }
+
+        // TODO Temporary until crypto implementations become more self-documenting around lengths
+        internal static int GetHybridSplitServerShare(int namedGroup)
+        {
+            switch (namedGroup)
+            {
+            case curveSM2:
+            case secp256r1:
+                return 65;
+            case secp384r1:
+                return 97;
+            case MLKEM768:
+                return 1088;
+            }
+            return -1;
         }
 
         public static string GetKemName(int namedGroup)
@@ -336,20 +398,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return "brainpoolP384r1tls13";
             case brainpoolP512r1tls13:
                 return "brainpoolP512r1tls13";
-            case GC256A:
-                return "GC256A";
-            case GC256B:
-                return "GC256B";
-            case GC256C:
-                return "GC256C";
-            case GC256D:
-                return "GC256D";
-            case GC512A:
-                return "GC512A";
-            case GC512B:
-                return "GC512B";
-            case GC512C:
-                return "GC512C";
             case curveSM2:
                 return "curveSM2";
             case MLKEM512:
@@ -358,6 +406,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return "MLKEM768";
             case MLKEM1024:
                 return "MLKEM1024";
+            case SecP256r1MLKEM768:
+                return "SecP256r1MLKEM768";
+            case X25519MLKEM768:
+                return "X25519MLKEM768";
+            case SecP384r1MLKEM1024:
+                return "SecP384r1MLKEM1024";
+            case curveSM2MLKEM768:
+                return "curveSM2MLKEM768";
             case arbitrary_explicit_prime_curves:
                 return "arbitrary_explicit_prime_curves";
             case arbitrary_explicit_char2_curves:
@@ -405,7 +461,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         public static bool IsPrimeCurve(int namedGroup)
         {
-            return (namedGroup >= secp160k1 && namedGroup <= curveSM2)
+            return (namedGroup >= secp160k1 && namedGroup <= secp521r1)
+                || (namedGroup >= brainpoolP256r1 && namedGroup <= brainpoolP512r1tls13)
+                || namedGroup == curveSM2
                 || (namedGroup == arbitrary_explicit_prime_curves);
         }
 
@@ -444,7 +502,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         public static bool RefersToASpecificCurve(int namedGroup)
         {
-            return namedGroup >= sect163k1 && namedGroup <= curveSM2;
+            return (namedGroup >= sect163k1 && namedGroup <= brainpoolP512r1tls13)
+                || namedGroup == curveSM2;
         }
 
         public static bool RefersToASpecificFiniteField(int namedGroup)
@@ -456,7 +515,22 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         {
             return RefersToASpecificCurve(namedGroup)
                 || RefersToASpecificFiniteField(namedGroup)
+                || RefersToASpecificHybrid(namedGroup)
                 || RefersToASpecificKem(namedGroup);
+        }
+
+        public static bool RefersToASpecificHybrid(int namedGroup)
+        {
+            switch (namedGroup)
+            {
+            case SecP256r1MLKEM768:
+            case X25519MLKEM768:
+            case SecP384r1MLKEM1024:
+            case curveSM2MLKEM768:
+                return true;
+            default:
+                return false;
+            }
         }
 
         public static bool RefersToASpecificKem(int namedGroup)

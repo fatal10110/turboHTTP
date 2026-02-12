@@ -22,12 +22,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public const short rsa_fixed_ecdh = 65;
         public const short ecdsa_fixed_ecdh = 66;
 
-        /*
-         * RFC 9189
-         */
-        public const short gost_sign256 = 67;
-        public const short gost_sign512 = 68;
-
         public static string GetName(short clientCertificateType)
         {
             switch (clientCertificateType)
@@ -52,10 +46,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return "rsa_fixed_ecdh";
             case ecdsa_fixed_ecdh:
                 return "ecdsa_fixed_ecdh";
-            case gost_sign256:
-                return "gost_sign256";
-            case gost_sign512:
-                return "gost_sign512";
             default:
                 return "UNKNOWN";
             }

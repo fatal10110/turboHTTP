@@ -2,7 +2,7 @@
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Macs;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators
 {
@@ -47,8 +47,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators
             int r = kdfParams.R;
             this.ios = new byte[r / 8];
 
-            BigInteger maxSize = BigInteger.One.ShiftLeft(r).Multiply(BigInteger.ValueOf(h));
-            this.maxSizeExcl = maxSize.BitLength > 31 ? int.MaxValue : maxSize.IntValueExact;
+            this.maxSizeExcl = r >= Integers.NumberOfLeadingZeros(h) ? int.MaxValue : h << r;
 
             // --- set operational state ---
 

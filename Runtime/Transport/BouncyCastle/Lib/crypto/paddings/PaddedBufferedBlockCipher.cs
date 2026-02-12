@@ -60,12 +60,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Paddings
         {
             this.forEncryption = forEncryption;
 
-            SecureRandom initRandom = null;
-            if (parameters is ParametersWithRandom withRandom)
-            {
-                initRandom = withRandom.Random;
-                parameters = withRandom.Parameters;
-            }
+            parameters = ParameterUtilities.GetRandom(parameters, out var initRandom);
 
             // TODO[api] Redundantly resets the cipher mode
             Reset();
@@ -154,17 +149,17 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Paddings
 #endif
 
         /**
-		* process an array of bytes, producing output if necessary.
-		*
-		* @param in the input byte array.
-		* @param inOff the offset at which the input data starts.
-		* @param len the number of bytes to be copied out of the input array.
-		* @param out the space for any output that might be produced.
-		* @param outOff the offset from which the output will be copied.
-		* @return the number of output bytes copied to out.
-		* @exception DataLengthException if there isn't enough space in out.
-		* @exception InvalidOperationException if the cipher isn't initialised.
-		*/
+         * process an array of bytes, producing output if necessary.
+         *
+         * @param in the input byte array.
+         * @param inOff the offset at which the input data starts.
+         * @param len the number of bytes to be copied out of the input array.
+         * @param out the space for any output that might be produced.
+         * @param outOff the offset from which the output will be copied.
+         * @return the number of output bytes copied to out.
+         * @exception DataLengthException if there isn't enough space in out.
+         * @exception InvalidOperationException if the cipher isn't initialised.
+         */
         public override int ProcessBytes(byte[] input, int inOff, int length, byte[] output, int outOff)
         {
             if (length < 1)
@@ -193,7 +188,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Paddings
                 length -= available;
 
                 // Handle destructive overlap by copying the remaining input
-                if (output == input && SegmentsOverlap(outOff, blockSize, inOff, length))
+                if (output == input && Arrays.SegmentsOverlap(outOff, blockSize, inOff, length))
                 {
                     input = new byte[length];
                     Array.Copy(output, inOff, input, 0, length);

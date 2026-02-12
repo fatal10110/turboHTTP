@@ -15,22 +15,22 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public override TlsKeyExchange CreateDHanonKeyExchangeClient(int keyExchange,
             TlsDHGroupVerifier dhGroupVerifier)
         {
-            return new TlsDHanonKeyExchange(keyExchange, dhGroupVerifier);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreateDHanonKeyExchangeServer(int keyExchange, TlsDHConfig dhConfig)
         {
-            return new TlsDHanonKeyExchange(keyExchange, dhConfig);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreateDheKeyExchangeClient(int keyExchange, TlsDHGroupVerifier dhGroupVerifier)
         {
-            return new TlsDheKeyExchange(keyExchange, dhGroupVerifier);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreateDheKeyExchangeServer(int keyExchange, TlsDHConfig dhConfig)
         {
-            return new TlsDheKeyExchange(keyExchange, dhConfig);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreateECDHKeyExchange(int keyExchange)
@@ -40,12 +40,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         public override TlsKeyExchange CreateECDHanonKeyExchangeClient(int keyExchange)
         {
-            return new TlsECDHanonKeyExchange(keyExchange);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreateECDHanonKeyExchangeServer(int keyExchange, TlsECConfig ecConfig)
         {
-            return new TlsECDHanonKeyExchange(keyExchange, ecConfig);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreateECDheKeyExchangeClient(int keyExchange)
@@ -61,13 +61,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public override TlsKeyExchange CreatePskKeyExchangeClient(int keyExchange, TlsPskIdentity pskIdentity,
             TlsDHGroupVerifier dhGroupVerifier)
         {
-            return new TlsPskKeyExchange(keyExchange, pskIdentity, dhGroupVerifier);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreatePskKeyExchangeServer(int keyExchange,
             TlsPskIdentityManager pskIdentityManager, TlsDHConfig dhConfig, TlsECConfig ecConfig)
         {
-            return new TlsPskKeyExchange(keyExchange, pskIdentityManager, dhConfig, ecConfig);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreateRsaKeyExchange(int keyExchange)
@@ -78,12 +78,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public override TlsKeyExchange CreateSrpKeyExchangeClient(int keyExchange, TlsSrpIdentity srpIdentity,
             TlsSrpConfigVerifier srpConfigVerifier)
         {
-            return new TlsSrpKeyExchange(keyExchange, srpIdentity, srpConfigVerifier);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         public override TlsKeyExchange CreateSrpKeyExchangeServer(int keyExchange, TlsSrpLoginParameters loginParameters)
         {
-            return new TlsSrpKeyExchange(keyExchange, loginParameters);
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
     }
 }

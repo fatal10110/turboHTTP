@@ -34,7 +34,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
             if ((modulus.IntValue & 1) == 0)
                 throw new ArgumentException("RSA modulus is even", nameof(modulus));
 
-            int maxBitLength = ImplGetInteger("Org.BouncyCastle.Rsa.MaxSize", 16384);
+            int maxBitLength = ImplGetInteger("TurboHTTP.SecureProtocol.Org.BouncyCastle.Rsa.MaxSize", 16384);
             if (modulus.BitLength > maxBitLength)
                 throw new ArgumentException("RSA modulus out of range", nameof(modulus));
 

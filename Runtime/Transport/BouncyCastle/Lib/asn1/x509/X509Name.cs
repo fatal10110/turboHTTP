@@ -25,7 +25,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
     */
     // TODO[api] sealed (and adjust protected constructors)
     public class X509Name
-        : Asn1Encodable
+        : Asn1Encodable, IAsn1Choice
     {
         /**
         * country code - StringType(SIZE(2))
@@ -354,14 +354,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
             DefaultLookupInternal.Add("jurisdictionlocality", JurisdictionL);
         }
 
-        public static X509Name GetInstance(object obj)
-        {
-            if (obj == null)
-                return null;
-            if (obj is X509Name x509Name)
-                return x509Name;
-            return new X509Name(Asn1Sequence.GetInstance(obj));
-        }
+        public static X509Name GetInstance(object obj) => Asn1Utilities.GetInstanceChoice(obj, GetOptional);
 
         /**
         * Return a X509Name based on the passed in tagged object.
@@ -371,7 +364,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         * @return the X509Name
         */
         public static X509Name GetInstance(Asn1TaggedObject obj, bool explicitly) =>
-            new X509Name(Asn1Sequence.GetInstance(obj, explicitly));
+            Asn1Utilities.GetInstanceChoice(obj, explicitly, GetInstance);
 
         public static X509Name GetOptional(Asn1Encodable element)
         {
@@ -389,7 +382,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         }
 
         public static X509Name GetTagged(Asn1TaggedObject taggedObject, bool declaredExplicit) =>
-            new X509Name(Asn1Sequence.GetTagged(taggedObject, declaredExplicit));
+            Asn1Utilities.GetTaggedChoice(taggedObject, declaredExplicit, GetInstance);
 
         private readonly List<DerObjectIdentifier> m_ordering = new List<DerObjectIdentifier>();
         private readonly X509NameEntryConverter converter;

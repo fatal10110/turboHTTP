@@ -2,7 +2,7 @@
 using System.IO;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Pqc.Crypto.SphincsPlus;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers.SlhDsa;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
@@ -17,7 +17,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
         private SlhDsaPrivateKeyParameters m_privateKey;
         private SlhDsaPublicKeyParameters m_publicKey;
         private SecureRandom m_random;
-        private SphincsPlusEngine m_engine;
+        private SlhDsaEngine m_engine;
 
         public SlhDsaSigner(SlhDsaParameters parameters, bool deterministic)
         {
@@ -34,24 +34,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
 
         public void Init(bool forSigning, ICipherParameters parameters)
         {
-            byte[] providedContext = null;
-            if (parameters is ParametersWithContext withContext)
-            {
-                if (withContext.ContextLength > 255)
-                    throw new ArgumentOutOfRangeException("context too long", nameof(parameters));
-
-                providedContext = withContext.GetContext();
-                parameters = withContext.Parameters;
-            }
+            parameters = ParameterUtilities.GetContext(parameters, minLen: 0, maxLen: 255, out var providedContext);
 
             if (forSigning)
             {
-                SecureRandom providedRandom = null;
-                if (parameters is ParametersWithRandom withRandom)
-                {
-                    providedRandom = withRandom.Random;
-                    parameters = withRandom.Parameters;
-                }
+                parameters = ParameterUtilities.GetRandom(parameters, out var providedRandom);
 
                 m_privateKey = (SlhDsaPrivateKeyParameters)parameters;
                 m_publicKey = null;
@@ -71,21 +58,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
             m_buffer.Init(context: providedContext ?? Array.Empty<byte>());
         }
 
-        public void Update(byte input)
-        {
-            m_buffer.WriteByte(input);
-        }
+        public void Update(byte input) => m_buffer.WriteByte(input);
 
-        public void BlockUpdate(byte[] input, int inOff, int inLen)
-        {
-            m_buffer.Write(input, inOff, inLen);
-        }
+        public void BlockUpdate(byte[] input, int inOff, int inLen) => m_buffer.Write(input, inOff, inLen);
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        public void BlockUpdate(ReadOnlySpan<byte> input)
-        {
-            m_buffer.Write(input);
-        }
+        public void BlockUpdate(ReadOnlySpan<byte> input) => m_buffer.Write(input);
 #endif
 
         public int GetMaxSignatureSize() => m_engine.SignatureLength;
@@ -106,16 +84,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
             return m_buffer.VerifySignature(m_publicKey, m_engine, signature);
         }
 
-        public void Reset()
-        {
-            m_buffer.Reset();
-        }
+        public void Reset() => m_buffer.Reset();
 
-        private SphincsPlusEngine GetEngine(SlhDsaParameters keyParameters)
+        private SlhDsaEngine GetEngine(SlhDsaParameters keyParameters)
         {
             var keyParameterSet = keyParameters.ParameterSet;
 
-            if (keyParameters.ParameterSet != m_parameters.ParameterSet)
+            if (keyParameterSet != m_parameters.ParameterSet)
                 throw new ArgumentException("Mismatching key parameter set", nameof(keyParameters));
 
             return keyParameterSet.GetEngine();
@@ -139,7 +114,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
                 }
             }
 
-            internal byte[] GenerateSignature(SlhDsaPrivateKeyParameters privateKey, SphincsPlusEngine engine,
+            internal byte[] GenerateSignature(SlhDsaPrivateKeyParameters privateKey, SlhDsaEngine engine,
                 SecureRandom random)
             {
                 lock (this)
@@ -155,7 +130,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
                 }
             }
 
-            internal bool VerifySignature(SlhDsaPublicKeyParameters publicKey, SphincsPlusEngine engine,
+            internal bool VerifySignature(SlhDsaPublicKeyParameters publicKey, SlhDsaEngine engine,
                 byte[] signature)
             {
                 if (engine.SignatureLength != signature.Length)

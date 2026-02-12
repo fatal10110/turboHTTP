@@ -31,7 +31,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators
 		/*
 		 * (non-Javadoc)
 		 *
-		 * @see Org.BouncyCastle.Crypto.AsymmetricCipherKeyPairGenerator#init(Org.BouncyCastle.Crypto.KeyGenerationParameters)
+		 * @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.AsymmetricCipherKeyPairGenerator#init(TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.KeyGenerationParameters)
 		 */
 		public void Init(KeyGenerationParameters parameters)
 		{
@@ -41,7 +41,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators
 		/*
 		 * (non-Javadoc)
 		 *
-		 * @see Org.BouncyCastle.Crypto.AsymmetricCipherKeyPairGenerator#generateKeyPair()
+		 * @see TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.AsymmetricCipherKeyPairGenerator#generateKeyPair()
 		 */
 		public AsymmetricCipherKeyPair GenerateKeyPair()
 		{

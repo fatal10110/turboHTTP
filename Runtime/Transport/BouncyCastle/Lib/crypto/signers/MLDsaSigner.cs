@@ -2,7 +2,7 @@
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Pqc.Crypto.Crystals.Dilithium;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers.MLDsa;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
@@ -10,7 +10,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
     public sealed class MLDsaSigner
         : ISigner
     {
-        private readonly ShakeDigest m_msgRepDigest = DilithiumEngine.MsgRepCreateDigest();
+        private readonly ShakeDigest m_msgRepDigest = MLDsaEngine.MsgRepCreateDigest();
 
         private readonly MLDsaParameters m_parameters;
         private readonly bool m_deterministic;
@@ -18,7 +18,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
         private byte[] m_context;
         private MLDsaPrivateKeyParameters m_privateKey;
         private MLDsaPublicKeyParameters m_publicKey;
-        private DilithiumEngine m_engine;
+        private MLDsaEngine m_engine;
 
         public MLDsaSigner(MLDsaParameters parameters, bool deterministic)
         {
@@ -35,26 +35,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
 
         public void Init(bool forSigning, ICipherParameters parameters)
         {
-            byte[] providedContext = null;
-            if (parameters is ParametersWithContext withContext)
-            {
-                if (withContext.ContextLength > 255)
-                    throw new ArgumentOutOfRangeException("context too long", nameof(parameters));
-
-                providedContext = withContext.GetContext();
-                parameters = withContext.Parameters;
-            }
+            parameters = ParameterUtilities.GetContext(parameters, minLen: 0, maxLen: 255, out var providedContext);
 
             m_context = providedContext ?? Array.Empty<byte>();
 
             if (forSigning)
             {
-                SecureRandom providedRandom = null;
-                if (parameters is ParametersWithRandom withRandom)
-                {
-                    providedRandom = withRandom.Random;
-                    parameters = withRandom.Parameters;
-                }
+                parameters = ParameterUtilities.GetRandom(parameters, out var providedRandom);
 
                 m_privateKey = (MLDsaPrivateKeyParameters)parameters;
                 m_publicKey = null;
@@ -73,21 +60,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
             Reset();
         }
 
-        public void Update(byte input)
-        {
-            m_msgRepDigest.Update(input);
-        }
+        public void Update(byte input) => m_msgRepDigest.Update(input);
 
-        public void BlockUpdate(byte[] input, int inOff, int inLen)
-        {
-            m_msgRepDigest.BlockUpdate(input, inOff, inLen);
-        }
+        public void BlockUpdate(byte[] input, int inOff, int inLen) => m_msgRepDigest.BlockUpdate(input, inOff, inLen);
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        public void BlockUpdate(ReadOnlySpan<byte> input)
-        {
-            m_msgRepDigest.BlockUpdate(input);
-        }
+        public void BlockUpdate(ReadOnlySpan<byte> input) => m_msgRepDigest.BlockUpdate(input);
 #endif
 
         public int GetMaxSignatureSize() => m_engine.CryptoBytes;
@@ -99,7 +77,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
 
             byte[] sig = new byte[m_engine.CryptoBytes];
             m_engine.MsgRepEndSign(m_msgRepDigest, sig, sig.Length, m_privateKey.m_rho, m_privateKey.m_k,
-                m_privateKey.m_t0, m_privateKey.m_s1, m_privateKey.m_s2, legacy: false);
+                m_privateKey.m_t0, m_privateKey.m_s1, m_privateKey.m_s2);
 
             Reset();
             return sig;
@@ -129,11 +107,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
             m_msgRepDigest.BlockUpdate(m_context, 0, m_context.Length);
         }
 
-        private DilithiumEngine GetEngine(MLDsaParameters keyParameters, SecureRandom random)
+        private MLDsaEngine GetEngine(MLDsaParameters keyParameters, SecureRandom random)
         {
             var keyParameterSet = keyParameters.ParameterSet;
 
-            if (keyParameters.ParameterSet != m_parameters.ParameterSet)
+            if (keyParameterSet != m_parameters.ParameterSet)
                 throw new ArgumentException("Mismatching key parameter set", nameof(keyParameters));
 
             return keyParameterSet.GetEngine(random);
