@@ -15,102 +15,108 @@ namespace TurboHTTP.Tests.Integration
     public class PipelineIntegrationTests
     {
         [Test]
-        public async Task FullPipeline_AllMiddlewaresExecute()
-        {
-            var logs = new List<string>();
-            var metricsMiddleware = new MetricsMiddleware();
-
-            var defaultHeaders = new HttpHeaders();
-            defaultHeaders.Set("X-Client", "TurboHTTP");
-
-            var options = new UHttpClientOptions
+        public void FullPipeline_AllMiddlewaresExecute()        {
+            Task.Run(async () =>
             {
-                Transport = new MockTransport(),
-                Middlewares = new List<IHttpMiddleware>
+                var logs = new List<string>();
+                var metricsMiddleware = new MetricsMiddleware();
+
+                var defaultHeaders = new HttpHeaders();
+                defaultHeaders.Set("X-Client", "TurboHTTP");
+
+                var options = new UHttpClientOptions
                 {
-                    new LoggingMiddleware(msg => logs.Add(msg)),
-                    metricsMiddleware,
-                    new DefaultHeadersMiddleware(defaultHeaders),
-                    new AuthMiddleware(new StaticTokenProvider("test-token"))
-                }
-            };
+                    Transport = new MockTransport(),
+                    Middlewares = new List<IHttpMiddleware>
+                    {
+                        new LoggingMiddleware(msg => logs.Add(msg)),
+                        metricsMiddleware,
+                        new DefaultHeadersMiddleware(defaultHeaders),
+                        new AuthMiddleware(new StaticTokenProvider("test-token"))
+                    }
+                };
 
-            using var client = new UHttpClient(options);
-            var response = await client.Get("https://api.example.com/data").SendAsync();
+                using var client = new UHttpClient(options);
+                var response = await client.Get("https://api.example.com/data").SendAsync();
 
-            // Verify response
-            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                // Verify response
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
-            // Verify logging captured request + response
-            Assert.AreEqual(2, logs.Count);
+                // Verify logging captured request + response
+                Assert.AreEqual(2, logs.Count);
 
-            // Verify metrics
-            Assert.AreEqual(1, metricsMiddleware.Metrics.TotalRequests);
-            Assert.AreEqual(1, metricsMiddleware.Metrics.SuccessfulRequests);
+                // Verify metrics
+                Assert.AreEqual(1, metricsMiddleware.Metrics.TotalRequests);
+                Assert.AreEqual(1, metricsMiddleware.Metrics.SuccessfulRequests);
 
-            // Verify default headers were applied (check via mock transport)
-            var transport = (MockTransport)options.Transport;
-            Assert.AreEqual("TurboHTTP", transport.LastRequest.Headers.Get("X-Client"));
+                // Verify default headers were applied (check via mock transport)
+                var transport = (MockTransport)options.Transport;
+                Assert.AreEqual("TurboHTTP", transport.LastRequest.Headers.Get("X-Client"));
 
-            // Verify auth header was applied
-            Assert.AreEqual("Bearer test-token",
-                transport.LastRequest.Headers.Get("Authorization"));
+                // Verify auth header was applied
+                Assert.AreEqual("Bearer test-token",
+                    transport.LastRequest.Headers.Get("Authorization"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task NoMiddlewares_WorksLikeDirectTransport()
-        {
-            var transport = new MockTransport();
-            var options = new UHttpClientOptions { Transport = transport };
+        public void NoMiddlewares_WorksLikeDirectTransport()        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport();
+                var options = new UHttpClientOptions { Transport = transport };
 
-            using var client = new UHttpClient(options);
-            var response = await client.Get("https://test.com/api").SendAsync();
+                using var client = new UHttpClient(options);
+                var response = await client.Get("https://test.com/api").SendAsync();
 
-            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            Assert.AreEqual(1, transport.RequestCount);
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(1, transport.RequestCount);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task RetryWrapsTimeout_RetriesOnPerAttemptTimeout()
-        {
-            int callCount = 0;
-            var transport = new MockTransport(async (req, ctx, ct) =>
+        public void RetryWrapsTimeout_RetriesOnPerAttemptTimeout()        {
+            Task.Run(async () =>
             {
-                callCount++;
-                if (callCount <= 1)
+                int callCount = 0;
+                var transport = new MockTransport(async (req, ctx, ct) =>
                 {
-                    // First attempt: exceed the per-request timeout
-                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
-                }
-                return new UHttpResponse(
-                    HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req);
-            });
+                    callCount++;
+                    if (callCount <= 1)
+                    {
+                        // First attempt: exceed the per-request timeout
+                        await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                    }
+                    return new UHttpResponse(
+                        HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req);
+                });
 
-            var retryPolicy = new RetryPolicy
-            {
-                MaxRetries = 2,
-                InitialDelay = TimeSpan.FromMilliseconds(1)
-            };
-
-            // Retry wraps Timeout => per-attempt timeout.
-            // TimeoutMiddleware returns 408 with retryable error, RetryMiddleware retries.
-            var pipeline = new HttpPipeline(
-                new IHttpMiddleware[]
+                var retryPolicy = new RetryPolicy
                 {
-                    new RetryMiddleware(retryPolicy),
-                    new TimeoutMiddleware()
-                },
-                transport);
+                    MaxRetries = 2,
+                    InitialDelay = TimeSpan.FromMilliseconds(1)
+                };
 
-            var request = new UHttpRequest(
-                HttpMethod.GET, new Uri("https://test.com"),
-                timeout: TimeSpan.FromMilliseconds(50));
-            var context = new RequestContext(request);
+                // Retry wraps Timeout => per-attempt timeout.
+                // TimeoutMiddleware returns 408 with retryable error, RetryMiddleware retries.
+                var pipeline = new HttpPipeline(
+                    new IHttpMiddleware[]
+                    {
+                        new RetryMiddleware(retryPolicy),
+                        new TimeoutMiddleware()
+                    },
+                    transport);
 
-            var response = await pipeline.ExecuteAsync(request, context);
+                var request = new UHttpRequest(
+                    HttpMethod.GET, new Uri("https://test.com"),
+                    timeout: TimeSpan.FromMilliseconds(50));
+                var context = new RequestContext(request);
 
-            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            Assert.AreEqual(2, callCount); // First attempt timed out, second succeeded
+                var response = await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(2, callCount); // First attempt timed out, second succeeded
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -136,7 +142,7 @@ namespace TurboHTTP.Tests.Integration
             using var cts = new CancellationTokenSource();
             cts.Cancel(); // Cancel immediately
 
-            Assert.ThrowsAsync<OperationCanceledException>(
+            AssertAsync.ThrowsAsync<OperationCanceledException>(
                 () => pipeline.ExecuteAsync(request, context, cts.Token));
         }
     }

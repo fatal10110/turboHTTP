@@ -11,56 +11,62 @@ namespace TurboHTTP.Tests.Pipeline
     public class LoggingMiddlewareTests
     {
         [Test]
-        public async Task LogsRequestAndResponse()
-        {
-            var logs = new List<string>();
-            var middleware = new LoggingMiddleware(msg => logs.Add(msg));
-            var transport = new MockTransport();
-            var pipeline = new HttpPipeline(new[] { middleware }, transport);
+        public void LogsRequestAndResponse()        {
+            Task.Run(async () =>
+            {
+                var logs = new List<string>();
+                var middleware = new LoggingMiddleware(msg => logs.Add(msg));
+                var transport = new MockTransport();
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
 
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/api"));
-            var context = new RequestContext(request);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/api"));
+                var context = new RequestContext(request);
 
-            await pipeline.ExecuteAsync(request, context);
+                await pipeline.ExecuteAsync(request, context);
 
-            Assert.AreEqual(2, logs.Count);
-            Assert.That(logs[0], Does.Contain("GET"));
-            Assert.That(logs[0], Does.Contain("test.com"));
-            Assert.That(logs[1], Does.Contain("200"));
+                Assert.AreEqual(2, logs.Count);
+                Assert.That(logs[0], Does.Contain("GET"));
+                Assert.That(logs[0], Does.Contain("test.com"));
+                Assert.That(logs[1], Does.Contain("200"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task LogLevelNone_NoLogs()
-        {
-            var logs = new List<string>();
-            var middleware = new LoggingMiddleware(
-                msg => logs.Add(msg),
-                LoggingMiddleware.LogLevel.None);
-            var transport = new MockTransport();
-            var pipeline = new HttpPipeline(new[] { middleware }, transport);
+        public void LogLevelNone_NoLogs()        {
+            Task.Run(async () =>
+            {
+                var logs = new List<string>();
+                var middleware = new LoggingMiddleware(
+                    msg => logs.Add(msg),
+                    LoggingMiddleware.LogLevel.None);
+                var transport = new MockTransport();
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
 
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
-            var context = new RequestContext(request);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
+                var context = new RequestContext(request);
 
-            await pipeline.ExecuteAsync(request, context);
+                await pipeline.ExecuteAsync(request, context);
 
-            Assert.IsEmpty(logs);
+                Assert.IsEmpty(logs);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task NonSuccessStatus_LogsWarn()
-        {
-            var logs = new List<string>();
-            var middleware = new LoggingMiddleware(msg => logs.Add(msg));
-            var transport = new MockTransport(HttpStatusCode.NotFound);
-            var pipeline = new HttpPipeline(new[] { middleware }, transport);
+        public void NonSuccessStatus_LogsWarn()        {
+            Task.Run(async () =>
+            {
+                var logs = new List<string>();
+                var middleware = new LoggingMiddleware(msg => logs.Add(msg));
+                var transport = new MockTransport(HttpStatusCode.NotFound);
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
 
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
-            var context = new RequestContext(request);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
+                var context = new RequestContext(request);
 
-            await pipeline.ExecuteAsync(request, context);
+                await pipeline.ExecuteAsync(request, context);
 
-            Assert.That(logs[1], Does.Contain("[WARN]"));
+                Assert.That(logs[1], Does.Contain("[WARN]"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -78,7 +84,7 @@ namespace TurboHTTP.Tests.Pipeline
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
             var context = new RequestContext(request);
 
-            Assert.ThrowsAsync<UHttpException>(
+            AssertAsync.ThrowsAsync<UHttpException>(
                 () => pipeline.ExecuteAsync(request, context));
 
             Assert.AreEqual(2, logs.Count); // Request log + error log

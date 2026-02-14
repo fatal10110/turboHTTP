@@ -12,66 +12,72 @@ namespace TurboHTTP.Tests.Pipeline
     public class HttpPipelineTests
     {
         [Test]
-        public async Task Pipeline_ExecutesMiddlewareInOrder()
-        {
-            var executionOrder = new List<string>();
+        public void Pipeline_ExecutesMiddlewareInOrder()        {
+            Task.Run(async () =>
+            {
+                var executionOrder = new List<string>();
 
-            var middleware1 = new OrderTrackingMiddleware("M1", executionOrder);
-            var middleware2 = new OrderTrackingMiddleware("M2", executionOrder);
-            var middleware3 = new OrderTrackingMiddleware("M3", executionOrder);
+                var middleware1 = new OrderTrackingMiddleware("M1", executionOrder);
+                var middleware2 = new OrderTrackingMiddleware("M2", executionOrder);
+                var middleware3 = new OrderTrackingMiddleware("M3", executionOrder);
 
-            var transport = new MockTransport();
-            var pipeline = new HttpPipeline(
-                new[] { middleware1, middleware2, middleware3 },
-                transport
-            );
+                var transport = new MockTransport();
+                var pipeline = new HttpPipeline(
+                    new[] { middleware1, middleware2, middleware3 },
+                    transport
+                );
 
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
-            var context = new RequestContext(request);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
+                var context = new RequestContext(request);
 
-            await pipeline.ExecuteAsync(request, context);
+                await pipeline.ExecuteAsync(request, context);
 
-            Assert.AreEqual(
-                new[] { "M1-Before", "M2-Before", "M3-Before",
-                        "M3-After", "M2-After", "M1-After" },
-                executionOrder.ToArray());
+                Assert.AreEqual(
+                    new[] { "M1-Before", "M2-Before", "M3-Before",
+                            "M3-After", "M2-After", "M1-After" },
+                    executionOrder.ToArray());
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task Pipeline_EmptyMiddleware_CallsTransportDirectly()
-        {
-            var transport = new MockTransport();
-            var pipeline = new HttpPipeline(
-                Array.Empty<IHttpMiddleware>(), transport);
+        public void Pipeline_EmptyMiddleware_CallsTransportDirectly()        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport();
+                var pipeline = new HttpPipeline(
+                    Array.Empty<IHttpMiddleware>(), transport);
 
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
-            var context = new RequestContext(request);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
+                var context = new RequestContext(request);
 
-            var response = await pipeline.ExecuteAsync(request, context);
+                var response = await pipeline.ExecuteAsync(request, context);
 
-            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            Assert.AreEqual(1, transport.RequestCount);
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(1, transport.RequestCount);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task Pipeline_MiddlewareCanShortCircuit()
-        {
-            var shortCircuit = new ShortCircuitMiddleware();
-            var shouldNotRun = new OrderTrackingMiddleware("Never", new List<string>());
+        public void Pipeline_MiddlewareCanShortCircuit()        {
+            Task.Run(async () =>
+            {
+                var shortCircuit = new ShortCircuitMiddleware();
+                var shouldNotRun = new OrderTrackingMiddleware("Never", new List<string>());
 
-            var transport = new MockTransport();
-            var pipeline = new HttpPipeline(
-                new IHttpMiddleware[] { shortCircuit, shouldNotRun },
-                transport
-            );
+                var transport = new MockTransport();
+                var pipeline = new HttpPipeline(
+                    new IHttpMiddleware[] { shortCircuit, shouldNotRun },
+                    transport
+                );
 
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
-            var context = new RequestContext(request);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
+                var context = new RequestContext(request);
 
-            var response = await pipeline.ExecuteAsync(request, context);
+                var response = await pipeline.ExecuteAsync(request, context);
 
-            Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
-            Assert.AreEqual(0, transport.RequestCount); // Transport never called
+                Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
+                Assert.AreEqual(0, transport.RequestCount); // Transport never called
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -85,7 +91,7 @@ namespace TurboHTTP.Tests.Pipeline
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
             var context = new RequestContext(request);
 
-            Assert.ThrowsAsync<InvalidOperationException>(
+            AssertAsync.ThrowsAsync<InvalidOperationException>(
                 () => pipeline.ExecuteAsync(request, context));
         }
 
@@ -105,7 +111,7 @@ namespace TurboHTTP.Tests.Pipeline
             var context = new RequestContext(
                 new UHttpRequest(HttpMethod.GET, new Uri("https://test.com")));
 
-            Assert.ThrowsAsync<ArgumentNullException>(
+            AssertAsync.ThrowsAsync<ArgumentNullException>(
                 () => pipeline.ExecuteAsync(null, context));
         }
 

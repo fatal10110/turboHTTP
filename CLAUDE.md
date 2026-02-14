@@ -49,7 +49,7 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 
 - **Transport:** Raw `System.Net.Sockets.Socket` with connection pooling (not UnityWebRequest)
 - **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation
-- **JSON:** `System.Text.Json` (no external dependencies)
+- **JSON:** `TurboHTTP.JSON.JsonSerializer` static facade with pluggable `IJsonSerializer` interface. Default: `LiteJsonSerializer` (AOT-safe). Optional: `System.Text.Json` via `TURBOHTTP_USE_SYSTEM_TEXT_JSON` define. Users can register Newtonsoft or custom serializers at startup.
 - **HTTP/2:** Native binary framing, HPACK compression, stream multiplexing, flow control
 - **Middleware:** ASP.NET Core-style pipeline pattern for request/response interception
 - **Namespaces:** Each module uses `TurboHTTP.<ModuleName>` (e.g., `TurboHTTP.Core`, `TurboHTTP.Transport`)
@@ -87,7 +87,8 @@ Implementation follows 14 phases documented in `docs/phases/`.
   - **Phase 4.3 (Module Middlewares):** COMPLETE — `RetryMiddleware` (Retry), `AuthMiddleware` (Auth), `MetricsMiddleware` (Observability) in separate assemblies.
   - **Phase 4.4 (MockTransport):** COMPLETE — `MockTransport` in Testing assembly with 3 constructor overloads.
   - **Phase 4.5 (Tests):** COMPLETE — 8 test files covering pipeline, all middlewares, and integration.
-- **Phases 5–14:** Not started.
+- **Phase 5 (Content Handlers):** COMPLETE — JSON extensions (AsJson, TryAsJson, GetJsonAsync, PostJsonAsync, PutJsonAsync, PatchJsonAsync, DeleteJsonAsync), FileDownloader with resume/checksum/progress, MultipartFormDataBuilder, ContentTypes constants, GetBodyAsString(Encoding) + GetContentEncoding(). See `docs/implementation-journal/2026-02-phase5-content-handlers.md`.
+- **Phases 6–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
 

@@ -13,7 +13,7 @@ namespace TurboHTTP.Transport.Http2
         public int MaxConcurrentStreams { get; private set; } = int.MaxValue;
         public int InitialWindowSize { get; private set; } = Http2Constants.DefaultInitialWindowSize;
         public int MaxFrameSize { get; private set; } = Http2Constants.DefaultMaxFrameSize;
-        public int MaxHeaderListSize { get; private set; } = int.MaxValue;
+        public int MaxHeaderListSize { get; private set; } = 64 * 1024; // 64 KB default (HPACK bomb protection)
 
         /// <summary>
         /// Maximum response body size in bytes. Prevents unbounded MemoryStream growth
@@ -88,6 +88,7 @@ namespace TurboHTTP.Transport.Http2
             {
                 (Http2SettingId.EnablePush, 0),
                 (Http2SettingId.MaxConcurrentStreams, 100),
+                (Http2SettingId.MaxHeaderListSize, (uint)MaxHeaderListSize),
             };
 
             byte[] payload = new byte[settings.Count * Http2Constants.SettingEntrySize];

@@ -7,7 +7,11 @@
 
 ## Overview
 
-Implement content handlers for common serialization formats and file operations. Add JSON support using System.Text.Json, file download with resume capability, and upload support. This phase makes TurboHTTP practical for real-world applications.
+Implement content handlers for common serialization formats and file operations. Add JSON support via the `TurboHTTP.JSON.JsonSerializer` abstraction layer, file download with resume capability, and upload support. This phase makes TurboHTTP practical for real-world applications.
+
+Detailed sub-phase breakdown: [Phase 5 Implementation Plan — Overview](phase5/overview.md)
+
+> Implementation authority note: examples in this legacy phase summary are historical. Current implementation guidance is the `docs/phases/phase5/` breakdown and uses `TurboHTTP.JSON.JsonSerializer`/`IJsonSerializer` (not direct `System.Text.Json` dependency in core APIs).
 
 ## Goals
 
@@ -610,7 +614,7 @@ namespace TurboHTTP.Core
 
 ### Success Criteria
 
-- [ ] JSON serialization/deserialization works with System.Text.Json
+- [ ] JSON serialization/deserialization works via `TurboHTTP.JSON.JsonSerializer` abstraction
 - [ ] `GetJsonAsync()` and `PostJsonAsync()` helper methods work
 - [ ] File downloader can download files
 - [ ] File resume works when server supports Range requests
@@ -745,7 +749,7 @@ Once Phase 5 is complete and validated:
 
 ## Notes
 
-- System.Text.Json is built-in for Unity 2021.3+
+- `TurboHTTP.JSON.JsonSerializer` abstraction is used in core APIs (default backend is LiteJson in this package)
 - File resume requires server support for Range requests
 - Checksum verification ensures file integrity
 - Multipart form data is standard for file uploads

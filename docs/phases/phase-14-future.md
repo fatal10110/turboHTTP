@@ -61,7 +61,70 @@ HTTP/2 support is now part of the core v1.0 implementation. See [Phase 3B](phase
 
 ---
 
-### 3. WebSocket Support (High Priority)
+### 3. Happy Eyeballs (RFC 8305) (Medium Priority)
+
+**Goal:** Improve connection time on dual-stack networks with broken IPv6
+
+**Problem:** Current `ConnectSocketAsync` tries each DNS address sequentially. If the first address is IPv6 and the route is broken, the connection is delayed by the full timeout before falling back to IPv4.
+
+**Implementation:**
+- Sort addresses: IPv6 first (iOS requirement), then IPv4
+- Try IPv6 first, wait 250ms, then start IPv4 in parallel
+- Use the first successful connection, cancel the other
+- Per RFC 8305 Section 3
+
+```csharp
+// Sort: IPv6 first, then IPv4
+var ipv6 = addresses.Where(a => a.AddressFamily == AddressFamily.InterNetworkV6);
+var ipv4 = addresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork);
+
+// Try IPv6, stagger IPv4 by 250ms
+var ipv6Task = ConnectAsync(ipv6.ToArray(), port, ct);
+await Task.Delay(250, ct);
+var ipv4Task = ConnectAsync(ipv4.ToArray(), port, ct);
+var winner = await Task.WhenAny(ipv6Task, ipv4Task);
+```
+
+**Estimated Effort:** 1 week
+
+**Complexity:** Medium
+
+**Value:** High (mobile user experience, iOS App Store compliance)
+
+---
+
+### 4. Proxy Support (Medium Priority)
+
+**Goal:** HTTP proxy support for enterprise and corporate environments
+
+**Features:**
+- `CONNECT` tunneling for HTTPS through HTTP proxies
+- `Proxy-Authorization` header support
+- Environment variable detection (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`)
+- Optional `TurboHTTP.Proxy` module (references only `TurboHTTP.Core`)
+
+**Implementation:**
+```csharp
+var options = new UHttpClientOptions
+{
+    Proxy = new ProxySettings
+    {
+        Address = "http://proxy.corp.example.com:8080",
+        Credentials = new NetworkCredential("user", "pass"),
+        BypassList = new[] { "*.local", "10.*" }
+    }
+};
+```
+
+**Estimated Effort:** 2-3 weeks
+
+**Complexity:** Medium-High
+
+**Value:** Medium (enterprise requirement, rare for mobile games)
+
+---
+
+### 5. WebSocket Support (High Priority)
 
 **Goal:** Add WebSocket client alongside HTTP
 
@@ -92,7 +155,7 @@ public class UWebSocketClient
 
 ---
 
-### 4. gRPC Support (Low Priority)
+### 6. gRPC Support (Low Priority)
 
 **Goal:** Support gRPC protocol
 
@@ -114,7 +177,7 @@ public class UWebSocketClient
 
 ---
 
-### 5. Adaptive Network Policies (Medium Priority)
+### 7. Adaptive Network Policies (Medium Priority)
 
 **Goal:** Automatically adjust behavior based on network conditions
 
@@ -160,7 +223,7 @@ public enum NetworkQuality
 
 ---
 
-### 6. GraphQL Client (Medium Priority)
+### 8. GraphQL Client (Medium Priority)
 
 **Goal:** Add GraphQL query builder and client
 
@@ -198,7 +261,7 @@ var user = await graphql.QueryAsync<User>(query, new { id = "123" });
 
 ---
 
-### 7. Advanced Content Handlers (Low Priority)
+### 9. Advanced Content Handlers (Low Priority)
 
 **Goal:** Support more Unity asset types and formats
 
@@ -229,7 +292,7 @@ var data = response.AsProtobuf<MyProtoMessage>();
 
 ---
 
-### 8. OAuth 2.0 / OpenID Connect (High Priority)
+### 10. OAuth 2.0 / OpenID Connect (High Priority)
 
 **Goal:** Built-in OAuth flow support
 
@@ -272,7 +335,7 @@ client.Options.Middlewares.Add(new AuthMiddleware(
 
 ---
 
-### 9. Request/Response Interceptors (Medium Priority)
+### 11. Request/Response Interceptors (Medium Priority)
 
 **Goal:** Allow modifying requests/responses without middleware
 
@@ -299,7 +362,7 @@ client.OnResponse += (response) =>
 
 ---
 
-### 10. Parallel Request Helpers (Low Priority)
+### 12. Parallel Request Helpers (Low Priority)
 
 **Goal:** Simplify common parallel request patterns
 
@@ -324,7 +387,7 @@ var fastestResult = await client.RaceAsync(urls);
 
 ---
 
-### 11. Mock Server for Testing (Medium Priority)
+### 13. Mock Server for Testing (Medium Priority)
 
 **Goal:** Built-in mock HTTP server for testing
 
@@ -355,7 +418,7 @@ var response = await client.Get("http://localhost:8080/api/users").SendAsync();
 
 ---
 
-### 12. Plugin System (Low Priority)
+### 14. Plugin System (Low Priority)
 
 **Goal:** Allow third-party extensions
 
@@ -388,7 +451,7 @@ client.RegisterPlugin(new SentryPlugin());
 
 ---
 
-### 13. Security & Privacy Hardening (High Priority)
+### 15. Security & Privacy Hardening (High Priority)
 
 **Goal:** Make “safe by default” behavior explicit and configurable
 
@@ -412,6 +475,8 @@ client.RegisterPlugin(new SentryPlugin());
 |---------|----------|--------|------------|-------|---------|
 | ~~HTTP/2~~ | ~~High~~ | — | — | — | **v1.0** (Phase 3B) |
 | WebGL Support | High | 2-3w | Medium | High | v1.1 |
+| Happy Eyeballs (RFC 8305) | Medium | 1w | Medium | High | v1.1 |
+| Proxy Support | Medium | 2-3w | Medium-High | Medium | v1.1 |
 | Adaptive Network | Medium | 2w | Medium | High | v1.1 |
 | OAuth 2.0 | High | 3-4w | High | High | v1.2 |
 | WebSocket | High | 2-3w | Medium | High | v1.2 |
@@ -428,6 +493,8 @@ client.RegisterPlugin(new SentryPlugin());
 
 ### v1.1 (Q1 after v1.0)
 - WebGL support (browser `fetch()` API via `.jslib` interop)
+- Happy Eyeballs (RFC 8305) — dual-stack connection racing
+- Proxy support (CONNECT tunneling, environment variable detection)
 - Adaptive network policies
 - Request/response interceptors
 - Security & privacy hardening (redaction + safe defaults)

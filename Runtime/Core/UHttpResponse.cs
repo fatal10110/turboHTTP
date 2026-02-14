@@ -1,5 +1,6 @@
 using System;
 using System.Net;
+using System.Text;
 
 namespace TurboHTTP.Core
 {
@@ -60,7 +61,67 @@ namespace TurboHTTP.Core
             if (Body == null || Body.Length == 0)
                 return null;
 
-            return System.Text.Encoding.UTF8.GetString(Body);
+            return Encoding.UTF8.GetString(Body);
+        }
+
+        /// <summary>
+        /// Get the response body as a string using the specified encoding.
+        /// Returns null if body is null or empty.
+        /// </summary>
+        public string GetBodyAsString(Encoding encoding)
+        {
+            if (encoding == null) throw new ArgumentNullException(nameof(encoding));
+            if (Body == null || Body.Length == 0)
+                return null;
+
+            return encoding.GetString(Body);
+        }
+
+        /// <summary>
+        /// Detect the character encoding from the Content-Type header's charset parameter.
+        /// Falls back to UTF-8 if no charset is specified or the charset is not recognized.
+        /// Uses manual string parsing to avoid Regex allocation (IL2CPP-safe).
+        /// </summary>
+        public Encoding GetContentEncoding()
+        {
+            var contentType = Headers.Get("Content-Type");
+            if (string.IsNullOrEmpty(contentType))
+                return Encoding.UTF8;
+
+            var charsetIndex = contentType.IndexOf("charset", StringComparison.OrdinalIgnoreCase);
+            if (charsetIndex < 0)
+                return Encoding.UTF8;
+
+            var eqIndex = contentType.IndexOf('=', charsetIndex + 7);
+            if (eqIndex < 0)
+                return Encoding.UTF8;
+
+            var start = eqIndex + 1;
+            while (start < contentType.Length && contentType[start] == ' ')
+                start++;
+            if (start >= contentType.Length)
+                return Encoding.UTF8;
+
+            bool quoted = contentType[start] == '"';
+            if (quoted) start++;
+
+            var end = start;
+            while (end < contentType.Length && contentType[end] != '"'
+                   && contentType[end] != ';' && contentType[end] != ' ')
+                end++;
+
+            if (end == start)
+                return Encoding.UTF8;
+
+            var charset = contentType.Substring(start, end - start);
+            try
+            {
+                return Encoding.GetEncoding(charset);
+            }
+            catch
+            {
+                return Encoding.UTF8;
+            }
         }
 
         /// <summary>
