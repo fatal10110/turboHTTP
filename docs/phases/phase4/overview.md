@@ -69,17 +69,29 @@ Before starting any sub-phase:
 
 1. **Pipeline caching:** Build delegate chain once per `UHttpClient` instance (in constructor), reuse across all requests. `_options.Middlewares` is already deep-copied by `UHttpClientOptions.Clone()`, so the list is immutable after construction.
 
-2. **Middleware ordering (user responsibility):** Order in `UHttpClientOptions.Middlewares` list determines execution order. First middleware in list = outermost (sees raw request/final response). Recommended order for users:
-   - LoggingMiddleware (first — captures everything)
-   - MetricsMiddleware
-   - TimeoutMiddleware (wraps retries — overall timeout)
-   - RetryMiddleware
+2. **Middleware ordering (user responsibility):** Order in `UHttpClientOptions.Middlewares` list determines execution order. First middleware in list = outermost (sees raw request/final response). **Two recommended configurations:**
+
+   **Option A — Retry on timeout (per-attempt timeout, recommended default):**
+   - LoggingMiddleware (first — captures everything including retries)
+   - MetricsMiddleware (captures all attempts)
+   - RetryMiddleware (outermost of the two — sees 408 from Timeout, can retry)
+   - TimeoutMiddleware (applies timeout per individual attempt)
    - AuthMiddleware
    - DefaultHeadersMiddleware (last — closest to transport)
 
+   **Option B — Overall timeout (no retry on timeout):**
+   - LoggingMiddleware
+   - MetricsMiddleware
+   - TimeoutMiddleware (outermost — enforces total time budget for all attempts)
+   - RetryMiddleware (retries within the time budget, but timeouts are NOT retried)
+   - AuthMiddleware
+   - DefaultHeadersMiddleware
+
+   **Why this matters:** First middleware in list wraps all subsequent ones. In Option B, `TimeoutMiddleware` wraps `RetryMiddleware` — when timeout fires, Timeout catches the `OperationCanceledException` and returns 408 directly to `UHttpClient`, so Retry never sees it. In Option A, `RetryMiddleware` wraps `TimeoutMiddleware` — Retry sees the 408 response from Timeout and can retry the request.
+
 3. **Error model in middleware:**
-   - `TimeoutMiddleware` returns a `UHttpResponse` with `408 RequestTimeout` status + `UHttpError` (does NOT throw). This allows `RetryMiddleware` to handle timeouts as retryable responses.
-   - `RetryMiddleware` catches `UHttpException` when `IsRetryable()` returns true. Returns last failed response when retries are exhausted.
+   - `TimeoutMiddleware` returns a `UHttpResponse` with `408 RequestTimeout` status + `UHttpError` (does NOT throw). This allows `RetryMiddleware` to handle timeouts as retryable responses **when Retry is positioned before Timeout in the list** (Option A).
+   - `RetryMiddleware` catches `UHttpException` when `IsRetryable()` returns true. Also checks `response.Error?.IsRetryable()` for non-exception retryable responses (e.g., 408 timeout, 5xx). Returns last failed response when retries are exhausted.
    - Other middlewares propagate exceptions unchanged.
 
 4. **Request immutability:** Middlewares that modify requests (DefaultHeaders, Auth) create new `UHttpRequest` instances via `WithHeaders()` and call `context.UpdateRequest()` to track the transformation.

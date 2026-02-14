@@ -106,9 +106,11 @@ namespace TurboHTTP.Core
 
             if (_logLevel >= LogLevel.Detailed && _logBody && request.Body != null && request.Body.Length > 0)
             {
-                var bodyPreview = System.Text.Encoding.UTF8.GetString(request.Body);
-                if (bodyPreview.Length > 500)
-                    bodyPreview = bodyPreview.Substring(0, 500) + "...";
+                // Decode only first N bytes to avoid allocating a full string for large bodies
+                int previewBytes = Math.Min(request.Body.Length, 500);
+                var bodyPreview = System.Text.Encoding.UTF8.GetString(request.Body, 0, previewBytes);
+                if (request.Body.Length > 500)
+                    bodyPreview += "...";
                 message += $"\n  Body: {bodyPreview}";
             }
 
@@ -130,9 +132,10 @@ namespace TurboHTTP.Core
 
             if (_logLevel >= LogLevel.Detailed && _logBody && response.Body != null && response.Body.Length > 0)
             {
-                var bodyPreview = System.Text.Encoding.UTF8.GetString(response.Body);
-                if (bodyPreview.Length > 500)
-                    bodyPreview = bodyPreview.Substring(0, 500) + "...";
+                int previewBytes = Math.Min(response.Body.Length, 500);
+                var bodyPreview = System.Text.Encoding.UTF8.GetString(response.Body, 0, previewBytes);
+                if (response.Body.Length > 500)
+                    bodyPreview += "...";
                 message += $"\n  Body: {bodyPreview}";
             }
 
@@ -163,7 +166,7 @@ namespace TurboHTTP.Core
 
 3. **`HttpHeaders` enumeration:** Iterates as `IEnumerable<KeyValuePair<string, string>>` — returns first value per header name. This is sufficient for logging. Multi-value headers (e.g., `Set-Cookie`) will show only the first value. For detailed multi-value logging in future, iterate `Names` + `GetValues()`.
 
-4. **Body preview truncation:** 500 character limit prevents log flooding on large responses. UTF-8 decoding may fail on binary content — acceptable for logging (garbled output, not crash).
+4. **Body preview truncation:** Only the first 500 bytes are decoded to prevent GC pressure from large payloads (e.g., a 10MB response body would otherwise allocate a 10MB string just to truncate it). UTF-8 multi-byte sequences may be split at the boundary — the decoder replaces incomplete sequences with U+FFFD, which is acceptable for logging.
 
 5. **Arrow characters:** Spec uses Unicode arrows (`→`, `←`, `✗`). Changed to ASCII (`->`, `<-`, `X`) for broader terminal/log compatibility.
 
@@ -311,7 +314,9 @@ namespace TurboHTTP.Core
 
 5. **Interaction with transport-level timeout:** The transport (e.g., `RawSocketTransport`) receives the linked token. If the transport has its own timeout mechanism, the stricter timeout wins. In practice, the middleware timeout is the primary timeout enforcement point.
 
-6. **Pipeline position:** Should be placed BEFORE `RetryMiddleware` in the pipeline (i.e., earlier in the list). This means the timeout applies to the entire retry sequence, not individual attempts. For per-attempt timeouts, users should configure `request.Timeout` and place `TimeoutMiddleware` AFTER `RetryMiddleware`.
+6. **Pipeline position:** Two valid configurations (see `overview.md` Decision #2):
+   - **Per-attempt timeout (recommended):** Place `RetryMiddleware` BEFORE `TimeoutMiddleware` in the list. Retry wraps Timeout, sees 408 responses, and can retry timed-out attempts.
+   - **Overall timeout:** Place `TimeoutMiddleware` BEFORE `RetryMiddleware`. Timeout wraps the entire retry sequence. When it fires, 408 is returned directly — Retry never sees it.
 
 ---
 

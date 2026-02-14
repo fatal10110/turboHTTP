@@ -118,14 +118,29 @@ namespace TurboHTTP.Core
 private readonly HttpPipeline _pipeline;
 ```
 
-**Modify constructor** — add pipeline construction after transport initialization:
+**Modify constructor** — add pipeline construction as the last line, after the existing transport initialization (which now has 3 branches for Transport/TlsBackend/Default):
 
 ```csharp
 public UHttpClient(UHttpClientOptions options = null)
 {
     _options = options?.Clone() ?? new UHttpClientOptions();
-    _transport = _options.Transport ?? HttpTransportFactory.Default;
-    _ownsTransport = (_options.Transport != null && _options.DisposeTransport);
+
+    if (_options.Transport != null)
+    {
+        _transport = _options.Transport;
+        _ownsTransport = _options.DisposeTransport;
+    }
+    else if (_options.TlsBackend != TlsBackend.Auto)
+    {
+        _transport = HttpTransportFactory.CreateWithBackend(_options.TlsBackend);
+        _ownsTransport = true;
+    }
+    else
+    {
+        _transport = HttpTransportFactory.Default;
+        _ownsTransport = false;
+    }
+
     _pipeline = new HttpPipeline(_options.Middlewares, _transport);
 }
 ```
@@ -182,9 +197,8 @@ Only ONE line changes in `SendAsync`:
 + var response = await _pipeline.ExecuteAsync(request, context, cancellationToken);
 ```
 
-Plus constructor additions:
+Plus one line added at the end of the constructor (after the existing 3-branch transport init):
 ```diff
-  _ownsTransport = (_options.Transport != null && _options.DisposeTransport);
 + _pipeline = new HttpPipeline(_options.Middlewares, _transport);
 ```
 

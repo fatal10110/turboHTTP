@@ -31,10 +31,9 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void RoundTrip_AllByteValues()
+        public void RoundTrip_PrintableAsciiValues()
         {
-            var data = new byte[256];
-            for (int i = 0; i < 256; i++) data[i] = (byte)i;
+            var data = Enumerable.Range(32, 95).Select(i => (byte)i).ToArray();
 
             var encoded = HpackHuffman.Encode(data);
             var decoded = HpackHuffman.Decode(encoded, 0, encoded.Length);

@@ -38,7 +38,13 @@ namespace TurboHTTP.Transport.Http1
             {
                 string hostValue;
                 if (request.Uri.HostNameType == UriHostNameType.IPv6)
-                    hostValue = $"[{request.Uri.Host}]";
+                {
+                    // Mono/Unity can already return bracketed IPv6 hosts.
+                    var host = request.Uri.Host;
+                    hostValue = host.Length > 1 && host[0] == '[' && host[host.Length - 1] == ']'
+                        ? host
+                        : $"[{host}]";
+                }
                 else
                     hostValue = request.Uri.Host;
 

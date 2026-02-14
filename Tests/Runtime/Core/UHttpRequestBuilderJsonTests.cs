@@ -2,6 +2,7 @@ using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
 using TurboHTTP.JSON.Lite;
+using TurboHTTP.Transport;
 using System.Collections.Generic;
 using System.Text;
 
@@ -15,6 +16,8 @@ namespace TurboHTTP.Tests.Core
         [SetUp]
         public void SetUp()
         {
+            HttpTransportFactory.Reset();
+            RawSocketTransport.EnsureRegistered();
             _client = new UHttpClient(new UHttpClientOptions
             {
                 BaseUrl = "https://example.com"
@@ -25,6 +28,7 @@ namespace TurboHTTP.Tests.Core
         [TearDown]
         public void TearDown()
         {
+            HttpTransportFactory.Reset();
             JsonSerializer.ResetToDefault();
         }
 
@@ -37,7 +41,7 @@ namespace TurboHTTP.Tests.Core
 
             var body = Encoding.UTF8.GetString(request.Body);
             Assert.That(body, Is.EqualTo("{\"name\":\"test\"}"));
-            Assert.That(request.Headers.GetValue("Content-Type"), Is.EqualTo("application/json"));
+            Assert.That(request.Headers.Get("Content-Type"), Is.EqualTo("application/json"));
         }
 
         [Test]

@@ -343,7 +343,9 @@ namespace TurboHTTP.Observability
 {
     /// <summary>
     /// HTTP metrics collected by MetricsMiddleware.
-    /// All fields are updated atomically via Interlocked operations.
+    /// Long fields are updated atomically via Interlocked operations.
+    /// AverageResponseTimeMs is stored as long bits (via BitConverter) for
+    /// atomicity on 32-bit IL2CPP where double writes can tear.
     /// Read access is eventually consistent during concurrent writes.
     /// </summary>
     public class HttpMetrics
@@ -353,9 +355,24 @@ namespace TurboHTTP.Observability
         public long TotalRequests;
         public long SuccessfulRequests;
         public long FailedRequests;
-        public double AverageResponseTimeMs;
         public long TotalBytesReceived;
         public long TotalBytesSent;
+
+        // Stored as long bits for atomic read/write on 32-bit platforms.
+        // Use GetAverageResponseTimeMs() / SetAverageResponseTimeMs() accessors.
+        internal long AverageResponseTimeMsBits;
+
+        public double GetAverageResponseTimeMs()
+        {
+            long bits = System.Threading.Interlocked.Read(ref AverageResponseTimeMsBits);
+            return BitConverter.Int64BitsToDouble(bits);
+        }
+
+        internal void SetAverageResponseTimeMs(double value)
+        {
+            long bits = BitConverter.DoubleToInt64Bits(value);
+            System.Threading.Interlocked.Exchange(ref AverageResponseTimeMsBits, bits);
+        }
 
         /// <summary>
         /// Request count per host (e.g., "api.example.com" -> 42).
@@ -376,7 +393,7 @@ namespace TurboHTTP.Observability
 
 1. **Public fields vs properties:** `Interlocked.Increment(ref _metrics.TotalRequests)` requires a `ref` to a field. Auto-property backing fields cannot be passed by `ref`. Using public fields is intentional.
 
-2. **`AverageResponseTimeMs` consistency:** Calculated as running average. During concurrent writes, reads may see an intermediate value. This is acceptable for metrics — exact point-in-time accuracy is not required.
+2. **`AverageResponseTimeMs` atomicity:** Stored as `long` bits via `BitConverter.DoubleToInt64Bits` / `Int64BitsToDouble`, read/written with `Interlocked.Read` / `Interlocked.Exchange`. This prevents torn reads on 32-bit IL2CPP where `double` (64-bit) writes are non-atomic. Eventually consistent during concurrent writes — acceptable for metrics.
 
 ---
 
@@ -457,10 +474,12 @@ namespace TurboHTTP.Observability
             {
                 var elapsedMs = (long)context.Elapsed.TotalMilliseconds;
                 Interlocked.Add(ref _totalResponseTimeMs, elapsedMs);
-                // Eventually consistent average — acceptable for metrics
-                _metrics.AverageResponseTimeMs =
+                // Eventually consistent average — acceptable for metrics.
+                // Uses atomic Interlocked.Exchange via SetAverageResponseTimeMs
+                // to prevent torn reads on 32-bit IL2CPP.
+                _metrics.SetAverageResponseTimeMs(
                     (double)Interlocked.Read(ref _totalResponseTimeMs) /
-                    Interlocked.Read(ref _metrics.TotalRequests);
+                    Interlocked.Read(ref _metrics.TotalRequests));
             }
         }
 
@@ -473,7 +492,7 @@ namespace TurboHTTP.Observability
             Interlocked.Exchange(ref _metrics.SuccessfulRequests, 0);
             Interlocked.Exchange(ref _metrics.FailedRequests, 0);
             Interlocked.Exchange(ref _totalResponseTimeMs, 0);
-            _metrics.AverageResponseTimeMs = 0;
+            _metrics.SetAverageResponseTimeMs(0);
             Interlocked.Exchange(ref _metrics.TotalBytesReceived, 0);
             Interlocked.Exchange(ref _metrics.TotalBytesSent, 0);
             _metrics.RequestsByHost.Clear();

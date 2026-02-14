@@ -50,89 +50,107 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public async Task SerializeGet_ProducesCorrectRequestLine()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/path"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.StartsWith("GET /path HTTP/1.1\r\n"));
+        public void SerializeGet_ProducesCorrectRequestLine()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/path"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.StartsWith("GET /path HTTP/1.1\r\n"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task SerializeGet_AutoAddsHostHeader()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Host: example.com"));
+        public void SerializeGet_AutoAddsHostHeader()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Host: example.com"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task SerializeGet_NonDefaultPort_IncludesPortInHost()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com:8080/"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Host: example.com:8080"));
+        public void SerializeGet_NonDefaultPort_IncludesPortInHost()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com:8080/"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Host: example.com:8080"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task SerializeGet_UserSetHostHeader_Preserved()
-        {
-            var headers = new HttpHeaders();
-            headers.Set("Host", "custom.example.com");
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Host: custom.example.com"));
-            Assert.IsFalse(result.Headers.Contains("Host: example.com"));
+        public void SerializeGet_UserSetHostHeader_Preserved()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Host", "custom.example.com");
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Host: custom.example.com"));
+                Assert.IsFalse(result.Headers.Contains("Host: example.com"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task SerializeGet_AutoAddsConnectionKeepAlive()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Connection: keep-alive"));
+        public void SerializeGet_AutoAddsConnectionKeepAlive()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Connection: keep-alive"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task SerializeGet_UserSetConnectionHeader_NotOverridden()
-        {
-            var headers = new HttpHeaders();
-            headers.Set("Connection", "close");
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Connection: close"));
-            Assert.IsFalse(result.Headers.Contains("Connection: keep-alive"));
+        public void SerializeGet_UserSetConnectionHeader_NotOverridden()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Connection", "close");
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Connection: close"));
+                Assert.IsFalse(result.Headers.Contains("Connection: keep-alive"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task SerializePost_AutoAddsContentLength()
-        {
-            var request = new UHttpRequest(
-                HttpMethod.POST,
-                new Uri("http://example.com/"),
-                body: Encoding.UTF8.GetBytes("hello"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+        public void SerializePost_AutoAddsContentLength()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    body: Encoding.UTF8.GetBytes("hello"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task SerializePost_WritesBody()
-        {
-            var body = Encoding.UTF8.GetBytes("hello");
-            var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"), body: body);
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Body.SequenceEqual(body));
+        public void SerializePost_WritesBody()        {
+            Task.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("hello");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"), body: body);
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Body.SequenceEqual(body));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task Serialize_MultiValueHeaders_EmitsSeparateLines()
-        {
-            var headers = new HttpHeaders();
-            headers.Add("Set-Cookie", "a=1");
-            headers.Add("Set-Cookie", "b=2");
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Set-Cookie: a=1"));
-            Assert.IsTrue(result.Headers.Contains("Set-Cookie: b=2"));
+        public void Serialize_MultiValueHeaders_EmitsSeparateLines()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Add("Set-Cookie", "a=1");
+                headers.Add("Set-Cookie", "b=2");
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Set-Cookie: a=1"));
+                Assert.IsTrue(result.Headers.Contains("Set-Cookie: b=2"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -141,7 +159,7 @@ namespace TurboHTTP.Tests.Transport
             var headers = new HttpHeaders();
             headers.Set("Host", "bad\r\nvalue");
             var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            Assert.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
         }
 
         [Test]
@@ -150,7 +168,7 @@ namespace TurboHTTP.Tests.Transport
             var headers = new HttpHeaders();
             headers.Set("X-Test", "bad\r\nvalue");
             var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            Assert.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
         }
 
         [Test]
@@ -159,7 +177,7 @@ namespace TurboHTTP.Tests.Transport
             var headers = new HttpHeaders();
             headers.Set("Bad:Name", "value");
             var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            Assert.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
         }
 
         [Test]
@@ -168,15 +186,17 @@ namespace TurboHTTP.Tests.Transport
             var headers = new HttpHeaders();
             headers.Set("Bad\r\nName", "value");
             var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            Assert.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
         }
 
         [Test]
-        public async Task Serialize_NoBody_NoContentLength()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-            var result = await SerializeAsync(request);
-            Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+        public void Serialize_NoBody_NoContentLength()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
+                var result = await SerializeAsync(request);
+                Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -190,67 +210,80 @@ namespace TurboHTTP.Tests.Transport
                 headers,
                 body: Encoding.UTF8.GetBytes("hello"));
 
-            Assert.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
         }
 
         [Test]
-        public async Task Serialize_UserSetContentLength_Correct_Preserved()
-        {
-            var headers = new HttpHeaders();
-            headers.Set("Content-Length", "5");
-            var request = new UHttpRequest(
-                HttpMethod.POST,
-                new Uri("http://example.com/"),
-                headers,
-                body: Encoding.UTF8.GetBytes("hello"));
+        public void Serialize_UserSetContentLength_Correct_Preserved()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Content-Length", "5");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    headers,
+                    body: Encoding.UTF8.GetBytes("hello"));
 
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task Serialize_AutoAddsUserAgent()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("User-Agent: TurboHTTP/1.0"));
+        public void Serialize_AutoAddsUserAgent()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("User-Agent: TurboHTTP/1.0"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task Serialize_UserSetUserAgent_NotOverridden()
-        {
-            var headers = new HttpHeaders();
-            headers.Set("User-Agent", "Custom");
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("User-Agent: Custom"));
-            Assert.IsFalse(result.Headers.Contains("User-Agent: TurboHTTP/1.0"));
+        public void Serialize_UserSetUserAgent_NotOverridden()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("User-Agent", "Custom");
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("User-Agent: Custom"));
+                Assert.IsFalse(result.Headers.Contains("User-Agent: TurboHTTP/1.0"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task Serialize_TransferEncodingSet_NoAutoContentLength()
-        {
-            var headers = new HttpHeaders();
-            headers.Set("Transfer-Encoding", "gzip");
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+        public void Serialize_TransferEncodingSet_NoAutoContentLength()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Transfer-Encoding", "gzip");
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
 
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: gzip"));
-            Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: gzip"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public void Serialize_TransferEncodingAny_WithBody_ThrowsArgumentException()
+        public void Serialize_TransferEncodingAny_WithBody_PreservesTransferEncoding()
         {
-            var headers = new HttpHeaders();
-            headers.Set("Transfer-Encoding", "gzip");
-            var request = new UHttpRequest(
-                HttpMethod.POST,
-                new Uri("http://example.com/"),
-                headers,
-                body: Encoding.UTF8.GetBytes("hello"));
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Transfer-Encoding", "gzip");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    headers,
+                    body: Encoding.UTF8.GetBytes("hello"));
 
-            Assert.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: gzip"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -262,31 +295,37 @@ namespace TurboHTTP.Tests.Transport
             dict[""] = new System.Collections.Generic.List<string> { "value" };
 
             var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
-            Assert.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
         }
 
         [Test]
-        public async Task Serialize_PathAndQuery_EmptyFallsBackToSlash()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.StartsWith("GET / HTTP/1.1\r\n"));
+        public void Serialize_PathAndQuery_EmptyFallsBackToSlash()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.StartsWith("GET / HTTP/1.1\r\n"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task Serialize_IPv6Host_WrappedInBrackets()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://[::1]/"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Host: [::1]"));
+        public void Serialize_IPv6Host_WrappedInBrackets()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://[::1]/"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Host: [::1]"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task Serialize_IPv6Host_NonDefaultPort_IncludesPortAfterBrackets()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://[::1]:8080/"));
-            var result = await SerializeAsync(request);
-            Assert.IsTrue(result.Headers.Contains("Host: [::1]:8080"));
+        public void Serialize_IPv6Host_NonDefaultPort_IncludesPortAfterBrackets()        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://[::1]:8080/"));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Host: [::1]:8080"));
+            }).GetAwaiter().GetResult();
         }
     }
 }

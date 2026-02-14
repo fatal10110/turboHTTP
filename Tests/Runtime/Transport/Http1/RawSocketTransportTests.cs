@@ -133,168 +133,178 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public async Task SendAsync_UnsupportedTransferEncoding_MapsToNetworkError()
-        {
-            using var server = new HttpServer(async (client, _) =>
+        public void SendAsync_UnsupportedTransferEncoding_MapsToNetworkError()        {
+            Task.Run(async () =>
             {
-                using var stream = client.GetStream();
-                await ReadRequestHeadersAsync(stream);
-                var response = "HTTP/1.1 200 OK\r\n" +
-                               "Transfer-Encoding: gzip\r\n" +
-                               "Content-Type: text/plain\r\n" +
-                               "\r\n" +
-                               "Hello";
-                await WriteResponseAsync(stream, response);
-                client.Close();
-            });
-
-            using var client = new UHttpClient(new UHttpClientOptions
-            {
-                Transport = new RawSocketTransport(),
-                DisposeTransport = true
-            });
-
-            var ex = Assert.ThrowsAsync<UHttpException>(async () =>
-                await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync());
-
-            Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
-        }
-
-        [Test]
-        public async Task RawSocketTransport_StaleConnection_RetriesOnce()
-        {
-            using var server = new HttpServer(async (client, index) =>
-            {
-                if (index == 1)
+                using var server = new HttpServer(async (client, _) =>
                 {
-                    // Keep open: this connection is injected as a failing reused connection.
-                    return;
-                }
+                    using var stream = client.GetStream();
+                    await ReadRequestHeadersAsync(stream);
+                    var response = "HTTP/1.1 200 OK\r\n" +
+                                   "Transfer-Encoding: gzip\r\n" +
+                                   "Content-Type: text/plain\r\n" +
+                                   "\r\n" +
+                                   "Hello";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
 
-                using var stream = client.GetStream();
-                await ReadRequestHeadersAsync(stream);
-                var response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
-                await WriteResponseAsync(stream, response);
-                client.Close();
-            });
-
-            var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
-            using var transport = new RawSocketTransport(pool);
-            using var client = new UHttpClient(new UHttpClientOptions
-            {
-                Transport = transport,
-                DisposeTransport = true
-            });
-
-            // Inject a reused connection that will throw on write/read.
-            var failingClient = new TcpClient();
-            await failingClient.ConnectAsync(IPAddress.Loopback, server.Port);
-            var failingStream = new FailingStream(failingClient.GetStream());
-            var failingConn = new PooledConnection(failingClient.Client, failingStream, "127.0.0.1", server.Port, false);
-
-            var idleField = typeof(TcpConnectionPool).GetField("_idleConnections", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
-            var key = $"127.0.0.1:{server.Port}:";
-            var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
-            queue.Enqueue(failingConn);
-
-            var responseResult = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
-            Assert.AreEqual(HttpStatusCode.OK, responseResult.StatusCode);
-            Assert.GreaterOrEqual(server.AcceptCount, 2);
-        }
-
-        [Test]
-        public async Task RawSocketTransport_StaleConnection_NonIdempotent_NoRetry()
-        {
-            using var server = new HttpServer(async (client, index) =>
-            {
-                if (index == 1)
+                using var client = new UHttpClient(new UHttpClientOptions
                 {
-                    return;
-                }
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true
+                });
 
-                using var stream = client.GetStream();
-                await ReadRequestHeadersAsync(stream);
-                var response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
-                await WriteResponseAsync(stream, response);
-                client.Close();
-            });
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync());
 
-            var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
-            using var transport = new RawSocketTransport(pool);
-            using var client = new UHttpClient(new UHttpClientOptions
-            {
-                Transport = transport,
-                DisposeTransport = true
-            });
-
-            var failingClient = new TcpClient();
-            await failingClient.ConnectAsync(IPAddress.Loopback, server.Port);
-            var failingStream = new FailingStream(failingClient.GetStream());
-            var failingConn = new PooledConnection(failingClient.Client, failingStream, "127.0.0.1", server.Port, false);
-
-            var idleField = typeof(TcpConnectionPool).GetField("_idleConnections", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
-            var key = $"127.0.0.1:{server.Port}:";
-            var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
-            queue.Enqueue(failingConn);
-
-            var ex = Assert.ThrowsAsync<UHttpException>(async () =>
-                await client.Post($"http://127.0.0.1:{server.Port}/").WithBody("test").SendAsync());
-
-            Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
-            Assert.AreEqual(1, server.AcceptCount);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task NonKeepAlive_Response_SemaphoreReleased()
-        {
-            using var server = new HttpServer(async (client, _) =>
+        public void RawSocketTransport_StaleConnection_RetriesOnce()        {
+            Task.Run(async () =>
             {
-                using var stream = client.GetStream();
-                await ReadRequestHeadersAsync(stream);
-                var response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                await WriteResponseAsync(stream, response);
-                client.Close();
-            });
+                using var server = new HttpServer(async (client, index) =>
+                {
+                    if (index == 1)
+                    {
+                        // Keep open: this connection is injected as a failing reused connection.
+                        return;
+                    }
 
-            var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
-            using var transport = new RawSocketTransport(pool);
-            using var client = new UHttpClient(new UHttpClientOptions
+                    using var stream = client.GetStream();
+                    await ReadRequestHeadersAsync(stream);
+                    var response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
+
+                var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
+                using var transport = new RawSocketTransport(pool);
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+
+                // Inject a reused connection that will throw on write/read.
+                var failingClient = new TcpClient();
+                await failingClient.ConnectAsync(IPAddress.Loopback, server.Port);
+                var failingStream = new FailingStream(failingClient.GetStream());
+                var failingConn = new PooledConnection(failingClient.Client, failingStream, "127.0.0.1", server.Port, false);
+
+                var idleField = typeof(TcpConnectionPool).GetField("_idleConnections", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
+                var key = $"127.0.0.1:{server.Port}:";
+                var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
+                queue.Enqueue(failingConn);
+
+                var responseResult = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
+                Assert.AreEqual(HttpStatusCode.OK, responseResult.StatusCode);
+                Assert.GreaterOrEqual(server.AcceptCount, 2);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RawSocketTransport_StaleConnection_NonIdempotent_NoRetry()        {
+            Task.Run(async () =>
             {
-                Transport = transport,
-                DisposeTransport = true
-            });
+                using var server = new HttpServer(async (client, index) =>
+                {
+                    if (index == 1)
+                    {
+                        return;
+                    }
 
-            var first = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
-            var second = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
+                    using var stream = client.GetStream();
+                    await ReadRequestHeadersAsync(stream);
+                    var response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
 
-            Assert.AreEqual(HttpStatusCode.OK, first.StatusCode);
-            Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
+                var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
+                using var transport = new RawSocketTransport(pool);
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+
+                var failingClient = new TcpClient();
+                await failingClient.ConnectAsync(IPAddress.Loopback, server.Port);
+                var failingStream = new FailingStream(failingClient.GetStream());
+                var failingConn = new PooledConnection(failingClient.Client, failingStream, "127.0.0.1", server.Port, false);
+
+                var idleField = typeof(TcpConnectionPool).GetField("_idleConnections", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
+                var key = $"127.0.0.1:{server.Port}:";
+                var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
+                queue.Enqueue(failingConn);
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await client.Post($"http://127.0.0.1:{server.Port}/").WithBody("test").SendAsync());
+
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.AreEqual(1, server.AcceptCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void NonKeepAlive_Response_SemaphoreReleased()        {
+            Task.Run(async () =>
+            {
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    await ReadRequestHeadersAsync(stream);
+                    var response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
+
+                var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
+                using var transport = new RawSocketTransport(pool);
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+
+                var first = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
+                var second = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, first.StatusCode);
+                Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
         [Explicit("Relies on TCP reset timing; may be flaky in CI")]
-        public async Task RawSocketTransport_FreshConnection_IOException_NoRetry()
-        {
-            using var server = new HttpServer((client, _) =>
+        public void RawSocketTransport_FreshConnection_IOException_NoRetry()        {
+            Task.Run(async () =>
             {
-                client.Client.LingerState = new LingerOption(true, 0);
-                client.Close();
-                return Task.CompletedTask;
-            });
+                using var server = new HttpServer((client, _) =>
+                {
+                    client.Client.LingerState = new LingerOption(true, 0);
+                    client.Close();
+                    return Task.CompletedTask;
+                });
 
-            using var client = new UHttpClient(new UHttpClientOptions
-            {
-                Transport = new RawSocketTransport(),
-                DisposeTransport = true
-            });
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true
+                });
 
-            var ex = Assert.ThrowsAsync<UHttpException>(async () =>
-                await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync());
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync());
 
-            Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
-            Assert.AreEqual(1, server.AcceptCount);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.AreEqual(1, server.AcceptCount);
+            }).GetAwaiter().GetResult();
         }
 
         private static async Task WriteResponseAsync(NetworkStream stream, string response)

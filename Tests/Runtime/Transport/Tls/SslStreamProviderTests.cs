@@ -35,44 +35,48 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Explicit("Requires network access to a real HTTPS server")]
-        public async Task WrapAsync_RealServer_SucceedsWithTls12OrHigher()
-        {
-            // Integration test: connect to a real HTTPS server
-            using var socket = new System.Net.Sockets.Socket(
-                System.Net.Sockets.SocketType.Stream, 
-                System.Net.Sockets.ProtocolType.Tcp);
+        public void WrapAsync_RealServer_SucceedsWithTls12OrHigher()        {
+            Task.Run(async () =>
+            {
+                // Integration test: connect to a real HTTPS server
+                using var socket = new System.Net.Sockets.Socket(
+                    System.Net.Sockets.SocketType.Stream, 
+                    System.Net.Sockets.ProtocolType.Tcp);
             
-            await socket.ConnectAsync("httpbin.org", 443);
-            using var stream = new System.Net.Sockets.NetworkStream(socket, true);
+                socket.Connect("httpbin.org", 443);
+                using var stream = new System.Net.Sockets.NetworkStream(socket, true);
 
-            var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
-            var result = await provider.WrapAsync(
-                stream, "httpbin.org", new[] { "h2", "http/1.1" }, CancellationToken.None);
+                var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
+                var result = await provider.WrapAsync(
+                    stream, "httpbin.org", new[] { "h2", "http/1.1" }, CancellationToken.None);
 
-            Assert.IsNotNull(result.SecureStream);
-            Assert.That(result.TlsVersion, Is.EqualTo("1.2").Or.EqualTo("1.3"));
-            Assert.That(result.NegotiatedAlpn, Is.EqualTo("h2").Or.EqualTo("http/1.1").Or.Null);
-            Assert.AreEqual("SslStream", result.ProviderName);
+                Assert.IsNotNull(result.SecureStream);
+                Assert.That(result.TlsVersion, Is.EqualTo("1.2").Or.EqualTo("1.3"));
+                Assert.That(result.NegotiatedAlpn, Is.EqualTo("h2").Or.EqualTo("http/1.1").Or.Null);
+                Assert.AreEqual("SslStream", result.ProviderName);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
         [Explicit("Requires network access to a real HTTPS server")]
-        public async Task WrapAsync_CancellationRequested_ThrowsOperationCanceledException()
-        {
-            using var socket = new System.Net.Sockets.Socket(
-                System.Net.Sockets.SocketType.Stream, 
-                System.Net.Sockets.ProtocolType.Tcp);
+        public void WrapAsync_CancellationRequested_ThrowsOperationCanceledException()        {
+            Task.Run(async () =>
+            {
+                using var socket = new System.Net.Sockets.Socket(
+                    System.Net.Sockets.SocketType.Stream, 
+                    System.Net.Sockets.ProtocolType.Tcp);
             
-            await socket.ConnectAsync("httpbin.org", 443);
-            using var stream = new System.Net.Sockets.NetworkStream(socket, true);
+                socket.Connect("httpbin.org", 443);
+                using var stream = new System.Net.Sockets.NetworkStream(socket, true);
 
-            using var cts = new CancellationTokenSource();
-            cts.Cancel();
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
 
-            var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
+                var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
 
-            Assert.ThrowsAsync<TaskCanceledException>(async () =>
-                await provider.WrapAsync(stream, "httpbin.org", new[] { "h2" }, cts.Token));
+                AssertAsync.ThrowsAsync<TaskCanceledException>(async () =>
+                    await provider.WrapAsync(stream, "httpbin.org", new[] { "h2" }, cts.Token));
+            }).GetAwaiter().GetResult();
         }
     }
 }

@@ -143,10 +143,10 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void RequestBuilder_WithRelativeUrl_NoBaseUrl_ThrowsArgumentException()
+        public void RequestBuilder_WithRelativeUrl_NoBaseUrl_ThrowsInvalidOperationException()
         {
             using var client = new UHttpClient(new UHttpClientOptions());
-            Assert.Throws<ArgumentException>(() => client.Get("users").Build());
+            Assert.Throws<InvalidOperationException>(() => client.Get("users").Build());
         }
 
         [Test]
@@ -187,8 +187,12 @@ namespace TurboHTTP.Tests.Core
         public void RequestBuilder_WithJsonBody_SetsContentTypeAndBody()
         {
             using var client = new UHttpClient();
+            var payload = new System.Collections.Generic.Dictionary<string, object>
+            {
+                ["Name"] = "Test"
+            };
             var request = client.Post("http://example.com/")
-                .WithJsonBody(new { Name = "Test" })
+                .WithJsonBody(payload)
                 .Build();
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
@@ -199,6 +203,7 @@ namespace TurboHTTP.Tests.Core
         [Test]
         public void RequestBuilder_WithJsonBody_WithOptions_AcceptsJsonSerializerOptions()
         {
+#if TURBOHTTP_USE_SYSTEM_TEXT_JSON
             var options = new System.Text.Json.JsonSerializerOptions
             {
                 WriteIndented = false
@@ -212,6 +217,9 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
             Assert.IsNotNull(request.Body);
             Assert.IsTrue(request.Body.Length > 0);
+#else
+            Assert.Ignore("System.Text.Json is not enabled for this build target.");
+#endif
         }
 
         [Test]
@@ -306,42 +314,46 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public async Task SendAsync_TransportThrowsUHttpException_NotDoubleWrapped()
-        {
-            var expected = new UHttpException(new UHttpError(UHttpErrorType.NetworkError, "boom"));
-            var transport = new TrackingTransport
+        public void SendAsync_TransportThrowsUHttpException_NotDoubleWrapped()        {
+            Task.Run(async () =>
             {
-                OnSendAsync = (req, ctx, ct) => throw expected
-            };
+                var expected = new UHttpException(new UHttpError(UHttpErrorType.NetworkError, "boom"));
+                var transport = new TrackingTransport
+                {
+                    OnSendAsync = (req, ctx, ct) => throw expected
+                };
 
-            using var client = new UHttpClient(new UHttpClientOptions
-            {
-                Transport = transport,
-                DisposeTransport = true
-            });
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
 
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-            var ex = Assert.ThrowsAsync<UHttpException>(async () => await client.SendAsync(request));
-            Assert.AreSame(expected, ex);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await client.SendAsync(request));
+                Assert.AreSame(expected, ex);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public async Task SendAsync_TransportThrowsIOException_WrappedInUHttpException()
-        {
-            var transport = new TrackingTransport
+        public void SendAsync_TransportThrowsIOException_WrappedInUHttpException()        {
+            Task.Run(async () =>
             {
-                OnSendAsync = (req, ctx, ct) => throw new IOException("fail")
-            };
+                var transport = new TrackingTransport
+                {
+                    OnSendAsync = (req, ctx, ct) => throw new IOException("fail")
+                };
 
-            using var client = new UHttpClient(new UHttpClientOptions
-            {
-                Transport = transport,
-                DisposeTransport = true
-            });
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
 
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-            var ex = Assert.ThrowsAsync<UHttpException>(async () => await client.SendAsync(request));
-            Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await client.SendAsync(request));
+                Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -396,16 +408,18 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public async Task SendAsync_RelativeUri_ThrowsUHttpException()
-        {
-            var transport = new RawSocketTransport();
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("relative", UriKind.Relative));
-            var context = new RequestContext(request);
+        public void SendAsync_RelativeUri_ThrowsUHttpException()        {
+            Task.Run(async () =>
+            {
+                var transport = new RawSocketTransport();
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("relative", UriKind.Relative));
+                var context = new RequestContext(request);
 
-            var ex = Assert.ThrowsAsync<UHttpException>(async () =>
-                await transport.SendAsync(request, context, CancellationToken.None));
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await transport.SendAsync(request, context, CancellationToken.None));
 
-            Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
+                Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
+            }).GetAwaiter().GetResult();
         }
     }
 }

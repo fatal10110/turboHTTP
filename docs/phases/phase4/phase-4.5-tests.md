@@ -880,15 +880,11 @@ namespace TurboHTTP.Tests.Observability
             var transport = new MockTransport();
             var pipeline = new HttpPipeline(new[] { middleware }, transport);
 
-            await pipeline.ExecuteAsync(
-                new UHttpRequest(HttpMethod.GET, new Uri("https://api.example.com/a")),
-                new RequestContext(
-                    new UHttpRequest(HttpMethod.GET, new Uri("https://api.example.com/a"))));
+            var request1 = new UHttpRequest(HttpMethod.GET, new Uri("https://api.example.com/a"));
+            await pipeline.ExecuteAsync(request1, new RequestContext(request1));
 
-            await pipeline.ExecuteAsync(
-                new UHttpRequest(HttpMethod.GET, new Uri("https://other.com/b")),
-                new RequestContext(
-                    new UHttpRequest(HttpMethod.GET, new Uri("https://other.com/b"))));
+            var request2 = new UHttpRequest(HttpMethod.GET, new Uri("https://other.com/b"));
+            await pipeline.ExecuteAsync(request2, new RequestContext(request2));
 
             Assert.AreEqual(1, middleware.Metrics.RequestsByHost["api.example.com"]);
             Assert.AreEqual(1, middleware.Metrics.RequestsByHost["other.com"]);

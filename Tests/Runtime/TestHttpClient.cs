@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net.Security;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,6 +9,7 @@ using TurboHTTP.Core;
 using TurboHTTP.Transport;
 using TurboHTTP.Transport.Tcp;
 using UnityEngine;
+using Debug = UnityEngine.Debug;
 
 namespace TurboHTTP.Tests.Runtime
 {
