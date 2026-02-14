@@ -35,6 +35,16 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - `TcpConnectionPool` / `TlsStreamWrapper` — Per-host pooling, DNS/Connect timeouts, TLS handshake + ALPN
 - `Http11RequestSerializer` / `Http11ResponseParser` — HTTP/1.1 wire formatting and parsing
 
+**Phase 4 components (Middleware Pipeline):**
+- `HttpPipeline` — Delegate chain built once at `UHttpClient` construction, reused across requests. Empty middleware list = zero overhead.
+- `LoggingMiddleware` — Configurable request/response logging (None/Minimal/Standard/Detailed levels)
+- `DefaultHeadersMiddleware` — Adds headers without overwriting existing (optional override mode)
+- `TimeoutMiddleware` — Returns 408 response on timeout (not exception), enabling retry-on-timeout
+- `RetryMiddleware` / `RetryPolicy` — Exponential backoff, idempotency-aware, retries 5xx and retryable transport errors
+- `AuthMiddleware` / `IAuthTokenProvider` / `StaticTokenProvider` — Bearer/custom auth token injection
+- `MetricsMiddleware` / `HttpMetrics` — Thread-safe request metrics with Interlocked (32-bit IL2CPP safe)
+- `MockTransport` — Test transport with configurable responses
+
 ## Key Technical Decisions
 
 - **Transport:** Raw `System.Net.Sockets.Socket` with connection pooling (not UnityWebRequest)
@@ -52,6 +62,10 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - **TLS Strategy:** `SslProtocols.None` (OS-negotiated, Microsoft-recommended) with post-handshake TLS 1.2 minimum enforcement. Runtime probe for `SslClientAuthenticationOptions` overload (.NET 5+); falls back to 4-arg overload with dispose-on-cancel pattern if unavailable.
 - **Encoding:** `Encoding.GetEncoding(28591)` cached in static field with custom `Latin1Encoding` fallback for IL2CPP code stripping. `Encoding.Latin1` static property is .NET 5+ only.
 - **Error Model:** Transport throws exceptions (`UHttpException`). Client catches and wraps. HTTP 4xx/5xx are normal responses with body intact (not exceptions).
+- **Pipeline:** Delegate chain built once at `UHttpClient` construction. Empty middleware list = direct transport call (zero overhead). Request flow: M[0] → M[1] → ... → Transport. Response flow: Transport → ... → M[1] → M[0].
+- **Timeout Middleware:** Returns `UHttpResponse` with 408 status + `UHttpError` (does NOT throw). This allows `RetryMiddleware` to detect timeout responses when positioned before `TimeoutMiddleware`. User cancellation propagates as `OperationCanceledException` via `when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)` filter — user intent takes precedence over coincidental timeout.
+- **Retry Middleware:** Only retries idempotent methods by default (`HttpMethod.IsIdempotent()`). Two retry paths: response path (5xx, 408 timeout) returns last failed response when exhausted; exception path (`UHttpException` with `IsRetryable()`) re-throws when exhausted. Exponential backoff capped by `RetryPolicy.MaxDelay` (30s default) to prevent unbounded delay growth.
+- **Metrics Thread Safety:** `HttpMetrics` uses public fields for `Interlocked` compatibility. `AverageResponseTimeMs` stored as `long` bits via `BitConverter.DoubleToInt64Bits` for atomic read/write on 32-bit IL2CPP.
 
 ## Development Status
 
@@ -66,8 +80,14 @@ Implementation follows 14 phases documented in `docs/phases/`.
   - **Phase 3.4 (RawSocketTransport & Wiring):** COMPLETE
   - **Phase 3.5 (Tests & Integration):** COMPLETE — Added Core/HTTP1/Pool unit tests and manual integration harness.
 - **Phase 3B (HTTP/2 Protocol):** COMPLETE — Full HTTP/2 support with binary framing, HPACK compression, stream multiplexing, and flow control. R9 fixes: reusable frame header buffers, ArrayPool for payloads, MemoryStream for header block accumulation, MaxResponseBodySize limit. See `docs/implementation-journal/2026-02-phase3b-http2.md`.
-- **Phase 3C (BouncyCastle TLS Fallback):** PLANNED — Optional BouncyCastle TLS module for IL2CPP platforms where SslStream ALPN may fail. See `docs/phases/phase-03c-bouncy-castle-tls.md`.
-- **Phases 4–14:** Not started.
+- **Phase 3C (BouncyCastle TLS Fallback):** COMPLETE — Optional BouncyCastle TLS module for IL2CPP platforms where SslStream ALPN may fail. TLS abstraction layer (ITlsProvider, TlsProviderSelector), BouncyCastle source bundled under TurboHTTP.SecureProtocol namespace.
+- **Phase 4 (Pipeline Infrastructure):** COMPLETE — ASP.NET Core-style middleware pipeline. See `docs/implementation-journal/2026-02-phase4-pipeline.md`.
+  - **Phase 4.1 (Pipeline Executor):** COMPLETE — `HttpPipeline` delegate chain built once, integrated into `UHttpClient.SendAsync`.
+  - **Phase 4.2 (Core Middlewares):** COMPLETE — `LoggingMiddleware`, `DefaultHeadersMiddleware`, `TimeoutMiddleware` in Core assembly.
+  - **Phase 4.3 (Module Middlewares):** COMPLETE — `RetryMiddleware` (Retry), `AuthMiddleware` (Auth), `MetricsMiddleware` (Observability) in separate assemblies.
+  - **Phase 4.4 (MockTransport):** COMPLETE — `MockTransport` in Testing assembly with 3 constructor overloads.
+  - **Phase 4.5 (Tests):** COMPLETE — 8 test files covering pipeline, all middlewares, and integration.
+- **Phases 5–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
 
@@ -101,6 +121,9 @@ Tests use Unity Test Runner with NUnit. Test assemblies and key suites:
 - Core client/factory tests: `Tests/Runtime/Core/UHttpClientTests.cs`
 - TCP pool + transport behavior tests: `Tests/Runtime/Transport/TcpConnectionPoolTests.cs`, `Tests/Runtime/Transport/Http1/RawSocketTransportTests.cs`
 - Manual integration harness (Editor/Play Mode): `Tests/Runtime/TestHttpClient.cs`
+- Pipeline tests: `Tests/Runtime/Pipeline/HttpPipelineTests.cs`, `LoggingMiddlewareTests.cs`, `DefaultHeadersMiddlewareTests.cs`, `TimeoutMiddlewareTests.cs`
+- Module middleware tests: `Tests/Runtime/Retry/RetryMiddlewareTests.cs`, `Tests/Runtime/Auth/AuthMiddlewareTests.cs`, `Tests/Runtime/Observability/MetricsMiddlewareTests.cs`
+- Pipeline integration tests: `Tests/Runtime/Integration/PipelineIntegrationTests.cs`
 
 Both use `defineConstraints: ["UNITY_INCLUDE_TESTS"]` and `precompiledReferences: ["nunit.framework.dll"]`.
 

@@ -127,6 +127,11 @@ namespace TurboHTTP.Tests.Transport
                 var conn1 = lease1.Connection;
 
                 server.CloseAllClients(reset: true);
+
+                // Give the local socket state a moment to observe the server-side reset.
+                for (int i = 0; i < 25 && conn1.IsAlive; i++)
+                    await Task.Delay(20);
+
                 lease1.ReturnToPool();
                 lease1.Dispose();
 

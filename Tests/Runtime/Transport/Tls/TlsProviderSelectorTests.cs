@@ -40,6 +40,24 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 #endif
 
+#if UNITY_IOS || UNITY_ANDROID
+        [Test]
+        public void Auto_OnMobile_UsesBouncyCastleIfAlpnUnsupported()
+        {
+            var autoProvider = TlsProviderSelector.GetProvider(TlsBackend.Auto);
+            var sslProvider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
+
+            if (!sslProvider.IsAlpnSupported() && TlsProviderSelector.IsBouncyCastleAvailable())
+            {
+                Assert.AreEqual("BouncyCastle", autoProvider.ProviderName);
+            }
+            else
+            {
+                Assert.AreEqual("SslStream", autoProvider.ProviderName);
+            }
+        }
+#endif
+
         [Test]
         public void IsBouncyCastleAvailable_DoesNotThrow()
         {
@@ -103,6 +121,20 @@ namespace TurboHTTP.Tests.Transport.Tls
 
             var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
             Assert.IsTrue(provider.IsAlpnSupported(), "BouncyCastle should always support ALPN");
+        }
+
+        // 3C.11 compatibility aliases (method names from checklist)
+
+        [Test]
+        public void ForceBouncyCastle_ReturnsCorrectProvider()
+        {
+            ForceBouncyCastle_WhenAvailable_ReturnsCorrectProvider();
+        }
+
+        [Test]
+        public void ForceBouncyCastle_WhenNotAvailable_ThrowsException()
+        {
+            ForceBouncyCastle_WhenNotAvailable_ThrowsInvalidOperationException();
         }
     }
 }

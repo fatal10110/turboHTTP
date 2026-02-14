@@ -13,6 +13,7 @@ namespace TurboHTTP.Core
         private readonly UHttpClientOptions _options;
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
+        private readonly HttpPipeline _pipeline;
         private int _disposed; // 0 = not disposed, 1 = disposed (for Interlocked)
 
         /// <summary>
@@ -46,6 +47,8 @@ namespace TurboHTTP.Core
                 _transport = HttpTransportFactory.Default;
                 _ownsTransport = false;
             }
+
+            _pipeline = new HttpPipeline(_options.Middlewares, _transport);
         }
 
         public UHttpRequestBuilder Get(string url)
@@ -106,7 +109,7 @@ namespace TurboHTTP.Core
 
             try
             {
-                var response = await _transport.SendAsync(request, context, cancellationToken);
+                var response = await _pipeline.ExecuteAsync(request, context, cancellationToken);
 
                 context.RecordEvent("RequestComplete");
                 context.Stop();
