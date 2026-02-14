@@ -10,10 +10,13 @@ TurboHTTP is a commercial, closed-source HTTP client package for Unity (Asset St
 
 **Layered design:** Public API → Middleware Pipeline → Core Engine → Transport → Serialization
 
-**Module system (11 runtime assemblies + 1 editor):**
-- **TurboHTTP.Core** — Client API, request/response types, pipeline. `autoReferenced: true`.
+**Module system (13 runtime assemblies + 1 editor):**
+- **TurboHTTP.Core** — Client API, request/response types, pipeline infrastructure. `autoReferenced: true`. Zero external assembly references.
 - **TurboHTTP.Transport** — Raw TCP sockets, TLS (SslStream + ALPN), HTTP/1.1 serializer/parser, HTTP/2 framing/HPACK/multiplexing. `allowUnsafeCode: true`, `excludePlatforms: ["WebGL"]`, `noEngineReferences: true`.
-- **9 optional modules** (Retry, Cache, Auth, RateLimit, Observability, Files, Unity, Testing, Performance) — all `autoReferenced: false`, reference only Core.
+- **TurboHTTP.JSON** — JSON serialization facade (`JsonSerializer`, `IJsonSerializer`, `LiteJsonSerializer`), response extensions (`AsJson`, `TryAsJson`, `GetJsonAsync`, etc.), request builder extensions (`WithJsonBody`). References Core. `noEngineReferences: true`.
+- **TurboHTTP.Middleware** — General-purpose middlewares (`DefaultHeadersMiddleware`). References Core.
+- **TurboHTTP.Auth** — Auth middleware (`AuthMiddleware`, `IAuthTokenProvider`, `StaticTokenProvider`) and builder extensions (`WithBearerToken`). References Core.
+- **8 optional modules** (Retry, Cache, RateLimit, Observability, Files, Unity, Testing, Performance) — all `autoReferenced: false`, reference only Core.
 - **TurboHTTP.Complete** — Meta-assembly referencing all modules, `autoReferenced: true`.
 - **TurboHTTP.Editor** — HTTP Monitor window, Editor-only.
 
@@ -30,32 +33,31 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - `HttpTransportFactory` — Static factory (throws until Phase 3 registers transport)
 
 **Phase 3 components:**
-- `UHttpClient` / `UHttpRequestBuilder` — Fluent request building, default header merging, timeout resolution, and transport dispatch
+- `UHttpClient` / `UHttpRequestBuilder` — Fluent request building (raw HTTP primitives only: `WithHeader`, `WithHeaders`, `WithBody`, `WithTimeout`, `WithMetadata`). Module-specific builder methods are extension methods from their own assemblies (e.g., `WithJsonBody` from TurboHTTP.JSON, `WithBearerToken` from TurboHTTP.Auth).
 - `RawSocketTransport` — Default transport wiring pool, serializer, parser, and retry-on-stale
 - `TcpConnectionPool` / `TlsStreamWrapper` — Per-host pooling, DNS/Connect timeouts, TLS handshake + ALPN
 - `Http11RequestSerializer` / `Http11ResponseParser` — HTTP/1.1 wire formatting and parsing
 
 **Phase 4 components (Middleware Pipeline):**
 - `HttpPipeline` — Delegate chain built once at `UHttpClient` construction, reused across requests. Empty middleware list = zero overhead.
-- `LoggingMiddleware` — Configurable request/response logging (None/Minimal/Standard/Detailed levels)
-- `DefaultHeadersMiddleware` — Adds headers without overwriting existing (optional override mode)
-- `TimeoutMiddleware` — Returns 408 response on timeout (not exception), enabling retry-on-timeout
-- `RetryMiddleware` / `RetryPolicy` — Exponential backoff, idempotency-aware, retries 5xx and retryable transport errors
-- `AuthMiddleware` / `IAuthTokenProvider` / `StaticTokenProvider` — Bearer/custom auth token injection
-- `MetricsMiddleware` / `HttpMetrics` — Thread-safe request metrics with Interlocked (32-bit IL2CPP safe)
-- `MockTransport` — Test transport with configurable responses
+- `LoggingMiddleware` (Observability) — Configurable request/response logging (None/Minimal/Standard/Detailed levels)
+- `DefaultHeadersMiddleware` (Middleware) — Adds headers without overwriting existing (optional override mode)
+- `RetryMiddleware` / `RetryPolicy` (Retry) — Exponential backoff, idempotency-aware, retries 5xx and retryable transport errors
+- `AuthMiddleware` / `IAuthTokenProvider` / `StaticTokenProvider` (Auth) — Bearer/custom auth token injection
+- `MetricsMiddleware` / `HttpMetrics` (Observability) — Thread-safe request metrics with Interlocked (32-bit IL2CPP safe)
+- `MockTransport` (Testing) — Test transport with configurable responses
 
 ## Key Technical Decisions
 
 - **Transport:** Raw `System.Net.Sockets.Socket` with connection pooling (not UnityWebRequest)
 - **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation
-- **JSON:** `TurboHTTP.JSON.JsonSerializer` static facade with pluggable `IJsonSerializer` interface. Default: `LiteJsonSerializer` (AOT-safe). Optional: `System.Text.Json` via `TURBOHTTP_USE_SYSTEM_TEXT_JSON` define. Users can register Newtonsoft or custom serializers at startup.
+- **JSON:** `TurboHTTP.JSON` assembly (references Core) provides `JsonSerializer` static facade with pluggable `IJsonSerializer` interface, response extensions (`AsJson`, `GetJsonAsync`, etc.), and all request builder JSON extensions (`WithJsonBody(string)`, `WithJsonBody<T>`). Default: `LiteJsonSerializer` (AOT-safe). Optional: `System.Text.Json` via `TURBOHTTP_USE_SYSTEM_TEXT_JSON` define. Core has zero dependency on JSON — users add `TurboHTTP.JSON` only if needed.
 - **HTTP/2:** Native binary framing, HPACK compression, stream multiplexing, flow control
 - **Middleware:** ASP.NET Core-style pipeline pattern for request/response interception
 - **Namespaces:** Each module uses `TurboHTTP.<ModuleName>` (e.g., `TurboHTTP.Core`, `TurboHTTP.Transport`)
 - **Transport Factory:** `HttpTransportFactory` uses `Register(Func<IHttpTransport>)` pattern with `Lazy<T>` thread-safe initialization. Phase 3 registers `RawSocketTransport` via C# 9 `[ModuleInitializer]` in the Transport assembly — auto-runs when assembly loads, no Unity bootstrap needed. `RawSocketTransport.EnsureRegistered()` fallback for IL2CPP timing issues. This avoids Core → Transport circular dependency while keeping `TurboHTTP.Unity` optional.
 - **Headers:** `HttpHeaders` uses `Dictionary<string, List<string>>` for multi-value support (RFC 9110 Section 5.3, Set-Cookie per RFC 6265). All header names/values validated for CRLF injection during serialization.
-- **Immutability:** `UHttpRequest` defensively clones headers in constructor. `byte[]` body uses shared ownership (documented, not copied). Migration to `ReadOnlyMemory<byte>` deferred to Phase 10.
+- **Immutability:** `UHttpRequest` defensively clones headers in constructor. `byte[]` body uses shared ownership (documented, not copied). Migration to `ReadOnlyMemory<byte>` deferred to Phase 6.
 - **Thread Safety:** `RequestContext` uses lock-based synchronization for timeline and state access. Required for HTTP/2 async continuations.
 - **IHttpTransport:** Extends `IDisposable` for connection pool cleanup.
 - **Connection Lifecycle:** `ConnectionLease` (IDisposable **class**, not struct) wraps connection + semaphore to guarantee per-host permit is always released. Idempotent `Dispose()` prevents double semaphore release. Prevents deadlock on non-keepalive, exception, and cancellation paths.
@@ -63,9 +65,10 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - **Encoding:** `Encoding.GetEncoding(28591)` cached in static field with custom `Latin1Encoding` fallback for IL2CPP code stripping. `Encoding.Latin1` static property is .NET 5+ only.
 - **Error Model:** Transport throws exceptions (`UHttpException`). Client catches and wraps. HTTP 4xx/5xx are normal responses with body intact (not exceptions).
 - **Pipeline:** Delegate chain built once at `UHttpClient` construction. Empty middleware list = direct transport call (zero overhead). Request flow: M[0] → M[1] → ... → Transport. Response flow: Transport → ... → M[1] → M[0].
-- **Timeout Middleware:** Returns `UHttpResponse` with 408 status + `UHttpError` (does NOT throw). This allows `RetryMiddleware` to detect timeout responses when positioned before `TimeoutMiddleware`. User cancellation propagates as `OperationCanceledException` via `when (!cancellationToken.IsCancellationRequested && timeoutCts.IsCancellationRequested)` filter — user intent takes precedence over coincidental timeout.
-- **Retry Middleware:** Only retries idempotent methods by default (`HttpMethod.IsIdempotent()`). Two retry paths: response path (5xx, 408 timeout) returns last failed response when exhausted; exception path (`UHttpException` with `IsRetryable()`) re-throws when exhausted. Exponential backoff capped by `RetryPolicy.MaxDelay` (30s default) to prevent unbounded delay growth.
+- **Timeout Enforcement:** Handled exclusively by `RawSocketTransport` via `CancellationTokenSource.CancelAfter(request.Timeout)`. Timeout throws `UHttpException(UHttpErrorType.Timeout)` — same exception path as DNS/connect/network failures. No separate TimeoutMiddleware (removed: transport already handles it, and RetryMiddleware catches timeout exceptions via `IsRetryable()`).
+- **Retry Middleware:** Only retries idempotent methods by default (`HttpMethod.IsIdempotent()`). Two retry paths: response path (5xx) returns last failed response when exhausted; exception path (`UHttpException` with `IsRetryable()`, including `UHttpErrorType.Timeout`) re-throws when exhausted. Exponential backoff capped by `RetryPolicy.MaxDelay` (30s default) to prevent unbounded delay growth.
 - **Metrics Thread Safety:** `HttpMetrics` uses public fields for `Interlocked` compatibility. `AverageResponseTimeMs` stored as `long` bits via `BitConverter.DoubleToInt64Bits` for atomic read/write on 32-bit IL2CPP.
+- **Builder Extension Pattern:** `UHttpRequestBuilder` in Core exposes only raw HTTP primitives (`WithHeader`, `WithBody`, `WithTimeout`, `WithMetadata`). Convenience methods live in their respective module assemblies as C# extension methods on `UHttpRequestBuilder` — e.g., `WithJsonBody` in `TurboHTTP.JSON.JsonRequestBuilderExtensions`, `WithBearerToken` in `TurboHTTP.Auth.AuthBuilderExtensions`. Users get these methods by adding a `using` for the module namespace. This keeps Core content-format agnostic and prevents convenience-alias bloat.
 
 ## Development Status
 
@@ -83,11 +86,12 @@ Implementation follows 14 phases documented in `docs/phases/`.
 - **Phase 3C (BouncyCastle TLS Fallback):** COMPLETE — Optional BouncyCastle TLS module for IL2CPP platforms where SslStream ALPN may fail. TLS abstraction layer (ITlsProvider, TlsProviderSelector), BouncyCastle source bundled under TurboHTTP.SecureProtocol namespace.
 - **Phase 4 (Pipeline Infrastructure):** COMPLETE — ASP.NET Core-style middleware pipeline. See `docs/implementation-journal/2026-02-phase4-pipeline.md`.
   - **Phase 4.1 (Pipeline Executor):** COMPLETE — `HttpPipeline` delegate chain built once, integrated into `UHttpClient.SendAsync`.
-  - **Phase 4.2 (Core Middlewares):** COMPLETE — `LoggingMiddleware`, `DefaultHeadersMiddleware`, `TimeoutMiddleware` in Core assembly.
+  - **Phase 4.2 (Core Middlewares):** COMPLETE — Originally in Core; since extracted: `LoggingMiddleware` → Observability, `DefaultHeadersMiddleware` → Middleware, `TimeoutMiddleware` → deleted (transport handles timeouts).
   - **Phase 4.3 (Module Middlewares):** COMPLETE — `RetryMiddleware` (Retry), `AuthMiddleware` (Auth), `MetricsMiddleware` (Observability) in separate assemblies.
   - **Phase 4.4 (MockTransport):** COMPLETE — `MockTransport` in Testing assembly with 3 constructor overloads.
   - **Phase 4.5 (Tests):** COMPLETE — 8 test files covering pipeline, all middlewares, and integration.
 - **Phase 5 (Content Handlers):** COMPLETE — JSON extensions (AsJson, TryAsJson, GetJsonAsync, PostJsonAsync, PutJsonAsync, PatchJsonAsync, DeleteJsonAsync), FileDownloader with resume/checksum/progress, MultipartFormDataBuilder, ContentTypes constants, GetBodyAsString(Encoding) + GetContentEncoding(). See `docs/implementation-journal/2026-02-phase5-content-handlers.md`.
+- **Core Extraction (Post-M1):** COMPLETE — Extracted non-core concerns from TurboHTTP.Core: LoggingMiddleware → Observability, DefaultHeadersMiddleware → new Middleware assembly, JSON extensions → JSON assembly, TimeoutMiddleware deleted (redundant with transport timeout). Removed convenience aliases (`Accept`, `ContentType`, `WithBearerToken`) from `UHttpRequestBuilder` — builder now has only raw HTTP primitives. `WithBearerToken` moved to `TurboHTTP.Auth.AuthBuilderExtensions`. Core now has zero external assembly references. See `docs/implementation-journal/2026-02-core-extraction.md`.
 - **Phases 6–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
@@ -96,8 +100,8 @@ Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md`
 
 - **M0 (Spike):** Phases 1–3B — Foundation, core types, raw socket transport, HTTP/2
 - **M1 (Usable):** Phases 4–5 — Middleware pipeline, content handlers
-- **M2 (Feature-complete):** Phases 6–8 — Advanced middleware, Unity integration, editor tools
-- **M3 (Production):** Phases 9–13 — Testing, performance, platform validation, release
+- **M2 (Hardening gate):** Phases 6–9 — Performance, testing, documentation, platform validation
+- **M3 (Feature-complete + release):** Phases 10–13 — Advanced middleware, Unity integration, editor tools, release
 
 ## Critical Risk Areas
 
@@ -106,8 +110,8 @@ Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md`
 3. **HTTP/2 flow control** — Stream multiplexing, window updates, HPACK correctness require rigorous testing
 4. **Memory target (phased):**
    - Phase 3: ~50KB GC per request (correctness focus; measured via profiler snapshot in Phase 3.5). Dominated by byte-by-byte ReadAsync Task allocations (~29KB for headers alone).
-   - Phase 10: <500 bytes GC per request (zero-alloc patterns, ArrayPool, buffered I/O)
-   - Phase 3 uses StringBuilder + Encoding for serialization (~600–700 bytes) and byte-by-byte ReadLineAsync (~400 Task allocations per response, ~29KB). Both are documented GC hotspots for Phase 10 rewrite.
+   - Phase 6: <500 bytes GC per request (zero-alloc patterns, ArrayPool, buffered I/O)
+   - Phase 3 uses StringBuilder + Encoding for serialization (~600–700 bytes) and byte-by-byte ReadLineAsync (~400 Task allocations per response, ~29KB). Both are documented GC hotspots for Phase 6 rewrite.
 5. **Timeout enforcement is best-effort for some operations (.NET Standard 2.1):**
    - `Dns.GetHostAddressesAsync` has no CancellationToken — DNS hangs on mobile networks can consume the entire request timeout. Known limitation.
    - `Socket.ConnectAsync` has no CancellationToken — mitigated with `ct.Register(() => socket.Dispose())` pattern (abrupt close, may throw `ObjectDisposedException`).
@@ -122,7 +126,7 @@ Tests use Unity Test Runner with NUnit. Test assemblies and key suites:
 - Core client/factory tests: `Tests/Runtime/Core/UHttpClientTests.cs`
 - TCP pool + transport behavior tests: `Tests/Runtime/Transport/TcpConnectionPoolTests.cs`, `Tests/Runtime/Transport/Http1/RawSocketTransportTests.cs`
 - Manual integration harness (Editor/Play Mode): `Tests/Runtime/TestHttpClient.cs`
-- Pipeline tests: `Tests/Runtime/Pipeline/HttpPipelineTests.cs`, `LoggingMiddlewareTests.cs`, `DefaultHeadersMiddlewareTests.cs`, `TimeoutMiddlewareTests.cs`
+- Pipeline tests: `Tests/Runtime/Pipeline/HttpPipelineTests.cs`, `LoggingMiddlewareTests.cs`, `DefaultHeadersMiddlewareTests.cs`
 - Module middleware tests: `Tests/Runtime/Retry/RetryMiddlewareTests.cs`, `Tests/Runtime/Auth/AuthMiddlewareTests.cs`, `Tests/Runtime/Observability/MetricsMiddlewareTests.cs`
 - Pipeline integration tests: `Tests/Runtime/Integration/PipelineIntegrationTests.cs`
 

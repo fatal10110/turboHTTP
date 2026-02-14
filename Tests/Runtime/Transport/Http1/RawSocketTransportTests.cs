@@ -281,8 +281,9 @@ namespace TurboHTTP.Tests.Transport.Http1
             }).GetAwaiter().GetResult();
         }
 
+#if TURBOHTTP_INTEGRATION_TESTS
         [Test]
-        [Explicit("Relies on TCP reset timing; may be flaky in CI")]
+        [Category("Integration")]
         public void RawSocketTransport_FreshConnection_IOException_NoRetry()        {
             Task.Run(async () =>
             {
@@ -306,6 +307,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Assert.AreEqual(1, server.AcceptCount);
             }).GetAwaiter().GetResult();
         }
+#endif
 
         private static async Task WriteResponseAsync(NetworkStream stream, string response)
         {

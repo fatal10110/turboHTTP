@@ -42,8 +42,8 @@ namespace TurboHTTP.Tests.Transport.Tls
             IsAlpnSupported_ReturnsBoolean();
         }
 
+#if TURBOHTTP_INTEGRATION_TESTS
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_ValidServer_Succeeds()        {
             Task.Run(async () =>
@@ -57,7 +57,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access to expired.badssl.com")]
         [Category("Integration")]
         public void WrapAsync_ExpiredCert_ThrowsAuthenticationException()
         {
@@ -76,7 +75,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_WithAlpn_NegotiatesH2()        {
             Task.Run(async () =>
@@ -94,7 +92,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_WithAlpn_NegotiatesHttp11()        {
             Task.Run(async () =>
@@ -112,14 +109,12 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_RealServer_SucceedsWithTls12OrHigher()        {
             WrapAsync_ValidServer_Succeeds();
         }
 
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_CancellationRequested_ThrowsOperationCanceledException()        {
             Task.Run(async () =>
@@ -152,5 +147,6 @@ namespace TurboHTTP.Tests.Transport.Tls
             var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
             return await provider.WrapAsync(stream, tlsHost, alpn, ct);
         }
+#endif
     }
 }

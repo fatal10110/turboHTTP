@@ -1,13 +1,15 @@
-# Phase 6: Advanced Middleware
+# Phase 10: Advanced Middleware
 
-**Milestone:** M2 (v0.5 "feature-complete core")
-**Dependencies:** Phase 5 (Content Handlers)
+**Milestone:** M3 (v1.0 "feature-complete + release")
+**Dependencies:** Phase 9 (Platform Compatibility)
 **Estimated Complexity:** High
 **Critical:** Yes - Key differentiators
 
 ## Overview
 
 Implement advanced middleware that sets TurboHTTP apart: HTTP caching with ETag support and rate limiting with token bucket algorithm. These features are essential for production applications but rarely found in Unity HTTP clients.
+
+Detailed sub-phase breakdown: [Phase 10 Implementation Plan - Overview](phase10/overview.md)
 
 ## Goals
 
@@ -20,7 +22,7 @@ Implement advanced middleware that sets TurboHTTP apart: HTTP caching with ETag 
 
 ## Tasks
 
-### Task 6.1: Cache Entry Model
+### Task 10.1: Cache Entry Model
 
 **File:** `Runtime/Cache/CacheEntry.cs`
 
@@ -67,7 +69,7 @@ namespace TurboHTTP.Cache
 }
 ```
 
-### Task 6.2: Cache Storage Interface
+### Task 10.2: Cache Storage Interface
 
 **File:** `Runtime/Cache/ICacheStorage.cs`
 
@@ -115,7 +117,7 @@ namespace TurboHTTP.Cache
 }
 ```
 
-### Task 6.3: Memory Cache Storage
+### Task 10.3: Memory Cache Storage
 
 **File:** `Runtime/Cache/MemoryCacheStorage.cs`
 
@@ -227,7 +229,7 @@ namespace TurboHTTP.Cache
 }
 ```
 
-### Task 6.4: Cache Middleware
+### Task 10.4: Cache Middleware
 
 **File:** `Runtime/Cache/CacheMiddleware.cs`
 
@@ -471,7 +473,7 @@ namespace TurboHTTP.Cache
 }
 ```
 
-### Task 6.5: Rate Limit Configuration
+### Task 10.5: Rate Limit Configuration
 
 **File:** `Runtime/RateLimit/RateLimitConfig.cs`
 
@@ -512,7 +514,7 @@ namespace TurboHTTP.RateLimit
 }
 ```
 
-### Task 6.6: Token Bucket Rate Limiter
+### Task 10.6: Token Bucket Rate Limiter
 
 **File:** `Runtime/RateLimit/TokenBucket.cs`
 
@@ -621,7 +623,7 @@ namespace TurboHTTP.RateLimit
 }
 ```
 
-### Task 6.7: Rate Limit Middleware
+### Task 10.7: Rate Limit Middleware
 
 **File:** `Runtime/RateLimit/RateLimitMiddleware.cs`
 
@@ -832,12 +834,12 @@ namespace TurboHTTP.Tests.RateLimit
 
 ## Next Steps
 
-Once Phase 6 is complete and validated:
+Once Phase 10 is complete and validated:
 
-1. Move to [Phase 7: Unity Integration](phase-07-unity-integration.md)
+1. Move to [Phase 11: Unity Integration](phase-11-unity-integration.md)
 2. Implement Unity-specific content handlers (Texture2D, AudioClip)
 3. Add main thread synchronization
-4. M2 milestone progress
+4. M3 milestone progress
 
 ## Notes
 
@@ -850,15 +852,15 @@ Once Phase 6 is complete and validated:
 
 ## Review Notes
 
-> **TODO: Phase 6 Complexity** - This phase has high implementation complexity that may warrant splitting:
+> **TODO: Phase 10 Complexity** - This phase has high implementation complexity that may warrant splitting:
 > - **Cache storage backends**: Memory cache with LRU is straightforward, but disk-based caching (not yet specified) adds significant complexity (serialization, file locking, corruption handling, platform-specific paths)
 > - **Cache key generation**: Current implementation uses URL only; production needs to include `Vary` headers, authentication context, and potentially request body hashes for POST caching
 > - **Cache invalidation**: No explicit invalidation API or support for cache tags/groups
 >
 > Consider splitting into sub-phases:
-> 1. Phase 6a: Memory cache with basic ETag/Last-Modified support
-> 2. Phase 6b: Disk cache storage backend (defer to post-M2 if needed)
-> 3. Phase 6c: Advanced cache features (Vary headers, invalidation API, cache tags)
+> 1. Phase 10a: Memory cache with basic ETag/Last-Modified support
+> 2. Phase 10b: Disk cache storage backend (defer to post-M3 if needed)
+> 3. Phase 10c: Advanced cache features (Vary headers, invalidation API, cache tags)
 
 ## Deferred Items from Phase 2
 

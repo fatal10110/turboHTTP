@@ -1,7 +1,8 @@
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core;
 
-namespace TurboHTTP.Core
+namespace TurboHTTP.Middleware
 {
     /// <summary>
     /// Middleware that adds default headers to all requests.

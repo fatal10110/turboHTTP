@@ -1,8 +1,9 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core;
 
-namespace TurboHTTP.Core
+namespace TurboHTTP.Observability
 {
     /// <summary>
     /// Middleware that logs HTTP requests and responses.

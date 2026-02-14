@@ -126,7 +126,7 @@ namespace TurboHTTP.Files
         public void ApplyTo(UHttpRequestBuilder builder)
         {
             if (builder == null) throw new ArgumentNullException(nameof(builder));
-            builder.WithBody(Build()).ContentType(GetContentType());
+            builder.WithBody(Build()).WithHeader("Content-Type", GetContentType());
         }
 
         /// <summary>

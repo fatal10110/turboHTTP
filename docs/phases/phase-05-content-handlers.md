@@ -742,9 +742,9 @@ public class TestContentHandlers : MonoBehaviour
 
 Once Phase 5 is complete and validated:
 
-1. Move to [Phase 6: Advanced Middleware](phase-06-advanced-middleware.md)
-2. Implement cache middleware with ETag support
-3. Implement rate limiting middleware
+1. Move to [Phase 6: Performance & Hardening](phase-06-performance.md)
+2. Implement memory pooling and request queuing
+3. Add backpressure and concurrency control
 4. M1 milestone is reached
 
 ## Notes

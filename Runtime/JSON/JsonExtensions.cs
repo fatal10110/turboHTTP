@@ -2,13 +2,13 @@ using System;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using TurboHTTP.JSON;
+using TurboHTTP.Core;
 
-namespace TurboHTTP.Core
+namespace TurboHTTP.JSON
 {
     /// <summary>
     /// Extension methods for JSON serialization/deserialization on responses and client.
-    /// Uses the registered <see cref="TurboHTTP.JSON.JsonSerializer"/> (LiteJson by default).
+    /// Uses the registered <see cref="JsonSerializer"/> (LiteJson by default).
     /// </summary>
     public static class JsonExtensions
     {
@@ -28,7 +28,7 @@ namespace TurboHTTP.Core
                 return default;
 
             var json = Encoding.UTF8.GetString(response.Body);
-            return TurboHTTP.JSON.JsonSerializer.Deserialize<T>(json);
+            return JsonSerializer.Deserialize<T>(json);
         }
 
         /// <summary>
@@ -82,7 +82,7 @@ namespace TurboHTTP.Core
 
             var response = await client
                 .Get(url)
-                .Accept(ContentTypes.Json)
+                .WithHeader("Accept", ContentTypes.Json)
                 .SendAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -105,7 +105,7 @@ namespace TurboHTTP.Core
             var response = await client
                 .Post(url)
                 .WithJsonBody(data)
-                .Accept(ContentTypes.Json)
+                .WithHeader("Accept", ContentTypes.Json)
                 .SendAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -128,7 +128,7 @@ namespace TurboHTTP.Core
             var response = await client
                 .Put(url)
                 .WithJsonBody(data)
-                .Accept(ContentTypes.Json)
+                .WithHeader("Accept", ContentTypes.Json)
                 .SendAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -151,7 +151,7 @@ namespace TurboHTTP.Core
             var response = await client
                 .Patch(url)
                 .WithJsonBody(data)
-                .Accept(ContentTypes.Json)
+                .WithHeader("Accept", ContentTypes.Json)
                 .SendAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -172,7 +172,7 @@ namespace TurboHTTP.Core
 
             var response = await client
                 .Delete(url)
-                .Accept(ContentTypes.Json)
+                .WithHeader("Accept", ContentTypes.Json)
                 .SendAsync(cancellationToken)
                 .ConfigureAwait(false);
 

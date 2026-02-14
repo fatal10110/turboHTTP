@@ -56,8 +56,8 @@ namespace TurboHTTP.Tests.Transport.Tls
                 "BouncyCastle provider should be cached via Lazy<T>");
         }
 
+#if TURBOHTTP_INTEGRATION_TESTS
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_ValidServer_Succeeds()        {
             Task.Run(async () =>
@@ -77,7 +77,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_WithAlpn_NegotiatesH2()        {
             Task.Run(async () =>
@@ -98,7 +97,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access to expired.badssl.com")]
         [Category("Integration")]
         public void WrapAsync_ExpiredCert_ThrowsFatalAlert()
         {
@@ -124,7 +122,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access to a wildcard certificate host")]
         [Category("Integration")]
         public void WrapAsync_WildcardCert_Succeeds()        {
             Task.Run(async () =>
@@ -143,14 +140,12 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_RealServer_SucceedsWithH2Alpn()        {
             WrapAsync_WithAlpn_NegotiatesH2();
         }
 
         [Test]
-        [Explicit("Requires network access to a real HTTPS server")]
         [Category("Integration")]
         public void WrapAsync_SniSent_ServerAcceptsConnection()        {
             Task.Run(async () =>
@@ -168,7 +163,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Requires network access - tests certificate hostname mismatch")]
         [Category("Integration")]
         public void WrapAsync_HostnameMismatch_ThrowsAuthenticationException()
         {
@@ -185,6 +179,7 @@ namespace TurboHTTP.Tests.Transport.Tls
                 await WrapAsync("www.google.com", "example.com", new[] { "h2" }, CancellationToken.None);
             });
         }
+#endif
 
         [Test]
         public void WrapAsync_PreCancelledToken_ThrowsOperationCancelledException()        {
@@ -239,6 +234,7 @@ namespace TurboHTTP.Tests.Transport.Tls
                 await provider.WrapAsync(memoryStream, null, new[] { "h2" }, CancellationToken.None));
         }
 
+#if TURBOHTTP_INTEGRATION_TESTS
         private async Task<TlsResult> WrapAsync(
             string tcpHost,
             string tlsHost,
@@ -252,5 +248,6 @@ namespace TurboHTTP.Tests.Transport.Tls
             var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
             return await provider.WrapAsync(stream, tlsHost, alpn, ct);
         }
+#endif
     }
 }

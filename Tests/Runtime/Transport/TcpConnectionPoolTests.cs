@@ -511,25 +511,27 @@ namespace TurboHTTP.Tests.Transport
             }).GetAwaiter().GetResult();
         }
 
+#if TURBOHTTP_INTEGRATION_TESTS
         [Test]
-        [Explicit("Requires local TLS test server and certificate")]
+        [Category("Integration")]
         public void PooledConnection_TlsVersion_SetAfterTlsHandshake()
         {
             Assert.Inconclusive("Requires TLS server setup.");
         }
 
         [Test]
-        [Explicit("Requires local TLS test server and certificate")]
+        [Category("Integration")]
         public void ITlsProvider_WrapAsync_ReturnsTlsResult_WithNegotiatedProtocol()
         {
             Assert.Inconclusive("Requires TLS server setup.");
         }
 
         [Test]
-        [Explicit("Requires TLS 1.0/1.1 test server")]
+        [Category("Integration")]
         public void ITlsProvider_TlsBelowMinimum_ThrowsAuthenticationException()
         {
             Assert.Inconclusive("Requires TLS server setup.");
         }
+#endif
     }
 }

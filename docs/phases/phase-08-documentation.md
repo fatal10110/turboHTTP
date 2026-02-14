@@ -1,7 +1,7 @@
-# Phase 12: Documentation & Samples
+# Phase 8: Documentation & Samples
 
-**Milestone:** M3 (v1.0 "production")
-**Dependencies:** Phase 11 (Platform Compatibility)
+**Milestone:** M2 (v0.5 "hardening gate")
+**Dependencies:** Phase 7 (Testing Infrastructure)
 **Estimated Complexity:** Medium
 **Critical:** Yes - User experience
 
@@ -22,7 +22,7 @@ Create comprehensive documentation and sample projects that enable users to quic
 
 ## Tasks
 
-### Task 12.1: Quick Start Guide
+### Task 8.1: Quick Start Guide
 
 **File:** `Documentation~/QuickStart.md`
 
@@ -163,7 +163,7 @@ catch (UHttpException ex)
 - [Platform Notes](PlatformNotes.md) - Platform-specific information
 ```
 
-### Task 12.2: API Reference
+### Task 8.2: API Reference
 
 **File:** `Documentation~/APIReference.md`
 
@@ -460,7 +460,7 @@ var transport = new RecordReplayTransport(
 ```
 ```
 
-### Task 12.3: Create Sample 1 - Basic Usage
+### Task 8.3: Create Sample 1 - Basic Usage
 
 **File:** `Samples~/01-BasicUsage/BasicUsageExample.cs`
 
@@ -584,7 +584,7 @@ namespace TurboHTTP.Samples.BasicUsage
 }
 ```
 
-### Task 12.4: Create Sample 2 - JSON API
+### Task 8.4: Create Sample 2 - JSON API
 
 **File:** `Samples~/02-JsonApi/JsonApiExample.cs`
 
@@ -713,7 +713,7 @@ namespace TurboHTTP.Samples.JsonApi
 }
 ```
 
-### Task 12.5: Create Sample 3 - File Download
+### Task 8.5: Create Sample 3 - File Download
 
 **File:** `Samples~/03-FileDownload/FileDownloadExample.cs`
 
@@ -778,13 +778,13 @@ namespace TurboHTTP.Samples.FileDownload
 }
 ```
 
-### Task 12.6: Create Samples 4 & 5
+### Task 8.6: Create Samples 4 & 5
 
 Create similar comprehensive samples for:
 - **Sample 4:** Authentication (token management, refresh logic)
 - **Sample 5:** Advanced Features (caching, retry, rate limiting, metrics)
 
-### Task 12.7: Troubleshooting Guide
+### Task 8.7: Troubleshooting Guide
 
 **File:** `Documentation~/Troubleshooting.md`
 
@@ -907,12 +907,12 @@ Common issues and solutions for TurboHTTP.
 
 ## Next Steps
 
-Once Phase 12 is complete and validated:
+Once Phase 8 is complete and validated:
 
-1. Move to [Phase 13: CI/CD & Release](phase-13-release.md)
-2. Set up CI/CD pipeline
-3. Prepare Asset Store submission
-4. M3 milestone complete
+1. Move to [Phase 9: Platform Compatibility](phase-09-platform-compat.md)
+2. Test all target platforms and IL2CPP builds
+3. Document platform-specific limitations
+4. M2 milestone complete
 
 ## Notes
 

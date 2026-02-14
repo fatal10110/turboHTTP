@@ -4,7 +4,9 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TurboHTTP.Auth;
 using TurboHTTP.Core;
+using TurboHTTP.JSON;
 using TurboHTTP.Transport;
 
 namespace TurboHTTP.Tests.Core
@@ -200,10 +202,10 @@ namespace TurboHTTP.Tests.Core
             Assert.IsTrue(request.Body.Length > 0);
         }
 
+#if TURBOHTTP_USE_SYSTEM_TEXT_JSON
         [Test]
         public void RequestBuilder_WithJsonBody_WithOptions_AcceptsJsonSerializerOptions()
         {
-#if TURBOHTTP_USE_SYSTEM_TEXT_JSON
             var options = new System.Text.Json.JsonSerializerOptions
             {
                 WriteIndented = false
@@ -217,10 +219,8 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
             Assert.IsNotNull(request.Body);
             Assert.IsTrue(request.Body.Length > 0);
-#else
-            Assert.Ignore("System.Text.Json is not enabled for this build target.");
-#endif
         }
+#endif
 
         [Test]
         public void RequestBuilder_WithTimeout_OverridesDefault()

@@ -1,7 +1,7 @@
 # Phase 13: CI/CD & Release
 
 **Milestone:** M3 (v1.0 "production")
-**Dependencies:** Phase 12 (Documentation & Samples)
+**Dependencies:** Phase 12 (Editor Tooling)
 **Estimated Complexity:** Medium
 **Critical:** Yes - Release preparation
 

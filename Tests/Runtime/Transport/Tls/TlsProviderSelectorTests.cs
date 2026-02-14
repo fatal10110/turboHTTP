@@ -70,10 +70,11 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void ForceBouncyCastle_WhenNotAvailable_ThrowsInvalidOperationException()
         {
-            // This test is conditional on BouncyCastle NOT being available
             if (TlsProviderSelector.IsBouncyCastleAvailable())
             {
-                Assert.Ignore("BouncyCastle is available, skipping unavailable test");
+                // BouncyCastle is bundled; verify it returns a provider instead of throwing
+                var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
+                Assert.IsNotNull(provider);
                 return;
             }
 
@@ -84,10 +85,11 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void ForceBouncyCastle_WhenAvailable_ReturnsCorrectProvider()
         {
-            // This test is conditional on BouncyCastle being available
             if (!TlsProviderSelector.IsBouncyCastleAvailable())
             {
-                Assert.Ignore("BouncyCastle is not available, skipping provider test");
+                // BouncyCastle not available; verify it throws
+                Assert.Throws<InvalidOperationException>(() =>
+                    TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle));
                 return;
             }
 
@@ -98,10 +100,11 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void ForceBouncyCastle_WhenAvailable_CachesInstance()
         {
-            // This test verifies caching behavior
             if (!TlsProviderSelector.IsBouncyCastleAvailable())
             {
-                Assert.Ignore("BouncyCastle is not available, skipping caching test");
+                // BouncyCastle not available; verify it throws
+                Assert.Throws<InvalidOperationException>(() =>
+                    TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle));
                 return;
             }
 
@@ -115,7 +118,9 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             if (!TlsProviderSelector.IsBouncyCastleAvailable())
             {
-                Assert.Ignore("BouncyCastle is not available");
+                // BouncyCastle not available; verify it throws
+                Assert.Throws<InvalidOperationException>(() =>
+                    TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle));
                 return;
             }
 

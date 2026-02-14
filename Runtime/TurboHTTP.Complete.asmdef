@@ -13,7 +13,8 @@
     "TurboHTTP.Unity",
     "TurboHTTP.Testing",
     "TurboHTTP.Performance",
-    "TurboHTTP.JSON"
+    "TurboHTTP.JSON",
+    "TurboHTTP.Middleware"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

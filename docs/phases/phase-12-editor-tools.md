@@ -1,13 +1,15 @@
-# Phase 8: Editor Tooling
+# Phase 12: Editor Tooling
 
-**Milestone:** M2 (v0.5 "feature-complete core")
-**Dependencies:** Phase 7 (Unity Integration)
+**Milestone:** M3 (v1.0 "feature-complete + release")
+**Dependencies:** Phase 11 (Unity Integration)
 **Estimated Complexity:** Medium
 **Critical:** High - Major differentiator
 
 ## Overview
 
 Implement the HTTP Monitor window - a key differentiator that allows developers to inspect all HTTP traffic in real-time within the Unity Editor. This tool dramatically improves debugging and development experience.
+
+Detailed sub-phase breakdown: [Phase 12 Implementation Plan - Overview](phase12/overview.md)
 
 ## Goals
 
@@ -22,7 +24,7 @@ Implement the HTTP Monitor window - a key differentiator that allows developers 
 
 ## Tasks
 
-### Task 8.1: Monitor Data Model
+### Task 12.1: Monitor Data Model
 
 **File:** `Runtime/Observability/HttpMonitorEvent.cs`
 
@@ -81,7 +83,7 @@ namespace TurboHTTP.Observability
 }
 ```
 
-### Task 8.2: Monitor Collector Middleware
+### Task 12.2: Monitor Collector Middleware
 
 **File:** `Runtime/Observability/MonitorMiddleware.cs`
 
@@ -195,7 +197,7 @@ namespace TurboHTTP.Observability
 }
 ```
 
-### Task 8.3: HTTP Monitor Window
+### Task 12.3: HTTP Monitor Window
 
 **File:** `Editor/Monitor/HttpMonitorWindow.cs`
 
@@ -553,7 +555,7 @@ namespace TurboHTTP.Editor
 }
 ```
 
-### Task 8.4: Auto-Enable Monitor in Editor
+### Task 12.4: Auto-Enable Monitor in Editor
 
 **File:** `Editor/Settings/TurboHttpSettings.cs`
 
@@ -653,13 +655,12 @@ namespace TurboHTTP.Editor
 
 ## Next Steps
 
-Once Phase 8 is complete and validated:
+Once Phase 12 is complete and validated:
 
-1. Move to [Phase 9: Testing Infrastructure](phase-09-testing.md)
-2. Implement unit tests for all modules
-3. Create integration tests
-4. Implement record/replay mode
-5. M2 milestone is reached
+1. Move to [Phase 13: CI/CD & Release](phase-13-release.md)
+2. Set up CI/CD pipeline
+3. Prepare Asset Store submission
+4. M3 milestone near completion
 
 ## Notes
 

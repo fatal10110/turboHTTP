@@ -1,3 +1,4 @@
+#if TURBOHTTP_INTEGRATION_TESTS
 using System.Diagnostics;
 using System.Net;
 using System.Threading.Tasks;
@@ -11,7 +12,6 @@ namespace TurboHTTP.Tests.Transport.Tls
     public class TlsPerformanceBenchmarkTests
     {
         [Test]
-        [Explicit("Manual benchmark: requires network access")]
         [Category("Performance")]
         public void Benchmark_SslStream_HandshakeTime()        {
             Task.Run(async () =>
@@ -22,7 +22,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        [Explicit("Manual benchmark: requires network access and BouncyCastle module")]
         [Category("Performance")]
         public void Benchmark_BouncyCastle_HandshakeTime()        {
             if (!TlsProviderSelector.IsBouncyCastleAvailable())
@@ -57,3 +56,4 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
     }
 }
+#endif

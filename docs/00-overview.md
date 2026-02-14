@@ -160,24 +160,21 @@ The implementation is organized into 14 phases, progressing from foundation to p
 - **[Phase 4](phases/phase-04-pipeline.md):** Pipeline Infrastructure
 - **[Phase 5](phases/phase-05-content-handlers.md):** Content Handlers
 
-### Advanced Middleware (Phases 6-7)
+### Hardening Gate (Phases 6-9)
 
-- **[Phase 6](phases/phase-06-advanced-middleware.md):** Advanced Middleware
-- **[Phase 7](phases/phase-07-unity-integration.md):** Unity Integration
+- **[Phase 6](phases/phase-06-performance.md):** Performance & Hardening
+- **[Phase 7](phases/phase-07-testing.md):** Testing Infrastructure
+- **[Phase 8](phases/phase-08-documentation.md):** Documentation & Samples
+- **[Phase 9](phases/phase-09-platform-compat.md):** Platform Compatibility
 
-### Tools & Testing (Phases 8-9)
+### Feature Expansion (Phases 10-12)
 
-- **[Phase 8](phases/phase-08-editor-tools.md):** Editor Tooling
-- **[Phase 9](phases/phase-09-testing.md):** Testing Infrastructure
+- **[Phase 10](phases/phase-10-advanced-middleware.md):** Advanced Middleware
+- **[Phase 11](phases/phase-11-unity-integration.md):** Unity Integration
+- **[Phase 12](phases/phase-12-editor-tools.md):** Editor Tooling
 
-### Production Ready (Phases 10-11)
+### Release (Phase 13)
 
-- **[Phase 10](phases/phase-10-performance.md):** Performance & Hardening
-- **[Phase 11](phases/phase-11-platform-compat.md):** Platform Compatibility
-
-### Release (Phases 12-13)
-
-- **[Phase 12](phases/phase-12-documentation.md):** Documentation & Samples
 - **[Phase 13](phases/phase-13-release.md):** CI/CD & Release
 
 ### Future (Phase 14)
@@ -194,13 +191,13 @@ Core types, raw TCP socket transport, HTTP/1.1 serializer/parser, TLS via SslStr
 
 Middleware pipeline, retry + logging + metrics, JSON helper, file download
 
-### M2 — v0.5 "feature-complete core" (Phases 6-8)
+### M2 — v0.5 "hardening gate" (Phases 6-9)
 
-Cache middleware, trace timeline, editor monitor window, upload support
+Performance optimization, testing infrastructure, documentation, platform validation
 
-### M3 — v1.0 "production" (Phases 9-13)
+### M3 — v1.0 "feature-complete + release" (Phases 10-13)
 
-Hardening, testing, record/replay, documentation, platform validation, Asset Store release
+Advanced middleware, Unity integration, editor tooling, CI/CD and Asset Store release
 
 ### M4 — v1.x "differentiators" (Phase 14)
 

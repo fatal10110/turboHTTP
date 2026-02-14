@@ -1,9 +1,7 @@
 {
   "name": "TurboHTTP.Core",
   "rootNamespace": "TurboHTTP.Core",
-  "references": [
-    "TurboHTTP.JSON"
-  ],
+  "references": [],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

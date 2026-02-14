@@ -1,13 +1,15 @@
-# Phase 11: Platform Compatibility
+# Phase 9: Platform Compatibility
 
-**Milestone:** M3 (v1.0 "production")
-**Dependencies:** Phase 10 (Performance & Hardening)
+**Milestone:** M2 (v0.5 "hardening gate")
+**Dependencies:** Phase 8 (Documentation & Samples)
 **Estimated Complexity:** Medium
 **Critical:** Yes - Platform support validation
 
 ## Overview
 
 Validate TurboHTTP works correctly on all target platforms: Editor, Standalone (Windows/Mac/Linux), iOS, and Android. Since TurboHTTP uses raw TCP sockets and `SslStream` for TLS (rather than UnityWebRequest), this phase is critical — the transport layer must be validated against platform-specific socket and TLS behavior, especially under IL2CPP. Key areas: `SslStream` with ALPN for HTTP/2 negotiation, certificate validation, socket connection pooling, and platform threading models.
+
+Detailed sub-phase breakdown: [Phase 9 Implementation Plan - Overview](phase9/overview.md)
 
 ## Goals
 
@@ -23,7 +25,7 @@ Validate TurboHTTP works correctly on all target platforms: Editor, Standalone (
 
 ## Tasks
 
-### Task 11.1: Platform Detection Utility
+### Task 9.1: Platform Detection Utility
 
 **File:** `Runtime/Core/PlatformInfo.cs`
 
@@ -102,7 +104,7 @@ namespace TurboHTTP.Core
 }
 ```
 
-### Task 11.2: Platform-Specific Configuration
+### Task 9.2: Platform-Specific Configuration
 
 **File:** `Runtime/Core/PlatformConfig.cs`
 
@@ -176,7 +178,7 @@ namespace TurboHTTP.Core
 }
 ```
 
-### Task 11.3: IL2CPP Compatibility Check
+### Task 9.3: IL2CPP Compatibility Check
 
 **File:** `Runtime/Core/IL2CPPCompatibility.cs`
 
@@ -299,7 +301,7 @@ namespace TurboHTTP.Core
 }
 ```
 
-### Task 11.4: Platform Test Suite
+### Task 9.4: Platform Test Suite
 
 **File:** `Tests/Runtime/Platform/PlatformTests.cs`
 
@@ -410,7 +412,7 @@ namespace TurboHTTP.Tests.Platform
 }
 ```
 
-### Task 11.5: Platform-Specific Documentation
+### Task 9.5: Platform-Specific Documentation
 
 **File:** `Documentation~/PlatformNotes.md`
 
@@ -617,12 +619,12 @@ var client = new UHttpClient(options);
 
 ## Next Steps
 
-Once Phase 11 is complete and validated:
+Once Phase 9 is complete and validated:
 
-1. Move to [Phase 12: Documentation & Samples](phase-12-documentation.md)
-2. Write comprehensive documentation
-3. Create sample projects
-4. M3 milestone near completion
+1. Move to [Phase 10: Advanced Middleware](phase-10-advanced-middleware.md)
+2. Implement cache middleware with ETag support
+3. Implement rate limiting middleware
+4. Begin M3 feature-complete phase
 
 ## Notes
 

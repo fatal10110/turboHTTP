@@ -1,13 +1,15 @@
-# Phase 7: Unity Integration
+# Phase 11: Unity Integration
 
-**Milestone:** M2 (v0.5 "feature-complete core")
-**Dependencies:** Phase 6 (Advanced Middleware)
+**Milestone:** M3 (v1.0 "feature-complete + release")
+**Dependencies:** Phase 10 (Advanced Middleware)
 **Estimated Complexity:** Medium
 **Critical:** Yes - Unity-specific features
 
 ## Overview
 
 Implement Unity-specific integrations that make TurboHTTP feel native to Unity: Texture2D and AudioClip content handlers, main thread synchronization for Unity API calls, and Unity-friendly helper methods.
+
+Detailed sub-phase breakdown: [Phase 11 Implementation Plan - Overview](phase11/overview.md)
 
 ## Goals
 
@@ -21,7 +23,7 @@ Implement Unity-specific integrations that make TurboHTTP feel native to Unity: 
 
 ## Tasks
 
-### Task 7.1: Main Thread Dispatcher
+### Task 11.1: Main Thread Dispatcher
 
 **File:** `Runtime/Unity/MainThreadDispatcher.cs`
 
@@ -150,7 +152,7 @@ namespace TurboHTTP.Unity
 }
 ```
 
-### Task 7.2: Texture2D Handler
+### Task 11.2: Texture2D Handler
 
 **File:** `Runtime/Unity/Texture2DHandler.cs`
 
@@ -270,7 +272,7 @@ var texture = response.AsTexture2D(new TextureOptions
 });
 ```
 
-### Task 7.3: AudioClip Handler
+### Task 11.3: AudioClip Handler
 
 **File:** `Runtime/Unity/AudioClipHandler.cs`
 
@@ -449,7 +451,7 @@ audioSource.clip = audioClip;
 audioSource.Play();
 ```
 
-### Task 7.4: Unity Helper Extensions
+### Task 11.4: Unity Helper Extensions
 
 **File:** `Runtime/Unity/UnityExtensions.cs`
 
@@ -526,7 +528,7 @@ namespace TurboHTTP.Unity
 }
 ```
 
-### Task 7.5: Coroutine Wrapper
+### Task 11.5: Coroutine Wrapper
 
 **File:** `Runtime/Unity/CoroutineWrapper.cs`
 
@@ -694,12 +696,12 @@ public class TestUnityIntegration : MonoBehaviour
 
 ## Next Steps
 
-Once Phase 7 is complete and validated:
+Once Phase 11 is complete and validated:
 
-1. Move to [Phase 8: Editor Tooling](phase-08-editor-tools.md)
+1. Move to [Phase 12: Editor Tooling](phase-12-editor-tools.md)
 2. Implement HTTP Monitor window
 3. Add request/response inspection UI
-4. M2 milestone near completion
+4. M3 milestone near completion
 
 ## Notes
 

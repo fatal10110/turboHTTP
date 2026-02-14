@@ -21,16 +21,16 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 4. **[Pipeline Infrastructure](phases/phase-04-pipeline.md)** - Middleware system, basic middlewares
 5. **[Content Handlers](phases/phase-05-content-handlers.md)** - JSON, file downloads
 
-#### Advanced Features (M2 Feature-Complete)
-6. **[Advanced Middleware](phases/phase-06-advanced-middleware.md)** - Caching, rate limiting
-7. **[Unity Integration](phases/phase-07-unity-integration.md)** - Texture2D, AudioClip, main thread sync
-8. **[Editor Tooling](phases/phase-08-editor-tools.md)** - HTTP Monitor window
+#### Hardening (M2 Gate)
+6. **[Performance & Hardening](phases/phase-06-performance.md)** - Memory pooling, concurrency
+7. **[Testing Infrastructure](phases/phase-07-testing.md)** - Unit/integration tests, record/replay
+8. **[Documentation & Samples](phases/phase-08-documentation.md)** - QuickStart, API docs, samples
+9. **[Platform Compatibility](phases/phase-09-platform-compat.md)** - iOS/Android testing, IL2CPP
 
-#### Production Ready (M3 v1.0)
-9. **[Testing Infrastructure](phases/phase-09-testing.md)** - Unit/integration tests, record/replay
-10. **[Performance & Hardening](phases/phase-10-performance.md)** - Memory pooling, concurrency
-11. **[Platform Compatibility](phases/phase-11-platform-compat.md)** - iOS/Android testing, IL2CPP
-12. **[Documentation & Samples](phases/phase-12-documentation.md)** - QuickStart, API docs, samples
+#### Feature Complete (M3)
+10. **[Advanced Middleware](phases/phase-10-advanced-middleware.md)** - Caching, rate limiting
+11. **[Unity Integration](phases/phase-11-unity-integration.md)** - Texture2D, AudioClip, main thread sync
+12. **[Editor Tooling](phases/phase-12-editor-tools.md)** - HTTP Monitor window
 13. **[CI/CD & Release](phases/phase-13-release.md)** - Asset Store submission
 
 #### Future (M4 v1.x)

@@ -382,8 +382,8 @@ namespace TurboHTTP.Tests.Transport
             AssertAsync.ThrowsAsync<IOException>(async () => await ParseAsync(response));
         }
 
+#if TURBOHTTP_INTEGRATION_TESTS
         [Test]
-        [Explicit("Allocates >100MB to trigger MaxResponseBodySize")]
         public void Parse_ReadToEnd_ExceedsMaxBodySize_ThrowsIOException()
         {
             var header = "HTTP/1.1 200 OK\r\n\r\n";
@@ -391,6 +391,7 @@ namespace TurboHTTP.Tests.Transport
             var response = header + body;
             AssertAsync.ThrowsAsync<IOException>(async () => await ParseAsync(response));
         }
+#endif
 
         [Test]
         public void Parse_MultipleSetCookieHeaders_AllPreservedViaAdd()        {

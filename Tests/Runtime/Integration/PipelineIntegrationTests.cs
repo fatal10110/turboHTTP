@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Auth;
 using TurboHTTP.Core;
+using TurboHTTP.Middleware;
 using TurboHTTP.Observability;
 using TurboHTTP.Retry;
 using TurboHTTP.Testing;
@@ -75,20 +76,23 @@ namespace TurboHTTP.Tests.Integration
         }
 
         [Test]
-        public void RetryWrapsTimeout_RetriesOnPerAttemptTimeout()        {
+        public void RetryOnTimeoutException_RetriesWhenTransportTimesOut()        {
             Task.Run(async () =>
             {
                 int callCount = 0;
-                var transport = new MockTransport(async (req, ctx, ct) =>
+                // Simulate transport throwing UHttpException(Timeout) on first attempt,
+                // same as RawSocketTransport does when request.Timeout fires.
+                var transport = new MockTransport((req, ctx, ct) =>
                 {
                     callCount++;
                     if (callCount <= 1)
                     {
-                        // First attempt: exceed the per-request timeout
-                        await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.Timeout,
+                            "Request timed out after 0.05s"));
                     }
-                    return new UHttpResponse(
-                        HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req);
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req));
                 });
 
                 var retryPolicy = new RetryPolicy
@@ -97,19 +101,15 @@ namespace TurboHTTP.Tests.Integration
                     InitialDelay = TimeSpan.FromMilliseconds(1)
                 };
 
-                // Retry wraps Timeout => per-attempt timeout.
-                // TimeoutMiddleware returns 408 with retryable error, RetryMiddleware retries.
                 var pipeline = new HttpPipeline(
                     new IHttpMiddleware[]
                     {
-                        new RetryMiddleware(retryPolicy),
-                        new TimeoutMiddleware()
+                        new RetryMiddleware(retryPolicy)
                     },
                     transport);
 
                 var request = new UHttpRequest(
-                    HttpMethod.GET, new Uri("https://test.com"),
-                    timeout: TimeSpan.FromMilliseconds(50));
+                    HttpMethod.GET, new Uri("https://test.com"));
                 var context = new RequestContext(request);
 
                 var response = await pipeline.ExecuteAsync(request, context);
@@ -117,33 +117,6 @@ namespace TurboHTTP.Tests.Integration
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(2, callCount); // First attempt timed out, second succeeded
             }).GetAwaiter().GetResult();
-        }
-
-        [Test]
-        public void UserCancellation_PropagatesEvenWhenTimeoutFires()
-        {
-            // Verify that user cancellation takes precedence over timeout
-            var transport = new MockTransport(async (req, ctx, ct) =>
-            {
-                await Task.Delay(TimeSpan.FromSeconds(30), ct);
-                return new UHttpResponse(
-                    HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req);
-            });
-
-            var pipeline = new HttpPipeline(
-                new IHttpMiddleware[] { new TimeoutMiddleware() },
-                transport);
-
-            var request = new UHttpRequest(
-                HttpMethod.GET, new Uri("https://test.com"),
-                timeout: TimeSpan.FromSeconds(30));
-            var context = new RequestContext(request);
-
-            using var cts = new CancellationTokenSource();
-            cts.Cancel(); // Cancel immediately
-
-            AssertAsync.ThrowsAsync<OperationCanceledException>(
-                () => pipeline.ExecuteAsync(request, context, cts.Token));
         }
     }
 }
