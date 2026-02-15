@@ -117,7 +117,7 @@ namespace TurboHTTP.Files
         /// </summary>
         public string GetContentType()
         {
-            return $"multipart/form-data; boundary={_boundary}";
+            return $"multipart/form-data; boundary=\"{_boundary}\"";
         }
 
         /// <summary>
@@ -158,7 +158,7 @@ namespace TurboHTTP.Files
             if (c >= '0' && c <= '9') return true;
             return c == '\'' || c == '(' || c == ')' || c == '+' || c == '_' ||
                    c == ',' || c == '-' || c == '.' || c == '/' || c == ':' ||
-                   c == '=' || c == '?' || c == ' ';
+                   c == '=' || c == '?';
         }
 
         private static void WriteBytes(MemoryStream stream, string text)

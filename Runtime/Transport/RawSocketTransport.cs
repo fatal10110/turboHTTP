@@ -22,7 +22,7 @@ namespace TurboHTTP.Transport
     {
         private readonly TcpConnectionPool _pool;
         private readonly Http2ConnectionManager _h2Manager = new Http2ConnectionManager();
-        private volatile bool _disposed;
+        private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for atomic CAS)
 
         public RawSocketTransport(TcpConnectionPool pool = null, TlsBackend tlsBackend = TlsBackend.Auto)
         {
@@ -46,7 +46,8 @@ namespace TurboHTTP.Transport
             RequestContext context,
             CancellationToken cancellationToken = default)
         {
-            if (_disposed) throw new ObjectDisposedException(nameof(RawSocketTransport));
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(RawSocketTransport));
 
             // 1. Create timeout enforcement
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -250,8 +251,9 @@ namespace TurboHTTP.Transport
 
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
             _h2Manager?.Dispose();
             _pool?.Dispose();
         }

@@ -27,8 +27,14 @@ namespace TurboHTTP.Core
             _method = method;
         }
 
+        /// <summary>
+        /// Set a header on the request. Validates name and value for CRLF injection.
+        /// </summary>
+        /// <exception cref="ArgumentException">Name or value contains CR/LF characters.</exception>
         public UHttpRequestBuilder WithHeader(string name, string value)
         {
+            ValidateHeaderInput(name, nameof(name));
+            ValidateHeaderInput(value, nameof(value));
             _headers.Set(name, value);
             return this;
         }
@@ -124,6 +130,19 @@ namespace TurboHTTP.Core
 
             var baseUri = new Uri(baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/");
             return new Uri(baseUri, url);
+        }
+
+        /// <summary>
+        /// Validate that a header name or value does not contain CR or LF characters.
+        /// This is a defense-in-depth measure — the serializer also validates, but catching
+        /// injection early provides clearer error messages and consistent behavior across
+        /// all code paths (builder, middleware, extensions).
+        /// </summary>
+        private static void ValidateHeaderInput(string value, string paramName)
+        {
+            if (value != null && (value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0))
+                throw new ArgumentException(
+                    $"Header {paramName} must not contain CR or LF characters.", paramName);
         }
 
         /// <summary>

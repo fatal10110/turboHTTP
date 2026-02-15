@@ -282,6 +282,15 @@ namespace TurboHTTP.Transport.Tcp
                     {
                         if (candidate.IsAlive && (DateTime.UtcNow - candidate.LastUsed) < _connectionIdleTimeout)
                         {
+                            // Drain any unexpected bytes from a previous response.
+                            // If the server sent extra data after the last response body,
+                            // reading it here prevents data leakage between requests.
+                            if (HasUnexpectedData(candidate))
+                            {
+                                candidate.Dispose();
+                                continue;
+                            }
+
                             candidate.IsReused = true;
                             candidate.LastUsed = DateTime.UtcNow;
                             return new ConnectionLease(this, semaphore, candidate);
@@ -372,6 +381,14 @@ namespace TurboHTTP.Transport.Tcp
 
             if (completed == timeoutTask)
             {
+                // Observe the abandoned DNS task to prevent UnobservedTaskException.
+                // The task may complete (or fault) after the timeout; suppress its result.
+                _ = dnsTask.ContinueWith(
+                    static t => { _ = t.Exception; },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default);
+
                 // Check cancellation FIRST — distinguish user cancellation from DNS timeout.
                 ct.ThrowIfCancellationRequested();
                 throw new UHttpException(new UHttpError(UHttpErrorType.Timeout,
@@ -384,6 +401,17 @@ namespace TurboHTTP.Transport.Tcp
         private static async Task<Socket> ConnectSocketAsync(
             IPAddress[] addresses, int port, CancellationToken ct)
         {
+            // Sort addresses: IPv6 first, then IPv4. This provides basic dual-stack
+            // preference per RFC 6724 (prefer IPv6 on dual-stack networks).
+            // Full Happy Eyeballs (RFC 8305) with parallel racing deferred to Phase 10.
+            Array.Sort(addresses, (a, b) =>
+            {
+                bool aIs6 = a.AddressFamily == AddressFamily.InterNetworkV6;
+                bool bIs6 = b.AddressFamily == AddressFamily.InterNetworkV6;
+                if (aIs6 == bIs6) return 0;
+                return aIs6 ? -1 : 1;
+            });
+
             Socket socket = null;
             Exception lastException = null;
 
@@ -428,6 +456,25 @@ namespace TurboHTTP.Transport.Tcp
                 throw lastException ?? new SocketException((int)SocketError.HostNotFound);
 
             return socket;
+        }
+
+        /// <summary>
+        /// Check if a pooled connection has unexpected data waiting to be read.
+        /// If data is available on an idle connection, it means either:
+        /// 1. The previous response was not fully consumed
+        /// 2. The server sent unexpected data
+        /// In either case, the connection is not safe to reuse — close it.
+        /// </summary>
+        private static bool HasUnexpectedData(PooledConnection connection)
+        {
+            try
+            {
+                if (connection.Socket == null || !connection.Socket.Connected)
+                    return false;
+                return connection.Socket.Available > 0;
+            }
+            catch (ObjectDisposedException) { return true; }
+            catch (SocketException) { return true; }
         }
 
         private void EvictSemaphoresIfNeeded(string currentKey)

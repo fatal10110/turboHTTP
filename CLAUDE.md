@@ -69,6 +69,10 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - **Retry Middleware:** Only retries idempotent methods by default (`HttpMethod.IsIdempotent()`). Two retry paths: response path (5xx) returns last failed response when exhausted; exception path (`UHttpException` with `IsRetryable()`, including `UHttpErrorType.Timeout`) re-throws when exhausted. Exponential backoff capped by `RetryPolicy.MaxDelay` (30s default) to prevent unbounded delay growth.
 - **Metrics Thread Safety:** `HttpMetrics` uses public fields for `Interlocked` compatibility. `AverageResponseTimeMs` stored as `long` bits via `BitConverter.DoubleToInt64Bits` for atomic read/write on 32-bit IL2CPP.
 - **Builder Extension Pattern:** `UHttpRequestBuilder` in Core exposes only raw HTTP primitives (`WithHeader`, `WithBody`, `WithTimeout`, `WithMetadata`). Convenience methods live in their respective module assemblies as C# extension methods on `UHttpRequestBuilder` — e.g., `WithJsonBody` in `TurboHTTP.JSON.JsonRequestBuilderExtensions`, `WithBearerToken` in `TurboHTTP.Auth.AuthBuilderExtensions`. Users get these methods by adding a `using` for the module namespace. This keeps Core content-format agnostic and prevents convenience-alias bloat.
+- **Object Pooling:** `ObjectPool<T>` uses array-backed storage with `Interlocked.CompareExchange` for atomic capacity enforcement (not `ConcurrentBag` — avoids IL2CPP thread-local storage issues). `ByteArrayPool` wraps `ArrayPool<byte>.Shared` (BCL battle-tested, no custom bucketing needed for Phase 6).
+- **Concurrency Control:** `ConcurrencyLimiter` acquires global semaphore before per-host semaphore (prevents starvation). Cancellation-safe: if per-host acquire fails after global acquired, global is released in catch block. `ConcurrencyMiddleware` wraps limiter for pipeline integration.
+- **Sensitive Header Redaction:** `LoggingMiddleware` redacts `Authorization`, `Cookie`, `Set-Cookie`, `Proxy-Authorization`, `WWW-Authenticate`, `X-Api-Key` by default. Configurable via `redactSensitiveHeaders` parameter.
+- **Disposal Hardening:** `UHttpClient.Dispose()` disposes `IDisposable` middlewares (not just transport). `RawSocketTransport.Dispose()` uses `Interlocked.CompareExchange` for atomic CAS (prevents double-dispose race). All disposal is idempotent.
 
 ## Development Status
 
@@ -92,7 +96,9 @@ Implementation follows 14 phases documented in `docs/phases/`.
   - **Phase 4.5 (Tests):** COMPLETE — 8 test files covering pipeline, all middlewares, and integration.
 - **Phase 5 (Content Handlers):** COMPLETE — JSON extensions (AsJson, TryAsJson, GetJsonAsync, PostJsonAsync, PutJsonAsync, PatchJsonAsync, DeleteJsonAsync), FileDownloader with resume/checksum/progress, MultipartFormDataBuilder, ContentTypes constants, GetBodyAsString(Encoding) + GetContentEncoding(). See `docs/implementation-journal/2026-02-phase5-content-handlers.md`.
 - **Core Extraction (Post-M1):** COMPLETE — Extracted non-core concerns from TurboHTTP.Core: LoggingMiddleware → Observability, DefaultHeadersMiddleware → new Middleware assembly, JSON extensions → JSON assembly, TimeoutMiddleware deleted (redundant with transport timeout). Removed convenience aliases (`Accept`, `ContentType`, `WithBearerToken`) from `UHttpRequestBuilder` — builder now has only raw HTTP primitives. `WithBearerToken` moved to `TurboHTTP.Auth.AuthBuilderExtensions`. Core now has zero external assembly references. See `docs/implementation-journal/2026-02-core-extraction.md`.
-- **Phases 6–14:** Not started.
+- **Phase 6 (Performance & Hardening):** COMPLETE — ObjectPool, ByteArrayPool, ConcurrencyLimiter, ConcurrencyMiddleware, RequestQueue. Disposal hardening (UHttpClient disposes middlewares, RawSocketTransport atomic disposal). Timeline optimization (lazy dict in TimelineEvent). ALPN reflection caching in SslStreamTlsProvider. Logging redaction for sensitive headers. Stress tests (1000-request, concurrency enforcement, multi-host, pool leak detection). See `docs/implementation-journal/2026-02-phase6-performance.md`.
+- **Security Hardening (Post-Phase 6):** COMPLETE — Fixes from unified review: M-2 (connection drain check), M-3 (TE+CL RFC compliance), M-4 (path traversal protection), H-3 (CRLF injection defense-in-depth), HPACK decompression bomb protection (128KB limit), IPv6 preference in address sorting, DNS task observation, multipart boundary quoting. Phase docs updated with redirect/cookie middleware (Phase 10) and background networking (Phase 14). See `docs/implementation-journal/2026-02-security-hardening.md`.
+- **Phases 7–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
 
@@ -129,6 +135,7 @@ Tests use Unity Test Runner with NUnit. Test assemblies and key suites:
 - Pipeline tests: `Tests/Runtime/Pipeline/HttpPipelineTests.cs`, `LoggingMiddlewareTests.cs`, `DefaultHeadersMiddlewareTests.cs`
 - Module middleware tests: `Tests/Runtime/Retry/RetryMiddlewareTests.cs`, `Tests/Runtime/Auth/AuthMiddlewareTests.cs`, `Tests/Runtime/Observability/MetricsMiddlewareTests.cs`
 - Pipeline integration tests: `Tests/Runtime/Integration/PipelineIntegrationTests.cs`
+- Performance tests: `Tests/Runtime/Performance/ObjectPoolTests.cs`, `ConcurrencyLimiterTests.cs`, `StressTests.cs`
 
 Both use `defineConstraints: ["UNITY_INCLUDE_TESTS"]` and `precompiledReferences: ["nunit.framework.dll"]`.
 

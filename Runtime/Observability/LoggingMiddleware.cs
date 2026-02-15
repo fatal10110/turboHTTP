@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -7,6 +8,8 @@ namespace TurboHTTP.Observability
 {
     /// <summary>
     /// Middleware that logs HTTP requests and responses.
+    /// Sensitive headers (Authorization, Cookie, etc.) are automatically redacted
+    /// unless explicitly disabled via <see cref="redactSensitiveHeaders"/>.
     /// </summary>
     public class LoggingMiddleware : IHttpMiddleware
     {
@@ -14,6 +17,18 @@ namespace TurboHTTP.Observability
         private readonly LogLevel _logLevel;
         private readonly bool _logHeaders;
         private readonly bool _logBody;
+        private readonly bool _redactSensitiveHeaders;
+
+        private static readonly HashSet<string> DefaultSensitiveHeaders =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Authorization",
+                "Cookie",
+                "Set-Cookie",
+                "Proxy-Authorization",
+                "WWW-Authenticate",
+                "X-Api-Key"
+            };
 
         public enum LogLevel
         {
@@ -27,12 +42,14 @@ namespace TurboHTTP.Observability
             Action<string> log = null,
             LogLevel logLevel = LogLevel.Standard,
             bool logHeaders = false,
-            bool logBody = false)
+            bool logBody = false,
+            bool redactSensitiveHeaders = true)
         {
             _log = log ?? (_ => { });
             _logLevel = logLevel;
             _logHeaders = logHeaders;
             _logBody = logBody;
+            _redactSensitiveHeaders = redactSensitiveHeaders;
         }
 
         public async Task<UHttpResponse> InvokeAsync(
@@ -86,7 +103,8 @@ namespace TurboHTTP.Observability
                 message += "\n  Headers:";
                 foreach (var header in request.Headers)
                 {
-                    message += $"\n    {header.Key}: {header.Value}";
+                    var value = ShouldRedact(header.Key) ? "****" : header.Value;
+                    message += $"\n    {header.Key}: {value}";
                 }
             }
 
@@ -111,7 +129,8 @@ namespace TurboHTTP.Observability
                 message += "\n  Headers:";
                 foreach (var header in response.Headers)
                 {
-                    message += $"\n    {header.Key}: {header.Value}";
+                    var value = ShouldRedact(header.Key) ? "****" : header.Value;
+                    message += $"\n    {header.Key}: {value}";
                 }
             }
 
@@ -138,6 +157,11 @@ namespace TurboHTTP.Observability
         {
             var message = $"X {request.Method} {request.Uri} -> ERROR ({elapsed.TotalMilliseconds:F0}ms)\n  {exception.Message}";
             _log($"[TurboHTTP][ERROR] {message}");
+        }
+
+        private bool ShouldRedact(string headerName)
+        {
+            return _redactSensitiveHeaders && DefaultSensitiveHeaders.Contains(headerName);
         }
     }
 }

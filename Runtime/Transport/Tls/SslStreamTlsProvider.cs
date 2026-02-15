@@ -23,6 +23,15 @@ namespace TurboHTTP.Transport.Tls
         private static readonly PropertyInfo _alpnNegotiatedProperty;
         private static readonly bool _alpnSupported;
 
+        // Cached reflection for ALPN auth path — avoids per-connection reflection overhead
+        private static readonly Type _optionsType;
+        private static readonly PropertyInfo _targetHostProp;
+        private static readonly PropertyInfo _enabledProtocolsProp;
+        private static readonly Type _alpnProtocolType;
+        private static readonly MethodInfo _authWithOptionsMethod;
+        private static readonly object _h2ProtocolValue;
+        private static readonly object _http11ProtocolValue;
+
         static SslStreamTlsProvider()
         {
             // Reflect into SslClientAuthenticationOptions.ApplicationProtocols
@@ -42,6 +51,27 @@ namespace TurboHTTP.Transport.Tls
                 BindingFlags.Public | BindingFlags.Instance);
 
             _alpnSupported = _alpnOptionsProperty != null && _alpnNegotiatedProperty != null;
+
+            // Cache remaining ALPN auth reflection for per-connection reuse
+            if (_alpnSupported && optionsType != null)
+            {
+                _optionsType = optionsType;
+                _targetHostProp = optionsType.GetProperty("TargetHost");
+                _enabledProtocolsProp = optionsType.GetProperty("EnabledSslProtocols");
+                _alpnProtocolType = typeof(SslStream).Assembly.GetType(
+                    "System.Net.Security.SslApplicationProtocol");
+                _authWithOptionsMethod = typeof(SslStream).GetMethod(
+                    "AuthenticateAsClientAsync",
+                    new[] { optionsType, typeof(CancellationToken) });
+
+                if (_alpnProtocolType != null)
+                {
+                    _h2ProtocolValue = _alpnProtocolType.GetField("Http2",
+                        BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+                    _http11ProtocolValue = _alpnProtocolType.GetField("Http11",
+                        BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+                }
+            }
         }
 
         public bool IsAlpnSupported() => _alpnSupported;
@@ -134,23 +164,19 @@ namespace TurboHTTP.Transport.Tls
             string[] alpnProtocols,
             CancellationToken ct)
         {
-            // Create SslClientAuthenticationOptions via reflection
-            var optionsType = typeof(SslStream).Assembly.GetType(
-                "System.Net.Security.SslClientAuthenticationOptions");
-            var options = Activator.CreateInstance(optionsType);
+            // All reflection results are cached in static fields (see static ctor).
+            // Only Activator.CreateInstance + property sets run per connection.
+            if (_optionsType == null || _targetHostProp == null || _authWithOptionsMethod == null)
+                throw new PlatformNotSupportedException("SslClientAuthenticationOptions not available");
 
-            // Set TargetHost — null guard for platforms missing the property
-            var targetHostProp = optionsType.GetProperty("TargetHost");
-            if (targetHostProp == null)
-                throw new PlatformNotSupportedException("SslClientAuthenticationOptions.TargetHost not found");
-            targetHostProp.SetValue(options, host);
+            var options = Activator.CreateInstance(_optionsType);
 
-            // Set EnabledSslProtocols
-            var enabledProtocolsProp = optionsType.GetProperty("EnabledSslProtocols");
-            if (enabledProtocolsProp != null)
+            _targetHostProp.SetValue(options, host);
+
+            if (_enabledProtocolsProp != null)
             {
 #pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
-                enabledProtocolsProp.SetValue(
+                _enabledProtocolsProp.SetValue(
                     options, SslProtocols.Tls12 | (SslProtocols)0x3000 /* Tls13 */);
 #pragma warning restore SYSLIB0039
             }
@@ -159,13 +185,10 @@ namespace TurboHTTP.Transport.Tls
             // NOTE: MakeGenericType can fail under IL2CPP/AOT if the generic instantiation
             // List<SslApplicationProtocol> was not preserved. The caller catches this and
             // falls back to non-ALPN auth. BouncyCastle provides ALPN on those platforms.
-            var alpnListType = typeof(SslStream).Assembly.GetType(
-                "System.Net.Security.SslApplicationProtocol");
-
-            if (alpnListType != null)
+            if (_alpnProtocolType != null)
             {
                 var alpnList = typeof(System.Collections.Generic.List<>)
-                    .MakeGenericType(alpnListType)
+                    .MakeGenericType(_alpnProtocolType)
                     .GetConstructor(Type.EmptyTypes)
                     .Invoke(null);
 
@@ -173,34 +196,22 @@ namespace TurboHTTP.Transport.Tls
 
                 foreach (var protocol in alpnProtocols)
                 {
-                    // Get well-known protocol values (Http2, Http11)
-                    string fieldName;
+                    object value;
                     if (protocol == "h2")
-                        fieldName = "Http2";
+                        value = _h2ProtocolValue;
                     else if (protocol == "http/1.1")
-                        fieldName = "Http11";
+                        value = _http11ProtocolValue;
                     else
                         continue;
 
-                    var field = alpnListType.GetField(fieldName, BindingFlags.Public | BindingFlags.Static);
-                    if (field != null)
-                    {
-                        addMethod.Invoke(alpnList, new[] { field.GetValue(null) });
-                    }
+                    if (value != null)
+                        addMethod.Invoke(alpnList, new[] { value });
                 }
 
                 _alpnOptionsProperty.SetValue(options, alpnList);
             }
 
-            // AuthenticateAsClientAsync(SslClientAuthenticationOptions, CancellationToken)
-            var authMethod = typeof(SslStream).GetMethod(
-                "AuthenticateAsClientAsync",
-                new[] { optionsType, typeof(CancellationToken) });
-
-            if (authMethod == null)
-                throw new PlatformNotSupportedException("SslStream.AuthenticateAsClientAsync(options, ct) not found");
-
-            var task = (Task)authMethod.Invoke(sslStream, new[] { options, ct });
+            var task = (Task)_authWithOptionsMethod.Invoke(sslStream, new[] { options, ct });
             await task.ConfigureAwait(false);
         }
 
@@ -231,11 +242,10 @@ namespace TurboHTTP.Transport.Tls
             X509Chain chain,
             SslPolicyErrors sslPolicyErrors)
         {
-            // Accept all certificates for now (basic validation)
-            // TODO: In production, implement proper validation:
-            //  - Check sslPolicyErrors
-            //  - Verify certificate chain
-            //  - Implement certificate pinning (Phase 6)
+            // OS-level certificate validation. Returns true only if the certificate
+            // chain validates successfully with no policy errors (hostname mismatch,
+            // untrusted root, expired cert, etc. all cause SslPolicyErrors != None).
+            // Certificate pinning support is deferred to a future phase.
             return sslPolicyErrors == SslPolicyErrors.None;
         }
 

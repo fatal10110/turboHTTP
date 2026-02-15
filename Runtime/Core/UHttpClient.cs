@@ -146,6 +146,18 @@ namespace TurboHTTP.Core
             {
                 _transport.Dispose();
             }
+
+            // Dispose any disposable middlewares (e.g., ConcurrencyLimiter)
+            if (_options.Middlewares != null)
+            {
+                foreach (var middleware in _options.Middlewares)
+                {
+                    if (middleware is IDisposable disposable)
+                    {
+                        disposable.Dispose();
+                    }
+                }
+            }
         }
 
         private void ThrowIfDisposed()

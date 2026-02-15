@@ -18,7 +18,9 @@ namespace TurboHTTP.Core
         {
             Name = name;
             Timestamp = timestamp;
-            Data = data ?? new Dictionary<string, object>();
+            // Lazy: only allocate dictionary when caller provides data.
+            // Most timeline events have no data, saving ~80 bytes per event.
+            Data = data;
         }
     }
 
@@ -125,6 +127,19 @@ namespace TurboHTTP.Core
         {
             _stopwatch.Stop();
             return _stopwatch.Elapsed;
+        }
+
+        /// <summary>
+        /// Clear all timeline events and state. Called after request completion
+        /// to release references held by event data dictionaries and state values.
+        /// </summary>
+        internal void Clear()
+        {
+            lock (_lock)
+            {
+                _timeline.Clear();
+                _state.Clear();
+            }
         }
     }
 }

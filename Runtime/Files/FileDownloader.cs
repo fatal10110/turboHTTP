@@ -69,10 +69,21 @@ namespace TurboHTTP.Files
     /// <para><b>Memory Note:</b> The entire response body is buffered in memory before
     /// being written to disk. For files larger than ~50MB on mobile, monitor available
     /// memory. Streaming transport is planned for Phase 10.</para>
+    /// <para><b>Security Note:</b> If <c>destinationPath</c> is constructed from untrusted
+    /// input (e.g., server-provided filenames), use <see cref="BasePath"/> to restrict writes
+    /// to a specific directory. Without <c>BasePath</c>, the caller is responsible for
+    /// validating the destination path.</para>
     /// </summary>
     public class FileDownloader
     {
         private readonly UHttpClient _client;
+
+        /// <summary>
+        /// Optional base directory to restrict file writes. When set, all destination paths
+        /// are validated to be within this directory after canonicalization.
+        /// Prevents path traversal attacks when paths are constructed from untrusted input.
+        /// </summary>
+        public string BasePath { get; set; }
 
         public FileDownloader(UHttpClient client)
         {
@@ -95,6 +106,20 @@ namespace TurboHTTP.Files
             if (url == null) throw new ArgumentNullException(nameof(url));
             if (destinationPath == null) throw new ArgumentNullException(nameof(destinationPath));
             if (options == null) options = new DownloadOptions();
+
+            // Path traversal protection: canonicalize and validate against BasePath
+            destinationPath = Path.GetFullPath(destinationPath);
+            if (BasePath != null)
+            {
+                var canonicalBase = Path.GetFullPath(BasePath);
+                if (!canonicalBase.EndsWith(Path.DirectorySeparatorChar.ToString()))
+                    canonicalBase += Path.DirectorySeparatorChar;
+                if (!destinationPath.StartsWith(canonicalBase, StringComparison.Ordinal))
+                    throw new ArgumentException(
+                        $"Destination path escapes the allowed base directory. " +
+                        $"Base: {canonicalBase}, Resolved: {destinationPath}",
+                        nameof(destinationPath));
+            }
 
             var startTime = DateTime.UtcNow;
             long existingSize = 0;

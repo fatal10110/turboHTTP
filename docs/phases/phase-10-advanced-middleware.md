@@ -832,6 +832,32 @@ namespace TurboHTTP.Tests.RateLimit
 }
 ```
 
+### Task 10.8: Redirect Middleware
+
+**Deferred from Phase 3/4.** `UHttpClientOptions.FollowRedirects` and `MaxRedirects` are defined but NOT enforced. Implement a `RedirectMiddleware` that:
+- Follows 301, 302, 303, 307, 308 status codes
+- Converts POST to GET on 301/302/303 (RFC 9110 Section 15.4)
+- Preserves method on 307/308
+- Enforces `MaxRedirects` limit (default 10)
+- Strips `Authorization` header on cross-origin redirects
+- Handles relative `Location` headers
+- Records redirect chain in `RequestContext`
+
+### Task 10.9: Cookie Middleware
+
+**Deferred from Phase 4.** Implement a `CookieMiddleware` with:
+- RFC 6265-compliant cookie jar (domain, path, expiry, secure, httponly)
+- Automatic `Cookie` header injection on matching requests
+- Automatic `Set-Cookie` response parsing and storage
+- Per-domain cookie limits (RFC 6265 Section 6.1: at least 50 per domain, 3000 total)
+- Optional persistent storage (in-memory default, disk-backed option)
+- `SameSite` attribute support (Lax/Strict/None)
+- Thread-safe for HTTP/2 concurrent streams
+
+### Task 10.10: Streaming Transport Improvements
+
+Buffered I/O rewrite for HTTP/1.1 response parser to eliminate byte-by-byte ReadAsync (documented GC hotspot: ~400 Task allocations per response). See Phase 6 notes.
+
 ## Next Steps
 
 Once Phase 10 is complete and validated:
@@ -848,6 +874,7 @@ Once Phase 10 is complete and validated:
 - Rate limiting prevents API quota exhaustion
 - Token bucket is industry-standard algorithm
 - Per-host limiting respects different API rate limits
+- Redirect and cookie support are essential for real-world HTTP client usage
 - These features are rare in Unity HTTP libraries
 
 ## Review Notes

@@ -242,11 +242,49 @@ namespace TurboHTTP.Tests.Transport.Tls
             CancellationToken ct)
         {
             using var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
-            socket.Connect(tcpHost, 443);
+            try
+            {
+                ConnectWithTimeout(socket, tcpHost, 443, 8000);
+            }
+            catch (TimeoutException)
+            {
+                Assert.Ignore($"TCP connect to {tcpHost}:443 timed out in this environment.");
+                throw;
+            }
+            catch (SocketException ex)
+            {
+                Assert.Ignore($"TCP connect to {tcpHost}:443 failed ({ex.SocketErrorCode}) in this environment.");
+                throw;
+            }
+
             using var stream = new NetworkStream(socket, true);
 
             var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
-            return await provider.WrapAsync(stream, tlsHost, alpn, ct);
+            var wrapTask = Task.Run(async () => await provider.WrapAsync(stream, tlsHost, alpn, ct));
+            var completed = await Task.WhenAny(wrapTask, Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None));
+            if (completed != wrapTask)
+            {
+                Assert.Ignore($"BouncyCastle TLS handshake to {tlsHost} exceeded hard timeout in this environment.");
+                throw new TimeoutException();
+            }
+
+            return await wrapTask;
+        }
+
+        private static void ConnectWithTimeout(Socket socket, string host, int port, int timeoutMs)
+        {
+            var ar = socket.BeginConnect(host, port, null, null);
+            try
+            {
+                if (!ar.AsyncWaitHandle.WaitOne(timeoutMs))
+                    throw new TimeoutException($"Connect to {host}:{port} timed out after {timeoutMs}ms.");
+
+                socket.EndConnect(ar);
+            }
+            finally
+            {
+                ar.AsyncWaitHandle.Close();
+            }
         }
 #endif
     }

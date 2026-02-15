@@ -13,6 +13,14 @@ namespace TurboHTTP.Transport.Http2
         private int _maxTableSizeFromSettings;
         private bool _expectingSizeUpdate;
 
+        /// <summary>
+        /// Maximum total decoded header bytes per header block (names + values).
+        /// Protects against decompression bombs where a small HPACK payload decodes
+        /// into a massive header set (e.g., via Huffman expansion or indexed references).
+        /// 128KB matches the common server limit (e.g., Apache, nginx).
+        /// </summary>
+        private const int MaxDecodedHeaderBytes = 128 * 1024;
+
         public HpackDecoder(int maxDynamicTableSize = 4096)
         {
             _dynamicTable = new HpackDynamicTable(maxDynamicTableSize);
@@ -31,10 +39,12 @@ namespace TurboHTTP.Transport.Http2
             int end = offset + length;
             bool seenHeaderField = false;
             bool sawSizeUpdate = false;
+            long totalDecodedBytes = 0;
 
             while (offset < end)
             {
                 byte b = data[offset];
+                int countBefore = headers.Count;
 
                 if ((b & 0x80) != 0)
                 {
@@ -71,6 +81,16 @@ namespace TurboHTTP.Transport.Http2
                 else
                 {
                     throw new HpackDecodingException($"Invalid HPACK representation byte: 0x{b:X2}");
+                }
+
+                // Decompression bomb protection: track total decoded header bytes
+                if (headers.Count > countBefore)
+                {
+                    var last = headers[headers.Count - 1];
+                    totalDecodedBytes += last.Name.Length + last.Value.Length;
+                    if (totalDecodedBytes > MaxDecodedHeaderBytes)
+                        throw new HpackDecodingException(
+                            $"Decoded header block exceeds {MaxDecodedHeaderBytes} bytes (decompression bomb protection)");
                 }
             }
 

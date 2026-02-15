@@ -177,7 +177,28 @@ public class UWebSocketClient
 
 ---
 
-### 7. Adaptive Network Policies (Medium Priority)
+### 7. Background Networking on Mobile (High Priority)
+
+**Goal:** Support HTTP requests that survive app backgrounding on iOS and Android
+
+**Problem:** On mobile platforms, the OS suspends networking when the app goes to the background. In-flight requests fail, and new requests cannot be started. This is critical for file uploads, analytics, and data sync.
+
+**Implementation:**
+- **iOS:** Use `UIApplication.BeginBackgroundTask` / `EndBackgroundTask` to request extra execution time (up to ~30s) for in-flight requests
+- **Android:** Use `WorkManager` or `JobScheduler` for deferred network operations; foreground services for long transfers
+- **API:** `BackgroundNetworkingMiddleware` that wraps request execution with platform-specific background task registration
+- **Fallback:** Queue failed requests for retry when app resumes (via `OnApplicationPause`)
+
+**Estimated Effort:** 2-3 weeks
+
+**Complexity:** High (platform-specific native plugins)
+
+**Value:** High (essential for production mobile apps)
+
+---
+
+### 8. Adaptive Network Policies (Medium Priority)
+<!-- NOTE: Sections renumbered after inserting "7. Background Networking on Mobile" -->
 
 **Goal:** Automatically adjust behavior based on network conditions
 
@@ -223,7 +244,7 @@ public enum NetworkQuality
 
 ---
 
-### 8. GraphQL Client (Medium Priority)
+### 9. GraphQL Client (Medium Priority)
 
 **Goal:** Add GraphQL query builder and client
 
@@ -261,7 +282,7 @@ var user = await graphql.QueryAsync<User>(query, new { id = "123" });
 
 ---
 
-### 9. Advanced Content Handlers (Low Priority)
+### 10. Advanced Content Handlers (Low Priority)
 
 **Goal:** Support more Unity asset types and formats
 
@@ -292,7 +313,7 @@ var data = response.AsProtobuf<MyProtoMessage>();
 
 ---
 
-### 10. OAuth 2.0 / OpenID Connect (High Priority)
+### 11. OAuth 2.0 / OpenID Connect (High Priority)
 
 **Goal:** Built-in OAuth flow support
 
@@ -335,7 +356,7 @@ client.Options.Middlewares.Add(new AuthMiddleware(
 
 ---
 
-### 11. Request/Response Interceptors (Medium Priority)
+### 12. Request/Response Interceptors (Medium Priority)
 
 **Goal:** Allow modifying requests/responses without middleware
 
@@ -362,7 +383,7 @@ client.OnResponse += (response) =>
 
 ---
 
-### 12. Parallel Request Helpers (Low Priority)
+### 13. Parallel Request Helpers (Low Priority)
 
 **Goal:** Simplify common parallel request patterns
 
@@ -387,7 +408,7 @@ var fastestResult = await client.RaceAsync(urls);
 
 ---
 
-### 13. Mock Server for Testing (Medium Priority)
+### 14. Mock Server for Testing (Medium Priority)
 
 **Goal:** Built-in mock HTTP server for testing
 
@@ -418,7 +439,7 @@ var response = await client.Get("http://localhost:8080/api/users").SendAsync();
 
 ---
 
-### 14. Plugin System (Low Priority)
+### 15. Plugin System (Low Priority)
 
 **Goal:** Allow third-party extensions
 
@@ -451,7 +472,7 @@ client.RegisterPlugin(new SentryPlugin());
 
 ---
 
-### 15. Security & Privacy Hardening (High Priority)
+### 16. Security & Privacy Hardening (High Priority)
 
 **Goal:** Make “safe by default” behavior explicit and configurable
 
@@ -476,6 +497,7 @@ client.RegisterPlugin(new SentryPlugin());
 | ~~HTTP/2~~ | ~~High~~ | — | — | — | **v1.0** (Phase 3B) |
 | WebGL Support | High | 2-3w | Medium | High | v1.1 |
 | Happy Eyeballs (RFC 8305) | Medium | 1w | Medium | High | v1.1 |
+| Background Networking | High | 2-3w | High | High | v1.1 |
 | Proxy Support | Medium | 2-3w | Medium-High | Medium | v1.1 |
 | Adaptive Network | Medium | 2w | Medium | High | v1.1 |
 | OAuth 2.0 | High | 3-4w | High | High | v1.2 |
@@ -494,6 +516,7 @@ client.RegisterPlugin(new SentryPlugin());
 ### v1.1 (Q1 after v1.0)
 - WebGL support (browser `fetch()` API via `.jslib` interop)
 - Happy Eyeballs (RFC 8305) — dual-stack connection racing
+- Background networking on mobile (iOS/Android background task support)
 - Proxy support (CONNECT tunneling, environment variable detection)
 - Adaptive network policies
 - Request/response interceptors

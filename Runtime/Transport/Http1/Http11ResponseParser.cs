@@ -145,6 +145,12 @@ namespace TurboHTTP.Transport.Http1
                     else if (te.EndsWith("chunked", StringComparison.OrdinalIgnoreCase))
                     {
                         body = await ReadChunkedBodyAsync(stream, ct).ConfigureAwait(false);
+
+                        // RFC 9112 Section 6.1: When Transfer-Encoding is present and
+                        // chunked is applied, Content-Length MUST be ignored. Remove it
+                        // to prevent downstream code from reading a misleading value.
+                        if (contentLengthStr != null)
+                            headers.Remove("Content-Length");
                     }
                     else
                     {
