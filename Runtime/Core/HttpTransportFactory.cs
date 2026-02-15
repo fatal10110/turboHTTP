@@ -13,6 +13,7 @@ namespace TurboHTTP.Core
     {
         private static volatile Func<IHttpTransport> _factory;
         private static volatile Func<TlsBackend, IHttpTransport> _backendFactory;
+        private static volatile Func<TlsBackend, int, IHttpTransport> _advancedFactory;
         private static volatile Lazy<IHttpTransport> _lazy;
         private static readonly object _lock = new object();
 
@@ -26,11 +27,26 @@ namespace TurboHTTP.Core
             Func<IHttpTransport> factory,
             Func<TlsBackend, IHttpTransport> backendFactory = null)
         {
+            Register(factory, backendFactory, advancedFactory: null);
+        }
+
+        /// <summary>
+        /// Register transport factory functions including advanced option support.
+        /// </summary>
+        /// <param name="factory">Factory for the default (Auto) transport singleton.</param>
+        /// <param name="backendFactory">Optional factory for creating transport instances with a specific TLS backend.</param>
+        /// <param name="advancedFactory">Optional factory for creating transport instances with advanced options.</param>
+        public static void Register(
+            Func<IHttpTransport> factory,
+            Func<TlsBackend, IHttpTransport> backendFactory,
+            Func<TlsBackend, int, IHttpTransport> advancedFactory)
+        {
             if (factory == null) throw new ArgumentNullException(nameof(factory));
             lock (_lock)
             {
                 _factory = factory;
                 _backendFactory = backendFactory;
+                _advancedFactory = advancedFactory;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
             }
         }
@@ -76,6 +92,23 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Create a new transport instance with TLS backend plus advanced transport options.
+        /// Unlike <see cref="Default"/>, this creates a fresh (non-singleton) instance
+        /// that the caller owns and must dispose.
+        /// Falls back to <see cref="CreateWithBackend"/> if no advanced factory was registered.
+        /// </summary>
+        public static IHttpTransport CreateWithOptions(
+            TlsBackend tlsBackend,
+            int http2MaxDecodedHeaderBytes)
+        {
+            var advancedFactory = _advancedFactory;
+            if (advancedFactory != null)
+                return advancedFactory(tlsBackend, http2MaxDecodedHeaderBytes);
+
+            return CreateWithBackend(tlsBackend);
+        }
+
+        /// <summary>
         /// Set a transport directly for testing (bypasses factory).
         /// </summary>
         public static void SetForTesting(IHttpTransport transport)
@@ -97,6 +130,7 @@ namespace TurboHTTP.Core
             {
                 _factory = null;
                 _backendFactory = null;
+                _advancedFactory = null;
                 _lazy = null;
             }
         }

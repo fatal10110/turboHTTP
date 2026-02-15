@@ -219,15 +219,19 @@ namespace TurboHTTP.Transport.Tcp
     /// Thread-safe TCP connection pool keyed by host:port:secure.
     /// Manages idle connection reuse, per-host concurrency limits, TLS handshake delegation,
     /// and DNS resolution with timeout.
+    /// Uses IPv6-first sequential connect attempts (RFC 6724 preference). Full Happy Eyeballs
+    /// parallel racing (RFC 8305) is deferred to a future phase.
+    /// Per-host semaphore limits are advisory under rare eviction races during high churn.
     /// </summary>
     public sealed class TcpConnectionPool : IDisposable
     {
-        private const int DnsTimeoutMs = 5000;
+        private const int DefaultDnsTimeoutMs = 10000;
         private const int MaxSemaphoreEntries = 1000;
 
         private readonly int _maxConnectionsPerHost;
         private readonly TimeSpan _connectionIdleTimeout;
         private readonly TlsBackend _tlsBackend;
+        private readonly int _dnsTimeoutMs;
         private volatile bool _disposed;
 
         private readonly ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>> _idleConnections
@@ -239,19 +243,27 @@ namespace TurboHTTP.Transport.Tcp
         /// <param name="maxConnectionsPerHost">Maximum concurrent connections per host (default 6, matches browser convention).</param>
         /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 2 minutes).</param>
         /// <param name="tlsBackend">TLS backend selection strategy (default Auto).</param>
+        /// <param name="dnsTimeout">Timeout for DNS lookups. Default 10 seconds.</param>
         public TcpConnectionPool(
             int maxConnectionsPerHost = 6,
             TimeSpan? connectionIdleTimeout = null,
-            TlsBackend tlsBackend = TlsBackend.Auto)
+            TlsBackend tlsBackend = TlsBackend.Auto,
+            TimeSpan? dnsTimeout = null)
         {
             if (maxConnectionsPerHost <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
             if (connectionIdleTimeout.HasValue && connectionIdleTimeout.Value <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(connectionIdleTimeout), "Must be positive");
+            if (dnsTimeout.HasValue && dnsTimeout.Value <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(dnsTimeout), "Must be positive");
+            if (dnsTimeout.HasValue && dnsTimeout.Value.TotalMilliseconds > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(dnsTimeout),
+                    "Must be less than or equal to Int32.MaxValue milliseconds.");
 
             _maxConnectionsPerHost = maxConnectionsPerHost;
             _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
             _tlsBackend = tlsBackend;
+            _dnsTimeoutMs = dnsTimeout.HasValue ? (int)dnsTimeout.Value.TotalMilliseconds : DefaultDnsTimeoutMs;
         }
 
         /// <summary>
@@ -376,7 +388,7 @@ namespace TurboHTTP.Transport.Tcp
             // Dns.GetHostAddressesAsync has no CancellationToken in .NET Standard 2.1.
             // Wrap with a timeout to prevent 30+ second hangs on mobile networks.
             var dnsTask = Dns.GetHostAddressesAsync(host);
-            var timeoutTask = Task.Delay(DnsTimeoutMs, ct);
+            var timeoutTask = Task.Delay(_dnsTimeoutMs, ct);
             var completed = await Task.WhenAny(dnsTask, timeoutTask).ConfigureAwait(false);
 
             if (completed == timeoutTask)
@@ -386,13 +398,13 @@ namespace TurboHTTP.Transport.Tcp
                 _ = dnsTask.ContinueWith(
                     static t => { _ = t.Exception; },
                     CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted,
+                    TaskContinuationOptions.NotOnRanToCompletion,
                     TaskScheduler.Default);
 
                 // Check cancellation FIRST — distinguish user cancellation from DNS timeout.
                 ct.ThrowIfCancellationRequested();
                 throw new UHttpException(new UHttpError(UHttpErrorType.Timeout,
-                    $"DNS resolution for '{host}' timed out after {DnsTimeoutMs}ms"));
+                    $"DNS resolution for '{host}' timed out after {_dnsTimeoutMs}ms"));
             }
 
             return await dnsTask.ConfigureAwait(false);
@@ -464,6 +476,8 @@ namespace TurboHTTP.Transport.Tcp
         /// 1. The previous response was not fully consumed
         /// 2. The server sent unexpected data
         /// In either case, the connection is not safe to reuse — close it.
+        /// TLS caveat: Socket.Available only reports kernel-buffered bytes and cannot see
+        /// decrypted bytes buffered inside SslStream. This check is best-effort only.
         /// </summary>
         private static bool HasUnexpectedData(PooledConnection connection)
         {

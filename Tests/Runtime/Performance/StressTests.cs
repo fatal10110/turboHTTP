@@ -257,6 +257,74 @@ namespace TurboHTTP.Tests.Performance
         }
 
         [Test]
+        public void RequestQueue_Shutdown_UnblocksPendingDequeue()
+        {
+            Task.Run(async () =>
+            {
+                var queue = new RequestQueue<string>();
+                try
+                {
+                    var blockedDequeue = queue.DequeueAsync();
+
+                    // Ensure the dequeue has reached wait state before shutdown.
+                    await Task.Delay(25);
+                    queue.Shutdown();
+
+                    var completed = await Task.WhenAny(blockedDequeue, Task.Delay(1000));
+                    Assert.AreSame(blockedDequeue, completed,
+                        "Blocked dequeue should be released promptly after shutdown.");
+
+                    try
+                    {
+                        await blockedDequeue;
+                        Assert.Fail("Expected OperationCanceledException");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Expected
+                    }
+                }
+                finally
+                {
+                    queue.Dispose();
+                }
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RequestQueue_ForceShutdown_CancelsDequeueImmediately()
+        {
+            Task.Run(async () =>
+            {
+                var queue = new RequestQueue<string>();
+                try
+                {
+                    queue.Enqueue("pending");
+                    queue.ForceShutdown();
+
+                    var dequeueTask = queue.DequeueAsync();
+                    var completed = await Task.WhenAny(dequeueTask, Task.Delay(1000));
+                    Assert.AreSame(dequeueTask, completed,
+                        "Dequeue should complete immediately after ForceShutdown.");
+
+                    try
+                    {
+                        await dequeueTask;
+                        Assert.Fail("Expected OperationCanceledException");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Expected
+                    }
+                }
+                finally
+                {
+                    queue.Dispose();
+                }
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void UHttpClient_ThrowsAfterDispose()
         {
             Task.Run(async () =>
@@ -298,6 +366,48 @@ namespace TurboHTTP.Tests.Performance
 
             client.Dispose();
             Assert.DoesNotThrow(() => client.Dispose());
+        }
+
+        [Test]
+        public void ConcurrencyMiddleware_OwnedLimiter_DisposedWithClient()
+        {
+            Task.Run(async () =>
+            {
+                var middleware = new ConcurrencyMiddleware(maxConnectionsPerHost: 1, maxTotalConnections: 1);
+                Assert.IsTrue(middleware is IDisposable);
+
+                var transport = new MockTransport(HttpStatusCode.OK);
+                var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = false,
+                    Middlewares = new List<IHttpMiddleware> { middleware }
+                });
+
+                client.Dispose();
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
+                var context = new RequestContext(request);
+
+                try
+                {
+                    await middleware.InvokeAsync(
+                        request,
+                        context,
+                        (req, ctx, ct) => Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            null,
+                            ctx.Elapsed,
+                            req)),
+                        CancellationToken.None);
+                    Assert.Fail("Expected ObjectDisposedException");
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Expected
+                }
+            }).GetAwaiter().GetResult();
         }
 
         [Test]

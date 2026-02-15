@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -30,16 +31,28 @@ namespace TurboHTTP.Core
         {
             _options = options?.Clone() ?? new UHttpClientOptions();
 
+            if (_options.Http2MaxDecodedHeaderBytes <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(_options.Http2MaxDecodedHeaderBytes),
+                    _options.Http2MaxDecodedHeaderBytes,
+                    "Must be greater than 0.");
+            }
+
             if (_options.Transport != null)
             {
                 _transport = _options.Transport;
                 _ownsTransport = _options.DisposeTransport;
             }
-            else if (_options.TlsBackend != TlsBackend.Auto)
+            else if (_options.TlsBackend != TlsBackend.Auto ||
+                _options.Http2MaxDecodedHeaderBytes != UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
             {
-                // Non-default TLS backend requires a dedicated transport instance
-                // because the shared default singleton is always TlsBackend.Auto.
-                _transport = HttpTransportFactory.CreateWithBackend(_options.TlsBackend);
+                // Non-default TLS backend or custom transport hardening options require
+                // a dedicated transport instance because the shared default singleton
+                // uses default configuration.
+                _transport = HttpTransportFactory.CreateWithOptions(
+                    _options.TlsBackend,
+                    _options.Http2MaxDecodedHeaderBytes);
                 _ownsTransport = true;
             }
             else
@@ -135,6 +148,10 @@ namespace TurboHTTP.Core
                 throw new UHttpException(
                     new UHttpError(UHttpErrorType.Unknown, ex.Message, ex));
             }
+            finally
+            {
+                context.Clear();
+            }
         }
 
         public void Dispose()
@@ -142,22 +159,48 @@ namespace TurboHTTP.Core
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            if (_ownsTransport)
-            {
-                _transport.Dispose();
-            }
+            GC.SuppressFinalize(this);
 
-            // Dispose any disposable middlewares (e.g., ConcurrencyLimiter)
+            List<Exception> disposeErrors = null;
+
             if (_options.Middlewares != null)
             {
-                foreach (var middleware in _options.Middlewares)
+                // Dispose in reverse registration order (LIFO).
+                for (int i = _options.Middlewares.Count - 1; i >= 0; i--)
                 {
-                    if (middleware is IDisposable disposable)
+                    if (!(_options.Middlewares[i] is IDisposable disposable))
+                        continue;
+
+                    try
                     {
                         disposable.Dispose();
                     }
+                    catch (Exception ex)
+                    {
+                        if (disposeErrors == null)
+                            disposeErrors = new List<Exception>();
+                        disposeErrors.Add(ex);
+                    }
                 }
             }
+
+            // Transport is disposed last.
+            if (_ownsTransport)
+            {
+                try
+                {
+                    _transport.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    if (disposeErrors == null)
+                        disposeErrors = new List<Exception>();
+                    disposeErrors.Add(ex);
+                }
+            }
+
+            if (disposeErrors != null && disposeErrors.Count > 0)
+                throw new AggregateException("One or more errors occurred while disposing UHttpClient.", disposeErrors);
         }
 
         private void ThrowIfDisposed()

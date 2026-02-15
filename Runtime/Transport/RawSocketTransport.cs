@@ -21,12 +21,34 @@ namespace TurboHTTP.Transport
     public sealed class RawSocketTransport : IHttpTransport
     {
         private readonly TcpConnectionPool _pool;
-        private readonly Http2ConnectionManager _h2Manager = new Http2ConnectionManager();
+        private readonly Http2ConnectionManager _h2Manager;
         private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for atomic CAS)
 
+        /// <summary>
+        /// Backward-compatible constructor signature retained for binary compatibility.
+        /// </summary>
         public RawSocketTransport(TcpConnectionPool pool = null, TlsBackend tlsBackend = TlsBackend.Auto)
+            : this(pool, tlsBackend, UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
         {
-            _pool = pool ?? new TcpConnectionPool(tlsBackend: tlsBackend);
+        }
+
+        public RawSocketTransport(
+            TcpConnectionPool pool,
+            TlsBackend tlsBackend,
+            int http2MaxDecodedHeaderBytes)
+        {
+            if (http2MaxDecodedHeaderBytes <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(http2MaxDecodedHeaderBytes),
+                    http2MaxDecodedHeaderBytes,
+                    "Must be greater than 0.");
+            }
+
+            _pool = pool ?? new TcpConnectionPool(
+                maxConnectionsPerHost: PlatformConfig.RecommendedMaxConcurrency,
+                tlsBackend: tlsBackend);
+            _h2Manager = new Http2ConnectionManager(http2MaxDecodedHeaderBytes);
         }
 
         /// <summary>
@@ -38,7 +60,11 @@ namespace TurboHTTP.Transport
         {
             HttpTransportFactory.Register(
                 () => new RawSocketTransport(),
-                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend));
+                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend),
+                (tlsBackend, http2MaxDecodedHeaderBytes) =>
+                    new RawSocketTransport(
+                        tlsBackend: tlsBackend,
+                        http2MaxDecodedHeaderBytes: http2MaxDecodedHeaderBytes));
         }
 
         public async Task<UHttpResponse> SendAsync(

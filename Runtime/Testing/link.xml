@@ -1,0 +1,11 @@
+<linker>
+  <!--
+    RecordReplayTransport hashing path (SHA-256).
+    Preserve providers used by SHA256.Create() on Unity/IL2CPP profiles.
+  -->
+  <assembly fullname="mscorlib">
+    <type fullname="System.Security.Cryptography.SHA256" preserve="all" />
+    <type fullname="System.Security.Cryptography.SHA256Managed" preserve="all" />
+    <type fullname="System.Security.Cryptography.SHA256CryptoServiceProvider" preserve="all" />
+  </assembly>
+</linker>

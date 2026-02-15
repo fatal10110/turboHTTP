@@ -317,6 +317,8 @@ namespace TurboHTTP.Transport.Http1
                         throw new IOException("Response body exceeds maximum size");
 
                     // Read chunk data using pooled buffer to avoid per-chunk allocation
+                    if (chunkSize > int.MaxValue)
+                        throw new IOException("Chunk size exceeds supported range");
                     int remaining = (int)chunkSize;
                     var readBuf = ArrayPool<byte>.Shared.Rent(Math.Min(remaining, 8192));
                     try
@@ -357,6 +359,8 @@ namespace TurboHTTP.Transport.Http1
             if (length > MaxResponseBodySize)
                 throw new IOException("Response body exceeds maximum size");
 
+            // Known limitation: fixed-length bodies allocate one contiguous array.
+            // Large responses may hit LOH; streaming body APIs are planned for Phase 10.
             var buffer = new byte[length];
             await ReadExactAsync(stream, buffer, 0, length, ct).ConfigureAwait(false);
             return buffer;
@@ -364,26 +368,28 @@ namespace TurboHTTP.Transport.Http1
 
         private static async Task<byte[]> ReadToEndAsync(Stream stream, CancellationToken ct)
         {
-            var ms = new MemoryStream();
-            var buffer = ArrayPool<byte>.Shared.Rent(8192);
-            try
+            using (var ms = new MemoryStream())
             {
-                while (true)
+                var buffer = ArrayPool<byte>.Shared.Rent(8192);
+                try
                 {
-                    int read = await stream.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
-                    if (read == 0) break;
+                    while (true)
+                    {
+                        int read = await stream.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
+                        if (read == 0) break;
 
-                    ms.Write(buffer, 0, read);
-                    if (ms.Length > MaxResponseBodySize)
-                        throw new IOException("Response body exceeds maximum size");
+                        ms.Write(buffer, 0, read);
+                        if (ms.Length > MaxResponseBodySize)
+                            throw new IOException("Response body exceeds maximum size");
+                    }
                 }
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
 
-            return ms.ToArray();
+                return ms.ToArray();
+            }
         }
 
         private static async Task ReadExactAsync(

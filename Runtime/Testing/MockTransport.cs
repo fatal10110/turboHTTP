@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net;
+using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -13,9 +17,35 @@ namespace TurboHTTP.Testing
     /// </summary>
     public class MockTransport : IHttpTransport
     {
-        private readonly Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>> _handler;
+        private readonly Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>> _fallbackHandler;
+        private readonly ConcurrentQueue<QueuedResponse> _queuedResponses = new ConcurrentQueue<QueuedResponse>();
+        private readonly ConcurrentQueue<UHttpRequest> _capturedRequests = new ConcurrentQueue<UHttpRequest>();
         private int _requestCount;
         private volatile UHttpRequest _lastRequest;
+        private int _disposed;
+
+        private sealed class QueuedResponse
+        {
+            public readonly HttpStatusCode StatusCode;
+            public readonly HttpHeaders Headers;
+            public readonly byte[] Body;
+            public readonly UHttpError Error;
+            public readonly TimeSpan Delay;
+
+            public QueuedResponse(
+                HttpStatusCode statusCode,
+                HttpHeaders headers,
+                byte[] body,
+                UHttpError error,
+                TimeSpan delay)
+            {
+                StatusCode = statusCode;
+                Headers = headers?.Clone() ?? new HttpHeaders();
+                Body = body != null ? (byte[])body.Clone() : null;
+                Error = error;
+                Delay = delay;
+            }
+        }
 
         /// <summary>
         /// Number of times SendAsync has been called.
@@ -28,6 +58,11 @@ namespace TurboHTTP.Testing
         public UHttpRequest LastRequest => _lastRequest;
 
         /// <summary>
+        /// Snapshot of captured requests in send order.
+        /// </summary>
+        public IReadOnlyList<UHttpRequest> CapturedRequests => _capturedRequests.ToArray();
+
+        /// <summary>
         /// Create a MockTransport that returns the specified status code with
         /// optional headers, body, and error.
         /// </summary>
@@ -37,13 +72,8 @@ namespace TurboHTTP.Testing
             byte[] body = null,
             UHttpError error = null)
         {
-            var responseHeaders = headers ?? new HttpHeaders();
-            _handler = (req, ctx, ct) =>
-            {
-                var response = new UHttpResponse(
-                    statusCode, responseHeaders, body, ctx.Elapsed, req, error);
-                return Task.FromResult(response);
-            };
+            _fallbackHandler = (req, ctx, ct) => Task.FromResult(
+                CreateResponse(statusCode, headers, body, error, req, ctx));
         }
 
         /// <summary>
@@ -53,7 +83,7 @@ namespace TurboHTTP.Testing
         public MockTransport(
             Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>> handler)
         {
-            _handler = handler ?? throw new ArgumentNullException(nameof(handler));
+            _fallbackHandler = handler ?? throw new ArgumentNullException(nameof(handler));
         }
 
         /// <summary>
@@ -62,25 +92,188 @@ namespace TurboHTTP.Testing
         public MockTransport(Func<UHttpRequest, UHttpResponse> handler)
         {
             if (handler == null) throw new ArgumentNullException(nameof(handler));
-            _handler = (req, ctx, ct) => Task.FromResult(handler(req));
+            _fallbackHandler = (req, ctx, ct) => Task.FromResult(handler(req));
         }
 
-        public Task<UHttpResponse> SendAsync(
+        /// <summary>
+        /// Queue a deterministic response fixture.
+        /// </summary>
+        public void EnqueueResponse(
+            HttpStatusCode statusCode = HttpStatusCode.OK,
+            HttpHeaders headers = null,
+            byte[] body = null,
+            UHttpError error = null,
+            TimeSpan? delay = null)
+        {
+            var effectiveDelay = delay ?? TimeSpan.Zero;
+            if (effectiveDelay < TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(delay), "Delay must be >= 0.");
+
+            _queuedResponses.Enqueue(new QueuedResponse(
+                statusCode,
+                headers,
+                body,
+                error,
+                effectiveDelay));
+        }
+
+        /// <summary>
+        /// Queue a JSON response fixture using the project JSON facade.
+        /// </summary>
+        public void EnqueueJsonResponse<T>(
+            T payload,
+            HttpStatusCode statusCode = HttpStatusCode.OK,
+            TimeSpan? delay = null)
+        {
+            var json = SerializeViaProjectJson(payload, typeof(T));
+            var headers = new HttpHeaders();
+            headers.Set("Content-Type", "application/json");
+            EnqueueResponse(
+                statusCode,
+                headers,
+                Encoding.UTF8.GetBytes(json),
+                error: null,
+                delay: delay);
+        }
+
+        /// <summary>
+        /// Queue an error response fixture for deterministic error-path tests.
+        /// </summary>
+        public void EnqueueError(
+            UHttpError error,
+            HttpStatusCode statusCode = HttpStatusCode.InternalServerError,
+            HttpHeaders headers = null,
+            byte[] body = null,
+            TimeSpan? delay = null)
+        {
+            if (error == null) throw new ArgumentNullException(nameof(error));
+            EnqueueResponse(statusCode, headers, body, error, delay);
+        }
+
+        /// <summary>
+        /// Clear all queued response fixtures.
+        /// </summary>
+        public void ClearQueuedResponses()
+        {
+            while (_queuedResponses.TryDequeue(out _))
+            {
+            }
+        }
+
+        /// <summary>
+        /// Clear captured request history.
+        /// </summary>
+        public void ClearCapturedRequests()
+        {
+            while (_capturedRequests.TryDequeue(out _))
+            {
+            }
+        }
+
+        public async Task<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default)
         {
+            ThrowIfDisposed();
             Interlocked.Increment(ref _requestCount);
             _lastRequest = request;
+            _capturedRequests.Enqueue(request);
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            return _handler(request, context, cancellationToken);
+            if (_queuedResponses.TryDequeue(out var queued))
+            {
+                if (queued.Delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(queued.Delay, cancellationToken).ConfigureAwait(false);
+                }
+
+                return CreateResponse(
+                    queued.StatusCode,
+                    queued.Headers,
+                    queued.Body,
+                    queued.Error,
+                    request,
+                    context);
+            }
+
+            if (_fallbackHandler != null)
+            {
+                return await _fallbackHandler(request, context, cancellationToken).ConfigureAwait(false);
+            }
+
+            throw new InvalidOperationException(
+                "MockTransport has no queued responses and no fallback handler. " +
+                "Call EnqueueResponse/EnqueueJsonResponse before sending.");
         }
 
         public void Dispose()
         {
-            // No resources to dispose
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
+            ClearQueuedResponses();
+            ClearCapturedRequests();
+        }
+
+        private static UHttpResponse CreateResponse(
+            HttpStatusCode statusCode,
+            HttpHeaders headers,
+            byte[] body,
+            UHttpError error,
+            UHttpRequest request,
+            RequestContext context)
+        {
+            var responseHeaders = headers?.Clone() ?? new HttpHeaders();
+            var responseBody = body != null ? (byte[])body.Clone() : null;
+            return new UHttpResponse(
+                statusCode,
+                responseHeaders,
+                responseBody,
+                context?.Elapsed ?? TimeSpan.Zero,
+                request,
+                error);
+        }
+
+        private static string SerializeViaProjectJson(object payload, Type payloadType)
+        {
+            var serializerType = Type.GetType("TurboHTTP.JSON.JsonSerializer, TurboHTTP.JSON", throwOnError: false);
+            if (serializerType == null)
+            {
+                throw new InvalidOperationException(
+                    "TurboHTTP.JSON assembly is required for EnqueueJsonResponse. " +
+                    "Install/enable TurboHTTP.JSON and ensure it is loaded.");
+            }
+
+            var serializeMethod = serializerType.GetMethod(
+                "Serialize",
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                types: new[] { typeof(object), typeof(Type) },
+                modifiers: null);
+            if (serializeMethod == null)
+            {
+                throw new InvalidOperationException(
+                    "TurboHTTP.JSON.JsonSerializer.Serialize(object, Type) was not found.");
+            }
+
+            try
+            {
+                return (string)serializeMethod.Invoke(null, new[] { payload, payloadType });
+            }
+            catch (TargetInvocationException tie) when (tie.InnerException != null)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to serialize queued JSON payload of type '{payloadType.FullName}'.",
+                    tie.InnerException);
+            }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(MockTransport));
         }
     }
 }

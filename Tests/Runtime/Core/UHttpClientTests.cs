@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -35,6 +37,78 @@ namespace TurboHTTP.Tests.Core
             public void Dispose()
             {
                 Disposed = true;
+            }
+        }
+
+        private sealed class TrackingDisposeMiddleware : IHttpMiddleware, IDisposable
+        {
+            private readonly List<string> _disposeOrder;
+            private readonly string _name;
+            private readonly bool _throwOnDispose;
+
+            public bool Disposed { get; private set; }
+
+            public TrackingDisposeMiddleware(List<string> disposeOrder, string name, bool throwOnDispose = false)
+            {
+                _disposeOrder = disposeOrder;
+                _name = name;
+                _throwOnDispose = throwOnDispose;
+            }
+
+            public Task<UHttpResponse> InvokeAsync(
+                UHttpRequest request,
+                RequestContext context,
+                HttpPipelineDelegate next,
+                CancellationToken cancellationToken)
+            {
+                return next(request, context, cancellationToken);
+            }
+
+            public void Dispose()
+            {
+                Disposed = true;
+                _disposeOrder?.Add(_name);
+
+                if (_throwOnDispose)
+                    throw new InvalidOperationException($"{_name} dispose failed");
+            }
+        }
+
+        private sealed class TrackingDisposeTransport : IHttpTransport
+        {
+            private readonly List<string> _disposeOrder;
+            private readonly string _name;
+            private readonly bool _throwOnDispose;
+
+            public bool Disposed { get; private set; }
+
+            public TrackingDisposeTransport(List<string> disposeOrder, string name = "transport", bool throwOnDispose = false)
+            {
+                _disposeOrder = disposeOrder;
+                _name = name;
+                _throwOnDispose = throwOnDispose;
+            }
+
+            public Task<UHttpResponse> SendAsync(
+                UHttpRequest request,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult(new UHttpResponse(
+                    HttpStatusCode.OK,
+                    new HttpHeaders(),
+                    Array.Empty<byte>(),
+                    TimeSpan.Zero,
+                    request));
+            }
+
+            public void Dispose()
+            {
+                Disposed = true;
+                _disposeOrder?.Add(_name);
+
+                if (_throwOnDispose)
+                    throw new InvalidOperationException($"{_name} dispose failed");
             }
         }
 
@@ -256,6 +330,19 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void ClientOptions_Clone_CopiesHttp2MaxDecodedHeaderBytes()
+        {
+            var options = new UHttpClientOptions
+            {
+                Http2MaxDecodedHeaderBytes = 512 * 1024
+            };
+
+            var clone = options.Clone();
+
+            Assert.AreEqual(512 * 1024, clone.Http2MaxDecodedHeaderBytes);
+        }
+
+        [Test]
         public void Client_ImplementsIDisposable()
         {
             using var client = new UHttpClient();
@@ -369,6 +456,72 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void Client_CustomHttp2HeaderLimit_UsesOwnedFactoryTransport()
+        {
+            var defaultTransport = new TrackingTransport();
+            var customTransport = new TrackingTransport();
+            int capturedMaxDecodedHeaderBytes = -1;
+            TlsBackend capturedTlsBackend = TlsBackend.Auto;
+
+            HttpTransportFactory.Register(
+                () => defaultTransport,
+                tlsBackend => throw new InvalidOperationException("Backend factory should not be used."),
+                (tlsBackend, http2MaxDecodedHeaderBytes) =>
+                {
+                    capturedTlsBackend = tlsBackend;
+                    capturedMaxDecodedHeaderBytes = http2MaxDecodedHeaderBytes;
+                    return customTransport;
+                });
+
+            var client = new UHttpClient(new UHttpClientOptions
+            {
+                Http2MaxDecodedHeaderBytes = 384 * 1024
+            });
+
+            client.Dispose();
+
+            Assert.AreEqual(TlsBackend.Auto, capturedTlsBackend);
+            Assert.AreEqual(384 * 1024, capturedMaxDecodedHeaderBytes);
+            Assert.IsTrue(customTransport.Disposed);
+            Assert.IsFalse(defaultTransport.Disposed);
+        }
+
+        [Test]
+        public void Constructor_InvalidHttp2HeaderLimit_ThrowsArgumentOutOfRangeException()
+        {
+            var ex = Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new UHttpClient(new UHttpClientOptions
+                {
+                    Http2MaxDecodedHeaderBytes = 0
+                }));
+
+            Assert.IsNotNull(ex);
+            Assert.AreEqual("Http2MaxDecodedHeaderBytes", ex.ParamName);
+        }
+
+        [Test]
+        public void HttpTransportFactory_Register_BackwardCompatibleOverloadExists()
+        {
+            var method = typeof(HttpTransportFactory).GetMethod(
+                "Register",
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                types: new[] { typeof(Func<IHttpTransport>), typeof(Func<TlsBackend, IHttpTransport>) },
+                modifiers: null);
+
+            Assert.IsNotNull(method);
+        }
+
+        [Test]
+        public void RawSocketTransport_BackwardCompatibleConstructorExists()
+        {
+            var ctor = typeof(RawSocketTransport).GetConstructor(
+                new[] { typeof(TurboHTTP.Transport.Tcp.TcpConnectionPool), typeof(TlsBackend) });
+
+            Assert.IsNotNull(ctor);
+        }
+
+        [Test]
         public void Client_Dispose_DisposesUserTransport_WhenDisposeTransportTrue()
         {
             var transport = new TrackingTransport();
@@ -394,6 +547,92 @@ namespace TurboHTTP.Tests.Core
 
             client.Dispose();
             Assert.IsFalse(transport.Disposed);
+        }
+
+        [Test]
+        public void Client_Dispose_DisposesMiddlewaresInReverseOrder_ThenTransport()
+        {
+            var disposeOrder = new List<string>();
+            var middleware1 = new TrackingDisposeMiddleware(disposeOrder, "mw1");
+            var middleware2 = new TrackingDisposeMiddleware(disposeOrder, "mw2");
+            var middleware3 = new TrackingDisposeMiddleware(disposeOrder, "mw3");
+            var transport = new TrackingDisposeTransport(disposeOrder);
+
+            var client = new UHttpClient(new UHttpClientOptions
+            {
+                Transport = transport,
+                DisposeTransport = true,
+                Middlewares = new List<IHttpMiddleware> { middleware1, middleware2, middleware3 }
+            });
+
+            client.Dispose();
+
+            Assert.AreEqual(new[] { "mw3", "mw2", "mw1", "transport" }, disposeOrder.ToArray());
+            Assert.IsTrue(transport.Disposed);
+        }
+
+        [Test]
+        public void Client_Dispose_ContinuesAfterDisposeErrors_ThrowsAggregateException()
+        {
+            var disposeOrder = new List<string>();
+            var middleware1 = new TrackingDisposeMiddleware(disposeOrder, "mw1");
+            var middleware2 = new TrackingDisposeMiddleware(disposeOrder, "mw2", throwOnDispose: true);
+            var transport = new TrackingDisposeTransport(disposeOrder);
+
+            var client = new UHttpClient(new UHttpClientOptions
+            {
+                Transport = transport,
+                DisposeTransport = true,
+                Middlewares = new List<IHttpMiddleware> { middleware1, middleware2 }
+            });
+
+            var ex = Assert.Throws<AggregateException>(() => client.Dispose());
+
+            Assert.IsNotNull(ex);
+            Assert.AreEqual(1, ex.InnerExceptions.Count);
+            Assert.AreEqual(new[] { "mw2", "mw1", "transport" }, disposeOrder.ToArray());
+            Assert.IsTrue(middleware1.Disposed);
+            Assert.IsTrue(middleware2.Disposed);
+            Assert.IsTrue(transport.Disposed);
+            Assert.DoesNotThrow(() => client.Dispose());
+        }
+
+        [Test]
+        public void SendAsync_ClearsRequestContextAfterCompletion()
+        {
+            Task.Run(async () =>
+            {
+                RequestContext capturedContext = null;
+                var transport = new TrackingTransport
+                {
+                    OnSendAsync = (req, ctx, ct) =>
+                    {
+                        capturedContext = ctx;
+                        ctx.SetState("k", 123);
+                        ctx.RecordEvent("TransportEvent");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            Array.Empty<byte>(),
+                            TimeSpan.Zero,
+                            req));
+                    }
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
+                var response = await client.SendAsync(request);
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.IsNotNull(capturedContext);
+                Assert.AreEqual(0, capturedContext.Timeline.Count);
+                Assert.AreEqual(0, capturedContext.State.Count);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]

@@ -16,7 +16,10 @@ namespace TurboHTTP.Performance
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
 
         private readonly SemaphoreSlim _globalSemaphore;
+        private readonly CancellationTokenSource _disposeCts = new CancellationTokenSource();
         private readonly int _maxConnectionsPerHost;
+        private int _disposing;
+        private int _activeOperations;
         private int _disposed;
 
         /// <summary>
@@ -61,26 +64,60 @@ namespace TurboHTTP.Performance
         /// <exception cref="OperationCanceledException">The token was cancelled.</exception>
         public async Task AcquireAsync(string host, CancellationToken cancellationToken = default)
         {
-            ThrowIfDisposed();
-
             if (host == null)
                 throw new ArgumentNullException(nameof(host));
 
-            // Acquire global permit first to prevent starvation
-            await _globalSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            ThrowIfDisposed();
+
+            Interlocked.Increment(ref _activeOperations);
+
+            bool globalAcquired = false;
+            bool hostAcquired = false;
 
             try
             {
+                if (IsDisposingOrDisposed())
+                    throw new ObjectDisposedException(nameof(ConcurrencyLimiter));
+
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken, _disposeCts.Token);
+
+                // Acquire global permit first to prevent starvation.
+                await _globalSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+                globalAcquired = true;
+
                 var hostSemaphore = _hostSemaphores.GetOrAdd(host,
                     _ => new SemaphoreSlim(_maxConnectionsPerHost, _maxConnectionsPerHost));
 
-                await hostSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await hostSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+                hostAcquired = true;
+            }
+            catch (OperationCanceledException) when (IsDisposingOrDisposed() && !cancellationToken.IsCancellationRequested)
+            {
+                throw new ObjectDisposedException(nameof(ConcurrencyLimiter));
             }
             catch
             {
-                // If per-host acquire fails (cancellation), release the global permit
-                _globalSemaphore.Release();
+                // If per-host acquire fails/cancels after global acquire, release global permit.
+                if (globalAcquired && !hostAcquired)
+                {
+                    try
+                    {
+                        _globalSemaphore.Release();
+                    }
+                    catch (ObjectDisposedException) when (IsDisposingOrDisposed())
+                    {
+                        // Disposer owns semaphore lifetime once shutdown starts.
+                    }
+                }
+
                 throw;
+            }
+            finally
+            {
+                // Failed acquires still consume an active-operation slot that must be released.
+                if (!hostAcquired)
+                    EndOperation();
             }
         }
 
@@ -95,12 +132,30 @@ namespace TurboHTTP.Performance
             if (host == null)
                 throw new ArgumentNullException(nameof(host));
 
-            if (_hostSemaphores.TryGetValue(host, out var hostSemaphore))
+            try
             {
-                hostSemaphore.Release();
+                if (_hostSemaphores.TryGetValue(host, out var hostSemaphore))
+                {
+                    hostSemaphore.Release();
+                }
             }
+            catch (ObjectDisposedException) when (IsDisposingOrDisposed())
+            {
+                // Disposal race: semaphore already torn down.
+            }
+            finally
+            {
+                try
+                {
+                    _globalSemaphore.Release();
+                }
+                catch (ObjectDisposedException) when (IsDisposingOrDisposed())
+                {
+                    // Disposal race: semaphore already torn down.
+                }
 
-            _globalSemaphore.Release();
+                EndOperation();
+            }
         }
 
         /// <summary>
@@ -109,6 +164,42 @@ namespace TurboHTTP.Performance
         /// </summary>
         public void Dispose()
         {
+            if (Interlocked.CompareExchange(ref _disposing, 1, 0) != 0)
+                return;
+
+            _disposeCts.Cancel();
+            TryFinalizeDispose();
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (IsDisposingOrDisposed())
+                throw new ObjectDisposedException(nameof(ConcurrencyLimiter));
+        }
+
+        private bool IsDisposingOrDisposed()
+        {
+            return Volatile.Read(ref _disposing) != 0 || Volatile.Read(ref _disposed) != 0;
+        }
+
+        private void EndOperation()
+        {
+            int remaining = Interlocked.Decrement(ref _activeOperations);
+            if (remaining < 0)
+            {
+                Interlocked.Exchange(ref _activeOperations, 0);
+                remaining = 0;
+            }
+
+            if (remaining == 0)
+                TryFinalizeDispose();
+        }
+
+        private void TryFinalizeDispose()
+        {
+            if (Volatile.Read(ref _disposing) == 0 || Volatile.Read(ref _activeOperations) != 0)
+                return;
+
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
@@ -120,12 +211,7 @@ namespace TurboHTTP.Performance
             }
 
             _hostSemaphores.Clear();
-        }
-
-        private void ThrowIfDisposed()
-        {
-            if (Volatile.Read(ref _disposed) != 0)
-                throw new ObjectDisposedException(nameof(ConcurrencyLimiter));
+            _disposeCts.Dispose();
         }
     }
 }

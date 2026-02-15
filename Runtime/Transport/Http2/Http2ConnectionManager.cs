@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -12,11 +13,27 @@ namespace TurboHTTP.Transport.Http2
     /// </summary>
     internal class Http2ConnectionManager : IDisposable
     {
+        private readonly int _maxDecodedHeaderBytes;
+
         private readonly ConcurrentDictionary<string, Http2Connection> _connections
             = new ConcurrentDictionary<string, Http2Connection>(StringComparer.OrdinalIgnoreCase);
 
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _initLocks
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+
+        public Http2ConnectionManager(
+            int maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
+        {
+            if (maxDecodedHeaderBytes <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxDecodedHeaderBytes),
+                    maxDecodedHeaderBytes,
+                    "Must be greater than 0.");
+            }
+
+            _maxDecodedHeaderBytes = maxDecodedHeaderBytes;
+        }
 
         /// <summary>
         /// Get an existing alive h2 connection for this host:port, or null.
@@ -71,7 +88,11 @@ namespace TurboHTTP.Transport.Http2
                 // If InitializeAsync fails (timeout, protocol error, cancellation),
                 // dispose the connection to clean up the stream + read loop.
                 // The lease was already transferred, so we own the stream.
-                var conn = new Http2Connection(tlsStream, host, port);
+                var conn = new Http2Connection(
+                    tlsStream,
+                    host,
+                    port,
+                    maxDecodedHeaderBytes: _maxDecodedHeaderBytes);
                 try
                 {
                     await conn.InitializeAsync(ct);

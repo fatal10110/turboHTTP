@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -66,14 +67,27 @@ namespace TurboHTTP.Transport.Http2
             _readLoopTask != null &&
             !_readLoopTask.IsCompleted;
 
-        public Http2Connection(Stream stream, string host, int port)
+        public Http2Connection(
+            Stream stream,
+            string host,
+            int port,
+            int maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
         {
+            if (maxDecodedHeaderBytes <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxDecodedHeaderBytes),
+                    maxDecodedHeaderBytes,
+                    "Must be greater than 0.");
+            }
+
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
             Host = host ?? throw new ArgumentNullException(nameof(host));
             Port = port;
             _codec = new Http2FrameCodec(stream);
             _hpackEncoder = new HpackEncoder();
-            _hpackDecoder = new HpackDecoder();
+            _hpackDecoder = new HpackDecoder(maxDecodedHeaderBytes: maxDecodedHeaderBytes);
+            _localSettings.Apply(Http2SettingId.EnablePush, 0);
         }
 
         /// <summary>
@@ -102,7 +116,7 @@ namespace TurboHTTP.Transport.Http2
             // 4. Wait for SETTINGS ACK with timeout
             var ackTask = _settingsAckTcs.Task;
             var timeoutTask = Task.Delay(5000, ct);
-            var completed = await Task.WhenAny(ackTask, timeoutTask);
+            var completed = await Task.WhenAny(ackTask, timeoutTask).ConfigureAwait(false);
 
             if (completed == timeoutTask)
             {
@@ -111,7 +125,7 @@ namespace TurboHTTP.Transport.Http2
                     "HTTP/2 SETTINGS ACK timeout"));
             }
 
-            await ackTask; // propagate any exception
+            await ackTask.ConfigureAwait(false); // propagate any exception
         }
 
         /// <summary>
@@ -138,10 +152,7 @@ namespace TurboHTTP.Transport.Http2
                     $"MAX_CONCURRENT_STREAMS limit reached ({_remoteSettings.MaxConcurrentStreams})"));
 
             // Step 3: Allocate stream ID
-            var streamId = Interlocked.Add(ref _nextStreamId, 2) - 2;
-            if (streamId < 0 || streamId > int.MaxValue)
-                throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                    "Stream ID space exhausted, close and reopen connection"));
+            var streamId = AllocateNextStreamId();
 
             // Step 3: Create stream object (with both send and recv windows)
             var stream = new Http2Stream(streamId, request, context,
@@ -271,7 +282,7 @@ namespace TurboHTTP.Transport.Http2
                     StreamId = streamId,
                     Payload = firstPayload,
                     Length = firstPayload.Length
-                }, ct);
+                }, ct, flush: false);
 
                 while (offset < headerBlock.Length)
                 {
@@ -289,7 +300,7 @@ namespace TurboHTTP.Transport.Http2
                         StreamId = streamId,
                         Payload = chunk,
                         Length = chunkSize
-                    }, ct);
+                    }, ct, flush: isLast);
                 }
             }
         }
@@ -316,12 +327,10 @@ namespace TurboHTTP.Transport.Http2
                     continue;
                 }
 
-                bool isLast = (offset + available) >= body.Length;
-                var payload = new byte[available];
-                Array.Copy(body, offset, payload, 0, available);
-
                 await _writeLock.WaitAsync(ct);
                 bool lockHeld = true;
+                int bytesSent = 0;
+                byte[] payload = null;
                 try
                 {
                     int connWindow = Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0);
@@ -338,16 +347,12 @@ namespace TurboHTTP.Transport.Http2
                         continue;
                     }
 
-                    if (actualAvailable != available)
-                    {
-                        payload = new byte[actualAvailable];
-                        Array.Copy(body, offset, payload, 0, actualAvailable);
-                        available = actualAvailable;
-                        isLast = (offset + available) >= body.Length;
-                    }
+                    bool isLast = (offset + actualAvailable) >= body.Length;
+                    payload = ArrayPool<byte>.Shared.Rent(actualAvailable);
+                    Buffer.BlockCopy(body, offset, payload, 0, actualAvailable);
 
-                    Interlocked.Add(ref _connectionSendWindow, -available);
-                    stream.AdjustSendWindowSize(-available);
+                    Interlocked.Add(ref _connectionSendWindow, -actualAvailable);
+                    stream.AdjustSendWindowSize(-actualAvailable);
 
                     await _codec.WriteFrameAsync(new Http2Frame
                     {
@@ -355,15 +360,18 @@ namespace TurboHTTP.Transport.Http2
                         Flags = isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,
                         StreamId = streamId,
                         Payload = payload,
-                        Length = available
+                        Length = actualAvailable
                     }, ct);
+                    bytesSent = actualAvailable;
                 }
                 finally
                 {
+                    if (payload != null)
+                        ArrayPool<byte>.Shared.Return(payload);
                     if (lockHeld) _writeLock.Release();
                 }
 
-                offset += available;
+                offset += bytesSent;
             }
         }
 
@@ -396,7 +404,7 @@ namespace TurboHTTP.Transport.Http2
                         case Http2FrameType.GoAway:       HandleGoAwayFrame(frame); break;
                         case Http2FrameType.WindowUpdate: HandleWindowUpdateFrame(frame); break;
                         case Http2FrameType.RstStream:    HandleRstStreamFrame(frame); break;
-                        case Http2FrameType.PushPromise:  await RejectPushPromiseAsync(frame, ct); break;
+                        case Http2FrameType.PushPromise:  await RejectPushPromiseAsync(frame); break;
                         case Http2FrameType.Priority:     break; // Ignored (deprecated by RFC 9113)
                     }
                 }
@@ -892,8 +900,15 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        private async Task RejectPushPromiseAsync(Http2Frame frame, CancellationToken ct)
+        private async Task RejectPushPromiseAsync(Http2Frame frame)
         {
+            // RFC 9113 Section 8.4:
+            // A client that sent SETTINGS_ENABLE_PUSH = 0 MUST treat PUSH_PROMISE as
+            // a connection error of type PROTOCOL_ERROR.
+            if (!_localSettings.EnablePush)
+                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    "Received PUSH_PROMISE after advertising ENABLE_PUSH=0");
+
             if (frame.Payload.Length < 4) return;
 
             int promisedStreamId = ((frame.Payload[0] & 0x7F) << 24) | (frame.Payload[1] << 16) |
@@ -903,6 +918,23 @@ namespace TurboHTTP.Transport.Http2
         }
 
         // --- Helpers ---
+
+        private int AllocateNextStreamId()
+        {
+            while (true)
+            {
+                int current = Volatile.Read(ref _nextStreamId);
+
+                // Keep one increment of headroom so _nextStreamId never wraps into negatives.
+                if (current <= 0 || current >= int.MaxValue - 1)
+                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        "Stream ID space exhausted, close and reopen connection"));
+
+                int next = current + 2;
+                if (Interlocked.CompareExchange(ref _nextStreamId, next, current) == current)
+                    return current;
+            }
+        }
 
         private async Task SendWindowUpdateAsync(int streamId, int increment, CancellationToken ct)
         {
@@ -1039,30 +1071,7 @@ namespace TurboHTTP.Transport.Http2
         public void Dispose()
         {
             _cts.Cancel();
-
-            // Best-effort GOAWAY
-            try
-            {
-                int lastStreamId = Math.Max(_nextStreamId - 2, 0);
-                var goawayPayload = new byte[8];
-                goawayPayload[0] = (byte)((lastStreamId >> 24) & 0x7F);
-                goawayPayload[1] = (byte)((lastStreamId >> 16) & 0xFF);
-                goawayPayload[2] = (byte)((lastStreamId >> 8) & 0xFF);
-                goawayPayload[3] = (byte)(lastStreamId & 0xFF);
-                // Error code = NO_ERROR (0x0) — bytes 4-7 are already 0
-
-                _codec.WriteFrameAsync(new Http2Frame
-                {
-                    Type = Http2FrameType.GoAway,
-                    Flags = Http2FrameFlags.None,
-                    StreamId = 0,
-                    Payload = goawayPayload,
-                    Length = 8
-                }, CancellationToken.None).Wait(TimeSpan.FromSeconds(1));
-            }
-            catch { /* best effort */ }
-
-            try { _readLoopTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            SendGoAwayOnDisposeBestEffort();
 
             FailAllStreams(new ObjectDisposedException(nameof(Http2Connection)));
 
@@ -1070,6 +1079,44 @@ namespace TurboHTTP.Transport.Http2
             _cts?.Dispose();
             _windowWaiter?.Dispose();
             _stream?.Dispose();
+        }
+
+        private void SendGoAwayOnDisposeBestEffort()
+        {
+            int lastStreamId = Math.Max(Volatile.Read(ref _nextStreamId) - 2, 0);
+            var goawayPayload = new byte[8];
+            goawayPayload[0] = (byte)((lastStreamId >> 24) & 0x7F);
+            goawayPayload[1] = (byte)((lastStreamId >> 16) & 0xFF);
+            goawayPayload[2] = (byte)((lastStreamId >> 8) & 0xFF);
+            goawayPayload[3] = (byte)(lastStreamId & 0xFF);
+            // Error code = NO_ERROR (0x0) — bytes 4-7 are already 0.
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _writeLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+                    try
+                    {
+                        await _codec.WriteFrameAsync(new Http2Frame
+                        {
+                            Type = Http2FrameType.GoAway,
+                            Flags = Http2FrameFlags.None,
+                            StreamId = 0,
+                            Payload = goawayPayload,
+                            Length = 8
+                        }, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _writeLock.Release();
+                    }
+                }
+                catch
+                {
+                    // Best effort only — Dispose must never block or throw.
+                }
+            });
         }
     }
 }

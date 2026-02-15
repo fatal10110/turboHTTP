@@ -117,7 +117,9 @@ namespace TurboHTTP.Files
         /// </summary>
         public string GetContentType()
         {
-            return $"multipart/form-data; boundary=\"{_boundary}\"";
+            // Unquoted boundary maximizes compatibility with older proxies/servers.
+            // Boundary chars are already validated to RFC 2046 bchars.
+            return $"multipart/form-data; boundary={_boundary}";
         }
 
         /// <summary>
@@ -150,6 +152,7 @@ namespace TurboHTTP.Files
 
         /// <summary>
         /// RFC 2046 bchars: DIGIT / ALPHA / ' ( ) + _ , - . / : = ?
+        /// Intentionally excludes space for stricter interoperability and simpler parsing.
         /// </summary>
         private static bool IsValidBoundaryChar(char c)
         {

@@ -10,6 +10,7 @@ namespace TurboHTTP.Transport.Http2
     internal class HpackDecoder
     {
         private readonly HpackDynamicTable _dynamicTable;
+        private readonly int _maxDecodedHeaderBytes;
         private int _maxTableSizeFromSettings;
         private bool _expectingSizeUpdate;
 
@@ -17,13 +18,18 @@ namespace TurboHTTP.Transport.Http2
         /// Maximum total decoded header bytes per header block (names + values).
         /// Protects against decompression bombs where a small HPACK payload decodes
         /// into a massive header set (e.g., via Huffman expansion or indexed references).
-        /// 128KB matches the common server limit (e.g., Apache, nginx).
+        /// Default is 256KB to reduce false positives on large but legitimate header sets.
         /// </summary>
-        private const int MaxDecodedHeaderBytes = 128 * 1024;
+        private const int DefaultMaxDecodedHeaderBytes = 256 * 1024;
 
-        public HpackDecoder(int maxDynamicTableSize = 4096)
+        public HpackDecoder(int maxDynamicTableSize = 4096, int maxDecodedHeaderBytes = DefaultMaxDecodedHeaderBytes)
         {
+            if (maxDecodedHeaderBytes <= 0)
+                throw new System.ArgumentOutOfRangeException(nameof(maxDecodedHeaderBytes),
+                    maxDecodedHeaderBytes, "Must be greater than 0.");
+
             _dynamicTable = new HpackDynamicTable(maxDynamicTableSize);
+            _maxDecodedHeaderBytes = maxDecodedHeaderBytes;
             _maxTableSizeFromSettings = maxDynamicTableSize;
         }
 
@@ -87,10 +93,10 @@ namespace TurboHTTP.Transport.Http2
                 if (headers.Count > countBefore)
                 {
                     var last = headers[headers.Count - 1];
-                    totalDecodedBytes += last.Name.Length + last.Value.Length;
-                    if (totalDecodedBytes > MaxDecodedHeaderBytes)
+                    totalDecodedBytes += last.Item1.Length + last.Item2.Length;
+                    if (totalDecodedBytes > _maxDecodedHeaderBytes)
                         throw new HpackDecodingException(
-                            $"Decoded header block exceeds {MaxDecodedHeaderBytes} bytes (decompression bomb protection)");
+                            $"Decoded header block exceeds {_maxDecodedHeaderBytes} bytes (decompression bomb protection)");
                 }
             }
 

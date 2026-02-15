@@ -9,9 +9,11 @@ namespace TurboHTTP.Performance
     /// Middleware that enforces per-host and global concurrency limits on HTTP requests.
     /// Wraps <see cref="ConcurrencyLimiter"/> for use in the middleware pipeline.
     /// </summary>
-    public sealed class ConcurrencyMiddleware : IHttpMiddleware
+    public sealed class ConcurrencyMiddleware : IHttpMiddleware, IDisposable
     {
         private readonly ConcurrencyLimiter _limiter;
+        private readonly bool _ownsLimiter;
+        private int _disposed;
 
         /// <summary>
         /// Creates a new concurrency middleware using the specified limiter.
@@ -21,6 +23,7 @@ namespace TurboHTTP.Performance
         public ConcurrencyMiddleware(ConcurrencyLimiter limiter)
         {
             _limiter = limiter ?? throw new ArgumentNullException(nameof(limiter));
+            _ownsLimiter = false;
         }
 
         /// <summary>
@@ -31,6 +34,7 @@ namespace TurboHTTP.Performance
         public ConcurrencyMiddleware(int maxConnectionsPerHost = 6, int maxTotalConnections = 64)
         {
             _limiter = new ConcurrencyLimiter(maxConnectionsPerHost, maxTotalConnections);
+            _ownsLimiter = true;
         }
 
         /// <inheritdoc />
@@ -40,10 +44,14 @@ namespace TurboHTTP.Performance
             HttpPipelineDelegate next,
             CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
+
             var host = ExtractHost(request.Uri);
             context.RecordEvent("ConcurrencyAcquire");
 
+            bool acquired = false;
             await _limiter.AcquireAsync(host, cancellationToken).ConfigureAwait(false);
+            acquired = true;
             try
             {
                 context.RecordEvent("ConcurrencyAcquired");
@@ -51,14 +59,35 @@ namespace TurboHTTP.Performance
             }
             finally
             {
-                _limiter.Release(host);
-                context.RecordEvent("ConcurrencyReleased");
+                if (acquired)
+                {
+                    _limiter.Release(host);
+                    context.RecordEvent("ConcurrencyReleased");
+                }
             }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
+            if (_ownsLimiter)
+                _limiter.Dispose();
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(ConcurrencyMiddleware));
         }
 
         private static string ExtractHost(Uri uri)
         {
-            return uri?.Host ?? "unknown";
+            if (uri == null)
+                throw new ArgumentNullException(nameof(uri));
+
+            return uri.Authority;
         }
     }
 }

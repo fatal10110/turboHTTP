@@ -9,15 +9,20 @@ namespace TurboHTTP.Core
     public class UHttpClientOptions
     {
         /// <summary>
+        /// Default maximum decoded HTTP/2 header bytes per header block.
+        /// </summary>
+        public const int DefaultHttp2MaxDecodedHeaderBytes = 256 * 1024;
+
+        /// <summary>
         /// Base URL for resolving relative request URLs.
         /// </summary>
         public string BaseUrl { get; set; }
 
         /// <summary>
-        /// Default timeout for requests. Defaults to 30 seconds.
+        /// Default timeout for requests. Defaults to <see cref="PlatformConfig.RecommendedTimeout"/>.
         /// Can be overridden per-request via <see cref="UHttpRequestBuilder.WithTimeout"/>.
         /// </summary>
-        public TimeSpan DefaultTimeout { get; set; } = TimeSpan.FromSeconds(30);
+        public TimeSpan DefaultTimeout { get; set; } = PlatformConfig.RecommendedTimeout;
 
         /// <summary>
         /// Default headers applied to every request.
@@ -71,6 +76,18 @@ namespace TurboHTTP.Core
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 
         /// <summary>
+        /// Maximum total decoded HTTP/2 header bytes (name + value) allowed per
+        /// header block. Used as decompression-bomb protection for HPACK decoding.
+        /// Default is 256KB.
+        /// </summary>
+        /// <remarks>
+        /// This option is applied when <see cref="UHttpClient"/> creates its own
+        /// transport instance (default transport path). It does not mutate behavior
+        /// of a user-supplied custom <see cref="Transport"/> instance.
+        /// </remarks>
+        public int Http2MaxDecodedHeaderBytes { get; set; } = DefaultHttp2MaxDecodedHeaderBytes;
+
+        /// <summary>
         /// Creates a deep copy of these options. Headers and middleware list are
         /// cloned; Transport is a shared reference (NOT snapshotted). Middleware
         /// instances are also shared references (typically stateless services —
@@ -90,7 +107,8 @@ namespace TurboHTTP.Core
                 FollowRedirects = FollowRedirects,
                 MaxRedirects = MaxRedirects,
                 DisposeTransport = DisposeTransport,
-                TlsBackend = TlsBackend
+                TlsBackend = TlsBackend,
+                Http2MaxDecodedHeaderBytes = Http2MaxDecodedHeaderBytes
             };
         }
     }

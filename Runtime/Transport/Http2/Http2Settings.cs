@@ -80,13 +80,14 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// Serialize client settings for the initial SETTINGS frame.
-        /// Sends ENABLE_PUSH=0 and MAX_CONCURRENT_STREAMS=100.
+        /// Sends ENABLE_PUSH according to <see cref="EnablePush"/> and
+        /// MAX_CONCURRENT_STREAMS=100.
         /// </summary>
         public byte[] SerializeClientSettings()
         {
             var settings = new List<(Http2SettingId, uint)>
             {
-                (Http2SettingId.EnablePush, 0),
+                (Http2SettingId.EnablePush, EnablePush ? 1u : 0u),
                 (Http2SettingId.MaxConcurrentStreams, 100),
                 (Http2SettingId.MaxHeaderListSize, (uint)MaxHeaderListSize),
             };

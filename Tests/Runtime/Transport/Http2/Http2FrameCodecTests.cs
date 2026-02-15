@@ -198,6 +198,86 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void WriteFrameAsync_UsesFrameLengthNotPayloadBufferLength()        {
+            Task.Run(async () =>
+            {
+                var ms = new MemoryStream();
+                var codec = new Http2FrameCodec(ms);
+                var payload = new byte[] { 1, 2, 3, 4, 5 };
+
+                await codec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Data,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = 1,
+                    Payload = payload,
+                    Length = 3
+                }, CancellationToken.None);
+
+                var written = ms.ToArray();
+                Assert.AreEqual(Http2Constants.FrameHeaderSize + 3, written.Length);
+                Assert.AreEqual(0x00, written[0]);
+                Assert.AreEqual(0x00, written[1]);
+                Assert.AreEqual(0x03, written[2]);
+                Assert.AreEqual(1, written[9]);
+                Assert.AreEqual(2, written[10]);
+                Assert.AreEqual(3, written[11]);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void WriteFrameAsync_LengthExceedsPayload_Throws()        {
+            Task.Run(async () =>
+            {
+                var ms = new MemoryStream();
+                var codec = new Http2FrameCodec(ms);
+                var payload = new byte[] { 1, 2, 3 };
+
+                AssertAsync.ThrowsAsync<ArgumentException>(async () =>
+                    await codec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Data,
+                        Flags = Http2FrameFlags.None,
+                        StreamId = 1,
+                        Payload = payload,
+                        Length = 4
+                    }, CancellationToken.None));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void WriteFrameAsync_FlushFalse_DefersFlush()
+        {
+            Task.Run(async () =>
+            {
+                var stream = new FlushCountingStream();
+                var codec = new Http2FrameCodec(stream);
+
+                await codec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Headers,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = 1,
+                    Payload = new byte[] { 1, 2, 3 },
+                    Length = 3
+                }, CancellationToken.None, flush: false);
+
+                Assert.AreEqual(0, stream.FlushCount);
+
+                await codec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Continuation,
+                    Flags = Http2FrameFlags.EndHeaders,
+                    StreamId = 1,
+                    Payload = new byte[] { 4, 5 },
+                    Length = 2
+                }, CancellationToken.None, flush: true);
+
+                Assert.AreEqual(1, stream.FlushCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void FrameSizeValidation_RejectsOversized()        {
             Task.Run(async () =>
             {
@@ -267,6 +347,23 @@ namespace TurboHTTP.Tests.Transport.Http2
             Assert.AreEqual(original.StreamId, read.StreamId);
             Assert.AreEqual(original.Payload.Length, read.Length);
             Assert.AreEqual(original.Payload, read.Payload);
+        }
+
+        private sealed class FlushCountingStream : MemoryStream
+        {
+            public int FlushCount { get; private set; }
+
+            public override void Flush()
+            {
+                FlushCount++;
+                base.Flush();
+            }
+
+            public override Task FlushAsync(CancellationToken cancellationToken)
+            {
+                FlushCount++;
+                return base.FlushAsync(cancellationToken);
+            }
         }
     }
 }

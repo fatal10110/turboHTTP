@@ -14,6 +14,7 @@ namespace TurboHTTP.Performance
         private readonly Func<T> _factory;
         private readonly Action<T> _reset;
         private readonly int _capacity;
+        private readonly object _lock = new object();
         private int _count;
 
         /// <summary>
@@ -57,27 +58,18 @@ namespace TurboHTTP.Performance
         /// <returns>A pooled or newly created instance.</returns>
         public T Rent()
         {
-            // Try to take an item from the pool using lock-free decrement.
-            // We speculatively decrement, then check if the slot had an item.
-            while (true)
+            lock (_lock)
             {
-                int currentCount = Volatile.Read(ref _count);
-                if (currentCount == 0)
-                    break;
-
-                if (Interlocked.CompareExchange(ref _count, currentCount - 1, currentCount) == currentCount)
+                if (_count > 0)
                 {
-                    int index = currentCount - 1;
-                    T item = Interlocked.Exchange(ref _items[index], null);
+                    int index = _count - 1;
+                    var item = _items[index];
+                    _items[index] = null;
+                    _count--;
+
                     if (item != null)
                         return item;
-
-                    // Slot was null (race with another Rent); the count is already
-                    // decremented, which is correct — the item was logically consumed.
-                    // Fall through to create a new one.
-                    break;
                 }
-                // CAS failed — another thread modified _count, retry.
             }
 
             return _factory();
@@ -86,6 +78,7 @@ namespace TurboHTTP.Performance
         /// <summary>
         /// Return an object to the pool. If the pool is full, the item is discarded.
         /// The reset callback (if provided) is invoked before storing the item.
+        /// If reset throws, the exception propagates and the item is not returned.
         /// </summary>
         /// <param name="item">The item to return. Null items are silently ignored.</param>
         public void Return(T item)
@@ -95,19 +88,13 @@ namespace TurboHTTP.Performance
 
             _reset?.Invoke(item);
 
-            // Try to insert into the pool using lock-free increment.
-            while (true)
+            lock (_lock)
             {
-                int currentCount = Volatile.Read(ref _count);
-                if (currentCount >= _capacity)
+                if (_count >= _capacity)
                     return; // Pool is full — discard item.
 
-                if (Interlocked.CompareExchange(ref _count, currentCount + 1, currentCount) == currentCount)
-                {
-                    _items[currentCount] = item;
-                    return;
-                }
-                // CAS failed — retry.
+                _items[_count] = item;
+                _count++;
             }
         }
     }

@@ -20,7 +20,11 @@ namespace TurboHTTP.Transport
         {
             HttpTransportFactory.Register(
                 () => new RawSocketTransport(),
-                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend));
+                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend),
+                (tlsBackend, http2MaxDecodedHeaderBytes) =>
+                    new RawSocketTransport(
+                        tlsBackend: tlsBackend,
+                        http2MaxDecodedHeaderBytes: http2MaxDecodedHeaderBytes));
         }
     }
 }

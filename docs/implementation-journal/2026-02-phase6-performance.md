@@ -7,7 +7,7 @@ Phase 6 (M2 hardening gate) — pooling primitives, concurrency controls, reques
 ## Files Created
 
 ### Runtime/Performance/ (new files)
-- **ObjectPool.cs** — Generic bounded pool with lock-free CAS operations. Array-backed, Interlocked.CompareExchange for atomic capacity enforcement. Configurable reset callback for cross-request data leakage prevention.
+- **ObjectPool.cs** — Generic bounded pool using a `lock` based stack strategy. Prioritizes LIFO access for better CPU cache locality (hot items reused first) and O(1) complexity over lock-free complexity. Includes configurable reset callback for cross-request data leakage prevention.
 - **ByteArrayPool.cs** — Static facade over `ArrayPool<byte>.Shared`. Rent/Return with optional `clearArray` for security-sensitive buffers. Rejects negative sizes, returns `Array.Empty<byte>()` for zero.
 - **ConcurrencyLimiter.cs** — Per-host + global connection limiting using `SemaphoreSlim`. `ConcurrentDictionary<string, SemaphoreSlim>` for per-host semaphores (case-insensitive). Global semaphore acquired first (prevents starvation). Cancellation-safe: if per-host acquire fails after global acquired, global is released in catch block. Idempotent `Dispose()` with `Interlocked.CompareExchange`.
 - **ConcurrencyMiddleware.cs** — `IHttpMiddleware` wrapping `ConcurrencyLimiter`. Extracts host from `request.Uri`. Acquire/release in try/finally. Records timeline events (ConcurrencyAcquire/Acquired/Released).

@@ -45,7 +45,8 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - `RetryMiddleware` / `RetryPolicy` (Retry) — Exponential backoff, idempotency-aware, retries 5xx and retryable transport errors
 - `AuthMiddleware` / `IAuthTokenProvider` / `StaticTokenProvider` (Auth) — Bearer/custom auth token injection
 - `MetricsMiddleware` / `HttpMetrics` (Observability) — Thread-safe request metrics with Interlocked (32-bit IL2CPP safe)
-- `MockTransport` (Testing) — Test transport with configurable responses
+- `MockTransport` (Testing) — Thread-safe test transport with deterministic response queueing, request capture history, delay simulation, and JSON/error fixture helpers
+- `RecordReplayTransport` (Testing, Phase 7) — Record/replay wrapper with schema-versioned artifacts, strict request-key matching, configurable mismatch policies, and redaction support
 
 ## Key Technical Decisions
 
@@ -92,13 +93,14 @@ Implementation follows 14 phases documented in `docs/phases/`.
   - **Phase 4.1 (Pipeline Executor):** COMPLETE — `HttpPipeline` delegate chain built once, integrated into `UHttpClient.SendAsync`.
   - **Phase 4.2 (Core Middlewares):** COMPLETE — Originally in Core; since extracted: `LoggingMiddleware` → Observability, `DefaultHeadersMiddleware` → Middleware, `TimeoutMiddleware` → deleted (transport handles timeouts).
   - **Phase 4.3 (Module Middlewares):** COMPLETE — `RetryMiddleware` (Retry), `AuthMiddleware` (Auth), `MetricsMiddleware` (Observability) in separate assemblies.
-  - **Phase 4.4 (MockTransport):** COMPLETE — `MockTransport` in Testing assembly with 3 constructor overloads.
+  - **Phase 4.4 (MockTransport):** COMPLETE — `MockTransport` foundation (3 constructor overloads), later extended in Phase 7 with queue/capture/helper APIs.
   - **Phase 4.5 (Tests):** COMPLETE — 8 test files covering pipeline, all middlewares, and integration.
 - **Phase 5 (Content Handlers):** COMPLETE — JSON extensions (AsJson, TryAsJson, GetJsonAsync, PostJsonAsync, PutJsonAsync, PatchJsonAsync, DeleteJsonAsync), FileDownloader with resume/checksum/progress, MultipartFormDataBuilder, ContentTypes constants, GetBodyAsString(Encoding) + GetContentEncoding(). See `docs/implementation-journal/2026-02-phase5-content-handlers.md`.
 - **Core Extraction (Post-M1):** COMPLETE — Extracted non-core concerns from TurboHTTP.Core: LoggingMiddleware → Observability, DefaultHeadersMiddleware → new Middleware assembly, JSON extensions → JSON assembly, TimeoutMiddleware deleted (redundant with transport timeout). Removed convenience aliases (`Accept`, `ContentType`, `WithBearerToken`) from `UHttpRequestBuilder` — builder now has only raw HTTP primitives. `WithBearerToken` moved to `TurboHTTP.Auth.AuthBuilderExtensions`. Core now has zero external assembly references. See `docs/implementation-journal/2026-02-core-extraction.md`.
 - **Phase 6 (Performance & Hardening):** COMPLETE — ObjectPool, ByteArrayPool, ConcurrencyLimiter, ConcurrencyMiddleware, RequestQueue. Disposal hardening (UHttpClient disposes middlewares, RawSocketTransport atomic disposal). Timeline optimization (lazy dict in TimelineEvent). ALPN reflection caching in SslStreamTlsProvider. Logging redaction for sensitive headers. Stress tests (1000-request, concurrency enforcement, multi-host, pool leak detection). See `docs/implementation-journal/2026-02-phase6-performance.md`.
 - **Security Hardening (Post-Phase 6):** COMPLETE — Fixes from unified review: M-2 (connection drain check), M-3 (TE+CL RFC compliance), M-4 (path traversal protection), H-3 (CRLF injection defense-in-depth), HPACK decompression bomb protection (128KB limit), IPv6 preference in address sorting, DNS task observation, multipart boundary quoting. Phase docs updated with redirect/cookie middleware (Phase 10) and background networking (Phase 14). See `docs/implementation-journal/2026-02-security-hardening.md`.
-- **Phases 7–14:** Not started.
+- **Phase 7 (Testing Infrastructure):** COMPLETE — Extended `MockTransport` (queue/capture/helpers), added `RecordReplayTransport` (record/replay/passthrough, strict mismatch by default, redaction, SHA-256 hashing), added Testing `link.xml` guidance, added `TestHelpers`, `CoreTypesTests`, deterministic `IntegrationTests` + optional `ExternalNetwork` category, and `BenchmarkTests` quality gates. See `docs/implementation-journal/2026-02-phase7-testing.md`.
+- **Phases 8–14:** Not started.
 
 Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
 
@@ -135,7 +137,11 @@ Tests use Unity Test Runner with NUnit. Test assemblies and key suites:
 - Pipeline tests: `Tests/Runtime/Pipeline/HttpPipelineTests.cs`, `LoggingMiddlewareTests.cs`, `DefaultHeadersMiddlewareTests.cs`
 - Module middleware tests: `Tests/Runtime/Retry/RetryMiddlewareTests.cs`, `Tests/Runtime/Auth/AuthMiddlewareTests.cs`, `Tests/Runtime/Observability/MetricsMiddlewareTests.cs`
 - Pipeline integration tests: `Tests/Runtime/Integration/PipelineIntegrationTests.cs`
-- Performance tests: `Tests/Runtime/Performance/ObjectPoolTests.cs`, `ConcurrencyLimiterTests.cs`, `StressTests.cs`
+- Phase 7 integration tests: `Tests/Runtime/Integration/IntegrationTests.cs` (deterministic suite + `ExternalNetwork` category split)
+- Phase 7 core tests: `Tests/Runtime/Core/CoreTypesTests.cs`
+- Phase 7 benchmark tests: `Tests/Runtime/Performance/BenchmarkTests.cs`
+- Performance tests: `Tests/Runtime/Performance/ObjectPoolTests.cs`, `ConcurrencyLimiterTests.cs`, `StressTests.cs`, `BenchmarkTests.cs`
+- Shared test utilities: `Tests/Runtime/TestHelpers.cs`
 
 Both use `defineConstraints: ["UNITY_INCLUDE_TESTS"]` and `precompiledReferences: ["nunit.framework.dll"]`.
 

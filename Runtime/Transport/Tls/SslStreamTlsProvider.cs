@@ -12,6 +12,9 @@ namespace TurboHTTP.Transport.Tls
     /// <summary>
     /// TLS provider using System.Net.Security.SslStream.
     /// Uses reflection to access ALPN APIs on .NET Standard 2.1.
+    /// On IL2CPP with aggressive stripping, preserve SslStream ALPN types (e.g., via
+    /// link.xml or [Preserve]) to keep HTTP/2 ALPN negotiation available. Without that
+    /// preservation, TurboHTTP falls back to BouncyCastle in Auto mode.
     /// </summary>
     internal sealed class SslStreamTlsProvider : ITlsProvider
     {

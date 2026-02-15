@@ -85,9 +85,21 @@ namespace TurboHTTP.Transport.Http2
         /// Write a single HTTP/2 frame to the stream.
         /// Uses reusable header buffer (writes are serialized under lock).
         /// </summary>
-        public async Task WriteFrameAsync(Http2Frame frame, CancellationToken ct)
+        public async Task WriteFrameAsync(Http2Frame frame, CancellationToken ct, bool flush = true)
         {
-            int payloadLength = frame.Payload?.Length ?? 0;
+            if (frame == null)
+                throw new ArgumentNullException(nameof(frame));
+
+            int payloadLength = frame.Length;
+            if (payloadLength < 0)
+                throw new ArgumentOutOfRangeException(nameof(frame.Length), frame.Length,
+                    "Frame length must be non-negative.");
+
+            var payload = frame.Payload ?? Array.Empty<byte>();
+            if (payloadLength > payload.Length)
+                throw new ArgumentException(
+                    "Frame length exceeds payload buffer length.",
+                    nameof(frame));
 
             // Reuse pre-allocated header buffer (writes serialized by _writeLock)
             _writeHeaderBuffer[0] = (byte)((payloadLength >> 16) & 0xFF);
@@ -103,9 +115,10 @@ namespace TurboHTTP.Transport.Http2
             await _stream.WriteAsync(_writeHeaderBuffer, 0, Http2Constants.FrameHeaderSize, ct);
 
             if (payloadLength > 0)
-                await _stream.WriteAsync(frame.Payload, 0, payloadLength, ct);
+                await _stream.WriteAsync(payload, 0, payloadLength, ct);
 
-            await _stream.FlushAsync(ct);
+            if (flush)
+                await _stream.FlushAsync(ct);
         }
 
         /// <summary>

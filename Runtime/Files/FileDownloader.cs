@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -77,6 +78,10 @@ namespace TurboHTTP.Files
     public class FileDownloader
     {
         private readonly UHttpClient _client;
+        private static readonly StringComparison PathComparison =
+            RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
 
         /// <summary>
         /// Optional base directory to restrict file writes. When set, all destination paths
@@ -111,10 +116,10 @@ namespace TurboHTTP.Files
             destinationPath = Path.GetFullPath(destinationPath);
             if (BasePath != null)
             {
-                var canonicalBase = Path.GetFullPath(BasePath);
-                if (!canonicalBase.EndsWith(Path.DirectorySeparatorChar.ToString()))
-                    canonicalBase += Path.DirectorySeparatorChar;
-                if (!destinationPath.StartsWith(canonicalBase, StringComparison.Ordinal))
+                // NOTE: Path.GetFullPath does not resolve symbolic links. Symlink-aware
+                // canonicalization is deferred to a future hardening phase.
+                var canonicalBase = EnsureTrailingDirectorySeparator(Path.GetFullPath(BasePath));
+                if (!destinationPath.StartsWith(canonicalBase, PathComparison))
                     throw new ArgumentException(
                         $"Destination path escapes the allowed base directory. " +
                         $"Base: {canonicalBase}, Resolved: {destinationPath}",
@@ -268,6 +273,18 @@ namespace TurboHTTP.Files
                 return start;
 
             return -1;
+        }
+
+        private static string EnsureTrailingDirectorySeparator(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return path;
+
+            if (path[path.Length - 1] == Path.DirectorySeparatorChar ||
+                path[path.Length - 1] == Path.AltDirectorySeparatorChar)
+                return path;
+
+            return path + Path.DirectorySeparatorChar;
         }
 
         /// <summary>

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -488,35 +489,41 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void PushPromise_RejectedWithRstStream()        {
+        public void PushPromise_EnablePushDisabled_SendsGoAwayProtocolError()        {
             Task.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
                 var serverCodec = new Http2FrameCodec(serverStream);
 
-                // Send a PUSH_PROMISE frame from server (promised stream ID = 2)
+                // Open a stream so a connection-level protocol error will fail active work.
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+
+                // Send a PUSH_PROMISE frame despite client advertising ENABLE_PUSH=0.
                 var pushPayload = new byte[4];
                 pushPayload[3] = 2; // promised stream ID = 2
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {
                     Type = Http2FrameType.PushPromise,
                     Flags = Http2FrameFlags.EndHeaders,
-                    StreamId = 0,
+                    StreamId = headersFrame.StreamId,
                     Payload = pushPayload,
                     Length = 4
                 }, cts.Token);
 
-                // Client should send RST_STREAM for the promised stream
-                var rstFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
-                Assert.AreEqual(Http2FrameType.RstStream, rstFrame.Type);
-                Assert.AreEqual(2, rstFrame.StreamId);
+                // Client should terminate the connection with GOAWAY(PROTOCOL_ERROR).
+                var goawayFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.GoAway, goawayFrame.Type);
+                Assert.AreEqual(0, goawayFrame.StreamId);
 
-                // Parse error code from RST_STREAM
-                uint errorCode = ((uint)rstFrame.Payload[0] << 24) | ((uint)rstFrame.Payload[1] << 16) |
-                                 ((uint)rstFrame.Payload[2] << 8) | rstFrame.Payload[3];
-                Assert.AreEqual((uint)Http2ErrorCode.RefusedStream, errorCode);
+                uint errorCode = ((uint)goawayFrame.Payload[4] << 24) | ((uint)goawayFrame.Payload[5] << 16) |
+                                 ((uint)goawayFrame.Payload[6] << 8) | goawayFrame.Payload[7];
+                Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, errorCode);
 
+                AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
                 conn.Dispose();
             }).GetAwaiter().GetResult();
         }
@@ -931,6 +938,30 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void StreamIdExhaustion_DoesNotCorruptCounterOnFailure()        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+
+                var nextStreamIdField = typeof(Http2Connection).GetField(
+                    "_nextStreamId",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.IsNotNull(nextStreamIdField);
+                nextStreamIdField.SetValue(conn, int.MaxValue - 1);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/overflow"));
+                var context = new RequestContext(request);
+
+                AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await conn.SendRequestAsync(request, context, cts.Token));
+
+                Assert.AreEqual(int.MaxValue - 1, (int)nextStreamIdField.GetValue(conn));
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void PostRequest_StreamStateIsOpen_ThenHalfClosedLocal()        {
             Task.Run(async () =>
             {
@@ -1332,4 +1363,3 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
     }
 }
-

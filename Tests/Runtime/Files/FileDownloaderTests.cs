@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -333,7 +334,62 @@ namespace TurboHTTP.Tests.Files
             }).GetAwaiter().GetResult();
         }
 
+        [Test]
+        public void Download_BasePath_RejectsTraversalOutsideBaseDirectory()
+        {
+            AssertAsync.ThrowsAsync<ArgumentException>(() =>
+            {
+                return Task.Run(async () =>
+                {
+                    var transport = new MockTransport(HttpStatusCode.OK, body: new byte[] { 0x01 });
+                    var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
+                    var downloader = new FileDownloader(client)
+                    {
+                        BasePath = _tempDir
+                    };
+
+                    var outsidePath = Path.Combine(_tempDir, "..", "outside.bin");
+                    await downloader.DownloadFileAsync("https://test.com/file.bin", outsidePath);
+                });
+            });
+        }
+
+        [Test]
+        public void Download_BasePath_MixedCaseBehavior_IsPlatformAware()
+        {
+            Task.Run(async () =>
+            {
+                var content = new byte[] { 0x7A };
+                var transport = new MockTransport(HttpStatusCode.OK, body: content);
+                var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
+                var downloader = new FileDownloader(client)
+                {
+                    BasePath = _tempDir.ToUpperInvariant()
+                };
+                var destination = Path.Combine(_tempDir, "case-aware.bin");
+
+                if (IsCaseInsensitiveFileSystem())
+                {
+                    var result = await downloader.DownloadFileAsync(
+                        "https://test.com/file.bin", destination);
+                    Assert.AreEqual(destination, result.FilePath);
+                    Assert.IsTrue(File.Exists(destination));
+                }
+                else
+                {
+                    AssertAsync.ThrowsAsync<ArgumentException>(async () =>
+                        await downloader.DownloadFileAsync("https://test.com/file.bin", destination));
+                }
+            }).GetAwaiter().GetResult();
+        }
+
         // --- Helpers ---
+
+        private static bool IsCaseInsensitiveFileSystem()
+        {
+            return RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ||
+                   RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
+        }
 
         private static string ComputeMd5(byte[] data)
         {

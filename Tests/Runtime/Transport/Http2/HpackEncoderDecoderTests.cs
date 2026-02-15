@@ -330,6 +330,19 @@ namespace TurboHTTP.Tests.Transport.Http2
             Assert.AreEqual(1, decoded.Count);
             Assert.AreEqual("x", decoded[0].Name);
         }
+
+        [Test]
+        public void Decode_RespectsConfiguredMaxDecodedHeaderBytes()
+        {
+            var encoder = new HpackEncoder();
+            var decoder = new HpackDecoder(maxDecodedHeaderBytes: 32);
+            var headers = new List<(string, string)>
+            {
+                ("x-large", new string('a', 64))
+            };
+            var encoded = encoder.Encode(headers);
+
+            Assert.Throws<HpackDecodingException>(() => decoder.Decode(encoded, 0, encoded.Length));
+        }
     }
 }
-

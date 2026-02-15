@@ -16,6 +16,8 @@ namespace TurboHTTP.Performance
         /// Rent a byte array of at least the specified length.
         /// The returned array may be larger than requested.
         /// Contents are NOT guaranteed to be zeroed.
+        /// A request of length 0 returns <see cref="Array.Empty{T}"/> and should not
+        /// be returned to the pool.
         /// </summary>
         /// <param name="minimumLength">Minimum required length. Must be non-negative.</param>
         /// <returns>A pooled or newly allocated byte array.</returns>

@@ -28,6 +28,7 @@ namespace TurboHTTP.Performance
     {
         private readonly ConcurrentQueue<T>[] _queues;
         private readonly SemaphoreSlim _itemAvailable;
+        private readonly CancellationTokenSource _shutdownCts;
         private int _count;
         private int _disposed;
         private int _shutdown;
@@ -53,6 +54,7 @@ namespace TurboHTTP.Performance
                 _queues[i] = new ConcurrentQueue<T>();
 
             _itemAvailable = new SemaphoreSlim(0);
+            _shutdownCts = new CancellationTokenSource();
         }
 
         /// <summary>
@@ -85,22 +87,29 @@ namespace TurboHTTP.Performance
         {
             ThrowIfDisposed();
 
-            await _itemAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-            // Drain in priority order
-            for (int i = 0; i < _queues.Length; i++)
+            while (true)
             {
-                if (_queues[i].TryDequeue(out T item))
-                {
-                    Interlocked.Decrement(ref _count);
-                    return item;
-                }
-            }
+                if (Volatile.Read(ref _shutdown) != 0 && Volatile.Read(ref _count) == 0)
+                    throw new OperationCanceledException("Queue has been shut down.");
 
-            // Should not happen — semaphore guarantees an item exists.
-            // But under extreme contention another DequeueAsync could have taken it.
-            // Throw rather than return default to avoid silent data loss.
-            throw new InvalidOperationException("Queue was signaled but no item was available.");
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken, _shutdownCts.Token);
+                await _itemAvailable.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+
+                // Drain in priority order
+                for (int i = 0; i < _queues.Length; i++)
+                {
+                    if (_queues[i].TryDequeue(out T item))
+                    {
+                        Interlocked.Decrement(ref _count);
+                        CancelShutdownWaitersIfDrained();
+                        return item;
+                    }
+                }
+
+                // Extremely rare contention path: a signal was consumed but no item
+                // was observed. Retry instead of faulting the consumer.
+            }
         }
 
         /// <summary>
@@ -110,6 +119,7 @@ namespace TurboHTTP.Performance
         /// <returns>True if an item was dequeued; false if the queue is empty.</returns>
         public bool TryDequeue(out T item)
         {
+            ThrowIfDisposed();
             item = default;
 
             if (!_itemAvailable.Wait(0))
@@ -120,6 +130,7 @@ namespace TurboHTTP.Performance
                 if (_queues[i].TryDequeue(out item))
                 {
                     Interlocked.Decrement(ref _count);
+                    CancelShutdownWaitersIfDrained();
                     return true;
                 }
             }
@@ -135,6 +146,25 @@ namespace TurboHTTP.Performance
         public void Shutdown()
         {
             Interlocked.Exchange(ref _shutdown, 1);
+            CancelShutdownWaitersIfDrained();
+        }
+
+        /// <summary>
+        /// Initiate immediate shutdown. No new items can be enqueued and all pending
+        /// and future <see cref="DequeueAsync"/> calls are canceled immediately,
+        /// even if items remain in the queue.
+        /// </summary>
+        public void ForceShutdown()
+        {
+            Interlocked.Exchange(ref _shutdown, 1);
+            try
+            {
+                _shutdownCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Ignore races with disposal.
+            }
         }
 
         /// <summary>
@@ -146,7 +176,31 @@ namespace TurboHTTP.Performance
                 return;
 
             Interlocked.Exchange(ref _shutdown, 1);
+            try
+            {
+                _shutdownCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Ignore races with in-flight shutdown/dispose.
+            }
             _itemAvailable.Dispose();
+            _shutdownCts.Dispose();
+        }
+
+        private void CancelShutdownWaitersIfDrained()
+        {
+            if (Volatile.Read(ref _shutdown) == 0 || Volatile.Read(ref _count) != 0)
+                return;
+
+            try
+            {
+                _shutdownCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Ignore races with disposal.
+            }
         }
 
         private void ThrowIfDisposed()

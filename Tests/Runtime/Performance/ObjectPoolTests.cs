@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -144,6 +145,48 @@ namespace TurboHTTP.Tests.Performance
 
                 Assert.LessOrEqual(pool.Count, capacity,
                     "Pool count must never exceed capacity");
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Pool_DoesNotStrandItemsBeyondCount_UnderContention()
+        {
+            Task.Run(async () =>
+            {
+                var pool = new ObjectPool<object>(() => new object(), capacity: 32);
+                var tasks = new List<Task>();
+
+                for (int i = 0; i < 32; i++)
+                {
+                    tasks.Add(Task.Run(() =>
+                    {
+                        for (int j = 0; j < 5000; j++)
+                        {
+                            var item = pool.Rent();
+                            Thread.SpinWait(20);
+                            pool.Return(item);
+                        }
+                    }));
+                }
+
+                await Task.WhenAll(tasks);
+
+                var countField = typeof(ObjectPool<object>).GetField("_count",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                var itemsField = typeof(ObjectPool<object>).GetField("_items",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+
+                Assert.IsNotNull(countField);
+                Assert.IsNotNull(itemsField);
+
+                var count = (int)countField.GetValue(pool);
+                var items = (object[])itemsField.GetValue(pool);
+
+                for (int i = count; i < items.Length; i++)
+                {
+                    Assert.IsNull(items[i],
+                        $"Found stranded pooled item in slot {i} beyond count {count}.");
+                }
             }).GetAwaiter().GetResult();
         }
     }

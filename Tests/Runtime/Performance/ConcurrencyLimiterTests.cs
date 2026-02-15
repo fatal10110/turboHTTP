@@ -159,6 +159,48 @@ namespace TurboHTTP.Tests.Performance
         }
 
         [Test]
+        public void Dispose_DoesNotBreakInFlightRelease()
+        {
+            Task.Run(async () =>
+            {
+                var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 1, maxTotalConnections: 1);
+
+                await limiter.AcquireAsync("host1");
+                Assert.DoesNotThrow(() => limiter.Dispose());
+                Assert.DoesNotThrow(() => limiter.Release("host1"));
+                Assert.DoesNotThrow(() => limiter.Dispose());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Dispose_CancelsWaitingAcquire_WithObjectDisposedException()
+        {
+            Task.Run(async () =>
+            {
+                var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 1, maxTotalConnections: 1);
+                await limiter.AcquireAsync("host1");
+
+                var waitingAcquire = limiter.AcquireAsync("host1");
+                await Task.Delay(25);
+
+                limiter.Dispose();
+
+                try
+                {
+                    await waitingAcquire;
+                    Assert.Fail("Expected ObjectDisposedException");
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Expected.
+                }
+
+                Assert.DoesNotThrow(() => limiter.Release("host1"));
+                Assert.DoesNotThrow(() => limiter.Dispose());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void AcquireAsync_ThrowsAfterDispose()
         {
             Task.Run(async () =>
