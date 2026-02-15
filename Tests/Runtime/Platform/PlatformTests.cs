@@ -109,21 +109,24 @@ namespace TurboHTTP.Tests.Platform
         [Test]
         [Category("ExternalNetwork")]
         [Explicit("Requires internet access and valid Google endpoint")]
-        public async Task NetworkReachability_External_Google_RequestSucceeds()
+        public void NetworkReachability_External_Google_RequestSucceeds()
         {
-            using var client = new UHttpClient(new UHttpClientOptions
+            Task.Run(async () =>
             {
-                BaseUrl = "https://www.google.com",
-                DefaultTimeout = PlatformConfig.RecommendedTimeout
-            });
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    DefaultTimeout = PlatformConfig.RecommendedTimeout,
+                    Transport = new RawSocketTransport()
+                });
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-            var response = await client.Get("/generate_204").SendAsync(cts.Token);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+                var response = await client.Get("https://www.google.com/generate_204").SendAsync(cts.Token);
 
-            Assert.That(
-                response.StatusCode,
-                Is.EqualTo(HttpStatusCode.NoContent).Or.EqualTo(HttpStatusCode.OK),
-                $"Unexpected status for external network probe on {PlatformInfo.GetPlatformDescription()}");
+                Assert.That(
+                    response.StatusCode,
+                    Is.EqualTo(HttpStatusCode.NoContent).Or.EqualTo(HttpStatusCode.OK),
+                    $"Unexpected status for external network probe on {PlatformInfo.GetPlatformDescription()}");
+            }).GetAwaiter().GetResult();
         }
     }
 }

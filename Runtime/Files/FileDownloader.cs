@@ -207,15 +207,15 @@ namespace TurboHTTP.Files
                 destinationPath, fileMode, FileAccess.Write, FileShare.None))
             {
                 var body = response.Body;
-                if (body != null && body.Length > 0)
+                if (!body.IsEmpty)
                 {
-                    await fileStream.WriteAsync(body, 0, body.Length, cancellationToken)
+                    await fileStream.WriteAsync(body, cancellationToken)
                         .ConfigureAwait(false);
                 }
             }
 
             // Report progress (single report after download completes — see DownloadProgress doc)
-            var bytesWritten = response.Body?.Length ?? 0;
+            var bytesWritten = response.Body.Length;
             var elapsed = DateTime.UtcNow - startTime;
             options.Progress?.Report(new DownloadProgress
             {

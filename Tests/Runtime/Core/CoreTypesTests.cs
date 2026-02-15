@@ -95,8 +95,8 @@ namespace TurboHTTP.Tests.Core
         {
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));
 
-            var success = new UHttpResponse(HttpStatusCode.OK, new HttpHeaders(), null, TimeSpan.Zero, request);
-            var notFound = new UHttpResponse(HttpStatusCode.NotFound, new HttpHeaders(), null, TimeSpan.Zero, request);
+            var success = new UHttpResponse(HttpStatusCode.OK, new HttpHeaders(), ReadOnlyMemory<byte>.Empty, TimeSpan.Zero, request);
+            var notFound = new UHttpResponse(HttpStatusCode.NotFound, new HttpHeaders(), ReadOnlyMemory<byte>.Empty, TimeSpan.Zero, request);
 
             Assert.IsTrue(success.IsSuccessStatusCode);
             Assert.IsFalse(notFound.IsSuccessStatusCode);
@@ -113,13 +113,13 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void UHttpResponse_GetBodyAsString_EmptyOrNullBody_ReturnsNull()
+        public void UHttpResponse_GetBodyAsString_EmptyOrDefaultBody_ReturnsNull()
         {
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));
-            var withNull = new UHttpResponse(HttpStatusCode.OK, new HttpHeaders(), null, TimeSpan.Zero, request);
+            var withDefault = new UHttpResponse(HttpStatusCode.OK, new HttpHeaders(), default, TimeSpan.Zero, request);
             var withEmpty = new UHttpResponse(HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>(), TimeSpan.Zero, request);
 
-            Assert.IsNull(withNull.GetBodyAsString());
+            Assert.IsNull(withDefault.GetBodyAsString());
             Assert.IsNull(withEmpty.GetBodyAsString());
         }
 
@@ -127,7 +127,7 @@ namespace TurboHTTP.Tests.Core
         public void UHttpResponse_EnsureSuccessStatusCode_WithHttpError_ThrowsUHttpException()
         {
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));
-            var response = new UHttpResponse(HttpStatusCode.BadRequest, new HttpHeaders(), null, TimeSpan.Zero, request);
+            var response = new UHttpResponse(HttpStatusCode.BadRequest, new HttpHeaders(), ReadOnlyMemory<byte>.Empty, TimeSpan.Zero, request);
 
             var ex = Assert.Throws<UHttpException>(() => response.EnsureSuccessStatusCode());
             Assert.AreEqual(UHttpErrorType.HttpError, ex.HttpError.Type);
@@ -142,7 +142,7 @@ namespace TurboHTTP.Tests.Core
             var response = new UHttpResponse(
                 HttpStatusCode.RequestTimeout,
                 new HttpHeaders(),
-                null,
+                ReadOnlyMemory<byte>.Empty,
                 TimeSpan.Zero,
                 request,
                 responseError);
@@ -156,7 +156,7 @@ namespace TurboHTTP.Tests.Core
         public void UHttpResponse_Constructor_NullRequest_ThrowsArgumentNullException()
         {
             Assert.Throws<ArgumentNullException>(() =>
-                new UHttpResponse(HttpStatusCode.OK, new HttpHeaders(), null, TimeSpan.Zero, null));
+                new UHttpResponse(HttpStatusCode.OK, new HttpHeaders(), ReadOnlyMemory<byte>.Empty, TimeSpan.Zero, null));
         }
 
         [Test]

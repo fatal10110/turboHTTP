@@ -27,6 +27,66 @@ namespace TurboHTTP.Tests.Transport
             return await Http11ResponseParser.ParseAsync(ms, method, CancellationToken.None);
         }
 
+        private static async Task<ParsedResponse> ParseFragmentedAsync(
+            byte[] responseBytes,
+            int[] chunkSizes,
+            HttpMethod method = HttpMethod.GET)
+        {
+            using var stream = new FragmentedReadStream(responseBytes, chunkSizes);
+            return await Http11ResponseParser.ParseAsync(stream, method, CancellationToken.None);
+        }
+
+        private sealed class FragmentedReadStream : Stream
+        {
+            private readonly byte[] _buffer;
+            private readonly int[] _chunkSizes;
+            private int _position;
+            private int _chunkIndex;
+
+            public FragmentedReadStream(byte[] buffer, int[] chunkSizes)
+            {
+                _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
+                _chunkSizes = (chunkSizes == null || chunkSizes.Length == 0)
+                    ? new[] { 1 }
+                    : chunkSizes;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => _buffer.Length;
+            public override long Position
+            {
+                get => _position;
+                set => throw new NotSupportedException();
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (_position >= _buffer.Length)
+                    return 0;
+
+                var configured = _chunkSizes[_chunkIndex % _chunkSizes.Length];
+                _chunkIndex++;
+
+                var toCopy = Math.Min(Math.Min(configured, count), _buffer.Length - _position);
+                Buffer.BlockCopy(_buffer, _position, buffer, offset, toCopy);
+                _position += toCopy;
+                return toCopy;
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.FromResult(Read(buffer, offset, count));
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override void Flush() { }
+        }
+
         [Test]
         public void Parse_200OK_ContentLength_ReturnsBodyAndHeaders()        {
             Task.Run(async () =>
@@ -442,6 +502,71 @@ namespace TurboHTTP.Tests.Transport
         {
             var response = "HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n";
             AssertAsync.ThrowsAsync<FormatException>(async () => await ParseAsync(response));
+        }
+
+        [Test]
+        public void Parse_FragmentedHeadersAcrossReads_ParsesCorrectly()
+        {
+            Task.Run(async () =>
+            {
+                var raw = "HTTP/1.1 200 OK\r\nX-One: A\r\nX-Two: B\r\nContent-Length: 5\r\n\r\nHello";
+                var parsed = await ParseFragmentedAsync(Encoding.ASCII.GetBytes(raw), new[] { 2, 3, 1, 4 });
+
+                Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
+                Assert.AreEqual("A", parsed.Headers.Get("X-One"));
+                Assert.AreEqual("B", parsed.Headers.Get("X-Two"));
+                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Parse_SplitDelimiterBoundaries_ParsesCorrectly()
+        {
+            Task.Run(async () =>
+            {
+                var raw = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Test: value\r\n\r\nOK";
+                // Forces boundaries inside CR/LF delimiters.
+                var parsed = await ParseFragmentedAsync(Encoding.ASCII.GetBytes(raw), new[] { 1, 1, 1, 1, 2, 1, 3 });
+
+                Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
+                Assert.AreEqual("value", parsed.Headers.Get("X-Test"));
+                Assert.AreEqual("OK", Encoding.ASCII.GetString(parsed.Body));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Parse_LargeHeaderBlockWithinLimit_ParsesCorrectly()
+        {
+            Task.Run(async () =>
+            {
+                var largeValue = new string('x', 3000);
+                var response = "HTTP/1.1 200 OK\r\n"
+                    + "X-A: " + largeValue + "\r\n"
+                    + "X-B: " + largeValue + "\r\n"
+                    + "X-C: " + largeValue + "\r\n"
+                    + "Content-Length: 0\r\n\r\n";
+
+                var parsed = await ParseFragmentedAsync(Encoding.ASCII.GetBytes(response), new[] { 512, 256, 128, 64 });
+                Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
+                Assert.AreEqual(0, parsed.Body.Length);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Parse_SplitMultibytePayloadBoundary_ContentLengthPathRemainsCorrect()
+        {
+            Task.Run(async () =>
+            {
+                var payload = "hello-🙂-world";
+                var bodyBytes = Encoding.UTF8.GetBytes(payload);
+                var header = "HTTP/1.1 200 OK\r\nContent-Length: " + bodyBytes.Length + "\r\n\r\n";
+                var responseBytes = new byte[Encoding.ASCII.GetByteCount(header) + bodyBytes.Length];
+                Encoding.ASCII.GetBytes(header, 0, header.Length, responseBytes, 0);
+                Buffer.BlockCopy(bodyBytes, 0, responseBytes, Encoding.ASCII.GetByteCount(header), bodyBytes.Length);
+
+                var parsed = await ParseFragmentedAsync(responseBytes, new[] { 5, 2, 1, 3, 4, 1, 2 });
+                Assert.AreEqual(payload, Encoding.UTF8.GetString(parsed.Body));
+            }).GetAwaiter().GetResult();
         }
     }
 }

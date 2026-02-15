@@ -134,10 +134,10 @@ namespace TurboHTTP.Observability
                 }
             }
 
-            if (_logLevel >= LogLevel.Detailed && _logBody && response.Body != null && response.Body.Length > 0)
+            if (_logLevel >= LogLevel.Detailed && _logBody && !response.Body.IsEmpty)
             {
                 int previewBytes = Math.Min(response.Body.Length, 500);
-                var bodyPreview = System.Text.Encoding.UTF8.GetString(response.Body, 0, previewBytes);
+                var bodyPreview = System.Text.Encoding.UTF8.GetString(response.Body.Span.Slice(0, previewBytes));
                 if (response.Body.Length > 500)
                     bodyPreview += "...";
                 message += $"\n  Body: {bodyPreview}";

@@ -273,7 +273,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = 2
                 }, CancellationToken.None, flush: true);
 
-                Assert.AreEqual(1, stream.FlushCount);
+                // Some runtimes implement FlushAsync by calling Flush internally, so count can be 1 or 2.
+                Assert.GreaterOrEqual(stream.FlushCount, 1);
             }).GetAwaiter().GetResult();
         }
 

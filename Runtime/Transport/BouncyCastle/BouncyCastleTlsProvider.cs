@@ -70,8 +70,26 @@ namespace TurboHTTP.Transport.BouncyCastle
             await HandshakeSemaphore.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                return await Task.Run(() => PerformHandshake(innerStream, host, alpnProtocols, ct), ct)
-                    .ConfigureAwait(false);
+                // BouncyCastle handshake is blocking. Dispose the stream on cancellation to
+                // break out of blocking IO inside protocol.Connect().
+                using var cancelRegistration = ct.Register(static state =>
+                {
+                    try { ((Stream)state).Dispose(); } catch { }
+                }, innerStream);
+
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var result = await Task.Run(
+                        () => PerformHandshake(innerStream, host, alpnProtocols, ct),
+                        CancellationToken.None).ConfigureAwait(false);
+                    ct.ThrowIfCancellationRequested();
+                    return result;
+                }
+                catch (Exception) when (ct.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException("TLS handshake was canceled.", ct);
+                }
             }
             finally
             {
@@ -130,4 +148,3 @@ namespace TurboHTTP.Transport.BouncyCastle
         }
     }
 }
-

@@ -147,7 +147,7 @@ namespace TurboHTTP.Tests.Pipeline
             {
                 // Return without calling next() — short-circuits the pipeline
                 var response = new UHttpResponse(
-                    HttpStatusCode.Forbidden, new HttpHeaders(), null,
+                    HttpStatusCode.Forbidden, new HttpHeaders(), Array.Empty<byte>(),
                     context.Elapsed, request);
                 return Task.FromResult(response);
             }

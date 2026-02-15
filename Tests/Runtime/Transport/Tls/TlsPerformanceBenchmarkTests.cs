@@ -4,6 +4,7 @@ using System.Net;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Transport;
 using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Tests.Transport.Tls
@@ -44,10 +45,13 @@ namespace TurboHTTP.Tests.Transport.Tls
             {
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
-                    TlsBackend = backend
+                    TlsBackend = backend,
+                    Transport = new RawSocketTransport()
                 });
 
-                var response = await client.Get("https://www.google.com").SendAsync();
+                var response = await client.Get("https://www.google.com")
+                    .WithTimeout(System.TimeSpan.FromSeconds(20))
+                    .SendAsync();
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
             }
 

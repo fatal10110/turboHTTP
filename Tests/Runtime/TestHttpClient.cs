@@ -136,7 +136,7 @@ namespace TurboHTTP.Tests.Runtime
         {
             var response = await _client.Head("https://httpbin.org/get").SendAsync();
             Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "HEAD failed");
-            Ensure(response.Body == null || response.Body.Length == 0, "HEAD should have empty body");
+            Ensure(response.Body.IsEmpty, "HEAD should have empty body");
             Debug.Log("TestHeadRequest passed");
         }
 

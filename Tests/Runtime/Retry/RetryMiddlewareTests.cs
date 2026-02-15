@@ -42,7 +42,7 @@ namespace TurboHTTP.Tests.Retry
                         ? HttpStatusCode.InternalServerError
                         : HttpStatusCode.OK;
                     return Task.FromResult(new UHttpResponse(
-                        status, new HttpHeaders(), null, ctx.Elapsed, req));
+                        status, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req));
                 });
 
                 var policy = new RetryPolicy
@@ -144,7 +144,7 @@ namespace TurboHTTP.Tests.Retry
                         ? HttpStatusCode.InternalServerError
                         : HttpStatusCode.OK;
                     return Task.FromResult(new UHttpResponse(
-                        status, new HttpHeaders(), null, ctx.Elapsed, req));
+                        status, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req));
                 });
 
                 var policy = new RetryPolicy
@@ -178,7 +178,7 @@ namespace TurboHTTP.Tests.Retry
                         ? HttpStatusCode.InternalServerError
                         : HttpStatusCode.OK;
                     return Task.FromResult(new UHttpResponse(
-                        status, new HttpHeaders(), null, ctx.Elapsed, req));
+                        status, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req));
                 });
 
                 var policy = new RetryPolicy
@@ -210,7 +210,7 @@ namespace TurboHTTP.Tests.Retry
                         throw new UHttpException(
                             new UHttpError(UHttpErrorType.NetworkError, "Connection reset"));
                     return Task.FromResult(new UHttpResponse(
-                        HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req));
+                        HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req));
                 });
 
                 var policy = new RetryPolicy

@@ -18,6 +18,7 @@ Required behavior:
 4. Return cached response on cache hit when revalidation is not required.
 5. Cache successful upstream responses according to policy.
 6. Default invalidation policy: non-safe methods (`POST`, `PUT`, `PATCH`, `DELETE`) invalidate cached `GET`/`HEAD` entries for the same normalized URI.
+7. Store response bytes as received (including encoded payloads) and select variants using request dimensions instead of on-store transcoding.
 
 Implementation constraints:
 
@@ -35,6 +36,7 @@ Implementation constraints:
 9. Avoid caching responses tied to sensitive auth context unless explicitly enabled.
 10. Preserve response semantics when serving from cache (status, headers, body).
 11. Keep hot-path logging disabled or minimal by default.
+12. Compression variant behavior must be explicit: cache key/variant logic must separate `Accept-Encoding` variants when `Vary: Accept-Encoding` is present.
 
 ---
 
@@ -67,3 +69,4 @@ Implementation constraints:
 7. Variant requests separated by `Vary` dimensions do not collide.
 8. `max-age` vs `Expires` precedence is validated with targeted tests.
 9. Path normalization cases (dot-segments, default ports, fragments) map to deterministic cache keys.
+10. Encoded and non-encoded variants (for example gzip vs identity) do not collide when `Vary: Accept-Encoding` applies.

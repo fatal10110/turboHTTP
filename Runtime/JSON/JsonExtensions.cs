@@ -24,10 +24,10 @@ namespace TurboHTTP.JSON
         public static T AsJson<T>(this UHttpResponse response)
         {
             if (response == null) throw new ArgumentNullException(nameof(response));
-            if (response.Body == null || response.Body.Length == 0)
+            if (response.Body.IsEmpty)
                 return default;
 
-            var json = Encoding.UTF8.GetString(response.Body);
+            var json = Encoding.UTF8.GetString(response.Body.Span);
             return JsonSerializer.Deserialize<T>(json);
         }
 
@@ -39,10 +39,10 @@ namespace TurboHTTP.JSON
         {
             if (response == null) throw new ArgumentNullException(nameof(response));
             if (serializer == null) throw new ArgumentNullException(nameof(serializer));
-            if (response.Body == null || response.Body.Length == 0)
+            if (response.Body.IsEmpty)
                 return default;
 
-            var json = Encoding.UTF8.GetString(response.Body);
+            var json = Encoding.UTF8.GetString(response.Body.Span);
             return serializer.Deserialize<T>(json);
         }
 
@@ -55,7 +55,7 @@ namespace TurboHTTP.JSON
             try
             {
                 result = response.AsJson<T>();
-                return response.Body != null && response.Body.Length > 0;
+                return !response.Body.IsEmpty;
             }
             catch (JsonSerializationException)
             {

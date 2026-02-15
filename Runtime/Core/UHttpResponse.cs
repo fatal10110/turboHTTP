@@ -11,7 +11,7 @@ namespace TurboHTTP.Core
     {
         public HttpStatusCode StatusCode { get; }
         public HttpHeaders Headers { get; }
-        public byte[] Body { get; }
+        public ReadOnlyMemory<byte> Body { get; }
         public TimeSpan ElapsedTime { get; }
 
         /// <summary>
@@ -28,7 +28,7 @@ namespace TurboHTTP.Core
         public UHttpResponse(
             HttpStatusCode statusCode,
             HttpHeaders headers,
-            byte[] body,
+            ReadOnlyMemory<byte> body,
             TimeSpan elapsedTime,
             UHttpRequest request,
             UHttpError error = null)
@@ -54,27 +54,27 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Get the response body as a UTF-8 string.
-        /// Returns null if body is null or empty.
+        /// Returns null if body is empty.
         /// </summary>
         public string GetBodyAsString()
         {
-            if (Body == null || Body.Length == 0)
+            if (Body.IsEmpty)
                 return null;
 
-            return Encoding.UTF8.GetString(Body);
+            return Encoding.UTF8.GetString(Body.Span);
         }
 
         /// <summary>
         /// Get the response body as a string using the specified encoding.
-        /// Returns null if body is null or empty.
+        /// Returns null if body is empty.
         /// </summary>
         public string GetBodyAsString(Encoding encoding)
         {
             if (encoding == null) throw new ArgumentNullException(nameof(encoding));
-            if (Body == null || Body.Length == 0)
+            if (Body.IsEmpty)
                 return null;
 
-            return encoding.GetString(Body);
+            return encoding.GetString(Body.Span);
         }
 
         /// <summary>

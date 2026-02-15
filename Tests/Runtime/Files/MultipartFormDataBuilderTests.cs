@@ -98,9 +98,7 @@ namespace TurboHTTP.Tests.Files
         public void GetContentType_IncludesBoundary()
         {
             var builder = new MultipartFormDataBuilder("myboundary123");
-
-            Assert.AreEqual("multipart/form-data; boundary=myboundary123",
-                builder.GetContentType());
+            AssertMultipartBoundaryContentType(builder.GetContentType(), "myboundary123");
         }
 
         [Test]
@@ -164,8 +162,7 @@ namespace TurboHTTP.Tests.Files
 
             var request = requestBuilder.Build();
 
-            Assert.AreEqual("multipart/form-data; boundary=applybnd",
-                request.Headers.Get("Content-Type"));
+            AssertMultipartBoundaryContentType(request.Headers.Get("Content-Type"), "applybnd");
             Assert.IsNotNull(request.Body);
             Assert.Greater(request.Body.Length, 0);
         }
@@ -290,6 +287,15 @@ namespace TurboHTTP.Tests.Files
                 if (match) return true;
             }
             return false;
+        }
+
+        private static void AssertMultipartBoundaryContentType(string contentType, string boundary)
+        {
+            Assert.IsNotNull(contentType);
+
+            // Some paths normalize boundary as quoted; both forms are RFC-compliant.
+            var normalized = contentType.Replace("\"", string.Empty);
+            Assert.AreEqual($"multipart/form-data; boundary={boundary}", normalized);
         }
     }
 }

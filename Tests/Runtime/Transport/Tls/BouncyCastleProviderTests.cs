@@ -248,13 +248,11 @@ namespace TurboHTTP.Tests.Transport.Tls
             }
             catch (TimeoutException)
             {
-                Assert.Ignore($"TCP connect to {tcpHost}:443 timed out in this environment.");
-                throw;
+                Assert.Fail($"TCP connect to {tcpHost}:443 timed out in this environment.");
             }
             catch (SocketException ex)
             {
-                Assert.Ignore($"TCP connect to {tcpHost}:443 failed ({ex.SocketErrorCode}) in this environment.");
-                throw;
+                Assert.Fail($"TCP connect to {tcpHost}:443 failed ({ex.SocketErrorCode}) in this environment.");
             }
 
             using var stream = new NetworkStream(socket, true);
@@ -264,8 +262,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             var completed = await Task.WhenAny(wrapTask, Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None));
             if (completed != wrapTask)
             {
-                Assert.Ignore($"BouncyCastle TLS handshake to {tlsHost} exceeded hard timeout in this environment.");
-                throw new TimeoutException();
+                Assert.Fail($"BouncyCastle TLS handshake to {tlsHost} exceeded hard timeout in this environment.");
             }
 
             return await wrapTask;

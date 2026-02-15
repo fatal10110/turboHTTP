@@ -284,7 +284,7 @@ namespace TurboHTTP.Tests.Files
                     if (callCount == 1)
                     {
                         return Task.FromResult(new UHttpResponse(
-                            (HttpStatusCode)416, new HttpHeaders(), null, ctx.Elapsed, req));
+                            (HttpStatusCode)416, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req));
                     }
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK, new HttpHeaders(), fullContent, ctx.Elapsed, req));

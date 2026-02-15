@@ -53,7 +53,7 @@ namespace TurboHTTP.Observability
                 _metrics.RequestsByStatusCode.AddOrUpdate(
                     statusCode, 1, (_, count) => count + 1);
 
-                if (response.Body != null)
+                if (!response.Body.IsEmpty)
                 {
                     Interlocked.Add(ref _metrics.TotalBytesReceived, response.Body.Length);
                 }

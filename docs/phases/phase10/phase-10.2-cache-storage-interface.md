@@ -16,6 +16,7 @@ Required behavior:
 2. Expose observability APIs for entry count and total size.
 3. Define behavior for missing/expired keys (return `null`).
 4. Make storage swappable (memory now, disk later).
+5. Keep v1 storage contract byte-array based for response snapshots while documenting future stream-oriented extension points.
 
 Implementation constraints:
 
@@ -23,6 +24,7 @@ Implementation constraints:
 2. Methods must be cancellation-safe where cancellation token usage is introduced.
 3. Storage API must not leak backend-specific details into middleware.
 4. Interface should remain minimal to preserve backend flexibility.
+5. Add an explicit forward-compatibility note for streaming backends (for example a future `IStreamingCacheStorage` adapter) to avoid breaking middleware contracts later.
 
 ---
 
@@ -32,3 +34,4 @@ Implementation constraints:
 2. Contract docs clearly specify null/expiration behavior.
 3. Existing middleware code can target `ICacheStorage` without backend conditionals.
 4. Interface remains compatible with a future disk-cache backend.
+5. Future stream-based cache evolution can be introduced without a breaking Phase 10 API rewrite.

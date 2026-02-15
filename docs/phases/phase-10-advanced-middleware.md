@@ -7,7 +7,7 @@
 
 ## Overview
 
-Implement advanced middleware that sets TurboHTTP apart: HTTP caching with ETag support and rate limiting with token bucket algorithm. These features are essential for production applications but rarely found in Unity HTTP clients.
+Implement advanced middleware that sets TurboHTTP apart: HTTP caching with ETag support. Rate limiting is deferred to [Phase 14: Post-v1.0 Roadmap](phase-14-future.md).
 
 Detailed sub-phase breakdown: [Phase 10 Implementation Plan - Overview](phase10/overview.md)
 
@@ -15,10 +15,8 @@ Detailed sub-phase breakdown: [Phase 10 Implementation Plan - Overview](phase10/
 
 1. Create `CacheMiddleware` with ETag/Last-Modified support
 2. Create `CacheStorage` abstraction (memory and disk implementations)
-3. Create `RateLimitMiddleware` with token bucket algorithm
-4. Create per-host rate limiting
-5. Implement cache eviction policies (LRU, TTL)
-6. Support cache validation and revalidation
+3. Implement cache eviction policies (LRU, TTL)
+4. Support cache validation and revalidation
 
 ## Tasks
 
@@ -473,251 +471,9 @@ namespace TurboHTTP.Cache
 }
 ```
 
-### Task 10.5: Rate Limit Configuration
+### Deferred Tasks 10.5-10.7: Rate Limiting (Moved to Phase 14)
 
-**File:** `Runtime/RateLimit/RateLimitConfig.cs`
-
-```csharp
-using System;
-using System.Collections.Generic;
-
-namespace TurboHTTP.RateLimit
-{
-    /// <summary>
-    /// Rate limit policy configuration.
-    /// </summary>
-    public class RateLimitPolicy
-    {
-        /// <summary>
-        /// Maximum number of requests allowed per time window.
-        /// </summary>
-        public int MaxRequests { get; set; } = 100;
-
-        /// <summary>
-        /// Time window for rate limiting.
-        /// </summary>
-        public TimeSpan TimeWindow { get; set; } = TimeSpan.FromMinutes(1);
-
-        /// <summary>
-        /// Enable per-host rate limiting (default: true).
-        /// If false, rate limit applies globally across all hosts.
-        /// </summary>
-        public bool PerHost { get; set; } = true;
-
-        /// <summary>
-        /// Custom rate limits per host.
-        /// Key: hostname, Value: (maxRequests, timeWindow)
-        /// </summary>
-        public Dictionary<string, (int MaxRequests, TimeSpan TimeWindow)> HostOverrides { get; set; }
-            = new Dictionary<string, (int, TimeSpan)>();
-    }
-}
-```
-
-### Task 10.6: Token Bucket Rate Limiter
-
-**File:** `Runtime/RateLimit/TokenBucket.cs`
-
-```csharp
-using System;
-using System.Threading;
-using System.Threading.Tasks;
-
-namespace TurboHTTP.RateLimit
-{
-    /// <summary>
-    /// Token bucket algorithm for rate limiting.
-    /// </summary>
-    public class TokenBucket
-    {
-        private readonly int _capacity;
-        private readonly TimeSpan _refillInterval;
-        private readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
-        private int _tokens;
-        private DateTime _lastRefill;
-
-        public TokenBucket(int capacity, TimeSpan refillInterval)
-        {
-            _capacity = capacity;
-            _refillInterval = refillInterval;
-            _tokens = capacity;
-            _lastRefill = DateTime.UtcNow;
-        }
-
-        /// <summary>
-        /// Try to acquire a token.
-        /// Returns true if token acquired, false if rate limit exceeded.
-        /// </summary>
-        public async Task<bool> TryAcquireAsync()
-        {
-            await _lock.WaitAsync();
-            try
-            {
-                Refill();
-
-                if (_tokens > 0)
-                {
-                    _tokens--;
-                    return true;
-                }
-
-                return false;
-            }
-            finally
-            {
-                _lock.Release();
-            }
-        }
-
-        /// <summary>
-        /// Wait until a token is available, then acquire it.
-        /// </summary>
-        public async Task AcquireAsync(CancellationToken cancellationToken = default)
-        {
-            while (!await TryAcquireAsync())
-            {
-                var delay = GetTimeUntilNextToken();
-                await Task.Delay(delay, cancellationToken);
-            }
-        }
-
-        private void Refill()
-        {
-            var now = DateTime.UtcNow;
-            var elapsed = now - _lastRefill;
-
-            if (elapsed >= _refillInterval)
-            {
-                var tokensToAdd = (int)(elapsed.TotalMilliseconds / _refillInterval.TotalMilliseconds) * _capacity;
-                _tokens = Math.Min(_capacity, _tokens + tokensToAdd);
-                _lastRefill = now;
-            }
-        }
-
-        private TimeSpan GetTimeUntilNextToken()
-        {
-            var now = DateTime.UtcNow;
-            var timeSinceRefill = now - _lastRefill;
-            var timeUntilRefill = _refillInterval - timeSinceRefill;
-
-            return timeUntilRefill > TimeSpan.Zero ? timeUntilRefill : TimeSpan.FromMilliseconds(100);
-        }
-
-        public int AvailableTokens
-        {
-            get
-            {
-                _lock.Wait();
-                try
-                {
-                    Refill();
-                    return _tokens;
-                }
-                finally
-                {
-                    _lock.Release();
-                }
-            }
-        }
-    }
-}
-```
-
-### Task 10.7: Rate Limit Middleware
-
-**File:** `Runtime/RateLimit/RateLimitMiddleware.cs`
-
-```csharp
-using System;
-using System.Collections.Concurrent;
-using System.Threading;
-using System.Threading.Tasks;
-using TurboHTTP.Core;
-using UnityEngine;
-
-namespace TurboHTTP.RateLimit
-{
-    /// <summary>
-    /// Middleware that enforces rate limits using token bucket algorithm.
-    /// </summary>
-    public class RateLimitMiddleware : IHttpMiddleware
-    {
-        private readonly RateLimitPolicy _policy;
-        private readonly ConcurrentDictionary<string, TokenBucket> _buckets = new ConcurrentDictionary<string, TokenBucket>();
-        private readonly TokenBucket _globalBucket;
-
-        public RateLimitMiddleware(RateLimitPolicy policy = null)
-        {
-            _policy = policy ?? new RateLimitPolicy();
-
-            if (!_policy.PerHost)
-            {
-                _globalBucket = new TokenBucket(_policy.MaxRequests, _policy.TimeWindow);
-            }
-        }
-
-        public async Task<UHttpResponse> InvokeAsync(
-            UHttpRequest request,
-            RequestContext context,
-            HttpPipelineDelegate next,
-            CancellationToken cancellationToken)
-        {
-            var bucket = GetBucket(request);
-
-            // Try to acquire token
-            var acquired = await bucket.TryAcquireAsync();
-
-            if (!acquired)
-            {
-                // Rate limit exceeded
-                context.RecordEvent("RateLimitExceeded");
-                Debug.LogWarning($"[RateLimitMiddleware] Rate limit exceeded for {request.Uri.Host}");
-
-                // Wait for token
-                context.RecordEvent("RateLimitWaiting");
-                await bucket.AcquireAsync(cancellationToken);
-                context.RecordEvent("RateLimitAcquired");
-            }
-
-            // Proceed with request
-            return await next(request, context, cancellationToken);
-        }
-
-        private TokenBucket GetBucket(UHttpRequest request)
-        {
-            if (!_policy.PerHost)
-            {
-                return _globalBucket;
-            }
-
-            var host = request.Uri.Host;
-
-            return _buckets.GetOrAdd(host, h =>
-            {
-                // Check for host-specific override
-                if (_policy.HostOverrides.TryGetValue(h, out var config))
-                {
-                    return new TokenBucket(config.MaxRequests, config.TimeWindow);
-                }
-
-                return new TokenBucket(_policy.MaxRequests, _policy.TimeWindow);
-            });
-        }
-
-        /// <summary>
-        /// Get the current token count for a specific host.
-        /// </summary>
-        public int GetAvailableTokens(string host)
-        {
-            if (_buckets.TryGetValue(host, out var bucket))
-            {
-                return bucket.AvailableTokens;
-            }
-            return _policy.MaxRequests;
-        }
-    }
-}
-```
+Rate limit policy/config, token bucket implementation, and rate-limit middleware (former tasks 10.5-10.7) are deferred to [Phase 14: Post-v1.0 Roadmap](phase-14-future.md).
 
 ## Validation Criteria
 
@@ -728,10 +484,6 @@ namespace TurboHTTP.RateLimit
 - [ ] Last-Modified revalidation works
 - [ ] Cache respects Cache-Control headers
 - [ ] Cache eviction works (LRU policy)
-- [ ] Rate limit middleware throttles requests
-- [ ] Token bucket refills correctly
-- [ ] Per-host rate limiting works
-- [ ] Rate limit doesn't block when under limit
 
 ### Unit Tests
 
@@ -785,56 +537,11 @@ namespace TurboHTTP.Tests.Cache
 }
 ```
 
-Create test file: `Tests/Runtime/RateLimit/TokenBucketTests.cs`
-
-```csharp
-using NUnit.Framework;
-using System;
-using System.Threading.Tasks;
-using TurboHTTP.RateLimit;
-
-namespace TurboHTTP.Tests.RateLimit
-{
-    public class TokenBucketTests
-    {
-        [Test]
-        public async Task TokenBucket_AllowsRequestsUnderLimit()
-        {
-            var bucket = new TokenBucket(capacity: 5, refillInterval: TimeSpan.FromMinutes(1));
-
-            for (int i = 0; i < 5; i++)
-            {
-                var acquired = await bucket.TryAcquireAsync();
-                Assert.IsTrue(acquired, $"Request {i + 1} should be allowed");
-            }
-
-            var exceeded = await bucket.TryAcquireAsync();
-            Assert.IsFalse(exceeded, "6th request should be denied");
-        }
-
-        [Test]
-        public async Task TokenBucket_RefillsOverTime()
-        {
-            var bucket = new TokenBucket(capacity: 2, refillInterval: TimeSpan.FromSeconds(1));
-
-            // Exhaust tokens
-            await bucket.TryAcquireAsync();
-            await bucket.TryAcquireAsync();
-
-            // Wait for refill
-            await Task.Delay(TimeSpan.FromSeconds(1.1));
-
-            // Should have tokens again
-            var acquired = await bucket.TryAcquireAsync();
-            Assert.IsTrue(acquired);
-        }
-    }
-}
-```
-
 ### Task 10.8: Redirect Middleware
 
-**Deferred from Phase 3/4.** `UHttpClientOptions.FollowRedirects` and `MaxRedirects` are defined but NOT enforced. Implement a `RedirectMiddleware` that:
+Detailed plan: [Phase 10.8 Redirect Middleware](phase10/phase-10.8-redirect-middleware.md)
+
+**Carried over from Phase 3/4 backlog.** `UHttpClientOptions.FollowRedirects` and `MaxRedirects` are defined but NOT enforced. Implement a `RedirectMiddleware` that:
 - Follows 301, 302, 303, 307, 308 status codes
 - Converts POST to GET on 301/302/303 (RFC 9110 Section 15.4)
 - Preserves method on 307/308
@@ -845,7 +552,9 @@ namespace TurboHTTP.Tests.RateLimit
 
 ### Task 10.9: Cookie Middleware
 
-**Deferred from Phase 4.** Implement a `CookieMiddleware` with:
+Detailed plan: [Phase 10.9 Cookie Middleware](phase10/phase-10.9-cookie-middleware.md)
+
+**Carried over from Phase 4 backlog.** Implement a `CookieMiddleware` with:
 - RFC 6265-compliant cookie jar (domain, path, expiry, secure, httponly)
 - Automatic `Cookie` header injection on matching requests
 - Automatic `Set-Cookie` response parsing and storage
@@ -855,6 +564,8 @@ namespace TurboHTTP.Tests.RateLimit
 - Thread-safe for HTTP/2 concurrent streams
 
 ### Task 10.10: Streaming Transport Improvements
+
+Detailed plan: [Phase 10.10 Streaming Transport Improvements](phase10/phase-10.10-streaming-transport-improvements.md)
 
 Buffered I/O rewrite for HTTP/1.1 response parser to eliminate byte-by-byte ReadAsync (documented GC hotspot: ~400 Task allocations per response). See Phase 6 notes.
 
@@ -871,9 +582,7 @@ Once Phase 10 is complete and validated:
 
 - Cache middleware dramatically reduces bandwidth and latency
 - ETag revalidation ensures cache freshness
-- Rate limiting prevents API quota exhaustion
-- Token bucket is industry-standard algorithm
-- Per-host limiting respects different API rate limits
+- Rate limiting is deferred to [Phase 14: Post-v1.0 Roadmap](phase-14-future.md)
 - Redirect and cookie support are essential for real-world HTTP client usage
 - These features are rare in Unity HTTP libraries
 
@@ -891,7 +600,7 @@ Once Phase 10 is complete and validated:
 
 ## Deferred Items from Phase 2
 
-1. **HTTP 429 retryability** — `UHttpError.IsRetryable()` currently treats all 4xx as non-retryable. HTTP 429 (Too Many Requests, RFC 6585) is a 4xx code that is explicitly retryable. The rate limit middleware and/or retry middleware should handle 429 + `Retry-After` header parsing. Either special-case 429 in `IsRetryable()` or override in middleware.
+1. **HTTP 429 retryability** — `UHttpError.IsRetryable()` currently treats all 4xx as non-retryable. HTTP 429 (Too Many Requests, RFC 6585) is a 4xx code that is explicitly retryable. Handling for 429 + `Retry-After` should be addressed when rate limiting is implemented in Phase 14.
 
 ### Security & Privacy Notes
 

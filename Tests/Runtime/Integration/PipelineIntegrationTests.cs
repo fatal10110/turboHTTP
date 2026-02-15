@@ -92,7 +92,7 @@ namespace TurboHTTP.Tests.Integration
                             "Request timed out after 0.05s"));
                     }
                     return Task.FromResult(new UHttpResponse(
-                        HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req));
+                        HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req));
                 });
 
                 var retryPolicy = new RetryPolicy

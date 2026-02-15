@@ -23,6 +23,7 @@ namespace TurboHTTP.Transport
                 tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend),
                 (tlsBackend, http2MaxDecodedHeaderBytes) =>
                     new RawSocketTransport(
+                        pool: null,
                         tlsBackend: tlsBackend,
                         http2MaxDecodedHeaderBytes: http2MaxDecodedHeaderBytes));
         }

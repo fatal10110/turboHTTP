@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -6,11 +7,15 @@ using System.Net;
 using System.Text;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TurboHTTP.Cache;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
+using TurboHTTP.Middleware;
 using TurboHTTP.Testing;
 using TurboHTTP.Tests;
 using TurboHTTP.Transport;
+using TurboHTTP.Transport.Tcp;
+using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Tests.Integration
 {
@@ -304,7 +309,7 @@ namespace TurboHTTP.Tests.Integration
                         DisposeTransport = true
                     });
 
-                    var ex = await TestHelpers.AssertThrowsAsync<InvalidOperationException>(async () =>
+                    var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                     {
                         await replayClient.Get("https://example.test/not-matching").SendAsync();
                     });
@@ -473,6 +478,97 @@ namespace TurboHTTP.Tests.Integration
         }
 
         [Test]
+        public void Deterministic_Phase10_RedirectCookieCacheRevalidationFlow()
+        {
+            Task.Run(async () =>
+            {
+                int startHits = 0;
+                int resourceHits = 0;
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Uri.AbsolutePath == "/start")
+                    {
+                        startHits++;
+                        var redirectHeaders = new HttpHeaders();
+                        redirectHeaders.Set("Location", "/resource");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.Found,
+                            redirectHeaders,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    if (req.Uri.AbsolutePath == "/resource")
+                    {
+                        resourceHits++;
+                        var headers = new HttpHeaders();
+                        headers.Set("Cache-Control", "no-cache");
+                        headers.Set("ETag", "\"v1\"");
+
+                        if (resourceHits == 1)
+                        {
+                            headers.Add("Set-Cookie", "sid=abc; Path=/; HttpOnly");
+                            return Task.FromResult(new UHttpResponse(
+                                HttpStatusCode.OK,
+                                headers,
+                                Encoding.UTF8.GetBytes("resource-body"),
+                                ctx.Elapsed,
+                                req));
+                        }
+
+                        Assert.AreEqual("\"v1\"", req.Headers.Get("If-None-Match"));
+                        StringAssert.Contains("sid=abc", req.Headers.Get("Cookie"));
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.NotModified,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotFound,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true,
+                    FollowRedirects = true,
+                    MaxRedirects = 10,
+                    Middlewares = new List<IHttpMiddleware>
+                    {
+                        new RedirectMiddleware(),
+                        new CookieMiddleware(),
+                        new CacheMiddleware(new CachePolicy
+                        {
+                            Storage = new MemoryCacheStorage(),
+                            AllowSetCookieResponses = true
+                        })
+                    }
+                });
+
+                var first = await client.Get("https://example.test/start").SendAsync();
+                var second = await client.Get("https://example.test/start").SendAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, first.StatusCode);
+                Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
+                Assert.AreEqual("resource-body", first.GetBodyAsString());
+                Assert.AreEqual("resource-body", second.GetBodyAsString());
+                Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
+                Assert.AreEqual(2, startHits);
+                Assert.AreEqual(2, resourceHits);
+                Assert.AreEqual(4, transport.RequestCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         [Category("ExternalNetwork")]
         public void ExternalNetwork_HttpBin_Get()
         {
@@ -493,11 +589,50 @@ namespace TurboHTTP.Tests.Integration
         }
 
         [Test]
-        public void Http2IntegrationCoverage_DeferredToPhase9()
+        [Category("Integration")]
+        public void Http2IntegrationCoverage_Phase9_ValidatesAlpnNegotiation()
         {
-            Assert.Ignore(
-                "HTTP/2 platform ALPN/multiplexing integration is deferred to Phase 9 " +
-                "(Platform Validation) for IL2CPP device-specific verification.");
+            Task.Run(async () =>
+            {
+                using var pool = new TcpConnectionPool(tlsBackend: TlsBackend.Auto);
+                using var transport = new RawSocketTransport(pool);
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+
+                var response = await client.Get("https://www.google.com")
+                    .WithTimeout(TimeSpan.FromSeconds(25))
+                    .SendAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+
+                var alpn = TryGetNegotiatedAlpn(pool, "www.google.com");
+                Assert.That(
+                    alpn,
+                    Is.EqualTo("h2").Or.EqualTo("http/1.1"),
+                    "Expected ALPN negotiation result to be h2 or http/1.1.");
+            }).GetAwaiter().GetResult();
+        }
+
+        private static string TryGetNegotiatedAlpn(TcpConnectionPool pool, string hostFragment)
+        {
+            var idleField = typeof(TcpConnectionPool).GetField(
+                "_idleConnections",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
+
+            foreach (var kv in idle)
+            {
+                if (!kv.Key.Contains(hostFragment, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (kv.Value.TryPeek(out var conn))
+                    return conn.NegotiatedAlpnProtocol;
+            }
+
+            return null;
         }
     }
 }

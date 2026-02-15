@@ -70,7 +70,7 @@ namespace TurboHTTP.Tests.Performance
                     Interlocked.Decrement(ref currentConcurrent);
 
                     return new UHttpResponse(
-                        HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req);
+                        HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req);
                 });
 
                 var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 4, maxTotalConnections: 8);
@@ -134,7 +134,7 @@ namespace TurboHTTP.Tests.Performance
                     }
 
                     return new UHttpResponse(
-                        HttpStatusCode.OK, new HttpHeaders(), null, ctx.Elapsed, req);
+                        HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req);
                 });
 
                 var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 3, maxTotalConnections: 20);
@@ -397,7 +397,7 @@ namespace TurboHTTP.Tests.Performance
                         (req, ctx, ct) => Task.FromResult(new UHttpResponse(
                             HttpStatusCode.OK,
                             new HttpHeaders(),
-                            null,
+                            Array.Empty<byte>(),
                             ctx.Elapsed,
                             req)),
                         CancellationToken.None);

@@ -97,6 +97,15 @@ namespace TurboHTTP.Core
                 ? new Dictionary<string, object>(_metadata)
                 : null;
 
+            if (metadata == null)
+                metadata = new Dictionary<string, object>();
+
+            if (!metadata.ContainsKey(RequestMetadataKeys.FollowRedirects))
+                metadata[RequestMetadataKeys.FollowRedirects] = _client.ClientOptions.FollowRedirects;
+
+            if (!metadata.ContainsKey(RequestMetadataKeys.MaxRedirects))
+                metadata[RequestMetadataKeys.MaxRedirects] = _client.ClientOptions.MaxRedirects;
+
             return new UHttpRequest(
                 _method,
                 uri,

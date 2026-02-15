@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -530,7 +531,7 @@ namespace TurboHTTP.Testing
 
             var responseHeaders = FromDictionary(entry.ResponseHeaders);
             var responseBody = string.IsNullOrEmpty(entry.ResponseBodyBase64)
-                ? null
+                ? ReadOnlyMemory<byte>.Empty
                 : Convert.FromBase64String(entry.ResponseBodyBase64);
 
             var statusCode = entry.StatusCode <= 0
@@ -784,6 +785,50 @@ namespace TurboHTTP.Testing
             return result;
         }
 
+        private byte[] RedactJsonBodyIfNeeded(ReadOnlyMemory<byte> body, HttpHeaders headers)
+        {
+            if (body.IsEmpty)
+                return null;
+            if (_redactionPolicy.JsonBodyFieldNames.Count == 0)
+                return ToExactByteArray(body);
+
+            var contentType = headers?.Get("Content-Type");
+            if (string.IsNullOrEmpty(contentType) ||
+                contentType.IndexOf("application/json", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return ToExactByteArray(body);
+            }
+
+            object parsedBody;
+            try
+            {
+                var json = Utf8.GetString(body.Span);
+                parsedBody = DeserializeJson(json, typeof(object));
+            }
+            catch
+            {
+                return ToExactByteArray(body);
+            }
+
+            if (parsedBody == null)
+                return ToExactByteArray(body);
+
+            if (!TryRedactParsedJson(parsedBody))
+                return ToExactByteArray(body);
+
+            string redactedJson;
+            try
+            {
+                redactedJson = SerializeJson(parsedBody, typeof(object));
+            }
+            catch
+            {
+                return ToExactByteArray(body);
+            }
+
+            return Utf8.GetBytes(redactedJson);
+        }
+
         private byte[] RedactJsonBodyIfNeeded(byte[] body, HttpHeaders headers)
         {
             if (body == null || body.Length == 0)
@@ -826,6 +871,24 @@ namespace TurboHTTP.Testing
             }
 
             return Utf8.GetBytes(redactedJson);
+        }
+
+        private static byte[] ToExactByteArray(ReadOnlyMemory<byte> body)
+        {
+            if (body.IsEmpty)
+                return null;
+
+            if (MemoryMarshal.TryGetArray(body, out var segment))
+            {
+                if (segment.Offset == 0 && segment.Count == segment.Array.Length)
+                    return segment.Array;
+
+                var copy = new byte[segment.Count];
+                Buffer.BlockCopy(segment.Array, segment.Offset, copy, 0, segment.Count);
+                return copy;
+            }
+
+            return body.ToArray();
         }
 
         private bool TryRedactParsedJson(object node)

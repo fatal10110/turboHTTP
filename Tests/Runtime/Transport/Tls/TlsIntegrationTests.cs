@@ -9,7 +9,6 @@ using TurboHTTP.Core;
 using TurboHTTP.Transport;
 using TurboHTTP.Transport.Tcp;
 using TurboHTTP.Transport.Tls;
-using UnityEngine;
 
 namespace TurboHTTP.Tests.Transport.Tls
 {
@@ -41,7 +40,6 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 var response = await SendWithGuardedTimeoutAsync(client, "https://www.google.com");
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-                Assert.IsNotNull(response.Body);
                 Assert.Greater(response.Body.Length, 0);
             }).GetAwaiter().GetResult();
         }
@@ -49,12 +47,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         [Category("Integration")]
         public void HttpClient_WithBouncyCastle_CanFetchGoogle()        {
-            if (Application.isBatchMode)
-            {
-                Assert.Ignore("BouncyCastle integration is skipped in Unity batch mode on this environment.");
-                return;
-            }
-
             if (!TlsProviderSelector.IsBouncyCastleAvailable())
             {
                 Assert.Ignore("BouncyCastle is not available");
@@ -70,7 +62,6 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 var response = await SendWithGuardedTimeoutAsync(client, "https://www.google.com");
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-                Assert.IsNotNull(response.Body);
                 Assert.Greater(response.Body.Length, 0);
             }).GetAwaiter().GetResult();
         }
@@ -113,12 +104,6 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         [Category("Integration")]
         public void HttpClient_Http2_Works()        {
-            if (Application.isBatchMode)
-            {
-                Assert.Ignore("BouncyCastle HTTP/2 integration is skipped in Unity batch mode on this environment.");
-                return;
-            }
-
             if (!TlsProviderSelector.IsBouncyCastleAvailable())
             {
                 Assert.Ignore("BouncyCastle is not available");
@@ -152,20 +137,19 @@ namespace TurboHTTP.Tests.Transport.Tls
                 var completed = await Task.WhenAny(requestTask, Task.Delay(TimeSpan.FromSeconds(35), CancellationToken.None));
                 if (completed != requestTask)
                 {
-                    Assert.Ignore($"Integration request to {url} exceeded hard timeout in this environment.");
-                    throw new TimeoutException();
+                    Assert.Fail($"Integration request to {url} exceeded hard timeout in this environment.");
                 }
 
                 return await requestTask;
             }
             catch (OperationCanceledException)
             {
-                Assert.Ignore($"Integration request to {url} timed out or was canceled in this environment.");
+                Assert.Fail($"Integration request to {url} timed out or was canceled in this environment.");
                 throw;
             }
             catch (UHttpException ex) when (ex.HttpError.Type == UHttpErrorType.Timeout)
             {
-                Assert.Ignore($"Integration request to {url} timed out in this environment.");
+                Assert.Fail($"Integration request to {url} timed out in this environment.");
                 throw;
             }
         }

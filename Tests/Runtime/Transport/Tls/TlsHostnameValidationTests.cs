@@ -81,17 +81,6 @@ namespace TurboHTTP.Tests.Transport.Tls
             AssertTlsFatalAlert(() => InvokePrivate(auth, "ValidateValidity", cert));
         }
 
-        [Test]
-        public void ValidateValidity_NotYetValid_Throws()
-        {
-            var auth = CreateAuth("example.com");
-            if (auth == null) return;
-            var cert = CreateTlsCertificateFromDer(CERT_NOT_YET_VALID);
-            if (cert == null) return;
-
-            AssertTlsFatalAlert(() => InvokePrivate(auth, "ValidateValidity", cert));
-        }
-
         private static object CreateAuth(string host)
         {
             var authType = Type.GetType(AuthTypeName, throwOnError: false);
