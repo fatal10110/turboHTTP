@@ -42,10 +42,3 @@ See the [Documentation](Documentation~/QuickStart.md) folder for:
 - Unity 2021.3 LTS or higher
 - .NET Standard 2.1
 
-## Support
-
-For support, please contact: support@yourcompany.com
-
-## License
-
-Proprietary - Unity Asset Store License
