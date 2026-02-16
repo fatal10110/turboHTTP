@@ -1,7 +1,7 @@
 # Phase 15: Unity Runtime Hardening and Advanced Asset Pipeline
 
 **Milestone:** M4 (v1.x "correctness + scale")
-**Dependencies:** Phase 11 (Unity Integration), Phase 12 (Editor Tools), Phase 13 (Release), Phase 14 prioritization
+**Dependencies:** Phase 11 (Unity Integration), Phase 12 (Editor Tools), Phase 14 prioritization
 **Estimated Complexity:** High
 **Critical:** Yes - Production stability for high-load Unity projects
 
@@ -261,6 +261,44 @@ Phase 15 upgrades that baseline for high concurrency, memory pressure, and large
 4. Missing decoder package scenario fails gracefully and falls back without crashes.
 5. Each officially supported platform has both primary-path and fallback-path coverage for at least one image and one audio asset.
 6. Decoder upgrade tests verify pinned-version compatibility before dependency bumps are merged.
+
+## Task 15.8: Advanced Content Handlers (Moved from Phase 14)
+
+**Priority:** Low
+
+**Goal:** Support additional Unity asset types and serialization formats under the hardened Phase 15 pipeline.
+
+**New handlers in this track:**
+- AssetBundle loading
+- Video (`VideoClip`)
+- 3D models (glTF, FBX)
+- Compressed formats (gzip, brotli)
+- Protobuf serialization
+
+**Implementation examples:**
+```csharp
+// AssetBundle handler
+var assetBundle = await client.GetAssetBundleAsync(url);
+
+// Video handler
+var videoClip = await client.GetVideoClipAsync(url);
+
+// Protobuf handler
+var data = response.AsProtobuf<MyProtoMessage>();
+```
+
+**Estimated Effort:** 1-2 weeks per handler
+
+**Complexity:** Low-Medium
+
+**Value:** Medium
+
+**Verification criteria:**
+
+1. Each new handler has at least one integration test covering success, malformed payload handling, and cancellation.
+2. Handler conversions remain compatible with Phase 15 memory/concurrency guardrails.
+3. Handler behavior is documented per platform (including unsupported/partial support cases).
+4. New handlers preserve deterministic fallback/error behavior when required decoders/codecs are unavailable.
 
 ## Definition of Done
 

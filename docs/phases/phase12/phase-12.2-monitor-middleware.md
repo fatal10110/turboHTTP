@@ -16,6 +16,7 @@ Required behavior:
 2. Publish events to listeners for real-time editor updates.
 3. Maintain bounded in-memory history for monitor browsing.
 4. Expose clear-history API for tooling controls.
+5. Expose configurable capture size policy (`MaxCaptureSize` default 5 MB) and binary payload preview behavior.
 
 Implementation constraints:
 
@@ -23,8 +24,10 @@ Implementation constraints:
 2. Capture failures must surface diagnostics with explicit throttling policy (log first error immediately, then suppress repeats for a fixed cooldown window).
 3. Shared history must be thread-safe and allocation-conscious using a bounded ring buffer (fixed capacity) or equivalent O(1) bounded structure.
 4. History cap must be configurable with deterministic eviction strategy.
-5. Redaction/truncation policy hooks must be available before persisting payloads.
-6. Listener callback failures must be isolated so one bad subscriber cannot break capture flow.
+5. History read APIs used by UI must avoid per-frame allocations (for example snapshot into caller-provided buffer).
+6. Capture policy should keep text bodies (up to configured limit) and avoid fully buffering large binary payloads (preview or metadata only).
+7. Header masking/redaction hooks must be opt-in and configurable (default disabled).
+8. Listener callback failures must be isolated so one bad subscriber cannot break capture flow.
 
 ---
 
@@ -35,3 +38,5 @@ Implementation constraints:
 3. Clear-history operation empties capture store and updates listeners.
 4. Capture path does not materially change request latency in stress tests.
 5. Capture exceptions are visible in diagnostics and do not spam logs under repeated failures.
+6. Large binary responses do not produce full in-memory body copies by default.
+7. UI history retrieval path does not allocate a new list each repaint cycle.

@@ -1,0 +1,13 @@
+<linker>
+  <!--
+    Unity coroutine JSON wrapper resolves JsonExtensions via reflection:
+    Type.GetType("TurboHTTP.JSON.JsonExtensions, TurboHTTP.JSON")
+    and then invokes GetJsonAsync<T>(...) dynamically.
+
+    Under IL2CPP managed stripping, this type/method can be removed because
+    there is no direct static reference from TurboHTTP.Unity.
+  -->
+  <assembly fullname="TurboHTTP.JSON">
+    <type fullname="TurboHTTP.JSON.JsonExtensions" preserve="all" />
+  </assembly>
+</linker>

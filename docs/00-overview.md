@@ -9,7 +9,7 @@
 - **Licensing:** Closed source, commercial package for Unity Asset Store (per-seat licensing)
 - **Minimum Unity Version:** Unity 2021.3 LTS (.NET Standard 2.1)
 - **Target Platforms (v1.0):** Editor, Standalone (Windows/Mac/Linux), Mobile (iOS/Android)
-- **WebGL Support:** Deferred to v1.1 (browser `fetch()` API via `.jslib` interop)
+- **WebGL Support:** Planned in [Phase 16](phases/phase-16-platform-protocol-security.md) (browser `fetch()` API via `.jslib` interop)
 - **Transport Layer:** Raw TCP sockets with custom HTTP/1.1 and HTTP/2 implementation (no UnityWebRequest dependency)
 - **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation
 - **JSON Library:** System.Text.Json (built-in for Unity 2021.3+)
@@ -146,7 +146,8 @@ These are the easiest "false assumptions" to make early and the most expensive t
 
 ## Implementation Phases
 
-The implementation is organized into 15 phases, progressing from foundation to production release:
+The implementation is organized into 17 numbered phases. Execution order is:
+1-12, then 14-16, then deferred release Phase 17.
 
 ### Foundation (Phases 1-3B)
 
@@ -173,14 +174,15 @@ The implementation is organized into 15 phases, progressing from foundation to p
 - **[Phase 11](phases/phase-11-unity-integration.md):** Unity Integration
 - **[Phase 12](phases/phase-12-editor-tools.md):** Editor Tooling
 
-### Release (Phase 13)
-
-- **[Phase 13](phases/phase-13-release.md):** CI/CD & Release
-
-### Future (Phases 14-15)
+### Expansion Track (Phases 14-16, before release)
 
 - **[Phase 14](phases/phase-14-future.md):** Post-v1.0 Roadmap
 - **[Phase 15](phases/phase-15-unity-runtime-hardening.md):** Unity Runtime Hardening and Advanced Asset Pipeline
+- **[Phase 16](phases/phase-16-platform-protocol-security.md):** Platform, Protocol, and Security Expansion
+
+### Deferred Release (Phase 17, executed last)
+
+- **[Phase 17](phases/phase-17-release.md):** CI/CD & Release
 
 ## Development Milestones
 
@@ -196,13 +198,17 @@ Middleware pipeline, retry + logging + metrics, JSON helper, file download
 
 Performance optimization, testing infrastructure, documentation, platform validation
 
-### M3 — v1.0 "feature-complete + release" (Phases 10-13)
+### M3 — v1.0 "feature-complete core" (Phases 10-12)
 
-Advanced middleware, Unity integration, editor tooling, CI/CD and Asset Store release
+Advanced middleware, Unity integration, editor tooling
 
-### M4 — v1.x "differentiators" (Phases 14-15)
+### M4 — pre-release expansion (Phases 14-16)
 
-WebGL support (browser fetch API via .jslib), adaptive network policies, WebSocket support, more content handlers
+Adaptive network policies, WebGL support (browser fetch API via .jslib), WebSocket support, security hardening, and more content handlers
+
+### M5 — v1.0 "release hardening + launch" (Deferred Phase 17)
+
+CI/CD pipeline, release automation, Unity Asset Store submission
 
 ## Key Differentiators
 
@@ -228,7 +234,7 @@ turboHTTP/
 │   └── phases/                    # Detailed phase documentation
 │       ├── phase-01-project-foundation.md
 │       ├── phase-02-core-types.md
-│       ├── ... (through phase 15)
+│       ├── ... (through phase 17)
 ├── package.json
 ├── README.md
 ├── CHANGELOG.md
@@ -285,9 +291,9 @@ v1.0 is ready for Unity Asset Store when:
 
 1. Review each phase document in the `phases/` directory
 2. Start implementation with Phase 1 (Project Foundation)
-3. Progress through phases sequentially
+3. Progress through phases in this order: 1-12, 14-16, 17
 4. Validate each phase before moving to the next
-5. Reach M0, M1, M2, M3 milestones
+5. Reach M0, M1, M2, M3, M4, M5 milestones
 6. Release v1.0 on Unity Asset Store
 
 ---

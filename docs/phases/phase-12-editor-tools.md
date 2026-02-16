@@ -31,6 +31,7 @@ Detailed sub-phase breakdown: [Phase 12 Implementation Plan - Overview](phase12/
 ```csharp
 using System;
 using System.Collections.Generic;
+using System.Text;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Observability
@@ -47,37 +48,107 @@ namespace TurboHTTP.Observability
         // Request
         public string Method { get; set; }
         public string Url { get; set; }
-        public Dictionary<string, string> RequestHeaders { get; set; }
+        public IReadOnlyDictionary<string, string> RequestHeaders { get; set; }
         public byte[] RequestBody { get; set; }
+        public int OriginalRequestBodySize { get; set; }
+        public bool IsRequestBodyTruncated { get; set; }
+        public bool IsRequestBodyBinary { get; set; }
 
         // Response
         public int StatusCode { get; set; }
         public string StatusText { get; set; }
-        public Dictionary<string, string> ResponseHeaders { get; set; }
+        public IReadOnlyDictionary<string, string> ResponseHeaders { get; set; }
         public byte[] ResponseBody { get; set; }
+        public int OriginalResponseBodySize { get; set; }
+        public bool IsResponseBodyTruncated { get; set; }
+        public bool IsResponseBodyBinary { get; set; }
 
         // Timing
         public TimeSpan ElapsedTime { get; set; }
-        public List<TimelineEvent> Timeline { get; set; }
+        public IReadOnlyList<TimelineEvent> Timeline { get; set; }
 
         // Error
         public string Error { get; set; }
 
         public bool IsSuccess => StatusCode >= 200 && StatusCode < 300;
         public bool IsError => !string.IsNullOrEmpty(Error);
+        private static readonly UTF8Encoding Utf8NoThrow = new UTF8Encoding(false, false);
 
         public string GetRequestBodyAsString()
         {
-            if (RequestBody == null || RequestBody.Length == 0)
-                return string.Empty;
-            return System.Text.Encoding.UTF8.GetString(RequestBody);
+            return GetBodyAsString(
+                RequestBody,
+                RequestHeaders,
+                IsRequestBodyBinary,
+                IsRequestBodyTruncated,
+                OriginalRequestBodySize);
         }
 
         public string GetResponseBodyAsString()
         {
-            if (ResponseBody == null || ResponseBody.Length == 0)
+            return GetBodyAsString(
+                ResponseBody,
+                ResponseHeaders,
+                IsResponseBodyBinary,
+                IsResponseBodyTruncated,
+                OriginalResponseBodySize);
+        }
+
+        private static string GetBodyAsString(
+            byte[] body,
+            IReadOnlyDictionary<string, string> headers,
+            bool isBinary,
+            bool isTruncated,
+            int originalSize)
+        {
+            if (body == null || body.Length == 0)
+            {
                 return string.Empty;
-            return System.Text.Encoding.UTF8.GetString(ResponseBody);
+            }
+
+            var totalSize = originalSize > 0 ? originalSize : body.Length;
+            if (isBinary || HasBinaryContentType(headers) || ContainsNullByte(body))
+            {
+                return $"<Binary Data: {totalSize} bytes{(isTruncated ? ", preview only" : string.Empty)}>";
+            }
+
+            var text = Utf8NoThrow.GetString(body);
+            if (isTruncated)
+            {
+                text += $"\n\n<Truncated: showing {body.Length}/{totalSize} bytes>";
+            }
+
+            return text;
+        }
+
+        private static bool HasBinaryContentType(IReadOnlyDictionary<string, string> headers)
+        {
+            if (headers == null
+                || !headers.TryGetValue("Content-Type", out var contentType)
+                || string.IsNullOrEmpty(contentType))
+            {
+                return false;
+            }
+
+            return contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+                || contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+                || contentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
+                || contentType.Contains("application/octet-stream", StringComparison.OrdinalIgnoreCase)
+                || contentType.Contains("application/x-protobuf", StringComparison.OrdinalIgnoreCase)
+                || contentType.Contains("application/vnd.unity", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ContainsNullByte(byte[] bytes)
+        {
+            for (var i = 0; i < bytes.Length; i++)
+            {
+                if (bytes[i] == 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }
@@ -103,26 +174,75 @@ namespace TurboHTTP.Observability
     public class MonitorMiddleware : IHttpMiddleware
     {
         public static event Action<HttpMonitorEvent> OnRequestCaptured;
-        private static readonly List<HttpMonitorEvent> _history = new List<HttpMonitorEvent>();
-        private static readonly object _lock = new object();
+        private static readonly object _historyLock = new object();
+        private static readonly List<HttpMonitorEvent> _history = new List<HttpMonitorEvent>(1000);
 
-        public static IReadOnlyList<HttpMonitorEvent> History
+        private const int DefaultHistoryCapacity = 1000;
+        private const int DefaultMaxCaptureSizeBytes = 5 * 1024 * 1024; // 5 MB
+        private const int DefaultBinaryPreviewBytes = 64 * 1024; // 64 KB
+        private static readonly TimeSpan CaptureErrorLogCooldown = TimeSpan.FromSeconds(30);
+
+        private static int _historyCapacity = DefaultHistoryCapacity;
+        private static int _maxCaptureSizeBytes = DefaultMaxCaptureSizeBytes;
+        private static int _binaryPreviewBytes = DefaultBinaryPreviewBytes;
+        private static DateTime _nextCaptureErrorLogUtc = DateTime.MinValue;
+
+        // Optional hook; default is pass-through (no masking/redaction).
+        public static Func<string, string, string> HeaderValueTransform { get; set; } = (key, value) => value;
+        public static Action<string> DiagnosticLogger { get; set; }
+
+        public static int HistoryCount
         {
             get
             {
-                lock (_lock)
+                lock (_historyLock)
                 {
-                    return _history.ToList();
+                    return _history.Count;
                 }
+            }
+        }
+
+        public static int HistoryCapacity
+        {
+            get => _historyCapacity;
+            set => _historyCapacity = Math.Max(10, value);
+        }
+
+        public static int MaxCaptureSizeBytes
+        {
+            get => _maxCaptureSizeBytes;
+            set => _maxCaptureSizeBytes = Math.Max(1024, value);
+        }
+
+        public static int BinaryPreviewBytes
+        {
+            get => _binaryPreviewBytes;
+            set => _binaryPreviewBytes = Math.Max(256, value);
+        }
+
+        public static void GetHistorySnapshot(List<HttpMonitorEvent> buffer)
+        {
+            if (buffer == null)
+            {
+                throw new ArgumentNullException(nameof(buffer));
+            }
+
+            lock (_historyLock)
+            {
+                buffer.Clear();
+                buffer.AddRange(_history);
             }
         }
 
         public static void ClearHistory()
         {
-            lock (_lock)
+            lock (_historyLock)
             {
                 _history.Clear();
             }
+
+            // Null payload indicates structural update (for example clear).
+            PublishEvent(null);
         }
 
         public async Task<UHttpResponse> InvokeAsync(
@@ -131,22 +251,13 @@ namespace TurboHTTP.Observability
             HttpPipelineDelegate next,
             CancellationToken cancellationToken)
         {
-            var monitorEvent = new HttpMonitorEvent
-            {
-                Id = Guid.NewGuid().ToString(),
-                Timestamp = DateTime.UtcNow,
-                Method = request.Method.ToString(),
-                Url = request.Uri.ToString(),
-                RequestHeaders = request.Headers.ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
-                RequestBody = request.Body
-            };
-
+            HttpMonitorEvent monitorEvent = null;
             UHttpResponse response = null;
             Exception exception = null;
 
             try
             {
-                response = await next(request, context, cancellationToken);
+                response = await next(request, context, cancellationToken).ConfigureAwait(false);
                 return response;
             }
             catch (Exception ex)
@@ -156,41 +267,180 @@ namespace TurboHTTP.Observability
             }
             finally
             {
-                // Capture response data
-                if (response != null)
+                try
                 {
-                    monitorEvent.StatusCode = (int)response.StatusCode;
-                    monitorEvent.StatusText = response.StatusCode.ToString();
-                    monitorEvent.ResponseHeaders = response.Headers.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-                    monitorEvent.ResponseBody = response.Body;
-
-                    if (response.Error != null)
-                    {
-                        monitorEvent.Error = response.Error.ToString();
-                    }
+                    monitorEvent = BuildMonitorEvent(request, response, context, exception);
+                    StoreEvent(monitorEvent);
+                    PublishEvent(monitorEvent);
                 }
-                else if (exception != null)
+                catch (Exception captureEx)
                 {
-                    monitorEvent.Error = exception.Message;
+                    LogCaptureFailure(captureEx);
                 }
+            }
+        }
 
-                monitorEvent.ElapsedTime = context.Elapsed;
-                monitorEvent.Timeline = context.Timeline.ToList();
+        private static HttpMonitorEvent BuildMonitorEvent(
+            UHttpRequest request,
+            UHttpResponse response,
+            RequestContext context,
+            Exception exception)
+        {
+            var requestHeaders = CopyHeaders(request.Headers);
+            var requestSnapshot = CreateBodySnapshot(request.Body, requestHeaders);
 
-                // Store in history
-                lock (_lock)
+            var responseHeaders = response != null
+                ? CopyHeaders(response.Headers)
+                : new Dictionary<string, string>();
+
+            var responseSnapshot = response != null
+                ? CreateBodySnapshot(response.Body, responseHeaders)
+                : (Body: (byte[])null, OriginalSize: 0, IsTruncated: false, IsBinary: false);
+
+            return new HttpMonitorEvent
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Timestamp = DateTime.UtcNow,
+                Method = request.Method.ToString(),
+                Url = request.Uri?.ToString() ?? string.Empty,
+                RequestHeaders = requestHeaders,
+                RequestBody = requestSnapshot.Body,
+                OriginalRequestBodySize = requestSnapshot.OriginalSize,
+                IsRequestBodyTruncated = requestSnapshot.IsTruncated,
+                IsRequestBodyBinary = requestSnapshot.IsBinary,
+                StatusCode = response != null ? (int)response.StatusCode : 0,
+                StatusText = response?.StatusCode.ToString(),
+                ResponseHeaders = responseHeaders,
+                ResponseBody = responseSnapshot.Body,
+                OriginalResponseBodySize = responseSnapshot.OriginalSize,
+                IsResponseBodyTruncated = responseSnapshot.IsTruncated,
+                IsResponseBodyBinary = responseSnapshot.IsBinary,
+                Error = response?.Error?.ToString() ?? exception?.Message,
+                ElapsedTime = context?.Elapsed ?? TimeSpan.Zero,
+                Timeline = context?.Timeline?.ToList() ?? new List<TimelineEvent>()
+            };
+        }
+
+        private static Dictionary<string, string> CopyHeaders(IEnumerable<KeyValuePair<string, string>> headers)
+        {
+            var copy = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (headers == null)
+            {
+                return copy;
+            }
+
+            foreach (var header in headers)
+            {
+                var transformed = HeaderValueTransform?.Invoke(header.Key, header.Value) ?? header.Value;
+                copy[header.Key] = transformed;
+            }
+
+            return copy;
+        }
+
+        private static (byte[] Body, int OriginalSize, bool IsTruncated, bool IsBinary) CreateBodySnapshot(
+            byte[] body,
+            IReadOnlyDictionary<string, string> headers)
+        {
+            if (body == null || body.Length == 0)
+            {
+                return (null, 0, false, false);
+            }
+
+            var originalSize = body.Length;
+            var isBinary = IsBinaryPayload(body, headers);
+            var limit = isBinary ? BinaryPreviewBytes : MaxCaptureSizeBytes;
+            var captureSize = Math.Min(originalSize, Math.Max(0, limit));
+            var isTruncated = originalSize > captureSize;
+
+            if (captureSize <= 0)
+            {
+                return (Array.Empty<byte>(), originalSize, true, isBinary);
+            }
+
+            var snapshot = new byte[captureSize];
+            Buffer.BlockCopy(body, 0, snapshot, 0, captureSize);
+            return (snapshot, originalSize, isTruncated, isBinary);
+        }
+
+        private static bool IsBinaryPayload(byte[] body, IReadOnlyDictionary<string, string> headers)
+        {
+            if (headers != null
+                && headers.TryGetValue("Content-Type", out var contentType)
+                && !string.IsNullOrEmpty(contentType))
+            {
+                if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+                    || contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+                    || contentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
+                    || contentType.Contains("application/octet-stream", StringComparison.OrdinalIgnoreCase)
+                    || contentType.Contains("application/x-protobuf", StringComparison.OrdinalIgnoreCase)
+                    || contentType.Contains("application/vnd.unity", StringComparison.OrdinalIgnoreCase))
                 {
-                    _history.Add(monitorEvent);
-
-                    // Limit history size
-                    if (_history.Count > 1000)
-                    {
-                        _history.RemoveAt(0);
-                    }
+                    return true;
                 }
+            }
 
-                // Notify listeners
-                OnRequestCaptured?.Invoke(monitorEvent);
+            var checkLength = Math.Min(body.Length, 512);
+            for (var i = 0; i < checkLength; i++)
+            {
+                if (body[i] == 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void StoreEvent(HttpMonitorEvent monitorEvent)
+        {
+            lock (_historyLock)
+            {
+                _history.Add(monitorEvent);
+                while (_history.Count > HistoryCapacity)
+                {
+                    _history.RemoveAt(0);
+                }
+            }
+        }
+
+        private static void PublishEvent(HttpMonitorEvent monitorEvent)
+        {
+            var handlers = OnRequestCaptured;
+            if (handlers == null)
+            {
+                return;
+            }
+
+            foreach (Action<HttpMonitorEvent> handler in handlers.GetInvocationList())
+            {
+                try
+                {
+                    handler(monitorEvent);
+                }
+                catch (Exception ex)
+                {
+                    LogCaptureFailure(ex);
+                }
+            }
+        }
+
+        private static void LogCaptureFailure(Exception ex)
+        {
+            var shouldLog = false;
+            lock (_historyLock)
+            {
+                var now = DateTime.UtcNow;
+                if (now >= _nextCaptureErrorLogUtc)
+                {
+                    _nextCaptureErrorLogUtc = now + CaptureErrorLogCooldown;
+                    shouldLog = true;
+                }
+            }
+
+            if (shouldLog)
+            {
+                DiagnosticLogger?.Invoke($"[TurboHTTP][Monitor] Capture failure: {ex.Message}");
             }
         }
     }
@@ -204,7 +454,8 @@ namespace TurboHTTP.Observability
 ```csharp
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Text;
+using System.Threading;
 using TurboHTTP.Observability;
 using UnityEditor;
 using UnityEngine;
@@ -216,12 +467,28 @@ namespace TurboHTTP.Editor
     /// </summary>
     public class HttpMonitorWindow : EditorWindow
     {
+        public static bool DefaultMaskConfidentialHeaders { get; set; }
+
+        private static readonly HashSet<string> ConfidentialHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Authorization",
+            "X-Auth-Token",
+            "X-API-Key",
+            "Cookie",
+            "Set-Cookie"
+        };
+
+        private readonly List<HttpMonitorEvent> _historyCache = new List<HttpMonitorEvent>(1024);
+        private readonly List<HttpMonitorEvent> _filteredCache = new List<HttpMonitorEvent>(1024);
         private Vector2 _requestListScroll;
         private Vector2 _detailsScroll;
         private HttpMonitorEvent _selectedEvent;
-        private string _filterUrl = "";
-        private string _filterMethod = "";
-        private int _selectedTab = 0;
+        private string _filterUrl = string.Empty;
+        private string _filterMethod = string.Empty;
+        private bool _maskConfidentialHeaders;
+        private bool _historyDirty = true;
+        private int _selectedTab;
+        private int _pendingUiRefresh;
         private readonly string[] _tabNames = { "Request", "Response", "Timeline", "Raw" };
 
         [MenuItem("Window/TurboHTTP/HTTP Monitor")]
@@ -233,7 +500,9 @@ namespace TurboHTTP.Editor
 
         private void OnEnable()
         {
+            _maskConfidentialHeaders = DefaultMaskConfidentialHeaders;
             MonitorMiddleware.OnRequestCaptured += OnRequestCaptured;
+            RefreshHistoryCache();
         }
 
         private void OnDisable()
@@ -241,13 +510,26 @@ namespace TurboHTTP.Editor
             MonitorMiddleware.OnRequestCaptured -= OnRequestCaptured;
         }
 
-        private void OnRequestCaptured(HttpMonitorEvent evt)
+        private void OnRequestCaptured(HttpMonitorEvent _)
         {
+            if (Interlocked.Exchange(ref _pendingUiRefresh, 1) == 1)
+            {
+                return;
+            }
+
+            EditorApplication.delayCall += FlushCaptureOnMainThread;
+        }
+
+        private void FlushCaptureOnMainThread()
+        {
+            Interlocked.Exchange(ref _pendingUiRefresh, 0);
+            _historyDirty = true;
             Repaint();
         }
 
         private void OnGUI()
         {
+            RefreshHistoryCacheIfDirty();
             DrawToolbar();
 
             EditorGUILayout.BeginHorizontal();
@@ -264,6 +546,27 @@ namespace TurboHTTP.Editor
             EditorGUILayout.EndHorizontal();
         }
 
+        private void RefreshHistoryCacheIfDirty()
+        {
+            if (!_historyDirty)
+            {
+                return;
+            }
+
+            RefreshHistoryCache();
+            _historyDirty = false;
+
+            if (_selectedEvent != null && !_historyCache.Contains(_selectedEvent))
+            {
+                _selectedEvent = null;
+            }
+        }
+
+        private void RefreshHistoryCache()
+        {
+            MonitorMiddleware.GetHistorySnapshot(_historyCache);
+        }
+
         private void DrawToolbar()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
@@ -272,7 +575,15 @@ namespace TurboHTTP.Editor
                 {
                     MonitorMiddleware.ClearHistory();
                     _selectedEvent = null;
+                    _historyDirty = true;
                 }
+
+                GUILayout.Space(8);
+                _maskConfidentialHeaders = GUILayout.Toggle(
+                    _maskConfidentialHeaders,
+                    "Mask Confidential Headers",
+                    EditorStyles.toolbarButton,
+                    GUILayout.Width(170));
 
                 GUILayout.FlexibleSpace();
 
@@ -282,8 +593,7 @@ namespace TurboHTTP.Editor
                 GUILayout.Label("Method:", GUILayout.Width(50));
                 _filterMethod = GUILayout.TextField(_filterMethod, EditorStyles.toolbarSearchField, GUILayout.Width(60));
 
-                var history = MonitorMiddleware.History;
-                GUILayout.Label($"Total: {history.Count}", GUILayout.Width(80));
+                GUILayout.Label($"Total: {_historyCache.Count}", GUILayout.Width(90));
             }
             EditorGUILayout.EndHorizontal();
         }
@@ -307,11 +617,10 @@ namespace TurboHTTP.Editor
                 // Request list
                 _requestListScroll = EditorGUILayout.BeginScrollView(_requestListScroll);
                 {
-                    var filteredEvents = GetFilteredEvents();
-
-                    foreach (var evt in filteredEvents)
+                    BuildFilteredCache();
+                    for (var i = 0; i < _filteredCache.Count; i++)
                     {
-                        DrawRequestRow(evt);
+                        DrawRequestRow(_filteredCache[i]);
                     }
                 }
                 EditorGUILayout.EndScrollView();
@@ -339,7 +648,8 @@ namespace TurboHTTP.Editor
                 GUI.color = originalColor;
 
                 // URL
-                var urlLabel = evt.Url.Length > 50 ? evt.Url.Substring(0, 47) + "..." : evt.Url;
+                var url = evt.Url ?? string.Empty;
+                var urlLabel = url.Length > 50 ? url.Substring(0, 47) + "..." : url;
                 GUILayout.Label(urlLabel, GUILayout.ExpandWidth(true));
 
                 // Status
@@ -404,15 +714,13 @@ namespace TurboHTTP.Editor
             EditorGUILayout.LabelField("Request Details", EditorStyles.boldLabel);
             EditorGUILayout.Space();
 
-            EditorGUILayout.LabelField("URL:", _selectedEvent.Url);
-            EditorGUILayout.LabelField("Method:", _selectedEvent.Method);
+            EditorGUILayout.LabelField("URL:", _selectedEvent.Url ?? string.Empty);
+            EditorGUILayout.LabelField("Method:", _selectedEvent.Method ?? string.Empty);
+            DrawBodyMeta(_selectedEvent.OriginalRequestBodySize, _selectedEvent.IsRequestBodyTruncated, _selectedEvent.IsRequestBodyBinary);
             EditorGUILayout.Space();
 
             EditorGUILayout.LabelField("Headers:", EditorStyles.boldLabel);
-            foreach (var header in _selectedEvent.RequestHeaders)
-            {
-                EditorGUILayout.LabelField($"  {header.Key}:", header.Value);
-            }
+            DrawHeaders(_selectedEvent.RequestHeaders);
 
             if (_selectedEvent.RequestBody != null && _selectedEvent.RequestBody.Length > 0)
             {
@@ -430,13 +738,11 @@ namespace TurboHTTP.Editor
 
             EditorGUILayout.LabelField("Status:", $"{_selectedEvent.StatusCode} {_selectedEvent.StatusText}");
             EditorGUILayout.LabelField("Time:", $"{_selectedEvent.ElapsedTime.TotalMilliseconds:F2}ms");
+            DrawBodyMeta(_selectedEvent.OriginalResponseBodySize, _selectedEvent.IsResponseBodyTruncated, _selectedEvent.IsResponseBodyBinary);
             EditorGUILayout.Space();
 
             EditorGUILayout.LabelField("Headers:", EditorStyles.boldLabel);
-            foreach (var header in _selectedEvent.ResponseHeaders)
-            {
-                EditorGUILayout.LabelField($"  {header.Key}:", header.Value);
-            }
+            DrawHeaders(_selectedEvent.ResponseHeaders);
 
             if (_selectedEvent.ResponseBody != null && _selectedEvent.ResponseBody.Length > 0)
             {
@@ -477,44 +783,118 @@ namespace TurboHTTP.Editor
 
         private void DrawRawTab()
         {
-            EditorGUILayout.LabelField("Raw Data", EditorStyles.boldLabel);
-            EditorGUILayout.Space();
+            var raw = new StringBuilder(4096);
+            raw.AppendLine("=== REQUEST ===");
+            raw.AppendLine($"{_selectedEvent.Method} {_selectedEvent.Url}");
+            raw.AppendLine();
+            raw.AppendLine("Headers:");
+            AppendHeaders(raw, _selectedEvent.RequestHeaders);
+            raw.AppendLine();
+            raw.AppendLine("Body:");
+            raw.AppendLine(_selectedEvent.GetRequestBodyAsString());
+            raw.AppendLine();
+            raw.AppendLine("=== RESPONSE ===");
+            raw.AppendLine($"Status: {_selectedEvent.StatusCode} {_selectedEvent.StatusText}");
+            raw.AppendLine();
+            raw.AppendLine("Headers:");
+            AppendHeaders(raw, _selectedEvent.ResponseHeaders);
+            raw.AppendLine();
+            raw.AppendLine("Body:");
+            raw.AppendLine(_selectedEvent.GetResponseBodyAsString());
 
-            var raw = $"=== REQUEST ===\n{_selectedEvent.Method} {_selectedEvent.Url}\n\n";
-            raw += "Headers:\n";
-            foreach (var h in _selectedEvent.RequestHeaders)
-            {
-                raw += $"{h.Key}: {h.Value}\n";
-            }
-            raw += "\nBody:\n" + _selectedEvent.GetRequestBodyAsString();
-
-            raw += "\n\n=== RESPONSE ===\n";
-            raw += $"Status: {_selectedEvent.StatusCode} {_selectedEvent.StatusText}\n\n";
-            raw += "Headers:\n";
-            foreach (var h in _selectedEvent.ResponseHeaders)
-            {
-                raw += $"{h.Key}: {h.Value}\n";
-            }
-            raw += "\nBody:\n" + _selectedEvent.GetResponseBodyAsString();
-
-            EditorGUILayout.TextArea(raw, GUILayout.ExpandHeight(true));
+            EditorGUILayout.TextArea(raw.ToString(), GUILayout.ExpandHeight(true));
         }
 
-        private List<HttpMonitorEvent> GetFilteredEvents()
+        private void BuildFilteredCache()
         {
-            var events = MonitorMiddleware.History.ToList();
-
-            if (!string.IsNullOrWhiteSpace(_filterUrl))
+            _filteredCache.Clear();
+            for (var i = _historyCache.Count - 1; i >= 0; i--)
             {
-                events = events.Where(e => e.Url.Contains(_filterUrl, StringComparison.OrdinalIgnoreCase)).ToList();
+                var evt = _historyCache[i];
+                if (!MatchesFilter(evt))
+                {
+                    continue;
+                }
+
+                _filteredCache.Add(evt);
+            }
+        }
+
+        private bool MatchesFilter(HttpMonitorEvent evt)
+        {
+            if (evt == null)
+            {
+                return false;
             }
 
-            if (!string.IsNullOrWhiteSpace(_filterMethod))
+            if (!string.IsNullOrWhiteSpace(_filterUrl)
+                && (evt.Url == null || evt.Url.IndexOf(_filterUrl, StringComparison.OrdinalIgnoreCase) < 0))
             {
-                events = events.Where(e => e.Method.Contains(_filterMethod, StringComparison.OrdinalIgnoreCase)).ToList();
+                return false;
             }
 
-            return events.OrderByDescending(e => e.Timestamp).ToList();
+            if (!string.IsNullOrWhiteSpace(_filterMethod)
+                && (evt.Method == null || evt.Method.IndexOf(_filterMethod, StringComparison.OrdinalIgnoreCase) < 0))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private void DrawBodyMeta(int originalSize, bool truncated, bool binary)
+        {
+            var label = $"{originalSize} bytes";
+            if (binary)
+            {
+                label += " (binary)";
+            }
+
+            if (truncated)
+            {
+                label += " - truncated/preview";
+            }
+
+            EditorGUILayout.LabelField("Captured Body:", label);
+        }
+
+        private void DrawHeaders(IReadOnlyDictionary<string, string> headers)
+        {
+            if (headers == null || headers.Count == 0)
+            {
+                EditorGUILayout.LabelField("  <none>");
+                return;
+            }
+
+            foreach (var header in headers)
+            {
+                EditorGUILayout.LabelField($"  {header.Key}:", FormatHeaderValue(header.Key, header.Value));
+            }
+        }
+
+        private void AppendHeaders(StringBuilder builder, IReadOnlyDictionary<string, string> headers)
+        {
+            if (headers == null || headers.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var header in headers)
+            {
+                builder.Append(header.Key);
+                builder.Append(": ");
+                builder.AppendLine(FormatHeaderValue(header.Key, header.Value));
+            }
+        }
+
+        private string FormatHeaderValue(string key, string value)
+        {
+            if (_maskConfidentialHeaders && key != null && ConfidentialHeaders.Contains(key))
+            {
+                return "********";
+            }
+
+            return value ?? string.Empty;
         }
 
         private Color GetMethodColor(string method)
@@ -541,15 +921,18 @@ namespace TurboHTTP.Editor
         private void ExportEvent(HttpMonitorEvent evt)
         {
             var path = EditorUtility.SaveFilePanel("Export HTTP Event", "", $"http_event_{evt.Id}", "json");
-            if (!string.IsNullOrEmpty(path))
+            if (string.IsNullOrEmpty(path))
             {
-                var json = System.Text.Json.JsonSerializer.Serialize(evt, new System.Text.Json.JsonSerializerOptions
-                {
-                    WriteIndented = true
-                });
-                System.IO.File.WriteAllText(path, json);
-                Debug.Log($"Exported to {path}");
+                return;
             }
+
+            var json = System.Text.Json.JsonSerializer.Serialize(evt, new System.Text.Json.JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+
+            System.IO.File.WriteAllText(path, json);
+            Debug.Log($"Exported to {path}");
         }
     }
 }
@@ -560,7 +943,6 @@ namespace TurboHTTP.Editor
 **File:** `Editor/Settings/TurboHttpSettings.cs`
 
 ```csharp
-using TurboHTTP.Core;
 using TurboHTTP.Observability;
 using UnityEditor;
 using UnityEngine;
@@ -574,6 +956,10 @@ namespace TurboHTTP.Editor
     public static class TurboHttpSettings
     {
         private const string EnableMonitorKey = "TurboHTTP_EnableMonitor";
+        private const string MaxCaptureSizeMbKey = "TurboHTTP_MaxCaptureSizeMb";
+        private const string MaskConfidentialHeadersKey = "TurboHTTP_MaskConfidentialHeaders";
+        private const int DefaultMaxCaptureSizeMb = 5;
+        private const bool DefaultMaskConfidentialHeaders = false;
 
         public static bool EnableMonitor
         {
@@ -581,21 +967,43 @@ namespace TurboHTTP.Editor
             set => EditorPrefs.SetBool(EnableMonitorKey, value);
         }
 
+        public static int MaxCaptureSizeMb
+        {
+            get => Mathf.Clamp(EditorPrefs.GetInt(MaxCaptureSizeMbKey, DefaultMaxCaptureSizeMb), 1, 50);
+            set => EditorPrefs.SetInt(MaxCaptureSizeMbKey, Mathf.Clamp(value, 1, 50));
+        }
+
+        public static bool MaskConfidentialHeaders
+        {
+            get => EditorPrefs.GetBool(MaskConfidentialHeadersKey, DefaultMaskConfidentialHeaders);
+            set => EditorPrefs.SetBool(MaskConfidentialHeadersKey, value);
+        }
+
         static TurboHttpSettings()
         {
-            // Auto-enable monitor middleware in editor
-            if (EnableMonitor)
-            {
-                EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
-            }
+            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+            ApplyMonitorPreferences();
         }
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
         {
-            if (state == PlayModeStateChange.EnteredPlayMode && EnableMonitor)
+            if (state != PlayModeStateChange.EnteredPlayMode)
             {
-                Debug.Log("[TurboHTTP] Monitor middleware auto-enabled in Editor");
+                return;
             }
+
+            ApplyMonitorPreferences();
+            if (EnableMonitor)
+            {
+                Debug.Log("[TurboHTTP] Monitor middleware configured in Editor play mode.");
+            }
+        }
+
+        private static void ApplyMonitorPreferences()
+        {
+            MonitorMiddleware.MaxCaptureSizeBytes = MaxCaptureSizeMb * 1024 * 1024;
+            HttpMonitorWindow.DefaultMaskConfidentialHeaders = MaskConfidentialHeaders;
         }
 
         [SettingsProvider]
@@ -610,7 +1018,14 @@ namespace TurboHTTP.Editor
                     EditorGUILayout.LabelField("Editor Settings", EditorStyles.boldLabel);
 
                     EnableMonitor = EditorGUILayout.Toggle("Enable HTTP Monitor", EnableMonitor);
-                    EditorGUILayout.HelpBox("When enabled, all HTTP requests will be captured in the HTTP Monitor window.", MessageType.Info);
+                    MaxCaptureSizeMb = EditorGUILayout.IntField("Max Capture Size (MB)", MaxCaptureSizeMb);
+                    MaskConfidentialHeaders = EditorGUILayout.Toggle("Mask Confidential Headers", MaskConfidentialHeaders);
+
+                    EditorGUILayout.HelpBox(
+                        "Text payloads are captured up to Max Capture Size (default 5 MB). Binary payloads store preview/metadata by default.",
+                        MessageType.Info);
+
+                    ApplyMonitorPreferences();
 
                     EditorGUILayout.Space();
 
@@ -638,9 +1053,13 @@ namespace TurboHTTP.Editor
 - [ ] Timeline tab shows all events with timestamps
 - [ ] Filter by URL works
 - [ ] Filter by method works
+- [ ] Large text payloads are preserved up to configured `MaxCaptureSize` (default 5 MB)
+- [ ] Large binary payloads show preview/metadata instead of full body allocation
+- [ ] Header masking toggle works and defaults to OFF
 - [ ] Export functionality works
 - [ ] Clear history works
-- [ ] Window updates in real-time
+- [ ] Window updates in real-time without per-`OnGUI` history list allocations
+- [ ] Window repaint scheduling remains main-thread safe
 
 ### Manual Testing
 
@@ -650,17 +1069,19 @@ namespace TurboHTTP.Editor
 4. Click on request to see details
 5. Switch between tabs (Request, Response, Timeline, Raw)
 6. Test filters
-7. Test export
-8. Test clear
+7. Verify binary payload request/response renders placeholder/preview text
+8. Toggle "Mask Confidential Headers" and verify expected header masking behavior
+9. Test export
+10. Test clear
 
 ## Next Steps
 
 Once Phase 12 is complete and validated:
 
-1. Move to [Phase 13: CI/CD & Release](phase-13-release.md)
-2. Set up CI/CD pipeline
-3. Prepare Asset Store submission
-4. M3 milestone near completion
+1. Move to [Phase 14: Post-v1.0 Roadmap](phase-14-future.md)
+2. Continue through Phases 15 and 16
+3. Finish with [Phase 17: CI/CD & Release](phase-17-release.md)
+4. M3 milestone complete; proceed toward M4/M5
 
 ## Notes
 

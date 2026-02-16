@@ -24,6 +24,7 @@ Implementation constraints:
 4. Wrap coroutine task completion path in `try/catch` and invoke error callback exactly once on failure.
 5. Keep wrappers allocation-light, but treat coroutine wrappers as convenience API; high-frequency paths should prefer async/await APIs.
 6. For `AggregateException`, unwrap deterministic root exception and preserve stack fidelity (no `throw ex`).
+7. JSON coroutine support may use reflection to keep JSON module optional; IL2CPP stripping must preserve reflected JSON extension entry points (for example via `Runtime/JSON/link.xml`).
 
 ---
 

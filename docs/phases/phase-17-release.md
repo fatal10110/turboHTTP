@@ -1,13 +1,13 @@
-# Phase 13: CI/CD & Release
+# Phase 17: CI/CD & Release
 
-**Milestone:** M3 (v1.0 "production")
-**Dependencies:** Phase 12 (Editor Tooling)
+**Milestone:** M5 (v1.0 "production release")
+**Dependencies:** Phase 12 (Editor Tooling), completion of Phases 14-16 expansion track
 **Estimated Complexity:** Medium
 **Critical:** Yes - Release preparation
 
 ## Overview
 
-Set up continuous integration and continuous deployment (CI/CD) pipeline, prepare Asset Store submission package, and create the release process. This phase ensures consistent quality and streamlined releases.
+Set up continuous integration and continuous deployment (CI/CD) pipeline, prepare Asset Store submission package, and create the release process. This phase ensures consistent quality and streamlined releases. It is intentionally deferred and executed after Phases 14-16.
 
 ## Goals
 
@@ -22,7 +22,7 @@ Set up continuous integration and continuous deployment (CI/CD) pipeline, prepar
 
 ## Tasks
 
-### Task 13.1: GitHub Actions CI
+### Task 17.1: GitHub Actions CI
 
 **File:** `.github/workflows/ci.yml`
 
@@ -149,7 +149,7 @@ jobs:
           fi
 ```
 
-### Task 13.2: Build Script
+### Task 17.2: Build Script
 
 **File:** `Editor/Build/BuildScript.cs`
 
@@ -243,7 +243,7 @@ namespace TurboHTTP.Editor.Build
 }
 ```
 
-### Task 13.3: Asset Store Package Builder
+### Task 17.3: Asset Store Package Builder
 
 **File:** `Editor/Build/AssetStorePackageBuilder.cs`
 
@@ -341,7 +341,7 @@ namespace TurboHTTP.Editor.Build
 }
 ```
 
-### Task 13.4: Release Checklist
+### Task 17.4: Release Checklist
 
 **File:** `RELEASE_CHECKLIST.md`
 
@@ -445,7 +445,7 @@ Current version: **1.0.0**
 Next version: ______
 ```
 
-### Task 13.5: Versioning Strategy
+### Task 17.5: Versioning Strategy
 
 **File:** `Editor/Settings/VersionInfo.cs`
 
@@ -479,7 +479,7 @@ namespace TurboHTTP.Editor
 }
 ```
 
-### Task 13.6: Asset Store Metadata
+### Task 17.6: Asset Store Metadata
 
 **File:** `AssetStore/Description.txt`
 
@@ -567,14 +567,14 @@ HTTP, REST, API, networking, client, request, download, upload, JSON, cache, ret
 
 ## Next Steps
 
-Once Phase 13 is complete and validated:
+Once Phase 17 is complete and validated:
 
 1. Submit to Unity Asset Store
 2. Wait for approval (typically 1-2 weeks)
 3. Publish when approved
 4. Monitor for issues
-5. Plan v1.1 features (Phase 14)
-6. M3 milestone **COMPLETE** - v1.0 shipped!
+5. Start post-launch roadmap refresh based on production feedback
+6. M5 milestone **COMPLETE** - v1.0 shipped!
 
 ## Notes
 

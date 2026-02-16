@@ -1,6 +1,6 @@
 # Phase 11: Unity Integration
 
-**Milestone:** M3 (v1.0 "feature-complete + release")
+**Milestone:** M3 (v1.0 "feature-complete")
 **Dependencies:** Phase 10 (Advanced Middleware)
 **Estimated Complexity:** Medium
 **Critical:** Yes - Unity-specific features
@@ -711,4 +711,7 @@ Once Phase 11 is complete and validated:
 - `Texture2D.LoadImage()` must run on main thread
 - AudioClip requires temporary file workaround (Unity limitation)
 - Coroutine wrapper provides backward compatibility
+- `GetJsonCoroutine<T>` uses reflection to keep `TurboHTTP.JSON` optional; IL2CPP
+  managed stripping builds must preserve `TurboHTTP.JSON.JsonExtensions` (via
+  `Runtime/JSON/link.xml`)
 - Unity-specific paths (persistentDataPath, temporaryCachePath) are properly supported

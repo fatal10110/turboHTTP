@@ -1,57 +1,29 @@
 # Phase 14: Post-v1.0 Roadmap
 
 **Milestone:** M4 (v1.x "differentiators")
-**Dependencies:** Phase 13 (v1.0 Release)
+**Dependencies:** Phase 12 (Editor Tooling)
 **Estimated Complexity:** Varies
 **Critical:** No - Future enhancements
 
 ## Overview
 
-This phase outlines the roadmap for TurboHTTP beyond v1.0. These features will differentiate TurboHTTP from competitors and address advanced use cases. Prioritize based on user feedback and market demand.
+This phase outlines the core roadmap for TurboHTTP beyond v1.0. These features prioritize transport robustness, mobile reliability, and extensibility. This roadmap can be prepared before the deferred release phase.
 
-## Potential Features for v1.1 - v2.0
+Detailed sub-phase breakdown: [Phase 14 Implementation Plan - Overview](phase14/overview.md)
 
-### 1. WebGL Support (High Priority)
+## Scope Split
 
-**Goal:** Make TurboHTTP work in WebGL builds
+The following items were extracted from Phase 14 into [Phase 16](phase-16-platform-protocol-security.md):
+- WebGL Support (High Priority)
+- WebSocket Support (High Priority)
+- gRPC Support (Low Priority)
+- GraphQL Client (Medium Priority)
+- Parallel Request Helpers (Low Priority)
+- Security & Privacy Hardening (High Priority)
 
-**Approach:** Implement a `.jslib` JavaScript plugin that wraps the browser `fetch()` API, with a C# `WebGLBrowserTransport : IHttpTransport` that calls into it via `[DllImport("__Internal")]`. This is the same proven approach used by BestHTTP (which uses `XMLHttpRequest`), but using the modern `fetch()` API which additionally supports `ReadableStream` for streaming responses.
+## Potential Features for v1.1 - v2.0 (Phase 14 Scope)
 
-**Architecture:**
-```
-IHttpTransport
-├── RawSocketTransport          ← Desktop/Mobile (Phase 3/3B)
-└── WebGLBrowserTransport       ← WebGL: fetch() API via .jslib
-```
-
-**Implementation:**
-- `Plugins/WebGL/TurboHTTP_WebFetch.jslib` — ~200 lines of JS wrapping `fetch()`
-  - `WebFetch_Create(method, url)` — create a fetch request
-  - `WebFetch_SetHeader(id, name, value)` — set request headers
-  - `WebFetch_Send(id, bodyPtr, bodyLen)` — send request, marshal body from Emscripten heap
-  - `WebFetch_GetStatus(id)` / `WebFetch_GetResponseHeaders(id)` / `WebFetch_GetResponseBody(id)` — retrieve response data
-  - `WebFetch_Abort(id)` / `WebFetch_Release(id)` — cleanup
-- `Runtime/Transport/WebGL/WebGLBrowserTransport.cs` — C# side calling jslib via `[DllImport("__Internal")]`
-
-**WebGL Limitations (accepted, same as BestHTTP):**
-- Cookies: browser-managed only
-- Caching: browser cache only (no TurboHTTP cache middleware)
-- Streaming: partial support via `ReadableStream` (improvement over BestHTTP's XHR approach)
-- Proxy: unavailable
-- Custom certificate validation: unavailable (browser handles TLS)
-- Redirect control: unavailable (browser follows automatically)
-- HTTP/2: browser decides protocol transparently (no client-side choice)
-- Connection pooling: browser-managed
-
-**Estimated Effort:** 2-3 weeks
-
-**Complexity:** Medium
-
-**Value:** High (expands platform support)
-
----
-
-### ~~2. HTTP/2 Support~~ ✅ Implemented in Phase 3B
+### ~~1. HTTP/2 Support~~ ✅ Implemented in Phase 3B
 
 HTTP/2 support is now part of the core v1.0 implementation. See [Phase 3B](phase-03b-http2.md) for details.
 
@@ -61,7 +33,9 @@ HTTP/2 support is now part of the core v1.0 implementation. See [Phase 3B](phase
 
 ---
 
-### 3. Happy Eyeballs (RFC 8305) (Medium Priority)
+### 2. Happy Eyeballs (RFC 8305) (Medium Priority)
+
+Detailed plan: [Phase 14.1 Happy Eyeballs (RFC 8305)](phase14/phase-14.1-happy-eyeballs-rfc8305.md)
 
 **Goal:** Improve connection time on dual-stack networks with broken IPv6
 
@@ -93,7 +67,9 @@ var winner = await Task.WhenAny(ipv6Task, ipv4Task);
 
 ---
 
-### 4. Proxy Support (Medium Priority)
+### 3. Proxy Support (Medium Priority)
+
+Detailed plan: [Phase 14.2 Proxy Support](phase14/phase-14.2-proxy-support.md)
 
 **Goal:** HTTP proxy support for enterprise and corporate environments
 
@@ -124,60 +100,9 @@ var options = new UHttpClientOptions
 
 ---
 
-### 5. WebSocket Support (High Priority)
+### 4. Background Networking on Mobile (High Priority)
 
-**Goal:** Add WebSocket client alongside HTTP
-
-**Use Cases:**
-- Real-time multiplayer
-- Live chat
-- Push notifications
-- Game servers
-
-**Implementation:**
-```csharp
-public class UWebSocketClient
-{
-    public async Task ConnectAsync(string url);
-    public async Task SendAsync(string message);
-    public event Action<string> OnMessage;
-    public event Action OnConnected;
-    public event Action<string> OnError;
-    public async Task DisconnectAsync();
-}
-```
-
-**Estimated Effort:** 2-3 weeks
-
-**Complexity:** Medium
-
-**Value:** High (expands use cases)
-
----
-
-### 6. gRPC Support (Low Priority)
-
-**Goal:** Support gRPC protocol
-
-**Benefits:**
-- Binary protocol (smaller payloads)
-- Strongly-typed contracts
-- Streaming support
-
-**Challenges:**
-- Requires protobuf compiler
-- Unity IL2CPP compatibility
-- Code generation complexity
-
-**Estimated Effort:** 4-6 weeks
-
-**Complexity:** Very High
-
-**Value:** Low-Medium (niche use case)
-
----
-
-### 7. Background Networking on Mobile (High Priority)
+Detailed plan: [Phase 14.3 Background Networking on Mobile](phase14/phase-14.3-background-networking-mobile.md)
 
 **Goal:** Support HTTP requests that survive app backgrounding on iOS and Android
 
@@ -197,8 +122,9 @@ public class UWebSocketClient
 
 ---
 
-### 8. Adaptive Network Policies (Medium Priority)
-<!-- NOTE: Sections renumbered after inserting "7. Background Networking on Mobile" -->
+### 5. Adaptive Network Policies (Medium Priority)
+
+Detailed plan: [Phase 14.4 Adaptive Network Policies](phase14/phase-14.4-adaptive-network-policies.md)
 
 **Goal:** Automatically adjust behavior based on network conditions
 
@@ -244,76 +170,9 @@ public enum NetworkQuality
 
 ---
 
-### 9. GraphQL Client (Medium Priority)
+### 6. OAuth 2.0 / OpenID Connect (High Priority)
 
-**Goal:** Add GraphQL query builder and client
-
-**Implementation:**
-```csharp
-public class GraphQLClient
-{
-    private readonly UHttpClient _httpClient;
-
-    public async Task<T> QueryAsync<T>(string query, object variables = null)
-    {
-        var request = new { query, variables };
-        return await _httpClient.PostJsonAsync<object, T>(endpoint, request);
-    }
-}
-
-// Usage
-var query = @"
-    query GetUser($id: ID!) {
-        user(id: $id) {
-            name
-            email
-        }
-    }
-";
-
-var user = await graphql.QueryAsync<User>(query, new { id = "123" });
-```
-
-**Estimated Effort:** 1-2 weeks
-
-**Complexity:** Low-Medium
-
-**Value:** Medium (popular API format)
-
----
-
-### 10. Advanced Content Handlers (Low Priority)
-
-**Goal:** Support more Unity asset types and formats
-
-**New Handlers:**
-- AssetBundle loading
-- Video (VideoClip)
-- 3D models (glTF, FBX)
-- Compressed formats (gzip, brotli)
-- Protobuf serialization
-
-**Implementation:**
-```csharp
-// AssetBundle handler
-var assetBundle = await client.GetAssetBundleAsync(url);
-
-// Video handler
-var videoClip = await client.GetVideoClipAsync(url);
-
-// Protobuf handler
-var data = response.AsProtobuf<MyProtoMessage>();
-```
-
-**Estimated Effort:** 1-2 weeks per handler
-
-**Complexity:** Low-Medium
-
-**Value:** Medium
-
----
-
-### 11. OAuth 2.0 / OpenID Connect (High Priority)
+Detailed plan: [Phase 14.5 OAuth 2.0 / OpenID Connect](phase14/phase-14.5-oauth2-openid-connect.md)
 
 **Goal:** Built-in OAuth flow support
 
@@ -356,7 +215,9 @@ client.Options.Middlewares.Add(new AuthMiddleware(
 
 ---
 
-### 12. Request/Response Interceptors (Medium Priority)
+### 7. Request/Response Interceptors (Medium Priority)
+
+Detailed plan: [Phase 14.6 Request/Response Interceptors](phase14/phase-14.6-request-response-interceptors.md)
 
 **Goal:** Allow modifying requests/responses without middleware
 
@@ -383,32 +244,9 @@ client.OnResponse += (response) =>
 
 ---
 
-### 13. Parallel Request Helpers (Low Priority)
+### 8. Mock Server for Testing (Medium Priority)
 
-**Goal:** Simplify common parallel request patterns
-
-**Implementation:**
-```csharp
-// Batch requests
-var urls = new[] { "/user/1", "/user/2", "/user/3" };
-var users = await client.GetManyJsonAsync<User>(urls);
-
-// All succeed or all fail
-var results = await client.GetAllOrNoneAsync(urls);
-
-// Race (return first success)
-var fastestResult = await client.RaceAsync(urls);
-```
-
-**Estimated Effort:** 1 week
-
-**Complexity:** Low
-
-**Value:** Low-Medium
-
----
-
-### 14. Mock Server for Testing (Medium Priority)
+Detailed plan: [Phase 14.7 Mock Server for Testing](phase14/phase-14.7-mock-server-testing.md)
 
 **Goal:** Built-in mock HTTP server for testing
 
@@ -439,7 +277,9 @@ var response = await client.Get("http://localhost:8080/api/users").SendAsync();
 
 ---
 
-### 15. Plugin System (Low Priority)
+### 9. Plugin System (Low Priority)
+
+Detailed plan: [Phase 14.8 Plugin System](phase14/phase-14.8-plugin-system.md)
 
 **Goal:** Allow third-party extensions
 
@@ -472,93 +312,47 @@ client.RegisterPlugin(new SentryPlugin());
 
 ---
 
-### 16. Security & Privacy Hardening (High Priority)
-
-**Goal:** Make “safe by default” behavior explicit and configurable
-
-**Focus Areas:**
-- **Record/replay redaction:** redact `Authorization`, cookies, API keys, and user identifiers by default
-- **Logging controls:** ensure sensitive headers/body fields are never logged unless explicitly enabled
-- **Cache safety:** partition cache correctly and avoid caching user-specific responses by default
-- **TLS controls (advanced):** optional certificate pinning / custom validation hooks (platform constraints apply)
-
-**Estimated Effort:** 1-2 weeks
-
-**Complexity:** Medium
-
-**Value:** High (reduces support burden and prevents real-world incidents)
-
----
-
-### 17. Unity Runtime Hardening and Advanced Asset Pipeline (High Priority, Phase 15)
-
-**Goal:** Move Unity integration from "stable baseline" to "high-load production hardening" with explicit correctness/performance controls.
-
-**Scope anchor:** Detailed execution plan lives in [Phase 15](phase-15-unity-runtime-hardening.md).
-
-**Key outcomes:**
-- Dispatcher V2 with bounded queue/backpressure and per-frame work budgets
-- Texture decode scheduling + memory guardrails for large/burst downloads
-- Audio temp-file lifecycle manager for high-concurrency safety and crash recovery
-- Atomic file writes + stricter canonical path policy in Unity helpers
-- Lifecycle-bound coroutine cancellation and reliability stress/perf gates
-
-**Estimated Effort:** 3-5 weeks
-
-**Complexity:** High
-
-**Value:** High (directly reduces frame spikes, leaks, and lifecycle bugs in shipped Unity titles)
-
----
-
 ## Prioritization Matrix
 
 | Feature | Priority | Effort | Complexity | Value | Version |
 |---------|----------|--------|------------|-------|---------|
 | ~~HTTP/2~~ | ~~High~~ | — | — | — | **v1.0** (Phase 3B) |
-| WebGL Support | High | 2-3w | Medium | High | v1.1 |
 | Happy Eyeballs (RFC 8305) | Medium | 1w | Medium | High | v1.1 |
 | Background Networking | High | 2-3w | High | High | v1.1 |
 | Proxy Support | Medium | 2-3w | Medium-High | Medium | v1.1 |
 | Adaptive Network | Medium | 2w | Medium | High | v1.1 |
-| OAuth 2.0 | High | 3-4w | High | High | v1.2 |
-| WebSocket | High | 2-3w | Medium | High | v1.2 |
-| GraphQL | Medium | 1-2w | Low | Medium | v1.3 |
 | Request Interceptors | Medium | 1w | Low | Medium | v1.1 |
-| Security & Privacy | High | 1-2w | Medium | High | v1.1 |
+| OAuth 2.0 | High | 3-4w | High | High | v1.2 |
 | Unity Runtime Hardening (Phase 15) | High | 3-5w | High | High | v1.2 |
-| Advanced Content | Low | 1-2w each | Medium | Medium | v1.x |
-| gRPC | Low | 4-6w | Very High | Low | v2.0? |
 | Mock Server | Medium | 2w | Medium | Medium | v1.x |
-| Parallel Helpers | Low | 1w | Low | Low | v1.x |
 | Plugin System | Low | 2w | Medium | Low | v2.0? |
 
 ## Recommended Roadmap
 
 ### v1.1 (Q1 after v1.0)
-- WebGL support (browser `fetch()` API via `.jslib` interop)
 - Happy Eyeballs (RFC 8305) — dual-stack connection racing
 - Background networking on mobile (iOS/Android background task support)
 - Proxy support (CONNECT tunneling, environment variable detection)
 - Adaptive network policies
 - Request/response interceptors
-- Security & privacy hardening (redaction + safe defaults)
 - Bug fixes from v1.0 feedback
 
 ### v1.2 (Q2)
 - OAuth 2.0 / OpenID Connect
-- WebSocket support
 - Unity runtime hardening (Phase 15)
 - Performance improvements
 
-### v1.3 (Q3)
-- GraphQL client
-- Additional content handlers
+### v1.x follow-ups
+- Mock server for testing
 
 ### v2.0 (Q4+)
 - Major architectural improvements based on feedback
 - Breaking changes if needed
-- Advanced features (gRPC, plugin system)
+- Plugin system
+
+### Parallel Phase 16 Track
+
+Cross-platform and protocol/security features split from this phase are tracked in [Phase 16](phase-16-platform-protocol-security.md).
 
 ## User Feedback Collection
 
@@ -605,7 +399,7 @@ Track these metrics to guide roadmap decisions:
 
 ## Conclusion
 
-Phase 14 (and linked follow-up Phase 15) is open-ended and depends on:
+Phase 14 (and linked follow-up Phases 15-16) is open-ended and depends on:
 1. User feedback after v1.0 launch
 2. Market demands
 3. Competitive landscape

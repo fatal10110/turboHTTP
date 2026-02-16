@@ -495,7 +495,7 @@ TurboHTTP v1.0 officially supports:
 
 **Status:** NOT SUPPORTED in v1.0
 
-WebGL support is planned for v1.1 (see Phase 14 roadmap).
+WebGL support is planned for v1.1 (see Phase 16 roadmap).
 
 **Reason:**
 - Raw TCP sockets are not available in WebGL (browser sandbox)

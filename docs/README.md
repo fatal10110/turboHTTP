@@ -31,11 +31,14 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 10. **[Advanced Middleware](phases/phase-10-advanced-middleware.md)** - Caching, rate limiting
 11. **[Unity Integration](phases/phase-11-unity-integration.md)** - Texture2D, AudioClip, main thread sync
 12. **[Editor Tooling](phases/phase-12-editor-tools.md)** - HTTP Monitor window
-13. **[CI/CD & Release](phases/phase-13-release.md)** - Asset Store submission
 
-#### Future (M4 v1.x)
-14. **[Post-v1.0 Roadmap](phases/phase-14-future.md)** - WebGL, faster transports, adaptive policies
+#### Expansion Track (M4 pre-release)
+14. **[Post-v1.0 Roadmap](phases/phase-14-future.md)** - transport resilience, mobile reliability, extensibility
 15. **[Unity Runtime Hardening](phases/phase-15-unity-runtime-hardening.md)** - advanced correctness/performance hardening for Unity asset workflows
+16. **[Platform, Protocol, and Security Expansion](phases/phase-16-platform-protocol-security.md)** - WebGL, WebSocket, GraphQL, security/privacy hardening
+
+#### Deferred Release (M5)
+17. **[CI/CD & Release](phases/phase-17-release.md)** - Asset Store submission (execute after phases 14-16)
 
 ## Project Configuration
 
@@ -69,9 +72,9 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 ## Implementation Workflow
 
 1. **Read** [00-overview.md](00-overview.md) to understand the architecture
-2. **Follow** phases sequentially (1-15)
+2. **Follow** phases in this order: 1-12, 14-16, then 17
 3. **Validate** each phase before moving to next
-4. **Milestone** gates: Complete M0, M1, M2 before M3 (release)
+4. **Milestone** gates: Complete M0, M1, M2, M3, M4 before M5 (release)
 
 ## Key Differentiators
 
@@ -100,4 +103,4 @@ For questions or issues during implementation:
 - Next steps
 - Implementation notes
 
-**Start with Phase 1 and work through sequentially for best results.**
+**Start with Phase 1 and follow the planned order (1-12, 14-16, then 17).**
