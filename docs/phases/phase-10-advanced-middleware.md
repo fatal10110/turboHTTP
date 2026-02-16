@@ -473,7 +473,7 @@ namespace TurboHTTP.Cache
 
 ### Deferred Tasks 10.5-10.7: Rate Limiting (Moved to Phase 14)
 
-Rate limit policy/config, token bucket implementation, and rate-limit middleware (former tasks 10.5-10.7) are deferred to [Phase 14: Post-v1.0 Roadmap](phase-14-future.md).
+Rate limit policy/config, token bucket implementation, and rate-limit middleware (former tasks 10.5-10.7) are deferred to [Phase 16: Extended Capabilities and Resilience](phase-16-advanced-capabilities.md).
 
 ## Validation Criteria
 

@@ -22,7 +22,7 @@ These items are intentionally outside active Phase 14 implementation scope.
 | Item | Name | Status | Reference |
 |---|---|---|---|
 | 14.0 | HTTP/2 Support | Implemented in Phase 3B | [phase-03b-http2.md](../phase-03b-http2.md) |
-| 14.x | WebGL / WebSocket / gRPC / GraphQL / Parallel Helpers / Security | Moved to Phase 16 | [phase-16-platform-protocol-security.md](../phase-16-platform-protocol-security.md) |
+| 14.x | WebGL / WebSocket / gRPC / GraphQL / Parallel Helpers / Security | Moved to Phase 16 | [phase-16-advanced-capabilities.md](../phase-16-advanced-capabilities.md) |
 
 ## Dependency Graph
 

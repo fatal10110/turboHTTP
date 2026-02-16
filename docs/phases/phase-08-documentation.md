@@ -351,6 +351,7 @@ var policy = new RateLimitPolicy
     PerHost = true
 };
 options.Middlewares.Add(new RateLimitMiddleware(policy));
+// Note: Rate Limiting is planned for v1.1 (Phase 16)
 ```
 
 ### MetricsMiddleware

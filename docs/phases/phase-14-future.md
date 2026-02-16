@@ -13,7 +13,7 @@ Detailed sub-phase breakdown: [Phase 14 Implementation Plan - Overview](phase14/
 
 ## Scope Split
 
-The following items were extracted from Phase 14 into [Phase 16](phase-16-platform-protocol-security.md):
+The following items were extracted from Phase 14 into [Phase 16](phase-16-advanced-capabilities.md):
 - WebGL Support (High Priority)
 - WebSocket Support (High Priority)
 - gRPC Support (Low Priority)
@@ -352,7 +352,7 @@ client.RegisterPlugin(new SentryPlugin());
 
 ### Parallel Phase 16 Track
 
-Cross-platform and protocol/security features split from this phase are tracked in [Phase 16](phase-16-platform-protocol-security.md).
+Cross-platform and protocol/security features split from this phase are tracked in [Phase 16](phase-16-advanced-capabilities.md).
 
 ## User Feedback Collection
 

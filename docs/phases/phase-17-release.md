@@ -508,7 +508,7 @@ MODULES:
 • Retry - Automatic retries with exponential backoff
 • Cache - HTTP caching with ETag support
 • Auth - Authentication middleware
-• RateLimit - Rate limiting per host
+• RateLimit - Rate limiting per host (v1.1)
 • Observability - Timeline tracing and metrics
 • Files - File downloads with resume support
 • Unity - Texture2D, AudioClip, Sprite handlers
