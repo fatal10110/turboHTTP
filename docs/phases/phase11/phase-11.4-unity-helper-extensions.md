@@ -21,7 +21,8 @@ Implementation constraints:
 1. Validate and normalize file paths before writing content.
 2. Create destination directories when missing.
 3. Ensure file writes honor cancellation tokens where supported.
-4. Do not hardcode platform-specific separators.
+4. Use `Path.Combine` for all path joins and `Path.GetFullPath` for canonicalization before validation checks.
+5. Do not hardcode platform-specific separators.
 
 ---
 
@@ -31,3 +32,4 @@ Implementation constraints:
 2. `CreateUnityClient` applies default headers and still allows overrides.
 3. Path validation prevents invalid traversal inputs.
 4. Helpers behave consistently in Editor and Player builds.
+5. Path composition uses `Path.Combine`-based joins and works across Windows/macOS/Linux targets.

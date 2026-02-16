@@ -490,6 +490,27 @@ client.RegisterPlugin(new SentryPlugin());
 
 ---
 
+### 17. Unity Runtime Hardening and Advanced Asset Pipeline (High Priority, Phase 15)
+
+**Goal:** Move Unity integration from "stable baseline" to "high-load production hardening" with explicit correctness/performance controls.
+
+**Scope anchor:** Detailed execution plan lives in [Phase 15](phase-15-unity-runtime-hardening.md).
+
+**Key outcomes:**
+- Dispatcher V2 with bounded queue/backpressure and per-frame work budgets
+- Texture decode scheduling + memory guardrails for large/burst downloads
+- Audio temp-file lifecycle manager for high-concurrency safety and crash recovery
+- Atomic file writes + stricter canonical path policy in Unity helpers
+- Lifecycle-bound coroutine cancellation and reliability stress/perf gates
+
+**Estimated Effort:** 3-5 weeks
+
+**Complexity:** High
+
+**Value:** High (directly reduces frame spikes, leaks, and lifecycle bugs in shipped Unity titles)
+
+---
+
 ## Prioritization Matrix
 
 | Feature | Priority | Effort | Complexity | Value | Version |
@@ -505,6 +526,7 @@ client.RegisterPlugin(new SentryPlugin());
 | GraphQL | Medium | 1-2w | Low | Medium | v1.3 |
 | Request Interceptors | Medium | 1w | Low | Medium | v1.1 |
 | Security & Privacy | High | 1-2w | Medium | High | v1.1 |
+| Unity Runtime Hardening (Phase 15) | High | 3-5w | High | High | v1.2 |
 | Advanced Content | Low | 1-2w each | Medium | Medium | v1.x |
 | gRPC | Low | 4-6w | Very High | Low | v2.0? |
 | Mock Server | Medium | 2w | Medium | Medium | v1.x |
@@ -526,6 +548,7 @@ client.RegisterPlugin(new SentryPlugin());
 ### v1.2 (Q2)
 - OAuth 2.0 / OpenID Connect
 - WebSocket support
+- Unity runtime hardening (Phase 15)
 - Performance improvements
 
 ### v1.3 (Q3)
@@ -582,7 +605,7 @@ Track these metrics to guide roadmap decisions:
 
 ## Conclusion
 
-Phase 14 is open-ended and depends on:
+Phase 14 (and linked follow-up Phase 15) is open-ended and depends on:
 1. User feedback after v1.0 launch
 2. Market demands
 3. Competitive landscape

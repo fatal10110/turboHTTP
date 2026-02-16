@@ -35,6 +35,7 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 
 #### Future (M4 v1.x)
 14. **[Post-v1.0 Roadmap](phases/phase-14-future.md)** - WebGL, faster transports, adaptive policies
+15. **[Unity Runtime Hardening](phases/phase-15-unity-runtime-hardening.md)** - advanced correctness/performance hardening for Unity asset workflows
 
 ## Project Configuration
 
@@ -68,7 +69,7 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 ## Implementation Workflow
 
 1. **Read** [00-overview.md](00-overview.md) to understand the architecture
-2. **Follow** phases sequentially (1-14)
+2. **Follow** phases sequentially (1-15)
 3. **Validate** each phase before moving to next
 4. **Milestone** gates: Complete M0, M1, M2 before M3 (release)
 

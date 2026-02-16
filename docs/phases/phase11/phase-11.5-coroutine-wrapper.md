@@ -34,3 +34,4 @@ Implementation constraints:
 3. JSON coroutine wrapper returns typed payloads equivalent to async API results.
 4. Cancellation stops coroutine flow without firing success callback.
 5. Aggregate task failures surface deterministic primary exception details without losing stack fidelity.
+6. Integration tests use `[UnityTest]` attribute to properly simulate runtime frame behavior.

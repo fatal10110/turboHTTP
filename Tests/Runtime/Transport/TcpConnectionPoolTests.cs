@@ -132,14 +132,41 @@ namespace TurboHTTP.Tests.Transport
 
                 server.CloseAllClients(reset: true);
 
-                // Give the local socket state a moment to observe the server-side reset.
-                for (int i = 0; i < 200 && conn1.IsAlive; i++)
-                    await Task.Delay(20);
-
-                if (conn1.IsAlive)
+                // Try to observe server-side reset first.
+                bool observedRemoteClose = false;
+                var probeByte = new byte[] { 0x2A };
+                for (int i = 0; i < 200; i++)
                 {
-                    Assert.Ignore("Could not observe server-side reset within timeout on this runtime.");
-                    return;
+                    if (!conn1.IsAlive)
+                    {
+                        observedRemoteClose = true;
+                        break;
+                    }
+
+                    try
+                    {
+                        conn1.Socket.Send(probeByte);
+                    }
+                    catch (SocketException)
+                    {
+                        observedRemoteClose = true;
+                        break;
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        observedRemoteClose = true;
+                        break;
+                    }
+
+                    await Task.Delay(20);
+                }
+
+                // Some runtimes do not surface remote reset promptly. Force-close locally
+                // so this test deterministically validates pool behavior.
+                if (!observedRemoteClose && conn1.IsAlive)
+                {
+                    try { conn1.Socket.Shutdown(SocketShutdown.Both); } catch { }
+                    try { conn1.Socket.Close(); } catch { }
                 }
 
                 lease1.ReturnToPool();

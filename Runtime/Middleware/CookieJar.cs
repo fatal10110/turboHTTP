@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
+using System.Text;
 using System.Threading;
 using TurboHTTP.Core;
 
@@ -79,7 +79,14 @@ namespace TurboHTTP.Middleware
             _lock.EnterReadLock();
             try
             {
-                return _cookies.Values.Count(c => string.Equals(c.Domain, normalizedDomain, StringComparison.Ordinal));
+                int count = 0;
+                foreach (var cookie in _cookies.Values)
+                {
+                    if (string.Equals(cookie.Domain, normalizedDomain, StringComparison.Ordinal))
+                        count++;
+                }
+
+                return count;
             }
             finally
             {
@@ -146,11 +153,9 @@ namespace TurboHTTP.Middleware
 
             var nowUtc = EnsureUtcNow(utcNowOverride);
 
-            _lock.EnterWriteLock();
+            _lock.EnterReadLock();
             try
             {
-                RemoveExpiredUnsafe(nowUtc);
-
                 var host = NormalizeDomain(requestUri.Host);
                 var path = string.IsNullOrEmpty(requestUri.AbsolutePath) ? "/" : requestUri.AbsolutePath;
                 bool isHttps = string.Equals(requestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
@@ -173,7 +178,6 @@ namespace TurboHTTP.Middleware
                     if (!SameSiteAllows(cookie.SameSite, method, isCrossSiteRequest))
                         continue;
 
-                    cookie.LastAccessedUtc = nowUtc;
                     matches.Add(cookie);
                 }
 
@@ -193,11 +197,11 @@ namespace TurboHTTP.Middleware
                     return string.CompareOrdinal(a.Name, b.Name);
                 });
 
-                return string.Join("; ", matches.Select(c => c.Name + "=" + c.Value));
+                return BuildCookieHeader(matches);
             }
             finally
             {
-                _lock.ExitWriteLock();
+                _lock.ExitReadLock();
             }
         }
 
@@ -229,7 +233,7 @@ namespace TurboHTTP.Middleware
                 return false;
 
             var name = nameValue.Substring(0, eqIndex).Trim();
-            var value = nameValue.Substring(eqIndex + 1).Trim();
+            var value = UnquoteCookieValue(nameValue.Substring(eqIndex + 1).Trim());
             if (name.Length == 0)
                 return false;
 
@@ -262,6 +266,9 @@ namespace TurboHTTP.Middleware
                         return false;
 
                     var normalizedDomain = NormalizeDomain(attrValue.TrimStart('.'));
+                    if (IsRejectedPublicSuffix(normalizedDomain))
+                        return false;
+
                     if (!DomainMatches(host, normalizedDomain, hostOnly: false))
                         return false;
 
@@ -351,41 +358,54 @@ namespace TurboHTTP.Middleware
         {
             RemoveExpiredUnsafe(DateTime.UtcNow);
 
+            var domainCounts = BuildDomainCountsUnsafe();
+
             while (_cookies.Count > _maxTotalCookies)
             {
-                if (!EvictOldestUnsafe(domain: null))
+                if (!TryEvictOldestUnsafe(domain: null, out var evictedDomain))
                     break;
-            }
 
-            var domainGroups = _cookies.Values
-                .GroupBy(c => c.Domain, StringComparer.Ordinal)
-                .Select(g => new { Domain = g.Key, Count = g.Count() })
-                .ToArray();
-
-            for (int i = 0; i < domainGroups.Length; i++)
-            {
-                var group = domainGroups[i];
-                while (GetDomainCountUnsafe(group.Domain) > _maxCookiesPerDomain)
+                if (!string.IsNullOrEmpty(evictedDomain)
+                    && domainCounts.TryGetValue(evictedDomain, out var count))
                 {
-                    if (!EvictOldestUnsafe(group.Domain))
-                        break;
+                    domainCounts[evictedDomain] = Math.Max(0, count - 1);
                 }
             }
+
+            var domains = new List<string>(domainCounts.Keys);
+            for (int i = 0; i < domains.Count; i++)
+            {
+                var domain = domains[i];
+                if (!domainCounts.TryGetValue(domain, out var count))
+                    continue;
+
+                while (count > _maxCookiesPerDomain)
+                {
+                    if (!TryEvictOldestUnsafe(domain, out _))
+                        break;
+
+                    count--;
+                }
+
+                domainCounts[domain] = count;
+            }
         }
 
-        private int GetDomainCountUnsafe(string domain)
+        private Dictionary<string, int> BuildDomainCountsUnsafe()
         {
-            int count = 0;
+            var counts = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var cookie in _cookies.Values)
             {
-                if (string.Equals(cookie.Domain, domain, StringComparison.Ordinal))
-                    count++;
+                if (!counts.TryGetValue(cookie.Domain, out var count))
+                    count = 0;
+
+                counts[cookie.Domain] = count + 1;
             }
 
-            return count;
+            return counts;
         }
 
-        private bool EvictOldestUnsafe(string domain)
+        private bool TryEvictOldestUnsafe(string domain, out string evictedDomain)
         {
             CookieRecord oldest = null;
             string oldestKey = null;
@@ -409,8 +429,12 @@ namespace TurboHTTP.Middleware
             }
 
             if (oldestKey == null)
+            {
+                evictedDomain = null;
                 return false;
+            }
 
+            evictedDomain = oldest.Domain;
             _cookies.Remove(oldestKey);
             return true;
         }
@@ -496,6 +520,25 @@ namespace TurboHTTP.Middleware
             return path;
         }
 
+        private static string BuildCookieHeader(List<CookieRecord> matches)
+        {
+            if (matches == null || matches.Count == 0)
+                return null;
+
+            var sb = new StringBuilder(matches.Count * 24);
+            for (int i = 0; i < matches.Count; i++)
+            {
+                if (i > 0)
+                    sb.Append("; ");
+
+                sb.Append(matches[i].Name);
+                sb.Append('=');
+                sb.Append(matches[i].Value);
+            }
+
+            return sb.ToString();
+        }
+
         private static string DefaultPath(string absolutePath)
         {
             if (string.IsNullOrEmpty(absolutePath) || absolutePath[0] != '/')
@@ -505,7 +548,7 @@ namespace TurboHTTP.Middleware
             if (lastSlash <= 0)
                 return "/";
 
-            return absolutePath.Substring(0, lastSlash + 1);
+            return absolutePath.Substring(0, lastSlash);
         }
 
         private static CookieSameSite ParseSameSite(string value)
@@ -532,6 +575,26 @@ namespace TurboHTTP.Middleware
                 return DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
             return value.ToUniversalTime();
+        }
+
+        private static string UnquoteCookieValue(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return string.Empty;
+
+            if (value.Length >= 2 && value[0] == '"' && value[value.Length - 1] == '"')
+                return value.Substring(1, value.Length - 2);
+
+            return value;
+        }
+
+        private static bool IsRejectedPublicSuffix(string normalizedDomain)
+        {
+            if (string.IsNullOrEmpty(normalizedDomain))
+                return true;
+
+            // Minimal public suffix guard: reject single-label cookie domains like "com".
+            return normalizedDomain.IndexOf('.') < 0;
         }
 
         private void ThrowIfDisposed()

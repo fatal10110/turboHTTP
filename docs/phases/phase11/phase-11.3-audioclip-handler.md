@@ -26,6 +26,8 @@ Implementation constraints:
 5. Document platform format caveats and expected behavior for unsupported combinations.
 6. Add startup fallback cleanup for orphaned temp files in case of crash/abrupt termination.
 7. Temp-file deletion failures must be handled as non-fatal and retried by fallback cleanup policy.
+8. Generate collision-resistant temp filenames (for example GUID-based names in a dedicated TurboHTTP temp subdirectory) so parallel decode flows cannot overwrite each other.
+9. Integration tests use `[UnityTest]` attribute to properly simulate runtime frame behavior.
 
 ---
 
@@ -37,3 +39,4 @@ Implementation constraints:
 4. Invalid/corrupt audio content produces deterministic failures.
 5. Cancellation during decode and exception during decode both leave zero temporary files.
 6. Startup fallback cleanup removes stale temporary audio artifacts from previous failed sessions.
+7. High-concurrency decode requests use unique temp files with zero filename collisions.

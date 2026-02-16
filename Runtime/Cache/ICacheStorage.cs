@@ -10,7 +10,8 @@ namespace TurboHTTP.Cache
     public interface ICacheStorage
     {
         /// <summary>
-        /// Gets an entry by key. Returns null when key is missing or entry is expired.
+        /// Gets an entry by key. Returns null when key is missing.
+        /// Expiry/revalidation decisions are handled by cache middleware.
         /// </summary>
         Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default);
 

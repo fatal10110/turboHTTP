@@ -14,6 +14,7 @@ namespace TurboHTTP.Cache
     {
         // Deterministic fixed overhead estimate per entry for object graph metadata.
         internal const int FixedMetadataBytesPerEntry = 1024;
+        private static readonly TimeSpan ExpiredSweepInterval = TimeSpan.FromSeconds(15);
 
         private readonly Dictionary<string, CacheSlot> _entries = new Dictionary<string, CacheSlot>(StringComparer.Ordinal);
         private readonly LinkedList<string> _lruKeys = new LinkedList<string>();
@@ -22,6 +23,7 @@ namespace TurboHTTP.Cache
         private readonly int _maxEntries;
         private readonly long _maxSizeBytes;
         private long _currentSizeBytes;
+        private DateTime _nextExpiredSweepUtc = DateTime.MinValue;
         private int _disposed;
 
         private sealed class CacheSlot
@@ -55,12 +57,6 @@ namespace TurboHTTP.Cache
                 if (!_entries.TryGetValue(key, out var slot))
                     return null;
 
-                if (slot.Entry.IsExpired(DateTime.UtcNow))
-                {
-                    RemoveSlotUnsafe(key, slot);
-                    return null;
-                }
-
                 TouchUnsafe(slot);
                 return slot.Entry.Clone();
             }
@@ -85,14 +81,20 @@ namespace TurboHTTP.Cache
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+                var nowUtc = DateTime.UtcNow;
+
                 if (_entries.TryGetValue(key, out var existing))
                     RemoveSlotUnsafe(key, existing);
 
-                RemoveExpiredEntriesUnsafe(DateTime.UtcNow);
+                MaybeSweepExpiredEntriesUnsafe(nowUtc);
 
                 // Cannot fit this entry under current constraints.
                 if (entrySizeBytes > _maxSizeBytes)
                     return;
+
+                // Under memory/entry pressure, force a sweep before evicting hot items.
+                if (_entries.Count >= _maxEntries || _currentSizeBytes + entrySizeBytes > _maxSizeBytes)
+                    MaybeSweepExpiredEntriesUnsafe(nowUtc, force: true);
 
                 while (_entries.Count >= _maxEntries || _currentSizeBytes + entrySizeBytes > _maxSizeBytes)
                 {
@@ -161,7 +163,7 @@ namespace TurboHTTP.Cache
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                RemoveExpiredEntriesUnsafe(DateTime.UtcNow);
+                MaybeSweepExpiredEntriesUnsafe(DateTime.UtcNow, force: true);
                 return _entries.Count;
             }
             finally
@@ -177,7 +179,7 @@ namespace TurboHTTP.Cache
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                RemoveExpiredEntriesUnsafe(DateTime.UtcNow);
+                MaybeSweepExpiredEntriesUnsafe(DateTime.UtcNow, force: true);
                 return _currentSizeBytes;
             }
             finally
@@ -268,6 +270,15 @@ namespace TurboHTTP.Cache
                     RemoveSlotUnsafe(key, slot);
                 node = previous;
             }
+        }
+
+        private void MaybeSweepExpiredEntriesUnsafe(DateTime utcNow, bool force = false)
+        {
+            if (!force && utcNow < _nextExpiredSweepUtc)
+                return;
+
+            RemoveExpiredEntriesUnsafe(utcNow);
+            _nextExpiredSweepUtc = utcNow.Add(ExpiredSweepInterval);
         }
 
         private void RemoveSlotUnsafe(string key, CacheSlot slot)

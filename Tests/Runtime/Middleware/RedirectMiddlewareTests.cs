@@ -311,5 +311,170 @@ namespace TurboHTTP.Tests.Middleware
                 Assert.AreEqual(1, transport.RequestCount);
             }).GetAwaiter().GetResult();
         }
+
+        [Test]
+        public void RedirectMiddleware_BlocksHttpsToHttpDowngrade_ByDefault()
+        {
+            Task.Run(() =>
+            {
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Uri.AbsolutePath == "/start")
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "http://example.test/insecure");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.Found,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectMiddleware();
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start"));
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await pipeline.ExecuteAsync(request, new RequestContext(request)));
+
+                Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
+                StringAssert.Contains("Blocked insecure redirect downgrade", ex.Message);
+                Assert.AreEqual(1, transport.RequestCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RedirectMiddleware_AllowsHttpsToHttpDowngrade_WhenEnabled()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Uri.AbsolutePath == "/start")
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "http://example.test/insecure");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.Found,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual("http", req.Uri.Scheme);
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectMiddleware(defaultAllowHttpsToHttpDowngrade: true);
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start"));
+                var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(2, transport.RequestCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RedirectMiddleware_DetectsLoop_WhenStatusCodesDifferAcrossHops()
+        {
+            Task.Run(() =>
+            {
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    if (req.Uri.AbsolutePath == "/a")
+                    {
+                        headers.Set("Location", "/b");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.MovedPermanently,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    headers.Set("Location", "/a");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.Found,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectMiddleware(defaultFollowRedirects: true, defaultMaxRedirects: 10);
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/a"));
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await pipeline.ExecuteAsync(request, new RequestContext(request)));
+
+                Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
+                StringAssert.Contains("Redirect loop detected", ex.Message);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RedirectMiddleware_EnforcesTotalTimeoutAcrossRedirectHops()
+        {
+            Task.Run(() =>
+            {
+                var transport = new MockTransport(async (req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    if (req.Uri.AbsolutePath == "/start")
+                    {
+                        headers.Set("Location", "/step1");
+                        return new UHttpResponse(
+                            HttpStatusCode.Found,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req);
+                    }
+
+                    await Task.Delay(120, ct).ConfigureAwait(false);
+                    headers.Set("Location", "/final");
+                    return new UHttpResponse(
+                        HttpStatusCode.Found,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req);
+                });
+
+                var middleware = new RedirectMiddleware(defaultEnforceRedirectTotalTimeout: true);
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(
+                    HttpMethod.GET,
+                    new Uri("https://example.test/start"),
+                    timeout: TimeSpan.FromMilliseconds(100));
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await pipeline.ExecuteAsync(request, new RequestContext(request)));
+
+                Assert.AreEqual(UHttpErrorType.Timeout, ex.HttpError.Type);
+                StringAssert.Contains("Redirect chain exceeded total timeout budget", ex.Message);
+                Assert.AreEqual(2, transport.RequestCount);
+            }).GetAwaiter().GetResult();
+        }
     }
 }

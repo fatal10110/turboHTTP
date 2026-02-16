@@ -30,7 +30,7 @@ namespace TurboHTTP.Cache
     /// <summary>
     /// RFC-aware cache middleware with conditional revalidation support.
     /// </summary>
-    public sealed class CacheMiddleware : IHttpMiddleware
+    public sealed class CacheMiddleware : IHttpMiddleware, IDisposable
     {
         private const string EmptyVaryKeyToken = "~";
 
@@ -51,13 +51,19 @@ namespace TurboHTTP.Cache
         };
 
         private readonly CachePolicy _policy;
+        private readonly bool _ownsStorage;
         private readonly object _indexLock = new object();
+        // Variant index is an in-memory accelerator only. Entries are ref-counted per
+        // signature and cleaned up as storage keys are removed or invalidated.
         private readonly Dictionary<string, VariantBucket> _variantIndex = new Dictionary<string, VariantBucket>(StringComparer.Ordinal);
+        private int _disposed;
 
         private sealed class VariantBucket
         {
             public readonly HashSet<string> Signatures = new HashSet<string>(StringComparer.Ordinal);
             public readonly HashSet<string> StorageKeys = new HashSet<string>(StringComparer.Ordinal);
+            public readonly Dictionary<string, string> SignatureByStorageKey = new Dictionary<string, string>(StringComparer.Ordinal);
+            public readonly Dictionary<string, int> SignatureRefCounts = new Dictionary<string, int>(StringComparer.Ordinal);
         }
 
         private readonly struct CacheLookupResult
@@ -91,27 +97,43 @@ namespace TurboHTTP.Cache
             public readonly bool NoStore;
             public readonly bool NoCache;
             public readonly bool Private;
+            public readonly bool Public;
             public readonly bool MustRevalidate;
+            public readonly TimeSpan? SharedMaxAge;
             public readonly TimeSpan? MaxAge;
 
             public CacheControlDirectives(
                 bool noStore,
                 bool noCache,
                 bool @private,
+                bool @public,
                 bool mustRevalidate,
+                TimeSpan? sharedMaxAge,
                 TimeSpan? maxAge)
             {
                 NoStore = noStore;
                 NoCache = noCache;
                 Private = @private;
+                Public = @public;
                 MustRevalidate = mustRevalidate;
+                SharedMaxAge = sharedMaxAge;
                 MaxAge = maxAge;
             }
         }
 
         public CacheMiddleware(CachePolicy policy = null)
         {
-            _policy = policy ?? new CachePolicy();
+            if (policy == null)
+            {
+                _policy = new CachePolicy();
+                _ownsStorage = true;
+            }
+            else
+            {
+                _policy = policy;
+                _ownsStorage = false;
+            }
+
             if (_policy.Storage == null)
                 throw new ArgumentNullException(nameof(policy), "CachePolicy.Storage cannot be null.");
         }
@@ -122,6 +144,8 @@ namespace TurboHTTP.Cache
             HttpPipelineDelegate next,
             CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
+
             if (request == null)
                 throw new ArgumentNullException(nameof(request));
             if (context == null)
@@ -326,7 +350,10 @@ namespace TurboHTTP.Cache
 
                 var entry = await _policy.Storage.GetAsync(storageKey, cancellationToken).ConfigureAwait(false);
                 if (entry == null)
+                {
+                    UnregisterStoredVariant(baseKey, storageKey);
                     continue;
+                }
 
                 return new CacheLookupResult(entry, storageKey, signature);
             }
@@ -336,14 +363,18 @@ namespace TurboHTTP.Cache
 
         private PreparedCacheEntry PrepareEntryForStorage(UHttpRequest request, UHttpResponse response, string baseKey)
         {
-            if (!_policy.AllowCacheForAuthorizedRequests && request.Headers.Contains("Authorization"))
-                return default;
-
             if (!_policy.AllowSetCookieResponses && response.Headers.Contains("Set-Cookie"))
                 return default;
 
             var responseCacheControl = ParseCacheControl(response.Headers.GetValues("Cache-Control"));
             var requestCacheControl = ParseCacheControl(request.Headers.GetValues("Cache-Control"));
+
+            if (!_policy.AllowCacheForAuthorizedRequests
+                && request.Headers.Contains("Authorization")
+                && !responseCacheControl.Public)
+            {
+                return default;
+            }
 
             if (responseCacheControl.NoStore || requestCacheControl.NoStore)
                 return default;
@@ -391,12 +422,13 @@ namespace TurboHTTP.Cache
             var varyKey = BuildVaryKey(request.Headers, varyHeaders);
             var storageKey = BuildStorageKey(baseKey, varyKey);
             var signature = BuildSignature(varyHeaders);
+            var bodySnapshot = SnapshotBodyForCache(response.Body);
 
             var entry = new CacheEntry(
                 key: storageKey,
                 statusCode: response.StatusCode,
                 headers: response.Headers,
-                body: response.Body,
+                body: bodySnapshot,
                 cachedAtUtc: nowUtc,
                 expiresAtUtc: expiresAtUtc,
                 eTag: eTag,
@@ -501,7 +533,7 @@ namespace TurboHTTP.Cache
         private static bool ShouldConsiderForStorage(UHttpRequest request, UHttpResponse response)
         {
             return response != null
-                && response.IsSuccessStatusCode
+                && (response.IsSuccessStatusCode || IsRfc9111CacheableByDefault(response.StatusCode))
                 && request.Method != HttpMethod.OPTIONS;
         }
 
@@ -542,7 +574,9 @@ namespace TurboHTTP.Cache
             bool noStore = false;
             bool noCache = false;
             bool @private = false;
+            bool @public = false;
             bool mustRevalidate = false;
+            TimeSpan? sharedMaxAge = null;
             TimeSpan? maxAge = null;
 
             if (values != null)
@@ -578,39 +612,66 @@ namespace TurboHTTP.Cache
                             continue;
                         }
 
+                        if (string.Equals(directive, "public", StringComparison.OrdinalIgnoreCase))
+                        {
+                            @public = true;
+                            continue;
+                        }
+
                         if (string.Equals(directive, "must-revalidate", StringComparison.OrdinalIgnoreCase))
                         {
                             mustRevalidate = true;
                             continue;
                         }
 
-                        if (!directive.StartsWith("max-age=", StringComparison.OrdinalIgnoreCase))
-                            continue;
+                        if (directive.StartsWith("s-maxage=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var sharedSecondsPart = directive.Substring("s-maxage=".Length).Trim().Trim('"');
+                            if (!long.TryParse(sharedSecondsPart, NumberStyles.None, CultureInfo.InvariantCulture, out var sharedSeconds))
+                                continue;
 
-                        var secondsPart = directive.Substring("max-age=".Length).Trim().Trim('"');
-                        if (!long.TryParse(secondsPart, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds))
-                            continue;
+                            if (sharedSeconds < 0)
+                                continue;
 
-                        if (seconds < 0)
+                            sharedMaxAge = TimeSpan.FromSeconds(sharedSeconds);
                             continue;
+                        }
 
-                        maxAge = TimeSpan.FromSeconds(seconds);
+                        if (directive.StartsWith("max-age=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var secondsPart = directive.Substring("max-age=".Length).Trim().Trim('"');
+                            if (!long.TryParse(secondsPart, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds))
+                                continue;
+
+                            if (seconds < 0)
+                                continue;
+
+                            maxAge = TimeSpan.FromSeconds(seconds);
+                            continue;
+                        }
                     }
                 }
             }
 
-            return new CacheControlDirectives(noStore, noCache, @private, mustRevalidate, maxAge);
+            return new CacheControlDirectives(noStore, noCache, @private, @public, mustRevalidate, sharedMaxAge, maxAge);
         }
 
         private static DateTime? ResolveExpiry(DateTime nowUtc, CacheControlDirectives cacheControl, HttpHeaders headers)
         {
-            // RFC precedence: max-age overrides Expires.
+            // RFC precedence: s-maxage overrides max-age, both override Expires.
+            if (cacheControl.SharedMaxAge.HasValue)
+                return nowUtc.Add(cacheControl.SharedMaxAge.Value);
+
             if (cacheControl.MaxAge.HasValue)
                 return nowUtc.Add(cacheControl.MaxAge.Value);
 
             var expiresValue = headers.Get("Expires");
             if (string.IsNullOrWhiteSpace(expiresValue))
                 return null;
+
+            expiresValue = expiresValue.Trim();
+            if (expiresValue == "0" || expiresValue == "-1")
+                return nowUtc.AddSeconds(-1);
 
             if (DateTime.TryParse(
                 expiresValue,
@@ -695,9 +756,7 @@ namespace TurboHTTP.Cache
                         if (j > 0)
                             sb.Append(',');
 
-                        var value = values[j] ?? string.Empty;
-                        var bytes = Encoding.UTF8.GetBytes(value.Trim());
-                        sb.Append(Convert.ToBase64String(bytes));
+                        AppendVaryValueToken(sb, values[j]);
                     }
                 }
 
@@ -754,7 +813,21 @@ namespace TurboHTTP.Cache
                     _variantIndex[baseKey] = bucket;
                 }
 
-                bucket.Signatures.Add(signature ?? string.Empty);
+                var normalizedSignature = signature ?? string.Empty;
+                if (bucket.SignatureByStorageKey.TryGetValue(storageKey, out var previousSignature))
+                {
+                    if (string.Equals(previousSignature, normalizedSignature, StringComparison.Ordinal))
+                    {
+                        bucket.StorageKeys.Add(storageKey);
+                        bucket.Signatures.Add(normalizedSignature);
+                        return;
+                    }
+
+                    ReleaseSignatureRefUnsafe(bucket, previousSignature);
+                }
+
+                bucket.SignatureByStorageKey[storageKey] = normalizedSignature;
+                AddSignatureRefUnsafe(bucket, normalizedSignature);
                 bucket.StorageKeys.Add(storageKey);
             }
         }
@@ -766,7 +839,15 @@ namespace TurboHTTP.Cache
                 if (!_variantIndex.TryGetValue(baseKey, out var bucket))
                     return;
 
-                bucket.StorageKeys.Remove(storageKey);
+                if (!bucket.StorageKeys.Remove(storageKey))
+                    return;
+
+                if (bucket.SignatureByStorageKey.TryGetValue(storageKey, out var signature))
+                {
+                    bucket.SignatureByStorageKey.Remove(storageKey);
+                    ReleaseSignatureRefUnsafe(bucket, signature);
+                }
+
                 if (bucket.StorageKeys.Count == 0)
                     _variantIndex.Remove(baseKey);
             }
@@ -861,7 +942,7 @@ namespace TurboHTTP.Cache
                 int eq = segment.IndexOf('=');
                 if (eq < 0)
                 {
-                    items.Add(new QueryPart(NormalizePercentEncoding(segment), string.Empty, false));
+                    items.Add(new QueryPart(NormalizePercentEncoding(segment), string.Empty, false, items.Count));
                     continue;
                 }
 
@@ -870,7 +951,8 @@ namespace TurboHTTP.Cache
                 items.Add(new QueryPart(
                     NormalizePercentEncoding(name),
                     NormalizePercentEncoding(value),
-                    hasEquals: true));
+                    hasEquals: true,
+                    ordinal: items.Count));
             }
 
             items.Sort((a, b) =>
@@ -879,14 +961,8 @@ namespace TurboHTTP.Cache
                 if (byName != 0)
                     return byName;
 
-                int byValue = string.CompareOrdinal(a.Value, b.Value);
-                if (byValue != 0)
-                    return byValue;
-
-                if (a.HasEquals == b.HasEquals)
-                    return 0;
-
-                return a.HasEquals ? -1 : 1;
+                // Preserve duplicate key order to avoid changing semantics for repeated parameters.
+                return a.Ordinal.CompareTo(b.Ordinal);
             });
 
             if (items.Count == 0)
@@ -986,17 +1062,91 @@ namespace TurboHTTP.Cache
             return false;
         }
 
+        private static bool IsRfc9111CacheableByDefault(HttpStatusCode statusCode)
+        {
+            var code = (int)statusCode;
+            return code == 300
+                   || code == 301
+                   || code == 308
+                   || code == 404
+                   || code == 405
+                   || code == 410
+                   || code == 414
+                   || code == 501;
+        }
+
+        private static void AddSignatureRefUnsafe(VariantBucket bucket, string signature)
+        {
+            bucket.Signatures.Add(signature);
+
+            if (!bucket.SignatureRefCounts.TryGetValue(signature, out var count))
+                count = 0;
+
+            bucket.SignatureRefCounts[signature] = count + 1;
+        }
+
+        private static void ReleaseSignatureRefUnsafe(VariantBucket bucket, string signature)
+        {
+            if (!bucket.SignatureRefCounts.TryGetValue(signature, out var count))
+            {
+                bucket.Signatures.Remove(signature);
+                return;
+            }
+
+            if (count <= 1)
+            {
+                bucket.SignatureRefCounts.Remove(signature);
+                bucket.Signatures.Remove(signature);
+                return;
+            }
+
+            bucket.SignatureRefCounts[signature] = count - 1;
+        }
+
+        private static void AppendVaryValueToken(StringBuilder sb, string rawValue)
+        {
+            var value = (rawValue ?? string.Empty).Trim();
+            sb.Append(value.Length.ToString(CultureInfo.InvariantCulture));
+            sb.Append(':');
+            sb.Append(value);
+        }
+
+        private static ReadOnlyMemory<byte> SnapshotBodyForCache(ReadOnlyMemory<byte> source)
+        {
+            if (source.IsEmpty)
+                return ReadOnlyMemory<byte>.Empty;
+
+            return source.ToArray();
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
+            if (_ownsStorage && _policy.Storage is IDisposable disposableStorage)
+                disposableStorage.Dispose();
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(CacheMiddleware));
+        }
+
         private readonly struct QueryPart
         {
             public readonly string Name;
             public readonly string Value;
             public readonly bool HasEquals;
+            public readonly int Ordinal;
 
-            public QueryPart(string name, string value, bool hasEquals)
+            public QueryPart(string name, string value, bool hasEquals, int ordinal)
             {
                 Name = name;
                 Value = value;
                 HasEquals = hasEquals;
+                Ordinal = ordinal;
             }
         }
     }

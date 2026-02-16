@@ -262,5 +262,112 @@ namespace TurboHTTP.Tests.Middleware
                 await pipeline.ExecuteAsync(second, new RequestContext(second));
             }).GetAwaiter().GetResult();
         }
+
+        [Test]
+        public void CookieJar_DefaultPath_ExcludesTrailingSlash()
+        {
+            var jar = new CookieJar();
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.test/app/login"),
+                new[] { "sid=1" },
+                utcNowOverride: now);
+
+            var atParent = jar.GetCookieHeader(
+                new Uri("https://example.test/app"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(1));
+            var atSibling = jar.GetCookieHeader(
+                new Uri("https://example.test/app/other"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(1));
+
+            StringAssert.Contains("sid=1", atParent);
+            StringAssert.Contains("sid=1", atSibling);
+        }
+
+        [Test]
+        public void CookieJar_RejectsSingleLabelDomainAttribute()
+        {
+            var jar = new CookieJar();
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.com/login"),
+                new[] { "sid=1; Domain=com; Path=/" },
+                utcNowOverride: now);
+
+            var header = jar.GetCookieHeader(
+                new Uri("https://example.com/profile"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(1));
+
+            Assert.IsNull(header);
+        }
+
+        [Test]
+        public void CookieJar_UnquotesCookieValues()
+        {
+            var jar = new CookieJar();
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.test/"),
+                new[] { "token=\"abc\"; Path=/" },
+                utcNowOverride: now);
+
+            var header = jar.GetCookieHeader(
+                new Uri("https://example.test/resource"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(1));
+
+            Assert.AreEqual("token=abc", header);
+        }
+
+        [Test]
+        public void CookieJar_FiltersSameSiteByMethodAndCrossSiteMode()
+        {
+            var jar = new CookieJar();
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.test/login"),
+                new[]
+                {
+                    "strict_cookie=1; Path=/; SameSite=Strict",
+                    "lax_cookie=1; Path=/; SameSite=Lax",
+                    "none_cookie=1; Path=/; SameSite=None"
+                },
+                utcNowOverride: now);
+
+            var crossSiteGet = jar.GetCookieHeader(
+                new Uri("https://example.test/data"),
+                HttpMethod.GET,
+                isCrossSiteRequest: true,
+                utcNowOverride: now.AddSeconds(1));
+            Assert.IsFalse(crossSiteGet.Contains("strict_cookie=1"));
+            StringAssert.Contains("lax_cookie=1", crossSiteGet);
+            StringAssert.Contains("none_cookie=1", crossSiteGet);
+
+            var crossSitePost = jar.GetCookieHeader(
+                new Uri("https://example.test/data"),
+                HttpMethod.POST,
+                isCrossSiteRequest: true,
+                utcNowOverride: now.AddSeconds(2));
+            Assert.IsFalse(crossSitePost.Contains("strict_cookie=1"));
+            Assert.IsFalse(crossSitePost.Contains("lax_cookie=1"));
+            StringAssert.Contains("none_cookie=1", crossSitePost);
+        }
+
+        [Test]
+        public void CookieMiddleware_ImplementsIDisposable()
+        {
+            Assert.IsTrue(new CookieMiddleware() is IDisposable);
+        }
     }
 }

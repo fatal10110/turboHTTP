@@ -11,6 +11,8 @@ Implement Unity-specific integrations that make TurboHTTP feel native to Unity: 
 
 Detailed sub-phase breakdown: [Phase 11 Implementation Plan - Overview](phase11/overview.md)
 
+This phase targets a compatibility-first baseline. Advanced scale/correctness hardening (dispatcher backpressure, decode scheduling, temp-file lifecycle manager, lifecycle-bound coroutine cancellation, reliability stress gates) is explicitly deferred to [Phase 15](phase-15-unity-runtime-hardening.md).
+
 ## Goals
 
 1. Create `Texture2DHandler` for loading images

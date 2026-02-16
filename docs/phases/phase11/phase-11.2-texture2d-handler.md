@@ -24,8 +24,12 @@ Implementation constraints:
 3. Validate `Content-Type` starts with `image/` by default (with explicit opt-out for non-compliant APIs).
 4. Preserve cancellation semantics through request pipeline before decode begins.
 5. If response body may come from pooled buffers, copy bytes before main-thread dispatch to guarantee buffer lifetime during decode.
-6. Document ownership explicitly: caller is responsible for destroying returned `Texture2D`/`Sprite` when no longer used.
-7. Avoid hidden global texture caches in this phase.
+6. Keep decode baseline on `Texture2D.LoadImage` and document that it is synchronous on the main thread and can stall frames for large images.
+7. If newer Unity versions expose async decode APIs, keep those paths explicitly opt-in/experimental; default behavior remains synchronous for deterministic compatibility.
+8. Acknowledge transient memory amplification during decode (`byte[]` payload + decode/upload intermediates) and provide an optional max-bytes guard before main-thread decode starts.
+9. Document ownership explicitly: caller is responsible for destroying returned `Texture2D`/`Sprite` when no longer used.
+10. Avoid hidden global texture caches in this phase.
+11. Integration tests use `[UnityTest]` attribute to properly simulate runtime frame behavior.
 
 ---
 
@@ -36,3 +40,4 @@ Implementation constraints:
 3. Invalid image data fails deterministically with actionable exceptions.
 4. Texture option flags are applied to produced textures.
 5. Non-image `Content-Type` is rejected by default.
+6. When a max image size guard is configured, oversized payloads fail before decode with a clear error.

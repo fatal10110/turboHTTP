@@ -340,6 +340,48 @@ namespace TurboHTTP.Transport.Tcp
             queue.Enqueue(connection);
         }
 
+        internal bool TryGetTlsProviderName(string hostFragment, out string providerName)
+        {
+            if (hostFragment == null)
+                throw new ArgumentNullException(nameof(hostFragment));
+
+            foreach (var kv in _idleConnections)
+            {
+                if (kv.Key.IndexOf(hostFragment, StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+
+                if (kv.Value.TryPeek(out var conn))
+                {
+                    providerName = conn.TlsProviderName;
+                    return true;
+                }
+            }
+
+            providerName = null;
+            return false;
+        }
+
+        internal bool TryGetNegotiatedAlpnProtocol(string hostFragment, out string negotiatedAlpnProtocol)
+        {
+            if (hostFragment == null)
+                throw new ArgumentNullException(nameof(hostFragment));
+
+            foreach (var kv in _idleConnections)
+            {
+                if (kv.Key.IndexOf(hostFragment, StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+
+                if (kv.Value.TryPeek(out var conn))
+                {
+                    negotiatedAlpnProtocol = conn.NegotiatedAlpnProtocol;
+                    return true;
+                }
+            }
+
+            negotiatedAlpnProtocol = null;
+            return false;
+        }
+
         private async Task<PooledConnection> CreateConnectionAsync(
             string host, int port, bool secure, CancellationToken ct)
         {

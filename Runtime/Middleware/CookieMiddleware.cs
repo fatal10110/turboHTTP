@@ -9,15 +9,26 @@ namespace TurboHTTP.Middleware
     /// <summary>
     /// Adds outbound Cookie headers and persists inbound Set-Cookie headers.
     /// </summary>
-    public sealed class CookieMiddleware : IHttpMiddleware
+    public sealed class CookieMiddleware : IHttpMiddleware, IDisposable
     {
         private readonly CookieJar _jar;
+        private readonly bool _ownsJar;
+        private int _disposed;
 
         public CookieJar Jar => _jar;
 
         public CookieMiddleware(CookieJar jar = null)
         {
-            _jar = jar ?? new CookieJar();
+            if (jar == null)
+            {
+                _jar = new CookieJar();
+                _ownsJar = true;
+            }
+            else
+            {
+                _jar = jar;
+                _ownsJar = false;
+            }
         }
 
         public async Task<UHttpResponse> InvokeAsync(
@@ -26,6 +37,8 @@ namespace TurboHTTP.Middleware
             HttpPipelineDelegate next,
             CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
+
             if (request == null)
                 throw new ArgumentNullException(nameof(request));
             if (context == null)
@@ -83,6 +96,21 @@ namespace TurboHTTP.Middleware
             }
 
             return response;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
+            if (_ownsJar)
+                _jar.Dispose();
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(CookieMiddleware));
         }
     }
 }

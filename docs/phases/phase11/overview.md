@@ -52,6 +52,22 @@ Sub-phases 11.2 and 11.3 can run in parallel once 11.1 is complete.
 4. Coroutine wrappers must preserve exception and cancellation semantics.
 5. Unity helper APIs should be optional convenience layers over existing core APIs.
 
+## Deferred Advanced Work (Phase 15)
+
+Phase 11 intentionally ships stable baseline behavior. More complex scale/correctness upgrades are tracked in [Phase 15: Unity Runtime Hardening and Advanced Asset Pipeline](../phase-15-unity-runtime-hardening.md):
+
+1. Dispatcher V2 with PlayerLoop-driven execution, queue backpressure, and per-frame budgets.
+2. Texture decode scheduling with memory guards and optional experimental async decode path.
+3. Centralized temp-file lifecycle manager for audio decode under high concurrency.
+4. Atomic file writes and stricter path safety policy for Unity helper I/O APIs.
+5. Lifecycle-bound coroutine cancellation and expanded Unity reliability/performance gate tests.
+
+## Testing Strategy
+
+1. Use Unity Test Framework runtime integration tests with `[UnityTest]` for dispatcher, handler, and coroutine flows that must run through the player loop.
+2. Add a dedicated dispatcher stress test that enqueues work from multiple `ThreadPool` threads and verifies completion/error propagation without deadlocks.
+3. Keep editor/runtime parity checks for Scene reload, domain reload, and cancellation edge cases.
+
 ## All Files (5 new)
 
 | # | Action | Path | Assembly |
@@ -65,6 +81,6 @@ Sub-phases 11.2 and 11.3 can run in parallel once 11.1 is complete.
 ## Post-Implementation
 
 1. Validate runtime behavior on Editor and IL2CPP players.
-2. Run Unity integration scene and automated runtime tests.
+2. Run Unity integration scene and automated `[UnityTest]` runtime tests.
 3. Validate no main-thread deadlocks under stress and cancellation.
 4. Run specialist reviews before advancing to Phase 12.

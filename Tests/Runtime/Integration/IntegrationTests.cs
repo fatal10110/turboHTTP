@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -602,37 +601,43 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true
                 });
 
-                var response = await client.Get("https://www.google.com")
+                var response = await client.Get("https://nghttp2.org/httpbin/get")
                     .WithTimeout(TimeSpan.FromSeconds(25))
                     .SendAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
-                var alpn = TryGetNegotiatedAlpn(pool, "www.google.com");
-                Assert.That(
-                    alpn,
-                    Is.EqualTo("h2").Or.EqualTo("http/1.1"),
-                    "Expected ALPN negotiation result to be h2 or http/1.1.");
+                bool usedHttp2 = TryHasHttp2Connection(transport, "nghttp2.org", 443);
+                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "nghttp2.org");
+                if (string.Equals(negotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
+                {
+                    Assert.IsTrue(
+                        usedHttp2,
+                        "Negotiated ALPN was h2 but HTTP/2 connection was not established.");
+                }
+                else
+                {
+                    Assert.IsFalse(
+                        usedHttp2,
+                        "Negotiated ALPN was not h2; expected HTTP/1.1 fallback.");
+                    Assert.That(
+                        negotiatedAlpn,
+                        Is.Null.Or.EqualTo("http/1.1"),
+                        "Expected ALPN fallback to be null or http/1.1.");
+                }
             }).GetAwaiter().GetResult();
         }
 
         private static string TryGetNegotiatedAlpn(TcpConnectionPool pool, string hostFragment)
         {
-            var idleField = typeof(TcpConnectionPool).GetField(
-                "_idleConnections",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
+            return pool.TryGetNegotiatedAlpnProtocol(hostFragment, out var negotiatedAlpn)
+                ? negotiatedAlpn
+                : null;
+        }
 
-            foreach (var kv in idle)
-            {
-                if (!kv.Key.Contains(hostFragment, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                if (kv.Value.TryPeek(out var conn))
-                    return conn.NegotiatedAlpnProtocol;
-            }
-
-            return null;
+        private static bool TryHasHttp2Connection(RawSocketTransport transport, string host, int port)
+        {
+            return transport.HasHttp2Connection(host, port);
         }
     }
 }

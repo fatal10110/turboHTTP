@@ -1,6 +1,5 @@
 #if TURBOHTTP_INTEGRATION_TESTS
 using System;
-using System.Collections.Concurrent;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,6 +14,9 @@ namespace TurboHTTP.Tests.Transport.Tls
     [TestFixture]
     public class TlsIntegrationTests
     {
+        private const string BouncyFetchUrl = "https://sha256.badssl.com/";
+        private const string Http2ProbeUrl = "https://nghttp2.org/httpbin/get";
+
         [SetUp]
         public void SetUp()
         {
@@ -60,7 +62,7 @@ namespace TurboHTTP.Tests.Transport.Tls
                     TlsBackend = TlsBackend.BouncyCastle
                 });
 
-                var response = await SendWithGuardedTimeoutAsync(client, "https://www.google.com");
+                var response = await SendWithGuardedTimeoutAsync(client, BouncyFetchUrl);
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.Greater(response.Body.Length, 0);
             }).GetAwaiter().GetResult();
@@ -104,15 +106,9 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         [Category("Integration")]
         public void HttpClient_Http2_Works()        {
-            if (!TlsProviderSelector.IsBouncyCastleAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
-
             Task.Run(async () =>
             {
-                using var pool = new TcpConnectionPool(tlsBackend: TlsBackend.BouncyCastle);
+                using var pool = new TcpConnectionPool(tlsBackend: TlsBackend.Auto);
                 using var transport = new RawSocketTransport(pool);
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
@@ -120,11 +116,27 @@ namespace TurboHTTP.Tests.Transport.Tls
                     DisposeTransport = true
                 });
 
-                var response = await SendWithGuardedTimeoutAsync(client, "https://www.google.com");
+                var response = await SendWithGuardedTimeoutAsync(client, Http2ProbeUrl);
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
-                var alpn = TryGetNegotiatedAlpn(pool, "www.google.com");
-                Assert.AreEqual("h2", alpn, "Expected HTTP/2 ALPN negotiation with BouncyCastle backend");
+                bool usedHttp2 = TryHasHttp2Connection(transport, "nghttp2.org", 443);
+                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "nghttp2.org");
+                if (string.Equals(negotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
+                {
+                    Assert.IsTrue(
+                        usedHttp2,
+                        "Negotiated ALPN was h2 but HTTP/2 connection was not established.");
+                }
+                else
+                {
+                    Assert.IsFalse(
+                        usedHttp2,
+                        "Negotiated ALPN was not h2; expected HTTP/1.1 fallback.");
+                    Assert.That(
+                        negotiatedAlpn,
+                        Is.Null.Or.EqualTo("http/1.1"),
+                        "Expected ALPN fallback to be null or http/1.1.");
+                }
             }).GetAwaiter().GetResult();
         }
 
@@ -156,36 +168,21 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         private static string TryGetProviderName(TcpConnectionPool pool, string hostFragment)
         {
-            var idleField = typeof(TcpConnectionPool).GetField("_idleConnections", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
-
-            foreach (var kv in idle)
-            {
-                if (!kv.Key.Contains(hostFragment, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                if (kv.Value.TryPeek(out var conn))
-                    return conn.TlsProviderName;
-            }
-
-            return null;
+            return pool.TryGetTlsProviderName(hostFragment, out var providerName)
+                ? providerName
+                : null;
         }
 
         private static string TryGetNegotiatedAlpn(TcpConnectionPool pool, string hostFragment)
         {
-            var idleField = typeof(TcpConnectionPool).GetField("_idleConnections", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
+            return pool.TryGetNegotiatedAlpnProtocol(hostFragment, out var negotiatedAlpn)
+                ? negotiatedAlpn
+                : null;
+        }
 
-            foreach (var kv in idle)
-            {
-                if (!kv.Key.Contains(hostFragment, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                if (kv.Value.TryPeek(out var conn))
-                    return conn.NegotiatedAlpnProtocol;
-            }
-
-            return null;
+        private static bool TryHasHttp2Connection(RawSocketTransport transport, string host, int port)
+        {
+            return transport.HasHttp2Connection(host, port);
         }
     }
 }

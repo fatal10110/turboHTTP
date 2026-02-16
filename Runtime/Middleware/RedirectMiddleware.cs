@@ -14,14 +14,22 @@ namespace TurboHTTP.Middleware
     {
         private readonly bool _defaultFollowRedirects;
         private readonly int _defaultMaxRedirects;
+        private readonly bool _defaultAllowHttpsToHttpDowngrade;
+        private readonly bool _defaultEnforceRedirectTotalTimeout;
 
-        public RedirectMiddleware(bool defaultFollowRedirects = true, int defaultMaxRedirects = 10)
+        public RedirectMiddleware(
+            bool defaultFollowRedirects = true,
+            int defaultMaxRedirects = 10,
+            bool defaultAllowHttpsToHttpDowngrade = false,
+            bool defaultEnforceRedirectTotalTimeout = true)
         {
             if (defaultMaxRedirects < 0)
                 throw new ArgumentOutOfRangeException(nameof(defaultMaxRedirects), defaultMaxRedirects, "Must be >= 0.");
 
             _defaultFollowRedirects = defaultFollowRedirects;
             _defaultMaxRedirects = defaultMaxRedirects;
+            _defaultAllowHttpsToHttpDowngrade = defaultAllowHttpsToHttpDowngrade;
+            _defaultEnforceRedirectTotalTimeout = defaultEnforceRedirectTotalTimeout;
         }
 
         public async Task<UHttpResponse> InvokeAsync(
@@ -42,6 +50,12 @@ namespace TurboHTTP.Middleware
                 return await next(request, context, cancellationToken).ConfigureAwait(false);
 
             var maxRedirects = ResolveMaxRedirects(request.Metadata, _defaultMaxRedirects);
+            var allowHttpsToHttpDowngrade = ResolveAllowHttpsToHttpDowngrade(request.Metadata, _defaultAllowHttpsToHttpDowngrade);
+            var enforceRedirectTotalTimeout = ResolveEnforceRedirectTotalTimeout(request.Metadata, _defaultEnforceRedirectTotalTimeout);
+            var totalTimeoutBudget = request.Timeout;
+
+            // Design decision: all redirect hops intentionally share one RequestContext so
+            // telemetry/timing represent a single logical request chain.
             var currentRequest = request;
             var visitedTargets = new HashSet<string>(StringComparer.Ordinal);
             var redirectChain = new List<string> { request.Uri.AbsoluteUri };
@@ -49,6 +63,12 @@ namespace TurboHTTP.Middleware
             for (int redirectCount = 0; ; redirectCount++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                if (enforceRedirectTotalTimeout)
+                {
+                    currentRequest = ApplyTotalRedirectTimeoutBudget(currentRequest, context, totalTimeoutBudget);
+                    context.UpdateRequest(currentRequest);
+                }
 
                 var response = await next(currentRequest, context, cancellationToken).ConfigureAwait(false);
                 if (!TryResolveRedirectTarget(currentRequest.Uri, response, out var targetUri, out var statusCode))
@@ -61,7 +81,14 @@ namespace TurboHTTP.Middleware
                         $"Redirect limit exceeded ({maxRedirects}). Last redirect target: {targetUri}"));
                 }
 
-                var loopKey = BuildLoopKey(targetUri, statusCode);
+                if (IsHttpsToHttpDowngrade(currentRequest.Uri, targetUri) && !allowHttpsToHttpDowngrade)
+                {
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.InvalidRequest,
+                        $"Blocked insecure redirect downgrade from '{currentRequest.Uri}' to '{targetUri}'."));
+                }
+
+                var loopKey = BuildLoopKey(targetUri);
                 if (!visitedTargets.Add(loopKey))
                 {
                     throw new UHttpException(new UHttpError(
@@ -222,6 +249,34 @@ namespace TurboHTTP.Middleware
             return fallback;
         }
 
+        private static bool ResolveAllowHttpsToHttpDowngrade(IReadOnlyDictionary<string, object> metadata, bool fallback)
+        {
+            if (metadata == null)
+                return fallback;
+
+            if (!metadata.TryGetValue(RequestMetadataKeys.AllowHttpsToHttpDowngrade, out var raw))
+                return fallback;
+
+            if (raw is bool boolValue)
+                return boolValue;
+
+            return fallback;
+        }
+
+        private static bool ResolveEnforceRedirectTotalTimeout(IReadOnlyDictionary<string, object> metadata, bool fallback)
+        {
+            if (metadata == null)
+                return fallback;
+
+            if (!metadata.TryGetValue(RequestMetadataKeys.EnforceRedirectTotalTimeout, out var raw))
+                return fallback;
+
+            if (raw is bool boolValue)
+                return boolValue;
+
+            return fallback;
+        }
+
         private static bool IsCrossOrigin(Uri from, Uri to)
         {
             return !string.Equals(from.Scheme, to.Scheme, StringComparison.OrdinalIgnoreCase)
@@ -229,9 +284,40 @@ namespace TurboHTTP.Middleware
                    || from.Port != to.Port;
         }
 
-        private static string BuildLoopKey(Uri targetUri, HttpStatusCode statusCode)
+        private static bool IsHttpsToHttpDowngrade(Uri from, Uri to)
         {
-            return ((int)statusCode).ToString() + " " + targetUri.AbsoluteUri;
+            return string.Equals(from.Scheme, "https", StringComparison.OrdinalIgnoreCase)
+                   && string.Equals(to.Scheme, "http", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static UHttpRequest ApplyTotalRedirectTimeoutBudget(
+            UHttpRequest request,
+            RequestContext context,
+            TimeSpan totalTimeoutBudget)
+        {
+            var remaining = totalTimeoutBudget - context.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.Timeout,
+                    $"Redirect chain exceeded total timeout budget ({totalTimeoutBudget.TotalSeconds:F0}s)."));
+            }
+
+            if (remaining >= request.Timeout)
+                return request;
+
+            return new UHttpRequest(
+                request.Method,
+                request.Uri,
+                request.Headers,
+                request.Body,
+                timeout: remaining,
+                metadata: request.Metadata);
+        }
+
+        private static string BuildLoopKey(Uri targetUri)
+        {
+            return targetUri.AbsoluteUri;
         }
     }
 }

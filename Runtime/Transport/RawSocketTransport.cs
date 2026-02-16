@@ -276,6 +276,11 @@ namespace TurboHTTP.Transport
                 request: request);
         }
 
+        internal bool HasHttp2Connection(string host, int port)
+        {
+            return _h2Manager != null && _h2Manager.HasConnection(host, port);
+        }
+
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

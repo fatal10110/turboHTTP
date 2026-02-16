@@ -146,7 +146,7 @@ These are the easiest "false assumptions" to make early and the most expensive t
 
 ## Implementation Phases
 
-The implementation is organized into 14 phases, progressing from foundation to production release:
+The implementation is organized into 15 phases, progressing from foundation to production release:
 
 ### Foundation (Phases 1-3B)
 
@@ -177,9 +177,10 @@ The implementation is organized into 14 phases, progressing from foundation to p
 
 - **[Phase 13](phases/phase-13-release.md):** CI/CD & Release
 
-### Future (Phase 14)
+### Future (Phases 14-15)
 
 - **[Phase 14](phases/phase-14-future.md):** Post-v1.0 Roadmap
+- **[Phase 15](phases/phase-15-unity-runtime-hardening.md):** Unity Runtime Hardening and Advanced Asset Pipeline
 
 ## Development Milestones
 
@@ -199,7 +200,7 @@ Performance optimization, testing infrastructure, documentation, platform valida
 
 Advanced middleware, Unity integration, editor tooling, CI/CD and Asset Store release
 
-### M4 — v1.x "differentiators" (Phase 14)
+### M4 — v1.x "differentiators" (Phases 14-15)
 
 WebGL support (browser fetch API via .jslib), adaptive network policies, WebSocket support, more content handlers
 
@@ -227,7 +228,7 @@ turboHTTP/
 │   └── phases/                    # Detailed phase documentation
 │       ├── phase-01-project-foundation.md
 │       ├── phase-02-core-types.md
-│       ├── ... (through phase 14)
+│       ├── ... (through phase 15)
 ├── package.json
 ├── README.md
 ├── CHANGELOG.md

@@ -47,6 +47,11 @@ namespace TurboHTTP.Transport.Http2
             return null;
         }
 
+        internal bool HasConnection(string host, int port)
+        {
+            return GetIfExists(host, port) != null;
+        }
+
         /// <summary>
         /// Get or create an h2 connection for this host:port.
         /// If one exists and is alive, return it (disposes the caller's tlsStream).

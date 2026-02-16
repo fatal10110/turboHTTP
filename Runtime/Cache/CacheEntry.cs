@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net;
 using TurboHTTP.Core;
 
@@ -114,13 +113,26 @@ namespace TurboHTTP.Cache
             if (varyHeaders == null || varyHeaders.Count == 0)
                 return Array.Empty<string>();
 
-            var normalized = varyHeaders
-                .Where(h => !string.IsNullOrWhiteSpace(h))
-                .Select(h => h.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(h => h, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < varyHeaders.Count; i++)
+            {
+                var raw = varyHeaders[i];
+                if (string.IsNullOrWhiteSpace(raw))
+                    continue;
 
+                var trimmed = raw.Trim();
+                if (trimmed.Length == 0)
+                    continue;
+
+                set.Add(trimmed);
+            }
+
+            if (set.Count == 0)
+                return Array.Empty<string>();
+
+            var normalized = new string[set.Count];
+            set.CopyTo(normalized);
+            Array.Sort(normalized, StringComparer.OrdinalIgnoreCase);
             return normalized;
         }
     }

@@ -108,7 +108,6 @@ namespace TurboHTTP.Tests.Platform
 
         [Test]
         [Category("ExternalNetwork")]
-        [Explicit("Requires internet access and valid Google endpoint")]
         public void NetworkReachability_External_Google_RequestSucceeds()
         {
             Task.Run(async () =>
@@ -119,13 +118,32 @@ namespace TurboHTTP.Tests.Platform
                     Transport = new RawSocketTransport()
                 });
 
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-                var response = await client.Get("https://www.google.com/generate_204").SendAsync(cts.Token);
+                var candidates = new[]
+                {
+                    "https://httpbingo.org/status/204",
+                    "https://httpbin.org/status/204",
+                    "https://www.google.com/generate_204"
+                };
 
-                Assert.That(
-                    response.StatusCode,
-                    Is.EqualTo(HttpStatusCode.NoContent).Or.EqualTo(HttpStatusCode.OK),
-                    $"Unexpected status for external network probe on {PlatformInfo.GetPlatformDescription()}");
+                Exception lastError = null;
+                foreach (var url in candidates)
+                {
+                    try
+                    {
+                        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                        var response = await client.Get(url).SendAsync(cts.Token);
+                        if (response.StatusCode == HttpStatusCode.NoContent || response.StatusCode == HttpStatusCode.OK)
+                            return;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastError = ex;
+                    }
+                }
+
+                Assert.Fail(
+                    $"External network probe failed for all known endpoints on {PlatformInfo.GetPlatformDescription()}: " +
+                    $"{lastError?.Message}");
             }).GetAwaiter().GetResult();
         }
     }

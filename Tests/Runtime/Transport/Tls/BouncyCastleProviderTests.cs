@@ -172,12 +172,20 @@ namespace TurboHTTP.Tests.Transport.Tls
                 return;
             }
 
-            // Connect to google.com but claim we wanted example.com
-            // This should fail certificate validation due to hostname mismatch
-            AssertAsync.ThrowsAsync<AuthenticationException>(async () =>
+            Task.Run(async () =>
             {
-                await WrapAsync("www.google.com", "example.com", new[] { "h2" }, CancellationToken.None);
-            });
+                // Connect to google.com but claim we wanted example.com.
+                // This should fail certificate validation due to hostname mismatch.
+                try
+                {
+                    await WrapAsync("www.google.com", "example.com", new[] { "h2" }, CancellationToken.None);
+                    Assert.Fail("Expected AuthenticationException for hostname mismatch.");
+                }
+                catch (AuthenticationException)
+                {
+                    // Expected
+                }
+            }).GetAwaiter().GetResult();
         }
 #endif
 
