@@ -38,6 +38,12 @@ Implementation constraints:
 11. Keep hot-path logging disabled or minimal by default.
 12. Compression variant behavior must be explicit: cache key/variant logic must separate `Accept-Encoding` variants when `Vary: Accept-Encoding` is present.
 
+V1 notes:
+
+1. Private-cache `Expires` handling is intentionally simplified to absolute timestamp parsing (no explicit `Expires - Date` correction path in v1).
+2. Variant index bookkeeping is an in-memory accelerator and is not persisted across client restarts.
+3. Cache-hit response creation currently performs defensive cloning for immutability (storage clone + response header clone); optimization is deferred.
+
 ---
 
 ## Step 2: Implement Conditional Revalidation

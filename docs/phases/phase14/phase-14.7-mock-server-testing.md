@@ -2,7 +2,7 @@
 
 **Depends on:** Phase 7
 **Assembly:** `TurboHTTP.Testing`, `TurboHTTP.Tests.Runtime`
-**Files:** 3 new, 1 modified
+**Files:** 4 new, 1 modified
 
 ---
 
@@ -12,18 +12,46 @@
 - `Runtime/Testing/MockHttpServer.cs` (new)
 - `Runtime/Testing/MockRoute.cs` (new)
 
-Required behavior:
+### Technical Spec
 
-1. Register route handlers by method + path matcher.
-2. Return deterministic mock responses with status, headers, and body.
-3. Support startup/shutdown lifecycle for test setup/teardown.
-4. Support call-history capture for assertions.
+Server design:
 
-Implementation constraints:
+1. In-process transport-backed server (no OS port binding required for default mode).
+2. Optional local-loopback mode for external client compatibility tests.
+3. Deterministic request dispatcher using route table snapshot per request.
 
-1. Keep server deterministic and isolated per test fixture.
-2. Avoid real external network dependencies for core scenarios.
-3. Preserve cancellation behavior in handlers.
+Route model:
+
+```csharp
+public sealed class MockRoute
+{
+    public HttpMethod Method { get; init; }
+    public string PathPattern { get; init; }
+    public Func<MockRequestContext, ValueTask<MockResponse>> Handler { get; init; }
+    public int? RemainingInvocations { get; init; }
+    public int Priority { get; init; } = 0;
+}
+```
+
+Matching semantics:
+
+1. Match by method first, then path.
+2. Path supports exact, wildcard segment, and regex mode.
+3. Highest priority route wins; ties resolve by registration order.
+4. One-shot routes decrement atomically and retire when exhausted.
+
+History capture:
+
+1. Record inbound request snapshot with headers/body/timestamp/route id.
+2. Capture response snapshot and duration.
+3. Store bounded history ring buffer with configurable capacity.
+
+### Implementation Constraints
+
+1. Route registration and dispatch must be thread-safe under parallel tests.
+2. No hidden global singleton state across fixtures.
+3. Handler exceptions map to deterministic 5xx mock error responses unless configured otherwise.
+4. Body buffering policy must support large payload tests with size caps.
 
 ---
 
@@ -33,24 +61,60 @@ Implementation constraints:
 - `Runtime/Testing/MockResponseBuilder.cs` (new)
 - `Tests/Runtime/Integration/IntegrationTests.cs` (modify)
 
-Required behavior:
+### Technical Spec
 
-1. Provide fluent route registration and response-building helpers.
-2. Support one-shot and repeated routes.
-3. Support body matchers and header matchers for request assertions.
-4. Integrate at least one end-to-end integration test with the mock server.
+Fluent API requirements:
 
-Implementation constraints:
+```csharp
+mockServer
+    .When(HttpMethod.Get, "/api/users/{id}")
+    .WithHeader("Authorization", value => value.StartsWith("Bearer "))
+    .WithJsonBody<UserRequest>(predicate)
+    .Respond(response => response
+        .Status(200)
+        .Json(new UserDto(...))
+        .Header("X-Mock", "1"))
+    .Times(1);
+```
 
-1. Keep API consistent with existing test helper style from Phase 7.
-2. Ensure helpers produce clear assertion failures.
-3. Avoid hidden global state between tests.
+Capabilities:
+
+1. Header matcher, query matcher, JSON body matcher, raw body matcher.
+2. Latency injection (`Delay`), fault injection (`Abort`, `Timeout`), and sequence responses.
+3. Assertion helpers:
+   - `AssertReceived(path, count)`;
+   - `AssertLastRequest(...)`;
+   - `AssertNoUnexpectedRequests()`.
+
+### Implementation Constraints
+
+1. Builder APIs must produce readable failure messages with diff-style details.
+2. Default serialization for JSON matchers must align with runtime serializer settings.
+3. Sequence and one-shot routes must be race-safe under concurrent calls.
+
+---
+
+## Step 3: Add Deterministic Mock Server Tests
+
+**File:** `Tests/Runtime/Testing/MockHttpServerTests.cs` (new)
+
+### Required Test Matrix
+
+| Case | Setup | Expected Result |
+|---|---|---|
+| `RoutePriority_HighestWins` | overlapping routes | highest priority route selected |
+| `OneShotRoute_Expires` | `Times(1)` route hit twice | second call fails or falls through by policy |
+| `SequenceResponses_Ordered` | sequence of 3 responses | call order preserved |
+| `HeaderBodyMatchers_FilterCorrectly` | mixed requests | only matching requests handled |
+| `InjectedDelay_RespectsCancellation` | response delay + cancel token | deterministic cancellation |
+| `HistoryBounded_OldestEvicted` | capacity exceeded | oldest entries removed first |
+| `ParallelRequests_NoStateCorruption` | concurrent requests | consistent history and route counters |
 
 ---
 
 ## Verification Criteria
 
-1. Mock server supports deterministic request/response scenarios.
-2. Route matching and call-history assertions are reliable.
-3. Integration tests can run without live network dependency.
-4. Mock server startup/shutdown is stable under parallel test execution.
+1. Mock server delivers deterministic, composable test behavior without external network dependency.
+2. Matcher and response-builder APIs cover common integration test needs.
+3. Concurrency and history behavior remain stable under stress.
+4. Integration suite can replace ad-hoc live endpoint usage with mock server scenarios.

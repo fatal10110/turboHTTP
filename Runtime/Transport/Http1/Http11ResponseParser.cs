@@ -49,7 +49,7 @@ namespace TurboHTTP.Transport.Http1
             HttpHeaders headers;
             int interim1xxCount = 0;
 
-            var reader = new BufferedStreamReader(stream);
+            using var reader = new BufferedStreamReader(stream);
 
             // 1. Skip 1xx interim responses
             do
@@ -236,11 +236,14 @@ namespace TurboHTTP.Transport.Http1
         /// <summary>
         /// Read a line terminated by CRLF (or bare LF per RFC 9112 §2.2 robustness) from the stream.
         /// Returns the line content without the trailing line terminator.
+        /// WARNING: This helper creates a temporary buffered reader instance and may prefetch
+        /// bytes beyond the returned line. It is intended for tests/single-line probes, not
+        /// for continued parsing of a live connection where unread bytes must be preserved.
         /// </summary>
         internal static async Task<string> ReadLineAsync(
             Stream stream, CancellationToken ct, int maxLength = MaxHeaderLineLength)
         {
-            var reader = new BufferedStreamReader(stream);
+            using var reader = new BufferedStreamReader(stream);
             return await reader.ReadLineAsync(ct, maxLength).ConfigureAwait(false);
         }
 
@@ -349,7 +352,7 @@ namespace TurboHTTP.Transport.Http1
             }
         }
 
-        private sealed class BufferedStreamReader
+        private sealed class BufferedStreamReader : IDisposable
         {
             private const int DefaultBufferSize = 4096;
 
@@ -357,13 +360,23 @@ namespace TurboHTTP.Transport.Http1
             private readonly byte[] _buffer;
             private int _start;
             private int _end;
+            private bool _disposed;
 
             public BufferedStreamReader(Stream stream, int bufferSize = DefaultBufferSize)
             {
                 _stream = stream ?? throw new ArgumentNullException(nameof(stream));
                 if (bufferSize <= 0)
                     throw new ArgumentOutOfRangeException(nameof(bufferSize), bufferSize, "Must be > 0.");
-                _buffer = new byte[bufferSize];
+                _buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+                ArrayPool<byte>.Shared.Return(_buffer);
             }
 
             public async Task<string> ReadLineAsync(CancellationToken ct, int maxLength)
@@ -390,6 +403,9 @@ namespace TurboHTTP.Transport.Http1
                                 return line;
                             }
 
+                            if (accumulatorCount + segmentLength > maxLength + 2)
+                                throw new FormatException("HTTP header line exceeds maximum length");
+
                             EnsureCapacity(ref accumulator, accumulatorCount + segmentLength, accumulatorCount);
                             Buffer.BlockCopy(_buffer, _start, accumulator, accumulatorCount, segmentLength);
                             accumulatorCount += segmentLength;
@@ -401,13 +417,13 @@ namespace TurboHTTP.Transport.Http1
                         int available = _end - _start;
                         if (available > 0)
                         {
+                            if (accumulatorCount + available > maxLength + 2)
+                                throw new FormatException("HTTP header line exceeds maximum length");
+
                             EnsureCapacity(ref accumulator, accumulatorCount + available, accumulatorCount);
                             Buffer.BlockCopy(_buffer, _start, accumulator, accumulatorCount, available);
                             accumulatorCount += available;
                             _start = _end;
-
-                            if (accumulatorCount > maxLength + 2)
-                                throw new FormatException("HTTP header line exceeds maximum length");
                         }
 
                         int read = await FillBufferAsync(ct).ConfigureAwait(false);

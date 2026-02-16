@@ -139,6 +139,32 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
+        public void CookieJar_MaxAgeTakesPrecedenceOverExpires()
+        {
+            var jar = new CookieJar();
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.test/login"),
+                new[] { "a=b; Max-Age=3600; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/" },
+                utcNowOverride: now);
+
+            var beforeExpiry = jar.GetCookieHeader(
+                new Uri("https://example.test/profile"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddMinutes(30));
+            Assert.AreEqual("a=b", beforeExpiry);
+
+            var afterExpiry = jar.GetCookieHeader(
+                new Uri("https://example.test/profile"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddHours(2));
+            Assert.IsNull(afterExpiry);
+        }
+
+        [Test]
         public void CookieMiddleware_HonorsSecureAttribute()
         {
             Task.Run(async () =>
@@ -180,6 +206,27 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
+        public void CookieJar_RejectsSecureCookiesFromHttpOrigins()
+        {
+            var jar = new CookieJar();
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("http://example.test/login"),
+                new[] { "sid=secure; Path=/; Secure" },
+                utcNowOverride: now);
+
+            var secureHeader = jar.GetCookieHeader(
+                new Uri("https://example.test/profile"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(1));
+
+            Assert.IsNull(secureHeader);
+            Assert.AreEqual(0, jar.Count);
+        }
+
+        [Test]
         public void CookieJar_EnforcesDomainAndTotalLimits()
         {
             var jar = new CookieJar(maxCookiesPerDomain: 2, maxTotalCookies: 3);
@@ -213,6 +260,78 @@ namespace TurboHTTP.Tests.Middleware
                 utcNowOverride: baseTime.AddSeconds(2));
 
             Assert.LessOrEqual(jar.Count, 3);
+        }
+
+        [Test]
+        public void CookieJar_ReadPath_SweepsExpiredCookies()
+        {
+            var jar = new CookieJar();
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.test/login"),
+                new[] { "sid=1; Path=/; Max-Age=1" },
+                utcNowOverride: now);
+
+            Assert.AreEqual(1, jar.Count);
+
+            var header = jar.GetCookieHeader(
+                new Uri("https://example.test/profile"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(2));
+
+            Assert.IsNull(header);
+            Assert.AreEqual(0, jar.Count);
+        }
+
+        [Test]
+        public void CookieJar_UpdatesLastAccessedUtc_ForLruEviction()
+        {
+            var jar = new CookieJar(maxCookiesPerDomain: 2, maxTotalCookies: 2);
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.test/a/login"),
+                new[]
+                {
+                    "a=1; Path=/a",
+                    "b=2; Path=/b"
+                },
+                utcNowOverride: now);
+
+            var touched = jar.GetCookieHeader(
+                new Uri("https://example.test/a/resource"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(1));
+            StringAssert.Contains("a=1", touched);
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.test/c/login"),
+                new[] { "c=3; Path=/c" },
+                utcNowOverride: now.AddSeconds(2));
+
+            var aHeader = jar.GetCookieHeader(
+                new Uri("https://example.test/a/next"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(3));
+            StringAssert.Contains("a=1", aHeader);
+
+            var bHeader = jar.GetCookieHeader(
+                new Uri("https://example.test/b/next"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(3));
+            Assert.IsNull(bHeader);
+
+            var cHeader = jar.GetCookieHeader(
+                new Uri("https://example.test/c/next"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(3));
+            StringAssert.Contains("c=3", cHeader);
         }
 
         [Test]
@@ -310,6 +429,26 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
+        public void CookieJar_RejectsKnownMultiLabelPublicSuffixDomainAttribute()
+        {
+            var jar = new CookieJar();
+            var now = DateTime.UtcNow;
+
+            jar.StoreFromSetCookieHeaders(
+                new Uri("https://example.co.uk/login"),
+                new[] { "sid=1; Domain=co.uk; Path=/" },
+                utcNowOverride: now);
+
+            var header = jar.GetCookieHeader(
+                new Uri("https://example.co.uk/profile"),
+                HttpMethod.GET,
+                isCrossSiteRequest: false,
+                utcNowOverride: now.AddSeconds(1));
+
+            Assert.IsNull(header);
+        }
+
+        [Test]
         public void CookieJar_UnquotesCookieValues()
         {
             var jar = new CookieJar();
@@ -362,6 +501,64 @@ namespace TurboHTTP.Tests.Middleware
             Assert.IsFalse(crossSitePost.Contains("strict_cookie=1"));
             Assert.IsFalse(crossSitePost.Contains("lax_cookie=1"));
             StringAssert.Contains("none_cookie=1", crossSitePost);
+        }
+
+        [Test]
+        public void CookieMiddleware_DoesNotDuplicateCookieNamesWhenMergingExistingHeader()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    if (callCount == 1)
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Add("Set-Cookie", "sid=jar; Path=/");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    var cookieHeader = req.Headers.Get("Cookie");
+                    Assert.IsNotNull(cookieHeader);
+                    StringAssert.Contains("sid=manual", cookieHeader);
+                    StringAssert.DoesNotContain("sid=jar", cookieHeader);
+                    StringAssert.Contains("theme=dark", cookieHeader);
+
+                    var tokens = cookieHeader.Split(';');
+                    int sidCount = 0;
+                    for (int i = 0; i < tokens.Length; i++)
+                    {
+                        if (tokens[i].TrimStart().StartsWith("sid=", StringComparison.Ordinal))
+                            sidCount++;
+                    }
+
+                    Assert.AreEqual(1, sidCount);
+
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new CookieMiddleware(new CookieJar());
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var first = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/login"));
+                await pipeline.ExecuteAsync(first, new RequestContext(first));
+
+                var secondHeaders = new HttpHeaders();
+                secondHeaders.Set("Cookie", "sid=manual; theme=dark");
+                var second = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/profile"), secondHeaders);
+                await pipeline.ExecuteAsync(second, new RequestContext(second));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]

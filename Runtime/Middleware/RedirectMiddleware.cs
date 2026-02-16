@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -122,6 +123,8 @@ namespace TurboHTTP.Middleware
         {
             var method = source.Method;
             var body = source.Body;
+            // Current API clones in UHttpRequest ctor as well; this extra clone is acceptable
+            // for now and can be trimmed later via the ownsHeaders constructor path.
             var headers = source.Headers.Clone();
 
             headers.Remove("Host");
@@ -197,7 +200,9 @@ namespace TurboHTTP.Middleware
 
             try
             {
-                targetUri = new Uri(currentUri, location.Trim());
+                var trimmedLocation = location.Trim();
+                targetUri = new Uri(currentUri, trimmedLocation);
+                targetUri = ApplyFragmentInheritance(currentUri, targetUri, trimmedLocation);
                 return true;
             }
             catch (UriFormatException ex)
@@ -211,6 +216,7 @@ namespace TurboHTTP.Middleware
 
         private static bool IsRedirectStatus(HttpStatusCode statusCode)
         {
+            // 300 Multiple Choices is intentionally not auto-followed in middleware.
             return statusCode == HttpStatusCode.MovedPermanently
                    || statusCode == HttpStatusCode.Found
                    || statusCode == HttpStatusCode.SeeOther
@@ -295,7 +301,8 @@ namespace TurboHTTP.Middleware
             RequestContext context,
             TimeSpan totalTimeoutBudget)
         {
-            var remaining = totalTimeoutBudget - context.Elapsed;
+            var elapsed = context.Elapsed;
+            var remaining = totalTimeoutBudget - elapsed;
             if (remaining <= TimeSpan.Zero)
             {
                 throw new UHttpException(new UHttpError(
@@ -317,7 +324,35 @@ namespace TurboHTTP.Middleware
 
         private static string BuildLoopKey(Uri targetUri)
         {
-            return targetUri.AbsoluteUri;
+            var scheme = targetUri.Scheme.ToLowerInvariant();
+            var host = targetUri.Host.ToLowerInvariant();
+            var port = targetUri.IsDefaultPort
+                ? string.Empty
+                : ":" + targetUri.Port.ToString(CultureInfo.InvariantCulture);
+            var pathAndQuery = targetUri.PathAndQuery;
+            if (string.IsNullOrEmpty(pathAndQuery))
+                pathAndQuery = "/";
+
+            return scheme + "://" + host + port + pathAndQuery;
+        }
+
+        private static Uri ApplyFragmentInheritance(Uri currentUri, Uri targetUri, string rawLocation)
+        {
+            if (currentUri == null || targetUri == null || string.IsNullOrEmpty(rawLocation))
+                return targetUri;
+
+            if (rawLocation.IndexOf('#') >= 0)
+                return targetUri;
+
+            if (string.IsNullOrEmpty(currentUri.Fragment) || !string.IsNullOrEmpty(targetUri.Fragment))
+                return targetUri;
+
+            var builder = new UriBuilder(targetUri)
+            {
+                Fragment = currentUri.Fragment.Substring(1)
+            };
+
+            return builder.Uri;
         }
     }
 }

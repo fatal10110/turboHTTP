@@ -14,8 +14,9 @@ namespace TurboHTTP.Tests.UnityModule
     public class UnityExtensionsTests
     {
         [Test]
-        public async Task DownloadToPersistentDataAsync_WritesFileInsidePersistentDataPath()
+        public void DownloadToPersistentDataAsync_WritesFileInsidePersistentDataPath()
         {
+            var persistentDataPath = Application.persistentDataPath;
             var payload = Encoding.UTF8.GetBytes("phase11");
             var transport = new MockTransport(HttpStatusCode.OK, body: payload);
             using var client = new UHttpClient(new UHttpClientOptions
@@ -25,16 +26,16 @@ namespace TurboHTTP.Tests.UnityModule
             });
 
             var relativePath = Path.Combine("turbohttp-tests", Guid.NewGuid().ToString("N"), "payload.bin");
-            var writtenPath = await client.DownloadToPersistentDataAsync(
+            var writtenPath = client.DownloadToPersistentDataAsync(
                 "https://example.test/resource",
-                relativePath);
+                relativePath).GetAwaiter().GetResult();
 
             try
             {
                 Assert.IsTrue(File.Exists(writtenPath));
                 CollectionAssert.AreEqual(payload, File.ReadAllBytes(writtenPath));
 
-                var persistentRoot = EnsureTrailingSeparator(Path.GetFullPath(Application.persistentDataPath));
+                var persistentRoot = EnsureTrailingSeparator(Path.GetFullPath(persistentDataPath));
                 var fullWrittenPath = Path.GetFullPath(writtenPath);
                 Assert.IsTrue(
                     fullWrittenPath.StartsWith(persistentRoot, StringComparison.OrdinalIgnoreCase),
@@ -63,32 +64,35 @@ namespace TurboHTTP.Tests.UnityModule
         }
 
         [Test]
-        public async Task CreateUnityClient_AppliesDefaultUserAgent_AndAllowsOverride()
+        public void CreateUnityClient_AppliesDefaultUserAgent_AndAllowsOverride()
         {
-            var defaultTransport = new MockTransport(HttpStatusCode.OK);
-            using (var defaultClient = UnityExtensions.CreateUnityClient(options =>
-                   {
-                       options.Transport = defaultTransport;
-                       options.DisposeTransport = true;
-                   }))
+            Task.Run(async () =>
             {
-                await defaultClient.Get("https://example.test/default").SendAsync();
-                var userAgent = defaultTransport.LastRequest.Headers.Get("User-Agent");
-                StringAssert.Contains("TurboHTTP", userAgent);
-                StringAssert.Contains("Unity/", userAgent);
-            }
+                var defaultTransport = new MockTransport(HttpStatusCode.OK);
+                using (var defaultClient = UnityExtensions.CreateUnityClient(options =>
+                       {
+                           options.Transport = defaultTransport;
+                           options.DisposeTransport = true;
+                       }))
+                {
+                    await defaultClient.Get("https://example.test/default").SendAsync();
+                    var userAgent = defaultTransport.LastRequest.Headers.Get("User-Agent");
+                    StringAssert.Contains("TurboHTTP", userAgent);
+                    StringAssert.Contains("Unity/", userAgent);
+                }
 
-            var overrideTransport = new MockTransport(HttpStatusCode.OK);
-            using (var overrideClient = UnityExtensions.CreateUnityClient(options =>
-                   {
-                       options.DefaultHeaders.Set("User-Agent", "Custom-UA");
-                       options.Transport = overrideTransport;
-                       options.DisposeTransport = true;
-                   }))
-            {
-                await overrideClient.Get("https://example.test/override").SendAsync();
-                Assert.AreEqual("Custom-UA", overrideTransport.LastRequest.Headers.Get("User-Agent"));
-            }
+                var overrideTransport = new MockTransport(HttpStatusCode.OK);
+                using (var overrideClient = UnityExtensions.CreateUnityClient(options =>
+                       {
+                           options.DefaultHeaders.Set("User-Agent", "Custom-UA");
+                           options.Transport = overrideTransport;
+                           options.DisposeTransport = true;
+                       }))
+                {
+                    await overrideClient.Get("https://example.test/override").SendAsync();
+                    Assert.AreEqual("Custom-UA", overrideTransport.LastRequest.Headers.Get("User-Agent"));
+                }
+            }).GetAwaiter().GetResult();
         }
 
         private static string EnsureTrailingSeparator(string path)

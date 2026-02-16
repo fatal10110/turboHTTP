@@ -124,6 +124,89 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
+        public void RedirectMiddleware_RewritesPutToGet_On303()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Uri.AbsolutePath == "/submit")
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/result");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.SeeOther,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual(HttpMethod.GET, req.Method);
+                    Assert.IsNull(req.Body);
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectMiddleware();
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(
+                    HttpMethod.PUT,
+                    new Uri("https://example.test/submit"),
+                    body: Encoding.UTF8.GetBytes("put-body"));
+
+                var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RedirectMiddleware_RewritesDeleteToGet_On303()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Uri.AbsolutePath == "/delete")
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/after-delete");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.SeeOther,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual(HttpMethod.GET, req.Method);
+                    Assert.IsNull(req.Body);
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectMiddleware();
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(
+                    HttpMethod.DELETE,
+                    new Uri("https://example.test/delete"));
+
+                var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void RedirectMiddleware_PreservesMethodAndBody_On307()
         {
             Task.Run(async () =>
@@ -159,6 +242,48 @@ namespace TurboHTTP.Tests.Middleware
                     HttpMethod.POST,
                     new Uri("https://example.test/submit"),
                     body: Encoding.UTF8.GetBytes("body"));
+
+                var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RedirectMiddleware_PreservesMethodAndBody_On308()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Uri.AbsolutePath == "/submit")
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/result");
+                        return Task.FromResult(new UHttpResponse(
+                            (HttpStatusCode)308,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual(HttpMethod.PUT, req.Method);
+                    Assert.AreEqual("payload", Encoding.UTF8.GetString(req.Body));
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectMiddleware();
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(
+                    HttpMethod.PUT,
+                    new Uri("https://example.test/submit"),
+                    body: Encoding.UTF8.GetBytes("payload"));
 
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
@@ -243,6 +368,47 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.IsNotNull(finalRequestUri);
                 Assert.AreEqual("https://example.test/final?x=1", finalRequestUri.AbsoluteUri);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RedirectMiddleware_InheritsFragment_WhenLocationHasNoFragment()
+        {
+            Task.Run(async () =>
+            {
+                Uri finalRequestUri = null;
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Uri.AbsolutePath == "/start")
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/final");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.Found,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    finalRequestUri = req.Uri;
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectMiddleware();
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start#frag"));
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.IsNotNull(finalRequestUri);
+                Assert.AreEqual("https://example.test/final#frag", finalRequestUri.AbsoluteUri);
             }).GetAwaiter().GetResult();
         }
 

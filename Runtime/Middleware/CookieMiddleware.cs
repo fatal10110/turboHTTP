@@ -65,10 +65,7 @@ namespace TurboHTTP.Middleware
                 {
                     var headers = request.Headers.Clone();
                     var existingCookieHeader = headers.Get("Cookie");
-                    if (string.IsNullOrEmpty(existingCookieHeader))
-                        headers.Set("Cookie", jarCookieHeader);
-                    else
-                        headers.Set("Cookie", existingCookieHeader + "; " + jarCookieHeader);
+                    headers.Set("Cookie", MergeCookieHeaders(existingCookieHeader, jarCookieHeader));
 
                     effectiveRequest = new UHttpRequest(
                         request.Method,
@@ -96,6 +93,62 @@ namespace TurboHTTP.Middleware
             }
 
             return response;
+        }
+
+        private static string MergeCookieHeaders(string existingCookieHeader, string jarCookieHeader)
+        {
+            if (string.IsNullOrWhiteSpace(existingCookieHeader))
+                return jarCookieHeader;
+
+            if (string.IsNullOrWhiteSpace(jarCookieHeader))
+                return existingCookieHeader;
+
+            var existingNames = new HashSet<string>(StringComparer.Ordinal);
+            var mergedTokens = new List<string>();
+
+            AppendCookieHeaderTokens(existingCookieHeader, existingNames, mergedTokens, onlyAppendNewNames: false);
+            AppendCookieHeaderTokens(jarCookieHeader, existingNames, mergedTokens, onlyAppendNewNames: true);
+
+            if (mergedTokens.Count == 0)
+                return null;
+
+            return string.Join("; ", mergedTokens);
+        }
+
+        private static void AppendCookieHeaderTokens(
+            string cookieHeader,
+            HashSet<string> existingNames,
+            List<string> mergedTokens,
+            bool onlyAppendNewNames)
+        {
+            if (string.IsNullOrWhiteSpace(cookieHeader))
+                return;
+
+            var tokens = cookieHeader.Split(';');
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                var token = tokens[i].Trim();
+                if (token.Length == 0)
+                    continue;
+
+                var cookieName = ExtractCookieName(token);
+                if (onlyAppendNewNames && existingNames.Contains(cookieName))
+                    continue;
+
+                if (!onlyAppendNewNames)
+                    existingNames.Add(cookieName);
+
+                mergedTokens.Add(token);
+            }
+        }
+
+        private static string ExtractCookieName(string cookieToken)
+        {
+            int equalsIndex = cookieToken.IndexOf('=');
+            if (equalsIndex <= 0)
+                return cookieToken.Trim();
+
+            return cookieToken.Substring(0, equalsIndex).Trim();
         }
 
         public void Dispose()

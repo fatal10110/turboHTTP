@@ -33,6 +33,7 @@ namespace TurboHTTP.Cache
     public sealed class CacheMiddleware : IHttpMiddleware, IDisposable
     {
         private const string EmptyVaryKeyToken = "~";
+        private const int MaxVaryHeaders = 32;
 
         private static readonly string[] SensitiveVaryHeaders =
         {
@@ -40,14 +41,17 @@ namespace TurboHTTP.Cache
             "cookie"
         };
 
-        private static readonly string[] RevalidationMergeHeaders =
+        private static readonly string[] HopByHopHeaderNames =
         {
-            "Cache-Control",
-            "ETag",
-            "Last-Modified",
-            "Expires",
-            "Date",
-            "Vary"
+            "Connection",
+            "Keep-Alive",
+            "Proxy-Authenticate",
+            "Proxy-Authorization",
+            "Proxy-Connection",
+            "TE",
+            "Trailer",
+            "Transfer-Encoding",
+            "Upgrade"
         };
 
         private readonly CachePolicy _policy;
@@ -55,6 +59,7 @@ namespace TurboHTTP.Cache
         private readonly object _indexLock = new object();
         // Variant index is an in-memory accelerator only. Entries are ref-counted per
         // signature and cleaned up as storage keys are removed or invalidated.
+        // This index is intentionally not persisted across process restarts in v1.
         private readonly Dictionary<string, VariantBucket> _variantIndex = new Dictionary<string, VariantBucket>(StringComparer.Ordinal);
         private int _disposed;
 
@@ -162,11 +167,26 @@ namespace TurboHTTP.Cache
             if (!_policy.EnableCache)
                 return await next(request, context, cancellationToken).ConfigureAwait(false);
 
+            var requestCacheControl = ParseCacheControl(request.Headers.GetValues("Cache-Control"));
+            var forceRevalidation = requestCacheControl.NoCache || HasPragmaNoCache(request.Headers);
             var baseKey = BuildBaseKey(request.Method, request.Uri);
             var lookup = await TryLookupAsync(request, baseKey, cancellationToken).ConfigureAwait(false);
             if (lookup.Entry != null)
             {
-                if (lookup.Entry.MustRevalidate || lookup.Entry.IsExpired(DateTime.UtcNow))
+                if (forceRevalidation)
+                {
+                    if (_policy.EnableRevalidation && lookup.Entry.CanRevalidate())
+                    {
+                        return await RevalidateAsync(
+                            request,
+                            context,
+                            next,
+                            cancellationToken,
+                            baseKey,
+                            lookup).ConfigureAwait(false);
+                    }
+                }
+                else if (lookup.Entry.MustRevalidate || lookup.Entry.IsExpired(DateTime.UtcNow))
                 {
                     if (_policy.EnableRevalidation && lookup.Entry.CanRevalidate())
                     {
@@ -229,10 +249,14 @@ namespace TurboHTTP.Cache
 
             if (_policy.InvalidateOnUnsafeMethods && !response.IsError && (int)response.StatusCode < 500)
             {
-                await InvalidateUriAsync(request.Uri, cancellationToken).ConfigureAwait(false);
+                var invalidationTargets = CollectInvalidationTargets(request.Uri, response.Headers);
+                for (int i = 0; i < invalidationTargets.Count; i++)
+                    await InvalidateUriAsync(invalidationTargets[i], cancellationToken).ConfigureAwait(false);
+
                 context.RecordEvent("CacheInvalidated", new Dictionary<string, object>
                 {
-                    { "uri", NormalizeUri(request.Uri) }
+                    { "uri", NormalizeUri(request.Uri) },
+                    { "count", invalidationTargets.Count }
                 });
             }
 
@@ -363,10 +387,13 @@ namespace TurboHTTP.Cache
 
         private PreparedCacheEntry PrepareEntryForStorage(UHttpRequest request, UHttpResponse response, string baseKey)
         {
-            if (!_policy.AllowSetCookieResponses && response.Headers.Contains("Set-Cookie"))
+            var responseHeaders = response.Headers.Clone();
+            StripHopByHopHeaders(responseHeaders);
+
+            if (!_policy.AllowSetCookieResponses && responseHeaders.Contains("Set-Cookie"))
                 return default;
 
-            var responseCacheControl = ParseCacheControl(response.Headers.GetValues("Cache-Control"));
+            var responseCacheControl = ParseCacheControl(responseHeaders.GetValues("Cache-Control"));
             var requestCacheControl = ParseCacheControl(request.Headers.GetValues("Cache-Control"));
 
             if (!_policy.AllowCacheForAuthorizedRequests
@@ -382,7 +409,7 @@ namespace TurboHTTP.Cache
             if (responseCacheControl.Private && !_policy.AllowPrivateResponses)
                 return default;
 
-            if (!TryResolveVary(response.Headers, out var varyHeaders, out var varyIsWildcard))
+            if (!TryResolveVary(responseHeaders, out var varyHeaders, out var varyIsWildcard))
                 return default;
             if (varyIsWildcard)
                 return default;
@@ -397,10 +424,10 @@ namespace TurboHTTP.Cache
             }
 
             var nowUtc = DateTime.UtcNow;
-            var expiresAtUtc = ResolveExpiry(nowUtc, responseCacheControl, response.Headers);
-            var eTag = response.Headers.Get("ETag");
-            var lastModified = response.Headers.Get("Last-Modified");
-            var pragmaNoCache = HasPragmaNoCache(response.Headers);
+            var expiresAtUtc = ResolveExpiry(nowUtc, responseCacheControl, responseHeaders, isSharedCache: false);
+            var eTag = responseHeaders.Get("ETag");
+            var lastModified = responseHeaders.Get("Last-Modified");
+            var pragmaNoCache = HasPragmaNoCache(responseHeaders);
             var mustRevalidate = responseCacheControl.NoCache || responseCacheControl.MustRevalidate || pragmaNoCache;
 
             if (!expiresAtUtc.HasValue)
@@ -427,7 +454,7 @@ namespace TurboHTTP.Cache
             var entry = new CacheEntry(
                 key: storageKey,
                 statusCode: response.StatusCode,
-                headers: response.Headers,
+                headers: responseHeaders,
                 body: bodySnapshot,
                 cachedAtUtc: nowUtc,
                 expiresAtUtc: expiresAtUtc,
@@ -448,9 +475,8 @@ namespace TurboHTTP.Cache
             string baseKey)
         {
             var mergedHeaders = existing.Headers.Clone();
-            for (int i = 0; i < RevalidationMergeHeaders.Length; i++)
+            foreach (var name in notModifiedResponse.Headers.Names)
             {
-                var name = RevalidationMergeHeaders[i];
                 if (!notModifiedResponse.Headers.Contains(name))
                     continue;
 
@@ -459,6 +485,8 @@ namespace TurboHTTP.Cache
                 for (int j = 0; j < values.Count; j++)
                     mergedHeaders.Add(name, values[j]);
             }
+
+            StripHopByHopHeaders(mergedHeaders);
 
             if (!TryResolveVary(mergedHeaders, out var varyHeaders, out var varyIsWildcard))
                 return default;
@@ -476,7 +504,7 @@ namespace TurboHTTP.Cache
 
             var nowUtc = DateTime.UtcNow;
             var cacheControl = ParseCacheControl(mergedHeaders.GetValues("Cache-Control"));
-            var expiresAtUtc = ResolveExpiry(nowUtc, cacheControl, mergedHeaders);
+            var expiresAtUtc = ResolveExpiry(nowUtc, cacheControl, mergedHeaders, isSharedCache: false);
             var eTag = mergedHeaders.Get("ETag");
             var lastModified = mergedHeaders.Get("Last-Modified");
             var mustRevalidate = cacheControl.NoCache || cacheControl.MustRevalidate || HasPragmaNoCache(mergedHeaders);
@@ -519,7 +547,11 @@ namespace TurboHTTP.Cache
 
         private UHttpResponse CreateResponseFromEntry(CacheEntry entry, UHttpRequest request, RequestContext context, string provenance)
         {
+            // Clone for response immutability. Combined with storage-side cloning this is a
+            // deliberate v1 tradeoff; can be optimized with ownership transfer later.
             var headers = entry.Headers.Clone();
+            var ageSeconds = ComputeCurrentAgeSeconds(entry, DateTime.UtcNow);
+            headers.Set("Age", ageSeconds.ToString(CultureInfo.InvariantCulture));
             headers.Set("X-Cache", provenance);
 
             return new UHttpResponse(
@@ -606,6 +638,16 @@ namespace TurboHTTP.Cache
                             continue;
                         }
 
+                        if (directive.StartsWith("no-cache", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var remainder = directive.Substring("no-cache".Length).TrimStart();
+                            if (remainder.Length > 0 && remainder[0] != '=')
+                                continue;
+
+                            noCache = true;
+                            continue;
+                        }
+
                         if (string.Equals(directive, "private", StringComparison.OrdinalIgnoreCase))
                         {
                             @private = true;
@@ -656,19 +698,30 @@ namespace TurboHTTP.Cache
             return new CacheControlDirectives(noStore, noCache, @private, @public, mustRevalidate, sharedMaxAge, maxAge);
         }
 
-        private static DateTime? ResolveExpiry(DateTime nowUtc, CacheControlDirectives cacheControl, HttpHeaders headers)
+        private static DateTime? ResolveExpiry(
+            DateTime nowUtc,
+            CacheControlDirectives cacheControl,
+            HttpHeaders headers,
+            bool isSharedCache)
         {
-            // RFC precedence: s-maxage overrides max-age, both override Expires.
-            if (cacheControl.SharedMaxAge.HasValue)
-                return nowUtc.Add(cacheControl.SharedMaxAge.Value);
+            // RFC 9111 Section 5.2.2.10: s-maxage applies only to shared caches.
+            var freshnessLifetime = (isSharedCache && cacheControl.SharedMaxAge.HasValue)
+                ? cacheControl.SharedMaxAge
+                : cacheControl.MaxAge;
 
-            if (cacheControl.MaxAge.HasValue)
-                return nowUtc.Add(cacheControl.MaxAge.Value);
+            if (freshnessLifetime.HasValue)
+            {
+                var upstreamAgeSeconds = ParseAgeSeconds(headers);
+                var remainingLifetime = freshnessLifetime.Value - TimeSpan.FromSeconds(upstreamAgeSeconds);
+                return nowUtc.Add(remainingLifetime);
+            }
 
             var expiresValue = headers.Get("Expires");
             if (string.IsNullOrWhiteSpace(expiresValue))
                 return null;
 
+            // Private-cache simplification for v1: interpret Expires as an absolute instant.
+            // We intentionally do not adjust freshness via (Expires - Date) correction here.
             expiresValue = expiresValue.Trim();
             if (expiresValue == "0" || expiresValue == "-1")
                 return nowUtc.AddSeconds(-1);
@@ -697,6 +750,132 @@ namespace TurboHTTP.Cache
             return false;
         }
 
+        private static List<Uri> CollectInvalidationTargets(Uri requestUri, HttpHeaders responseHeaders)
+        {
+            var results = new List<Uri>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            AddInvalidationTarget(results, seen, requestUri);
+            AddHeaderInvalidationTargets(results, seen, requestUri, responseHeaders.GetValues("Location"));
+            AddHeaderInvalidationTargets(results, seen, requestUri, responseHeaders.GetValues("Content-Location"));
+
+            return results;
+        }
+
+        private static void AddHeaderInvalidationTargets(
+            List<Uri> results,
+            HashSet<string> seen,
+            Uri requestUri,
+            IReadOnlyList<string> values)
+        {
+            for (int i = 0; i < values.Count; i++)
+            {
+                var value = values[i];
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+
+                if (!Uri.TryCreate(requestUri, value.Trim(), out var resolved))
+                    continue;
+
+                if (!IsSameAuthority(requestUri, resolved))
+                    continue;
+
+                AddInvalidationTarget(results, seen, resolved);
+            }
+        }
+
+        private static void AddInvalidationTarget(List<Uri> results, HashSet<string> seen, Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri)
+                return;
+
+            var key = uri.AbsoluteUri;
+            if (!seen.Add(key))
+                return;
+
+            results.Add(uri);
+        }
+
+        private static bool IsSameAuthority(Uri left, Uri right)
+        {
+            if (left == null || right == null || !left.IsAbsoluteUri || !right.IsAbsoluteUri)
+                return false;
+
+            return string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase)
+                   && string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase)
+                   && left.Port == right.Port;
+        }
+
+        private static void StripHopByHopHeaders(HttpHeaders headers)
+        {
+            var connectionTokens = new List<string>();
+            var connectionValues = headers.GetValues("Connection");
+            for (int i = 0; i < connectionValues.Count; i++)
+            {
+                var line = connectionValues[i];
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                var tokens = line.Split(',');
+                for (int j = 0; j < tokens.Length; j++)
+                {
+                    var token = tokens[j].Trim();
+                    if (token.Length > 0)
+                        connectionTokens.Add(token);
+                }
+            }
+
+            for (int i = 0; i < HopByHopHeaderNames.Length; i++)
+                headers.Remove(HopByHopHeaderNames[i]);
+
+            for (int i = 0; i < connectionTokens.Count; i++)
+                headers.Remove(connectionTokens[i]);
+        }
+
+        private static int ParseAgeSeconds(HttpHeaders headers)
+        {
+            if (headers == null)
+                return 0;
+
+            var values = headers.GetValues("Age");
+            for (int i = 0; i < values.Count; i++)
+            {
+                var raw = values[i];
+                if (string.IsNullOrWhiteSpace(raw))
+                    continue;
+
+                if (!long.TryParse(raw.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+                    continue;
+
+                if (parsed <= 0)
+                    return 0;
+
+                if (parsed >= int.MaxValue)
+                    return int.MaxValue;
+
+                return (int)parsed;
+            }
+
+            return 0;
+        }
+
+        private static int ComputeCurrentAgeSeconds(CacheEntry entry, DateTime nowUtc)
+        {
+            var correctedInitialAge = ParseAgeSeconds(entry.Headers);
+            var residentTimeSeconds = nowUtc <= entry.CachedAtUtc
+                ? 0L
+                : (long)Math.Floor((nowUtc - entry.CachedAtUtc).TotalSeconds);
+
+            var total = (long)correctedInitialAge + residentTimeSeconds;
+            if (total <= 0)
+                return 0;
+
+            if (total >= int.MaxValue)
+                return int.MaxValue;
+
+            return (int)total;
+        }
+
         private static bool TryResolveVary(HttpHeaders headers, out string[] varyHeaders, out bool wildcard)
         {
             wildcard = false;
@@ -723,7 +902,12 @@ namespace TurboHTTP.Cache
                         return true;
                     }
 
-                    set.Add(token.ToLowerInvariant());
+                    var normalizedToken = token.ToLowerInvariant();
+                    if (set.Add(normalizedToken) && set.Count > MaxVaryHeaders)
+                    {
+                        varyHeaders = Array.Empty<string>();
+                        return false;
+                    }
                 }
             }
 
@@ -815,16 +999,7 @@ namespace TurboHTTP.Cache
 
                 var normalizedSignature = signature ?? string.Empty;
                 if (bucket.SignatureByStorageKey.TryGetValue(storageKey, out var previousSignature))
-                {
-                    if (string.Equals(previousSignature, normalizedSignature, StringComparison.Ordinal))
-                    {
-                        bucket.StorageKeys.Add(storageKey);
-                        bucket.Signatures.Add(normalizedSignature);
-                        return;
-                    }
-
                     ReleaseSignatureRefUnsafe(bucket, previousSignature);
-                }
 
                 bucket.SignatureByStorageKey[storageKey] = normalizedSignature;
                 AddSignatureRefUnsafe(bucket, normalizedSignature);
@@ -872,19 +1047,95 @@ namespace TurboHTTP.Cache
             if (!uri.IsAbsoluteUri)
                 throw new ArgumentException("Cache key URI must be absolute.", nameof(uri));
 
-            var scheme = uri.Scheme.ToLowerInvariant();
-            var host = uri.Host.ToLowerInvariant();
+            var scheme = NormalizeCaseInsensitiveUriToken(uri.Scheme);
+            var host = NormalizeCaseInsensitiveUriToken(uri.Host);
             var portPart = IsDefaultPort(scheme, uri.Port) ? string.Empty : ":" + uri.Port.ToString(CultureInfo.InvariantCulture);
-            var path = NormalizePath(uri.AbsolutePath);
-            var query = NormalizeQuery(uri.Query);
+            var absolutePath = uri.AbsolutePath;
+            var path = NeedsPathNormalization(absolutePath) ? NormalizePath(absolutePath) : absolutePath;
 
-            return scheme + "://" + host + portPart + path + query;
+            var rawQuery = uri.Query;
+            var query = NeedsQueryNormalization(rawQuery)
+                ? NormalizeQuery(rawQuery)
+                : NormalizeQueryFastPath(rawQuery);
+
+            var result = new StringBuilder(scheme.Length + host.Length + portPart.Length + path.Length + query.Length + 3);
+            result.Append(scheme);
+            result.Append("://");
+            result.Append(host);
+            result.Append(portPart);
+            result.Append(path);
+            result.Append(query);
+            return result.ToString();
         }
 
         private static bool IsDefaultPort(string scheme, int port)
         {
             return (scheme == "http" && port == 80)
                    || (scheme == "https" && port == 443);
+        }
+
+        private static string NormalizeCaseInsensitiveUriToken(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return string.Empty;
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                var c = value[i];
+                if (c >= 'A' && c <= 'Z')
+                    return value.ToLowerInvariant();
+            }
+
+            return value;
+        }
+
+        private static bool NeedsPathNormalization(string path)
+        {
+            if (string.IsNullOrEmpty(path) || path[0] != '/')
+                return true;
+
+            if (path.IndexOf('%') >= 0)
+                return true;
+
+            if (path.IndexOf("//", StringComparison.Ordinal) >= 0)
+                return true;
+
+            if (path.IndexOf("/./", StringComparison.Ordinal) >= 0
+                || path.IndexOf("/../", StringComparison.Ordinal) >= 0
+                || path.EndsWith("/.", StringComparison.Ordinal)
+                || path.EndsWith("/..", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool NeedsQueryNormalization(string query)
+        {
+            if (string.IsNullOrEmpty(query) || query == "?")
+                return false;
+
+            int start = query[0] == '?' ? 1 : 0;
+            for (int i = start; i < query.Length; i++)
+            {
+                var c = query[i];
+                if (c == '&' || c == '%')
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static string NormalizeQueryFastPath(string query)
+        {
+            if (string.IsNullOrEmpty(query) || query == "?")
+                return string.Empty;
+
+            if (query[0] == '?')
+                return query;
+
+            return "?" + query;
         }
 
         private static string NormalizePath(string path)

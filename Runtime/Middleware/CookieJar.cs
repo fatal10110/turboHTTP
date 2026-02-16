@@ -20,6 +20,75 @@ namespace TurboHTTP.Middleware
     /// </summary>
     public sealed class CookieJar : IDisposable
     {
+        private static readonly HashSet<string> CommonSecondLevelPublicSuffixes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "ac",
+            "co",
+            "com",
+            "edu",
+            "gov",
+            "net",
+            "org",
+            "ne",
+            "or",
+            "go",
+            "mil"
+        };
+
+        // Heuristic-only denylist for common multi-label public suffixes.
+        // This is not a complete PSL implementation; add/adjust entries as needed.
+        private static readonly HashSet<string> KnownMultiLabelPublicSuffixes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "ac.jp",
+            "ac.in",
+            "ac.nz",
+            "ac.uk",
+            "co.in",
+            "co.jp",
+            "co.nz",
+            "co.uk",
+            "com.au",
+            "com.br",
+            "com.cn",
+            "com.mx",
+            "com.sg",
+            "com.tr",
+            "edu.au",
+            "edu.cn",
+            "edu.sg",
+            "edu.tr",
+            "firm.in",
+            "gen.in",
+            "gob.mx",
+            "go.jp",
+            "gov.cn",
+            "gov.sg",
+            "gov.tr",
+            "gov.au",
+            "gov.uk",
+            "ind.in",
+            "ne.jp",
+            "net.br",
+            "net.cn",
+            "net.in",
+            "net.au",
+            "net.nz",
+            "net.sg",
+            "net.tr",
+            "nic.in",
+            "org.br",
+            "org.cn",
+            "org.in",
+            "org.mx",
+            "org.au",
+            "org.nz",
+            "org.uk",
+            "org.sg",
+            "org.tr",
+            "res.in",
+            "sch.uk"
+        };
+
         private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
         private readonly Dictionary<string, CookieRecord> _cookies = new Dictionary<string, CookieRecord>(StringComparer.Ordinal);
         private readonly int _maxCookiesPerDomain;
@@ -153,7 +222,7 @@ namespace TurboHTTP.Middleware
 
             var nowUtc = EnsureUtcNow(utcNowOverride);
 
-            _lock.EnterReadLock();
+            _lock.EnterWriteLock();
             try
             {
                 var host = NormalizeDomain(requestUri.Host);
@@ -161,10 +230,18 @@ namespace TurboHTTP.Middleware
                 bool isHttps = string.Equals(requestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
 
                 var matches = new List<CookieRecord>();
-                foreach (var cookie in _cookies.Values)
+                List<string> expiredKeys = null;
+                foreach (var pair in _cookies)
                 {
+                    var cookie = pair.Value;
                     if (cookie.ExpiresAtUtc.HasValue && cookie.ExpiresAtUtc.Value <= nowUtc)
+                    {
+                        if (expiredKeys == null)
+                            expiredKeys = new List<string>();
+
+                        expiredKeys.Add(pair.Key);
                         continue;
+                    }
 
                     if (cookie.Secure && !isHttps)
                         continue;
@@ -178,7 +255,14 @@ namespace TurboHTTP.Middleware
                     if (!SameSiteAllows(cookie.SameSite, method, isCrossSiteRequest))
                         continue;
 
+                    cookie.LastAccessedUtc = nowUtc;
                     matches.Add(cookie);
+                }
+
+                if (expiredKeys != null)
+                {
+                    for (int i = 0; i < expiredKeys.Count; i++)
+                        _cookies.Remove(expiredKeys[i]);
                 }
 
                 if (matches.Count == 0)
@@ -201,7 +285,7 @@ namespace TurboHTTP.Middleware
             }
             finally
             {
-                _lock.ExitReadLock();
+                _lock.ExitWriteLock();
             }
         }
 
@@ -242,6 +326,8 @@ namespace TurboHTTP.Middleware
             bool hostOnly = true;
             string path = DefaultPath(requestUri.AbsolutePath);
             DateTime? expiresUtc = null;
+            DateTime? maxAgeExpiresUtc = null;
+            bool hasMaxAge = false;
             bool secure = false;
             bool httpOnly = false;
             CookieSameSite sameSite = CookieSameSite.Unspecified;
@@ -302,13 +388,15 @@ namespace TurboHTTP.Middleware
                 {
                     if (long.TryParse(attrValue, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var seconds))
                     {
+                        hasMaxAge = true;
                         if (seconds <= 0)
                         {
+                            maxAgeExpiresUtc = nowUtc;
                             shouldDelete = true;
                         }
                         else
                         {
-                            expiresUtc = nowUtc.AddSeconds(seconds);
+                            maxAgeExpiresUtc = AddSecondsClamped(nowUtc, seconds);
                         }
                     }
 
@@ -333,8 +421,14 @@ namespace TurboHTTP.Middleware
                 }
             }
 
+            if (hasMaxAge)
+                expiresUtc = maxAgeExpiresUtc;
+
             if (expiresUtc.HasValue && expiresUtc.Value <= nowUtc)
                 shouldDelete = true;
+
+            if (secure && !string.Equals(requestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+                return false;
 
             cookie = new CookieRecord
             {
@@ -463,7 +557,9 @@ namespace TurboHTTP.Middleware
             if (host.Length <= cookieDomain.Length)
                 return false;
 
-            return host.EndsWith("." + cookieDomain, StringComparison.Ordinal);
+            int suffixStart = host.Length - cookieDomain.Length;
+            return host[suffixStart - 1] == '.'
+                   && host.EndsWith(cookieDomain, StringComparison.Ordinal);
         }
 
         private static bool PathMatches(string requestPath, string cookiePath)
@@ -593,8 +689,33 @@ namespace TurboHTTP.Middleware
             if (string.IsNullOrEmpty(normalizedDomain))
                 return true;
 
-            // Minimal public suffix guard: reject single-label cookie domains like "com".
-            return normalizedDomain.IndexOf('.') < 0;
+            var labels = normalizedDomain.Split('.');
+            if (labels.Length < 2)
+                return true;
+
+            if (KnownMultiLabelPublicSuffixes.Contains(normalizedDomain))
+                return true;
+
+            if (labels.Length == 2
+                && labels[1].Length == 2
+                && CommonSecondLevelPublicSuffixes.Contains(labels[0]))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static DateTime AddSecondsClamped(DateTime utcNow, long seconds)
+        {
+            try
+            {
+                return utcNow.AddSeconds(seconds);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc);
+            }
         }
 
         private void ThrowIfDisposed()

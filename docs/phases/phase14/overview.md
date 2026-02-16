@@ -6,14 +6,14 @@ Phase 14 is split into 8 roadmap sub-phases. Transport and platform reliability 
 
 | Sub-Phase | Name | Files | Depends On |
 |---|---|---|---|
-| [14.1](phase-14.1-happy-eyeballs-rfc8305.md) | Happy Eyeballs (RFC 8305) | 2 new, 1 modified | Phase 12 |
-| [14.2](phase-14.2-proxy-support.md) | Proxy Support | 3 new, 1 modified | 14.1 |
-| [14.3](phase-14.3-background-networking-mobile.md) | Background Networking on Mobile | 3 new, 2 modified | Phase 11 |
-| [14.4](phase-14.4-adaptive-network-policies.md) | Adaptive Network Policies | 2 new, 1 modified | 14.1 |
-| [14.5](phase-14.5-oauth2-openid-connect.md) | OAuth 2.0 / OpenID Connect | 4 new, 2 modified | Phase 12 |
-| [14.6](phase-14.6-request-response-interceptors.md) | Request/Response Interceptors | 1 new, 2 modified | Phase 12 |
-| [14.7](phase-14.7-mock-server-testing.md) | Mock Server for Testing | 3 new, 1 modified | Phase 7 |
-| [14.8](phase-14.8-plugin-system.md) | Plugin System | 2 new, 1 modified | 14.6 |
+| [14.1](phase-14.1-happy-eyeballs-rfc8305.md) | Happy Eyeballs (RFC 8305) | 3 new, 1 modified | Phase 12 |
+| [14.2](phase-14.2-proxy-support.md) | Proxy Support | 6 new, 2 modified | 14.1 |
+| [14.3](phase-14.3-background-networking-mobile.md) | Background Networking on Mobile | 6 new, 2 modified | Phase 11 |
+| [14.4](phase-14.4-adaptive-network-policies.md) | Adaptive Network Policies | 3 new, 1 modified | 14.1 |
+| [14.5](phase-14.5-oauth2-openid-connect.md) | OAuth 2.0 / OpenID Connect | 6 new, 2 modified | Phase 12 |
+| [14.6](phase-14.6-request-response-interceptors.md) | Request/Response Interceptors | 2 new, 2 modified | Phase 12 |
+| [14.7](phase-14.7-mock-server-testing.md) | Mock Server for Testing | 4 new, 1 modified | Phase 7 |
+| [14.8](phase-14.8-plugin-system.md) | Plugin System | 3 new, 1 modified | 14.6 |
 
 ## Completed and Transferred Item Index
 
@@ -77,18 +77,18 @@ Sub-phases 14.3, 14.5, and 14.7 can run in parallel with the 14.1 transport trac
 5. Extensibility APIs must not bypass core safety/privacy defaults silently.
 6. All new roadmap features require deterministic tests before graduation to default-on behavior.
 
-## All Files (19 new, 11 modified planned)
+## All Files (33 new, 12 modified planned)
 
 | Area | Planned New Files | Planned Modified Files |
 |---|---|---|
-| 14.1 Happy Eyeballs | 2 | 1 |
-| 14.2 Proxy Support | 3 | 1 |
-| 14.3 Background Networking | 3 | 2 |
-| 14.4 Adaptive Policies | 2 | 1 |
-| 14.5 OAuth/OIDC | 4 | 2 |
-| 14.6 Interceptors | 1 | 2 |
-| 14.7 Mock Server | 3 | 1 |
-| 14.8 Plugin System | 2 | 1 |
+| 14.1 Happy Eyeballs | 3 | 1 |
+| 14.2 Proxy Support | 6 | 2 |
+| 14.3 Background Networking | 6 | 2 |
+| 14.4 Adaptive Policies | 3 | 1 |
+| 14.5 OAuth/OIDC | 6 | 2 |
+| 14.6 Interceptors | 2 | 2 |
+| 14.7 Mock Server | 4 | 1 |
+| 14.8 Plugin System | 3 | 1 |
 
 ## Post-Implementation
 

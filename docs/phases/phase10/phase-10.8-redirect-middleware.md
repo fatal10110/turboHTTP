@@ -14,6 +14,7 @@ Required behavior:
 
 1. Enforce `UHttpClientOptions.FollowRedirects`; bypass redirect handling when disabled.
 2. Handle redirect status codes `301`, `302`, `303`, `307`, and `308`.
+   - `300 Multiple Choices` is intentionally not auto-followed.
 3. Enforce `UHttpClientOptions.MaxRedirects` (default `10`) with deterministic failure when exceeded.
 4. Resolve relative `Location` headers against the current request URI.
 5. Apply method/body rules:
