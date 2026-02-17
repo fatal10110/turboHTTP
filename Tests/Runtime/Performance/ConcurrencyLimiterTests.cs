@@ -1,9 +1,13 @@
 using System;
+using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Performance;
+using UnityEngine.TestTools;
 
 namespace TurboHTTP.Tests.Performance
 {
@@ -220,6 +224,57 @@ namespace TurboHTTP.Tests.Performance
             }).GetAwaiter().GetResult();
         }
 
+        [UnityTest]
+        public IEnumerator Dispose_AfterSuccessfulAcquireRelease_Finalizes()
+        {
+            var task = RunAsync();
+            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
+            RethrowIfFaulted(task);
+
+            async Task RunAsync()
+            {
+                var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 1, maxTotalConnections: 1);
+
+                await limiter.AcquireAsync("host1");
+                limiter.Release("host1");
+                limiter.Dispose();
+
+                var disposedField = typeof(ConcurrencyLimiter).GetField(
+                    "_disposed", BindingFlags.NonPublic | BindingFlags.Instance);
+                var disposedValue = (int)disposedField.GetValue(limiter);
+
+                Assert.AreEqual(1, disposedValue);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator AcquireAsync_EvictsIdleHostSemaphores_WhenCapExceeded()
+        {
+            var task = RunAsync();
+            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
+            RethrowIfFaulted(task);
+
+            async Task RunAsync()
+            {
+                using var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 1, maxTotalConnections: 2048);
+                var semaphoresField = typeof(ConcurrencyLimiter).GetField(
+                    "_hostSemaphores", BindingFlags.NonPublic | BindingFlags.Instance);
+                var semaphores = (ConcurrentDictionary<string, SemaphoreSlim>)semaphoresField.GetValue(limiter);
+
+                for (int i = 0; i < 1100; i++)
+                {
+                    semaphores.TryAdd($"host-{i}", new SemaphoreSlim(1, 1));
+                }
+
+                Assert.Greater(semaphores.Count, 1024);
+
+                await limiter.AcquireAsync("active-host");
+                limiter.Release("active-host");
+
+                Assert.LessOrEqual(semaphores.Count, 1024);
+            }
+        }
+
         [Test]
         public void ConcurrentAcquireRelease_IsThreadSafe()
         {
@@ -245,6 +300,14 @@ namespace TurboHTTP.Tests.Performance
                 await Task.WhenAll(tasks);
                 // If we get here without deadlock or exception, the test passes
             }).GetAwaiter().GetResult();
+        }
+
+        private static void RethrowIfFaulted(Task task)
+        {
+            if (!task.IsFaulted)
+                return;
+
+            throw task.Exception?.GetBaseException() ?? new Exception("Task failed without an exception.");
         }
     }
 }

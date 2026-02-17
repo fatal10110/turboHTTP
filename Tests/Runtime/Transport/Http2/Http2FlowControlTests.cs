@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -8,6 +9,7 @@ using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http2;
+using UnityEngine.TestTools;
 
 namespace TurboHTTP.Tests.Transport.Http2
 {
@@ -173,6 +175,62 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();
+        }
+
+        [UnityTest]
+        public IEnumerator WindowUpdate_Zero_Stream_SendsRstStreamAndKeepsConnectionAlive()
+        {
+            var task = RunAsync();
+            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
+            RethrowIfFaulted(task);
+
+            async Task RunAsync()
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                // Open stream 1.
+                var request1 = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/one"));
+                var context1 = new RequestContext(request1);
+                var task1 = conn.SendRequestAsync(request1, context1, cts.Token);
+                var headers1 = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId1 = headers1.StreamId;
+
+                // Invalid stream-level WINDOW_UPDATE (increment = 0) should be a stream error.
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.WindowUpdate,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = streamId1,
+                    Payload = MakeWindowUpdatePayload(0),
+                    Length = 4
+                }, cts.Token);
+
+                var rst = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.RstStream, rst.Type);
+                Assert.AreEqual(streamId1, rst.StreamId);
+
+                uint rstError = ((uint)rst.Payload[0] << 24) | ((uint)rst.Payload[1] << 16) |
+                                ((uint)rst.Payload[2] << 8) | rst.Payload[3];
+                Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, rstError);
+                AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await task1);
+
+                // Connection should still be usable for new streams.
+                var request2 = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/two"));
+                var context2 = new RequestContext(request2);
+                var task2 = conn.SendRequestAsync(request2, context2, cts.Token);
+                var headers2 = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId2 = headers2.StreamId;
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId2, 200, endStream: true), cts.Token);
+                var response2 = await task2;
+                Assert.AreEqual(HttpStatusCode.OK, response2.StatusCode);
+                Assert.IsTrue(conn.IsAlive);
+
+                conn.Dispose();
+            }
         }
 
         [Test]
@@ -604,6 +662,13 @@ namespace TurboHTTP.Tests.Transport.Http2
                 conn.Dispose();
             }).GetAwaiter().GetResult();
         }
+
+        private static void RethrowIfFaulted(Task task)
+        {
+            if (!task.IsFaulted)
+                return;
+
+            throw task.Exception?.GetBaseException() ?? new Exception("Task failed without an exception.");
+        }
     }
 }
-

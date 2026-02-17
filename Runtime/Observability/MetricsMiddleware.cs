@@ -13,6 +13,7 @@ namespace TurboHTTP.Observability
     {
         private readonly HttpMetrics _metrics = new HttpMetrics();
         private long _totalResponseTimeMs;
+        private long _completedRequests;
 
         /// <summary>
         /// Access collected metrics. Read access is eventually consistent.
@@ -68,16 +69,9 @@ namespace TurboHTTP.Observability
             finally
             {
                 var elapsedMs = (long)context.Elapsed.TotalMilliseconds;
-                Interlocked.Add(ref _totalResponseTimeMs, elapsedMs);
-                // Eventually consistent average — acceptable for metrics.
-                // Uses atomic Interlocked.Exchange via SetAverageResponseTimeMs
-                // to prevent torn reads on 32-bit IL2CPP.
-                var count = Interlocked.Read(ref _metrics.TotalRequests);
-                if (count > 0)
-                {
-                    _metrics.SetAverageResponseTimeMs(
-                        (double)Interlocked.Read(ref _totalResponseTimeMs) / count);
-                }
+                var totalResponseTime = Interlocked.Add(ref _totalResponseTimeMs, elapsedMs);
+                var completedCount = Interlocked.Increment(ref _completedRequests);
+                _metrics.SetAverageResponseTimeMs((double)totalResponseTime / completedCount);
             }
         }
 
@@ -90,6 +84,7 @@ namespace TurboHTTP.Observability
             Interlocked.Exchange(ref _metrics.SuccessfulRequests, 0);
             Interlocked.Exchange(ref _metrics.FailedRequests, 0);
             Interlocked.Exchange(ref _totalResponseTimeMs, 0);
+            Interlocked.Exchange(ref _completedRequests, 0);
             _metrics.SetAverageResponseTimeMs(0);
             Interlocked.Exchange(ref _metrics.TotalBytesReceived, 0);
             Interlocked.Exchange(ref _metrics.TotalBytesSent, 0);

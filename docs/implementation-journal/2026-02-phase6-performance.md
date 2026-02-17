@@ -35,7 +35,7 @@ Phase 6 (M2 hardening gate) — pooling primitives, concurrency controls, reques
 
 ## Decisions Made
 
-1. **ObjectPool uses array + CAS, not ConcurrentBag** — ConcurrentBag has thread-local storage overhead and unbounded growth under IL2CPP. Array-backed with `Interlocked.CompareExchange` gives deterministic capacity and minimal overhead.
+1. **ObjectPool uses lock-based stack, not ConcurrentBag** — ConcurrentBag has thread-local storage overhead and unbounded growth under IL2CPP. A bounded LIFO stack guarded by `lock` gives deterministic capacity and simple, reliable behavior.
 
 2. **ByteArrayPool wraps ArrayPool<byte>.Shared** — Rather than implementing custom bucketing (as architect review suggested), we use the BCL's battle-tested `ArrayPool<byte>.Shared`. Custom bucketing adds complexity with marginal benefit for Phase 6.
 

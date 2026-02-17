@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace TurboHTTP.Transport.Http2
@@ -89,6 +90,7 @@ namespace TurboHTTP.Transport.Http2
             {
                 (Http2SettingId.EnablePush, EnablePush ? 1u : 0u),
                 (Http2SettingId.MaxConcurrentStreams, 100),
+                (Http2SettingId.InitialWindowSize, (uint)InitialWindowSize),
                 (Http2SettingId.MaxHeaderListSize, (uint)MaxHeaderListSize),
             };
 
@@ -112,12 +114,26 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public static List<(Http2SettingId Id, uint Value)> ParsePayload(byte[] payload)
         {
-            if (payload.Length % Http2Constants.SettingEntrySize != 0)
+            return ParsePayload(payload, payload?.Length ?? 0);
+        }
+
+        /// <summary>
+        /// Parse a SETTINGS frame payload with an explicit payload length.
+        /// Useful when payload bytes are read into a pooled buffer larger than frame length.
+        /// </summary>
+        public static List<(Http2SettingId Id, uint Value)> ParsePayload(byte[] payload, int payloadLength)
+        {
+            if (payload == null)
+                throw new ArgumentNullException(nameof(payload));
+            if (payloadLength < 0 || payloadLength > payload.Length)
+                throw new ArgumentOutOfRangeException(nameof(payloadLength));
+
+            if (payloadLength % Http2Constants.SettingEntrySize != 0)
                 throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
                     "SETTINGS payload length must be a multiple of 6");
 
-            var result = new List<(Http2SettingId, uint)>(payload.Length / Http2Constants.SettingEntrySize);
-            for (int i = 0; i < payload.Length; i += Http2Constants.SettingEntrySize)
+            var result = new List<(Http2SettingId, uint)>(payloadLength / Http2Constants.SettingEntrySize);
+            for (int i = 0; i < payloadLength; i += Http2Constants.SettingEntrySize)
             {
                 var id = (Http2SettingId)((payload[i] << 8) | payload[i + 1]);
                 uint value = ((uint)payload[i + 2] << 24) | ((uint)payload[i + 3] << 16) |

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -96,15 +97,16 @@ namespace TurboHTTP.Observability
 
         private void LogRequest(UHttpRequest request)
         {
-            var message = $"-> {request.Method} {request.Uri}";
+            var messageBuilder = new StringBuilder();
+            messageBuilder.Append("-> ").Append(request.Method).Append(' ').Append(request.Uri);
 
             if (_logLevel >= LogLevel.Detailed && _logHeaders && request.Headers.Count > 0)
             {
-                message += "\n  Headers:";
+                messageBuilder.Append("\n  Headers:");
                 foreach (var header in request.Headers)
                 {
                     var value = ShouldRedact(header.Key) ? "****" : header.Value;
-                    message += $"\n    {header.Key}: {value}";
+                    messageBuilder.Append("\n    ").Append(header.Key).Append(": ").Append(value);
                 }
             }
 
@@ -114,23 +116,35 @@ namespace TurboHTTP.Observability
                 var bodyPreview = System.Text.Encoding.UTF8.GetString(request.Body, 0, previewBytes);
                 if (request.Body.Length > 500)
                     bodyPreview += "...";
-                message += $"\n  Body: {bodyPreview}";
+                messageBuilder.Append("\n  Body: ").Append(bodyPreview);
             }
 
-            _log($"[TurboHTTP] {message}");
+            _log($"[TurboHTTP] {messageBuilder}");
         }
 
         private void LogResponse(UHttpRequest request, UHttpResponse response)
         {
-            var message = $"<- {request.Method} {request.Uri} -> {(int)response.StatusCode} {response.StatusCode} ({response.ElapsedTime.TotalMilliseconds:F0}ms)";
+            var messageBuilder = new StringBuilder();
+            messageBuilder
+                .Append("<- ")
+                .Append(request.Method)
+                .Append(' ')
+                .Append(request.Uri)
+                .Append(" -> ")
+                .Append((int)response.StatusCode)
+                .Append(' ')
+                .Append(response.StatusCode)
+                .Append(" (")
+                .Append(response.ElapsedTime.TotalMilliseconds.ToString("F0"))
+                .Append("ms)");
 
             if (_logLevel >= LogLevel.Detailed && _logHeaders && response.Headers.Count > 0)
             {
-                message += "\n  Headers:";
+                messageBuilder.Append("\n  Headers:");
                 foreach (var header in response.Headers)
                 {
                     var value = ShouldRedact(header.Key) ? "****" : header.Value;
-                    message += $"\n    {header.Key}: {value}";
+                    messageBuilder.Append("\n    ").Append(header.Key).Append(": ").Append(value);
                 }
             }
 
@@ -140,16 +154,16 @@ namespace TurboHTTP.Observability
                 var bodyPreview = System.Text.Encoding.UTF8.GetString(response.Body.Span.Slice(0, previewBytes));
                 if (response.Body.Length > 500)
                     bodyPreview += "...";
-                message += $"\n  Body: {bodyPreview}";
+                messageBuilder.Append("\n  Body: ").Append(bodyPreview);
             }
 
             if (response.IsSuccessStatusCode)
             {
-                _log($"[TurboHTTP] {message}");
+                _log($"[TurboHTTP] {messageBuilder}");
             }
             else
             {
-                _log($"[TurboHTTP][WARN] {message}");
+                _log($"[TurboHTTP][WARN] {messageBuilder}");
             }
         }
 

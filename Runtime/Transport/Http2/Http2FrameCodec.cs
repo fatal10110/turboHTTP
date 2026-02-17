@@ -7,6 +7,32 @@ using System.Threading.Tasks;
 namespace TurboHTTP.Transport.Http2
 {
     /// <summary>
+    /// Lease object for frame payload buffers rented from ArrayPool.
+    /// Dispose returns the rented payload buffer to the pool.
+    /// </summary>
+    internal sealed class Http2FrameReadLease : IDisposable
+    {
+        public Http2Frame Frame { get; }
+        private byte[] _rentedPayload;
+
+        internal Http2FrameReadLease(Http2Frame frame, byte[] rentedPayload)
+        {
+            Frame = frame;
+            _rentedPayload = rentedPayload;
+        }
+
+        public void Dispose()
+        {
+            var buffer = _rentedPayload;
+            if (buffer != null)
+            {
+                _rentedPayload = null;
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+    }
+
+    /// <summary>
     /// Reads and writes HTTP/2 frames from/to a stream. RFC 7540 Section 4.1.
     /// NOT thread-safe — callers must serialize access (write lock for writes,
     /// single read loop for reads).
@@ -27,9 +53,35 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// Read a single HTTP/2 frame from the stream.
-        /// Uses reusable header buffer; payload uses ArrayPool for frames > threshold.
+        /// Uses reusable header buffer and materializes exact-size payload for compatibility.
         /// </summary>
         public async Task<Http2Frame> ReadFrameAsync(int maxFrameSize, CancellationToken ct)
+        {
+            using (var frameLease = await ReadFrameLeaseAsync(maxFrameSize, ct))
+            {
+                var frame = frameLease.Frame;
+                if (frame.Length == 0)
+                    return frame;
+
+                // Compatibility API: materialize exact-size payload for callers that keep frames around.
+                var payload = new byte[frame.Length];
+                Buffer.BlockCopy(frame.Payload, 0, payload, 0, frame.Length);
+                return new Http2Frame
+                {
+                    Length = frame.Length,
+                    Type = frame.Type,
+                    Flags = frame.Flags,
+                    StreamId = frame.StreamId,
+                    Payload = payload
+                };
+            }
+        }
+
+        /// <summary>
+        /// Read a single HTTP/2 frame and lease pooled payload storage.
+        /// Callers must Dispose the returned lease after consuming the frame.
+        /// </summary>
+        public async Task<Http2FrameReadLease> ReadFrameLeaseAsync(int maxFrameSize, CancellationToken ct)
         {
             // Reuse pre-allocated header buffer (single-threaded read loop)
             await ReadExactAsync(_readHeaderBuffer, Http2Constants.FrameHeaderSize, ct);
@@ -48,22 +100,17 @@ namespace TurboHTTP.Transport.Http2
             byte[] rentedBuffer = null;
             if (length > 0)
             {
-                // Use ArrayPool for larger payloads to reduce GC pressure
-                // Threshold: 256 bytes - small control frames allocate directly,
-                // larger DATA/HEADERS frames use pool
-                if (length > 256)
+                try
                 {
                     rentedBuffer = ArrayPool<byte>.Shared.Rent(length);
                     await ReadExactAsync(rentedBuffer, length, ct);
-                    // Copy to exact-size array since callers retain the payload
-                    payload = new byte[length];
-                    Buffer.BlockCopy(rentedBuffer, 0, payload, 0, length);
-                    ArrayPool<byte>.Shared.Return(rentedBuffer);
+                    payload = rentedBuffer;
                 }
-                else
+                catch
                 {
-                    payload = new byte[length];
-                    await ReadExactAsync(payload, length, ct);
+                    if (rentedBuffer != null)
+                        ArrayPool<byte>.Shared.Return(rentedBuffer);
+                    throw;
                 }
             }
             else
@@ -71,14 +118,14 @@ namespace TurboHTTP.Transport.Http2
                 payload = Array.Empty<byte>();
             }
 
-            return new Http2Frame
+            return new Http2FrameReadLease(new Http2Frame
             {
                 Length = length,
                 Type = type,
                 Flags = flags,
                 StreamId = streamId,
                 Payload = payload
-            };
+            }, rentedBuffer);
         }
 
         /// <summary>

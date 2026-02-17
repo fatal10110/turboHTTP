@@ -35,6 +35,8 @@ namespace TurboHTTP.Core
         private readonly List<TimelineEvent> _timeline;
         private readonly Dictionary<string, object> _state;
         private readonly object _lock = new object();
+        private TimelineEvent[] _timelineSnapshot;
+        private bool _timelineSnapshotDirty;
 
         public UHttpRequest Request { get; private set; }
 
@@ -44,7 +46,13 @@ namespace TurboHTTP.Core
             {
                 lock (_lock)
                 {
-                    return _timeline.ToArray();
+                    if (_timelineSnapshotDirty)
+                    {
+                        _timelineSnapshot = _timeline.ToArray();
+                        _timelineSnapshotDirty = false;
+                    }
+
+                    return _timelineSnapshot;
                 }
             }
         }
@@ -71,6 +79,8 @@ namespace TurboHTTP.Core
             _stopwatch = Stopwatch.StartNew();
             _timeline = new List<TimelineEvent>();
             _state = new Dictionary<string, object>();
+            _timelineSnapshot = Array.Empty<TimelineEvent>();
+            _timelineSnapshotDirty = false;
         }
 
         /// <summary>
@@ -82,6 +92,7 @@ namespace TurboHTTP.Core
             lock (_lock)
             {
                 _timeline.Add(evt);
+                _timelineSnapshotDirty = true;
             }
         }
 
@@ -138,6 +149,8 @@ namespace TurboHTTP.Core
             lock (_lock)
             {
                 _timeline.Clear();
+                _timelineSnapshot = Array.Empty<TimelineEvent>();
+                _timelineSnapshotDirty = false;
                 _state.Clear();
             }
         }

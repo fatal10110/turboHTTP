@@ -232,7 +232,7 @@ namespace TurboHTTP.Transport.Tcp
         private readonly TimeSpan _connectionIdleTimeout;
         private readonly TlsBackend _tlsBackend;
         private readonly int _dnsTimeoutMs;
-        private volatile bool _disposed;
+        private int _disposed;
 
         private readonly ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>> _idleConnections
             = new ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>(StringComparer.OrdinalIgnoreCase);
@@ -273,7 +273,7 @@ namespace TurboHTTP.Transport.Tcp
         public async Task<ConnectionLease> GetConnectionAsync(
             string host, int port, bool secure, CancellationToken ct)
         {
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(TcpConnectionPool));
 
             var key = $"{host}:{port}:{(secure ? "s" : "")}";
@@ -328,7 +328,7 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal void EnqueueConnection(PooledConnection connection)
         {
-            if (_disposed || connection == null || !connection.IsAlive)
+            if (Volatile.Read(ref _disposed) != 0 || connection == null || !connection.IsAlive)
             {
                 connection?.Dispose();
                 return;
@@ -573,8 +573,8 @@ namespace TurboHTTP.Transport.Tcp
 
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
 
             // Drain all queues, dispose each connection
             foreach (var kvp in _idleConnections)

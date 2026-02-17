@@ -49,9 +49,7 @@ namespace TurboHTTP.Performance
             var host = ExtractHost(request.Uri);
             context.RecordEvent("ConcurrencyAcquire");
 
-            bool acquired = false;
             await _limiter.AcquireAsync(host, cancellationToken).ConfigureAwait(false);
-            acquired = true;
             try
             {
                 context.RecordEvent("ConcurrencyAcquired");
@@ -59,11 +57,8 @@ namespace TurboHTTP.Performance
             }
             finally
             {
-                if (acquired)
-                {
-                    _limiter.Release(host);
-                    context.RecordEvent("ConcurrencyReleased");
-                }
+                _limiter.Release(host);
+                context.RecordEvent("ConcurrencyReleased");
             }
         }
 

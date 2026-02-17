@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -386,26 +387,29 @@ namespace TurboHTTP.Transport.Http2
                     // Fix 3: Use local max frame size for inbound validation, not remote.
                     // _localSettings.MaxFrameSize is what WE are willing to receive.
                     // _remoteSettings.MaxFrameSize is what the PEER is willing to receive.
-                    var frame = await _codec.ReadFrameAsync(_localSettings.MaxFrameSize, ct);
-
-                    if (_continuationStreamId != 0 && frame.Type != Http2FrameType.Continuation)
+                    using (var frameLease = await _codec.ReadFrameLeaseAsync(_localSettings.MaxFrameSize, ct))
                     {
-                        throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
-                            $"Expected CONTINUATION for stream {_continuationStreamId}, got {frame.Type}");
-                    }
+                        var frame = frameLease.Frame;
 
-                    switch (frame.Type)
-                    {
-                        case Http2FrameType.Data:         await HandleDataFrameAsync(frame, ct); break;
-                        case Http2FrameType.Headers:      HandleHeadersFrame(frame); break;
-                        case Http2FrameType.Continuation: HandleContinuationFrame(frame); break;
-                        case Http2FrameType.Settings:     await HandleSettingsFrameAsync(frame, ct); break;
-                        case Http2FrameType.Ping:         await HandlePingFrameAsync(frame, ct); break;
-                        case Http2FrameType.GoAway:       HandleGoAwayFrame(frame); break;
-                        case Http2FrameType.WindowUpdate: HandleWindowUpdateFrame(frame); break;
-                        case Http2FrameType.RstStream:    HandleRstStreamFrame(frame); break;
-                        case Http2FrameType.PushPromise:  await RejectPushPromiseAsync(frame); break;
-                        case Http2FrameType.Priority:     break; // Ignored (deprecated by RFC 9113)
+                        if (_continuationStreamId != 0 && frame.Type != Http2FrameType.Continuation)
+                        {
+                            throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                                $"Expected CONTINUATION for stream {_continuationStreamId}, got {frame.Type}");
+                        }
+
+                        switch (frame.Type)
+                        {
+                            case Http2FrameType.Data:         await HandleDataFrameAsync(frame, ct); break;
+                            case Http2FrameType.Headers:      HandleHeadersFrame(frame); break;
+                            case Http2FrameType.Continuation: HandleContinuationFrame(frame); break;
+                            case Http2FrameType.Settings:     await HandleSettingsFrameAsync(frame, ct); break;
+                            case Http2FrameType.Ping:         await HandlePingFrameAsync(frame, ct); break;
+                            case Http2FrameType.GoAway:       HandleGoAwayFrame(frame); break;
+                            case Http2FrameType.WindowUpdate: await HandleWindowUpdateFrameAsync(frame); break;
+                            case Http2FrameType.RstStream:    HandleRstStreamFrame(frame); break;
+                            case Http2FrameType.PushPromise:  await RejectPushPromiseAsync(frame); break;
+                            case Http2FrameType.Priority:     HandlePriorityFrame(frame); break;
+                        }
                     }
                 }
             }
@@ -455,7 +459,8 @@ namespace TurboHTTP.Transport.Http2
             int flowControlledLength = frame.Length;
 
             // Handle padding — strip for body consumption but use frame.Length for window accounting
-            byte[] dataPayload;
+            int dataOffset = 0;
+            int dataLength = flowControlledLength;
             if (frame.HasFlag(Http2FrameFlags.Padded))
             {
                 if (frame.Length < 1)
@@ -465,13 +470,8 @@ namespace TurboHTTP.Transport.Http2
                 if (padLength >= frame.Length)
                     throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                         "DATA padding length exceeds frame");
-                int dataLength = frame.Length - 1 - padLength;
-                dataPayload = new byte[dataLength];
-                Array.Copy(frame.Payload, 1, dataPayload, 0, dataLength);
-            }
-            else
-            {
-                dataPayload = frame.Payload;
+                dataOffset = 1;
+                dataLength = frame.Length - 1 - padLength;
             }
 
             // Validate connection-level flow control (uses full frame length including padding)
@@ -511,7 +511,7 @@ namespace TurboHTTP.Transport.Http2
 
             // Enforce MaxResponseBodySize limit to prevent unbounded MemoryStream growth
             long maxBodySize = _localSettings.MaxResponseBodySize;
-            if (maxBodySize > 0 && stream.ResponseBody.Length + dataPayload.Length > maxBodySize)
+            if (maxBodySize > 0 && stream.ResponseBody.Length + dataLength > maxBodySize)
             {
                 _connectionRecvWindow -= flowControlledLength;
                 if (_activeStreams.TryRemove(frame.StreamId, out _))
@@ -525,7 +525,8 @@ namespace TurboHTTP.Transport.Http2
             }
 
             // Write to response body (only the actual data, not padding)
-            stream.ResponseBody.Write(dataPayload, 0, dataPayload.Length);
+            if (dataLength > 0)
+                stream.ResponseBody.Write(frame.Payload, dataOffset, dataLength);
 
             // Decrement recv windows (both connection and stream, using full frame length)
             _connectionRecvWindow -= flowControlledLength;
@@ -632,7 +633,7 @@ namespace TurboHTTP.Transport.Http2
             if (!_activeStreams.TryGetValue(frame.StreamId, out var stream))
                 return;
 
-            stream.AppendHeaderBlock(frame.Payload, 0, frame.Payload.Length);
+            stream.AppendHeaderBlock(frame.Payload, 0, frame.Length);
 
             if (frame.HasFlag(Http2FrameFlags.EndHeaders))
             {
@@ -704,9 +705,36 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
+            if (TryGetContentLength(responseHeaders, _localSettings.MaxResponseBodySize, out int contentLength))
+                stream.EnsureResponseBodyCapacity(contentLength);
+
             stream.ResponseHeaders = responseHeaders;
             stream.HeadersReceived = true;
             stream.ClearHeaderBlock();
+        }
+
+        private static bool TryGetContentLength(
+            HttpHeaders headers, long maxResponseBodySize, out int contentLength)
+        {
+            contentLength = 0;
+            var value = headers.Get("content-length");
+            if (string.IsNullOrEmpty(value))
+                return false;
+
+            if (!long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out long parsed))
+                return false;
+            if (parsed <= 0)
+                return false;
+
+            if (maxResponseBodySize <= 0)
+                return false;
+
+            long cap = Math.Min(maxResponseBodySize, int.MaxValue);
+            if (cap <= 0)
+                return false;
+
+            contentLength = (int)Math.Min(parsed, cap);
+            return true;
         }
 
         private async Task HandleSettingsFrameAsync(Http2Frame frame, CancellationToken ct)
@@ -726,7 +754,7 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
-            var settings = Http2Settings.ParsePayload(frame.Payload);
+            var settings = Http2Settings.ParsePayload(frame.Payload, frame.Length);
             int oldInitialWindowSize = _remoteSettings.InitialWindowSize;
 
             foreach (var (id, value) in settings)
@@ -784,7 +812,7 @@ namespace TurboHTTP.Transport.Http2
                 throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                     "PING on non-zero stream");
 
-            if (frame.Payload.Length != 8)
+            if (frame.Length != 8)
                 throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
                     "PING payload must be 8 bytes");
 
@@ -815,7 +843,9 @@ namespace TurboHTTP.Transport.Http2
                 throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                     "GOAWAY on non-zero stream");
 
-            if (frame.Payload.Length < 8) return;
+            if (frame.Length < 8)
+                throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
+                    "GOAWAY payload must be at least 8 bytes");
 
             int lastStreamId = ((frame.Payload[0] & 0x7F) << 24) | (frame.Payload[1] << 16) |
                                (frame.Payload[2] << 8) | frame.Payload[3];
@@ -840,9 +870,9 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        private void HandleWindowUpdateFrame(Http2Frame frame)
+        private async Task HandleWindowUpdateFrameAsync(Http2Frame frame)
         {
-            if (frame.Payload.Length != 4)
+            if (frame.Length != 4)
                 throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
                     "WINDOW_UPDATE payload must be 4 bytes");
 
@@ -850,8 +880,25 @@ namespace TurboHTTP.Transport.Http2
                             (frame.Payload[2] << 8) | frame.Payload[3];
 
             if (increment == 0)
-                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
-                    "WINDOW_UPDATE increment must be non-zero");
+            {
+                // RFC 7540 Section 6.9: stream-level WINDOW_UPDATE with zero increment is
+                // a stream error; connection-level (stream 0) is a connection error.
+                if (frame.StreamId == 0)
+                {
+                    throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                        "WINDOW_UPDATE increment must be non-zero");
+                }
+
+                if (_activeStreams.TryRemove(frame.StreamId, out var erroredStream))
+                {
+                    erroredStream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                        $"Invalid WINDOW_UPDATE increment=0 on stream {frame.StreamId}"));
+                    erroredStream.Dispose();
+                }
+
+                await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError).ConfigureAwait(false);
+                return;
+            }
 
             if (frame.StreamId == 0)
             {
@@ -876,13 +923,31 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
+        private void HandlePriorityFrame(Http2Frame frame)
+        {
+            // RFC 7540 Section 6.3: PRIORITY frames are exactly 5 bytes and never stream 0.
+            if (frame.StreamId == 0)
+                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    "PRIORITY frame on stream 0");
+
+            if (frame.Length != 5)
+                throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
+                    "PRIORITY frame payload must be 5 bytes");
+
+            int dependencyStreamId = ((frame.Payload[0] & 0x7F) << 24) | (frame.Payload[1] << 16) |
+                                     (frame.Payload[2] << 8) | frame.Payload[3];
+            if (dependencyStreamId == frame.StreamId)
+                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    "PRIORITY frame cannot depend on itself");
+        }
+
         private void HandleRstStreamFrame(Http2Frame frame)
         {
             if (frame.StreamId == 0)
                 throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                     "RST_STREAM on stream 0");
 
-            if (frame.Payload.Length != 4)
+            if (frame.Length != 4)
                 throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
                     "RST_STREAM payload must be 4 bytes");
 
@@ -909,7 +974,7 @@ namespace TurboHTTP.Transport.Http2
                 throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                     "Received PUSH_PROMISE after advertising ENABLE_PUSH=0");
 
-            if (frame.Payload.Length < 4) return;
+            if (frame.Length < 4) return;
 
             int promisedStreamId = ((frame.Payload[0] & 0x7F) << 24) | (frame.Payload[1] << 16) |
                                    (frame.Payload[2] << 8) | frame.Payload[3];
@@ -966,7 +1031,8 @@ namespace TurboHTTP.Transport.Http2
         {
             try
             {
-                int lastStreamId = Math.Max(_nextStreamId - 2, 0);
+                // Client-initiated GOAWAY should use lastStreamId=0 when server push is disabled.
+                int lastStreamId = 0;
                 var payload = new byte[8];
                 payload[0] = (byte)((lastStreamId >> 24) & 0x7F);
                 payload[1] = (byte)((lastStreamId >> 16) & 0xFF);
@@ -1083,7 +1149,7 @@ namespace TurboHTTP.Transport.Http2
 
         private void SendGoAwayOnDisposeBestEffort()
         {
-            int lastStreamId = Math.Max(Volatile.Read(ref _nextStreamId) - 2, 0);
+            int lastStreamId = 0;
             var goawayPayload = new byte[8];
             goawayPayload[0] = (byte)((lastStreamId >> 24) & 0x7F);
             goawayPayload[1] = (byte)((lastStreamId >> 16) & 0xFF);
@@ -1091,32 +1157,43 @@ namespace TurboHTTP.Transport.Http2
             goawayPayload[3] = (byte)(lastStreamId & 0xFF);
             // Error code = NO_ERROR (0x0) — bytes 4-7 are already 0.
 
-            _ = Task.Run(async () =>
+            try
             {
+                // Best-effort only: don't block dispose if another writer is in-flight.
+                if (!_writeLock.Wait(0))
+                    return;
+
                 try
                 {
-                    await _writeLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-                    try
-                    {
-                        await _codec.WriteFrameAsync(new Http2Frame
-                        {
-                            Type = Http2FrameType.GoAway,
-                            Flags = Http2FrameFlags.None,
-                            StreamId = 0,
-                            Payload = goawayPayload,
-                            Length = 8
-                        }, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        _writeLock.Release();
-                    }
+                    // Use synchronous writes in Dispose to avoid async context deadlocks.
+                    var header = new byte[Http2Constants.FrameHeaderSize];
+                    header[0] = 0;
+                    header[1] = 0;
+                    header[2] = 8; // GOAWAY payload length
+                    header[3] = (byte)Http2FrameType.GoAway;
+                    header[4] = (byte)Http2FrameFlags.None;
+                    header[5] = 0; // stream id = 0
+                    header[6] = 0;
+                    header[7] = 0;
+                    header[8] = 0;
+
+                    _stream.Write(header, 0, header.Length);
+                    _stream.Write(goawayPayload, 0, goawayPayload.Length);
+                    _stream.Flush();
                 }
                 catch
                 {
                     // Best effort only — Dispose must never block or throw.
                 }
-            });
+                finally
+                {
+                    _writeLock.Release();
+                }
+            }
+            catch
+            {
+                // Best effort only — Dispose must never block or throw.
+            }
         }
     }
 }

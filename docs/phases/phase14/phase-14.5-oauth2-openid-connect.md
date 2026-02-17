@@ -135,6 +135,15 @@ Auth attachment behavior:
 2. Token store keying must include provider + client id + audience scope.
 3. Store operations must be bounded-time and cancellation-safe.
 
+### Future Hardening Item (Post-Initial Scope)
+
+Production mobile apps typically require secure persistent token storage. Track a follow-up implementation in `TurboHTTP.Mobile`:
+
+1. `Runtime/Mobile/Security/SecureStorageTokenStore.cs` (future) with Keychain (iOS) and Keystore/EncryptedSharedPreferences (Android) backends.
+2. `Runtime/Core/UHttpClientOptions.cs` extension point to select secure store by platform capability.
+3. Migration path from in-memory/default store to secure persistent store without token format changes.
+4. Security tests for at-rest encryption, app restart restore, and tamper/failure handling.
+
 ---
 
 ## Step 4: Add Deterministic OAuth/OIDC Tests

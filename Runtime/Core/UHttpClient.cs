@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -161,8 +161,6 @@ namespace TurboHTTP.Core
 
             GC.SuppressFinalize(this);
 
-            List<Exception> disposeErrors = null;
-
             if (_options.Middlewares != null)
             {
                 // Dispose in reverse registration order (LIFO).
@@ -177,9 +175,7 @@ namespace TurboHTTP.Core
                     }
                     catch (Exception ex)
                     {
-                        if (disposeErrors == null)
-                            disposeErrors = new List<Exception>();
-                        disposeErrors.Add(ex);
+                        Debug.WriteLine($"[TurboHTTP] Middleware dispose failed: {ex}");
                     }
                 }
             }
@@ -193,14 +189,9 @@ namespace TurboHTTP.Core
                 }
                 catch (Exception ex)
                 {
-                    if (disposeErrors == null)
-                        disposeErrors = new List<Exception>();
-                    disposeErrors.Add(ex);
+                    Debug.WriteLine($"[TurboHTTP] Transport dispose failed: {ex}");
                 }
             }
-
-            if (disposeErrors != null && disposeErrors.Count > 0)
-                throw new AggregateException("One or more errors occurred while disposing UHttpClient.", disposeErrors);
         }
 
         private void ThrowIfDisposed()

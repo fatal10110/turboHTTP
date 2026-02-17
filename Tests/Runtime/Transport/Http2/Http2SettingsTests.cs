@@ -19,17 +19,26 @@ namespace TurboHTTP.Tests.Transport.Http2
             var settings = new Http2Settings();
             var payload = settings.SerializeClientSettings();
 
-            // 3 settings x 6 bytes each = 18 bytes
-            Assert.AreEqual(18, payload.Length);
+            // 4 settings x 6 bytes each = 24 bytes
+            Assert.AreEqual(24, payload.Length);
 
-            // Third setting: MaxHeaderListSize (0x0006) = 65536
-            int offset = 12; // 3rd entry
-            var id = (Http2SettingId)((payload[offset] << 8) | payload[offset + 1]);
-            uint value = ((uint)payload[offset + 2] << 24) | ((uint)payload[offset + 3] << 16) |
-                         ((uint)payload[offset + 4] << 8) | payload[offset + 5];
+            // Third setting: InitialWindowSize (0x0004) = 65535
+            int initialWindowOffset = 12;
+            var initialWindowId = (Http2SettingId)((payload[initialWindowOffset] << 8) | payload[initialWindowOffset + 1]);
+            uint initialWindowValue = ((uint)payload[initialWindowOffset + 2] << 24) | ((uint)payload[initialWindowOffset + 3] << 16) |
+                                      ((uint)payload[initialWindowOffset + 4] << 8) | payload[initialWindowOffset + 5];
 
-            Assert.AreEqual(Http2SettingId.MaxHeaderListSize, id);
-            Assert.AreEqual(64u * 1024u, value);
+            Assert.AreEqual(Http2SettingId.InitialWindowSize, initialWindowId);
+            Assert.AreEqual(65535u, initialWindowValue);
+
+            // Fourth setting: MaxHeaderListSize (0x0006) = 65536
+            int maxHeaderListOffset = 18;
+            var maxHeaderListId = (Http2SettingId)((payload[maxHeaderListOffset] << 8) | payload[maxHeaderListOffset + 1]);
+            uint maxHeaderListValue = ((uint)payload[maxHeaderListOffset + 2] << 24) | ((uint)payload[maxHeaderListOffset + 3] << 16) |
+                                      ((uint)payload[maxHeaderListOffset + 4] << 8) | payload[maxHeaderListOffset + 5];
+
+            Assert.AreEqual(Http2SettingId.MaxHeaderListSize, maxHeaderListId);
+            Assert.AreEqual(64u * 1024u, maxHeaderListValue);
         }
 
         [Test]

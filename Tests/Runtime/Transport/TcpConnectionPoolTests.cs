@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -11,6 +12,7 @@ using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Transport.Tcp;
 using TurboHTTP.Transport.Tls;
+using UnityEngine.TestTools;
 
 namespace TurboHTTP.Tests.Transport
 {
@@ -440,6 +442,27 @@ namespace TurboHTTP.Tests.Transport
                 await pool.GetConnectionAsync("127.0.0.1", server.Port, false, CancellationToken.None));
         }
 
+        [UnityTest]
+        public IEnumerator Dispose_ConcurrentCalls_DoNotThrow()
+        {
+            var task = RunAsync();
+            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
+            RethrowIfFaulted(task);
+
+            async Task RunAsync()
+            {
+                using var server = new PassiveServer();
+                var pool = new TcpConnectionPool();
+                using var lease = await pool.GetConnectionAsync("127.0.0.1", server.Port, false, CancellationToken.None);
+
+                var t1 = Task.Run(() => pool.Dispose());
+                var t2 = Task.Run(() => pool.Dispose());
+                var t3 = Task.Run(() => pool.Dispose());
+
+                await Task.WhenAll(t1, t2, t3);
+            }
+        }
+
         [Test]
         public void EnqueueConnection_AfterPoolDispose_DisposesConnection()        {
             Task.Run(async () =>
@@ -668,6 +691,14 @@ namespace TurboHTTP.Tests.Transport
                     try { socket?.Dispose(); } catch { }
                 }
             }).GetAwaiter().GetResult();
+        }
+
+        private static void RethrowIfFaulted(Task task)
+        {
+            if (!task.IsFaulted)
+                return;
+
+            throw task.Exception?.GetBaseException() ?? new Exception("Task failed without an exception.");
         }
 
         private static Socket ConnectWithTimeout(string host, int port, int timeoutMs)

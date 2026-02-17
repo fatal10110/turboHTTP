@@ -12,6 +12,8 @@ namespace TurboHTTP.Performance
     /// </summary>
     public sealed class ConcurrencyLimiter : IDisposable
     {
+        private const int MaxHostSemaphoreEntries = 1024;
+
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _hostSemaphores
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
 
@@ -91,6 +93,7 @@ namespace TurboHTTP.Performance
 
                 await hostSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
                 hostAcquired = true;
+                EvictHostSemaphoresIfNeeded(host);
             }
             catch (OperationCanceledException) when (IsDisposingOrDisposed() && !cancellationToken.IsCancellationRequested)
             {
@@ -193,6 +196,38 @@ namespace TurboHTTP.Performance
 
             if (remaining == 0)
                 TryFinalizeDispose();
+        }
+
+        private void EvictHostSemaphoresIfNeeded(string currentHost)
+        {
+            if (_hostSemaphores.Count <= MaxHostSemaphoreEntries)
+                return;
+
+            foreach (var kvp in _hostSemaphores)
+            {
+                if (string.Equals(kvp.Key, currentHost, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                bool isIdle;
+                try
+                {
+                    isIdle = kvp.Value.CurrentCount == _maxConnectionsPerHost;
+                }
+                catch (ObjectDisposedException)
+                {
+                    isIdle = true;
+                }
+
+                if (!isIdle)
+                    continue;
+
+                // Remove only from dictionary. Do not dispose removed semaphores because
+                // racing acquires/releases may still hold references.
+                _hostSemaphores.TryRemove(kvp.Key, out _);
+
+                if (_hostSemaphores.Count <= MaxHostSemaphoreEntries)
+                    break;
+            }
         }
 
         private void TryFinalizeDispose()

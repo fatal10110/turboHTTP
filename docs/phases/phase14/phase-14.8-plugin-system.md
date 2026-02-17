@@ -39,6 +39,7 @@ Capability model:
 | Capability | Allows |
 |---|---|
 | `ObserveRequests` | subscribe to request/response timeline events |
+| `ReadOnlyMonitoring` | safe bundle: observe requests + diagnostics, explicitly no request/response mutation rights |
 | `MutateRequests` | register request interceptors/middleware |
 | `MutateResponses` | register response interceptors |
 | `HandleErrors` | subscribe to failure hooks |

@@ -90,6 +90,14 @@ namespace TurboHTTP.Transport.Http2
             return HeaderBlockBuffer.ToArray();
         }
 
+        public void EnsureResponseBodyCapacity(int capacity)
+        {
+            if (capacity <= 0)
+                return;
+            if (ResponseBody.Capacity < capacity)
+                ResponseBody.Capacity = capacity;
+        }
+
         public void ClearHeaderBlock()
         {
             HeaderBlockBuffer.SetLength(0);

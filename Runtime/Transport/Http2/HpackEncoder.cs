@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using TurboHTTP.Transport.Internal;
 
@@ -24,11 +25,11 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public byte[] Encode(IReadOnlyList<(string Name, string Value)> headers)
         {
-            var output = new List<byte>();
+            using var output = new PooledByteBuffer(EstimateInitialCapacity(headers));
 
             if (_pendingSizeUpdate)
             {
-                HpackIntegerCodec.Encode(_dynamicTable.MaxSize, 5, 0x20, output);
+                EncodeInteger(_dynamicTable.MaxSize, 5, 0x20, output);
                 _pendingSizeUpdate = false;
             }
 
@@ -45,17 +46,17 @@ namespace TurboHTTP.Transport.Http2
                 switch (match)
                 {
                     case HpackMatchType.FullMatch:
-                        HpackIntegerCodec.Encode(index, 7, 0x80, output);
+                        EncodeInteger(index, 7, 0x80, output);
                         break;
 
                     case HpackMatchType.NameMatch:
-                        HpackIntegerCodec.Encode(index, 6, 0x40, output);
+                        EncodeInteger(index, 6, 0x40, output);
                         EncodeString(value, output);
                         _dynamicTable.Add(name, value);
                         break;
 
                     case HpackMatchType.None:
-                        output.Add(0x40);
+                        output.AddByte(0x40);
                         EncodeString(name, output);
                         EncodeString(value, output);
                         _dynamicTable.Add(name, value);
@@ -75,23 +76,36 @@ namespace TurboHTTP.Transport.Http2
             _pendingSizeUpdate = true;
         }
 
-        private void EncodeLiteralNeverIndexed(string name, string value, List<byte> output)
+        private static int EstimateInitialCapacity(IReadOnlyList<(string Name, string Value)> headers)
+        {
+            int capacity = 64;
+            for (int i = 0; i < headers.Count; i++)
+            {
+                var header = headers[i];
+                capacity += header.Name.Length + header.Value.Length + 8;
+                if (capacity >= 8192)
+                    return 8192;
+            }
+            return capacity;
+        }
+
+        private void EncodeLiteralNeverIndexed(string name, string value, PooledByteBuffer output)
         {
             var (index, match) = HpackStaticTable.FindMatch(name, value);
 
             if (match != HpackMatchType.None)
             {
-                HpackIntegerCodec.Encode(index, 4, 0x10, output);
+                EncodeInteger(index, 4, 0x10, output);
             }
             else
             {
-                output.Add(0x10);
+                output.AddByte(0x10);
                 EncodeString(name, output);
             }
             EncodeString(value, output);
         }
 
-        private void EncodeString(string s, List<byte> output)
+        private static void EncodeString(string s, PooledByteBuffer output)
         {
             byte[] raw = EncodingHelper.Latin1.GetBytes(s);
             int huffmanLength = HpackHuffman.GetEncodedLength(raw, 0, raw.Length);
@@ -99,13 +113,34 @@ namespace TurboHTTP.Transport.Http2
             if (huffmanLength < raw.Length)
             {
                 byte[] huffmanEncoded = HpackHuffman.Encode(raw, 0, raw.Length);
-                HpackIntegerCodec.Encode(huffmanEncoded.Length, 7, 0x80, output);
+                EncodeInteger(huffmanEncoded.Length, 7, 0x80, output);
                 output.AddRange(huffmanEncoded);
             }
             else
             {
-                HpackIntegerCodec.Encode(raw.Length, 7, 0x00, output);
+                EncodeInteger(raw.Length, 7, 0x00, output);
                 output.AddRange(raw);
+            }
+        }
+
+        private static void EncodeInteger(int value, int prefixBits, byte prefixByte, PooledByteBuffer output)
+        {
+            int maxPrefix = (1 << prefixBits) - 1;
+
+            if (value < maxPrefix)
+            {
+                output.AddByte((byte)(prefixByte | value));
+            }
+            else
+            {
+                output.AddByte((byte)(prefixByte | maxPrefix));
+                value -= maxPrefix;
+                while (value >= 128)
+                {
+                    output.AddByte((byte)((value & 0x7F) | 0x80));
+                    value >>= 7;
+                }
+                output.AddByte((byte)value);
             }
         }
 
@@ -115,6 +150,75 @@ namespace TurboHTTP.Transport.Http2
                 || string.Equals(name, "cookie", StringComparison.Ordinal)
                 || string.Equals(name, "set-cookie", StringComparison.Ordinal)
                 || string.Equals(name, "proxy-authorization", StringComparison.Ordinal);
+        }
+
+        private sealed class PooledByteBuffer : IDisposable
+        {
+            private byte[] _buffer;
+            private int _length;
+            private bool _disposed;
+
+            public PooledByteBuffer(int initialCapacity)
+            {
+                if (initialCapacity < 1)
+                    initialCapacity = 64;
+                _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+            }
+
+            public void AddByte(byte value)
+            {
+                EnsureCapacity(1);
+                _buffer[_length++] = value;
+            }
+
+            public void AddRange(byte[] bytes)
+            {
+                if (bytes == null || bytes.Length == 0)
+                    return;
+
+                EnsureCapacity(bytes.Length);
+                Buffer.BlockCopy(bytes, 0, _buffer, _length, bytes.Length);
+                _length += bytes.Length;
+            }
+
+            public byte[] ToArray()
+            {
+                var result = new byte[_length];
+                if (_length > 0)
+                    Buffer.BlockCopy(_buffer, 0, result, 0, _length);
+                return result;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+                var buffer = _buffer;
+                _buffer = Array.Empty<byte>();
+                _length = 0;
+                if (buffer != null && buffer.Length > 0)
+                    ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            private void EnsureCapacity(int additional)
+            {
+                int required = _length + additional;
+                if (required <= _buffer.Length)
+                    return;
+
+                int newSize = _buffer.Length;
+                while (newSize < required)
+                {
+                    newSize = newSize < 1024 ? newSize * 2 : newSize + (newSize >> 1);
+                }
+
+                var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+                Buffer.BlockCopy(_buffer, 0, newBuffer, 0, _length);
+                ArrayPool<byte>.Shared.Return(_buffer);
+                _buffer = newBuffer;
+            }
         }
     }
 }

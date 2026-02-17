@@ -8,7 +8,7 @@ Phase 14 is split into 8 roadmap sub-phases. Transport and platform reliability 
 |---|---|---|---|
 | [14.1](phase-14.1-happy-eyeballs-rfc8305.md) | Happy Eyeballs (RFC 8305) | 3 new, 1 modified | Phase 12 |
 | [14.2](phase-14.2-proxy-support.md) | Proxy Support | 6 new, 2 modified | 14.1 |
-| [14.3](phase-14.3-background-networking-mobile.md) | Background Networking on Mobile | 6 new, 2 modified | Phase 11 |
+| [14.3](phase-14.3-background-networking-mobile.md) | Background Networking on Mobile | 9 new, 3 modified | Phase 11 |
 | [14.4](phase-14.4-adaptive-network-policies.md) | Adaptive Network Policies | 3 new, 1 modified | 14.1 |
 | [14.5](phase-14.5-oauth2-openid-connect.md) | OAuth 2.0 / OpenID Connect | 6 new, 2 modified | Phase 12 |
 | [14.6](phase-14.6-request-response-interceptors.md) | Request/Response Interceptors | 2 new, 2 modified | Phase 12 |
@@ -77,13 +77,13 @@ Sub-phases 14.3, 14.5, and 14.7 can run in parallel with the 14.1 transport trac
 5. Extensibility APIs must not bypass core safety/privacy defaults silently.
 6. All new roadmap features require deterministic tests before graduation to default-on behavior.
 
-## All Files (33 new, 12 modified planned)
+## All Files (36 new, 13 modified planned)
 
 | Area | Planned New Files | Planned Modified Files |
 |---|---|---|
 | 14.1 Happy Eyeballs | 3 | 1 |
 | 14.2 Proxy Support | 6 | 2 |
-| 14.3 Background Networking | 6 | 2 |
+| 14.3 Background Networking | 9 | 3 |
 | 14.4 Adaptive Policies | 3 | 1 |
 | 14.5 OAuth/OIDC | 6 | 2 |
 | 14.6 Interceptors | 2 | 2 |

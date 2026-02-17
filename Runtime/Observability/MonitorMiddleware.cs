@@ -88,7 +88,7 @@ namespace TurboHTTP.Observability
             get => Volatile.Read(ref _historyCapacity);
             set
             {
-                var clamped = Math.Max(10, value);
+                var clamped = Math.Max(1, value);
                 lock (HistoryLock)
                 {
                     if (_historyCapacity == clamped)
@@ -105,13 +105,13 @@ namespace TurboHTTP.Observability
         public static int MaxCaptureSizeBytes
         {
             get => Volatile.Read(ref _maxCaptureSizeBytes);
-            set => Volatile.Write(ref _maxCaptureSizeBytes, Math.Max(1024, value));
+            set => Volatile.Write(ref _maxCaptureSizeBytes, Math.Max(0, value));
         }
 
         public static int BinaryPreviewBytes
         {
             get => Volatile.Read(ref _binaryPreviewBytes);
-            set => Volatile.Write(ref _binaryPreviewBytes, Math.Max(256, value));
+            set => Volatile.Write(ref _binaryPreviewBytes, Math.Max(0, value));
         }
 
         public static void GetHistorySnapshot(List<HttpMonitorEvent> buffer)
@@ -420,7 +420,7 @@ namespace TurboHTTP.Observability
 
         private static void ResizeBufferLocked(int newCapacity)
         {
-            var capacity = Math.Max(10, newCapacity);
+            var capacity = Math.Max(1, newCapacity);
             var newBuffer = new HttpMonitorEvent[capacity];
 
             var itemsToCopy = Math.Min(_historyCount, capacity);

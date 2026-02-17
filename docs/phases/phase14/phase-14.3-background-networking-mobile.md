@@ -2,7 +2,7 @@
 
 **Depends on:** Phase 11
 **Assembly:** `TurboHTTP.Mobile`, `TurboHTTP.Unity`, `TurboHTTP.Tests.Runtime`
-**Files:** 6 new, 2 modified
+**Files:** 9 new, 3 modified
 
 ---
 
@@ -59,6 +59,10 @@ Lifecycle invariants:
 **Files:**
 - `Runtime/Mobile/Android/AndroidBackgroundWorkBridge.cs` (new)
 - `Runtime/Mobile/Android/AndroidBackgroundWorkConfig.cs` (new)
+- `Plugins/Android/src/main/java/com/turbohttp/background/TurboHttpBackgroundWorker.kt` (new)
+- `Plugins/Android/src/main/java/com/turbohttp/background/TurboHttpBackgroundPlugin.kt` (new)
+- `Plugins/Android/src/main/AndroidManifest.xml` (new)
+- `Plugins/Android/mainTemplate.gradle` (modify)
 
 ### Technical Spec
 
@@ -67,6 +71,14 @@ Execution modes:
 1. `InProcessGuard`: keep in-flight request alive while app is backgrounded (short windows).
 2. `DeferredWork`: enqueue resumable request payload to `WorkManager`.
 3. `ForegroundTransfer`: optional hook for long uploads/downloads requiring foreground service.
+
+Native bridge packaging:
+
+1. Unity Android plugin must include `androidx.work:work-runtime-ktx` dependency pin via Gradle template.
+2. Manifest merge must declare required `WorkManager` provider/services only once (avoid duplicate-authority collisions).
+3. C# bridge communicates through a minimal JNI surface (enqueue, cancel, query status) exposed by `TurboHttpBackgroundPlugin`.
+4. `TurboHttpBackgroundWorker` restores serialized request envelopes and delegates execution back to managed runtime bridge when process is active.
+5. If managed runtime is unavailable (cold start/headless execution), worker executes a constrained native fallback path or reschedules deterministically per policy.
 
 Queue model:
 
@@ -80,6 +92,7 @@ Android constraints:
 1. Do not serialize non-replayable bodies.
 2. Only queue methods/payloads explicitly marked replay-safe.
 3. Keep max queued jobs bounded; reject with deterministic error when full.
+4. Ensure manifest and dependency setup is validated in CI Android export checks (template merge + Gradle sync).
 
 ---
 
@@ -132,6 +145,8 @@ Middleware behavior:
 | `IosScope_AcquireReleaseAlways` | success, failure, cancellation | `EndBackgroundTask` always called once |
 | `IosExpiration_TriggersQueue` | forced expiration callback | replayable request queued |
 | `AndroidQueue_DeduplicatesWorkId` | repeated enqueue same dedupe key | single queued item |
+| `AndroidManifestMerge_NoProviderConflict` | Unity export + manifest merge | single valid WorkManager provider authority |
+| `AndroidNativeBridge_JniContractStable` | enqueue/cancel/status across JNI | deterministic result codes and no JNI leaks |
 | `ReplayUnsafeBody_Rejected` | non-replayable stream body | deterministic policy error |
 | `PolicyDisabled_NoBehaviorChange` | middleware disabled | baseline pipeline behavior |
 | `PauseResume_ReplayCompletes` | app pause then resume | queued request re-executed once |
@@ -144,3 +159,4 @@ Middleware behavior:
 2. Expired background windows degrade gracefully with deterministic fallback.
 3. Queue/replay behavior is bounded, idempotent, and policy-controlled.
 4. Foreground and editor behavior remain unchanged when feature is disabled.
+5. Android native plugin integration (Gradle dependency + manifest + JNI bridge) is explicitly covered and validated.

@@ -572,7 +572,7 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void Client_Dispose_ContinuesAfterDisposeErrors_ThrowsAggregateException()
+        public void Client_Dispose_ContinuesAfterDisposeErrors_DoesNotThrow()
         {
             var disposeOrder = new List<string>();
             var middleware1 = new TrackingDisposeMiddleware(disposeOrder, "mw1");
@@ -586,10 +586,7 @@ namespace TurboHTTP.Tests.Core
                 Middlewares = new List<IHttpMiddleware> { middleware1, middleware2 }
             });
 
-            var ex = Assert.Throws<AggregateException>(() => client.Dispose());
-
-            Assert.IsNotNull(ex);
-            Assert.AreEqual(1, ex.InnerExceptions.Count);
+            Assert.DoesNotThrow(() => client.Dispose());
             Assert.AreEqual(new[] { "mw2", "mw1", "transport" }, disposeOrder.ToArray());
             Assert.IsTrue(middleware1.Disposed);
             Assert.IsTrue(middleware2.Disposed);

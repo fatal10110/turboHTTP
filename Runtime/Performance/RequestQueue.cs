@@ -135,6 +135,17 @@ namespace TurboHTTP.Performance
                 }
             }
 
+            // Rare contention path: a permit was consumed but no item was observed.
+            // Restore the semaphore signal to avoid permanently drifting counts.
+            try
+            {
+                _itemAvailable.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Ignore races with disposal.
+            }
+
             return false;
         }
 

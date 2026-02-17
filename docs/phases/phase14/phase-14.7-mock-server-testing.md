@@ -81,7 +81,12 @@ Capabilities:
 
 1. Header matcher, query matcher, JSON body matcher, raw body matcher.
 2. Latency injection (`Delay`), fault injection (`Abort`, `Timeout`), and sequence responses.
-3. Assertion helpers:
+3. Stream-shaping controls for response body delivery:
+   - fixed chunk size;
+   - variable chunk size range;
+   - inter-chunk delay/jitter;
+   - forced boundary splits (for example inside CRLF delimiters and UTF-8 multibyte sequences).
+4. Assertion helpers:
    - `AssertReceived(path, count)`;
    - `AssertLastRequest(...)`;
    - `AssertNoUnexpectedRequests()`.
@@ -91,6 +96,7 @@ Capabilities:
 1. Builder APIs must produce readable failure messages with diff-style details.
 2. Default serialization for JSON matchers must align with runtime serializer settings.
 3. Sequence and one-shot routes must be race-safe under concurrent calls.
+4. Default test mode should avoid unrealistic "single full byte-array instant return"; chunked delivery must be first-class and easy to enable.
 
 ---
 
@@ -107,6 +113,8 @@ Capabilities:
 | `SequenceResponses_Ordered` | sequence of 3 responses | call order preserved |
 | `HeaderBodyMatchers_FilterCorrectly` | mixed requests | only matching requests handled |
 | `InjectedDelay_RespectsCancellation` | response delay + cancel token | deterministic cancellation |
+| `ChunkedDelivery_ReassemblesCorrectly` | chunk profile enabled | parser receives fragmented stream and reconstructs response correctly |
+| `ChunkBoundary_SensitiveSplitCoverage` | split on protocol/text boundaries | no parser corruption on CRLF or multibyte boundary splits |
 | `HistoryBounded_OldestEvicted` | capacity exceeded | oldest entries removed first |
 | `ParallelRequests_NoStateCorruption` | concurrent requests | consistent history and route counters |
 
@@ -116,5 +124,6 @@ Capabilities:
 
 1. Mock server delivers deterministic, composable test behavior without external network dependency.
 2. Matcher and response-builder APIs cover common integration test needs.
-3. Concurrency and history behavior remain stable under stress.
-4. Integration suite can replace ad-hoc live endpoint usage with mock server scenarios.
+3. Chunked stream simulation is sufficient to catch buffering and parser-boundary bugs, not just instant-buffer scenarios.
+4. Concurrency and history behavior remain stable under stress.
+5. Integration suite can replace ad-hoc live endpoint usage with mock server scenarios.

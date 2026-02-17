@@ -14,6 +14,8 @@ Phase 11 intentionally delivers a stable baseline for Unity integration:
 
 Phase 15 upgrades that baseline for high concurrency, memory pressure, and large asset workloads. This phase is where we implement the more complex but more correct long-term architecture so these improvements are tracked explicitly and not forgotten.
 
+Detailed sub-phase breakdown: [Phase 15 Implementation Plan - Overview](phase15/overview.md)
+
 ## Goals
 
 1. Eliminate avoidable frame spikes under bursty Unity API workloads.

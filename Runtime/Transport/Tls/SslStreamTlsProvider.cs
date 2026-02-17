@@ -31,6 +31,8 @@ namespace TurboHTTP.Transport.Tls
         private static readonly PropertyInfo _targetHostProp;
         private static readonly PropertyInfo _enabledProtocolsProp;
         private static readonly Type _alpnProtocolType;
+        private static readonly ConstructorInfo _alpnProtocolListCtor;
+        private static readonly MethodInfo _alpnProtocolListAddMethod;
         private static readonly MethodInfo _authWithOptionsMethod;
         private static readonly object _h2ProtocolValue;
         private static readonly object _http11ProtocolValue;
@@ -73,6 +75,19 @@ namespace TurboHTTP.Transport.Tls
                         BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
                     _http11ProtocolValue = _alpnProtocolType.GetField("Http11",
                         BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+
+                    try
+                    {
+                        var protocolListType = typeof(System.Collections.Generic.List<>)
+                            .MakeGenericType(_alpnProtocolType);
+                        _alpnProtocolListCtor = protocolListType.GetConstructor(Type.EmptyTypes);
+                        _alpnProtocolListAddMethod = protocolListType.GetMethod("Add", new[] { _alpnProtocolType });
+                    }
+                    catch
+                    {
+                        // IL2CPP/AOT or aggressive stripping may reject this generic instantiation.
+                        // Leave list metadata null so caller can fall back to non-ALPN auth.
+                    }
                 }
             }
         }
@@ -185,17 +200,11 @@ namespace TurboHTTP.Transport.Tls
             }
 
             // Set ApplicationProtocols (List<SslApplicationProtocol>)
-            // NOTE: MakeGenericType can fail under IL2CPP/AOT if the generic instantiation
-            // List<SslApplicationProtocol> was not preserved. The caller catches this and
-            // falls back to non-ALPN auth. BouncyCastle provides ALPN on those platforms.
-            if (_alpnProtocolType != null)
+            // NOTE: Cached reflection metadata can still be unavailable under IL2CPP/AOT
+            // stripping. In that case this path is skipped and caller fallback applies.
+            if (_alpnProtocolType != null && _alpnProtocolListCtor != null && _alpnProtocolListAddMethod != null)
             {
-                var alpnList = typeof(System.Collections.Generic.List<>)
-                    .MakeGenericType(_alpnProtocolType)
-                    .GetConstructor(Type.EmptyTypes)
-                    .Invoke(null);
-
-                var addMethod = alpnList.GetType().GetMethod("Add");
+                var alpnList = _alpnProtocolListCtor.Invoke(null);
 
                 foreach (var protocol in alpnProtocols)
                 {
@@ -208,7 +217,7 @@ namespace TurboHTTP.Transport.Tls
                         continue;
 
                     if (value != null)
-                        addMethod.Invoke(alpnList, new[] { value });
+                        _alpnProtocolListAddMethod.Invoke(alpnList, new[] { value });
                 }
 
                 _alpnOptionsProperty.SetValue(options, alpnList);
@@ -226,11 +235,7 @@ namespace TurboHTTP.Transport.Tls
                 if (alpnResult == null)
                     return null;
 
-                // NegotiatedApplicationProtocol is SslApplicationProtocol struct
-                // Use ToString() to get the protocol string
-                var toStringMethod = alpnResult.GetType().GetMethod("ToString", Type.EmptyTypes);
-                var result = toStringMethod?.Invoke(alpnResult, null) as string;
-
+                var result = alpnResult.ToString();
                 return string.IsNullOrEmpty(result) ? null : result;
             }
             catch

@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -10,6 +11,7 @@ using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http2;
+using UnityEngine.TestTools;
 
 namespace TurboHTTP.Tests.Transport.Http2
 {
@@ -518,6 +520,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var goawayFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
                 Assert.AreEqual(Http2FrameType.GoAway, goawayFrame.Type);
                 Assert.AreEqual(0, goawayFrame.StreamId);
+                int lastStreamId = ((goawayFrame.Payload[0] & 0x7F) << 24) | (goawayFrame.Payload[1] << 16) |
+                                   (goawayFrame.Payload[2] << 8) | goawayFrame.Payload[3];
+                Assert.AreEqual(0, lastStreamId);
 
                 uint errorCode = ((uint)goawayFrame.Payload[4] << 24) | ((uint)goawayFrame.Payload[5] << 16) |
                                  ((uint)goawayFrame.Payload[6] << 8) | goawayFrame.Payload[7];
@@ -526,6 +531,93 @@ namespace TurboHTTP.Tests.Transport.Http2
                 AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
                 conn.Dispose();
             }).GetAwaiter().GetResult();
+        }
+
+        [UnityTest]
+        public IEnumerator GoAway_InvalidPayloadLength_SendsFrameSizeErrorGoAway()
+        {
+            var task = RunAsync();
+            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
+            RethrowIfFaulted(task);
+
+            async Task RunAsync()
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                // Keep an active stream so we can observe failure propagation.
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, requestHeaders.Type);
+
+                // Malformed GOAWAY (< 8 bytes payload) must trigger FRAME_SIZE_ERROR.
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.GoAway,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = 0,
+                    Payload = new byte[7],
+                    Length = 7
+                }, cts.Token);
+
+                var goaway = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.GoAway, goaway.Type);
+                Assert.AreEqual(0, goaway.StreamId);
+
+                int lastStreamId = ((goaway.Payload[0] & 0x7F) << 24) | (goaway.Payload[1] << 16) |
+                                   (goaway.Payload[2] << 8) | goaway.Payload[3];
+                Assert.AreEqual(0, lastStreamId);
+
+                uint errorCode = ((uint)goaway.Payload[4] << 24) | ((uint)goaway.Payload[5] << 16) |
+                                 ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
+                Assert.AreEqual((uint)Http2ErrorCode.FrameSizeError, errorCode);
+
+                AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
+                conn.Dispose();
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator Priority_InvalidLength_SendsFrameSizeErrorGoAway()
+        {
+            var task = RunAsync();
+            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
+            RethrowIfFaulted(task);
+
+            async Task RunAsync()
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Priority,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = streamId,
+                    Payload = new byte[4], // must be exactly 5
+                    Length = 4
+                }, cts.Token);
+
+                var goaway = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.GoAway, goaway.Type);
+
+                uint errorCode = ((uint)goaway.Payload[4] << 24) | ((uint)goaway.Payload[5] << 16) |
+                                 ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
+                Assert.AreEqual((uint)Http2ErrorCode.FrameSizeError, errorCode);
+
+                AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
+                conn.Dispose();
+            }
         }
 
         // --- Settings ---
@@ -890,6 +982,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                     var frame = await serverCodec.ReadFrameAsync(16384, cts.Token);
                     Assert.AreEqual(Http2FrameType.GoAway, frame.Type);
                     Assert.AreEqual(0, frame.StreamId);
+                    int lastStreamId = ((frame.Payload[0] & 0x7F) << 24) | (frame.Payload[1] << 16) |
+                                       (frame.Payload[2] << 8) | frame.Payload[3];
+                    Assert.AreEqual(0, lastStreamId);
                 }
                 catch (IOException)
                 {
@@ -1260,6 +1355,70 @@ namespace TurboHTTP.Tests.Transport.Http2
             }).GetAwaiter().GetResult();
         }
 
+        [UnityTest]
+        public IEnumerator ContentLengthPreallocation_CappedByMaxResponseBodySize()
+        {
+            var task = RunAsync();
+            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
+            RethrowIfFaulted(task);
+
+            async Task RunAsync()
+            {
+                // Preallocation must be capped to MaxResponseBodySize to avoid large
+                // speculative allocations from malicious Content-Length values.
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                // Lower cap for test to avoid large allocations.
+                var localSettingsField = typeof(Http2Connection).GetField(
+                    "_localSettings", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.IsNotNull(localSettingsField);
+                var localSettings = (Http2Settings)localSettingsField.GetValue(conn);
+                localSettings.MaxResponseBodySize = 4096;
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 200,
+                        new Dictionary<string, string>
+                        {
+                            { "content-length", int.MaxValue.ToString() }
+                        },
+                        endStream: false),
+                    cts.Token);
+
+                await Task.Delay(100, cts.Token);
+
+                var activeStreamsField = typeof(Http2Connection).GetField(
+                    "_activeStreams", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.IsNotNull(activeStreamsField);
+                var activeStreams = (System.Collections.Concurrent.ConcurrentDictionary<int, Http2Stream>)
+                    activeStreamsField.GetValue(conn);
+                Assert.IsTrue(activeStreams.TryGetValue(streamId, out var stream));
+                Assert.LessOrEqual(stream.ResponseBody.Capacity, 4096);
+
+                var bodyBytes = System.Text.Encoding.UTF8.GetBytes("ok");
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Data,
+                    Flags = Http2FrameFlags.EndStream,
+                    StreamId = streamId,
+                    Payload = bodyBytes,
+                    Length = bodyBytes.Length
+                }, cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                conn.Dispose();
+            }
+        }
+
         // --- R5: HPACK decoding error sends GOAWAY with COMPRESSION_ERROR ---
 
         [Test]
@@ -1360,6 +1519,14 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();
+        }
+
+        private static void RethrowIfFaulted(Task task)
+        {
+            if (!task.IsFaulted)
+                return;
+
+            throw task.Exception?.GetBaseException() ?? new Exception("Task failed without an exception.");
         }
     }
 }
