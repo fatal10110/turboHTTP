@@ -1,6 +1,6 @@
 # Migration Guide
 
-Migrating from UnityWebRequest or BestHTTP to TurboHTTP.
+Migrating from other HTTP libraries to TurboHTTP.
 
 ## From UnityWebRequest
 
@@ -13,7 +13,7 @@ IEnumerator GetRequest()
     using (UnityWebRequest webRequest = UnityWebRequest.Get("https://api.example.com"))
     {
         yield return webRequest.SendWebRequest();
-        // ... handle result
+        // ... Check .result, .error, etc.
     }
 }
 ```
@@ -22,17 +22,17 @@ IEnumerator GetRequest()
 ```csharp
 async void GetRequest()
 {
-    var client = new UHttpClient();
+    // Re-use 'client' instance in production!
     var response = await client.Get("https://api.example.com").SendAsync();
-    // ... handle result
+    // ... Check response.IsSuccessStatusCode
 }
 ```
 
-### Differences
-- **Async/Await:** TurboHTTP is natively async/await, no coroutines required.
-- **Headers:** Setting headers is fluent (`.WithHeader(...)`) vs `SetRequestHeader`.
-- **JSON:** Built-in JSON support (`.WithJsonBody(...)`, `.AsJson<T>()`) vs manual `JsonUtility`.
-- **Keep-Alive:** TurboHTTP supports connection pooling and keep-alive by default; UnityWebRequest does not reuse connections efficiently in all versions.
+### Key Differences
+*   **Async/Await:** TurboHTTP uses `async/await` natively. No Coroutines.
+*   **Headers:** Use fluent `.WithHeader()` instead of `SetRequestHeader`.
+*   **JSON:** Built-in JSON serialization helpers.
+*   **Keep-Alive:** TurboHTTP pools connections by default; UnityWebRequest behavior varies by version.
 
 ## From BestHTTP
 
@@ -42,25 +42,22 @@ async void GetRequest()
 ```csharp
 var request = new HTTPRequest(new Uri("https://api.example.com"), HTTPMethods.Get, (req, resp) =>
 {
-    // ... handle result
+    // Callback
 });
 request.Send();
 ```
 
 **TurboHTTP:**
 ```csharp
-var client = new UHttpClient();
 var response = await client.Get("https://api.example.com").SendAsync();
-// ... handle result
 ```
 
-### Differences
-- **API Style:** TurboHTTP uses a fluent builder API (`client.Get().WithHeader()...`) vs constructor params and callbacks.
-- **Client Lifecycle:** TurboHTTP uses a reusable `UHttpClient` instance (like HttpClient in .NET) which manages the connection pool. BestHTTP requests are often standalone.
-- **Modules:** TurboHTTP is modular; you add features (Retry, Cache) via middleware or modules, whereas BestHTTP often has them built-in or enabled via flags.
+### Key Differences
+*   **Client Instance:** BestHTTP uses stand-alone `HTTPRequest` objects. TurboHTTP uses a centralized `UHttpClient` (similar to .NET `HttpClient`) to manage connection pooling and configurations.
+*   **Modularity:** Features like Caching and Retries are added as **Middleware** in TurboHTTP, rather than being built-in flags on the request.
 
-## Key Changes for Everyone
+## Checklist for Migration
 
-1. **Dispose your Client:** `UHttpClient` is `IDisposable`. Create one instance and reuse it for the lifetime of your app (or a specific scope), then dispose it. Do not create a new `UHttpClient` for every request.
-2. **Main Thread:** `SendAsync` can be called from the main thread. Callbacks/continuations return to the context they were captured in (usually main thread in Unity if started there), but verify if doing heavy processing.
-3. **Exceptions:** TurboHTTP does not throw exceptions for non-2xx status codes by default (check `IsSuccessStatusCode`), but does throw for network errors if you don't handle them or if you use `EnsureSuccessStatusCode`.
+1.  [ ] **Instantiation**: Create a single `UHttpClient` instance for your game/service lifetime.
+2.  [ ] **Disposal**: Ensure you call `client.Dispose()` when the application quits or the service is destroyed to free up sockets.
+3.  [ ] **Error Handling**: Switch from checking `.isNetworkError` strings to checking `response.IsSuccessStatusCode` or catching `UHttpException` (if using `EnsureSuccessStatusCode`).

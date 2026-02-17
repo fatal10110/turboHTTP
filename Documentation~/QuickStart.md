@@ -2,70 +2,102 @@
 
 Get started with TurboHTTP in under 5 minutes.
 
+## Prerequisites
+
+*   **Unity Version**: 2021.3 LTS or higher.
+*   **Scripting Backend**: .NET Standard 2.1 (Project Settings -> Player -> Other Settings -> Api Compatibility Level).
+
 ## Installation
 
-1. **Import Package:**
-   - Open Unity Package Manager (Window → Package Manager)
-   - Click "+" → "Add package from disk"
-   - Select `package.json` from the TurboHTTP folder
-
-2. **Verify Installation:**
-   - Check that "TurboHTTP - Complete HTTP Client" appears in Package Manager
-   - No compile errors in Console
+1.  **Open Unity Package Manager** (**Window** -> **Package Manager**).
+2.  Click the **+** button -> **Add package from disk...**.
+3.  Navigate to the `TurboHTTP` folder and select `package.json`.
+4.  Wait for compilation to finish.
 
 ## Your First Request
 
-### Simple GET Request
+### 1. Simple GET Request
+
+Create a new script `Example.cs` and attach it to a GameObject in your scene.
 
 ```csharp
 using TurboHTTP.Core;
 using UnityEngine;
+using System;
 
 public class Example : MonoBehaviour
 {
-    async void Start()
-    {
-        var client = new UHttpClient();
-        var response = await client.Get("https://api.example.com/data").SendAsync();
+    private UHttpClient _client;
 
-        if (response.IsSuccessStatusCode)
+    private void Awake()
+    {
+        // Initialize the client once and reuse it.
+        _client = new UHttpClient();
+    }
+
+    private async void Start()
+    {
+        try 
         {
-            Debug.Log(response.GetBodyAsString());
+            var response = await _client.Get("https://jsonplaceholder.typicode.com/posts/1")
+                .WithTimeout(TimeSpan.FromSeconds(10))
+                .SendAsync();
+
+            if (response.IsSuccessStatusCode)
+            {
+                Debug.Log($"Success: {response.GetBodyAsString()}");
+            }
+            else
+            {
+                Debug.LogError($"Error: {response.StatusCode}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Request failed: {ex.Message}");
         }
     }
-}
-```
-
-### POST JSON Request
-
-```csharp
-using TurboHTTP.Core;
-using UnityEngine;
-
-public class Example : MonoBehaviour
-{
-    async void Start()
+    
+    private void OnDestroy()
     {
-        var client = new UHttpClient();
-
-        var data = new { username = "player1", score = 1000 };
-
-        var response = await client
-            .Post("https://api.example.com/scores")
-            .WithJsonBody(data)
-            .SendAsync();
-
-        Debug.Log($"Status: {response.StatusCode}");
+        // Always dispose the client when done.
+        _client?.Dispose();
     }
 }
 ```
 
-### GET JSON with Deserialization
+### 2. POST JSON Request
+
+Sending JSON data is straightforward.
 
 ```csharp
 using TurboHTTP.Core;
 using UnityEngine;
 
+public class PostExample : MonoBehaviour
+{
+    private UHttpClient _client = new UHttpClient();
+
+    private async void Start()
+    {
+        var data = new { username = "player1", score = 1000 };
+
+        var response = await _client.Post("https://api.example.com/scores")
+            .WithJsonBody(data)
+            .SendAsync();
+            
+        Debug.Log($"Status: {response.StatusCode}");
+    }
+    
+    public void OnDestroy() => _client.Dispose();
+}
+```
+
+### 3. GET JSON DTO
+
+Deserializing responses directly into objects.
+
+```csharp
 [System.Serializable]
 public class User
 {
@@ -74,61 +106,13 @@ public class User
     public string email;
 }
 
-public class Example : MonoBehaviour
-{
-    async void Start()
-    {
-        var client = new UHttpClient();
-
-        var user = await client.GetJsonAsync<User>(
-            "https://jsonplaceholder.typicode.com/users/1"
-        );
-
-        Debug.Log($"User: {user.name} ({user.email})");
-    }
-}
-```
-
-## Common Patterns
-
-### With Headers
-
-```csharp
-var response = await client
-    .Get("https://api.example.com/protected")
-    .WithBearerToken("your-token-here")
-    .WithHeader("X-Custom-Header", "value")
-    .SendAsync();
-```
-
-### With Timeout
-
-```csharp
-var response = await client
-    .Get("https://api.example.com/slow")
-    .WithTimeout(TimeSpan.FromSeconds(10))
-    .SendAsync();
-```
-
-### Error Handling
-
-```csharp
-try
-{
-    var response = await client.Get("https://api.example.com/data").SendAsync();
-    response.EnsureSuccessStatusCode();
-
-    var data = response.AsJson<MyData>();
-}
-catch (UHttpException ex)
-{
-    Debug.LogError($"HTTP Error: {ex.HttpError.Type} - {ex.Message}");
-}
+// ... inside your method
+var user = await _client.GetJsonAsync<User>("https://jsonplaceholder.typicode.com/users/1");
+Debug.Log($"User: {user.name}");
 ```
 
 ## Next Steps
 
-- [API Reference](APIReference.md) - Complete API documentation
-- [Troubleshooting](Troubleshooting.md) - Common issues and solutions
-- [Examples](../Samples~/) - Example projects
-- [Platform Notes](PlatformNotes.md) - Platform-specific information
+*   [**API Reference**](APIReference.md): Explore the full API.
+*   [**Advanced Features**](../Samples~/05-AdvancedFeatures): See the sample projects in the package.
+*   [**Troubleshooting**](Troubleshooting.md): If you run into issues.

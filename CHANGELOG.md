@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial project structure
 - Modular assembly definitions
+- **Documentation Rework**: Restructured documentation, added contributing guidelines, and polished user guides.
 
 ## [1.0.0] - TBD
 

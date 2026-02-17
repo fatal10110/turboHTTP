@@ -2,17 +2,32 @@
 
 Complete API documentation for TurboHTTP.
 
+## Table of Contents
+
+*   [Core Classes](#core-classes)
+    *   [UHttpClient](#uhttpclient)
+    *   [UHttpRequestBuilder](#uhttprequestbuilder)
+    *   [UHttpResponse](#uhttpresponse)
+    *   [UHttpClientOptions](#uhttpclientoptions)
+*   [Extension Methods](#extension-methods)
+*   [Middleware](#middleware)
+*   [Error Handling](#error-handling)
+*   [Advanced Features](#advanced-features)
+
+---
+
 ## Core Classes
 
 ### UHttpClient
 
-Main HTTP client class. Thread-safe and reusable.
+Main HTTP client class. Thread-safe and reusable. **It is recommended to create one instance per application or module.**
 
 ```csharp
 public class UHttpClient : IDisposable
 ```
 
 **Constructor:**
+
 ```csharp
 // Default options
 var client = new UHttpClient();
@@ -25,7 +40,7 @@ var client = new UHttpClient(options);
 **Methods:**
 
 | Method | Description |
-|--------|-------------|
+| :--- | :--- |
 | `Get(url)` | Create GET request builder |
 | `Post(url)` | Create POST request builder |
 | `Put(url)` | Create PUT request builder |
@@ -42,7 +57,7 @@ Fluent API for building HTTP requests.
 **Methods:**
 
 | Method | Description | Example |
-|--------|-------------|---------|
+| :--- | :--- | :--- |
 | `WithHeader(name, value)` | Add header | `.WithHeader("Accept", "application/json")` |
 | `WithBody(byte[])` | Set body | `.WithBody(data)` |
 | `WithBody(string)` | Set body as string | `.WithBody("plain text")` |
@@ -60,38 +75,40 @@ Represents an HTTP response.
 **Properties:**
 
 | Property | Type | Description |
-|----------|------|-------------|
+| :--- | :--- | :--- |
 | `StatusCode` | `HttpStatusCode` | HTTP status code |
 | `Headers` | `HttpHeaders` | Response headers |
 | `Body` | `byte[]` | Response body |
 | `ElapsedTime` | `TimeSpan` | Request duration |
 | `Request` | `UHttpRequest` | Original request |
-| `Error` | `UHttpError` | Error (if any) |
-| `IsSuccessStatusCode` | `bool` | True if 2xx status |
+| `Error` | `UHttpError` | Error info (if any) |
+| `IsSuccessStatusCode` | `bool` | True if status is 200-299 |
 | `IsError` | `bool` | True if error occurred |
 
 **Methods:**
 
 | Method | Description |
-|--------|-------------|
+| :--- | :--- |
 | `GetBodyAsString()` | Get body as UTF-8 string |
 | `AsJson<T>()` | Deserialize body as JSON |
-| `EnsureSuccessStatusCode()` | Throw if not successful |
+| `EnsureSuccessStatusCode()` | Throw `UHttpException` if not successful |
 
 ### UHttpClientOptions
 
-Configuration options for UHttpClient.
+Configuration options for `UHttpClient`.
 
 **Properties:**
 
 | Property | Type | Description |
-|----------|------|-------------|
-| `BaseUrl` | `string` | Base URL for all requests |
-| `DefaultTimeout` | `TimeSpan` | Default timeout |
-| `DefaultHeaders` | `HttpHeaders` | Headers for all requests |
-| `Transport` | `IHttpTransport` | HTTP transport implementation |
+| :--- | :--- | :--- |
+| `BaseUrl` | `string` | Base URL for requests |
+| `DefaultTimeout` | `TimeSpan` | Default timeout (default: 30s) |
+| `DefaultHeaders` | `HttpHeaders` | Headers applied to every request |
+| `Transport` | `IHttpTransport` | Custom HTTP transport implementation |
 | `Middlewares` | `List<IHttpMiddleware>` | Middleware pipeline |
-| `Http2MaxDecodedHeaderBytes` | `int` | Maximum decoded HTTP/2 header bytes per header block (HPACK decompression-bomb guard, default `262144`) |
+| `Http2MaxDecodedHeaderBytes` | `int` | Max decoded header bytes for HTTP/2 (default: `262144`) |
+
+---
 
 ## Extension Methods
 
@@ -127,42 +144,44 @@ var clip = await client.GetAudioClipAsync(url, AudioType.MP3);
 var path = await client.DownloadToPersistentDataAsync(url, "file.zip");
 ```
 
+---
+
 ## Middleware
+
+TurboHTTP uses a middleware pipeline. You can add default middlewares via `UHttpClientOptions`.
 
 ### LoggingMiddleware
 
 ```csharp
-var middleware = new LoggingMiddleware(
+var logging = new LoggingMiddleware(
     logLevel: LoggingMiddleware.LogLevel.Detailed,
     logHeaders: true,
     logBody: true
 );
-options.Middlewares.Add(middleware);
+options.Middlewares.Add(logging);
 ```
 
 ### RetryMiddleware
 
 ```csharp
-var policy = new RetryPolicy
-{
+var retry = new RetryMiddleware(new RetryPolicy {
     MaxRetries = 3,
     InitialDelay = TimeSpan.FromSeconds(1),
     BackoffMultiplier = 2.0,
     OnlyRetryIdempotent = true
-};
-options.Middlewares.Add(new RetryMiddleware(policy));
+});
+options.Middlewares.Add(retry);
 ```
 
 ### CacheMiddleware
 
 ```csharp
-var policy = new CachePolicy
-{
+var cache = new CacheMiddleware(new CachePolicy {
     EnableCache = true,
     DefaultTtl = TimeSpan.FromMinutes(5),
     EnableRevalidation = true
-};
-options.Middlewares.Add(new CacheMiddleware(policy));
+});
+options.Middlewares.Add(cache);
 ```
 
 ### AuthMiddleware
@@ -175,13 +194,12 @@ options.Middlewares.Add(new AuthMiddleware(tokenProvider));
 ### RateLimitMiddleware
 
 ```csharp
-var policy = new RateLimitPolicy
-{
+var rateLimit = new RateLimitMiddleware(new RateLimitPolicy {
     MaxRequests = 100,
     TimeWindow = TimeSpan.FromMinutes(1),
     PerHost = true
-};
-options.Middlewares.Add(new RateLimitMiddleware(policy));
+});
+options.Middlewares.Add(rateLimit);
 ```
 
 ### MetricsMiddleware
@@ -190,14 +208,15 @@ options.Middlewares.Add(new RateLimitMiddleware(policy));
 var metrics = new MetricsMiddleware();
 options.Middlewares.Add(metrics);
 
-// Later, get metrics
+// Access metrics later
 Debug.Log($"Total requests: {metrics.Metrics.TotalRequests}");
-Debug.Log($"Success rate: {metrics.Metrics.SuccessfulRequests / metrics.Metrics.TotalRequests * 100}%");
 ```
+
+---
 
 ## Error Handling
 
-### UHttpError
+### UHttpErrorType
 
 ```csharp
 public enum UHttpErrorType
@@ -212,20 +231,25 @@ public enum UHttpErrorType
 }
 ```
 
-### UHttpException
+### Catching Exceptions
+
+If you use `EnsureSuccessStatusCode()` or encounter a strict failure:
 
 ```csharp
 try
 {
     var response = await client.Get(url).SendAsync();
+    response.EnsureSuccessStatusCode();
 }
 catch (UHttpException ex)
 {
-    Debug.LogError($"Error type: {ex.HttpError.Type}");
-    Debug.LogError($"Message: {ex.HttpError.Message}");
-    Debug.LogError($"Retryable: {ex.HttpError.IsRetryable()}");
+    Debug.LogError($"Error: {ex.HttpError.Type} - {ex.HttpError.Message}");
+    // Check if retryable
+    bool shouldRetry = ex.HttpError.IsRetryable();
 }
 ```
+
+---
 
 ## Advanced Features
 
@@ -235,19 +259,15 @@ catch (UHttpException ex)
 using TurboHTTP.Files;
 
 var downloader = new FileDownloader();
-
 var options = new DownloadOptions
 {
     EnableResume = true,
     VerifyChecksum = true,
     ExpectedMd5 = "abc123...",
-    Progress = new Progress<DownloadProgress>(p =>
-    {
-        Debug.Log($"Progress: {p.Percentage:F1}%");
-    })
+    Progress = new Progress<DownloadProgress>(p => Debug.Log($"{p.Percentage:F1}%"))
 };
 
-var result = await downloader.DownloadFileAsync(url, savePath, options);
+await downloader.DownloadFileAsync(url, savePath, options);
 ```
 
 ### Multipart Uploads
@@ -259,8 +279,7 @@ var multipart = new MultipartFormDataBuilder()
     .AddField("title", "My Upload")
     .AddFile("file", "/path/to/file.png", "image/png");
 
-var response = await client
-    .Post("https://api.example.com/upload")
+var response = await client.Post("https://api.example.com/upload")
     .WithBody(multipart.Build())
     .ContentType(multipart.GetContentType())
     .SendAsync();
@@ -268,10 +287,12 @@ var response = await client
 
 ### Record/Replay Testing
 
+Deterministic network testing for CI/CD.
+
 ```csharp
 using TurboHTTP.Testing;
 
-// Record mode
+// 1. Record Mode
 var transport = new RecordReplayTransport(
     new RawSocketTransport(),
     RecordReplayMode.Record,
@@ -279,13 +300,13 @@ var transport = new RecordReplayTransport(
 );
 
 // ... make requests ...
-
 transport.SaveRecordings();
 
-// Replay mode
-var transport = new RecordReplayTransport(
+// 2. Replay Mode
+var replayTransport = new RecordReplayTransport(
     new RawSocketTransport(),
     RecordReplayMode.Replay,
     "recordings.json"
 );
+// Requests will now return recorded responses instantly.
 ```

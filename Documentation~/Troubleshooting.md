@@ -2,93 +2,61 @@
 
 Common issues and solutions for TurboHTTP.
 
-## Request Timeout
+## Common Issues
 
-**Symptom:** Requests fail with `UHttpErrorType.Timeout`
+### Request Timeout
 
-**Solutions:**
-1. Increase timeout: `.WithTimeout(TimeSpan.FromSeconds(60))`
-2. Check network connectivity
-3. Verify server is responding
-4. On mobile, use longer timeouts (60s+)
-5. If DNS resolution is slow on the target network, increase DNS timeout via `TcpConnectionPool(dnsTimeout: ...)`.
-
-## SSL/TLS Errors
-
-**Symptom:** "An SSL error has occurred" or `UHttpErrorType.CertificateError`
+**Symptom:** Requests fail with `UHttpErrorType.Timeout`.
 
 **Solutions:**
-1. Ensure using HTTPS (not HTTP)
-2. Verify certificate is valid
-3. On iOS, check App Transport Security (ATS) settings
-4. Update Unity to latest version for latest TLS support
-5. If using self-signed certificates, ensure you have a custom validation callback or install the certificate on the device (not recommended for production)
+1.  **Increase Timeout:** `.WithTimeout(TimeSpan.FromSeconds(60))`
+2.  **Network Check:** Verify device connectivity.
+3.  **DNS Issues:** If DNS is slow, configure `TcpConnectionPool(dnsTimeout: ...)` with a higher value.
+4.  **Mobile:** Mobile networks can be high latency; default timeout increases on mobile (45s), but you may need more.
 
-## JSON Deserialization Fails
+### SSL/TLS Handshake Failures
 
-**Symptom:** Exception when calling `.AsJson<T>()`
+**Symptom:** `UHttpErrorType.CertificateError` or "Handshake failed".
 
 **Solutions:**
-1. Ensure class has public properties
-2. Add `[Serializable]` attribute to class
-3. Check JSON structure matches class
-4. Use `TryAsJson` for safer parsing (if available) or `try-catch` blocks
-5. Check for IL2CPP stripping issues (see Platform Notes)
+1.  **HTTPS vs HTTP:** Ensure you aren't trying to speak HTTPS to an HTTP port (or vice versa).
+2.  **Date/Time:** Check if the device clock is correct.
+3.  **Cert Validity:** Verify the server certificate is valid and not expired.
+4.  **Intermediates:** Ensure the server sends the full certificate chain.
+5.  **iOS/Android:** Check if the OS trusts the specific CA signing the cert.
 
-## Platform-Specific Issues
+### JSON Deserialization Errors
+
+**Symptom:** Exception when calling `.AsJson<T>()`.
+
+**Solutions:**
+1.  **Public Properties:** Ideally use properties (`{ get; set; }`) for your DTOs.
+2.  **Attributes:** Use `[Serializable]` or `[JsonPropertyName]` if keys don't match.
+3.  **Structure:** Verify the JSON response matches your class structure.
+4.  **IL2CPP:** Ensure your DTO class isn't being stripped (see [Platform Notes](PlatformNotes.md)).
+
+## Platform-Specific
 
 ### iOS
 
-**Issue:** "Cleartext not permitted"
-- Use HTTPS instead of HTTP
-- Or configure ATS exceptions in Info.plist
-
-**Issue:** Background requests timeout
-- Background execution limited to 30s on iOS
-- Use shorter timeouts for background requests
+*   **"Cleartext not permitted"**: You are trying to use HTTP. Use HTTPS or configure ATS in Info.plist.
+*   **Background Timeout**: iOS apps have very limited execution time in background (~30s). Requests may be cut off.
 
 ### Android
 
-**Issue:** "java.net.UnknownServiceException: CLEARTEXT"
-- Add `android:usesCleartextTraffic="true"` to AndroidManifest.xml
-- Or use HTTPS
+*   **"java.net.UnknownServiceException: CLEARTEXT"**: You need to enable cleartext traffic in AndroidManifest.xml if using HTTP.
+*   **Permission Denied**: Missing `android.permission.INTERNET`.
 
-**Issue:** Permission denied
-- Add `<uses-permission android:name="android.permission.INTERNET" />` to manifest
+## Tools
 
-## Memory Issues
+### HTTP Monitor Window
+If the HTTP Monitor (Window -> TurboHTTP -> Monitor) is empty:
+1.  Ensure **Enable HTTP Monitor** is checked in Preferences -> TurboHTTP.
+2.  Ensure you have `include HTTP Monitor` defined in your build settings/defines if using custom defines.
 
-**Symptom:** High memory usage or GC spikes
+### Logging
+Enable detailed logging to debug issues:
 
-**Solutions:**
-1. Dispose clients: `client.Dispose()`
-2. Enable memory pooling (automatic in v1.0)
-3. Limit concurrent requests with `ConcurrencyMiddleware` (if available)
-4. Clear cache periodically
-
-## Unity Editor Issues
-
-**Issue:** HTTP Monitor not showing requests
-
-**Solutions:**
-1. Check Window → TurboHTTP → HTTP Monitor
-2. Verify MonitorMiddleware is in pipeline (if manually configured)
-3. Check Preferences → TurboHTTP → "Enable HTTP Monitor"
-
-## IL2CPP Build Issues
-
-**Issue:** NotSupportedException or missing methods
-
-**Solutions:**
-1. Run `IL2CPPCompatibility.ValidateCompatibility()` (if available)
-2. Ensure using System.Text.Json (not Newtonsoft.Json if not configured)
-3. Add `link.xml` if needed for JSON types to prevent stripping
-4. If forcing `TlsBackend.SslStream` for HTTP/2, preserve SslStream ALPN types in `link.xml` (`SslStream`, `SslClientAuthenticationOptions`, `SslApplicationProtocol`)
-5. If ALPN remains unreliable on device, switch to `TlsBackend.BouncyCastle`
-
-## Getting Help
-
-1. Check [API Reference](APIReference.md)
-2. Check [Platform Notes](PlatformNotes.md)
-3. Review [Samples](../Samples~/)
-4. Contact support: support@yourcompany.com
+```csharp
+options.Middlewares.Add(new LoggingMiddleware(LoggingMiddleware.LogLevel.Detailed));
+```
