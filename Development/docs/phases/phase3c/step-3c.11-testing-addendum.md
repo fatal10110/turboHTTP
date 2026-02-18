@@ -1,6 +1,6 @@
 # Step 3C.11 Testing Addendum
 
-**Supplements:** [step-3c.11-tests.md](file:///Users/arturkoshtei/workspace/turboHTTP/docs/phases/phase3c/step-3c.11-tests.md)
+**Supplements:** [step-3c.11-tests.md](file:///Users/arturkoshtei/workspace/turboHTTP/Development/docs/phases/phase3c/step-3c.11-tests.md)
 
 This document adds missing test scenarios and comprehensive device testing checklists identified during the multi-agent review process.
 
@@ -256,5 +256,5 @@ namespace TurboHTTP.Tests.Transport.TlsProvider
 
 ## References
 
-- Main Test Spec: [step-3c.11-tests.md](file:///Users/arturkoshtei/workspace/turboHTTP/docs/phases/phase3c/step-3c.11-tests.md)
+- Main Test Spec: [step-3c.11-tests.md](file:///Users/arturkoshtei/workspace/turboHTTP/Development/docs/phases/phase3c/step-3c.11-tests.md)
 - Multi-Agent Review: [phase3c_agent_review.md](file:///Users/arturkoshtei/.gemini/antigravity/brain/b59b473e-0596-4c1b-b44a-0cbfe3835e66/phase3c_agent_review.md)

@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using TurboHTTP.Auth;
 using TurboHTTP.Core;
+using TurboHTTP.Middleware;
 using UnityEngine;
 
 namespace TurboHTTP.Samples.Authentication

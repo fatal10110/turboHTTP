@@ -2,8 +2,9 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Observability;
 
-namespace TurboHTTP.Observability
+namespace TurboHTTP.Middleware
 {
     /// <summary>
     /// Middleware that collects HTTP request/response metrics.

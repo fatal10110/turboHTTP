@@ -58,5 +58,7 @@ If the HTTP Monitor (Window -> TurboHTTP -> Monitor) is empty:
 Enable detailed logging to debug issues:
 
 ```csharp
+using TurboHTTP.Middleware;
+
 options.Middlewares.Add(new LoggingMiddleware(LoggingMiddleware.LogLevel.Detailed));
 ```

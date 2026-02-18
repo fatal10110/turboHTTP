@@ -84,5 +84,5 @@ Sub-phases 5.3, 5.4, and 5.5 can be implemented in parallel once 5.1 and 5.2 are
 
 1. Run both specialist agent reviews (unity-infrastructure-architect, unity-network-architect).
 2. Run full runtime test suite and confirm Phase 5 tests are stable.
-3. Create or update `docs/implementation-journal/2026-02-phase5-content-handlers.md`.
+3. Create or update `Development/docs/implementation-journal/2026-02-phase5-content-handlers.md`.
 4. Update `CLAUDE.md` Development Status section with Phase 5 completion details.

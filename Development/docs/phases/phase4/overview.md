@@ -137,5 +137,5 @@ Before starting any sub-phase:
 ## Post-Implementation
 
 1. Run both specialist agent reviews (unity-infrastructure-architect, unity-network-architect)
-2. Create `docs/implementation-journal/2026-02-phase4-pipeline.md`
+2. Create `Development/docs/implementation-journal/2026-02-phase4-pipeline.md`
 3. Update `CLAUDE.md` Development Status section

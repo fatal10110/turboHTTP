@@ -11,7 +11,7 @@ Implement content handlers for common serialization formats and file operations.
 
 Detailed sub-phase breakdown: [Phase 5 Implementation Plan — Overview](phase5/overview.md)
 
-> Implementation authority note: examples in this legacy phase summary are historical. Current implementation guidance is the `docs/phases/phase5/` breakdown and uses `TurboHTTP.JSON.JsonSerializer`/`IJsonSerializer` (not direct `System.Text.Json` dependency in core APIs).
+> Implementation authority note: examples in this legacy phase summary are historical. Current implementation guidance is the `Development/docs/phases/phase5/` breakdown and uses `TurboHTTP.JSON.JsonSerializer`/`IJsonSerializer` (not direct `System.Text.Json` dependency in core APIs).
 
 ## Goals
 

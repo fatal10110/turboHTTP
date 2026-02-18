@@ -150,6 +150,13 @@ var path = await client.DownloadToPersistentDataAsync(url, "file.zip");
 
 TurboHTTP uses a middleware pipeline. You can add default middlewares via `UHttpClientOptions`.
 
+```csharp
+using TurboHTTP.Auth;
+using TurboHTTP.Cache;
+using TurboHTTP.Middleware;
+using TurboHTTP.Retry;
+```
+
 ### LoggingMiddleware
 
 ```csharp

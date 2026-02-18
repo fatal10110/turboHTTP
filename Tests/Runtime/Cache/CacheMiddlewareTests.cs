@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Cache;
 using TurboHTTP.Core;
+using TurboHTTP.Middleware;
 using TurboHTTP.Testing;
 
 namespace TurboHTTP.Tests.Cache
@@ -268,6 +269,77 @@ namespace TurboHTTP.Tests.Cache
 
                 Assert.AreEqual(2, callCount);
                 Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheMiddleware_RevalidateModifiedWithNoStore_EvictsOldEntry()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheMiddleware(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    var headers = new HttpHeaders();
+
+                    if (callCount == 1)
+                    {
+                        headers.Set("Cache-Control", "max-age=120");
+                        headers.Set("ETag", "\"v1\"");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("v1"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    if (callCount == 2)
+                    {
+                        Assert.AreEqual("\"v1\"", req.Headers.Get("If-None-Match"));
+                        headers.Set("Cache-Control", "no-store");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("v2"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    headers.Set("Cache-Control", "max-age=120");
+                    headers.Set("ETag", "\"v3\"");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        headers,
+                        Encoding.UTF8.GetBytes("v3"),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new HttpPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/revalidate-modified-no-store");
+
+                var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var first = await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
+                Assert.AreEqual("v1", Encoding.UTF8.GetString(first.Body.Span));
+
+                var secondHeaders = new HttpHeaders();
+                secondHeaders.Set("Cache-Control", "no-cache");
+                var secondRequest = new UHttpRequest(HttpMethod.GET, uri, secondHeaders);
+                var second = await pipeline.ExecuteAsync(secondRequest, new RequestContext(secondRequest));
+                Assert.AreEqual("v2", Encoding.UTF8.GetString(second.Body.Span));
+
+                // Because the modified response was non-cacheable (no-store), the old entry
+                // must be evicted and the next request should go to transport again.
+                var thirdRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var third = await pipeline.ExecuteAsync(thirdRequest, new RequestContext(thirdRequest));
+                Assert.AreEqual("v3", Encoding.UTF8.GetString(third.Body.Span));
+
+                Assert.AreEqual(3, callCount);
             }).GetAwaiter().GetResult();
         }
 

@@ -994,6 +994,18 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void Dispose_IsIdempotent()        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+
+                Assert.DoesNotThrow(() => conn.Dispose());
+                Assert.DoesNotThrow(() => conn.Dispose());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void StreamIdExhaustion_ThrowsOnOverflow()        {
             Task.Run(async () =>
             {
@@ -1350,6 +1362,61 @@ namespace TurboHTTP.Tests.Transport.Http2
                 }, cts.Token);
 
                 AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void TrailingHeaders_WithoutStatus_AreAccepted()        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                // Initial response headers include :status and keep stream open.
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 200, endStream: false),
+                    cts.Token);
+
+                var bodyChunk = System.Text.Encoding.UTF8.GetBytes("hello");
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Data,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = streamId,
+                    Payload = bodyChunk,
+                    Length = bodyChunk.Length
+                }, cts.Token);
+
+                // Trailers have no :status; this must still be treated as valid.
+                var trailerEncoder = new HpackEncoder();
+                var trailerBlock = trailerEncoder.Encode(new List<(string, string)>
+                {
+                    ("grpc-status", "0")
+                });
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Headers,
+                    Flags = Http2FrameFlags.EndHeaders | Http2FrameFlags.EndStream,
+                    StreamId = streamId,
+                    Payload = trailerBlock,
+                    Length = trailerBlock.Length
+                }, cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("hello", System.Text.Encoding.UTF8.GetString(response.Body.Span));
+                Assert.AreEqual("0", response.Headers.Get("grpc-status"));
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();

@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Middleware;
 using TurboHTTP.Observability;
 using TurboHTTP.Testing;
 

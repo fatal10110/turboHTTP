@@ -77,34 +77,34 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 
 ## Development Status
 
-Implementation follows 14 phases documented in `docs/phases/`.
+Implementation follows 14 phases documented in `Development/docs/phases/`.
 
 - **Phase 1 (Project Foundation):** COMPLETE — Directory structure, assembly definitions, package files.
 - **Phase 2 (Core Type System):** COMPLETE — All 8 core types implemented in `Runtime/Core/`, 3 test files in `Tests/Runtime/Core/`. Reviewed by both specialist agents.
-- **Phase 3 (Client API & HTTP/1.1 Transport):** COMPLETE — Detailed sub-plans in `docs/phases/phase3/` (5 sub-phases). The old summary at `docs/phases/phase-03-client-api.md` is **deprecated** and must not be used for implementation. External reviews (GPT, Gemini) and specialist agent reviews incorporated.
+- **Phase 3 (Client API & HTTP/1.1 Transport):** COMPLETE — Detailed sub-plans in `Development/docs/phases/phase3/` (5 sub-phases). The old summary at `Development/docs/phases/phase-03-client-api.md` is **deprecated** and must not be used for implementation. External reviews (GPT, Gemini) and specialist agent reviews incorporated.
   - **Phase 3.1 (Client API):** COMPLETE
   - **Phase 3.2 (TCP Connection Pool & TLS):** COMPLETE
   - **Phase 3.3 (HTTP/1.1 Serializer & Parser):** COMPLETE
   - **Phase 3.4 (RawSocketTransport & Wiring):** COMPLETE
   - **Phase 3.5 (Tests & Integration):** COMPLETE — Added Core/HTTP1/Pool unit tests and manual integration harness.
-- **Phase 3B (HTTP/2 Protocol):** COMPLETE — Full HTTP/2 support with binary framing, HPACK compression, stream multiplexing, and flow control. R9 fixes: reusable frame header buffers, ArrayPool for payloads, MemoryStream for header block accumulation, MaxResponseBodySize limit. See `docs/implementation-journal/2026-02-phase3b-http2.md`.
+- **Phase 3B (HTTP/2 Protocol):** COMPLETE — Full HTTP/2 support with binary framing, HPACK compression, stream multiplexing, and flow control. R9 fixes: reusable frame header buffers, ArrayPool for payloads, MemoryStream for header block accumulation, MaxResponseBodySize limit. See `Development/docs/implementation-journal/2026-02-phase3b-http2.md`.
 - **Phase 3C (BouncyCastle TLS Fallback):** COMPLETE — Optional BouncyCastle TLS module for IL2CPP platforms where SslStream ALPN may fail. TLS abstraction layer (ITlsProvider, TlsProviderSelector), BouncyCastle source bundled under TurboHTTP.SecureProtocol namespace.
-- **Phase 4 (Pipeline Infrastructure):** COMPLETE — ASP.NET Core-style middleware pipeline. See `docs/implementation-journal/2026-02-phase4-pipeline.md`.
+- **Phase 4 (Pipeline Infrastructure):** COMPLETE — ASP.NET Core-style middleware pipeline. See `Development/docs/implementation-journal/2026-02-phase4-pipeline.md`.
   - **Phase 4.1 (Pipeline Executor):** COMPLETE — `HttpPipeline` delegate chain built once, integrated into `UHttpClient.SendAsync`.
   - **Phase 4.2 (Core Middlewares):** COMPLETE — Originally in Core; since extracted: `LoggingMiddleware` → Observability, `DefaultHeadersMiddleware` → Middleware, `TimeoutMiddleware` → deleted (transport handles timeouts).
   - **Phase 4.3 (Module Middlewares):** COMPLETE — `RetryMiddleware` (Retry), `AuthMiddleware` (Auth), `MetricsMiddleware` (Observability) in separate assemblies.
   - **Phase 4.4 (MockTransport):** COMPLETE — `MockTransport` foundation (3 constructor overloads), later extended in Phase 7 with queue/capture/helper APIs.
   - **Phase 4.5 (Tests):** COMPLETE — 8 test files covering pipeline, all middlewares, and integration.
-- **Phase 5 (Content Handlers):** COMPLETE — JSON extensions (AsJson, TryAsJson, GetJsonAsync, PostJsonAsync, PutJsonAsync, PatchJsonAsync, DeleteJsonAsync), FileDownloader with resume/checksum/progress, MultipartFormDataBuilder, ContentTypes constants, GetBodyAsString(Encoding) + GetContentEncoding(). See `docs/implementation-journal/2026-02-phase5-content-handlers.md`.
-- **Core Extraction (Post-M1):** COMPLETE — Extracted non-core concerns from TurboHTTP.Core: LoggingMiddleware → Observability, DefaultHeadersMiddleware → new Middleware assembly, JSON extensions → JSON assembly, TimeoutMiddleware deleted (redundant with transport timeout). Removed convenience aliases (`Accept`, `ContentType`, `WithBearerToken`) from `UHttpRequestBuilder` — builder now has only raw HTTP primitives. `WithBearerToken` moved to `TurboHTTP.Auth.AuthBuilderExtensions`. Core now has zero external assembly references. See `docs/implementation-journal/2026-02-core-extraction.md`.
-- **Phase 6 (Performance & Hardening):** COMPLETE — ObjectPool, ByteArrayPool, ConcurrencyLimiter, ConcurrencyMiddleware, RequestQueue. Disposal hardening (UHttpClient disposes middlewares, RawSocketTransport atomic disposal). Timeline optimization (lazy dict in TimelineEvent). ALPN reflection caching in SslStreamTlsProvider. Logging redaction for sensitive headers. Stress tests (1000-request, concurrency enforcement, multi-host, pool leak detection). See `docs/implementation-journal/2026-02-phase6-performance.md`.
-- **Security Hardening (Post-Phase 6):** COMPLETE — Fixes from unified review: M-2 (connection drain check), M-3 (TE+CL RFC compliance), M-4 (path traversal protection), H-3 (CRLF injection defense-in-depth), HPACK decompression bomb protection (128KB limit), IPv6 preference in address sorting, DNS task observation, multipart boundary quoting. Phase docs updated with redirect/cookie middleware (Phase 10) and background networking (Phase 14). See `docs/implementation-journal/2026-02-security-hardening.md`.
-- **Phase 7 (Testing Infrastructure):** COMPLETE — Extended `MockTransport` (queue/capture/helpers), added `RecordReplayTransport` (record/replay/passthrough, strict mismatch by default, redaction, SHA-256 hashing), added Testing `link.xml` guidance, added `TestHelpers`, `CoreTypesTests`, deterministic `IntegrationTests` + optional `ExternalNetwork` category, and `BenchmarkTests` quality gates. See `docs/implementation-journal/2026-02-phase7-testing.md`.
-- **Phase 10 (Advanced Middleware):** COMPLETE — Cache/revalidation middleware, redirect middleware, cookie middleware, and HTTP/1.1 parser streaming improvements. See `docs/implementation-journal/2026-02-phase10-advanced-middleware.md`.
-- **Phase 11 (Unity Integration):** COMPLETE — Added `MainThreadDispatcher`, `Texture2DHandler`, `AudioClipHandler`, `UnityExtensions`, and `CoroutineWrapper` with dedicated Unity runtime tests. See `docs/implementation-journal/2026-02-phase11-unity-integration.md`.
+- **Phase 5 (Content Handlers):** COMPLETE — JSON extensions (AsJson, TryAsJson, GetJsonAsync, PostJsonAsync, PutJsonAsync, PatchJsonAsync, DeleteJsonAsync), FileDownloader with resume/checksum/progress, MultipartFormDataBuilder, ContentTypes constants, GetBodyAsString(Encoding) + GetContentEncoding(). See `Development/docs/implementation-journal/2026-02-phase5-content-handlers.md`.
+- **Core Extraction (Post-M1):** COMPLETE — Extracted non-core concerns from TurboHTTP.Core: LoggingMiddleware → Observability, DefaultHeadersMiddleware → new Middleware assembly, JSON extensions → JSON assembly, TimeoutMiddleware deleted (redundant with transport timeout). Removed convenience aliases (`Accept`, `ContentType`, `WithBearerToken`) from `UHttpRequestBuilder` — builder now has only raw HTTP primitives. `WithBearerToken` moved to `TurboHTTP.Auth.AuthBuilderExtensions`. Core now has zero external assembly references. See `Development/docs/implementation-journal/2026-02-core-extraction.md`.
+- **Phase 6 (Performance & Hardening):** COMPLETE — ObjectPool, ByteArrayPool, ConcurrencyLimiter, ConcurrencyMiddleware, RequestQueue. Disposal hardening (UHttpClient disposes middlewares, RawSocketTransport atomic disposal). Timeline optimization (lazy dict in TimelineEvent). ALPN reflection caching in SslStreamTlsProvider. Logging redaction for sensitive headers. Stress tests (1000-request, concurrency enforcement, multi-host, pool leak detection). See `Development/docs/implementation-journal/2026-02-phase6-performance.md`.
+- **Security Hardening (Post-Phase 6):** COMPLETE — Fixes from unified review: M-2 (connection drain check), M-3 (TE+CL RFC compliance), M-4 (path traversal protection), H-3 (CRLF injection defense-in-depth), HPACK decompression bomb protection (128KB limit), IPv6 preference in address sorting, DNS task observation, multipart boundary quoting. Phase docs updated with redirect/cookie middleware (Phase 10) and background networking (Phase 14). See `Development/docs/implementation-journal/2026-02-security-hardening.md`.
+- **Phase 7 (Testing Infrastructure):** COMPLETE — Extended `MockTransport` (queue/capture/helpers), added `RecordReplayTransport` (record/replay/passthrough, strict mismatch by default, redaction, SHA-256 hashing), added Testing `link.xml` guidance, added `TestHelpers`, `CoreTypesTests`, deterministic `IntegrationTests` + optional `ExternalNetwork` category, and `BenchmarkTests` quality gates. See `Development/docs/implementation-journal/2026-02-phase7-testing.md`.
+- **Phase 10 (Advanced Middleware):** COMPLETE — Cache/revalidation middleware, redirect middleware, cookie middleware, and HTTP/1.1 parser streaming improvements. See `Development/docs/implementation-journal/2026-02-phase10-advanced-middleware.md`.
+- **Phase 11 (Unity Integration):** COMPLETE — Added `MainThreadDispatcher`, `Texture2DHandler`, `AudioClipHandler`, `UnityExtensions`, and `CoroutineWrapper` with dedicated Unity runtime tests. See `Development/docs/implementation-journal/2026-02-phase11-unity-integration.md`.
 - **Phase 8 + Phases 12–14:** Not started.
 
-Check `docs/00-overview.md` for the full roadmap and `docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
+Check `Development/docs/00-overview.md` for the full roadmap and `Development/docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
 
 ## Implementation Milestones
 
@@ -163,11 +163,11 @@ After completing each implementation step (phase task, new type, transport chang
 
 Both reviews must pass before proceeding to the next step. When a review identifies issues that require code changes, fix the issues and then run both reviews again as a verification pass. Repeat until all issues are resolved or explicitly deferred with documented rationale and target phase.
 
-After reviews pass, **update the implementation journal** (`docs/implementation-journal/`) with a session file documenting the completed step, then update this file's Development Status section.
+After reviews pass, **update the implementation journal** (`Development/docs/implementation-journal/`) with a session file documenting the completed step, then update this file's Development Status section.
 
 ## Implementation Journal
 
-An implementation journal is maintained in the `docs/implementation-journal/` folder. Each implementation session gets its own file in this folder. After completing each implementation step (phase task, new type, transport change, middleware, test, etc.), you **must** create or update a session file in the journal folder before marking the step as done. Each session file should include:
+An implementation journal is maintained in the `Development/docs/implementation-journal/` folder. Each implementation session gets its own file in this folder. After completing each implementation step (phase task, new type, transport change, middleware, test, etc.), you **must** create or update a session file in the journal folder before marking the step as done. Each session file should include:
 
 - **What** was implemented (brief description)
 - **Files created/modified** (paths + what each file contains)

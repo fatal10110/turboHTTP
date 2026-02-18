@@ -211,7 +211,7 @@ For payload buffers > 256 bytes, now uses `ArrayPool<byte>.Shared` to rent buffe
 
 **Issue:** SslStream ALPN negotiation via reflection may fail on IL2CPP/AOT platforms (iOS, Android) due to code stripping or platform TLS differences.
 
-**Resolution:** Created `docs/phases/phase-03c-bouncy-castle-tls.md` documenting:
+**Resolution:** Created `Development/docs/phases/phase-03c-bouncy-castle-tls.md` documenting:
 - Optional BouncyCastle TLS fallback module (pure C#, no reflection)
 - `ITlsProvider` abstraction for pluggable TLS backends
 - `TlsProviderSelector` with Auto/SslStream/BouncyCastle modes

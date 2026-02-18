@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Auth;
 using TurboHTTP.Core;
+using TurboHTTP.Middleware;
 using TurboHTTP.Testing;
 
 namespace TurboHTTP.Tests.Auth

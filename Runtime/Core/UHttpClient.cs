@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,6 +13,8 @@ namespace TurboHTTP.Core
     /// </summary>
     public class UHttpClient : IDisposable
     {
+        private const string MonitorMiddlewareTypeName = "TurboHTTP.Middleware.MonitorMiddleware, TurboHTTP.Observability";
+
         private readonly UHttpClientOptions _options;
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
@@ -61,7 +65,7 @@ namespace TurboHTTP.Core
                 _ownsTransport = false;
             }
 
-            _pipeline = new HttpPipeline(_options.Middlewares, _transport);
+            _pipeline = new HttpPipeline(BuildPipelineMiddlewares(_options.Middlewares), _transport);
         }
 
         public UHttpRequestBuilder Get(string url)
@@ -199,5 +203,76 @@ namespace TurboHTTP.Core
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(UHttpClient));
         }
+
+        private static IReadOnlyList<IHttpMiddleware> BuildPipelineMiddlewares(
+            IReadOnlyList<IHttpMiddleware> configuredMiddlewares)
+        {
+            var middlewares = configuredMiddlewares != null
+                ? new List<IHttpMiddleware>(configuredMiddlewares)
+                : new List<IHttpMiddleware>();
+
+#if UNITY_EDITOR
+            TryAppendEditorMonitorMiddleware(middlewares);
+#endif
+
+            return middlewares;
+        }
+
+#if UNITY_EDITOR
+        private static void TryAppendEditorMonitorMiddleware(List<IHttpMiddleware> middlewares)
+        {
+            if (middlewares == null || !UnityEngine.Application.isPlaying)
+            {
+                return;
+            }
+
+            try
+            {
+                var monitorType = Type.GetType(MonitorMiddlewareTypeName, throwOnError: false);
+                if (monitorType == null || !typeof(IHttpMiddleware).IsAssignableFrom(monitorType))
+                {
+                    return;
+                }
+
+                if (!IsMonitorCaptureEnabled(monitorType))
+                {
+                    return;
+                }
+
+                for (int i = 0; i < middlewares.Count; i++)
+                {
+                    var middleware = middlewares[i];
+                    if (middleware != null && monitorType.IsInstanceOfType(middleware))
+                    {
+                        return;
+                    }
+                }
+
+                if (Activator.CreateInstance(monitorType) is IHttpMiddleware monitorMiddleware)
+                {
+                    // Append to capture final request/response payload that reaches transport.
+                    middlewares.Add(monitorMiddleware);
+                }
+            }
+            catch
+            {
+                // Monitor auto-wiring is optional and must never break client construction.
+            }
+        }
+
+        private static bool IsMonitorCaptureEnabled(Type monitorType)
+        {
+            var captureEnabledProperty = monitorType.GetProperty(
+                "CaptureEnabled",
+                BindingFlags.Public | BindingFlags.Static);
+            if (captureEnabledProperty == null || captureEnabledProperty.PropertyType != typeof(bool))
+            {
+                return false;
+            }
+
+            var value = captureEnabledProperty.GetValue(null, null);
+            return value is bool enabled && enabled;
+        }
+#endif
     }
 }

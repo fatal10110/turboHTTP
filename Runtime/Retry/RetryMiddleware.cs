@@ -2,8 +2,9 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Retry;
 
-namespace TurboHTTP.Retry
+namespace TurboHTTP.Middleware
 {
     /// <summary>
     /// Middleware that automatically retries failed requests with exponential backoff.

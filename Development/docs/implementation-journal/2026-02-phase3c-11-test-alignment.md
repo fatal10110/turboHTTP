@@ -5,7 +5,7 @@
 
 ## What Was Implemented
 
-Aligned TLS test coverage with `docs/phases/phase3c/step-3c.11-tests.md` using Unity Test Runner-compatible NUnit tests.
+Aligned TLS test coverage with `Development/docs/phases/phase3c/step-3c.11-tests.md` using Unity Test Runner-compatible NUnit tests.
 
 - Added missing 3C.11 suites:
   - `TlsHostnameValidationTests.cs`

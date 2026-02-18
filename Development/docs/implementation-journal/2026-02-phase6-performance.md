@@ -49,7 +49,7 @@ Phase 6 (M2 hardening gate) — pooling primitives, concurrency controls, reques
 
 ## Review Documents Produced
 
-- `docs/architecture-review-phase6.md` — 840 lines, full architecture review + Phase 6 design
-- `docs/security-audit.md` — 669 lines, full security audit (1 CRITICAL, 3 HIGH, 5 MEDIUM, 6 LOW)
-- `docs/network-review.md` — 275 lines, protocol compliance + performance analysis
-- `docs/product-strategy.md` — 355 lines, competitive analysis + go-to-market strategy
+- `Development/docs/architecture-review-phase6.md` — 840 lines, full architecture review + Phase 6 design
+- `Development/docs/security-audit.md` — 669 lines, full security audit (1 CRITICAL, 3 HIGH, 5 MEDIUM, 6 LOW)
+- `Development/docs/network-review.md` — 275 lines, protocol compliance + performance analysis
+- `Development/docs/product-strategy.md` — 355 lines, competitive analysis + go-to-market strategy

@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Middleware;
 using TurboHTTP.Retry;
 using TurboHTTP.Testing;
 

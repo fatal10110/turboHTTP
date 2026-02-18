@@ -229,7 +229,7 @@ TurboHTTP stands out from competitors through:
 
 ```
 turboHTTP/
-├── docs/                          # Implementation documentation (this folder)
+├── Development/docs/                          # Implementation documentation (this folder)
 │   ├── 00-overview.md            # This file
 │   └── phases/                    # Detailed phase documentation
 │       ├── phase-01-project-foundation.md

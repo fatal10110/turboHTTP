@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using TurboHTTP.Cache;
 using TurboHTTP.Core;
+using TurboHTTP.Middleware;
 using TurboHTTP.Observability;
 using TurboHTTP.RateLimit;
 using TurboHTTP.Retry;
