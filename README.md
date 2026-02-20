@@ -8,13 +8,16 @@
 
 ## Key Features
 
-*   **Modular Architecture:** Core client with optional specific modules (Retry, Cache, etc.).
+*   **Modular Architecture:** Core client with optional specific modules (Retry, Cache, etc.) and a zero-overhead plugin system.
 *   **Modern Transport:** Raw socket-based transport supporting HTTP/1.1 and **HTTP/2** (with multiplexing).
+*   **Resilience & Routing:** Happy Eyeballs dual-stack, full Proxy support, and Adaptive timeouts based on network quality.
+*   **Enterprise Security:** Advanced OAuth 2.0 & OIDC support with automated token refresh.
+*   **Mobile Readiness:** Native background networking for seamless iOS and Android execution.
 *   **Observability:** Detailed timeline traces for every request (DNS, Connect, SSL, TTFB).
 *   **Reliability:** Intelligent retry logic with idempotency awareness.
 *   **Performance:** Zero-allocation focused design with memory pooling.
 *   **Unity Integration:** Native `Texture2D`, `AudioClip`, and AssetBundle support.
-*   **Testing:** Record/Replay mode for deterministic integration testing.
+*   **Testing:** Record/Replay mode and Mock Server for deterministic testing.
 
 ## Installation
 

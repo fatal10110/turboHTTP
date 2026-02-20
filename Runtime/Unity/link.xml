@@ -1,0 +1,14 @@
+<linker>
+  <assembly fullname="TurboHTTP.Unity">
+    <type fullname="TurboHTTP.Unity.Decoders.IImageDecoder" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.IAudioDecoder" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.DecodedImage" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.DecodedAudio" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.DecoderRegistry" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.StbImageSharpDecoder" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.WavPcmDecoder" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.AiffPcmDecoder" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.NVorbisDecoder" preserve="all" />
+    <type fullname="TurboHTTP.Unity.Decoders.NLayerMp3Decoder" preserve="all" />
+  </assembly>
+</linker>

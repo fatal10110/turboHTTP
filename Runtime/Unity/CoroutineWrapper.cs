@@ -5,6 +5,7 @@ using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using UnityEngine;
 
 namespace TurboHTTP.Unity
 {
@@ -29,18 +30,18 @@ namespace TurboHTTP.Unity
             Action<UHttpResponse> onSuccess,
             Action<Exception> onError = null,
             CancellationToken cancellationToken = default,
-            UnityEngine.Object callbackOwner = null)
+            UnityEngine.Object callbackOwner = null,
+            bool cancelOnOwnerInactive = false)
         {
             if (builder == null) throw new ArgumentNullException(nameof(builder));
 
-            var task = builder.SendAsync(cancellationToken);
-            return RunTaskCoroutine(
-                task,
-                () => task.Result,
+            return SendCoroutineImpl(
+                builder,
                 onSuccess,
                 onError,
                 cancellationToken,
-                callbackOwner);
+                callbackOwner,
+                cancelOnOwnerInactive);
         }
 
         /// <summary>
@@ -56,22 +57,82 @@ namespace TurboHTTP.Unity
             Action<T> onSuccess,
             Action<Exception> onError = null,
             CancellationToken cancellationToken = default,
-            UnityEngine.Object callbackOwner = null)
+            UnityEngine.Object callbackOwner = null,
+            bool cancelOnOwnerInactive = false)
             where T : class
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
             if (string.IsNullOrWhiteSpace(url))
                 throw new ArgumentException("URL cannot be null or empty.", nameof(url));
 
-            Task<T> jsonTask;
+            return GetJsonCoroutineImpl(
+                client,
+                url,
+                onSuccess,
+                onError,
+                cancellationToken,
+                callbackOwner,
+                cancelOnOwnerInactive);
+        }
+
+        private static IEnumerator SendCoroutineImpl(
+            UHttpRequestBuilder builder,
+            Action<UHttpResponse> onSuccess,
+            Action<Exception> onError,
+            CancellationToken cancellationToken,
+            UnityEngine.Object callbackOwner,
+            bool cancelOnOwnerInactive)
+        {
+            var lifecycleBinding = LifecycleCancellation.Bind(
+                callbackOwner,
+                cancellationToken,
+                cancelOnOwnerInactive);
+
+            Task<UHttpResponse> task;
             try
             {
-                jsonTask = CreateJsonTask<T>(client, url, cancellationToken);
+                task = builder.SendAsync(lifecycleBinding.Token);
             }
             catch (Exception ex)
             {
-                if (ShouldInvokeCallbacks(callbackOwner))
-                    onError?.Invoke(ex);
+                InvokeErrorIfEligible(onError, ex, callbackOwner, lifecycleBinding);
+                lifecycleBinding.Dispose();
+                yield break;
+            }
+
+            yield return RunTaskCoroutine(
+                task,
+                () => task.Result,
+                onSuccess,
+                onError,
+                callbackOwner,
+                lifecycleBinding);
+        }
+
+        private static IEnumerator GetJsonCoroutineImpl<T>(
+            UHttpClient client,
+            string url,
+            Action<T> onSuccess,
+            Action<Exception> onError,
+            CancellationToken cancellationToken,
+            UnityEngine.Object callbackOwner,
+            bool cancelOnOwnerInactive)
+            where T : class
+        {
+            var lifecycleBinding = LifecycleCancellation.Bind(
+                callbackOwner,
+                cancellationToken,
+                cancelOnOwnerInactive);
+
+            Task<T> jsonTask;
+            try
+            {
+                jsonTask = CreateJsonTask<T>(client, url, lifecycleBinding.Token);
+            }
+            catch (Exception ex)
+            {
+                InvokeErrorIfEligible(onError, ex, callbackOwner, lifecycleBinding);
+                lifecycleBinding.Dispose();
                 yield break;
             }
 
@@ -80,8 +141,8 @@ namespace TurboHTTP.Unity
                 () => jsonTask.Result,
                 onSuccess,
                 onError,
-                cancellationToken,
-                callbackOwner);
+                callbackOwner,
+                lifecycleBinding);
         }
 
         private static IEnumerator RunTaskCoroutine<T>(
@@ -89,56 +150,113 @@ namespace TurboHTTP.Unity
             Func<T> getResult,
             Action<T> onSuccess,
             Action<Exception> onError,
-            CancellationToken cancellationToken,
-            UnityEngine.Object callbackOwner)
+            UnityEngine.Object callbackOwner,
+            LifecycleCancellationBinding lifecycleBinding)
         {
-            var errorInvoked = false;
+            var terminalState = 0;
 
-            void InvokeError(Exception ex)
+            bool TryEnterTerminal()
             {
-                if (errorInvoked)
+                return Interlocked.CompareExchange(ref terminalState, 1, 0) == 0;
+            }
+
+            void InvokeError(Exception exception)
+            {
+                if (!TryEnterTerminal())
                     return;
 
-                errorInvoked = true;
-                if (ShouldInvokeCallbacks(callbackOwner))
-                    onError?.Invoke(ex);
-            }
+                if (!ShouldInvokeCallbacks(callbackOwner, lifecycleBinding))
+                    return;
 
-            while (!task.IsCompleted)
-            {
-                if (cancellationToken.IsCancellationRequested || !ShouldInvokeCallbacks(callbackOwner))
-                    yield break;
-
-                yield return null;
-            }
-
-            if (cancellationToken.IsCancellationRequested ||
-                task.IsCanceled ||
-                !ShouldInvokeCallbacks(callbackOwner))
-            {
-                yield break;
+                if (onError != null)
+                {
+                    onError(exception);
+                }
+                else if (exception != null)
+                {
+                    Debug.LogException(exception);
+                }
             }
 
             try
             {
+                while (!task.IsCompleted)
+                {
+                    if (IsCallbackSuppressed(callbackOwner, lifecycleBinding))
+                        yield break;
+
+                    yield return null;
+                }
+
+                if (task.IsCanceled || IsCallbackSuppressed(callbackOwner, lifecycleBinding))
+                    yield break;
+
                 if (task.IsFaulted)
                 {
                     InvokeError(UnwrapTaskException(task.Exception));
                     yield break;
                 }
 
-                var result = getResult();
-                onSuccess?.Invoke(result);
+                try
+                {
+                    var result = getResult();
+
+                    if (!TryEnterTerminal())
+                        yield break;
+
+                    if (ShouldInvokeCallbacks(callbackOwner, lifecycleBinding))
+                    {
+                        onSuccess?.Invoke(result);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    InvokeError(UnwrapTaskException(ex));
+                }
             }
-            catch (Exception ex)
+            finally
             {
-                InvokeError(UnwrapTaskException(ex));
+                lifecycleBinding?.Dispose();
             }
         }
 
-        private static bool ShouldInvokeCallbacks(UnityEngine.Object callbackOwner)
+        private static bool IsCallbackSuppressed(
+            UnityEngine.Object callbackOwner,
+            LifecycleCancellationBinding lifecycleBinding)
         {
+            if (lifecycleBinding != null && lifecycleBinding.IsCancellationRequested)
+                return true;
+
+            return !ShouldInvokeCallbacks(callbackOwner, lifecycleBinding);
+        }
+
+        private static bool ShouldInvokeCallbacks(
+            UnityEngine.Object callbackOwner,
+            LifecycleCancellationBinding lifecycleBinding)
+        {
+            if (lifecycleBinding != null && lifecycleBinding.IsCancellationRequested)
+                return false;
+
             return callbackOwner == null || callbackOwner;
+        }
+
+        private static void InvokeErrorIfEligible(
+            Action<Exception> onError,
+            Exception exception,
+            UnityEngine.Object callbackOwner,
+            LifecycleCancellationBinding lifecycleBinding)
+        {
+            if (!ShouldInvokeCallbacks(callbackOwner, lifecycleBinding))
+                return;
+
+            if (onError != null)
+            {
+                onError(exception);
+            }
+            else if (exception != null)
+            {
+                Debug.LogException(exception);
+            }
         }
 
         private static Exception UnwrapTaskException(Exception exception)

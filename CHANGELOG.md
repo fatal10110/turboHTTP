@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Phase 14 Features**:
+  - Happy Eyeballs support for fast IPv4/IPv6 dual-stack connections.
+  - Proxy Support with authenticated HTTP/HTTPS proxies.
+  - Background Networking for native iOS/Android seamless connection persistence.
+  - Adaptive Networking for dynamic timeouts based on network quality.
+  - OAuth 2.0 & OIDC integration with automated token refresh and PKCE flow.
+  - Interceptor Middleware architecture for request/response mutation.
+  - Mock Server capability for robust offline unit and integration testing.
+  - Plugin System for zero-overhead, modular extensions.
 - Initial project structure
 - Modular assembly definitions
 - **Documentation Rework**: Restructured documentation, added contributing guidelines, and polished user guides.

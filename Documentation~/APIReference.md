@@ -107,6 +107,10 @@ Configuration options for `UHttpClient`.
 | `Transport` | `IHttpTransport` | Custom HTTP transport implementation |
 | `Middlewares` | `List<IHttpMiddleware>` | Middleware pipeline |
 | `Http2MaxDecodedHeaderBytes` | `int` | Max decoded header bytes for HTTP/2 (default: `262144`) |
+| `Proxy` | `ProxySettings` | HTTP/HTTPS proxy configuration (Phase 14) |
+| `HappyEyeballs` | `HappyEyeballsOptions` | IPv4/IPv6 dual-stack fallback settings (Phase 14) |
+| `BackgroundNetworking` | `BackgroundNetworkingPolicy` | iOS/Android native background exec settings (Phase 14) |
+| `Plugins` | `List<IHttpPlugin>` | Zero-overhead extension plugins (Phase 14) |
 
 ---
 
@@ -194,8 +198,18 @@ options.Middlewares.Add(cache);
 ### AuthMiddleware
 
 ```csharp
-var tokenProvider = new StaticTokenProvider("your-token");
-options.Middlewares.Add(new AuthMiddleware(tokenProvider));
+// Static Token
+var staticProvider = new StaticTokenProvider("your-token");
+options.Middlewares.Add(new AuthMiddleware(staticProvider));
+
+// OAuth 2.0 / OIDC (Phase 14)
+var oauthConfig = new OAuthConfig {
+    DiscoveryUrl = "https://auth.example.com/.well-known/openid-configuration",
+    ClientId = "my-client-id",
+    Scopes = { "openid", "profile", "api" }
+};
+var oauthClient = new OAuthClient(oauthConfig, new InMemoryTokenStore());
+options.Middlewares.Add(new AuthMiddleware(new OAuthTokenProvider(oauthClient)));
 ```
 
 ### RateLimitMiddleware
@@ -209,14 +223,19 @@ var rateLimit = new RateLimitMiddleware(new RateLimitPolicy {
 options.Middlewares.Add(rateLimit);
 ```
 
-### MetricsMiddleware
+### MetricsMiddleware & AdaptiveMiddleware
 
 ```csharp
+// Standard Metrics
 var metrics = new MetricsMiddleware();
 options.Middlewares.Add(metrics);
 
-// Access metrics later
-Debug.Log($"Total requests: {metrics.Metrics.TotalRequests}");
+// Adaptive Networking (Phase 14 - Adjusts timeouts dynamically)
+var adaptive = new AdaptiveMiddleware(new AdaptivePolicy {
+    TargetSuccessRate = 0.95,
+    MaxTimeoutMultiplier = 3.0
+});
+options.Middlewares.Add(adaptive);
 ```
 
 ---
@@ -316,4 +335,49 @@ var replayTransport = new RecordReplayTransport(
     "recordings.json"
 );
 // Requests will now return recorded responses instantly.
+```
+
+### Mock Server
+
+In-memory mocking for robust offline testing without touching the network stack.
+
+```csharp
+using TurboHTTP.Testing;
+
+var mockServer = new MockHttpServer();
+
+// Setup a mock route
+mockServer.Setup(route => route
+    .MatchMethod(HttpMethod.Get)
+    .MatchPath("/api/users/1"))
+    .Returns(new MockResponseBuilder()
+        .WithStatusCode(HttpStatusCode.OK)
+        .WithJsonBody(new { id = 1, name = "Test User" }));
+
+// Configure client to use the mock transport
+var options = new UHttpClientOptions {
+    Transport = new MockTransport(mockServer)
+};
+var mockClient = new UHttpClient(options);
+```
+
+### Interceptors & Plugins
+
+Low-level, zero-overhead mutation of requests and responses before middleware execution.
+
+```csharp
+using TurboHTTP.Core;
+
+public class CustomHeaderInterceptor : IHttpInterceptor
+{
+    public ValueTask<InterceptorResponseAction> OnResponseAsync(
+        UHttpResponse response, PluginContext context, CancellationToken ct)
+    {
+        response.Headers.Add("X-Injected", "true");
+        return new ValueTask<InterceptorResponseAction>(InterceptorResponseAction.Continue);
+    }
+}
+
+// Register via Plugin System
+options.Plugins.Add(new CustomInterceptorPlugin(new CustomHeaderInterceptor()));
 ```

@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -658,6 +659,173 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var response = await responseTask;
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(totalToSend, response.Body.Length);
+
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void DataReceiving_ExceedsConnectionWindow_FlowControlError()        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/conn-window"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 200), cts.Token);
+
+                var recvWindowField = typeof(Http2Connection).GetField(
+                    "_connectionRecvWindow", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.IsNotNull(recvWindowField);
+                recvWindowField.SetValue(conn, 32);
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Data,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = streamId,
+                    Payload = new byte[64],
+                    Length = 64
+                }, cts.Token);
+
+                var goaway = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.GoAway, goaway.Type);
+
+                uint errorCode = ((uint)goaway.Payload[4] << 24) | ((uint)goaway.Payload[5] << 16) |
+                                 ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
+                Assert.AreEqual((uint)Http2ErrorCode.FlowControlError, errorCode);
+
+                try
+                {
+                    await responseTask;
+                    Assert.Fail("Expected exception");
+                }
+                catch (Http2ProtocolException) { /* expected */ }
+                catch (UHttpException) { /* also acceptable */ }
+                catch (ObjectDisposedException) { /* also acceptable */ }
+
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void DataReceiving_ExceedsStreamWindow_FlowControlError()        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/stream-window"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 200), cts.Token);
+
+                var activeStreamsField = typeof(Http2Connection).GetField(
+                    "_activeStreams", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.IsNotNull(activeStreamsField);
+                var activeStreams = (System.Collections.Concurrent.ConcurrentDictionary<int, Http2Stream>)
+                    activeStreamsField.GetValue(conn);
+                Assert.IsTrue(activeStreams.TryGetValue(streamId, out var stream));
+                stream.RecvWindowSize = 16;
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Data,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = streamId,
+                    Payload = new byte[32],
+                    Length = 32
+                }, cts.Token);
+
+                var goaway = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.GoAway, goaway.Type);
+
+                uint errorCode = ((uint)goaway.Payload[4] << 24) | ((uint)goaway.Payload[5] << 16) |
+                                 ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
+                Assert.AreEqual((uint)Http2ErrorCode.FlowControlError, errorCode);
+
+                try
+                {
+                    await responseTask;
+                    Assert.Fail("Expected exception");
+                }
+                catch (Http2ProtocolException) { /* expected */ }
+                catch (UHttpException) { /* also acceptable */ }
+                catch (ObjectDisposedException) { /* also acceptable */ }
+
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void InitialWindowSizeDelta_OverflowCheckedPerStream()        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/window-overflow"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                var activeStreamsField = typeof(Http2Connection).GetField(
+                    "_activeStreams", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.IsNotNull(activeStreamsField);
+                var activeStreams = (System.Collections.Concurrent.ConcurrentDictionary<int, Http2Stream>)
+                    activeStreamsField.GetValue(conn);
+                Assert.IsTrue(activeStreams.TryGetValue(streamId, out var stream));
+                stream.SendWindowSize = int.MaxValue;
+
+                const uint newInitialWindow = 65536;
+                var settingsPayload = new byte[6];
+                settingsPayload[0] = 0x00;
+                settingsPayload[1] = (byte)Http2SettingId.InitialWindowSize;
+                settingsPayload[2] = (byte)((newInitialWindow >> 24) & 0xFF);
+                settingsPayload[3] = (byte)((newInitialWindow >> 16) & 0xFF);
+                settingsPayload[4] = (byte)((newInitialWindow >> 8) & 0xFF);
+                settingsPayload[5] = (byte)(newInitialWindow & 0xFF);
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Settings,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = 0,
+                    Payload = settingsPayload,
+                    Length = settingsPayload.Length
+                }, cts.Token);
+
+                var goaway = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.GoAway, goaway.Type);
+
+                uint errorCode = ((uint)goaway.Payload[4] << 24) | ((uint)goaway.Payload[5] << 16) |
+                                 ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
+                Assert.AreEqual((uint)Http2ErrorCode.FlowControlError, errorCode);
+
+                try
+                {
+                    await responseTask;
+                    Assert.Fail("Expected exception");
+                }
+                catch (Http2ProtocolException) { /* expected */ }
+                catch (UHttpException) { /* also acceptable */ }
+                catch (ObjectDisposedException) { /* also acceptable */ }
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();

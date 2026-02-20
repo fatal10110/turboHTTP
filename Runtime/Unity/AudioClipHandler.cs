@@ -1,10 +1,9 @@
 using System;
 using System.Collections;
-using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Unity.Decoders;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -22,6 +21,54 @@ namespace TurboHTTP.Unity
     }
 
     /// <summary>
+    /// Runtime policy for audio clip decode and temp-file behavior.
+    /// </summary>
+    public sealed class AudioClipPipelineOptions
+    {
+        public int MaxConcurrentDecodes { get; set; } = 2;
+        public int MaxActiveTempFiles { get; set; } = 128;
+        public int TempShardCount { get; set; } = 32;
+        public int TempMaxConcurrentIo { get; set; } = 2;
+        public int CleanupRetryCount { get; set; } = 3;
+        public TimeSpan CleanupRetryDelay { get; set; } = TimeSpan.FromMilliseconds(100);
+
+        public bool EnableThreadedDecode { get; set; }
+        public int ThreadedDecodeMinBytes { get; set; } = 512 * 1024;
+
+        public bool EnableStreamingForLargeClips { get; set; } = true;
+        public int StreamingThresholdBytes { get; set; } = 2 * 1024 * 1024;
+
+        public AudioClipPipelineOptions Clone()
+        {
+            return new AudioClipPipelineOptions
+            {
+                MaxConcurrentDecodes = MaxConcurrentDecodes,
+                MaxActiveTempFiles = MaxActiveTempFiles,
+                TempShardCount = TempShardCount,
+                TempMaxConcurrentIo = TempMaxConcurrentIo,
+                CleanupRetryCount = CleanupRetryCount,
+                CleanupRetryDelay = CleanupRetryDelay,
+                EnableThreadedDecode = EnableThreadedDecode,
+                ThreadedDecodeMinBytes = ThreadedDecodeMinBytes,
+                EnableStreamingForLargeClips = EnableStreamingForLargeClips,
+                StreamingThresholdBytes = StreamingThresholdBytes
+            };
+        }
+
+        public void Validate()
+        {
+            if (MaxConcurrentDecodes < 1) throw new ArgumentOutOfRangeException(nameof(MaxConcurrentDecodes));
+            if (MaxActiveTempFiles < 1) throw new ArgumentOutOfRangeException(nameof(MaxActiveTempFiles));
+            if (TempShardCount < 1) throw new ArgumentOutOfRangeException(nameof(TempShardCount));
+            if (TempMaxConcurrentIo < 1) throw new ArgumentOutOfRangeException(nameof(TempMaxConcurrentIo));
+            if (CleanupRetryCount < 0) throw new ArgumentOutOfRangeException(nameof(CleanupRetryCount));
+            if (CleanupRetryDelay < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(CleanupRetryDelay));
+            if (ThreadedDecodeMinBytes < 1) throw new ArgumentOutOfRangeException(nameof(ThreadedDecodeMinBytes));
+            if (StreamingThresholdBytes < 1) throw new ArgumentOutOfRangeException(nameof(StreamingThresholdBytes));
+        }
+    }
+
+    /// <summary>
     /// Unity AudioClip helpers for <see cref="UHttpResponse"/> and <see cref="UHttpClient"/>.
     /// </summary>
     /// <remarks>
@@ -30,17 +77,22 @@ namespace TurboHTTP.Unity
     /// </remarks>
     public static class AudioClipHandler
     {
-        private const string TempDirectoryName = "TurboHTTPAudioDecode";
-        private const string TempFilePrefix = "turbohttp-audio-";
-        private const int CleanupFailureErrorThreshold = 10;
-        private static int _startupCleanupCompleted;
-        private static int _cleanupFailureCount;
+        private static readonly object OptionsLock = new object();
+        private static AudioClipPipelineOptions _options = new AudioClipPipelineOptions();
+        private static SemaphoreSlim _decodeLimiter = new SemaphoreSlim(
+            _options.MaxConcurrentDecodes,
+            _options.MaxConcurrentDecodes);
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStaticState()
         {
-            Volatile.Write(ref _startupCleanupCompleted, 0);
-            Volatile.Write(ref _cleanupFailureCount, 0);
+            lock (OptionsLock)
+            {
+                _options = new AudioClipPipelineOptions();
+                _decodeLimiter = new SemaphoreSlim(
+                    _options.MaxConcurrentDecodes,
+                    _options.MaxConcurrentDecodes);
+            }
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -49,8 +101,47 @@ namespace TurboHTTP.Unity
             EnsureStartupCleanup();
         }
 
+        public static AudioClipPipelineOptions GetOptions()
+        {
+            lock (OptionsLock)
+            {
+                return _options.Clone();
+            }
+        }
+
+        public static void Configure(AudioClipPipelineOptions options)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            var clone = options.Clone();
+            clone.Validate();
+
+            lock (OptionsLock)
+            {
+                var previousMax = _options.MaxConcurrentDecodes;
+                _options = clone;
+
+                if (clone.MaxConcurrentDecodes != previousMax)
+                {
+                    var oldLimiter = _decodeLimiter;
+                    _decodeLimiter = new SemaphoreSlim(
+                        clone.MaxConcurrentDecodes,
+                        clone.MaxConcurrentDecodes);
+                    oldLimiter?.Dispose();
+                }
+            }
+
+            UnityTempFileManager.Shared.Configure(new UnityTempFileManagerOptions
+            {
+                ShardCount = clone.TempShardCount,
+                MaxActiveFiles = clone.MaxActiveTempFiles,
+                MaxConcurrentIo = clone.TempMaxConcurrentIo,
+                CleanupRetryCount = clone.CleanupRetryCount,
+                CleanupRetryDelay = clone.CleanupRetryDelay
+            });
+        }
+
         /// <summary>
-        /// Converts response bytes into an AudioClip by decoding through Unity's audio loader.
+        /// Converts response bytes into an AudioClip by decoding through managed decoder or Unity's audio loader fallback.
         /// </summary>
         public static async Task<AudioClip> AsAudioClipAsync(
             this UHttpResponse response,
@@ -70,22 +161,36 @@ namespace TurboHTTP.Unity
             EnsureStartupCleanup();
             cancellationToken.ThrowIfCancellationRequested();
 
-            var tempPath = GetTempFilePath(audioType);
+            var options = GetOptions();
+            var limiter = GetDecodeLimiter();
 
+            await limiter.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await WriteTempFileAsync(tempPath, response.Body, cancellationToken).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
+                if (options.EnableThreadedDecode &&
+                    response.Body.Length >= options.ThreadedDecodeMinBytes)
+                {
+                    var managedClip = await TryManagedDecodeAsync(
+                        response,
+                        audioType,
+                        clipName,
+                        cancellationToken).ConfigureAwait(false);
 
-                return await LoadAudioClipFromFileAsync(
-                    tempPath,
-                    audioType,
-                    clipName,
-                    cancellationToken).ConfigureAwait(false);
+                    if (managedClip != null)
+                        return managedClip;
+                }
+
+                return await DecodeViaUnityTempPathAsync(
+                        response,
+                        audioType,
+                        clipName,
+                        options,
+                        cancellationToken)
+                    .ConfigureAwait(false);
             }
             finally
             {
-                TryDeleteTempFile(tempPath);
+                limiter.Release();
             }
         }
 
@@ -116,10 +221,126 @@ namespace TurboHTTP.Unity
                 .ConfigureAwait(false);
         }
 
+        public static UnityTempFileManagerMetrics GetTempFileMetrics()
+        {
+            return UnityTempFileManager.Shared.GetMetrics();
+        }
+
+        private static SemaphoreSlim GetDecodeLimiter()
+        {
+            lock (OptionsLock)
+            {
+                return _decodeLimiter;
+            }
+        }
+
+        private static async Task<AudioClip> TryManagedDecodeAsync(
+            UHttpResponse response,
+            AudioClipType audioType,
+            string clipName,
+            CancellationToken cancellationToken)
+        {
+            var contentType = response.Headers?.Get("Content-Type");
+            var sourcePath = response.Request?.Uri?.AbsolutePath ?? GetExtension(audioType);
+
+            if (!DecoderRegistry.TryResolveAudioDecoder(
+                    contentType,
+                    sourcePath,
+                    out var decoder,
+                    out var reason))
+            {
+                Debug.LogWarning(
+                    "[TurboHTTP] Managed audio decode unavailable (" + reason + "). " +
+                    "Falling back to Unity decode temp-file path.");
+                return null;
+            }
+
+            try
+            {
+                var decoded = await decoder
+                    .DecodeAsync(response.Body, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return await MainThreadDispatcher.ExecuteAsync(
+                    () => CreateAudioClip(decoded, clipName),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(
+                    "[TurboHTTP] Managed audio decode failed and will fall back to Unity decode path. " +
+                    "Error: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static AudioClip CreateAudioClip(DecodedAudio decoded, string clipName)
+        {
+            if (decoded == null) throw new ArgumentNullException(nameof(decoded));
+
+            var clip = AudioClip.Create(
+                clipName,
+                decoded.SampleFrames,
+                decoded.Channels,
+                decoded.SampleRate,
+                stream: false);
+
+            if (!clip.SetData(decoded.Samples, 0))
+            {
+                UnityEngine.Object.Destroy(clip);
+                throw new InvalidOperationException("Failed to push decoded PCM data into AudioClip.");
+            }
+
+            clip.name = clipName;
+            return clip;
+        }
+
+        private static async Task<AudioClip> DecodeViaUnityTempPathAsync(
+            UHttpResponse response,
+            AudioClipType audioType,
+            string clipName,
+            AudioClipPipelineOptions options,
+            CancellationToken cancellationToken)
+        {
+            if (!UnityTempFileManager.Shared.TryReservePath(GetExtension(audioType), out var tempPath))
+            {
+                throw new InvalidOperationException(
+                    "Audio temp-file manager reached MaxActiveTempFiles limit.");
+            }
+
+            try
+            {
+                await UnityTempFileManager.Shared
+                    .WriteBytesAsync(tempPath, response.Body, cancellationToken)
+                    .ConfigureAwait(false);
+
+                var shouldStream =
+                    options.EnableStreamingForLargeClips &&
+                    response.Body.Length >= options.StreamingThresholdBytes;
+
+                return await LoadAudioClipFromFileAsync(
+                        tempPath,
+                        audioType,
+                        clipName,
+                        shouldStream,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                UnityTempFileManager.Shared.ReleaseAndScheduleDelete(tempPath);
+            }
+        }
+
         private static async Task<AudioClip> LoadAudioClipFromFileAsync(
             string filePath,
             AudioClipType audioType,
             string clipName,
+            bool streamAudio,
             CancellationToken cancellationToken)
         {
             var tcs = new TaskCompletionSource<AudioClip>(
@@ -131,7 +352,7 @@ namespace TurboHTTP.Unity
 
             try
             {
-                await MainThreadDispatcher.ExecuteAsync(() =>
+                await MainThreadDispatcher.ExecuteControlAsync(() =>
                 {
                     var fileUri = new Uri(filePath).AbsoluteUri;
                     var unityAudioType = ToUnityAudioType(audioType);
@@ -141,6 +362,7 @@ namespace TurboHTTP.Unity
                             fileUri,
                             unityAudioType,
                             clipName,
+                            streamAudio,
                             cancellationToken,
                             tcs));
                 }, cancellationToken).ConfigureAwait(false);
@@ -157,11 +379,17 @@ namespace TurboHTTP.Unity
             string fileUri,
             UnityEngine.AudioType unityAudioType,
             string clipName,
+            bool streamAudio,
             CancellationToken cancellationToken,
             TaskCompletionSource<AudioClip> tcs)
         {
             using (var request = UnityWebRequestMultimedia.GetAudioClip(fileUri, unityAudioType))
             {
+                if (request.downloadHandler is DownloadHandlerAudioClip downloadHandler)
+                {
+                    downloadHandler.streamAudio = streamAudio;
+                }
+
                 var operation = request.SendWebRequest();
 
                 while (!operation.isDone)
@@ -185,7 +413,10 @@ namespace TurboHTTP.Unity
                 if (request.result != UnityWebRequest.Result.Success)
                 {
                     tcs.TrySetException(new InvalidOperationException(
-                        $"Failed to decode audio clip from temp file '{fileUri}'. Error: {request.error}"));
+                        "Failed to decode audio clip from temp file '" +
+                        fileUri +
+                        "'. Error: " +
+                        request.error));
                     yield break;
                 }
 
@@ -251,43 +482,6 @@ namespace TurboHTTP.Unity
             }
         }
 
-        private static async Task WriteTempFileAsync(
-            string path,
-            ReadOnlyMemory<byte> payload,
-            CancellationToken cancellationToken)
-        {
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
-
-            using (var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
-            {
-                if (payload.IsEmpty)
-                    return;
-
-                if (MemoryMarshal.TryGetArray(payload, out var segment) && segment.Array != null)
-                {
-                    await file.WriteAsync(
-                            segment.Array,
-                            segment.Offset,
-                            segment.Count,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                    return;
-                }
-
-                var copy = payload.ToArray();
-                await file.WriteAsync(copy, 0, copy.Length, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        private static string GetTempFilePath(AudioClipType audioType)
-        {
-            var extension = GetExtension(audioType);
-            var fileName = TempFilePrefix + Guid.NewGuid().ToString("N") + extension;
-            return Path.Combine(GetTempDirectoryPath(), fileName);
-        }
-
         private static string GetExtension(AudioClipType audioType)
         {
             switch (audioType)
@@ -308,76 +502,9 @@ namespace TurboHTTP.Unity
             }
         }
 
-        private static string GetTempDirectoryPath()
-        {
-            return Path.Combine(Application.temporaryCachePath, TempDirectoryName);
-        }
-
         private static void EnsureStartupCleanup()
         {
-            if (Interlocked.Exchange(ref _startupCleanupCompleted, 1) != 0)
-                return;
-
-            var directory = GetTempDirectoryPath();
-            if (!Directory.Exists(directory))
-                return;
-
-            try
-            {
-                var files = Directory.GetFiles(directory, TempFilePrefix + "*");
-                for (var i = 0; i < files.Length; i++)
-                {
-                    TryDeleteTempFile(files[i], suppressWarning: true);
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning(
-                    "[TurboHTTP] Startup cleanup for temporary audio decode files failed: " +
-                    ex.Message);
-            }
-        }
-
-        private static void TryDeleteTempFile(string path, bool suppressWarning = false)
-        {
-            if (string.IsNullOrEmpty(path))
-                return;
-
-            try
-            {
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                    Volatile.Write(ref _cleanupFailureCount, 0);
-                }
-            }
-            catch (Exception ex)
-            {
-                var failureCount = Interlocked.Increment(ref _cleanupFailureCount);
-
-                if (!suppressWarning)
-                {
-                    Debug.LogWarning(
-                        "[TurboHTTP] Could not delete temporary audio decode file '" +
-                        path +
-                        "'. It will be retried on next startup. Error: " +
-                        ex.Message +
-                        " (failure count: " +
-                        failureCount +
-                        ").");
-                }
-
-                if (failureCount == CleanupFailureErrorThreshold ||
-                    (failureCount > CleanupFailureErrorThreshold &&
-                     failureCount % CleanupFailureErrorThreshold == 0))
-                {
-                    Debug.LogError(
-                        "[TurboHTTP] Temporary audio cleanup has failed " +
-                        failureCount +
-                        " times. Persistent failures can leak storage in " +
-                        Application.temporaryCachePath + ".");
-                }
-            }
+            UnityTempFileManager.Shared.EnsureStartupSweep();
         }
     }
 }

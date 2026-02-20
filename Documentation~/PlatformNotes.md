@@ -45,6 +45,9 @@ var transport = new RawSocketTransport(pool);
 
 ### iOS (IL2CPP)
 
+#### Background Networking
+TurboHTTP natively supports `UIApplication.beginBackgroundTask` to allow critical requests to finish when the app enters the background. This is handled automatically by the transport layer.
+
 #### App Transport Security (ATS)
 iOS blocks cleartext HTTP by default. To allow HTTP (e.g., for local dev), add to `Info.plist`:
 ```xml
@@ -59,6 +62,9 @@ iOS blocks cleartext HTTP by default. To allow HTTP (e.g., for local dev), add t
 App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via standard C# Sockets.
 
 ### Android (IL2CPP)
+
+#### Background Networking
+TurboHTTP provides a native Android JNI bridge to ensure network connections can complete cleanly when the app is backgrounded, mitigating OS-level socket closures during transitions.
 
 #### Cleartext Traffic
 Android 9+ (API 28+) blocks cleartext traffic. To allow it, add `android:usesCleartextTraffic="true"` to `<application>` in `AndroidManifest.xml`.

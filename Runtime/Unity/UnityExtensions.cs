@@ -1,6 +1,4 @@
 using System;
-using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -28,6 +26,26 @@ namespace TurboHTTP.Unity
                 url,
                 Application.persistentDataPath,
                 relativePath,
+                writeOptions: null,
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Downloads content into Application.persistentDataPath using optional atomic-write options.
+        /// </summary>
+        public static Task<string> DownloadToPersistentDataAsync(
+            this UHttpClient client,
+            string url,
+            string relativePath,
+            UnityAtomicWriteOptions writeOptions,
+            CancellationToken cancellationToken = default)
+        {
+            return DownloadToUnityPathAsync(
+                client,
+                url,
+                Application.persistentDataPath,
+                relativePath,
+                writeOptions,
                 cancellationToken);
         }
 
@@ -45,6 +63,26 @@ namespace TurboHTTP.Unity
                 url,
                 Application.temporaryCachePath,
                 relativePath,
+                writeOptions: null,
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Downloads content into Application.temporaryCachePath using optional atomic-write options.
+        /// </summary>
+        public static Task<string> DownloadToTempCacheAsync(
+            this UHttpClient client,
+            string url,
+            string relativePath,
+            UnityAtomicWriteOptions writeOptions,
+            CancellationToken cancellationToken = default)
+        {
+            return DownloadToUnityPathAsync(
+                client,
+                url,
+                Application.temporaryCachePath,
+                relativePath,
+                writeOptions,
                 cancellationToken);
         }
 
@@ -73,6 +111,7 @@ namespace TurboHTTP.Unity
             string url,
             string rootPath,
             string relativePath,
+            UnityAtomicWriteOptions writeOptions,
             CancellationToken cancellationToken)
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
@@ -83,102 +122,23 @@ namespace TurboHTTP.Unity
             if (string.IsNullOrWhiteSpace(rootPath))
                 throw new InvalidOperationException("Unity data path is unavailable.");
 
-            var resolvedPath = ResolvePathWithinRoot(rootPath, relativePath, nameof(relativePath));
-            EnsureDirectoryForFile(resolvedPath);
+            var resolvedPath = PathSafety.ResolvePathWithinRoot(
+                rootPath,
+                relativePath,
+                nameof(relativePath));
 
             var response = await client.Get(url).SendAsync(cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             cancellationToken.ThrowIfCancellationRequested();
 
-            using (var file = new FileStream(resolvedPath, FileMode.Create, FileAccess.Write, FileShare.None))
-            {
-                if (!response.Body.IsEmpty)
-                {
-                    await WriteBodyToFileAsync(file, response.Body, cancellationToken).ConfigureAwait(false);
-                }
-            }
+            await PathSafety.WriteAtomicAsync(
+                    resolvedPath,
+                    response.Body,
+                    writeOptions,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             return resolvedPath;
-        }
-
-        private static string ResolvePathWithinRoot(
-            string rootPath,
-            string relativePath,
-            string parameterName)
-        {
-            if (Path.IsPathRooted(relativePath))
-            {
-                throw new ArgumentException(
-                    "Path must be relative to the selected Unity data directory.",
-                    parameterName);
-            }
-
-            var canonicalRoot = Path.GetFullPath(rootPath);
-            var combined = Path.Combine(canonicalRoot, relativePath);
-            var canonicalTarget = Path.GetFullPath(combined);
-
-            if (!IsPathWithinRoot(canonicalRoot, canonicalTarget))
-            {
-                throw new ArgumentException(
-                    $"Path escapes root directory. Root: {canonicalRoot}, Target: {canonicalTarget}",
-                    parameterName);
-            }
-
-            return canonicalTarget;
-        }
-
-        private static void EnsureDirectoryForFile(string filePath)
-        {
-            var directory = Path.GetDirectoryName(filePath);
-            if (string.IsNullOrEmpty(directory))
-            {
-                throw new InvalidOperationException(
-                    $"Cannot determine destination directory for path '{filePath}'.");
-            }
-
-            if (!Directory.Exists(directory))
-                Directory.CreateDirectory(directory);
-        }
-
-        private static bool IsPathWithinRoot(string canonicalRoot, string canonicalTarget)
-        {
-            var relative = Path.GetRelativePath(canonicalRoot, canonicalTarget);
-            if (string.IsNullOrEmpty(relative) ||
-                string.Equals(relative, ".", StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            if (Path.IsPathRooted(relative))
-            {
-                return false;
-            }
-
-            if (string.Equals(relative, "..", StringComparison.Ordinal))
-                return false;
-
-            return !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
-                   !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
-        }
-
-        private static async Task WriteBodyToFileAsync(
-            FileStream file,
-            ReadOnlyMemory<byte> body,
-            CancellationToken cancellationToken)
-        {
-            if (MemoryMarshal.TryGetArray(body, out var segment) && segment.Array != null)
-            {
-                await file.WriteAsync(
-                        segment.Array,
-                        segment.Offset,
-                        segment.Count,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                return;
-            }
-
-            var bodyArray = body.ToArray();
-            await file.WriteAsync(bodyArray, 0, bodyArray.Length, cancellationToken).ConfigureAwait(false);
         }
 
         private static string BuildDefaultUserAgent()
