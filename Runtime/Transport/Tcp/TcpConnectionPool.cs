@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Transport.Connection;
 using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Transport.Tcp
@@ -219,8 +220,8 @@ namespace TurboHTTP.Transport.Tcp
     /// Thread-safe TCP connection pool keyed by host:port:secure.
     /// Manages idle connection reuse, per-host concurrency limits, TLS handshake delegation,
     /// and DNS resolution with timeout.
-    /// Uses IPv6-first sequential connect attempts (RFC 6724 preference). Full Happy Eyeballs
-    /// parallel racing (RFC 8305) is deferred to a future phase.
+    /// Uses Happy Eyeballs dual-stack connection racing (RFC 8305) with IPv6 preference
+    /// and staggered fallback to IPv4 for broken dual-stack networks.
     /// Per-host semaphore limits are advisory under rare eviction races during high churn.
     /// </summary>
     public sealed class TcpConnectionPool : IDisposable
@@ -232,6 +233,7 @@ namespace TurboHTTP.Transport.Tcp
         private readonly TimeSpan _connectionIdleTimeout;
         private readonly TlsBackend _tlsBackend;
         private readonly int _dnsTimeoutMs;
+        private readonly HappyEyeballsOptions _happyEyeballsOptions;
         private int _disposed;
 
         private readonly ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>> _idleConnections
@@ -248,7 +250,8 @@ namespace TurboHTTP.Transport.Tcp
             int maxConnectionsPerHost = 6,
             TimeSpan? connectionIdleTimeout = null,
             TlsBackend tlsBackend = TlsBackend.Auto,
-            TimeSpan? dnsTimeout = null)
+            TimeSpan? dnsTimeout = null,
+            HappyEyeballsOptions happyEyeballsOptions = null)
         {
             if (maxConnectionsPerHost <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
@@ -264,6 +267,8 @@ namespace TurboHTTP.Transport.Tcp
             _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
             _tlsBackend = tlsBackend;
             _dnsTimeoutMs = dnsTimeout.HasValue ? (int)dnsTimeout.Value.TotalMilliseconds : DefaultDnsTimeoutMs;
+            _happyEyeballsOptions = (happyEyeballsOptions ?? new HappyEyeballsOptions()).Clone();
+            _happyEyeballsOptions.Validate();
         }
 
         /// <summary>
@@ -452,64 +457,22 @@ namespace TurboHTTP.Transport.Tcp
             return await dnsTask.ConfigureAwait(false);
         }
 
-        private static async Task<Socket> ConnectSocketAsync(
+        private async Task<Socket> ConnectSocketAsync(
             IPAddress[] addresses, int port, CancellationToken ct)
         {
-            // Sort addresses: IPv6 first, then IPv4. This provides basic dual-stack
-            // preference per RFC 6724 (prefer IPv6 on dual-stack networks).
-            // Full Happy Eyeballs (RFC 8305) with parallel racing deferred to Phase 10.
-            Array.Sort(addresses, (a, b) =>
+            try
             {
-                bool aIs6 = a.AddressFamily == AddressFamily.InterNetworkV6;
-                bool bIs6 = b.AddressFamily == AddressFamily.InterNetworkV6;
-                if (aIs6 == bIs6) return 0;
-                return aIs6 ? -1 : 1;
-            });
-
-            Socket socket = null;
-            Exception lastException = null;
-
-            foreach (var address in addresses)
-            {
-                try
-                {
-                    socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-                    socket.NoDelay = true;
-
-                    // ConnectAsync has no CancellationToken in .NET Std 2.1.
-                    // Use dispose-on-cancel pattern for best-effort cancellation.
-                    using (ct.Register(() => socket.Dispose()))
-                    {
-                        await socket.ConnectAsync(new IPEndPoint(address, port)).ConfigureAwait(false);
-                    }
-
-                    // Guard against race: if ct fired just after ConnectAsync completed
-                    // but before the Register callback was unsubscribed, the socket may
-                    // have been disposed. Check and throw to avoid returning a dead socket.
-                    if (ct.IsCancellationRequested)
-                    {
-                        socket.Dispose();
-                        throw new OperationCanceledException("Connection cancelled", ct);
-                    }
-
-                    lastException = null;
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    lastException = ex;
-                    socket?.Dispose();
-                    socket = null;
-
-                    if (ct.IsCancellationRequested)
-                        throw new OperationCanceledException("Connection cancelled", ex, ct);
-                }
+                return await HappyEyeballsConnector.ConnectAsync(
+                    addresses,
+                    port,
+                    Timeout.InfiniteTimeSpan,
+                    _happyEyeballsOptions,
+                    ct).ConfigureAwait(false);
             }
-
-            if (socket == null)
-                throw lastException ?? new SocketException((int)SocketError.HostNotFound);
-
-            return socket;
+            catch (AggregateException aggregate) when (aggregate.InnerExceptions.Count > 0)
+            {
+                throw aggregate.InnerExceptions[0];
+            }
         }
 
         /// <summary>

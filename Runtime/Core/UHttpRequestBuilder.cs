@@ -106,6 +106,21 @@ namespace TurboHTTP.Core
             if (!metadata.ContainsKey(RequestMetadataKeys.MaxRedirects))
                 metadata[RequestMetadataKeys.MaxRedirects] = _client.ClientOptions.MaxRedirects;
 
+            if (_timeout.HasValue)
+                metadata[RequestMetadataKeys.ExplicitTimeout] = true;
+
+            if (!metadata.ContainsKey(RequestMetadataKeys.ProxyDisabled) &&
+                !metadata.ContainsKey(RequestMetadataKeys.ProxySettings))
+            {
+                var resolvedProxy = ProxyEnvironmentResolver.Resolve(
+                    uri,
+                    _client.ClientOptions.Proxy);
+                if (resolvedProxy != null)
+                {
+                    metadata[RequestMetadataKeys.ProxySettings] = resolvedProxy;
+                }
+            }
+
             return new UHttpRequest(
                 _method,
                 uri,

@@ -5,10 +5,8 @@ using System.Linq;
 using System.Text;
 using TurboHTTP.Core;
 
-namespace TurboHTTP.Middleware
+namespace TurboHTTP.Cache
 {
-    using TurboHTTP.Cache;
-
     public sealed partial class CacheMiddleware
     {
         private static bool TryResolveVary(HttpHeaders headers, out string[] varyHeaders, out bool wildcard)

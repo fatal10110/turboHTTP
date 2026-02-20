@@ -7,7 +7,6 @@
     "TurboHTTP.Retry",
     "TurboHTTP.Cache",
     "TurboHTTP.Auth",
-    "TurboHTTP.RateLimit",
     "TurboHTTP.Observability",
     "TurboHTTP.Files",
     "TurboHTTP.Unity",

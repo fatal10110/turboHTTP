@@ -281,6 +281,169 @@ namespace TurboHTTP.Tests.Transport.Http1
             }).GetAwaiter().GetResult();
         }
 
+        [Test]
+        public void HttpViaProxy_UsesAbsoluteForm()
+        {
+            Task.Run(async () =>
+            {
+                string requestLine = null;
+                string proxyAuth = null;
+
+                using var proxyServer = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    requestLine = captured.RequestLine;
+                    captured.Headers.TryGetValue("Proxy-Authorization", out proxyAuth);
+
+                    var response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                var response = await client.Get("http://origin.example.com/resource?id=42").SendAsync();
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("GET http://origin.example.com/resource?id=42 HTTP/1.1", requestLine);
+                Assert.IsNull(proxyAuth);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Connect407_RetryWithAuthOnce()
+        {
+            Task.Run(async () =>
+            {
+                int connectCount = 0;
+                string firstAuth = null;
+                string secondAuth = null;
+
+                using var proxyServer = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+
+                    var first = await ReadRequestStartAndHeadersAsync(stream);
+                    connectCount++;
+                    first.Headers.TryGetValue("Proxy-Authorization", out firstAuth);
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+
+                    var second = await ReadRequestStartAndHeadersAsync(stream);
+                    connectCount++;
+                    second.Headers.TryGetValue("Proxy-Authorization", out secondAuth);
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 Connection Established\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    client.Close();
+                });
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    Credentials = new NetworkCredential("user", "pass"),
+                    AllowPlaintextProxyAuth = true,
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                // CONNECT succeeds but TLS handshake cannot complete with this plain test server.
+                AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await client.Get("https://origin.example.com/secure").SendAsync());
+
+                Assert.AreEqual(2, connectCount);
+                Assert.IsNull(firstAuth);
+                Assert.IsNotNull(secondAuth);
+                StringAssert.StartsWith("Basic ", secondAuth);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Connect407_NoCredentialsFails()
+        {
+            Task.Run(async () =>
+            {
+                using var proxyServer = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    await ReadRequestStartAndHeadersAsync(stream);
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    client.Close();
+                });
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await client.Get("https://origin.example.com/secure").SendAsync());
+                Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
+                StringAssert.Contains("Proxy authentication required", ex.HttpError.Message);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CancellationDuringConnect_NoLeaks()
+        {
+            Task.Run(async () =>
+            {
+                using var proxyServer = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    await ReadRequestStartAndHeadersAsync(stream);
+                    await Task.Delay(TimeSpan.FromSeconds(5));
+                    client.Close();
+                });
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await client.Get("https://origin.example.com/secure").SendAsync(cts.Token));
+                Assert.AreEqual(UHttpErrorType.Cancelled, ex.HttpError.Type);
+            }).GetAwaiter().GetResult();
+        }
+
 #if TURBOHTTP_INTEGRATION_TESTS
         [Test]
         [Category("Integration")]
@@ -333,6 +496,46 @@ namespace TurboHTTP.Tests.Transport.Http1
                 else if (matched == 3 && b == (byte)'\n') matched = 4;
                 else matched = b == (byte)'\r' ? 1 : 0;
             }
+        }
+
+        private static async Task<(string RequestLine, Dictionary<string, string> Headers)> ReadRequestStartAndHeadersAsync(NetworkStream stream)
+        {
+            var requestLine = await ReadLineAsync(stream);
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            while (true)
+            {
+                var line = await ReadLineAsync(stream);
+                if (string.IsNullOrEmpty(line))
+                    break;
+
+                var colon = line.IndexOf(':');
+                if (colon <= 0)
+                    continue;
+
+                headers[line.Substring(0, colon).Trim()] = line.Substring(colon + 1).Trim();
+            }
+
+            return (requestLine, headers);
+        }
+
+        private static async Task<string> ReadLineAsync(NetworkStream stream)
+        {
+            var bytes = new List<byte>(128);
+            var buffer = new byte[1];
+            while (true)
+            {
+                var read = await stream.ReadAsync(buffer, 0, 1);
+                if (read == 0)
+                    break;
+
+                if (buffer[0] == (byte)'\n')
+                    break;
+                if (buffer[0] != (byte)'\r')
+                    bytes.Add(buffer[0]);
+            }
+
+            return Encoding.ASCII.GetString(bytes.ToArray());
         }
     }
 }

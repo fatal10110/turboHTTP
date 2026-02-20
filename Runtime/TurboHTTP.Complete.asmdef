@@ -7,7 +7,6 @@
     "TurboHTTP.Retry",
     "TurboHTTP.Cache",
     "TurboHTTP.Auth",
-    "TurboHTTP.RateLimit",
     "TurboHTTP.Observability",
     "TurboHTTP.Files",
     "TurboHTTP.Unity",
@@ -17,7 +16,7 @@
     "TurboHTTP.Middleware"
   ],
   "includePlatforms": [],
-  "excludePlatforms": [],
+  "excludePlatforms": ["WebGL"],
   "allowUnsafeCode": false,
   "overrideReferences": false,
   "precompiledReferences": [],

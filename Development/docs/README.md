@@ -6,6 +6,7 @@ This directory contains the complete implementation plan for TurboHTTP, a produc
 
 ### Start Here
 - **[00-overview.md](00-overview.md)** - Project summary, architecture, and success criteria
+- **[how-to-run-tests-with-temp-unity-project.md](how-to-run-tests-with-temp-unity-project.md)** - Sync package source to a temp path and run Unity tests from a separate test project
 
 ### Implementation Phases
 

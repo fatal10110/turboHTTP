@@ -1,10 +1,9 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using TurboHTTP.Auth;
 using TurboHTTP.Core;
 
-namespace TurboHTTP.Middleware
+namespace TurboHTTP.Auth
 {
     /// <summary>
     /// Middleware that adds authentication headers to requests.

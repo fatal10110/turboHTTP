@@ -4,7 +4,6 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
-using TurboHTTP.Middleware;
 using TurboHTTP.Observability;
 using UnityEditor;
 using UnityEngine;

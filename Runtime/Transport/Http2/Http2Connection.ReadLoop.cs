@@ -157,9 +157,21 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
-            // Write to response body (only the actual data, not padding)
+            // Write to response body (only the actual data, not padding).
+            // A canceled stream can be disposed concurrently after being removed from
+            // _activeStreams; ignore write-after-dispose and retire the stream.
+            bool responseBodyDisposed = false;
             if (dataLength > 0)
-                stream.ResponseBody.Write(frame.Payload, dataOffset, dataLength);
+            {
+                try
+                {
+                    stream.ResponseBody.Write(frame.Payload, dataOffset, dataLength);
+                }
+                catch (ObjectDisposedException)
+                {
+                    responseBodyDisposed = true;
+                }
+            }
 
             // Decrement recv windows (both connection and stream, using full frame length)
             _connectionRecvWindow -= flowControlledLength;
@@ -179,6 +191,12 @@ namespace TurboHTTP.Transport.Http2
                 int increment = _localSettings.InitialWindowSize - stream.RecvWindowSize;
                 await SendWindowUpdateAsync(frame.StreamId, increment, ct);
                 stream.RecvWindowSize = _localSettings.InitialWindowSize;
+            }
+
+            if (responseBodyDisposed)
+            {
+                _activeStreams.TryRemove(frame.StreamId, out _);
+                return;
             }
 
             // END_STREAM handling

@@ -185,68 +185,75 @@ namespace TurboHTTP.Transport.Http2
                 _ = SendRstStreamAsync(streamId, Http2ErrorCode.Cancel);
                 stream.Cancel();
                 _activeStreams.TryRemove(streamId, out _);
-                stream.Dispose();
             });
 
-            // Step 4: Build pseudo-headers + regular headers
-            var headerList = new List<(string, string)>();
-            headerList.Add((":method", request.Method.ToUpperString()));
-            headerList.Add((":scheme", request.Uri.Scheme.ToLowerInvariant()));
-            headerList.Add((":authority", BuildAuthorityValue(request.Uri)));
-            headerList.Add((":path", request.Uri.PathAndQuery ?? "/"));
-
-            foreach (var name in request.Headers.Names)
-            {
-                if (IsHttp2ForbiddenHeader(name)) continue;
-
-                // RFC 7540 Section 8.1.2.2: te header is forbidden in HTTP/2
-                // except with the value "trailers".
-                if (string.Equals(name, "te", StringComparison.OrdinalIgnoreCase))
-                {
-                    var teValues = request.Headers.GetValues(name);
-                    foreach (var v in teValues)
-                    {
-                        if (string.Equals(v.Trim(), "trailers", StringComparison.OrdinalIgnoreCase))
-                            headerList.Add(("te", "trailers"));
-                    }
-                    continue;
-                }
-
-                foreach (var value in request.Headers.GetValues(name))
-                    headerList.Add((name.ToLowerInvariant(), value));
-            }
-
-            if (!request.Headers.Contains("user-agent"))
-                headerList.Add(("user-agent", "TurboHTTP/1.0"));
-
-            // Step 5: HPACK encode headers + send HEADERS (under write lock)
-            await _writeLock.WaitAsync(ct);
             try
             {
-                byte[] headerBlock = _hpackEncoder.Encode(headerList);
-                bool hasBody = request.Body != null && request.Body.Length > 0;
+                // Step 4: Build pseudo-headers + regular headers
+                var headerList = new List<(string, string)>();
+                headerList.Add((":method", request.Method.ToUpperString()));
+                headerList.Add((":scheme", request.Uri.Scheme.ToLowerInvariant()));
+                headerList.Add((":authority", BuildAuthorityValue(request.Uri)));
+                headerList.Add((":path", request.Uri.PathAndQuery ?? "/"));
 
-                await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct);
+                foreach (var name in request.Headers.Names)
+                {
+                    if (IsHttp2ForbiddenHeader(name)) continue;
 
-                stream.State = hasBody ? Http2StreamState.Open : Http2StreamState.HalfClosedLocal;
+                    // RFC 7540 Section 8.1.2.2: te header is forbidden in HTTP/2
+                    // except with the value "trailers".
+                    if (string.Equals(name, "te", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var teValues = request.Headers.GetValues(name);
+                        foreach (var v in teValues)
+                        {
+                            if (string.Equals(v.Trim(), "trailers", StringComparison.OrdinalIgnoreCase))
+                                headerList.Add(("te", "trailers"));
+                        }
+                        continue;
+                    }
+
+                    foreach (var value in request.Headers.GetValues(name))
+                        headerList.Add((name.ToLowerInvariant(), value));
+                }
+
+                if (!request.Headers.Contains("user-agent"))
+                    headerList.Add(("user-agent", "TurboHTTP/1.0"));
+
+                // Step 5: HPACK encode headers + send HEADERS (under write lock)
+                await _writeLock.WaitAsync(ct);
+                try
+                {
+                    byte[] headerBlock = _hpackEncoder.Encode(headerList);
+                    bool hasBody = request.Body != null && request.Body.Length > 0;
+
+                    await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct);
+
+                    stream.State = hasBody ? Http2StreamState.Open : Http2StreamState.HalfClosedLocal;
+                }
+                finally
+                {
+                    _writeLock.Release();
+                }
+
+                // Step 7: Send DATA frames OUTSIDE write lock
+                bool hasBody2 = request.Body != null && request.Body.Length > 0;
+                if (hasBody2)
+                {
+                    await SendDataAsync(streamId, request.Body, stream, ct);
+                    stream.State = Http2StreamState.HalfClosedLocal;
+                }
+
+                context.RecordEvent("TransportH2RequestSent");
+
+                // Step 8: Wait for response
+                return await stream.ResponseTcs.Task;
             }
             finally
             {
-                _writeLock.Release();
+                _activeStreams.TryRemove(streamId, out _);
+                stream.Dispose();
             }
-
-            // Step 7: Send DATA frames OUTSIDE write lock
-            bool hasBody2 = request.Body != null && request.Body.Length > 0;
-            if (hasBody2)
-            {
-                await SendDataAsync(streamId, request.Body, stream, ct);
-                stream.State = Http2StreamState.HalfClosedLocal;
-            }
-
-            context.RecordEvent("TransportH2RequestSent");
-
-            // Step 8: Wait for response
-            return await stream.ResponseTcs.Task;
         }
     }
 }

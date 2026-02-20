@@ -231,6 +231,51 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void Serialize_DuplicateContentLength_Conflicting_ThrowsArgumentException()
+        {
+            var headers = new HttpHeaders();
+            headers.Add("Content-Length", "5");
+            headers.Add("Content-Length", "6");
+            var request = new UHttpRequest(
+                HttpMethod.POST,
+                new Uri("http://example.com/"),
+                headers,
+                body: Encoding.UTF8.GetBytes("hello"));
+
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+        }
+
+        [Test]
+        public void Serialize_DuplicateContentLength_IdenticalValues_AcceptsRequest()
+        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Add("Content-Length", "5");
+                headers.Add("Content-Length", "5");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    headers,
+                    body: Encoding.UTF8.GetBytes("hello"));
+
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Serialize_TransferEncodingAndContentLength_ThrowsArgumentException()
+        {
+            var headers = new HttpHeaders();
+            headers.Set("Transfer-Encoding", "gzip");
+            headers.Set("Content-Length", "0");
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+        }
+
+        [Test]
         public void Serialize_AutoAddsUserAgent()        {
             Task.Run(async () =>
             {
@@ -325,6 +370,26 @@ namespace TurboHTTP.Tests.Transport
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://[::1]:8080/"));
                 var result = await SerializeAsync(request);
                 Assert.IsTrue(result.Headers.Contains("Host: [::1]:8080"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Serialize_ProxyAbsoluteForm_UsesAbsoluteRequestTarget()
+        {
+            Task.Run(async () =>
+            {
+                var metadata = new System.Collections.Generic.Dictionary<string, object>
+                {
+                    [RequestMetadataKeys.ProxyAbsoluteForm] = true
+                };
+
+                var request = new UHttpRequest(
+                    HttpMethod.GET,
+                    new Uri("http://example.com/api/users?x=1"),
+                    metadata: metadata);
+
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.StartsWith("GET http://example.com/api/users?x=1 HTTP/1.1\r\n"));
             }).GetAwaiter().GetResult();
         }
     }

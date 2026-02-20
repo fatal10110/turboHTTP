@@ -1,0 +1,5 @@
+// TurboHTTP Android template additions for background networking bridge.
+// Merge this dependency into the main Unity Gradle template's dependencies block.
+dependencies {
+    implementation 'androidx.work:work-runtime-ktx:2.9.0'
+}

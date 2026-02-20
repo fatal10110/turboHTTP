@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -28,9 +29,7 @@ namespace TurboHTTP.Transport.Http1
             // 1. Request line: METHOD /path HTTP/1.1\r\n
             sb.Append(request.Method.ToUpperString());
             sb.Append(' ');
-            var path = request.Uri.PathAndQuery;
-            if (string.IsNullOrEmpty(path)) path = "/";
-            sb.Append(path);
+            sb.Append(GetRequestTarget(request));
             sb.Append(" HTTP/1.1\r\n");
 
             // 2. Host header (required by HTTP/1.1)
@@ -66,12 +65,22 @@ namespace TurboHTTP.Transport.Http1
             bool hasTransferEncoding = request.Headers.Contains("Transfer-Encoding");
             if (hasTransferEncoding)
             {
-                var te = request.Headers.Get("Transfer-Encoding");
+                var teValues = request.Headers.GetValues("Transfer-Encoding");
                 bool hasBody = request.Body != null && request.Body.Length > 0;
+                bool hasChunked = false;
+                for (int i = 0; i < teValues.Count; i++)
+                {
+                    var teValue = teValues[i];
+                    if (teValue != null &&
+                        teValue.IndexOf("chunked", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        hasChunked = true;
+                        break;
+                    }
+                }
 
                 // Reject chunked with a body — we can't encode it (Phase 3 limitation)
-                if (hasBody && te != null &&
-                    te.IndexOf("chunked", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (hasBody && hasChunked)
                 {
                     throw new ArgumentException(
                         "Transfer-Encoding: chunked is set with a body, but chunked body encoding " +
@@ -80,7 +89,49 @@ namespace TurboHTTP.Transport.Http1
                 // TE without body is allowed — passes through for protocol signaling
             }
 
-            // 4. User headers — one line per value (multi-value support)
+            // 4. Validate Content-Length before serializing user headers
+            // (RFC 9110 §8.6 + smuggling hardening).
+            var contentLengthValues = request.Headers.GetValues("Content-Length");
+            int actualBodyLength = request.Body?.Length ?? 0;
+
+            if (hasTransferEncoding && contentLengthValues.Count > 0)
+            {
+                throw new ArgumentException(
+                    "Transfer-Encoding and Content-Length must not both be set.");
+            }
+
+            if (contentLengthValues.Count > 0)
+            {
+                long? normalizedContentLength = null;
+                for (int i = 0; i < contentLengthValues.Count; i++)
+                {
+                    var rawValue = contentLengthValues[i];
+                    if (string.IsNullOrWhiteSpace(rawValue) ||
+                        !long.TryParse(rawValue.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ||
+                        parsed < 0)
+                    {
+                        throw new ArgumentException($"Invalid Content-Length header value: {rawValue}");
+                    }
+
+                    if (!normalizedContentLength.HasValue)
+                    {
+                        normalizedContentLength = parsed;
+                    }
+                    else if (normalizedContentLength.Value != parsed)
+                    {
+                        throw new ArgumentException(
+                            "Conflicting Content-Length header values are not allowed.");
+                    }
+                }
+
+                if (normalizedContentLength.Value != actualBodyLength)
+                {
+                    throw new ArgumentException(
+                        $"Content-Length header ({normalizedContentLength.Value}) does not match body size ({actualBodyLength})");
+                }
+            }
+
+            // 5. User headers — one line per value (multi-value support)
             foreach (var name in request.Headers.Names)
             {
                 var values = request.Headers.GetValues(name);
@@ -94,20 +145,10 @@ namespace TurboHTTP.Transport.Http1
                 }
             }
 
-            // 5. Validate/auto-add Content-Length (unless Transfer-Encoding is set)
-            if (!hasTransferEncoding)
+            // 6. Auto-add Content-Length (unless Transfer-Encoding is set)
+            if (!hasTransferEncoding && contentLengthValues.Count == 0)
             {
-                var userCL = request.Headers.Get("Content-Length");
-                int actualBodyLength = request.Body?.Length ?? 0;
-
-                if (userCL != null)
-                {
-                    // Validate user-provided Content-Length matches actual body size
-                    if (!long.TryParse(userCL, out var clValue) || clValue != actualBodyLength)
-                        throw new ArgumentException(
-                            $"Content-Length header ({userCL}) does not match body size ({actualBodyLength})");
-                }
-                else if (actualBodyLength > 0)
+                if (actualBodyLength > 0)
                 {
                     // Auto-add Content-Length only when body is present
                     sb.Append("Content-Length: ");
@@ -116,26 +157,26 @@ namespace TurboHTTP.Transport.Http1
                 }
             }
 
-            // 6. Auto-add User-Agent
+            // 7. Auto-add User-Agent
             if (!request.Headers.Contains("User-Agent"))
             {
                 sb.Append("User-Agent: TurboHTTP/1.0\r\n");
             }
 
-            // 7. Auto-add Connection: keep-alive
+            // 8. Auto-add Connection: keep-alive
             if (!request.Headers.Contains("Connection"))
             {
                 sb.Append("Connection: keep-alive\r\n");
             }
 
-            // 8. End of headers
+            // 9. End of headers
             sb.Append("\r\n");
 
-            // 9. Write header block using Latin-1
+            // 10. Write header block using Latin-1
             var headerBytes = EncodingHelper.Latin1.GetBytes(sb.ToString());
             await stream.WriteAsync(headerBytes, 0, headerBytes.Length, ct).ConfigureAwait(false);
 
-            // 10. Write body
+            // 11. Write body
             if (request.Body != null && request.Body.Length > 0)
                 await stream.WriteAsync(request.Body, 0, request.Body.Length, ct).ConfigureAwait(false);
 
@@ -152,6 +193,24 @@ namespace TurboHTTP.Transport.Http1
                 throw new ArgumentException($"Header name contains invalid characters: {name}");
             if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
                 throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
+        }
+
+        private static string GetRequestTarget(UHttpRequest request)
+        {
+            if (request.Metadata != null &&
+                request.Metadata.TryGetValue(RequestMetadataKeys.ProxyAbsoluteForm, out var absoluteFormObj) &&
+                absoluteFormObj is bool useAbsoluteForm &&
+                useAbsoluteForm)
+            {
+                var absolute = request.Uri.GetComponents(
+                    UriComponents.SchemeAndServer | UriComponents.PathAndQuery,
+                    UriFormat.UriEscaped);
+                if (!string.IsNullOrEmpty(absolute))
+                    return absolute;
+            }
+
+            var path = request.Uri.PathAndQuery;
+            return string.IsNullOrEmpty(path) ? "/" : path;
         }
     }
 }

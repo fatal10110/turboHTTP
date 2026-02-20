@@ -3,9 +3,8 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
-using TurboHTTP.Observability;
 
-namespace TurboHTTP.Middleware
+namespace TurboHTTP.Observability
 {
     /// <summary>
     /// Middleware that captures request/response snapshots for the Editor monitor.

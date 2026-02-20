@@ -28,10 +28,8 @@ namespace TurboHTTP.Cache
     }
 }
 
-namespace TurboHTTP.Middleware
+namespace TurboHTTP.Cache
 {
-    using TurboHTTP.Cache;
-
     /// <summary>
     /// RFC-aware cache middleware with conditional revalidation support.
     /// </summary>

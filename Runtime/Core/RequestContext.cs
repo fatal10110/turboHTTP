@@ -37,8 +37,9 @@ namespace TurboHTTP.Core
         private readonly object _lock = new object();
         private TimelineEvent[] _timelineSnapshot;
         private bool _timelineSnapshotDirty;
+        private volatile UHttpRequest _request;
 
-        public UHttpRequest Request { get; private set; }
+        public UHttpRequest Request => _request;
 
         public IReadOnlyList<TimelineEvent> Timeline
         {
@@ -75,7 +76,7 @@ namespace TurboHTTP.Core
 
         public RequestContext(UHttpRequest request)
         {
-            Request = request ?? throw new ArgumentNullException(nameof(request));
+            _request = request ?? throw new ArgumentNullException(nameof(request));
             _stopwatch = Stopwatch.StartNew();
             _timeline = new List<TimelineEvent>();
             _state = new Dictionary<string, object>();
@@ -101,7 +102,7 @@ namespace TurboHTTP.Core
         /// </summary>
         public void UpdateRequest(UHttpRequest newRequest)
         {
-            Request = newRequest ?? throw new ArgumentNullException(nameof(newRequest));
+            _request = newRequest ?? throw new ArgumentNullException(nameof(newRequest));
         }
 
         /// <summary>

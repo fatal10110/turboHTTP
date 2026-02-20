@@ -2,9 +2,8 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
-using TurboHTTP.Observability;
 
-namespace TurboHTTP.Middleware
+namespace TurboHTTP.Observability
 {
     /// <summary>
     /// Middleware that collects HTTP request/response metrics.
@@ -12,6 +11,9 @@ namespace TurboHTTP.Middleware
     /// </summary>
     public class MetricsMiddleware : IHttpMiddleware
     {
+        private static readonly Func<string, long, long> IncrementHostCount = static (_, count) => count + 1;
+        private static readonly Func<int, long, long> IncrementStatusCodeCount = static (_, count) => count + 1;
+
         private readonly HttpMetrics _metrics = new HttpMetrics();
         private long _totalResponseTimeMs;
         private long _completedRequests;
@@ -30,7 +32,7 @@ namespace TurboHTTP.Middleware
             Interlocked.Increment(ref _metrics.TotalRequests);
 
             var host = request.Uri.Host;
-            _metrics.RequestsByHost.AddOrUpdate(host, 1, (_, count) => count + 1);
+            _metrics.RequestsByHost.AddOrUpdate(host, 1, IncrementHostCount);
 
             if (request.Body != null)
             {
@@ -53,7 +55,7 @@ namespace TurboHTTP.Middleware
 
                 var statusCode = (int)response.StatusCode;
                 _metrics.RequestsByStatusCode.AddOrUpdate(
-                    statusCode, 1, (_, count) => count + 1);
+                    statusCode, 1, IncrementStatusCodeCount);
 
                 if (!response.Body.IsEmpty)
                 {

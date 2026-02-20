@@ -4,10 +4,8 @@ using System.Globalization;
 using System.Net;
 using TurboHTTP.Core;
 
-namespace TurboHTTP.Middleware
+namespace TurboHTTP.Cache
 {
-    using TurboHTTP.Cache;
-
     public sealed partial class CacheMiddleware
     {
         private static CacheControlDirectives ParseCacheControl(IReadOnlyList<string> values)

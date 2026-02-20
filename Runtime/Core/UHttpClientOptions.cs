@@ -42,6 +42,47 @@ namespace TurboHTTP.Core
         public List<IHttpMiddleware> Middlewares { get; set; } = new List<IHttpMiddleware>();
 
         /// <summary>
+        /// Optional request/response interceptors that run around the middleware pipeline.
+        /// </summary>
+        public List<IHttpInterceptor> Interceptors { get; set; } = new List<IHttpInterceptor>();
+
+        /// <summary>
+        /// How interceptor exceptions are handled.
+        /// </summary>
+        public InterceptorFailurePolicy InterceptorFailurePolicy { get; set; } = InterceptorFailurePolicy.Propagate;
+
+        /// <summary>
+        /// Max time to wait for plugin shutdown callbacks.
+        /// </summary>
+        public TimeSpan PluginShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+        /// <summary>
+        /// Optional adaptive network behavior policy.
+        /// </summary>
+        public AdaptivePolicy AdaptivePolicy { get; set; } = new AdaptivePolicy();
+
+        /// <summary>
+        /// Optional proxy settings (or environment resolution).
+        /// </summary>
+        public ProxySettings Proxy { get; set; }
+
+        /// <summary>
+        /// Optional background networking behavior for mobile-style pause/resume flows.
+        /// </summary>
+        public BackgroundNetworkingPolicy BackgroundNetworkingPolicy { get; set; } = new BackgroundNetworkingPolicy();
+
+        /// <summary>
+        /// Optional platform bridge used by <see cref="BackgroundNetworkingMiddleware"/>
+        /// to acquire/release background execution scopes.
+        /// </summary>
+        public IBackgroundExecutionBridge BackgroundExecutionBridge { get; set; }
+
+        /// <summary>
+        /// Detector used by <see cref="AdaptiveMiddleware"/> for quality snapshots.
+        /// </summary>
+        public NetworkQualityDetector NetworkQualityDetector { get; set; }
+
+        /// <summary>
         /// Whether to follow HTTP redirects automatically.
         /// NOT enforced in Phase 3 — placeholder for Phase 4.
         /// </summary>
@@ -104,6 +145,14 @@ namespace TurboHTTP.Core
                 DefaultHeaders = DefaultHeaders?.Clone() ?? new HttpHeaders(),
                 Transport = Transport,
                 Middlewares = Middlewares != null ? new List<IHttpMiddleware>(Middlewares) : new List<IHttpMiddleware>(),
+                Interceptors = Interceptors != null ? new List<IHttpInterceptor>(Interceptors) : new List<IHttpInterceptor>(),
+                InterceptorFailurePolicy = InterceptorFailurePolicy,
+                PluginShutdownTimeout = PluginShutdownTimeout,
+                AdaptivePolicy = AdaptivePolicy?.Clone() ?? new AdaptivePolicy(),
+                Proxy = Proxy?.Clone(),
+                BackgroundNetworkingPolicy = BackgroundNetworkingPolicy?.Clone() ?? new BackgroundNetworkingPolicy(),
+                BackgroundExecutionBridge = BackgroundExecutionBridge,
+                NetworkQualityDetector = NetworkQualityDetector,
                 FollowRedirects = FollowRedirects,
                 MaxRedirects = MaxRedirects,
                 DisposeTransport = DisposeTransport,
@@ -111,5 +160,12 @@ namespace TurboHTTP.Core
                 Http2MaxDecodedHeaderBytes = Http2MaxDecodedHeaderBytes
             };
         }
+    }
+
+    public enum InterceptorFailurePolicy
+    {
+        Propagate,
+        ConvertToResponse,
+        IgnoreAndContinue
     }
 }
