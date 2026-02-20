@@ -16,9 +16,9 @@ namespace TurboHTTP.Core
         private int _currentQualityCode;
         private int _consecutiveBetter;
         private int _consecutiveWorse;
-        private double _ewmaLatencyMs;
-        private double _timeoutRatio;
-        private double _successRatio;
+        private long _ewmaLatencyMsBits;
+        private long _timeoutRatioBits;
+        private long _successRatioBits;
 
         public NetworkQualityDetector(
             int windowSize = 64,
@@ -38,6 +38,7 @@ namespace TurboHTTP.Core
             _promoteAfterConsecutiveWindows = promoteAfterConsecutiveWindows;
             _ewmaAlpha = ewmaAlpha;
             _currentQualityCode = (int)NetworkQuality.Good;
+            WriteAtomicDouble(ref _successRatioBits, 1d);
         }
 
         public void AddSample(NetworkQualitySample sample)
@@ -58,9 +59,9 @@ namespace TurboHTTP.Core
         {
             return new NetworkQualitySnapshot(
                 (NetworkQuality)Volatile.Read(ref _currentQualityCode),
-                Volatile.Read(ref _ewmaLatencyMs),
-                Volatile.Read(ref _timeoutRatio),
-                Volatile.Read(ref _successRatio),
+                ReadAtomicDouble(ref _ewmaLatencyMsBits),
+                ReadAtomicDouble(ref _timeoutRatioBits),
+                ReadAtomicDouble(ref _successRatioBits),
                 Volatile.Read(ref _count));
         }
 
@@ -68,9 +69,9 @@ namespace TurboHTTP.Core
         {
             if (_count == 0)
             {
-                _ewmaLatencyMs = 0;
-                _timeoutRatio = 0;
-                _successRatio = 1;
+                WriteAtomicDouble(ref _ewmaLatencyMsBits, 0d);
+                WriteAtomicDouble(ref _timeoutRatioBits, 0d);
+                WriteAtomicDouble(ref _successRatioBits, 1d);
                 return;
             }
 
@@ -100,9 +101,9 @@ namespace TurboHTTP.Core
                 }
             }
 
-            _ewmaLatencyMs = latencyEwma;
-            _timeoutRatio = timeoutEwma;
-            _successRatio = successEwma;
+            WriteAtomicDouble(ref _ewmaLatencyMsBits, latencyEwma);
+            WriteAtomicDouble(ref _timeoutRatioBits, timeoutEwma);
+            WriteAtomicDouble(ref _successRatioBits, successEwma);
         }
 
         private void UpdateQuality_NoLock()
@@ -150,23 +151,27 @@ namespace TurboHTTP.Core
             if (_count == 0)
                 return NetworkQuality.Good;
 
-            if (_ewmaLatencyMs < _thresholds.ExcellentLatencyMs &&
-                _timeoutRatio < _thresholds.ExcellentTimeoutRatio &&
-                _successRatio >= _thresholds.ExcellentSuccessRatio)
+            var ewmaLatencyMs = ReadAtomicDouble(ref _ewmaLatencyMsBits);
+            var timeoutRatio = ReadAtomicDouble(ref _timeoutRatioBits);
+            var successRatio = ReadAtomicDouble(ref _successRatioBits);
+
+            if (ewmaLatencyMs < _thresholds.ExcellentLatencyMs &&
+                timeoutRatio < _thresholds.ExcellentTimeoutRatio &&
+                successRatio >= _thresholds.ExcellentSuccessRatio)
             {
                 return NetworkQuality.Excellent;
             }
 
-            if (_ewmaLatencyMs < _thresholds.GoodLatencyMs &&
-                _timeoutRatio < _thresholds.GoodTimeoutRatio &&
-                _successRatio >= _thresholds.GoodSuccessRatio)
+            if (ewmaLatencyMs < _thresholds.GoodLatencyMs &&
+                timeoutRatio < _thresholds.GoodTimeoutRatio &&
+                successRatio >= _thresholds.GoodSuccessRatio)
             {
                 return NetworkQuality.Good;
             }
 
-            if (_ewmaLatencyMs < _thresholds.FairLatencyMs &&
-                _timeoutRatio < _thresholds.FairTimeoutRatio &&
-                _successRatio >= _thresholds.FairSuccessRatio)
+            if (ewmaLatencyMs < _thresholds.FairLatencyMs &&
+                timeoutRatio < _thresholds.FairTimeoutRatio &&
+                successRatio >= _thresholds.FairSuccessRatio)
             {
                 return NetworkQuality.Fair;
             }
@@ -182,7 +187,7 @@ namespace TurboHTTP.Core
         private bool ShouldDemoteImmediately_NoLock(NetworkQuality computed)
         {
             return computed == NetworkQuality.Poor &&
-                   _timeoutRatio >= _thresholds.FairTimeoutRatio;
+                   ReadAtomicDouble(ref _timeoutRatioBits) >= _thresholds.FairTimeoutRatio;
         }
 
         private static NetworkQuality DemoteOneLevel(NetworkQuality current, NetworkQuality computed)
@@ -192,6 +197,16 @@ namespace TurboHTTP.Core
 
             var oneStep = (NetworkQuality)Math.Min((int)current + 1, (int)NetworkQuality.Poor);
             return IsWorse(computed, oneStep) ? oneStep : computed;
+        }
+
+        private static void WriteAtomicDouble(ref long targetBits, double value)
+        {
+            Volatile.Write(ref targetBits, BitConverter.DoubleToInt64Bits(value));
+        }
+
+        private static double ReadAtomicDouble(ref long sourceBits)
+        {
+            return BitConverter.Int64BitsToDouble(Volatile.Read(ref sourceBits));
         }
     }
 }

@@ -19,7 +19,6 @@ namespace TurboHTTP.Observability
     /// <summary>
     /// Immutable timeline snapshot used by <see cref="HttpMonitorEvent"/>.
     /// </summary>
-    [Serializable]
     public sealed class HttpMonitorTimelineEvent
     {
         private static readonly IReadOnlyDictionary<string, string> EmptyData =
@@ -60,7 +59,8 @@ namespace TurboHTTP.Observability
     /// <summary>
     /// Immutable request/response capture record used by the HTTP monitor tooling.
     /// </summary>
-    [Serializable]
+    /// Not [Serializable] — contains ReadOnlyMemory{byte} and IReadOnlyDictionary fields
+    /// which are not serializable. Use the Export path in HttpMonitorWindow for serialization.
     public sealed class HttpMonitorEvent
     {
         private static readonly UTF8Encoding Utf8NoThrow = new UTF8Encoding(false, false);
@@ -264,12 +264,9 @@ namespace TurboHTTP.Observability
 
         private static ReadOnlyMemory<byte> CloneBody(ReadOnlyMemory<byte> body)
         {
-            if (body.IsEmpty)
-            {
-                return ReadOnlyMemory<byte>.Empty;
-            }
-
-            return new ReadOnlyMemory<byte>(body.ToArray());
+            // MonitorMiddleware.CreateBodySnapshot already returns a defensive copy.
+            // No additional cloning needed — HttpMonitorEvent is immutable.
+            return body;
         }
 
         private static IReadOnlyDictionary<string, string> CopyHeaders(

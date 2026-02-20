@@ -15,6 +15,7 @@ namespace TurboHTTP.Core
         private readonly Action<IHttpInterceptor> _registerInterceptor;
         private readonly Action<string> _diagnostics;
         private readonly List<IHttpInterceptor> _registeredInterceptors = new List<IHttpInterceptor>();
+        private readonly UHttpClientOptions _optionsSnapshot;
 
         internal PluginContext(
             UHttpClientOptions optionsSnapshot,
@@ -23,14 +24,14 @@ namespace TurboHTTP.Core
             Action<IHttpInterceptor> registerInterceptor,
             Action<string> diagnostics)
         {
-            OptionsSnapshot = optionsSnapshot ?? throw new ArgumentNullException(nameof(optionsSnapshot));
+            _optionsSnapshot = optionsSnapshot?.Clone() ?? throw new ArgumentNullException(nameof(optionsSnapshot));
             _pluginName = pluginName ?? string.Empty;
             _capabilities = capabilities;
             _registerInterceptor = registerInterceptor ?? throw new ArgumentNullException(nameof(registerInterceptor));
             _diagnostics = diagnostics;
         }
 
-        public UHttpClientOptions OptionsSnapshot { get; }
+        public UHttpClientOptions OptionsSnapshot => _optionsSnapshot.Clone();
 
         public PluginCapabilities Capabilities => _capabilities;
 

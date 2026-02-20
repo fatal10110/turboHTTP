@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -14,6 +15,11 @@ namespace TurboHTTP.Unity
         public bool Readable { get; set; }
         public bool MipMaps { get; set; } = true;
         public bool Linear { get; set; }
+
+        /// <summary>
+        /// Initial Texture2D construction format. Unity's Texture2D.LoadImage may replace
+        /// the underlying texture data format during decode.
+        /// </summary>
         public TextureFormat Format { get; set; } = TextureFormat.RGBA32;
 
         /// <summary>
@@ -40,6 +46,11 @@ namespace TurboHTTP.Unity
         /// <summary>
         /// Converts response bytes into a Texture2D.
         /// </summary>
+        /// <remarks>
+        /// This synchronous API is main-thread only and blocks until work completes.
+        /// Prefer <see cref="GetTextureAsync(UHttpClient, string, TextureOptions, CancellationToken)"/>
+        /// when calling from worker-thread contexts.
+        /// </remarks>
         public static Texture2D AsTexture2D(this UHttpResponse response, TextureOptions options = null)
         {
             var decodeInput = PrepareDecodeInput(response, options);
@@ -62,7 +73,8 @@ namespace TurboHTTP.Unity
             var response = await client
                 .Get(url)
                 .WithHeader("Accept", "image/*")
-                .SendAsync(cancellationToken);
+                .SendAsync(cancellationToken)
+                .ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();
             cancellationToken.ThrowIfCancellationRequested();
@@ -70,12 +82,17 @@ namespace TurboHTTP.Unity
             var decodeInput = PrepareDecodeInput(response, options);
             return await MainThreadDispatcher.ExecuteAsync(
                 () => DecodeTexture(decodeInput),
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>
         /// Creates a sprite from a texture on the main thread.
         /// </summary>
+        /// <remarks>
+        /// This synchronous API is main-thread only and blocks until work completes.
+        /// Prefer <see cref="GetSpriteAsync(UHttpClient, string, TextureOptions, Vector2?, float, CancellationToken)"/>
+        /// when calling from worker-thread contexts.
+        /// </remarks>
         public static Sprite AsSprite(this Texture2D texture, Vector2? pivot = null, float pixelsPerUnit = 100f)
         {
             if (texture == null) throw new ArgumentNullException(nameof(texture));
@@ -87,12 +104,7 @@ namespace TurboHTTP.Unity
                     "pixelsPerUnit must be > 0.");
             }
 
-            return MainThreadDispatcher.Execute(() =>
-            {
-                var rect = new Rect(0f, 0f, texture.width, texture.height);
-                var spritePivot = pivot ?? new Vector2(0.5f, 0.5f);
-                return Sprite.Create(texture, rect, spritePivot, pixelsPerUnit);
-            });
+            return MainThreadDispatcher.Execute(() => CreateSprite(texture, pivot, pixelsPerUnit));
         }
 
         /// <summary>
@@ -106,13 +118,19 @@ namespace TurboHTTP.Unity
             float pixelsPerUnit = 100f,
             CancellationToken cancellationToken = default)
         {
-            var texture = await client.GetTextureAsync(url, options, cancellationToken);
-            return texture.AsSprite(pivot, pixelsPerUnit);
+            var texture = await client
+                .GetTextureAsync(url, options, cancellationToken)
+                .ConfigureAwait(false);
+
+            return await MainThreadDispatcher.ExecuteAsync(
+                () => CreateSprite(texture, pivot, pixelsPerUnit),
+                cancellationToken).ConfigureAwait(false);
         }
 
         private static DecodeInput PrepareDecodeInput(UHttpResponse response, TextureOptions options)
         {
             if (response == null) throw new ArgumentNullException(nameof(response));
+            response.EnsureSuccessStatusCode();
 
             options ??= new TextureOptions();
 
@@ -125,8 +143,7 @@ namespace TurboHTTP.Unity
             ValidateContentType(response, options);
             ValidateBodyLength(response, options);
 
-            // Response body may be sourced from pooled buffers; copy before dispatch.
-            return new DecodeInput(response.Body.ToArray(), options);
+            return new DecodeInput(GetDecodeBytes(response.Body), options);
         }
 
         private static void ValidateContentType(UHttpResponse response, TextureOptions options)
@@ -199,6 +216,36 @@ namespace TurboHTTP.Unity
                     "Failed to decode image bytes into Texture2D.",
                     ex);
             }
+        }
+
+        private static byte[] GetDecodeBytes(ReadOnlyMemory<byte> body)
+        {
+            if (TryGetExactArray(body, out var existing))
+                return existing;
+
+            return body.ToArray();
+        }
+
+        private static bool TryGetExactArray(ReadOnlyMemory<byte> memory, out byte[] array)
+        {
+            if (MemoryMarshal.TryGetArray(memory, out var segment) &&
+                segment.Array != null &&
+                segment.Offset == 0 &&
+                segment.Count == segment.Array.Length)
+            {
+                array = segment.Array;
+                return true;
+            }
+
+            array = null;
+            return false;
+        }
+
+        private static Sprite CreateSprite(Texture2D texture, Vector2? pivot, float pixelsPerUnit)
+        {
+            var rect = new Rect(0f, 0f, texture.width, texture.height);
+            var spritePivot = pivot ?? new Vector2(0.5f, 0.5f);
+            return Sprite.Create(texture, rect, spritePivot, pixelsPerUnit);
         }
 
         private static void DestroyUnityObject(UnityEngine.Object unityObject)

@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using NUnit.Framework;
 using TurboHTTP.Core;
 
@@ -135,6 +136,31 @@ namespace TurboHTTP.Tests.Core
         {
             Assert.IsFalse(ProxyBypassMatcher.IsBypassed("10.1.2.3", 443, new[] { "10.0.0.0/33" }));
             Assert.IsFalse(ProxyBypassMatcher.IsBypassed("::1", 443, new[] { "2001:db8::/129" }));
+        }
+
+        [Test]
+        public void Clone_Credentials_AreDeepCloned()
+        {
+            var original = new ProxySettings
+            {
+                Address = new Uri("http://proxy.example:8080"),
+                Credentials = new NetworkCredential("user-a", "pass-a", "domain-a")
+            };
+
+            var clone = original.Clone();
+            original.Credentials.UserName = "user-b";
+            original.Credentials.Password = "pass-b";
+            original.Credentials.Domain = "domain-b";
+
+            Assert.AreEqual("user-a", clone.Credentials.UserName);
+            Assert.AreEqual("pass-a", clone.Credentials.Password);
+            Assert.AreEqual("domain-a", clone.Credentials.Domain);
+        }
+
+        [Test]
+        public void Cidr_Ipv4MappedIpv6_MatchesIpv4Rule()
+        {
+            Assert.IsTrue(ProxyBypassMatcher.IsBypassed("::ffff:192.168.1.50", 443, new[] { "192.168.0.0/16" }));
         }
     }
 }

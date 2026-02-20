@@ -302,8 +302,9 @@ namespace TurboHTTP.Transport.Http2
 
         private void DecodeAndSetHeaders(Http2Stream stream, bool isTrailingHeaders)
         {
-            var headerBlock = stream.GetHeaderBlock();
-            var decoded = _hpackDecoder.Decode(headerBlock, 0, headerBlock.Length);
+            var headerBlock = stream.GetHeaderBlockSegment();
+            var headerBytes = headerBlock.Array ?? Array.Empty<byte>();
+            var decoded = _hpackDecoder.Decode(headerBytes, headerBlock.Offset, headerBlock.Count);
 
             // Enforce SETTINGS_MAX_HEADER_LIST_SIZE (RFC 7540 Section 6.5.2).
             // Header list size = sum of (name length + value length + 32) for each header.
@@ -459,21 +460,32 @@ namespace TurboHTTP.Transport.Http2
             }
 
             // Send SETTINGS ACK
-            await _writeLock.WaitAsync(CancellationToken.None);
             try
             {
-                await _codec.WriteFrameAsync(new Http2Frame
+                await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+                try
                 {
-                    Type = Http2FrameType.Settings,
-                    Flags = Http2FrameFlags.Ack,
-                    StreamId = 0,
-                    Payload = Array.Empty<byte>(),
-                    Length = 0
-                }, CancellationToken.None);
+                    await _codec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Settings,
+                        Flags = Http2FrameFlags.Ack,
+                        StreamId = 0,
+                        Payload = Array.Empty<byte>(),
+                        Length = 0
+                    }, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _writeLock.Release();
+                }
             }
-            finally
+            catch (OperationCanceledException) when (ct.IsCancellationRequested || _cts.IsCancellationRequested)
             {
-                _writeLock.Release();
+                // Connection is shutting down.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Connection is shutting down.
             }
         }
 
@@ -490,21 +502,32 @@ namespace TurboHTTP.Transport.Http2
             if (frame.HasFlag(Http2FrameFlags.Ack))
                 return; // We don't send PINGs proactively in Phase 3
 
-            await _writeLock.WaitAsync(CancellationToken.None);
             try
             {
-                await _codec.WriteFrameAsync(new Http2Frame
+                await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+                try
                 {
-                    Type = Http2FrameType.Ping,
-                    Flags = Http2FrameFlags.Ack,
-                    StreamId = 0,
-                    Payload = frame.Payload,
-                    Length = 8
-                }, CancellationToken.None);
+                    await _codec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Ping,
+                        Flags = Http2FrameFlags.Ack,
+                        StreamId = 0,
+                        Payload = frame.Payload,
+                        Length = 8
+                    }, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _writeLock.Release();
+                }
             }
-            finally
+            catch (OperationCanceledException) when (ct.IsCancellationRequested || _cts.IsCancellationRequested)
             {
-                _writeLock.Release();
+                // Connection is shutting down.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Connection is shutting down.
             }
         }
 

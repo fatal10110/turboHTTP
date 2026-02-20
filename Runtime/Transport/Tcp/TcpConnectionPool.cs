@@ -150,6 +150,7 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         public void ReturnToPool()
         {
+            PooledConnection connectionToReturn = null;
             bool shouldReturn = false;
             lock (_lock)
             {
@@ -157,6 +158,7 @@ namespace TurboHTTP.Transport.Tcp
                 {
                     shouldReturn = true;
                     _released = true;
+                    connectionToReturn = Connection;
                 }
             }
 
@@ -164,16 +166,11 @@ namespace TurboHTTP.Transport.Tcp
             {
                 try
                 {
-                    if (Connection.IsAlive)
-                        _pool.EnqueueConnection(Connection);
-                    else
-                        Connection.Dispose();
+                    _pool.EnqueueConnection(connectionToReturn);
                 }
                 catch (ObjectDisposedException)
                 {
-                    // Connection was disposed by racing Dispose() call on another thread.
-                    // This can occur if Dispose() is called between setting _released = true
-                    // and the IsAlive check. Safe to ignore — connection is already cleaned up.
+                    // Pool/connection was disposed by a racing shutdown path.
                 }
             }
         }
@@ -234,6 +231,9 @@ namespace TurboHTTP.Transport.Tcp
         private readonly TlsBackend _tlsBackend;
         private readonly int _dnsTimeoutMs;
         private readonly HappyEyeballsOptions _happyEyeballsOptions;
+        private readonly TimeSpan _scavengeInterval;
+        private readonly CancellationTokenSource _scavengeCts;
+        private readonly Task _scavengeTask;
         private int _disposed;
 
         private readonly ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>> _idleConnections
@@ -269,6 +269,16 @@ namespace TurboHTTP.Transport.Tcp
             _dnsTimeoutMs = dnsTimeout.HasValue ? (int)dnsTimeout.Value.TotalMilliseconds : DefaultDnsTimeoutMs;
             _happyEyeballsOptions = (happyEyeballsOptions ?? new HappyEyeballsOptions()).Clone();
             _happyEyeballsOptions.Validate();
+
+            var halfIdle = TimeSpan.FromTicks(_connectionIdleTimeout.Ticks / 2);
+            var minInterval = TimeSpan.FromSeconds(5);
+            var maxInterval = TimeSpan.FromSeconds(60);
+            _scavengeInterval = halfIdle < minInterval
+                ? minInterval
+                : (halfIdle > maxInterval ? maxInterval : halfIdle);
+
+            _scavengeCts = new CancellationTokenSource();
+            _scavengeTask = Task.Run(() => RunIdleScavengerAsync(_scavengeCts.Token));
         }
 
         /// <summary>
@@ -534,10 +544,90 @@ namespace TurboHTTP.Transport.Tcp
             }
         }
 
+        private async Task RunIdleScavengerAsync(CancellationToken ct)
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(_scavengeInterval, ct).ConfigureAwait(false);
+                    ScavengeIdleConnections(DateTime.UtcNow);
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Expected during disposal.
+            }
+            catch
+            {
+                // Background scavenger must never crash the process.
+            }
+        }
+
+        private void ScavengeIdleConnections(DateTime nowUtc)
+        {
+            foreach (var kvp in _idleConnections)
+            {
+                var key = kvp.Key;
+                var queue = kvp.Value;
+                int toScan = queue.Count;
+
+                for (int i = 0; i < toScan; i++)
+                {
+                    if (!queue.TryDequeue(out var connection))
+                        break;
+
+                    if (IsConnectionReusable(connection, nowUtc))
+                    {
+                        queue.Enqueue(connection);
+                    }
+                    else
+                    {
+                        connection.Dispose();
+                    }
+                }
+
+                if (queue.IsEmpty)
+                {
+                    _idleConnections.TryRemove(key, out _);
+                }
+            }
+        }
+
+        private bool IsConnectionReusable(PooledConnection connection, DateTime nowUtc)
+        {
+            if (connection == null || !connection.IsAlive)
+                return false;
+
+            if ((nowUtc - connection.LastUsed) >= _connectionIdleTimeout)
+                return false;
+
+            if (HasUnexpectedData(connection))
+                return false;
+
+            return true;
+        }
+
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
+
+            try
+            {
+                _scavengeCts?.Cancel();
+            }
+            catch { /* best effort */ }
+
+            try
+            {
+                _scavengeTask?.Wait(TimeSpan.FromMilliseconds(250));
+            }
+            catch { /* best effort */ }
+            finally
+            {
+                _scavengeCts?.Dispose();
+            }
 
             // Drain all queues, dispose each connection
             foreach (var kvp in _idleConnections)

@@ -30,6 +30,7 @@ namespace TurboHTTP.Transport.Http2
         // Stream management
         private readonly ConcurrentDictionary<int, Http2Stream> _activeStreams
             = new ConcurrentDictionary<int, Http2Stream>();
+        private readonly object _streamCreateLock = new object();
         private int _nextStreamId = 1;
 
         // Settings
@@ -46,10 +47,12 @@ namespace TurboHTTP.Transport.Http2
 
         // Lifecycle
         private Task _readLoopTask;
+        private Task _keepAliveTask;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private volatile bool _goawayReceived;
         private int _lastGoawayStreamId;
         private int _disposed;
+        private static readonly TimeSpan KeepAlivePingInterval = TimeSpan.FromSeconds(30);
 
         // CONTINUATION tracking
         private int _continuationStreamId;
@@ -126,6 +129,10 @@ namespace TurboHTTP.Transport.Http2
             }
 
             await ackTask.ConfigureAwait(false); // propagate any exception
+
+            // Keep idle HTTP/2 connections active on mobile NATs.
+            if (_keepAliveTask == null)
+                _keepAliveTask = Task.Run(() => KeepAliveLoopAsync(_cts.Token));
         }
 
         /// <summary>
@@ -134,40 +141,36 @@ namespace TurboHTTP.Transport.Http2
         public async Task<UHttpResponse> SendRequestAsync(
             UHttpRequest request, RequestContext context, CancellationToken ct)
         {
-            // Step 1: Pre-flight checks
-            if (_goawayReceived)
-                throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                    "Connection received GOAWAY"));
-            if (_cts.IsCancellationRequested)
-                throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                    "Connection is closed"));
+            Http2Stream stream;
+            int streamId;
 
-            // Step 2: Enforce SETTINGS_MAX_CONCURRENT_STREAMS (RFC 7540 Section 5.1.2)
-            // NOTE: This check is not atomic with stream creation below. Under high
-            // concurrency, multiple threads may pass this check simultaneously, briefly
-            // exceeding the limit. The server handles this gracefully with REFUSED_STREAM.
-            // A proper fix (SemaphoreSlim gated on MaxConcurrentStreams) is deferred to Phase 10.
-            if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
-                throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                    $"MAX_CONCURRENT_STREAMS limit reached ({_remoteSettings.MaxConcurrentStreams})"));
-
-            // Step 3: Allocate stream ID
-            var streamId = AllocateNextStreamId();
-
-            // Step 3: Create stream object (with both send and recv windows)
-            var stream = new Http2Stream(streamId, request, context,
-                _remoteSettings.InitialWindowSize, _localSettings.InitialWindowSize);
-            _activeStreams[streamId] = stream;
-
-            // Re-check shutdown after adding to _activeStreams
-            if (_goawayReceived || _cts.IsCancellationRequested)
+            lock (_streamCreateLock)
             {
-                _activeStreams.TryRemove(streamId, out _);
-                stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                    "Connection closed during stream creation")));
-                stream.Dispose();
-                throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                    "Connection is closed"));
+                // Step 1: Pre-flight checks
+                if (_goawayReceived)
+                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        "Connection received GOAWAY"));
+                if (_cts.IsCancellationRequested)
+                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        "Connection is closed"));
+
+                // Step 2: Enforce SETTINGS_MAX_CONCURRENT_STREAMS (RFC 7540 Section 5.1.2)
+                if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
+                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        $"MAX_CONCURRENT_STREAMS limit reached ({_remoteSettings.MaxConcurrentStreams})"));
+
+                // Step 3: Allocate stream ID and reject IDs beyond GOAWAY last stream.
+                streamId = AllocateNextStreamId();
+                if (_goawayReceived || (_lastGoawayStreamId > 0 && streamId > _lastGoawayStreamId))
+                {
+                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        "Connection closed during stream creation"));
+                }
+
+                // Step 4: Create stream object (with both send and recv windows)
+                stream = new Http2Stream(streamId, request, context,
+                    _remoteSettings.InitialWindowSize, _localSettings.InitialWindowSize);
+                _activeStreams[streamId] = stream;
             }
 
             // Check if already cancelled
@@ -182,17 +185,25 @@ namespace TurboHTTP.Transport.Http2
             // Register per-request cancellation
             stream.CancellationRegistration = ct.Register(() =>
             {
-                _ = SendRstStreamAsync(streamId, Http2ErrorCode.Cancel);
-                stream.Cancel();
-                _activeStreams.TryRemove(streamId, out _);
+                if (_activeStreams.TryRemove(streamId, out var canceledStream))
+                {
+                    _ = SendRstStreamAsync(streamId, Http2ErrorCode.Cancel);
+                    canceledStream.Cancel();
+                }
             });
 
             try
             {
                 // Step 4: Build pseudo-headers + regular headers
-                var headerList = new List<(string, string)>();
+                int headerValueCount = 5; // 4 pseudo-headers + user-agent fallback
+                foreach (var name in request.Headers.Names)
+                {
+                    headerValueCount += request.Headers.GetValues(name).Count;
+                }
+
+                var headerList = new List<(string, string)>(headerValueCount);
                 headerList.Add((":method", request.Method.ToUpperString()));
-                headerList.Add((":scheme", request.Uri.Scheme.ToLowerInvariant()));
+                headerList.Add((":scheme", ToLowerAsciiInvariant(request.Uri.Scheme)));
                 headerList.Add((":authority", BuildAuthorityValue(request.Uri)));
                 headerList.Add((":path", request.Uri.PathAndQuery ?? "/"));
 
@@ -214,7 +225,7 @@ namespace TurboHTTP.Transport.Http2
                     }
 
                     foreach (var value in request.Headers.GetValues(name))
-                        headerList.Add((name.ToLowerInvariant(), value));
+                        headerList.Add((ToLowerAsciiInvariant(name), value));
                 }
 
                 if (!request.Headers.Contains("user-agent"))
@@ -249,11 +260,33 @@ namespace TurboHTTP.Transport.Http2
                 // Step 8: Wait for response
                 return await stream.ResponseTcs.Task;
             }
+            catch (ObjectDisposedException ex)
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    "HTTP/2 connection disposed during request send.",
+                    ex));
+            }
             finally
             {
                 _activeStreams.TryRemove(streamId, out _);
                 stream.Dispose();
             }
+        }
+
+        private static string ToLowerAsciiInvariant(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return string.Empty;
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c >= 'A' && c <= 'Z')
+                    return value.ToLowerInvariant();
+            }
+
+            return value;
         }
     }
 }

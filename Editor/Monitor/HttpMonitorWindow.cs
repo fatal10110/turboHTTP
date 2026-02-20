@@ -22,8 +22,9 @@ namespace TurboHTTP.Editor
         {
             "Authorization",
             "Proxy-Authorization",
+            "WWW-Authenticate",
             "X-Auth-Token",
-            "X-API-Key",
+            "X-Api-Key",
             "Cookie",
             "Set-Cookie"
         };

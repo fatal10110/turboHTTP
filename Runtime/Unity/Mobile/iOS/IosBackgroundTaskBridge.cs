@@ -49,11 +49,24 @@ namespace TurboHTTP.Unity.Mobile.iOS
                 disposeAction: async () =>
                 {
                     expirationCts.Cancel();
+                    try
+                    {
+                        await monitorTask.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                    catch
+                    {
+                    }
+
                     expirationCts.Dispose();
                     await TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(
                         () => IosBackgroundTaskBindings.EndBackgroundTask(taskId),
                         CancellationToken.None).ConfigureAwait(false);
-                    _ = monitorTask;
                 });
 #endif
         }

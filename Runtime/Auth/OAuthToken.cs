@@ -14,6 +14,8 @@ namespace TurboHTTP.Auth
         {
             if (string.IsNullOrWhiteSpace(accessToken))
                 throw new ArgumentException("Access token is required.", nameof(accessToken));
+            if (expiresAtUtc.Kind != DateTimeKind.Utc)
+                throw new ArgumentException("ExpiresAtUtc must be specified in UTC.", nameof(expiresAtUtc));
 
             AccessToken = accessToken;
             ExpiresAtUtc = expiresAtUtc;

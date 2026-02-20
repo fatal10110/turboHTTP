@@ -4,6 +4,10 @@
 **Assembly:** `TurboHTTP.Unity`, `TurboHTTP.Tests.Runtime`
 **Files:** 2 new, 1 modified
 
+## Current State
+
+`UnityExtensions.cs` already implements `ResolvePathWithinRoot`, `IsPathWithinRoot`, and `Path.GetFullPath` canonicalization with traversal detection. Phase 15.4 extracts this logic into a dedicated `PathSafety` utility, adds atomic write support, and optional integrity checks — hardening the existing foundation without breaking current APIs.
+
 ---
 
 ## Step 1: Add Canonical Path Safety Layer
@@ -33,7 +37,7 @@ Implementation constraints:
 
 **Files:**
 - `Runtime/Unity/UnityExtensions.cs` (modify)
-- `Runtime/Unity/PathSafety.cs` (new)
+- `Runtime/Unity/PathSafety.cs` (modify)
 
 Required behavior:
 

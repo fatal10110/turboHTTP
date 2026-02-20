@@ -17,7 +17,7 @@ Phase 15 is split into 7 sub-phases. Dispatcher hardening ships first, then asse
 ## Dependency Graph
 
 ```text
-Phase 11 (done)
+Phase 11 (done — reviewed in Phase 14)
     ├── 15.1 MainThreadDispatcher V2
     │    ├── 15.2 Texture Pipeline V2
     │    │    └── 15.7 Decoder Provider Matrix

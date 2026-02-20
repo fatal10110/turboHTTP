@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -42,11 +41,6 @@ namespace TurboHTTP.Core
                 adapted = Math.Max(_policy.MinTimeout.TotalMilliseconds, adapted);
                 adapted = Math.Min(_policy.MaxTimeout.TotalMilliseconds, adapted);
 
-                // If the quality policy asks for a longer timeout, never let clamping
-                // turn that into an equal-or-shorter timeout than the original request.
-                if (timeoutMultiplier > 1d && adapted <= request.Timeout.TotalMilliseconds)
-                    adapted = request.Timeout.TotalMilliseconds * timeoutMultiplier;
-
                 var adaptedTimeout = TimeSpan.FromMilliseconds(adapted);
                 if (adaptedTimeout != request.Timeout)
                 {
@@ -57,12 +51,8 @@ namespace TurboHTTP.Core
 
             context.SetState("adaptive.quality", snapshot.Quality);
             context.SetState("adaptive.timeout_multiplier", timeoutMultiplier);
-            context.RecordEvent("adaptive.applied", new Dictionary<string, object>
-            {
-                ["quality"] = snapshot.Quality.ToString(),
-                ["timeoutMultiplier"] = timeoutMultiplier,
-                ["sampleCount"] = snapshot.SampleCount
-            });
+            context.SetState("adaptive.sample_count", snapshot.SampleCount);
+            context.RecordEvent("adaptive.applied");
 
             var started = context.Elapsed;
             try

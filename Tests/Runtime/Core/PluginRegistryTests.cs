@@ -201,6 +201,25 @@ namespace TurboHTTP.Tests.Core
             }).GetAwaiter().GetResult();
         }
 
+        [Test]
+        public void OptionsSnapshot_IsDefensiveClone()
+        {
+            Task.Run(async () =>
+            {
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new MockTransport(),
+                    DisposeTransport = true,
+                    DefaultTimeout = TimeSpan.FromSeconds(30)
+                });
+
+                var plugin = new OptionsSnapshotMutationPlugin("snapshot");
+                await client.RegisterPluginAsync(plugin);
+
+                Assert.IsFalse(plugin.MutationPersisted);
+            }).GetAwaiter().GetResult();
+        }
+
         private static UHttpClient CreateClient(List<string> recorder = null)
         {
             var transport = new MockTransport((request, context, ct) =>
@@ -299,6 +318,32 @@ namespace TurboHTTP.Tests.Core
             public async ValueTask ShutdownAsync(CancellationToken cancellationToken)
             {
                 await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+        }
+
+        private sealed class OptionsSnapshotMutationPlugin : IHttpPlugin
+        {
+            public OptionsSnapshotMutationPlugin(string name)
+            {
+                Name = name;
+            }
+
+            public string Name { get; }
+            public string Version => "1.0.0";
+            public PluginCapabilities Capabilities => PluginCapabilities.None;
+            public bool MutationPersisted { get; private set; }
+
+            public ValueTask InitializeAsync(PluginContext context, CancellationToken cancellationToken)
+            {
+                var snapshot = context.OptionsSnapshot;
+                snapshot.DefaultTimeout = TimeSpan.FromSeconds(1);
+                MutationPersisted = context.OptionsSnapshot.DefaultTimeout == TimeSpan.FromSeconds(1);
+                return default;
+            }
+
+            public ValueTask ShutdownAsync(CancellationToken cancellationToken)
+            {
+                return default;
             }
         }
 

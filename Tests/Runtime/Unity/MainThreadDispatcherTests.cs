@@ -69,5 +69,31 @@ namespace TurboHTTP.Tests.UnityModule
             Assert.IsTrue(MainThreadDispatcher.IsMainThread());
             Assert.IsFalse(workerReportedMain);
         }
+
+        [UnityTest]
+        public IEnumerator Execute_FromWorkerThread_ThrowsInvalidOperationException()
+        {
+            var _ = MainThreadDispatcher.Instance;
+            Exception error = null;
+
+            var task = Task.Run(() =>
+            {
+                try
+                {
+                    MainThreadDispatcher.Execute(() => { });
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                }
+            });
+
+            yield return new WaitUntil(() => task.IsCompleted);
+
+            Assert.AreEqual(TaskStatus.RanToCompletion, task.Status);
+            Assert.IsNotNull(error);
+            Assert.IsInstanceOf<InvalidOperationException>(error);
+            StringAssert.Contains("Use ExecuteAsync", error.Message);
+        }
     }
 }

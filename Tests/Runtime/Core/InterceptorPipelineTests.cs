@@ -15,6 +15,19 @@ namespace TurboHTTP.Tests.Core
     public class InterceptorPipelineTests
     {
         [Test]
+        public void ContinueWithResponse_RequiresExplicitReplace()
+        {
+            var response = new UHttpResponse(
+                HttpStatusCode.OK,
+                new HttpHeaders(),
+                Array.Empty<byte>(),
+                TimeSpan.Zero,
+                new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/interceptor")));
+
+            Assert.Throws<ArgumentException>(() => InterceptorResponseResult.Continue(response));
+        }
+
+        [Test]
         public void Ordering_RequestForward_ResponseReverse()
         {
             Task.Run(async () =>

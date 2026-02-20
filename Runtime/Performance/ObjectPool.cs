@@ -18,11 +18,19 @@ namespace TurboHTTP.Performance
         private int _count;
 
         /// <summary>
-        /// Approximate number of items currently available in the pool.
-        /// This value is inherently racy under concurrent access and should be
-        /// used only for diagnostics, not for control flow.
+        /// Number of items currently available in the pool at the moment of the call.
+        /// The value can change immediately after this property returns under concurrency.
         /// </summary>
-        public int Count => Volatile.Read(ref _count);
+        public int Count
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _count;
+                }
+            }
+        }
 
         /// <summary>
         /// Maximum number of items this pool will hold.

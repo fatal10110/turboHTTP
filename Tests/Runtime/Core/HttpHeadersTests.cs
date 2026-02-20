@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using System.Collections.Generic;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Tests.Core
@@ -37,6 +38,22 @@ namespace TurboHTTP.Tests.Core
 
             Assert.AreEqual("Bearer token123", headers.Get("Authorization"));
             Assert.AreEqual("Bearer newtoken", clone.Get("Authorization"));
+        }
+
+        [Test]
+        public void Enumerator_YieldsAllValuesForMultiValueHeaders()
+        {
+            var headers = new HttpHeaders();
+            headers.Add("Set-Cookie", "a=1");
+            headers.Add("Set-Cookie", "b=2");
+
+            var enumerated = new List<KeyValuePair<string, string>>(headers);
+
+            Assert.AreEqual(2, enumerated.Count);
+            Assert.AreEqual("Set-Cookie", enumerated[0].Key);
+            Assert.AreEqual("a=1", enumerated[0].Value);
+            Assert.AreEqual("Set-Cookie", enumerated[1].Key);
+            Assert.AreEqual("b=2", enumerated[1].Value);
         }
     }
 }

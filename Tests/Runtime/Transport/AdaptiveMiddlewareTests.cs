@@ -60,6 +60,7 @@ namespace TurboHTTP.Tests.Transport
                 {
                     Transport = transport,
                     DisposeTransport = true,
+                    DefaultTimeout = TimeSpan.FromSeconds(10),
                     AdaptivePolicy = new AdaptivePolicy
                     {
                         Enable = true,
@@ -112,6 +113,44 @@ namespace TurboHTTP.Tests.Transport
                     .SendAsync();
 
                 Assert.AreEqual(TimeSpan.FromSeconds(3), transport.LastRequest.Timeout);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void PoorNetwork_RespectsConfiguredMaxTimeout()
+        {
+            Task.Run(async () =>
+            {
+                var detector = new NetworkQualityDetector();
+                for (int i = 0; i < 16; i++)
+                {
+                    detector.AddSample(new NetworkQualitySample(
+                        latencyMs: 1800,
+                        totalDurationMs: 1800,
+                        wasTimeout: true,
+                        wasTransportFailure: true,
+                        bytesTransferred: 0,
+                        wasSuccess: false));
+                }
+
+                var transport = new MockTransport();
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true,
+                    DefaultTimeout = TimeSpan.FromSeconds(15),
+                    AdaptivePolicy = new AdaptivePolicy
+                    {
+                        Enable = true,
+                        MinTimeout = TimeSpan.FromSeconds(1),
+                        MaxTimeout = TimeSpan.FromSeconds(20)
+                    },
+                    NetworkQualityDetector = detector
+                });
+
+                await client.Get("https://example.test/max-timeout").SendAsync();
+
+                Assert.AreEqual(TimeSpan.FromSeconds(20), transport.LastRequest.Timeout);
             }).GetAwaiter().GetResult();
         }
 

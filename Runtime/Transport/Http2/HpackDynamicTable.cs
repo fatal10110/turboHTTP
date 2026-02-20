@@ -11,7 +11,7 @@ namespace TurboHTTP.Transport.Http2
     /// </summary>
     internal class HpackDynamicTable
     {
-        private readonly List<(string Name, string Value)> _entries = new List<(string, string)>();
+        private readonly LinkedList<(string Name, string Value)> _entries = new LinkedList<(string, string)>();
         private int _maxSize;
         private int _currentSize;
 
@@ -53,12 +53,12 @@ namespace TurboHTTP.Transport.Http2
 
             while (_currentSize + entrySize > _maxSize && _entries.Count > 0)
             {
-                var last = _entries[_entries.Count - 1];
+                var last = _entries.Last.Value;
                 _currentSize -= EntrySize(last.Name, last.Value);
-                _entries.RemoveAt(_entries.Count - 1);
+                _entries.RemoveLast();
             }
 
-            _entries.Insert(0, (name, value));
+            _entries.AddFirst((name, value));
             _currentSize += entrySize;
         }
 
@@ -79,7 +79,7 @@ namespace TurboHTTP.Transport.Http2
                 throw new HpackDecodingException(
                     $"HPACK index {index} out of range (dynamic table has {_entries.Count} entries)");
 
-            return _entries[dynamicIndex];
+            return GetEntryAt(dynamicIndex);
         }
 
         /// <summary>
@@ -96,9 +96,11 @@ namespace TurboHTTP.Transport.Http2
             int nameMatchIndex = staticIndex;
             HpackMatchType bestMatch = staticMatch;
 
-            for (int i = 0; i < _entries.Count; i++)
+            int i = 0;
+            var node = _entries.First;
+            while (node != null)
             {
-                var entry = _entries[i];
+                var entry = node.Value;
                 if (string.Equals(entry.Name, name, StringComparison.Ordinal))
                 {
                     if (string.Equals(entry.Value, value, StringComparison.Ordinal))
@@ -110,6 +112,9 @@ namespace TurboHTTP.Transport.Http2
                         bestMatch = HpackMatchType.NameMatch;
                     }
                 }
+
+                i++;
+                node = node.Next;
             }
 
             return (nameMatchIndex, bestMatch);
@@ -125,10 +130,46 @@ namespace TurboHTTP.Transport.Http2
 
             while (_currentSize > _maxSize && _entries.Count > 0)
             {
-                var last = _entries[_entries.Count - 1];
+                var last = _entries.Last.Value;
                 _currentSize -= EntrySize(last.Name, last.Value);
-                _entries.RemoveAt(_entries.Count - 1);
+                _entries.RemoveLast();
             }
+        }
+
+        private (string Name, string Value) GetEntryAt(int index)
+        {
+            if (index < 0 || index >= _entries.Count)
+                throw new ArgumentOutOfRangeException(nameof(index));
+
+            // Fast path from nearest side to keep indexed lookup near O(n/2) worst-case.
+            if (index <= _entries.Count / 2)
+            {
+                int i = 0;
+                var node = _entries.First;
+                while (node != null)
+                {
+                    if (i == index)
+                        return node.Value;
+
+                    i++;
+                    node = node.Next;
+                }
+            }
+            else
+            {
+                int i = _entries.Count - 1;
+                var node = _entries.Last;
+                while (node != null)
+                {
+                    if (i == index)
+                        return node.Value;
+
+                    i--;
+                    node = node.Previous;
+                }
+            }
+
+            throw new HpackDecodingException("Dynamic table index lookup failed unexpectedly");
         }
     }
 }

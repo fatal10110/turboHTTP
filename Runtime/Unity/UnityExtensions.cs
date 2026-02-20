@@ -14,12 +14,6 @@ namespace TurboHTTP.Unity
     /// </summary>
     public static class UnityExtensions
     {
-        private static readonly StringComparison PathComparison =
-            RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ||
-            RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal;
-
         /// <summary>
         /// Downloads content into Application.persistentDataPath using a validated relative path.
         /// </summary>
@@ -100,7 +94,7 @@ namespace TurboHTTP.Unity
             {
                 if (!response.Body.IsEmpty)
                 {
-                    await file.WriteAsync(response.Body, cancellationToken).ConfigureAwait(false);
+                    await WriteBodyToFileAsync(file, response.Body, cancellationToken).ConfigureAwait(false);
                 }
             }
 
@@ -119,11 +113,11 @@ namespace TurboHTTP.Unity
                     parameterName);
             }
 
-            var canonicalRoot = EnsureTrailingDirectorySeparator(Path.GetFullPath(rootPath));
+            var canonicalRoot = Path.GetFullPath(rootPath);
             var combined = Path.Combine(canonicalRoot, relativePath);
             var canonicalTarget = Path.GetFullPath(combined);
 
-            if (!canonicalTarget.StartsWith(canonicalRoot, PathComparison))
+            if (!IsPathWithinRoot(canonicalRoot, canonicalTarget))
             {
                 throw new ArgumentException(
                     $"Path escapes root directory. Root: {canonicalRoot}, Target: {canonicalTarget}",
@@ -146,18 +140,45 @@ namespace TurboHTTP.Unity
                 Directory.CreateDirectory(directory);
         }
 
-        private static string EnsureTrailingDirectorySeparator(string path)
+        private static bool IsPathWithinRoot(string canonicalRoot, string canonicalTarget)
         {
-            if (string.IsNullOrEmpty(path))
-                return path;
-
-            if (path[path.Length - 1] == Path.DirectorySeparatorChar ||
-                path[path.Length - 1] == Path.AltDirectorySeparatorChar)
+            var relative = Path.GetRelativePath(canonicalRoot, canonicalTarget);
+            if (string.IsNullOrEmpty(relative) ||
+                string.Equals(relative, ".", StringComparison.Ordinal))
             {
-                return path;
+                return true;
             }
 
-            return path + Path.DirectorySeparatorChar;
+            if (Path.IsPathRooted(relative))
+            {
+                return false;
+            }
+
+            if (string.Equals(relative, "..", StringComparison.Ordinal))
+                return false;
+
+            return !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+                   !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
+        }
+
+        private static async Task WriteBodyToFileAsync(
+            FileStream file,
+            ReadOnlyMemory<byte> body,
+            CancellationToken cancellationToken)
+        {
+            if (MemoryMarshal.TryGetArray(body, out var segment) && segment.Array != null)
+            {
+                await file.WriteAsync(
+                        segment.Array,
+                        segment.Offset,
+                        segment.Count,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            var bodyArray = body.ToArray();
+            await file.WriteAsync(bodyArray, 0, bodyArray.Length, cancellationToken).ConfigureAwait(false);
         }
 
         private static string BuildDefaultUserAgent()

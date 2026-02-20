@@ -19,7 +19,9 @@ namespace TurboHTTP.Core
             return new ProxySettings
             {
                 Address = Address,
-                Credentials = Credentials,
+                Credentials = Credentials != null
+                    ? new NetworkCredential(Credentials.UserName, Credentials.Password, Credentials.Domain)
+                    : null,
                 BypassList = BypassList != null ? BypassList.ToArray() : Array.Empty<string>(),
                 UseEnvironmentVariables = UseEnvironmentVariables,
                 AllowHttpProxyFallbackForHttps = AllowHttpProxyFallbackForHttps,
@@ -113,6 +115,21 @@ namespace TurboHTTP.Core
                 return false;
             if (!int.TryParse(cidr.Substring(slash + 1), out var bits))
                 return false;
+
+            if (hostIp.AddressFamily != network.AddressFamily)
+            {
+                if (hostIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 &&
+                    hostIp.IsIPv4MappedToIPv6)
+                {
+                    hostIp = hostIp.MapToIPv4();
+                }
+
+                if (network.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 &&
+                    network.IsIPv4MappedToIPv6)
+                {
+                    network = network.MapToIPv4();
+                }
+            }
 
             var hostBytes = hostIp.GetAddressBytes();
             var netBytes = network.GetAddressBytes();

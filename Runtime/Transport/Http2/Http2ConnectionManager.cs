@@ -20,6 +20,7 @@ namespace TurboHTTP.Transport.Http2
 
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _initLocks
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+        private int _disposed;
 
         public Http2ConnectionManager(
             int maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
@@ -41,6 +42,9 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public Http2Connection GetIfExists(string host, int port)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return null;
+
             string key = $"{host}:{port}";
             if (_connections.TryGetValue(key, out var conn) && conn.IsAlive)
                 return conn;
@@ -61,6 +65,12 @@ namespace TurboHTTP.Transport.Http2
         public async Task<Http2Connection> GetOrCreateAsync(
             string host, int port, Stream tlsStream, CancellationToken ct)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                tlsStream?.Dispose();
+                throw new ObjectDisposedException(nameof(Http2ConnectionManager));
+            }
+
             string key = $"{host}:{port}";
 
             // Fast path: existing alive connection
@@ -121,6 +131,9 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public void Remove(string host, int port)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             string key = $"{host}:{port}";
             if (_connections.TryRemove(key, out var conn))
             {
@@ -130,6 +143,9 @@ namespace TurboHTTP.Transport.Http2
 
         public void Dispose()
         {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
             foreach (var kvp in _connections)
             {
                 kvp.Value.Dispose();

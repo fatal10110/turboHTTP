@@ -1,5 +1,4 @@
 using System;
-using System.Net.Security;
 using System.Reflection;
 using UnityEngine;
 
@@ -15,7 +14,7 @@ namespace TurboHTTP.Core
             "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
             throwOnError: false) != null;
 
-        private static readonly bool _sslStreamAlpnApisAvailable = DetectSslStreamAlpnApis();
+        private static readonly bool _sslStreamAlpnApisAvailable = DetectSslStreamAlpnSupport();
 
         /// <summary>
         /// Recommended request timeout based on the current platform.
@@ -56,16 +55,34 @@ namespace TurboHTTP.Core
                       $"HTTP/2={SupportsHttp2}, CustomCertValidation={SupportsCustomCertValidation}");
         }
 
-        private static bool DetectSslStreamAlpnApis()
+        private static bool DetectSslStreamAlpnSupport()
         {
-            var optionsType = typeof(SslStream).Assembly.GetType("System.Net.Security.SslClientAuthenticationOptions");
-            if (optionsType == null)
+            // Reuse Transport's SslStream ALPN capability detection to avoid
+            // duplicating reflection logic in Core.
+            var providerType = Type.GetType(
+                "TurboHTTP.Transport.Tls.SslStreamTlsProvider, TurboHTTP.Transport",
+                throwOnError: false);
+            if (providerType == null)
                 return false;
 
-            var appProtocols = optionsType.GetProperty("ApplicationProtocols", BindingFlags.Public | BindingFlags.Instance);
-            var negotiated = typeof(SslStream).GetProperty("NegotiatedApplicationProtocol", BindingFlags.Public | BindingFlags.Instance);
+            var instanceField = providerType.GetField(
+                "Instance",
+                BindingFlags.Public | BindingFlags.Static);
+            var isAlpnSupportedMethod = providerType.GetMethod(
+                "IsAlpnSupported",
+                BindingFlags.Public | BindingFlags.Instance);
 
-            return appProtocols != null && negotiated != null;
+            if (instanceField == null || isAlpnSupportedMethod == null)
+                return false;
+
+            var instance = instanceField.GetValue(null);
+            if (instance == null)
+                return false;
+
+            if (isAlpnSupportedMethod.Invoke(instance, null) is bool supported)
+                return supported;
+
+            return false;
         }
     }
 }

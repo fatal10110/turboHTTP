@@ -38,6 +38,36 @@ namespace TurboHTTP.Tests.Auth
         }
 
         [Test]
+        public void OAuthToken_RequiresUtcExpiry()
+        {
+            Assert.Throws<ArgumentException>(() =>
+            {
+                _ = new OAuthToken(
+                    accessToken: "token",
+                    expiresAtUtc: DateTime.Now.AddMinutes(5));
+            });
+        }
+
+        [Test]
+        public void InMemoryTokenStore_Dispose_ClearsTokens()
+        {
+            Task.Run(async () =>
+            {
+                var store = new InMemoryTokenStore();
+                await store.SetAsync(
+                    "key-1",
+                    new OAuthToken(
+                        accessToken: "token",
+                        expiresAtUtc: DateTime.UtcNow.AddMinutes(5)),
+                    CancellationToken.None);
+
+                store.Dispose();
+                var stored = await store.GetAsync("key-1", CancellationToken.None);
+                Assert.IsNull(stored);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void AuthCodeExchange_ParsesToken()
         {
             Task.Run(async () =>
@@ -227,6 +257,152 @@ namespace TurboHTTP.Tests.Auth
                 Assert.AreEqual("https://id.example.com/token", resolved.TokenEndpoint.ToString());
                 Assert.AreEqual(originalAuth, config.AuthorizationEndpoint);
                 Assert.AreEqual(originalToken, config.TokenEndpoint);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Discovery_InsecureDiscoveredEndpoint_IsRejected()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport((request, context, ct) =>
+                {
+                    var body = Encoding.UTF8.GetBytes(
+                        "{\"authorization_endpoint\":\"https://id.example.com/auth\",\"token_endpoint\":\"http://id.example.com/token\",\"issuer\":\"https://id.example.com\"}");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        body,
+                        context.Elapsed,
+                        request));
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+                using var oauth = new OAuthClient(client);
+
+                var config = CreateConfig();
+                config.UseOidcDiscovery = true;
+
+                await TestHelpers.AssertThrowsAsync<ArgumentException>(async () =>
+                {
+                    await oauth.ResolveEndpointsAsync(
+                        config,
+                        new Uri("https://id.example.com/.well-known/openid-configuration"),
+                        CancellationToken.None);
+                });
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Discovery_IssuerMismatch_IsRejected()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport((request, context, ct) =>
+                {
+                    var body = Encoding.UTF8.GetBytes(
+                        "{\"authorization_endpoint\":\"https://id.example.com/auth\",\"token_endpoint\":\"https://id.example.com/token\",\"issuer\":\"https://evil.example.com\"}");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        body,
+                        context.Elapsed,
+                        request));
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+                using var oauth = new OAuthClient(client);
+
+                var config = CreateConfig();
+                config.UseOidcDiscovery = true;
+
+                await TestHelpers.AssertThrowsAsync<InvalidOperationException>(async () =>
+                {
+                    await oauth.ResolveEndpointsAsync(
+                        config,
+                        new Uri("https://id.example.com/.well-known/openid-configuration"),
+                        CancellationToken.None);
+                });
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Discovery_HttpLoopbackEndpoint_Allowed()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport((request, context, ct) =>
+                {
+                    var body = Encoding.UTF8.GetBytes(
+                        "{\"authorization_endpoint\":\"http://127.0.0.1:9000/auth\",\"token_endpoint\":\"http://127.0.0.1:9000/token\",\"issuer\":\"http://127.0.0.1:9000\"}");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        body,
+                        context.Elapsed,
+                        request));
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+                using var oauth = new OAuthClient(client);
+
+                var config = CreateConfig();
+                config.UseOidcDiscovery = true;
+
+                var resolved = await oauth.ResolveEndpointsAsync(
+                    config,
+                    new Uri("http://127.0.0.1:9000/.well-known/openid-configuration"),
+                    CancellationToken.None);
+
+                Assert.AreEqual("http://127.0.0.1:9000/auth", resolved.AuthorizationEndpoint.ToString());
+                Assert.AreEqual("http://127.0.0.1:9000/token", resolved.TokenEndpoint.ToString());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void AuthCodeExchange_NonBearerTokenType_IsRejected()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport((request, context, ct) =>
+                {
+                    var body = Encoding.UTF8.GetBytes("{\"access_token\":\"access-1\",\"token_type\":\"mac\",\"expires_in\":120}");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        body,
+                        context.Elapsed,
+                        request));
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true
+                });
+                using var oauth = new OAuthClient(client);
+
+                await TestHelpers.AssertThrowsAsync<InvalidOperationException>(async () =>
+                {
+                    await oauth.ExchangeCodeAsync(new OAuthCodeExchangeRequest
+                    {
+                        Config = CreateConfig(),
+                        AuthorizationCode = "code-123",
+                        CodeVerifier = PkceUtility.GenerateCodeVerifier()
+                    }, CancellationToken.None);
+                });
             }).GetAwaiter().GetResult();
         }
 

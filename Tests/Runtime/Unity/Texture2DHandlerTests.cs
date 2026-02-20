@@ -68,6 +68,15 @@ namespace TurboHTTP.Tests.UnityModule
         }
 
         [Test]
+        public void AsTexture2D_NonSuccessStatus_ThrowsUHttpException()
+        {
+            var pngBytes = CreatePngBytes();
+            var response = CreateResponse(pngBytes, "image/png", HttpStatusCode.NotFound);
+
+            Assert.Throws<UHttpException>(() => response.AsTexture2D());
+        }
+
+        [Test]
         public void AsSprite_CreatesSpriteFromTexture()
         {
             var pngBytes = CreatePngBytes();
@@ -84,14 +93,17 @@ namespace TurboHTTP.Tests.UnityModule
             UnityEngine.Object.DestroyImmediate(texture);
         }
 
-        private static UHttpResponse CreateResponse(byte[] body, string contentType)
+        private static UHttpResponse CreateResponse(
+            byte[] body,
+            string contentType,
+            HttpStatusCode statusCode = HttpStatusCode.OK)
         {
             var headers = new HttpHeaders();
             headers.Set("Content-Type", contentType);
 
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/image"));
             return new UHttpResponse(
-                HttpStatusCode.OK,
+                statusCode,
                 headers,
                 body,
                 TimeSpan.Zero,

@@ -111,15 +111,14 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Enumerates headers as key-value pairs.
-        /// Multi-value headers yield the first value.
-        /// For full multi-value enumeration, iterate Names and call GetValues().
+        /// Multi-value headers yield one item per value in insertion order.
         /// </summary>
         public IEnumerator<KeyValuePair<string, string>> GetEnumerator()
         {
             foreach (var kvp in _headers)
             {
-                if (kvp.Value.Count > 0)
-                    yield return new KeyValuePair<string, string>(kvp.Key, kvp.Value[0]);
+                for (int i = 0; i < kvp.Value.Count; i++)
+                    yield return new KeyValuePair<string, string>(kvp.Key, kvp.Value[i]);
             }
         }
 

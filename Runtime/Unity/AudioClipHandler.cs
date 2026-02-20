@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -31,7 +32,16 @@ namespace TurboHTTP.Unity
     {
         private const string TempDirectoryName = "TurboHTTPAudioDecode";
         private const string TempFilePrefix = "turbohttp-audio-";
+        private const int CleanupFailureErrorThreshold = 10;
         private static int _startupCleanupCompleted;
+        private static int _cleanupFailureCount;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStaticState()
+        {
+            Volatile.Write(ref _startupCleanupCompleted, 0);
+            Volatile.Write(ref _cleanupFailureCount, 0);
+        }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void RuntimeInitialize()
@@ -60,13 +70,11 @@ namespace TurboHTTP.Unity
             EnsureStartupCleanup();
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Response body may be backed by pooled transport buffers.
-            var payload = response.Body.ToArray();
             var tempPath = GetTempFilePath(audioType);
 
             try
             {
-                await WriteTempFileAsync(tempPath, payload, cancellationToken).ConfigureAwait(false);
+                await WriteTempFileAsync(tempPath, response.Body, cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
 
                 return await LoadAudioClipFromFileAsync(
@@ -245,7 +253,7 @@ namespace TurboHTTP.Unity
 
         private static async Task WriteTempFileAsync(
             string path,
-            byte[] payload,
+            ReadOnlyMemory<byte> payload,
             CancellationToken cancellationToken)
         {
             var directory = Path.GetDirectoryName(path);
@@ -254,8 +262,22 @@ namespace TurboHTTP.Unity
 
             using (var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                await file.WriteAsync(payload, 0, payload.Length, cancellationToken)
-                    .ConfigureAwait(false);
+                if (payload.IsEmpty)
+                    return;
+
+                if (MemoryMarshal.TryGetArray(payload, out var segment) && segment.Array != null)
+                {
+                    await file.WriteAsync(
+                            segment.Array,
+                            segment.Offset,
+                            segment.Count,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                var copy = payload.ToArray();
+                await file.WriteAsync(copy, 0, copy.Length, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -324,17 +346,36 @@ namespace TurboHTTP.Unity
             try
             {
                 if (File.Exists(path))
+                {
                     File.Delete(path);
+                    Volatile.Write(ref _cleanupFailureCount, 0);
+                }
             }
             catch (Exception ex)
             {
+                var failureCount = Interlocked.Increment(ref _cleanupFailureCount);
+
                 if (!suppressWarning)
                 {
                     Debug.LogWarning(
                         "[TurboHTTP] Could not delete temporary audio decode file '" +
                         path +
                         "'. It will be retried on next startup. Error: " +
-                        ex.Message);
+                        ex.Message +
+                        " (failure count: " +
+                        failureCount +
+                        ").");
+                }
+
+                if (failureCount == CleanupFailureErrorThreshold ||
+                    (failureCount > CleanupFailureErrorThreshold &&
+                     failureCount % CleanupFailureErrorThreshold == 0))
+                {
+                    Debug.LogError(
+                        "[TurboHTTP] Temporary audio cleanup has failed " +
+                        failureCount +
+                        " times. Persistent failures can leak storage in " +
+                        Application.temporaryCachePath + ".");
                 }
             }
         }

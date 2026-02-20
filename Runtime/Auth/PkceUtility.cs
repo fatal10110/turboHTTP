@@ -14,7 +14,8 @@ namespace TurboHTTP.Auth
                 throw new ArgumentOutOfRangeException(nameof(length), "PKCE code verifier length must be 43-128.");
 
             var chars = new char[length];
-            var random = new byte[Math.Min(256, length * 2)];
+            // Oversample to reduce extra RNG fills caused by rejection sampling.
+            var random = new byte[Math.Max(256, length * 4)];
             var alphabetLength = AllowedChars.Length;
             var rejectionThreshold = 256 - (256 % alphabetLength);
             using var rng = RandomNumberGenerator.Create();

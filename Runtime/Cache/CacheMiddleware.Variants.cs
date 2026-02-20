@@ -182,6 +182,36 @@ namespace TurboHTTP.Cache
 
             return false;
         }
+
+        private static bool TryResolveSensitiveVaryFlags(
+            string[] varyHeaders,
+            out bool hasCookieVary,
+            out bool hasAuthorizationVary)
+        {
+            hasCookieVary = false;
+            hasAuthorizationVary = false;
+
+            if (varyHeaders == null || varyHeaders.Length == 0)
+                return false;
+
+            bool containsSensitive = false;
+            for (int i = 0; i < varyHeaders.Length; i++)
+            {
+                var header = varyHeaders[i];
+                if (!IsSensitiveVaryHeader(header))
+                    continue;
+
+                containsSensitive = true;
+
+                if (!hasCookieVary && string.Equals(header, "cookie", StringComparison.OrdinalIgnoreCase))
+                    hasCookieVary = true;
+
+                if (!hasAuthorizationVary && string.Equals(header, "authorization", StringComparison.OrdinalIgnoreCase))
+                    hasAuthorizationVary = true;
+            }
+
+            return containsSensitive;
+        }
         private static void AddSignatureRefUnsafe(VariantBucket bucket, string signature)
         {
             bucket.Signatures.Add(signature);

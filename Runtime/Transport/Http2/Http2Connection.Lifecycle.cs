@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -28,37 +29,52 @@ namespace TurboHTTP.Transport.Http2
 
         private async Task SendWindowUpdateAsync(int streamId, int increment, CancellationToken ct)
         {
-            var payload = new byte[4];
-            payload[0] = (byte)((increment >> 24) & 0x7F);
-            payload[1] = (byte)((increment >> 16) & 0xFF);
-            payload[2] = (byte)((increment >> 8) & 0xFF);
-            payload[3] = (byte)(increment & 0xFF);
-
-            await _writeLock.WaitAsync(CancellationToken.None);
+            var payload = ArrayPool<byte>.Shared.Rent(4);
             try
             {
-                await _codec.WriteFrameAsync(new Http2Frame
+                payload[0] = (byte)((increment >> 24) & 0x7F);
+                payload[1] = (byte)((increment >> 16) & 0xFF);
+                payload[2] = (byte)((increment >> 8) & 0xFF);
+                payload[3] = (byte)(increment & 0xFF);
+
+                await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+                try
                 {
-                    Type = Http2FrameType.WindowUpdate,
-                    Flags = Http2FrameFlags.None,
-                    StreamId = streamId,
-                    Payload = payload,
-                    Length = 4
-                }, CancellationToken.None);
+                    await _codec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.WindowUpdate,
+                        Flags = Http2FrameFlags.None,
+                        StreamId = streamId,
+                        Payload = payload,
+                        Length = 4
+                    }, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _writeLock.Release();
+                }
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
+            {
+                // Connection is shutting down.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Connection is shutting down.
             }
             finally
             {
-                _writeLock.Release();
+                ArrayPool<byte>.Shared.Return(payload);
             }
         }
 
         private async Task SendGoAwayAsync(Http2ErrorCode errorCode)
         {
+            var payload = ArrayPool<byte>.Shared.Rent(8);
             try
             {
                 // Client-initiated GOAWAY should use lastStreamId=0 when server push is disabled.
                 int lastStreamId = 0;
-                var payload = new byte[8];
                 payload[0] = (byte)((lastStreamId >> 24) & 0x7F);
                 payload[1] = (byte)((lastStreamId >> 16) & 0xFF);
                 payload[2] = (byte)((lastStreamId >> 8) & 0xFF);
@@ -68,7 +84,7 @@ namespace TurboHTTP.Transport.Http2
                 payload[6] = (byte)(((uint)errorCode >> 8) & 0xFF);
                 payload[7] = (byte)((uint)errorCode & 0xFF);
 
-                await _writeLock.WaitAsync(CancellationToken.None);
+                await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
                 try
                 {
                     await _codec.WriteFrameAsync(new Http2Frame
@@ -78,27 +94,32 @@ namespace TurboHTTP.Transport.Http2
                         StreamId = 0,
                         Payload = payload,
                         Length = 8
-                    }, CancellationToken.None);
+                    }, _cts.Token).ConfigureAwait(false);
                 }
                 finally
                 {
                     _writeLock.Release();
                 }
             }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested) { /* Connection being disposed */ }
             catch (ObjectDisposedException) { /* Connection being disposed, ignore */ }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(payload);
+            }
         }
 
         private async Task SendRstStreamAsync(int streamId, Http2ErrorCode errorCode)
         {
+            var payload = ArrayPool<byte>.Shared.Rent(4);
             try
             {
-                var payload = new byte[4];
                 payload[0] = (byte)(((uint)errorCode >> 24) & 0xFF);
                 payload[1] = (byte)(((uint)errorCode >> 16) & 0xFF);
                 payload[2] = (byte)(((uint)errorCode >> 8) & 0xFF);
                 payload[3] = (byte)((uint)errorCode & 0xFF);
 
-                await _writeLock.WaitAsync(CancellationToken.None);
+                await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
                 try
                 {
                     await _codec.WriteFrameAsync(new Http2Frame
@@ -108,14 +129,80 @@ namespace TurboHTTP.Transport.Http2
                         StreamId = streamId,
                         Payload = payload,
                         Length = 4
-                    }, CancellationToken.None);
+                    }, _cts.Token).ConfigureAwait(false);
                 }
                 finally
                 {
                     _writeLock.Release();
                 }
             }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested) { /* Connection being disposed */ }
             catch (ObjectDisposedException) { /* Connection being disposed, ignore */ }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(payload);
+            }
+        }
+
+        private async Task KeepAliveLoopAsync(CancellationToken ct)
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(KeepAlivePingInterval, ct).ConfigureAwait(false);
+                    await SendKeepAlivePingAsync(ct).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Expected during disposal.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Connection is shutting down.
+            }
+            catch
+            {
+                // Keepalive must never crash the process.
+            }
+        }
+
+        private async Task SendKeepAlivePingAsync(CancellationToken ct)
+        {
+            var payload = ArrayPool<byte>.Shared.Rent(8);
+            Array.Clear(payload, 0, 8);
+            try
+            {
+                await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    await _codec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Ping,
+                        Flags = Http2FrameFlags.None,
+                        StreamId = 0,
+                        Payload = payload,
+                        Length = 8
+                    }, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _writeLock.Release();
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested || _cts.IsCancellationRequested)
+            {
+                // Connection is shutting down.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Connection is shutting down.
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(payload);
+            }
         }
 
         private void FailAllStreams(Exception ex)
@@ -143,9 +230,25 @@ namespace TurboHTTP.Transport.Http2
 
             FailAllStreams(new ObjectDisposedException(nameof(Http2Connection)));
 
-            _writeLock?.Dispose();
+            try
+            {
+                _readLoopTask?.Wait(100);
+            }
+            catch
+            {
+                // Best effort only.
+            }
+
+            try
+            {
+                _keepAliveTask?.Wait(100);
+            }
+            catch
+            {
+                // Best effort only.
+            }
+
             _cts?.Dispose();
-            _windowWaiter?.Dispose();
             _stream?.Dispose();
         }
 

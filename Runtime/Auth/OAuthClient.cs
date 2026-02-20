@@ -20,6 +20,7 @@ namespace TurboHTTP.Auth
         private readonly TimeSpan _defaultRefreshSkew;
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _refreshGuards
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.Ordinal);
+        private int _disposed;
 
         public OAuthClient(
             UHttpClient client = null,
@@ -38,6 +39,7 @@ namespace TurboHTTP.Auth
             OAuthConfig config,
             CancellationToken ct)
         {
+            ThrowIfDisposed();
             if (config == null) throw new ArgumentNullException(nameof(config));
             config.Validate();
             ct.ThrowIfCancellationRequested();
@@ -87,16 +89,21 @@ namespace TurboHTTP.Auth
             Uri discoveryEndpoint,
             CancellationToken ct)
         {
+            ThrowIfDisposed();
             if (config == null) throw new ArgumentNullException(nameof(config));
             if (!config.UseOidcDiscovery)
                 return config;
 
             var metadata = await DiscoverAsync(discoveryEndpoint, ct).ConfigureAwait(false);
+            ValidateDiscoveredIssuer(discoveryEndpoint, metadata.Issuer);
+
             var resolved = CloneConfig(config);
             if (metadata.AuthorizationEndpoint != null)
                 resolved.AuthorizationEndpoint = metadata.AuthorizationEndpoint;
             if (metadata.TokenEndpoint != null)
                 resolved.TokenEndpoint = metadata.TokenEndpoint;
+
+            resolved.Validate();
             return resolved;
         }
 
@@ -104,6 +111,7 @@ namespace TurboHTTP.Auth
             OAuthCodeExchangeRequest request,
             CancellationToken ct)
         {
+            ThrowIfDisposed();
             if (request == null) throw new ArgumentNullException(nameof(request));
             if (request.Config == null) throw new ArgumentException("Config is required.", nameof(request));
             if (string.IsNullOrWhiteSpace(request.AuthorizationCode))
@@ -134,6 +142,7 @@ namespace TurboHTTP.Auth
             OAuthRefreshRequest request,
             CancellationToken ct)
         {
+            ThrowIfDisposed();
             if (request == null) throw new ArgumentNullException(nameof(request));
             if (request.Config == null) throw new ArgumentException("Config is required.", nameof(request));
             if (string.IsNullOrWhiteSpace(request.RefreshToken))
@@ -149,6 +158,7 @@ namespace TurboHTTP.Auth
             await gate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                ThrowIfDisposed();
                 var existing = await _tokenStore.GetAsync(key, ct).ConfigureAwait(false);
                 if (existing != null && !existing.IsExpired(_utcNow(), _defaultRefreshSkew))
                     return existing;
@@ -191,9 +201,10 @@ namespace TurboHTTP.Auth
 
         public async Task<OpenIdProviderMetadata> DiscoverAsync(Uri discoveryEndpoint, CancellationToken ct)
         {
+            ThrowIfDisposed();
             if (discoveryEndpoint == null) throw new ArgumentNullException(nameof(discoveryEndpoint));
             if (!string.Equals(discoveryEndpoint.Scheme, "https", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(discoveryEndpoint.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+                !OAuthConfig.IsLocalhostUri(discoveryEndpoint))
             {
                 throw new ArgumentException("OIDC discovery endpoint must use HTTPS.", nameof(discoveryEndpoint));
             }
@@ -217,6 +228,7 @@ namespace TurboHTTP.Auth
             OAuthRefreshRequest refreshRequest,
             CancellationToken ct)
         {
+            ThrowIfDisposed();
             if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentException("Token store key is required.", nameof(key));
 
@@ -264,12 +276,15 @@ namespace TurboHTTP.Auth
 
         public void Dispose()
         {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
             if (_ownsClient)
                 _client.Dispose();
 
             // Do not dispose semaphore instances here: refresh operations may still
             // be completing on other threads, and disposal can race with Release().
-            _refreshGuards.Clear();
+            // Keep the dictionary intact so in-flight operations can release safely.
         }
 
         private async Task<UHttpResponse> SendTokenRequestAsync(
@@ -297,14 +312,20 @@ namespace TurboHTTP.Auth
             if (string.IsNullOrWhiteSpace(accessToken))
                 throw new InvalidOperationException("Token response missing access_token.");
 
-            var tokenType = GetString(data, "token_type") ?? "Bearer";
+            var tokenType = GetString(data, "token_type");
+            if (string.IsNullOrWhiteSpace(tokenType))
+                tokenType = "Bearer";
+            else if (!string.Equals(tokenType, "Bearer", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"Unsupported token_type '{tokenType}'. Only Bearer tokens are supported.");
+
             var expiresIn = GetNumber(data, "expires_in", fallback: 3600);
 
             return new OAuthToken(
                 accessToken: accessToken,
                 expiresAtUtc: _utcNow().AddSeconds(expiresIn),
                 refreshToken: GetString(data, "refresh_token"),
-                tokenType: tokenType,
+                tokenType: "Bearer",
                 idToken: GetString(data, "id_token"),
                 scope: GetString(data, "scope"));
         }
@@ -455,6 +476,73 @@ namespace TurboHTTP.Auth
 
             if (string.IsNullOrWhiteSpace(token.IdToken))
                 throw new InvalidOperationException("id_token is required for openid scope.");
+        }
+
+        private static void ValidateDiscoveredIssuer(Uri discoveryEndpoint, Uri issuer)
+        {
+            if (issuer == null)
+                return;
+
+            var expected = BuildExpectedIssuerFromDiscoveryEndpoint(discoveryEndpoint);
+            if (expected == null)
+                return;
+
+            if (!AreEquivalentIssuers(expected, issuer))
+            {
+                throw new InvalidOperationException(
+                    $"OIDC discovery issuer mismatch. Expected '{expected}', got '{issuer}'.");
+            }
+        }
+
+        private static Uri BuildExpectedIssuerFromDiscoveryEndpoint(Uri discoveryEndpoint)
+        {
+            if (discoveryEndpoint == null || !discoveryEndpoint.IsAbsoluteUri)
+                return null;
+
+            const string marker = "/.well-known/openid-configuration";
+            var path = discoveryEndpoint.AbsolutePath ?? string.Empty;
+            var markerIndex = path.IndexOf(marker, StringComparison.Ordinal);
+            var issuerPath = markerIndex >= 0
+                ? path.Substring(0, markerIndex)
+                : path;
+
+            var builder = new UriBuilder(discoveryEndpoint.Scheme, discoveryEndpoint.Host, discoveryEndpoint.Port)
+            {
+                Path = issuerPath
+            };
+
+            var expectedIssuer = builder.Uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+            if (string.IsNullOrEmpty(expectedIssuer))
+                expectedIssuer = builder.Uri.GetLeftPart(UriPartial.Authority);
+            return new Uri(expectedIssuer);
+        }
+
+        private static bool AreEquivalentIssuers(Uri expected, Uri actual)
+        {
+            if (expected == null || actual == null)
+                return false;
+
+            var expectedNormalized = NormalizeIssuer(expected);
+            var actualNormalized = NormalizeIssuer(actual);
+            return string.Equals(expectedNormalized, actualNormalized, StringComparison.Ordinal);
+        }
+
+        private static string NormalizeIssuer(Uri issuer)
+        {
+            var builder = new UriBuilder(issuer.Scheme, issuer.Host, issuer.Port)
+            {
+                Path = issuer.AbsolutePath?.TrimEnd('/') ?? string.Empty,
+                Query = string.Empty,
+                Fragment = string.Empty
+            };
+
+            return builder.Uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(OAuthClient));
         }
     }
 }

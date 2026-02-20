@@ -4,9 +4,13 @@ namespace TurboHTTP.Retry
 {
     /// <summary>
     /// Configuration for retry behavior.
+    /// Timeout semantics: request timeout is evaluated per attempt, not as a total retry budget.
     /// </summary>
     public class RetryPolicy
     {
+        private static readonly RetryPolicy DefaultPolicy = new RetryPolicy();
+        private static readonly RetryPolicy NoRetryPolicy = new RetryPolicy { MaxRetries = 0 };
+
         /// <summary>
         /// Maximum number of retry attempts after the initial request.
         /// Default: 3 (total of 4 attempts including the original).
@@ -41,11 +45,11 @@ namespace TurboHTTP.Retry
         /// <summary>
         /// Default retry policy: 3 retries, 1s initial delay, 2x backoff, idempotent only.
         /// </summary>
-        public static RetryPolicy Default => new RetryPolicy();
+        public static RetryPolicy Default => DefaultPolicy;
 
         /// <summary>
         /// No retry policy: disables all retries.
         /// </summary>
-        public static RetryPolicy NoRetry => new RetryPolicy { MaxRetries = 0 };
+        public static RetryPolicy NoRetry => NoRetryPolicy;
     }
 }

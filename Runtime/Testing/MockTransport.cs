@@ -2,7 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
-using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -238,36 +237,10 @@ namespace TurboHTTP.Testing
 
         private static string SerializeViaProjectJson(object payload, Type payloadType)
         {
-            var serializerType = Type.GetType("TurboHTTP.JSON.JsonSerializer, TurboHTTP.JSON", throwOnError: false);
-            if (serializerType == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON assembly is required for EnqueueJsonResponse. " +
-                    "Install/enable TurboHTTP.JSON and ensure it is loaded.");
-            }
-
-            var serializeMethod = serializerType.GetMethod(
-                "Serialize",
-                BindingFlags.Public | BindingFlags.Static,
-                binder: null,
-                types: new[] { typeof(object), typeof(Type) },
-                modifiers: null);
-            if (serializeMethod == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON.JsonSerializer.Serialize(object, Type) was not found.");
-            }
-
-            try
-            {
-                return (string)serializeMethod.Invoke(null, new[] { payload, payloadType });
-            }
-            catch (TargetInvocationException tie) when (tie.InnerException != null)
-            {
-                throw new InvalidOperationException(
-                    $"Failed to serialize queued JSON payload of type '{payloadType.FullName}'.",
-                    tie.InnerException);
-            }
+            return ProjectJsonBridge.Serialize(
+                payload,
+                payloadType,
+                requiredBy: "MockTransport.EnqueueJsonResponse(...)");
         }
 
         private void ThrowIfDisposed()

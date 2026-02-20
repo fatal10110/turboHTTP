@@ -113,7 +113,7 @@ namespace TurboHTTP.Tests.Core
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/get"));
                 var context = new RequestContext(request);
 
-                await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
+                var queued = await TestHelpers.AssertThrowsAsync<BackgroundRequestQueuedException>(async () =>
                 {
                     await middleware.InvokeAsync(
                         request,
@@ -122,6 +122,7 @@ namespace TurboHTTP.Tests.Core
                         CancellationToken.None);
                 });
 
+                Assert.AreEqual("GET:https://example.test/get", queued.ReplayDedupeKey);
                 Assert.AreEqual(1, middleware.Queued);
                 Assert.AreEqual(1, middleware.Expired);
                 Assert.IsTrue(middleware.TryDequeueReplayable(out var replay));

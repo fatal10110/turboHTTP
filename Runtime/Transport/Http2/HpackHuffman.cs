@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 
 namespace TurboHTTP.Transport.Http2
@@ -373,66 +374,110 @@ namespace TurboHTTP.Transport.Http2
 
         public static byte[] Decode(byte[] data, int offset, int length)
         {
-            var output = new List<byte>();
-            var node = s_root;
-            int paddingBits = 0; // Count consecutive 1-bits at end
-
-            for (int i = offset; i < offset + length; i++)
+            using (var output = new PooledByteAccumulator(Math.Max(16, length)))
             {
-                byte b = data[i];
-                bool isLastByte = (i == offset + length - 1);
+                var node = s_root;
+                int paddingBits = 0; // Count consecutive 1-bits at end
 
-                for (int bit = 7; bit >= 0; bit--)
+                for (int i = offset; i < offset + length; i++)
                 {
-                    int bitVal = (b >> bit) & 1;
-                    var next = bitVal == 0 ? node.Zero : node.One;
+                    byte b = data[i];
+                    bool isLastByte = (i == offset + length - 1);
 
-                    if (next == null)
+                    for (int bit = 7; bit >= 0; bit--)
                     {
-                        // Only valid if we're in the final byte's padding region (all 1s)
-                        if (!isLastByte || bitVal != 1)
-                            throw new HpackDecodingException("Invalid Huffman code sequence");
+                        int bitVal = (b >> bit) & 1;
+                        var next = bitVal == 0 ? node.Zero : node.One;
 
-                        // We've hit padding — remaining bits in this byte must all be 1s
-                        // (which they are if we got here via bitVal == 1).
-                        // Verify remaining bits are also 1s.
-                        for (int pb = bit - 1; pb >= 0; pb--)
+                        if (next == null)
                         {
-                            if (((b >> pb) & 1) != 1)
-                                throw new HpackDecodingException(
-                                    "Invalid Huffman padding (must be all 1-bits)");
+                            // Only valid if we're in the final byte's padding region (all 1s)
+                            if (!isLastByte || bitVal != 1)
+                                throw new HpackDecodingException("Invalid Huffman code sequence");
+
+                            // We've hit padding — remaining bits in this byte must all be 1s
+                            // (which they are if we got here via bitVal == 1).
+                            // Verify remaining bits are also 1s.
+                            for (int pb = bit - 1; pb >= 0; pb--)
+                            {
+                                if (((b >> pb) & 1) != 1)
+                                    throw new HpackDecodingException(
+                                        "Invalid Huffman padding (must be all 1-bits)");
+                            }
+                            return output.ToArray();
                         }
-                        return output.ToArray();
-                    }
 
-                    node = next;
+                        node = next;
 
-                    // Track consecutive 1-bits for padding validation
-                    paddingBits = (bitVal == 1) ? paddingBits + 1 : 0;
+                        // Track consecutive 1-bits for padding validation
+                        paddingBits = (bitVal == 1) ? paddingBits + 1 : 0;
 
-                    if (node.Symbol >= 0)
-                    {
-                        if (node.Symbol == EosSymbol)
-                            throw new HpackDecodingException("EOS symbol found in Huffman-encoded data");
+                        if (node.Symbol >= 0)
+                        {
+                            if (node.Symbol == EosSymbol)
+                                throw new HpackDecodingException("EOS symbol found in Huffman-encoded data");
 
-                        output.Add((byte)node.Symbol);
-                        node = s_root;
-                        paddingBits = 0;
+                            output.Add((byte)node.Symbol);
+                            node = s_root;
+                            paddingBits = 0;
+                        }
                     }
                 }
-            }
 
-            // Validate padding: remaining partial code must be all 1s and <= 7 bits
-            if (node != s_root)
+                // Validate padding: remaining partial code must be all 1s and <= 7 bits
+                if (node != s_root)
+                {
+                    // We're mid-sequence after all input. This is padding territory.
+                    // The partial bits should all be 1s (EOS prefix). Since we didn't
+                    // hit a null node, the path exists, but verify it was all 1s.
+                    if (paddingBits > 7)
+                        throw new HpackDecodingException("Invalid Huffman padding (more than 7 bits)");
+                }
+
+                return output.ToArray();
+            }
+        }
+
+        private sealed class PooledByteAccumulator : IDisposable
+        {
+            private byte[] _buffer;
+            private int _length;
+
+            public PooledByteAccumulator(int initialCapacity)
             {
-                // We're mid-sequence after all input. This is padding territory.
-                // The partial bits should all be 1s (EOS prefix). Since we didn't
-                // hit a null node, the path exists, but verify it was all 1s.
-                if (paddingBits > 7)
-                    throw new HpackDecodingException("Invalid Huffman padding (more than 7 bits)");
+                _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
             }
 
-            return output.ToArray();
+            public void Add(byte value)
+            {
+                if (_length == _buffer.Length)
+                {
+                    var resized = ArrayPool<byte>.Shared.Rent(_buffer.Length * 2);
+                    Buffer.BlockCopy(_buffer, 0, resized, 0, _length);
+                    ArrayPool<byte>.Shared.Return(_buffer);
+                    _buffer = resized;
+                }
+
+                _buffer[_length++] = value;
+            }
+
+            public byte[] ToArray()
+            {
+                var copy = new byte[_length];
+                if (_length > 0)
+                    Buffer.BlockCopy(_buffer, 0, copy, 0, _length);
+                return copy;
+            }
+
+            public void Dispose()
+            {
+                if (_buffer != null)
+                {
+                    ArrayPool<byte>.Shared.Return(_buffer);
+                    _buffer = null;
+                    _length = 0;
+                }
+            }
         }
     }
 }

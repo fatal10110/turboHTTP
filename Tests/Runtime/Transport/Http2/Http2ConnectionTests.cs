@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -11,7 +10,6 @@ using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http2;
-using UnityEngine.TestTools;
 
 namespace TurboHTTP.Tests.Transport.Http2
 {
@@ -533,14 +531,9 @@ namespace TurboHTTP.Tests.Transport.Http2
             }).GetAwaiter().GetResult();
         }
 
-        [UnityTest]
-        public IEnumerator GoAway_InvalidPayloadLength_SendsFrameSizeErrorGoAway()
-        {
-            var task = RunAsync();
-            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
-            RethrowIfFaulted(task);
-
-            async Task RunAsync()
+        [Test]
+        public void GoAway_InvalidPayloadLength_SendsFrameSizeErrorGoAway()        {
+            Task.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -577,17 +570,12 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
                 conn.Dispose();
-            }
+            }).GetAwaiter().GetResult();
         }
 
-        [UnityTest]
-        public IEnumerator Priority_InvalidLength_SendsFrameSizeErrorGoAway()
-        {
-            var task = RunAsync();
-            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
-            RethrowIfFaulted(task);
-
-            async Task RunAsync()
+        [Test]
+        public void Priority_InvalidLength_SendsFrameSizeErrorGoAway()        {
+            Task.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -617,7 +605,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
                 conn.Dispose();
-            }
+            }).GetAwaiter().GetResult();
         }
 
         // --- Settings ---
@@ -767,6 +755,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Assert.Fail("Expected exception");
                 }
                 catch (Http2ProtocolException) { /* expected */ }
+                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
+                {
+                    /* also acceptable */
+                }
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 await Task.Delay(200);
@@ -820,6 +812,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Assert.Fail("Expected exception");
                 }
                 catch (Http2ProtocolException) { /* expected */ }
+                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
+                {
+                    /* also acceptable */
+                }
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 await Task.Delay(200);
@@ -866,6 +862,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Assert.Fail("Expected exception");
                 }
                 catch (Http2ProtocolException) { /* expected */ }
+                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
+                {
+                    /* also acceptable */
+                }
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 await Task.Delay(200);
@@ -954,12 +954,18 @@ namespace TurboHTTP.Tests.Transport.Http2
                 // Dispose the connection without responding
                 conn.Dispose();
 
-                // The response task should fail — can be ObjectDisposedException or OperationCanceledException
-                // depending on timing (CTS cancel vs FailAllStreams)
+                // The response task should fail. Depending on timing it can surface as:
+                // - UHttpException wrapping ObjectDisposedException (SendRequestAsync wrapper)
+                // - raw ObjectDisposedException
+                // - OperationCanceledException (CTS cancel wins race)
                 try
                 {
                     await responseTask;
                     Assert.Fail("Expected exception");
+                }
+                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
+                {
+                    /* expected */
                 }
                 catch (ObjectDisposedException) { /* expected */ }
                 catch (OperationCanceledException) { /* also acceptable - CTS cancelled first */ }
@@ -1422,14 +1428,9 @@ namespace TurboHTTP.Tests.Transport.Http2
             }).GetAwaiter().GetResult();
         }
 
-        [UnityTest]
-        public IEnumerator ContentLengthPreallocation_CappedByMaxResponseBodySize()
-        {
-            var task = RunAsync();
-            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
-            RethrowIfFaulted(task);
-
-            async Task RunAsync()
+        [Test]
+        public void ContentLengthPreallocation_CappedByMaxResponseBodySize()        {
+            Task.Run(async () =>
             {
                 // Preallocation must be capped to MaxResponseBodySize to avoid large
                 // speculative allocations from malicious Content-Length values.
@@ -1483,7 +1484,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var response = await responseTask;
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 conn.Dispose();
-            }
+            }).GetAwaiter().GetResult();
         }
 
         // --- R5: HPACK decoding error sends GOAWAY with COMPRESSION_ERROR ---
@@ -1522,6 +1523,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Assert.Fail("Expected exception");
                 }
                 catch (Http2ProtocolException) { /* expected */ }
+                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
+                {
+                    /* also acceptable */
+                }
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 // Read GOAWAY from client — should have COMPRESSION_ERROR (0x9)
@@ -1586,14 +1591,6 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();
-        }
-
-        private static void RethrowIfFaulted(Task task)
-        {
-            if (!task.IsFaulted)
-                return;
-
-            throw task.Exception?.GetBaseException() ?? new Exception("Task failed without an exception.");
         }
     }
 }

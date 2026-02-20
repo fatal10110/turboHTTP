@@ -349,6 +349,7 @@ namespace TurboHTTP.Transport
             }
 
             context.RecordEvent("TransportProxyConnect");
+            context.RecordEvent("TransportProxyConnectHttp11Only");
             stream = await EstablishConnectTunnelAsync(
                 stream,
                 host,
@@ -449,6 +450,9 @@ namespace TurboHTTP.Transport
                 if (response.StatusCode == 200)
                 {
                     var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
+                    // CONNECT tunnels currently run request framing through the HTTP/1.1 parser path only.
+                    // Advertising h2 ALPN here would negotiate HTTP/2 that this tunnel code path cannot
+                    // yet service safely.
                     var tlsResult = await tlsProvider.WrapAsync(
                         proxyStream,
                         targetHost,

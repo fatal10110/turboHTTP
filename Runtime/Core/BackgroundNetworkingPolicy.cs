@@ -5,6 +5,24 @@ using System.Threading.Tasks;
 
 namespace TurboHTTP.Core
 {
+    public sealed class BackgroundRequestQueuedException : OperationCanceledException
+    {
+        public BackgroundRequestQueuedException(
+            string replayDedupeKey,
+            string scopeId,
+            CancellationToken cancellationToken)
+            : base(
+                "Request was canceled after background expiration and queued for deferred replay.",
+                cancellationToken)
+        {
+            ReplayDedupeKey = replayDedupeKey;
+            ScopeId = scopeId;
+        }
+
+        public string ReplayDedupeKey { get; }
+        public string ScopeId { get; }
+    }
+
     public sealed class BackgroundNetworkingPolicy
     {
         public bool Enable { get; set; }
@@ -103,9 +121,9 @@ namespace TurboHTTP.Core
                     throw;
                 }
 
+                var replayKey = GetReplayDedupeKey(request);
                 if (_bridge is IDeferredBackgroundWorkBridge deferredBridge)
                 {
-                    var replayKey = GetReplayDedupeKey(request);
                     if (!string.IsNullOrWhiteSpace(replayKey) &&
                         deferredBridge.TryEnqueueDeferredWork(replayKey))
                     {
@@ -113,7 +131,10 @@ namespace TurboHTTP.Core
                     }
                 }
 
-                throw;
+                throw new BackgroundRequestQueuedException(
+                    replayKey,
+                    scope?.ScopeId,
+                    effectiveToken);
             }
             finally
             {

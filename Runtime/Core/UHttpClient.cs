@@ -99,7 +99,7 @@ namespace TurboHTTP.Core
             }
 
             _pipeline = new HttpPipeline(BuildPipelineMiddlewares(_options), _transport);
-            _interceptors = BuildInterceptors(_options.Interceptors);
+            Volatile.Write(ref _interceptors, BuildInterceptors(_options.Interceptors));
         }
 
         public UHttpRequestBuilder Get(string url)
@@ -280,7 +280,7 @@ namespace TurboHTTP.Core
 
             var context = new RequestContext(request);
             context.RecordEvent("RequestStart");
-            var interceptorSnapshot = _interceptors;
+            var interceptorSnapshot = Volatile.Read(ref _interceptors) ?? Array.Empty<IHttpInterceptor>();
 
             try
             {
@@ -330,7 +330,7 @@ namespace TurboHTTP.Core
             {
                 pluginsToShutdown = _plugins.ToArray();
                 _plugins.Clear();
-                _interceptors = BuildInterceptors(_options.Interceptors);
+                Volatile.Write(ref _interceptors, BuildInterceptors(_options.Interceptors));
             }
 
             for (int i = pluginsToShutdown.Length - 1; i >= 0; i--)
@@ -339,7 +339,10 @@ namespace TurboHTTP.Core
                 try
                 {
                     plugin.State = PluginLifecycleState.ShuttingDown;
-                    var shutdownTask = plugin.Plugin.ShutdownAsync(CancellationToken.None).AsTask();
+                    var shutdownTask = Task.Run(async () =>
+                    {
+                        await plugin.Plugin.ShutdownAsync(CancellationToken.None).ConfigureAwait(false);
+                    });
                     if (!shutdownTask.Wait(_options.PluginShutdownTimeout))
                     {
                         throw new TimeoutException(
@@ -593,9 +596,11 @@ namespace TurboHTTP.Core
                 }
             }
 
-            _interceptors = combined.Count == 0
-                ? Array.Empty<IHttpInterceptor>()
-                : combined;
+            Volatile.Write(
+                ref _interceptors,
+                combined.Count == 0
+                    ? Array.Empty<IHttpInterceptor>()
+                    : combined);
         }
 
         private static Dictionary<string, object> CreateInterceptorEventData(IHttpInterceptor interceptor, int index)

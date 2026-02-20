@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -26,10 +25,7 @@ namespace TurboHTTP.Cache
         public bool InvalidateOnUnsafeMethods { get; set; } = true;
         public ICacheStorage Storage { get; set; } = new MemoryCacheStorage();
     }
-}
 
-namespace TurboHTTP.Cache
-{
     /// <summary>
     /// RFC-aware cache middleware with conditional revalidation support.
     /// </summary>
@@ -432,11 +428,8 @@ namespace TurboHTTP.Cache
             if (varyIsWildcard)
                 return default;
 
-            var containsSensitiveVary = varyHeaders.Any(h => IsSensitiveVaryHeader(h));
-            if (containsSensitiveVary)
+            if (TryResolveSensitiveVaryFlags(varyHeaders, out var hasCookieVary, out var hasAuthVary))
             {
-                var hasCookieVary = varyHeaders.Any(h => string.Equals(h, "cookie", StringComparison.OrdinalIgnoreCase));
-                var hasAuthVary = varyHeaders.Any(h => string.Equals(h, "authorization", StringComparison.OrdinalIgnoreCase));
                 if ((hasCookieVary && !_policy.AllowVaryCookie) || (hasAuthVary && !_policy.AllowVaryAuthorization))
                     return default;
             }
@@ -511,11 +504,8 @@ namespace TurboHTTP.Cache
             if (varyIsWildcard)
                 return default;
 
-            var containsSensitiveVary = varyHeaders.Any(h => IsSensitiveVaryHeader(h));
-            if (containsSensitiveVary)
+            if (TryResolveSensitiveVaryFlags(varyHeaders, out var hasCookieVary, out var hasAuthVary))
             {
-                var hasCookieVary = varyHeaders.Any(h => string.Equals(h, "cookie", StringComparison.OrdinalIgnoreCase));
-                var hasAuthVary = varyHeaders.Any(h => string.Equals(h, "authorization", StringComparison.OrdinalIgnoreCase));
                 if ((hasCookieVary && !_policy.AllowVaryCookie) || (hasAuthVary && !_policy.AllowVaryAuthorization))
                     return default;
             }

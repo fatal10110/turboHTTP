@@ -66,7 +66,7 @@ namespace TurboHTTP.Observability
 
             LogRequest(request);
 
-            var startTime = DateTime.UtcNow;
+            var startElapsed = context.Elapsed;
             UHttpResponse response = null;
             Exception exception = null;
 
@@ -82,7 +82,9 @@ namespace TurboHTTP.Observability
             }
             finally
             {
-                var elapsed = DateTime.UtcNow - startTime;
+                var elapsed = context.Elapsed - startElapsed;
+                if (elapsed < TimeSpan.Zero)
+                    elapsed = TimeSpan.Zero;
 
                 if (exception != null)
                 {

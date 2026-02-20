@@ -9,6 +9,7 @@ namespace TurboHTTP.Retry
     /// Middleware that automatically retries failed requests with exponential backoff.
     /// Retries on 5xx server errors and retryable transport errors.
     /// Only retries idempotent methods by default.
+    /// Note: request-level timeout applies to each attempt independently.
     /// </summary>
     public class RetryMiddleware : IHttpMiddleware
     {

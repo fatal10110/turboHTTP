@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 
 namespace TurboHTTP.Core
@@ -37,6 +38,8 @@ namespace TurboHTTP.Core
         private readonly object _lock = new object();
         private TimelineEvent[] _timelineSnapshot;
         private bool _timelineSnapshotDirty;
+        private IReadOnlyDictionary<string, object> _stateSnapshot;
+        private bool _stateSnapshotDirty;
         private volatile UHttpRequest _request;
 
         public UHttpRequest Request => _request;
@@ -64,7 +67,14 @@ namespace TurboHTTP.Core
             {
                 lock (_lock)
                 {
-                    return new Dictionary<string, object>(_state);
+                    if (_stateSnapshotDirty)
+                    {
+                        _stateSnapshot = new ReadOnlyDictionary<string, object>(
+                            new Dictionary<string, object>(_state));
+                        _stateSnapshotDirty = false;
+                    }
+
+                    return _stateSnapshot;
                 }
             }
         }
@@ -82,6 +92,9 @@ namespace TurboHTTP.Core
             _state = new Dictionary<string, object>();
             _timelineSnapshot = Array.Empty<TimelineEvent>();
             _timelineSnapshotDirty = false;
+            _stateSnapshot = new ReadOnlyDictionary<string, object>(
+                new Dictionary<string, object>());
+            _stateSnapshotDirty = false;
         }
 
         /// <summary>
@@ -114,6 +127,7 @@ namespace TurboHTTP.Core
             lock (_lock)
             {
                 _state[key] = value;
+                _stateSnapshotDirty = true;
             }
         }
 
@@ -153,6 +167,9 @@ namespace TurboHTTP.Core
                 _timelineSnapshot = Array.Empty<TimelineEvent>();
                 _timelineSnapshotDirty = false;
                 _state.Clear();
+                _stateSnapshot = new ReadOnlyDictionary<string, object>(
+                    new Dictionary<string, object>());
+                _stateSnapshotDirty = false;
             }
         }
     }

@@ -11,11 +11,19 @@ namespace TurboHTTP.Unity
     /// <summary>
     /// Coroutine wrappers over TurboHTTP async APIs for legacy MonoBehaviour workflows.
     /// </summary>
+    /// <remarks>
+    /// Cancellation suppresses callback invocation. Once canceled, success/error callbacks
+    /// are skipped even if the underlying task later completes.
+    /// </remarks>
     public static class CoroutineWrapper
     {
         /// <summary>
         /// Sends a request via coroutine callback pattern.
         /// </summary>
+        /// <remarks>
+        /// If <paramref name="cancellationToken"/> is canceled (or <paramref name="callbackOwner"/>
+        /// is destroyed), callbacks are intentionally suppressed.
+        /// </remarks>
         public static IEnumerator SendCoroutine(
             this UHttpRequestBuilder builder,
             Action<UHttpResponse> onSuccess,
@@ -38,6 +46,10 @@ namespace TurboHTTP.Unity
         /// <summary>
         /// Sends a JSON GET request via coroutine callback pattern.
         /// </summary>
+        /// <remarks>
+        /// If <paramref name="cancellationToken"/> is canceled (or <paramref name="callbackOwner"/>
+        /// is destroyed), callbacks are intentionally suppressed.
+        /// </remarks>
         public static IEnumerator GetJsonCoroutine<T>(
             this UHttpClient client,
             string url,
@@ -45,6 +57,7 @@ namespace TurboHTTP.Unity
             Action<Exception> onError = null,
             CancellationToken cancellationToken = default,
             UnityEngine.Object callbackOwner = null)
+            where T : class
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
             if (string.IsNullOrWhiteSpace(url))
@@ -151,6 +164,7 @@ namespace TurboHTTP.Unity
             UHttpClient client,
             string url,
             CancellationToken cancellationToken)
+            where T : class
         {
             var extensionsType = Type.GetType(
                 "TurboHTTP.JSON.JsonExtensions, TurboHTTP.JSON",
@@ -208,6 +222,14 @@ namespace TurboHTTP.Unity
 
                 throw new InvalidOperationException(
                     "TurboHTTP.JSON.JsonExtensions.GetJsonAsync<T> returned an unexpected task type.");
+            }
+            catch (ArgumentException ex)
+            {
+                throw new InvalidOperationException(
+                    "GetJsonCoroutine<T> cannot materialize the requested generic type at runtime. " +
+                    "For IL2CPP, prefer reference types and ensure required generic usages are " +
+                    "preserved for AOT compilation.",
+                    ex);
             }
             catch (TargetInvocationException tie) when (tie.InnerException != null)
             {

@@ -1,6 +1,6 @@
 # Phase 15.5: Coroutine Wrapper Lifecycle Binding
 
-**Depends on:** Phase 15.1, Phase 15.4
+**Depends on:** Phase 15.1 (dispatcher guarantees for main-thread callback dispatch), Phase 15.4 (deterministic cleanup and lifecycle patterns)
 **Assembly:** `TurboHTTP.Unity`, `TurboHTTP.Tests.Runtime`
 **Files:** 2 new, 1 modified
 

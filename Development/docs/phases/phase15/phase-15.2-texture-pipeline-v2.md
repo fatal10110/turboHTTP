@@ -40,7 +40,7 @@ Implementation constraints:
 
 **Files:**
 - `Runtime/Unity/Texture2DHandler.cs` (modify)
-- `Runtime/Unity/TextureDecodeScheduler.cs` (new)
+- `Runtime/Unity/TextureDecodeScheduler.cs` (modify)
 
 Required behavior:
 

@@ -90,9 +90,14 @@ namespace TurboHTTP.Core
 
         public static InterceptorResponseResult Continue(UHttpResponse response = null)
         {
-            return response == null
-                ? new InterceptorResponseResult(InterceptorResponseAction.Continue, null, null)
-                : new InterceptorResponseResult(InterceptorResponseAction.Replace, response, null);
+            if (response != null)
+            {
+                throw new ArgumentException(
+                    "Continue(response) is ambiguous. Use Replace(response) for response replacement.",
+                    nameof(response));
+            }
+
+            return new InterceptorResponseResult(InterceptorResponseAction.Continue, null, null);
         }
 
         public static InterceptorResponseResult Replace(UHttpResponse response)

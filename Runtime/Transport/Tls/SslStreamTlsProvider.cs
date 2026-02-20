@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq.Expressions;
 using System.Net.Security;
 using System.Reflection;
 using System.Security.Authentication;
@@ -36,6 +37,14 @@ namespace TurboHTTP.Transport.Tls
         private static readonly MethodInfo _authWithOptionsMethod;
         private static readonly object _h2ProtocolValue;
         private static readonly object _http11ProtocolValue;
+        private static readonly ConstructorInfo _optionsCtor;
+        private static readonly Func<object> _createOptionsInstance;
+
+#pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
+        // TLS 1.3 bitmask used where the enum member may be unavailable at compile time
+        // on older Unity/Mono profiles, but is accepted by runtime TLS stacks.
+        private const SslProtocols Tls13Protocol = (SslProtocols)0x3000;
+#pragma warning restore SYSLIB0039
 
         static SslStreamTlsProvider()
         {
@@ -61,6 +70,21 @@ namespace TurboHTTP.Transport.Tls
             if (_alpnSupported && optionsType != null)
             {
                 _optionsType = optionsType;
+                _optionsCtor = optionsType.GetConstructor(Type.EmptyTypes);
+                if (_optionsCtor != null)
+                {
+                    try
+                    {
+                        var newExpr = Expression.New(_optionsCtor);
+                        _createOptionsInstance = Expression.Lambda<Func<object>>(newExpr).Compile();
+                    }
+                    catch
+                    {
+                        // AOT/JIT restrictions may block dynamic delegate compilation.
+                        // Fallback to ConstructorInfo.Invoke in AuthenticateWithAlpnAsync.
+                    }
+                }
+
                 _targetHostProp = optionsType.GetProperty("TargetHost");
                 _enabledProtocolsProp = optionsType.GetProperty("EnabledSslProtocols");
                 _alpnProtocolType = typeof(SslStream).Assembly.GetType(
@@ -139,7 +163,7 @@ namespace TurboHTTP.Transport.Tls
                     var authTask = sslStream.AuthenticateAsClientAsync(
                         host,
                         clientCertificates: null,
-                        enabledSslProtocols: SslProtocols.Tls12 | (SslProtocols)0x3000 /* Tls13 */,
+                        enabledSslProtocols: SslProtocols.Tls12 | Tls13Protocol,
                         checkCertificateRevocation: false);
 #pragma warning restore SYSLIB0039
 
@@ -183,11 +207,16 @@ namespace TurboHTTP.Transport.Tls
             CancellationToken ct)
         {
             // All reflection results are cached in static fields (see static ctor).
-            // Only Activator.CreateInstance + property sets run per connection.
+            // Option instance creation prefers cached delegate to avoid Activator overhead.
             if (_optionsType == null || _targetHostProp == null || _authWithOptionsMethod == null)
                 throw new PlatformNotSupportedException("SslClientAuthenticationOptions not available");
 
-            var options = Activator.CreateInstance(_optionsType);
+            var options = _createOptionsInstance != null
+                ? _createOptionsInstance()
+                : _optionsCtor != null
+                    ? _optionsCtor.Invoke(null)
+                    : throw new PlatformNotSupportedException(
+                        "SslClientAuthenticationOptions default constructor not available.");
 
             _targetHostProp.SetValue(options, host);
 
@@ -195,7 +224,7 @@ namespace TurboHTTP.Transport.Tls
             {
 #pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
                 _enabledProtocolsProp.SetValue(
-                    options, SslProtocols.Tls12 | (SslProtocols)0x3000 /* Tls13 */);
+                    options, SslProtocols.Tls12 | Tls13Protocol);
 #pragma warning restore SYSLIB0039
             }
 
@@ -262,7 +291,7 @@ namespace TurboHTTP.Transport.Tls
         {
             if (protocol == SslProtocols.Tls12)
                 return "1.2";
-            if (protocol == (SslProtocols)0x3000) // Tls13
+            if (protocol == Tls13Protocol)
                 return "1.3";
             return protocol.ToString();
         }

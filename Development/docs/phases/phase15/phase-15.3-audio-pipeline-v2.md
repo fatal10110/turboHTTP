@@ -4,6 +4,10 @@
 **Assembly:** `TurboHTTP.Unity`, `TurboHTTP.Tests.Runtime`
 **Files:** 2 new, 1 modified
 
+## Current State
+
+`AudioClipHandler.cs` already provides GUID-based temp-file naming (`GetTempFilePath`), startup sweep (`EnsureStartupCleanup`), retry-based deletion (`TryDeleteTempFile`), and a dedicated temp directory under `Application.temporaryCachePath`. Phase 15.3 extracts these into a dedicated `UnityTempFileManager` and hardens the lifecycle with sharded I/O, bounded concurrency, and structured diagnostics.
+
 ---
 
 ## Step 1: Centralize Temp-File Lifecycle Management
@@ -35,7 +39,7 @@ Implementation constraints:
 
 **Files:**
 - `Runtime/Unity/AudioClipHandler.cs` (modify)
-- `Runtime/Unity/UnityTempFileManager.cs` (new)
+- `Runtime/Unity/UnityTempFileManager.cs` (modify)
 
 Required behavior:
 

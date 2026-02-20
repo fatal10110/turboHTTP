@@ -128,10 +128,15 @@ namespace TurboHTTP.Editor
 
             foreach (var pair in GetSortedHeaders(headers))
             {
+                // Always mask confidential headers in exports to prevent credential
+                // leakage when files are shared or committed to version control.
+                var value = ConfidentialHeaders.Contains(pair.Key)
+                    ? "********"
+                    : pair.Value ?? string.Empty;
                 list.Add(new ExportHeaderEntry
                 {
                     key = pair.Key,
-                    value = FormatHeaderValue(pair.Key, pair.Value)
+                    value = value
                 });
             }
 

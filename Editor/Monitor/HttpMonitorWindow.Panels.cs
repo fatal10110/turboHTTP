@@ -310,37 +310,69 @@ namespace TurboHTTP.Editor
         private void DrawRawTab()
         {
             var raw = new StringBuilder(4096);
-            raw.AppendLine("=== REQUEST ===");
+
+            // Request line (approximate HTTP/1.1 wire format)
             raw.Append(_selectedEvent.Method);
             raw.Append(' ');
-            raw.AppendLine(_selectedEvent.Url);
+            var url = _selectedEvent.Url ?? "/";
+            if (Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+                raw.Append(parsed.PathAndQuery);
+            else
+                raw.Append(url);
+            raw.AppendLine(" HTTP/1.1");
+
+            // Host header
+            if (parsed != null)
+            {
+                raw.Append("Host: ");
+                raw.AppendLine(parsed.Authority);
+            }
+
+            AppendRawHeaders(raw, _selectedEvent.RequestHeaders);
             raw.AppendLine();
-            raw.AppendLine("Headers:");
-            AppendHeaders(raw, _selectedEvent.RequestHeaders);
+            var requestBody = _selectedEvent.GetRequestBodyAsString();
+            if (!string.IsNullOrEmpty(requestBody))
+            {
+                raw.AppendLine(requestBody);
+            }
             raw.AppendLine();
-            raw.AppendLine("Body:");
-            raw.AppendLine(_selectedEvent.GetRequestBodyAsString());
-            raw.AppendLine();
-            raw.AppendLine("=== RESPONSE ===");
-            raw.Append("Status: ");
+
+            // Response status line
+            raw.Append("HTTP/1.1 ");
             raw.Append(_selectedEvent.StatusCode);
             raw.Append(' ');
             raw.AppendLine(_selectedEvent.StatusText);
+            AppendRawHeaders(raw, _selectedEvent.ResponseHeaders);
             raw.AppendLine();
-            raw.AppendLine("Headers:");
-            AppendHeaders(raw, _selectedEvent.ResponseHeaders);
-            raw.AppendLine();
-            raw.AppendLine("Body:");
-            raw.AppendLine(_selectedEvent.GetResponseBodyAsString());
+            var responseBody = _selectedEvent.GetResponseBodyAsString();
+            if (!string.IsNullOrEmpty(responseBody))
+            {
+                raw.AppendLine(responseBody);
+            }
 
             if (!string.IsNullOrEmpty(_selectedEvent.Error))
             {
                 raw.AppendLine();
-                raw.AppendLine("Error:");
+                raw.AppendLine("--- Error ---");
                 raw.AppendLine(_selectedEvent.Error);
             }
 
             EditorGUILayout.TextArea(raw.ToString(), GUILayout.ExpandHeight(true));
+        }
+
+        private void AppendRawHeaders(StringBuilder builder, IReadOnlyDictionary<string, string> headers)
+        {
+            if (headers == null || headers.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var pair in GetSortedHeaders(headers))
+            {
+                builder.Append(pair.Key);
+                builder.Append(": ");
+                builder.AppendLine(FormatHeaderValue(pair.Key, pair.Value));
+            }
         }
 
         private void DrawBodyMeta(
@@ -374,22 +406,6 @@ namespace TurboHTTP.Editor
             foreach (var pair in GetSortedHeaders(headers))
             {
                 EditorGUILayout.LabelField(pair.Key, FormatHeaderValue(pair.Key, pair.Value));
-            }
-        }
-
-        private void AppendHeaders(StringBuilder builder, IReadOnlyDictionary<string, string> headers)
-        {
-            if (headers == null || headers.Count == 0)
-            {
-                builder.AppendLine("<none>");
-                return;
-            }
-
-            foreach (var pair in GetSortedHeaders(headers))
-            {
-                builder.Append(pair.Key);
-                builder.Append(": ");
-                builder.AppendLine(FormatHeaderValue(pair.Key, pair.Value));
             }
         }
 

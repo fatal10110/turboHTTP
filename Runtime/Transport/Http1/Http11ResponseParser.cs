@@ -240,6 +240,7 @@ namespace TurboHTTP.Transport.Http1
         /// bytes beyond the returned line. It is intended for tests/single-line probes, not
         /// for continued parsing of a live connection where unread bytes must be preserved.
         /// </summary>
+        [Obsolete("Test helper only. Prefer ParseAsync/BufferedStreamReader for production parsing paths.", false)]
         internal static async Task<string> ReadLineAsync(
             Stream stream, CancellationToken ct, int maxLength = MaxHeaderLineLength)
         {
@@ -543,8 +544,17 @@ namespace TurboHTTP.Transport.Http1
                     return;
 
                 var resized = ArrayPool<byte>.Shared.Rent(Math.Max(required, buffer.Length * 2));
-                if (bytesToCopy > 0)
-                    Buffer.BlockCopy(buffer, 0, resized, 0, bytesToCopy);
+                try
+                {
+                    if (bytesToCopy > 0)
+                        Buffer.BlockCopy(buffer, 0, resized, 0, bytesToCopy);
+                }
+                catch
+                {
+                    ArrayPool<byte>.Shared.Return(resized);
+                    throw;
+                }
+
                 ArrayPool<byte>.Shared.Return(buffer);
                 buffer = resized;
             }

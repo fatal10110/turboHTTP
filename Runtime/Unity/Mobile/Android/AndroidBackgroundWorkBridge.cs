@@ -10,20 +10,22 @@ namespace TurboHTTP.Unity.Mobile.Android
     {
         private readonly AndroidBackgroundWorkConfig _config;
         private readonly ConcurrentDictionary<string, byte> _queuedWorkIds = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        private int _pluginInitializationAttempted;
+        private int _pluginInitialized;
 
         public AndroidBackgroundWorkBridge(AndroidBackgroundWorkConfig config = null)
         {
             _config = (config ?? new AndroidBackgroundWorkConfig()).Clone();
         }
 
-        public ValueTask<IBackgroundExecutionScope> AcquireAsync(
+        public async ValueTask<IBackgroundExecutionScope> AcquireAsync(
             RequestContext context,
             CancellationToken cancellationToken)
         {
 #if !UNITY_ANDROID || UNITY_EDITOR
-            return new ValueTask<IBackgroundExecutionScope>((IBackgroundExecutionScope)null);
+            return null;
 #else
-            TryInitializePluginContext();
+            await TryInitializePluginContextAsync(cancellationToken).ConfigureAwait(false);
 
             var scopeId = "android-" + Guid.NewGuid().ToString("N");
             var started = DateTime.UtcNow;
@@ -31,8 +33,11 @@ namespace TurboHTTP.Unity.Mobile.Android
 
             try
             {
-                using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
-                plugin.CallStatic("beginInProcessGuard", scopeId, _config.GuardGraceMilliseconds);
+                await TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(() =>
+                {
+                    using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
+                    plugin.CallStatic("beginInProcessGuard", scopeId, _config.GuardGraceMilliseconds);
+                }, cancellationToken).ConfigureAwait(false);
             }
             catch
             {
@@ -44,12 +49,15 @@ namespace TurboHTTP.Unity.Mobile.Android
                 started,
                 expirationCts.Token,
                 remainingBudgetProvider: () => TimeSpan.FromMilliseconds(_config.GuardGraceMilliseconds),
-                disposeAction: () =>
+                disposeAction: async () =>
                 {
                     try
                     {
-                        using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
-                        plugin.CallStatic("endInProcessGuard", scopeId);
+                        await TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(() =>
+                        {
+                            using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
+                            plugin.CallStatic("endInProcessGuard", scopeId);
+                        }, CancellationToken.None).ConfigureAwait(false);
                     }
                     catch
                     {
@@ -57,10 +65,9 @@ namespace TurboHTTP.Unity.Mobile.Android
 
                     expirationCts.Cancel();
                     expirationCts.Dispose();
-                    return default;
                 });
 
-            return new ValueTask<IBackgroundExecutionScope>(scope);
+            return scope;
 #endif
         }
 
@@ -79,9 +86,12 @@ namespace TurboHTTP.Unity.Mobile.Android
 #if UNITY_ANDROID && !UNITY_EDITOR
             try
             {
-                TryInitializePluginContext();
-                using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
-                var enqueued = plugin.CallStatic<bool>("enqueueDeferredWork", dedupeKey);
+                TryInitializePluginContextBlocking();
+                var enqueued = TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(() =>
+                {
+                    using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
+                    return plugin.CallStatic<bool>("enqueueDeferredWork", dedupeKey);
+                }).GetAwaiter().GetResult();
                 if (!enqueued)
                 {
                     _queuedWorkIds.TryRemove(dedupeKey, out _);
@@ -112,12 +122,52 @@ namespace TurboHTTP.Unity.Mobile.Android
 #if UNITY_ANDROID && !UNITY_EDITOR
         private void TryInitializePluginContext()
         {
+            if (Volatile.Read(ref _pluginInitializationAttempted) != 0)
+                return;
+
+            if (Interlocked.CompareExchange(ref _pluginInitializationAttempted, 1, 0) != 0)
+                return;
+
             try
             {
                 using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
                 using var unityPlayer = new UnityEngine.AndroidJavaClass("com.unity3d.player.UnityPlayer");
                 using var activity = unityPlayer.GetStatic<UnityEngine.AndroidJavaObject>("currentActivity");
-                plugin.CallStatic<bool>("initialize", activity);
+                if (plugin.CallStatic<bool>("initialize", activity))
+                {
+                    Volatile.Write(ref _pluginInitialized, 1);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private async Task TryInitializePluginContextAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (Volatile.Read(ref _pluginInitializationAttempted) != 0)
+                    return;
+
+                await TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(
+                    TryInitializePluginContext,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
+        private void TryInitializePluginContextBlocking()
+        {
+            try
+            {
+                if (Volatile.Read(ref _pluginInitializationAttempted) != 0)
+                    return;
+
+                TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(
+                    TryInitializePluginContext).GetAwaiter().GetResult();
             }
             catch
             {
@@ -128,8 +178,14 @@ namespace TurboHTTP.Unity.Mobile.Android
         {
             try
             {
-                using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
-                plugin.CallStatic<bool>("cancelDeferredWork", dedupeKey);
+                if (Volatile.Read(ref _pluginInitialized) == 0)
+                    return;
+
+                TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(() =>
+                {
+                    using var plugin = new UnityEngine.AndroidJavaClass(_config.PluginClassName);
+                    plugin.CallStatic<bool>("cancelDeferredWork", dedupeKey);
+                }).GetAwaiter().GetResult();
             }
             catch
             {

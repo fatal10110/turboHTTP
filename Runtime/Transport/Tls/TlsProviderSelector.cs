@@ -9,11 +9,12 @@ namespace TurboHTTP.Transport.Tls
     public static class TlsProviderSelector
     {
         // Lazy caching for BouncyCastle provider - avoids reflection overhead on every call
-        private static readonly Lazy<ITlsProvider> _bouncyCastleProvider = 
+        private static readonly Lazy<ITlsProvider> _bouncyCastleProvider =
             new Lazy<ITlsProvider>(LoadBouncyCastleProvider, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
-        
-        // Track if BouncyCastle is available (null = not checked, true/false = cached result)
-        private static bool? _bouncyCastleAvailable;
+
+        // Thread-safe availability check cache (avoids non-atomic nullable writes on 32-bit IL2CPP).
+        private static readonly Lazy<bool> _bouncyCastleAvailable =
+            new Lazy<bool>(DetectBouncyCastleAvailability, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
 
         /// <summary>
         /// Get the TLS provider for the specified backend strategy.
@@ -44,14 +45,6 @@ namespace TurboHTTP.Transport.Tls
         /// </summary>
         public static bool IsBouncyCastleAvailable()
         {
-            if (_bouncyCastleAvailable.HasValue)
-                return _bouncyCastleAvailable.Value;
-            
-            var bcType = Type.GetType(
-                "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
-                throwOnError: false);
-            
-            _bouncyCastleAvailable = bcType != null;
             return _bouncyCastleAvailable.Value;
         }
 
@@ -89,6 +82,15 @@ namespace TurboHTTP.Transport.Tls
             }
 
             return (ITlsProvider)instanceField.GetValue(null);
+        }
+
+        private static bool DetectBouncyCastleAvailability()
+        {
+            var bcType = Type.GetType(
+                "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
+                throwOnError: false);
+
+            return bcType != null;
         }
 
         /// <summary>

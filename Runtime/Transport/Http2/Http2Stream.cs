@@ -85,9 +85,19 @@ namespace TurboHTTP.Transport.Http2
             HeaderBlockBuffer.Write(data, offset, length);
         }
 
-        public byte[] GetHeaderBlock()
+        public ArraySegment<byte> GetHeaderBlockSegment()
         {
-            return HeaderBlockBuffer.ToArray();
+            if (HeaderBlockBuffer.TryGetBuffer(out var segment))
+            {
+                return new ArraySegment<byte>(
+                    segment.Array,
+                    segment.Offset,
+                    (int)HeaderBlockBuffer.Length);
+            }
+
+            // Fallback for non-exposable buffers.
+            var copy = HeaderBlockBuffer.ToArray();
+            return new ArraySegment<byte>(copy, 0, copy.Length);
         }
 
         public void EnsureResponseBodyCapacity(int capacity)

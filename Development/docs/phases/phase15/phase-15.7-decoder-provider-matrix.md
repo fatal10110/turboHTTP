@@ -61,7 +61,7 @@ Implementation constraints:
 ## Step 3: Add Platform Routing Policy and Linker Safety
 
 **Files:**
-- `Runtime/Unity/Decoders/DecoderRegistry.cs` (new)
+- `Runtime/Unity/Decoders/DecoderRegistry.cs` (modify)
 - `Runtime/Unity/link.xml` (modify)
 
 Required behavior:

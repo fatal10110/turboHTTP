@@ -327,34 +327,73 @@ namespace TurboHTTP.Testing
                 return GetCachedRegex(regexPattern).IsMatch(path);
             }
 
-            var patternSegments = SplitPath(pattern);
-            var pathSegments = SplitPath(path);
-
-            if (patternSegments.Length != pathSegments.Length)
-                return false;
-
-            for (int i = 0; i < patternSegments.Length; i++)
+            int patternIndex = 0;
+            int pathIndex = 0;
+            while (true)
             {
-                var token = patternSegments[i];
-                if (token == "*" ||
-                    (token.Length >= 2 && token[0] == '{' && token[token.Length - 1] == '}'))
+                var hasPatternSegment = TryReadNextPathSegment(pattern, ref patternIndex, out var patternStart, out var patternLength);
+                var hasPathSegment = TryReadNextPathSegment(path, ref pathIndex, out var pathStart, out var pathLength);
+
+                if (!hasPatternSegment || !hasPathSegment)
+                    return hasPatternSegment == hasPathSegment;
+
+                if (IsWildcardOrParameter(pattern, patternStart, patternLength))
                 {
                     continue;
                 }
 
-                if (!string.Equals(token, pathSegments[i], StringComparison.Ordinal))
+                if (patternLength != pathLength ||
+                    string.CompareOrdinal(pattern, patternStart, path, pathStart, patternLength) != 0)
+                {
                     return false;
+                }
+            }
+        }
+
+        private static bool TryReadNextPathSegment(
+            string path,
+            ref int index,
+            out int start,
+            out int length)
+        {
+            start = 0;
+            length = 0;
+
+            if (string.IsNullOrEmpty(path))
+                return false;
+
+            int trimmedStart = 0;
+            int trimmedEnd = path.Length;
+            while (trimmedStart < trimmedEnd && path[trimmedStart] == '/')
+                trimmedStart++;
+            while (trimmedEnd > trimmedStart && path[trimmedEnd - 1] == '/')
+                trimmedEnd--;
+            if (trimmedStart >= trimmedEnd)
+                return false;
+
+            int i = index < trimmedStart ? trimmedStart : index;
+            if (i >= trimmedEnd)
+            {
+                index = i;
+                return false;
             }
 
+            start = i;
+            while (i < trimmedEnd && path[i] != '/')
+                i++;
+            length = i - start;
+            index = i < trimmedEnd ? i + 1 : i;
             return true;
         }
 
-        private static string[] SplitPath(string path)
+        private static bool IsWildcardOrParameter(string pattern, int start, int length)
         {
-            if (string.IsNullOrEmpty(path) || path == "/")
-                return Array.Empty<string>();
+            if (length == 1 && pattern[start] == '*')
+                return true;
 
-            return path.Trim('/').Split('/');
+            return length >= 2 &&
+                pattern[start] == '{' &&
+                pattern[start + length - 1] == '}';
         }
 
         private static Regex GetCachedRegex(string pattern)

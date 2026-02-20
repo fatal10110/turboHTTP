@@ -107,19 +107,34 @@ namespace TurboHTTP.Transport.Http2
 
         private static void EncodeString(string s, PooledByteBuffer output)
         {
-            byte[] raw = EncodingHelper.Latin1.GetBytes(s);
-            int huffmanLength = HpackHuffman.GetEncodedLength(raw, 0, raw.Length);
-
-            if (huffmanLength < raw.Length)
+            int rawLength = EncodingHelper.Latin1.GetByteCount(s);
+            if (rawLength == 0)
             {
-                byte[] huffmanEncoded = HpackHuffman.Encode(raw, 0, raw.Length);
-                EncodeInteger(huffmanEncoded.Length, 7, 0x80, output);
-                output.AddRange(huffmanEncoded);
+                EncodeInteger(0, 7, 0x00, output);
+                return;
             }
-            else
+
+            var raw = ArrayPool<byte>.Shared.Rent(rawLength);
+            try
             {
-                EncodeInteger(raw.Length, 7, 0x00, output);
-                output.AddRange(raw);
+                int bytesWritten = EncodingHelper.Latin1.GetBytes(s, 0, s.Length, raw, 0);
+                int huffmanLength = HpackHuffman.GetEncodedLength(raw, 0, bytesWritten);
+
+                if (huffmanLength < bytesWritten)
+                {
+                    byte[] huffmanEncoded = HpackHuffman.Encode(raw, 0, bytesWritten);
+                    EncodeInteger(huffmanEncoded.Length, 7, 0x80, output);
+                    output.AddRange(huffmanEncoded);
+                }
+                else
+                {
+                    EncodeInteger(bytesWritten, 7, 0x00, output);
+                    output.AddRange(raw, bytesWritten);
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(raw);
             }
         }
 
@@ -179,6 +194,16 @@ namespace TurboHTTP.Transport.Http2
                 EnsureCapacity(bytes.Length);
                 Buffer.BlockCopy(bytes, 0, _buffer, _length, bytes.Length);
                 _length += bytes.Length;
+            }
+
+            public void AddRange(byte[] bytes, int count)
+            {
+                if (bytes == null || count <= 0)
+                    return;
+
+                EnsureCapacity(count);
+                Buffer.BlockCopy(bytes, 0, _buffer, _length, count);
+                _length += count;
             }
 
             public byte[] ToArray()

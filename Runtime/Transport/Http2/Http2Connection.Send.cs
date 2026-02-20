@@ -29,37 +29,51 @@ namespace TurboHTTP.Transport.Http2
             }
             else
             {
-                var firstPayload = new byte[maxPayload];
-                Array.Copy(headerBlock, 0, firstPayload, 0, maxPayload);
+                var firstPayload = ArrayPool<byte>.Shared.Rent(maxPayload);
+                Buffer.BlockCopy(headerBlock, 0, firstPayload, 0, maxPayload);
                 int offset = maxPayload;
 
                 var headersFlags = endStream ? Http2FrameFlags.EndStream : Http2FrameFlags.None;
-                await _codec.WriteFrameAsync(new Http2Frame
+                try
                 {
-                    Type = Http2FrameType.Headers,
-                    Flags = headersFlags,
-                    StreamId = streamId,
-                    Payload = firstPayload,
-                    Length = firstPayload.Length
-                }, ct, flush: false);
+                    await _codec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Headers,
+                        Flags = headersFlags,
+                        StreamId = streamId,
+                        Payload = firstPayload,
+                        Length = maxPayload
+                    }, ct, flush: false);
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(firstPayload);
+                }
 
                 while (offset < headerBlock.Length)
                 {
                     int remaining = headerBlock.Length - offset;
                     int chunkSize = Math.Min(remaining, maxPayload);
-                    var chunk = new byte[chunkSize];
-                    Array.Copy(headerBlock, offset, chunk, 0, chunkSize);
+                    var chunk = ArrayPool<byte>.Shared.Rent(chunkSize);
+                    Buffer.BlockCopy(headerBlock, offset, chunk, 0, chunkSize);
                     offset += chunkSize;
 
                     bool isLast = offset >= headerBlock.Length;
-                    await _codec.WriteFrameAsync(new Http2Frame
+                    try
                     {
-                        Type = Http2FrameType.Continuation,
-                        Flags = isLast ? Http2FrameFlags.EndHeaders : Http2FrameFlags.None,
-                        StreamId = streamId,
-                        Payload = chunk,
-                        Length = chunkSize
-                    }, ct, flush: isLast);
+                        await _codec.WriteFrameAsync(new Http2Frame
+                        {
+                            Type = Http2FrameType.Continuation,
+                            Flags = isLast ? Http2FrameFlags.EndHeaders : Http2FrameFlags.None,
+                            StreamId = streamId,
+                            Payload = chunk,
+                            Length = chunkSize
+                        }, ct, flush: isLast);
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(chunk);
+                    }
                 }
             }
         }
@@ -136,7 +150,10 @@ namespace TurboHTTP.Transport.Http2
 
         private async Task WaitForWindowUpdateAsync(CancellationToken ct)
         {
-            await _windowWaiter.WaitAsync(ct);
+            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token))
+            {
+                await _windowWaiter.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+            }
         }
 
         private static string BuildAuthorityValue(Uri uri)

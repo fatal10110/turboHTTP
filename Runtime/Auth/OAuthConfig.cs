@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 
 namespace TurboHTTP.Auth
 {
@@ -44,14 +45,28 @@ namespace TurboHTTP.Auth
             if (allowInsecure)
                 return;
 
-            var isLocalhost = string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(uri.Host, "::1", StringComparison.OrdinalIgnoreCase);
-
-            if (!uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) && !isLocalhost)
+            if (!uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) && !IsLocalhostUri(uri))
             {
                 throw new ArgumentException($"{paramName} must use HTTPS (except localhost development endpoints).", paramName);
             }
+        }
+
+        internal static bool IsLocalhostUri(Uri uri)
+        {
+            if (uri == null)
+                return false;
+
+            if (uri.IsLoopback)
+                return true;
+
+            var host = uri.Host;
+            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip))
+                return true;
+
+            return false;
         }
     }
 

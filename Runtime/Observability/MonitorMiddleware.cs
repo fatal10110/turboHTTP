@@ -52,19 +52,33 @@ namespace TurboHTTP.Observability
 
         /// <summary>
         /// Raised when history changes. Null payload means structural update (for example clear).
+        /// Thread safety: event invocation is thread-safe (per-handler isolation).
+        /// Subscription/unsubscription should occur on the main thread.
         /// </summary>
         public static event Action<HttpMonitorEvent> OnRequestCaptured;
 
+        private static Func<string, string, string> _headerValueTransform;
+
         /// <summary>
         /// Optional hook for value-level header transformations (for example redaction).
-        /// Disabled by default.
+        /// Disabled by default. Thread-safe: subscription/unsubscription may occur on any thread.
         /// </summary>
-        public static Func<string, string, string> HeaderValueTransform { get; set; }
+        public static Func<string, string, string> HeaderValueTransform
+        {
+            get => Volatile.Read(ref _headerValueTransform);
+            set => Volatile.Write(ref _headerValueTransform, value);
+        }
+
+        private static Action<string> _diagnosticLogger;
 
         /// <summary>
         /// Optional diagnostics sink used for throttled capture-failure logs.
         /// </summary>
-        public static Action<string> DiagnosticLogger { get; set; }
+        public static Action<string> DiagnosticLogger
+        {
+            get => Volatile.Read(ref _diagnosticLogger);
+            set => Volatile.Write(ref _diagnosticLogger, value);
+        }
 
         public static bool CaptureEnabled
         {
@@ -237,12 +251,31 @@ namespace TurboHTTP.Observability
                 return copy;
             }
 
-            foreach (var header in headers)
+            // Use Names + GetValues to capture all multi-value headers.
+            // The IEnumerable<KeyValuePair> enumerator only yields the first value per name.
+            var transform = Volatile.Read(ref _headerValueTransform);
+            foreach (var name in headers.Names)
             {
-                var headerKey = header.Key ?? string.Empty;
-                var value = header.Value ?? string.Empty;
+                var headerKey = name ?? string.Empty;
+                var values = headers.GetValues(name);
+                if (values.Count == 0)
+                {
+                    continue;
+                }
 
-                var transform = HeaderValueTransform;
+                string value;
+                if (values.Count == 1)
+                {
+                    value = values[0] ?? string.Empty;
+                }
+                else
+                {
+                    // Set-Cookie must not be comma-folded (RFC 6265).
+                    var separator = string.Equals(name, "Set-Cookie", StringComparison.OrdinalIgnoreCase)
+                        ? "; " : ", ";
+                    value = string.Join(separator, values);
+                }
+
                 if (transform != null)
                 {
                     try

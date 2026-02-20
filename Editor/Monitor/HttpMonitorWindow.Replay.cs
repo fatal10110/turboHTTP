@@ -21,9 +21,16 @@ namespace TurboHTTP.Editor
             "Proxy-Connection"
         };
 
-        private void ReplayEvent(HttpMonitorEvent evt)
+        private async void ReplayEvent(HttpMonitorEvent evt)
         {
-            _ = ReplayEventAsync(evt);
+            try
+            {
+                await ReplayEventAsync(evt);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[TurboHTTP] Replay failed with unhandled exception: {ex}");
+            }
         }
 
         private async Task ReplayEventAsync(HttpMonitorEvent evt)
@@ -122,6 +129,13 @@ namespace TurboHTTP.Editor
             bool bodyIsEmpty)
         {
             var warning = new StringBuilder();
+
+            if (evt.Method == "POST" || evt.Method == "PATCH" || evt.Method == "DELETE")
+            {
+                AppendReplayWarning(
+                    warning,
+                    $"{evt.Method} is not idempotent. Replaying may cause side effects (duplicate creation, data modification).");
+            }
 
             if (evt.IsRequestBodyTruncated)
             {

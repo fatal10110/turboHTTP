@@ -2,6 +2,79 @@
 
 Comprehensive review performed by both specialist agents (unity-infrastructure-architect and unity-network-architect) across all runtime modules.
 
+## Resolution Update (2026-02-20)
+
+All IDs in this review are now resolved.
+
+- `Fixed`: code/config/test changes implemented.
+- `Verified`: finding represented correct behavior; kept as documented-by-design.
+
+### Critical Findings Status
+
+| ID | Status | Resolution |
+|----|--------|------------|
+| C-1 | Fixed | Middleware namespaces aligned to owning assemblies |
+| C-2 | Fixed | `RequestContext._request` made `volatile` |
+| C-3 | Fixed | Empty `RateLimit` assembly removed from package assembly graph |
+| C-4 | Fixed | `TurboHTTP.Transport.asmdef` set to `autoReferenced: false` |
+| C-5 | Fixed | HTTP/2 cancellation no longer disposes active stream in callback; lifecycle race hardened |
+| C-6 | Fixed | Content-Length/Transfer-Encoding validation moved before header serialization |
+
+### Warning Findings Status
+
+| ID | Status | Resolution |
+|----|--------|------------|
+| W-I1 | Fixed | `RetryPolicy.Default` converted to cached singleton |
+| W-I2 | Fixed | `MetricsMiddleware` uses static `AddOrUpdate` delegates |
+| W-I3 | Fixed | HTTP/2 header list pre-sized + ASCII-lower fast path |
+| W-I4 | Fixed | CONTINUATION payloads switched to `ArrayPool<byte>` |
+| W-I5 | Fixed | Small frame payloads pooled on HTTP/2 lifecycle paths |
+| W-I6 | Fixed | `ObjectPool.Count` now lock-consistent with writes |
+| W-I7 | Fixed | `SslStreamTlsProvider` option construction cached; activator fallback removed |
+| W-I8 | Fixed | `TlsProviderSelector` availability cache switched to `Lazy<bool>` |
+| W-I9 | Fixed | `ReturnToPool` race narrowed and idle-scavenger hardening added |
+| W-I10 | Fixed | Stream cancellation callback now idempotent remove-first path |
+| W-I11 | Fixed | HTTP/2 read-loop write waits now cancellation-aware |
+| W-I12 | Fixed | `ReadLineAsync` test helper marked `[Obsolete]` |
+| W-I13 | Fixed | `CacheMiddleware` consolidated to single namespace declaration |
+| W-I14 | Fixed | `PlatformConfig` now reuses TLS provider ALPN detection |
+| W-N1 | Fixed | Same as W-I4 (`ArrayPool` CONTINUATION payloads) |
+| W-N2 | Fixed | Stream creation serialized/re-checked around GOAWAY |
+| W-N3 | Fixed | TLS 1.3 cast replaced with documented constant |
+| W-N4 | Fixed | Background idle connection scavenger implemented |
+| W-N5 | Fixed | HPACK dynamic table moved off `List.Insert(0)` pattern |
+| W-N6 | Fixed | Retry timeout semantics documented as per-attempt |
+| W-N7 | Fixed | HTTP/2 concurrent dispose/sender lifecycle hardened |
+| W-N8 | Verified | `Socket.Available` limitation retained and explicitly documented |
+
+### Info Findings Status
+
+| ID | Status | Resolution |
+|----|--------|------------|
+| I-I1 | Fixed | `HttpHeaders` enumeration now yields all values |
+| I-I2 | Fixed | `RequestContext.State` snapshot caching added |
+| I-I3 | Fixed | HTTP/2 header decode path uses segment access (no forced copy) |
+| I-I4 | Fixed | HTTP/1.1 Content-Length parsing accepts comma-separated normalized values |
+| I-I5 | Fixed | `BufferedStreamReader.EnsureCapacity` leak-on-copy-failure path guarded |
+| I-I6 | Fixed | `Http2ConnectionManager` now has `_disposed` guard |
+| I-I7 | Fixed | `TurboHTTP.Complete.asmdef` excludes WebGL |
+| I-I8 | Fixed | `MockTransport` switched to `ProjectJsonBridge` |
+| I-I9 | Fixed | `LoggingMiddleware` timing uses `RequestContext.Elapsed` |
+| I-I10 | Fixed | CLAUDE ObjectPool docs aligned with lock-based implementation |
+| I-N1 | Fixed | HTTP/1.1 serializer reuses thread-static `StringBuilder` |
+| I-N2 | Fixed | HTTP/2 client keepalive PING loop added |
+| I-N3 | Fixed | HPACK encoder raw-bytes allocation moved to pooled buffer |
+| I-N4 | Fixed | Frame codec coalesces header+payload into one write buffer |
+| I-N5 | Fixed | ObjectPool implementation/docs consistency corrected |
+| I-N6 | Fixed | `CacheMiddleware` LINQ closure allocations removed |
+| I-N7 | Fixed | Connection return race remains handled + documented with hardening |
+| I-N8 | Verified | HTTP/2 user-agent check already correct |
+| I-N9 | Fixed | Huffman decoder accumulation moved to pooled buffer |
+| I-N10 | Verified | SETTINGS_MAX_FRAME_SIZE validation already correct |
+| I-N11 | Verified | Platform directives already correct |
+
+Historical sections below are preserved as the original review snapshot for audit trail.
+
 ## Review Scope
 
 All files under `Runtime/` — Core, Transport, JSON, Middleware, Auth, Retry, Observability, Performance, Testing, Cache, RateLimit, Files, Unity. Assembly definitions verified for dependency rules.

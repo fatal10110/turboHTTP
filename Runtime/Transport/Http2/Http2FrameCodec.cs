@@ -148,21 +148,48 @@ namespace TurboHTTP.Transport.Http2
                     "Frame length exceeds payload buffer length.",
                     nameof(frame));
 
-            // Reuse pre-allocated header buffer (writes serialized by _writeLock)
-            _writeHeaderBuffer[0] = (byte)((payloadLength >> 16) & 0xFF);
-            _writeHeaderBuffer[1] = (byte)((payloadLength >> 8) & 0xFF);
-            _writeHeaderBuffer[2] = (byte)(payloadLength & 0xFF);
-            _writeHeaderBuffer[3] = (byte)frame.Type;
-            _writeHeaderBuffer[4] = (byte)frame.Flags;
-            _writeHeaderBuffer[5] = (byte)((frame.StreamId >> 24) & 0x7F); // mask reserved bit
-            _writeHeaderBuffer[6] = (byte)((frame.StreamId >> 16) & 0xFF);
-            _writeHeaderBuffer[7] = (byte)((frame.StreamId >> 8) & 0xFF);
-            _writeHeaderBuffer[8] = (byte)(frame.StreamId & 0xFF);
+            if (payloadLength == 0)
+            {
+                // Reuse pre-allocated header buffer (writes serialized by _writeLock)
+                _writeHeaderBuffer[0] = 0;
+                _writeHeaderBuffer[1] = 0;
+                _writeHeaderBuffer[2] = 0;
+                _writeHeaderBuffer[3] = (byte)frame.Type;
+                _writeHeaderBuffer[4] = (byte)frame.Flags;
+                _writeHeaderBuffer[5] = (byte)((frame.StreamId >> 24) & 0x7F); // mask reserved bit
+                _writeHeaderBuffer[6] = (byte)((frame.StreamId >> 16) & 0xFF);
+                _writeHeaderBuffer[7] = (byte)((frame.StreamId >> 8) & 0xFF);
+                _writeHeaderBuffer[8] = (byte)(frame.StreamId & 0xFF);
 
-            await _stream.WriteAsync(_writeHeaderBuffer, 0, Http2Constants.FrameHeaderSize, ct);
+                await _stream.WriteAsync(_writeHeaderBuffer, 0, Http2Constants.FrameHeaderSize, ct);
+            }
+            else
+            {
+                var writeBuffer = ArrayPool<byte>.Shared.Rent(Http2Constants.FrameHeaderSize + payloadLength);
+                try
+                {
+                    writeBuffer[0] = (byte)((payloadLength >> 16) & 0xFF);
+                    writeBuffer[1] = (byte)((payloadLength >> 8) & 0xFF);
+                    writeBuffer[2] = (byte)(payloadLength & 0xFF);
+                    writeBuffer[3] = (byte)frame.Type;
+                    writeBuffer[4] = (byte)frame.Flags;
+                    writeBuffer[5] = (byte)((frame.StreamId >> 24) & 0x7F); // mask reserved bit
+                    writeBuffer[6] = (byte)((frame.StreamId >> 16) & 0xFF);
+                    writeBuffer[7] = (byte)((frame.StreamId >> 8) & 0xFF);
+                    writeBuffer[8] = (byte)(frame.StreamId & 0xFF);
+                    Buffer.BlockCopy(payload, 0, writeBuffer, Http2Constants.FrameHeaderSize, payloadLength);
 
-            if (payloadLength > 0)
-                await _stream.WriteAsync(payload, 0, payloadLength, ct);
+                    await _stream.WriteAsync(
+                        writeBuffer,
+                        0,
+                        Http2Constants.FrameHeaderSize + payloadLength,
+                        ct);
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(writeBuffer);
+                }
+            }
 
             if (flush)
                 await _stream.FlushAsync(ct);

@@ -64,6 +64,7 @@ namespace TurboHTTP.Transport.Connection
                 ? new CancellationTokenSource(connectTimeout)
                 : null;
             CancellationTokenSource linkedCts = null;
+            List<Task<AttemptResult>> activeTasks = null;
 
             try
             {
@@ -72,7 +73,7 @@ namespace TurboHTTP.Transport.Connection
                     : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var ct = linkedCts.Token;
 
-                var activeTasks = new List<Task<AttemptResult>>();
+                activeTasks = new List<Task<AttemptResult>>();
                 var failures = new List<Exception>();
                 var started = Stopwatch.StartNew();
                 int scheduleIndex = 0;
@@ -130,6 +131,7 @@ namespace TurboHTTP.Transport.Connection
                     {
                         linkedCts.Cancel();
                         await DrainLosersAsync(activeTasks, result.Socket).ConfigureAwait(false);
+                        activeTasks.Clear();
                         return result.Socket;
                     }
 
@@ -149,6 +151,19 @@ namespace TurboHTTP.Transport.Connection
             }
             finally
             {
+                if (activeTasks != null && activeTasks.Count > 0)
+                {
+                    try
+                    {
+                        linkedCts?.Cancel();
+                    }
+                    catch
+                    {
+                    }
+
+                    await ObserveOutstandingAttemptsAsync(activeTasks).ConfigureAwait(false);
+                }
+
                 try { linkedCts?.Dispose(); } catch { }
                 try { timeoutCts?.Dispose(); } catch { }
             }
@@ -166,6 +181,39 @@ namespace TurboHTTP.Transport.Connection
                     var result = await activeTasks[i].ConfigureAwait(false);
                     if (result.Success && !ReferenceEquals(result.Socket, winner))
                         result.Socket.Dispose();
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static async Task ObserveOutstandingAttemptsAsync(List<Task<AttemptResult>> activeTasks)
+        {
+            if (activeTasks == null || activeTasks.Count == 0)
+                return;
+
+            for (int i = 0; i < activeTasks.Count; i++)
+            {
+                try
+                {
+                    var result = await activeTasks[i].ConfigureAwait(false);
+                    if (result.Success)
+                    {
+                        try
+                        {
+                            result.Socket.Dispose();
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
                 }
                 catch
                 {

@@ -10,7 +10,7 @@ namespace TurboHTTP.Auth
         Task RemoveAsync(string key, CancellationToken ct);
     }
 
-    public sealed class InMemoryTokenStore : ITokenStore
+    public sealed class InMemoryTokenStore : ITokenStore, System.IDisposable
     {
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, OAuthToken> _tokens
             = new System.Collections.Concurrent.ConcurrentDictionary<string, OAuthToken>(System.StringComparer.Ordinal);
@@ -43,6 +43,16 @@ namespace TurboHTTP.Auth
             ct.ThrowIfCancellationRequested();
             _tokens.TryRemove(key ?? string.Empty, out _);
             return Task.CompletedTask;
+        }
+
+        public void Clear()
+        {
+            _tokens.Clear();
+        }
+
+        public void Dispose()
+        {
+            Clear();
         }
     }
 }

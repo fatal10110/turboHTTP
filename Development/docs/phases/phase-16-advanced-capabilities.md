@@ -2,12 +2,12 @@
 
 **Milestone:** M4 (v1.x "differentiators")
 **Dependencies:** Phase 14 prioritization
-**Estimated Complexity:** Varies
+**Estimated Complexity:** Medium
 **Critical:** No - Future enhancements
 
 ## Overview
 
-This phase aggregates high-impact platform, protocol, security, and resilience features that are critical for specific use cases but are prioritized after the v1.0 core release.
+This phase aggregates focused, self-contained features that enhance the TurboHTTP platform after the v1.0 core release. Larger protocol-level features (WebSocket, gRPC) and deep refactoring (async runtime, content handlers) have been extracted to their own dedicated phases.
 
 ## Features
 
@@ -75,42 +75,7 @@ IHttpTransport
 
 ---
 
-### 3. WebSocket Support (High Priority)
-
-**Goal:** Add WebSocket client alongside HTTP
-
-**Use Cases:**
-- Real-time multiplayer
-- Live chat
-- Push notifications
-
-**Estimated Effort:** 2-3 weeks
-
-**Complexity:** Medium
-
-**Value:** High (expands use cases)
-
----
-
-### 4. gRPC Support (Low Priority)
-
-**Goal:** Support gRPC protocol
-
-**Benefits:**
-- Binary protocol, strong contracts, streaming.
-
-**Challenges:**
-- Protobuf compiler, IL2CPP compatibility.
-
-**Estimated Effort:** 4-6 weeks
-
-**Complexity:** Very High
-
-**Value:** Low-Medium (niche)
-
----
-
-### 5. GraphQL Client (Medium Priority)
+### 3. GraphQL Client (Medium Priority)
 
 **Goal:** Add GraphQL query builder and client
 
@@ -122,7 +87,7 @@ IHttpTransport
 
 ---
 
-### 6. Parallel Request Helpers (Low Priority)
+### 4. Parallel Request Helpers (Low Priority)
 
 **Goal:** Simplify common parallel request patterns (Batch, Race, AllOrNone).
 
@@ -134,7 +99,7 @@ IHttpTransport
 
 ---
 
-### 7. Security & Privacy Hardening (High Priority)
+### 5. Security & Privacy Hardening (High Priority)
 
 **Goal:** Make "safe by default" behavior explicit and configurable.
 
@@ -151,6 +116,19 @@ IHttpTransport
 
 ---
 
+## Extracted to Dedicated Phases
+
+The following features were originally part of Phase 16 but have been promoted to their own phases due to scope:
+
+| Feature | New Phase | Reason |
+|---------|-----------|--------|
+| WebSocket Support | [Phase 18](phase-18-websocket-client.md) | Full new protocol (RFC 6455), comparable to Phase 3B HTTP/2 |
+| Async Runtime Refactor + UniTask | [Phase 19](phase-19-async-runtime-refactor.md) | Deep cross-cutting architectural refactor |
+| Advanced Content Handlers | [Phase 20](phase-20-advanced-content-handlers.md) | Aggregate ~6-8 weeks across 5+ handlers |
+| gRPC Support | [Phase 21](phase-21-grpc-client.md) | Largest item in roadmap, v2.0 feature |
+
+---
+
 ## Prioritization Matrix
 
 | Feature | Priority | Effort | Complexity | Value | Version |
@@ -158,10 +136,17 @@ IHttpTransport
 | Rate Limiting | High | 2w | Medium | High | v1.1 |
 | WebGL Support | High | 2-3w | Medium | High | v1.1 |
 | Security & Privacy | High | 1-2w | Medium | High | v1.1 |
-| WebSocket | High | 2-3w | Medium | High | v1.2 |
 | GraphQL | Medium | 1-2w | Low | Medium | v1.3 |
 | Parallel Helpers | Low | 1w | Low | Low | v1.x |
-| gRPC | Low | 4-6w | Very High | Low | v2.0? |
+
+### Extracted phases (see dedicated docs):
+
+| Feature | Phase | Effort | Version |
+|---------|-------|--------|---------|
+| WebSocket Client | Phase 18 | 3-4w | v1.2 |
+| Async Runtime Refactor | Phase 19 | 3-4w | v1.2 |
+| Advanced Content Handlers | Phase 20 | 6-8w | v1.2+ |
+| gRPC Client | Phase 21 | 5-7w | v2.0 |
 
 ## Recommended Roadmap
 
@@ -171,18 +156,22 @@ IHttpTransport
 - Security & privacy hardening
 
 ### v1.2 (Q2)
-- WebSocket support
+- Async runtime refactor (Phase 19)
+- WebSocket client (Phase 18)
+- Advanced content handlers — first batch (Phase 20)
 
 ### v1.3 (Q3)
 - GraphQL client
+- Advanced content handlers — second batch (Phase 20)
 
 ### v1.x backlog
 - Parallel request helpers
 
 ### v2.0 (Q4+)
-- gRPC support
+- gRPC client (Phase 21)
 
 ## Notes
 
 - Keep this phase synchronized with Phase 14 roadmap decisions.
 - Re-prioritize based on post-v1.0 adoption data.
+- Advanced content handlers depend on Phase 15 decoder abstractions and pipeline hardening.

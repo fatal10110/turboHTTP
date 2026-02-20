@@ -283,6 +283,81 @@ namespace TurboHTTP.Tests.Observability
             }).GetAwaiter().GetResult();
         }
 
+        [Test]
+        public void HeaderValueTransformRedactsCaputuredHeaderValues()
+        {
+            Task.Run(async () =>
+            {
+                MonitorMiddleware.HeaderValueTransform = (name, value) =>
+                    string.Equals(name, "Authorization", StringComparison.OrdinalIgnoreCase)
+                        ? "REDACTED" : value;
+
+                var requestHeaders = new HttpHeaders();
+                requestHeaders.Set("Authorization", "Bearer secret-token-123");
+                requestHeaders.Set("Accept", "application/json");
+
+                var request = new UHttpRequest(
+                    HttpMethod.GET,
+                    new Uri("https://api.example.com/protected"),
+                    requestHeaders);
+                var context = new RequestContext(request);
+
+                var transport = new MockTransport();
+                var pipeline = new HttpPipeline(
+                    new IHttpMiddleware[] { new MonitorMiddleware() },
+                    transport);
+                await pipeline.ExecuteAsync(request, context);
+
+                var snapshot = new List<HttpMonitorEvent>();
+                MonitorMiddleware.GetHistorySnapshot(snapshot);
+                Assert.AreEqual(1, snapshot.Count);
+
+                var evt = snapshot[0];
+                Assert.AreEqual("REDACTED", evt.RequestHeaders["Authorization"]);
+                Assert.AreEqual("application/json", evt.RequestHeaders["Accept"]);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CapturesMultiValueHeaders()
+        {
+            Task.Run(async () =>
+            {
+                var responseHeaders = new HttpHeaders();
+                responseHeaders.Add("Set-Cookie", "session=abc123; Path=/");
+                responseHeaders.Add("Set-Cookie", "prefs=dark; Path=/settings");
+                responseHeaders.Add("X-Custom", "value1");
+                responseHeaders.Add("X-Custom", "value2");
+
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    responseHeaders,
+                    Encoding.UTF8.GetBytes("ok"));
+                var pipeline = new HttpPipeline(
+                    new IHttpMiddleware[] { new MonitorMiddleware() },
+                    transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                var snapshot = new List<HttpMonitorEvent>();
+                MonitorMiddleware.GetHistorySnapshot(snapshot);
+                Assert.AreEqual(1, snapshot.Count);
+
+                var evt = snapshot[0];
+                // Set-Cookie uses "; " separator (RFC 6265 forbids comma-folding)
+                Assert.That(evt.ResponseHeaders["Set-Cookie"],
+                    Does.Contain("session=abc123"));
+                Assert.That(evt.ResponseHeaders["Set-Cookie"],
+                    Does.Contain("prefs=dark"));
+                Assert.That(evt.ResponseHeaders["Set-Cookie"],
+                    Does.Contain("; "));
+
+                // Other multi-value headers use ", " separator
+                Assert.AreEqual("value1, value2", evt.ResponseHeaders["X-Custom"]);
+            }).GetAwaiter().GetResult();
+        }
+
         private static void ResetMonitor()
         {
             MonitorMiddleware.CaptureEnabled = true;

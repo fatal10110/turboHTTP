@@ -265,6 +265,38 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void Serialize_CommaSeparatedContentLength_IdenticalValues_AcceptsRequest()
+        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Content-Length", "5, 5");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    headers,
+                    body: Encoding.UTF8.GetBytes("hello"));
+
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5, 5"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Serialize_CommaSeparatedContentLength_ConflictingValues_ThrowsArgumentException()
+        {
+            var headers = new HttpHeaders();
+            headers.Set("Content-Length", "5, 6");
+            var request = new UHttpRequest(
+                HttpMethod.POST,
+                new Uri("http://example.com/"),
+                headers,
+                body: Encoding.UTF8.GetBytes("hello"));
+
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+        }
+
+        [Test]
         public void Serialize_TransferEncodingAndContentLength_ThrowsArgumentException()
         {
             var headers = new HttpHeaders();

@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -55,8 +55,8 @@ namespace TurboHTTP.Unity
         }
 
         private static readonly object LifecycleLock = new object();
-        private static readonly ConcurrentQueue<IDispatchWorkItem> PendingWork =
-            new ConcurrentQueue<IDispatchWorkItem>();
+        private static readonly Queue<IDispatchWorkItem> PendingWork =
+            new Queue<IDispatchWorkItem>();
 
         private static MainThreadDispatcher _instance;
         private static int _mainThreadManagedId;
@@ -121,7 +121,7 @@ namespace TurboHTTP.Unity
             if (!ReferenceEquals(_instance, this))
                 return;
 
-            while (PendingWork.TryDequeue(out var workItem))
+            while (TryDequeueWorkItem(out var workItem))
             {
                 workItem.Execute();
             }
@@ -298,17 +298,59 @@ namespace TurboHTTP.Unity
         /// <summary>
         /// Synchronously executes work on the main thread.
         /// </summary>
+        /// <remarks>
+        /// This API is intentionally main-thread only to avoid worker-thread starvation.
+        /// Use <see cref="ExecuteAsync(Action, CancellationToken)"/> from worker threads.
+        /// </remarks>
         public static void Execute(Action action)
         {
-            ExecuteAsync(action).GetAwaiter().GetResult();
+            if (action == null) throw new ArgumentNullException(nameof(action));
+
+            EnsureInitializedIfMainThread();
+
+            if (State == DispatcherState.Disposing)
+            {
+                throw new InvalidOperationException(
+                    CreateUnavailableMessage(State));
+            }
+
+            if (!IsMainThread())
+            {
+                throw new InvalidOperationException(
+                    "MainThreadDispatcher.Execute can only be called from the Unity main thread. " +
+                    "Use ExecuteAsync for worker-thread callers.");
+            }
+
+            action();
         }
 
         /// <summary>
         /// Synchronously executes value-producing work on the main thread.
         /// </summary>
+        /// <remarks>
+        /// This API is intentionally main-thread only to avoid worker-thread starvation.
+        /// Use <see cref="ExecuteAsync{T}(Func{T}, CancellationToken)"/> from worker threads.
+        /// </remarks>
         public static T Execute<T>(Func<T> func)
         {
-            return ExecuteAsync(func).GetAwaiter().GetResult();
+            if (func == null) throw new ArgumentNullException(nameof(func));
+
+            EnsureInitializedIfMainThread();
+
+            if (State == DispatcherState.Disposing)
+            {
+                throw new InvalidOperationException(
+                    CreateUnavailableMessage(State));
+            }
+
+            if (!IsMainThread())
+            {
+                throw new InvalidOperationException(
+                    "MainThreadDispatcher.Execute<T> can only be called from the Unity main thread. " +
+                    "Use ExecuteAsync<T> for worker-thread callers.");
+            }
+
+            return func();
         }
 
         /// <summary>
@@ -318,7 +360,12 @@ namespace TurboHTTP.Unity
         {
             var captured = Volatile.Read(ref _mainThreadManagedId);
             if (captured <= 0)
-                return false;
+            {
+                TryCaptureMainThreadIdFromCurrentContext();
+                captured = Volatile.Read(ref _mainThreadManagedId);
+                if (captured <= 0)
+                    return false;
+            }
 
             return Thread.CurrentThread.ManagedThreadId == captured;
         }
@@ -331,6 +378,21 @@ namespace TurboHTTP.Unity
             {
                 EnsureDispatcherAvailableForEnqueue();
                 PendingWork.Enqueue(workItem);
+            }
+        }
+
+        private static bool TryDequeueWorkItem(out IDispatchWorkItem workItem)
+        {
+            lock (LifecycleLock)
+            {
+                if (PendingWork.Count == 0)
+                {
+                    workItem = null;
+                    return false;
+                }
+
+                workItem = PendingWork.Dequeue();
+                return true;
             }
         }
 
@@ -405,6 +467,31 @@ namespace TurboHTTP.Unity
             Interlocked.CompareExchange(ref _mainThreadManagedId, currentManagedId, 0);
         }
 
+        private static void TryCaptureMainThreadIdFromCurrentContext()
+        {
+            if (Volatile.Read(ref _mainThreadManagedId) > 0)
+                return;
+
+            if (Thread.CurrentThread.IsThreadPoolThread)
+                return;
+
+            var currentContext = SynchronizationContext.Current;
+            if (currentContext == null)
+                return;
+
+            var contextTypeName = currentContext.GetType().FullName;
+            if (string.IsNullOrEmpty(contextTypeName) ||
+                contextTypeName.IndexOf("UnitySynchronizationContext", StringComparison.Ordinal) < 0)
+            {
+                return;
+            }
+
+            Interlocked.CompareExchange(
+                ref _mainThreadManagedId,
+                Thread.CurrentThread.ManagedThreadId,
+                0);
+        }
+
         private static CancellationTokenRegistration RegisterCancellation<T>(
             CancellationToken cancellationToken,
             TaskCompletionSource<T> tcs)
@@ -448,7 +535,7 @@ namespace TurboHTTP.Unity
 
         private static void FailPendingWork(Exception exception)
         {
-            while (PendingWork.TryDequeue(out var workItem))
+            while (TryDequeueWorkItem(out var workItem))
             {
                 try
                 {
