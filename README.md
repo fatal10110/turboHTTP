@@ -1,7 +1,7 @@
 # TurboHTTP
 
 [![Unity 2021.3+](https://img.shields.io/badge/unity-2021.3%2B-blue.svg)](https://unity3d.com/get-unity/download)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+[![License: Custom](https://img.shields.io/badge/License-Custom-yellow.svg)](LICENSE.md)
 [![Platform: All](https://img.shields.io/badge/Platform-Win%20%7C%20Mac%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey)](Documentation~/PlatformNotes.md)
 
 **TurboHTTP** is a production-grade, modular HTTP client for Unity, designed for reliability, performance, and advanced observability. It serves as a modern alternative to `UnityWebRequest`, offering HTTP/2 support, detailed timeline tracing, and a fluent API.
@@ -15,8 +15,9 @@
 *   **Mobile Readiness:** Native background networking for seamless iOS and Android execution.
 *   **Observability:** Detailed timeline traces for every request (DNS, Connect, SSL, TTFB).
 *   **Reliability:** Intelligent retry logic with idempotency awareness.
-*   **Performance:** Zero-allocation focused design with memory pooling.
-*   **Unity Integration:** Native `Texture2D`, `AudioClip`, and AssetBundle support.
+*   **Performance:** Zero-allocation focused design with memory pooling and native `ValueTask` / `UniTask` support.
+*   **Unity Integration:** Native `Texture2D`, `AudioClip`, and AssetBundle support on background threads.
+*   **WebSockets:** RFC 6455 compliant WebSocket client with automatic reconnection and framing.
 *   **Testing:** Record/Replay mode and Mock Server for deterministic testing.
 
 ## Installation
@@ -84,6 +85,10 @@ Comprehensive documentation is available in the `Documentation~` folder (visible
 
 *   [**Quick Start Guide**](Documentation~/QuickStart.md): Get up and running in minutes.
 *   [**API Reference**](Documentation~/APIReference.md): Detailed API usage.
+*   **Module Deep Dives**:
+    *   [Core](Documentation~/Modules/Core.md), [Transport](Documentation~/Modules/Transport.md), [WebSocket](Documentation~/Modules/WebSocket.md)
+    *   [Unity Integration](Documentation~/Modules/Unity.md), [UniTask Support](Documentation~/Modules/UniTask.md)
+    *   [Auth](Documentation~/Modules/Auth.md), [Middleware](Documentation~/Modules/Middleware.md), [Testing](Documentation~/Modules/Testing.md)
 *   [**Platform Notes**](Documentation~/PlatformNotes.md): Platform-specific configuration (iOS, Android, IL2CPP).
 *   [**Troubleshooting**](Documentation~/Troubleshooting.md): Common issues and solutions.
 *   [**Migration Guide**](Documentation~/MigrationGuide.md): Moving from UnityWebRequest or BestHTTP.
@@ -98,4 +103,4 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+This project is free for personal use and small companies. For enterprise commercial use, a separate agreement is required. See the [LICENSE.md](LICENSE.md) file for details.

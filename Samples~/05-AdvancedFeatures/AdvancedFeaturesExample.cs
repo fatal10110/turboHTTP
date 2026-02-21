@@ -16,6 +16,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
     /// - Caching
     /// - Rate limiting
     /// - Metrics/Observability
+    /// - WebSockets (Phase 18)
     /// </summary>
     public class AdvancedFeaturesExample : MonoBehaviour
     {
@@ -72,6 +73,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             await Example1_Caching();
             await Example2_Retries();
             await Example3_RateLimiting();
+            await Example4_WebSockets();
             
             PrintMetrics();
         }
@@ -144,6 +146,34 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             Debug.Log($"Failed: {m.FailedRequests}");
             Debug.Log($"Cached: {m.CachedRequests}");
             Debug.Log($"Retried: {m.RetriedRequests}");
+        }
+
+        async Task Example4_WebSockets()
+        {
+            Debug.Log("=== Example 4: WebSockets ===");
+
+            // Create a WebSocket connection
+            var ws = _client.WebSockets.Create("wss://echo.websocket.events");
+            
+            await ws.ConnectAsync(System.Threading.CancellationToken.None);
+            Debug.Log("WebSocket connected.");
+
+            // Send a message
+            await ws.SendTextAsync("Hello from TurboHTTP Advanced WebSocket!");
+
+            // Note: In a real app, you would loop receive continually. 
+            // For this sample, we just wait briefly for the echo.
+            var buffer = new byte[1024];
+            var result = await ws.ReceiveAsync(buffer.AsMemory(), System.Threading.CancellationToken.None);
+            
+            if (result.MessageType == TurboHTTP.WebSocket.WebSocketMessageType.Text)
+            {
+                var text = System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count);
+                Debug.Log($"WebSocket Received: {text}");
+            }
+
+            // Close connection
+            await ws.CloseAsync(TurboHTTP.WebSocket.WebSocketCloseStatus.NormalClosure, "Demo Complete");
         }
 
         void OnDestroy()

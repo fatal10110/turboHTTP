@@ -4,6 +4,7 @@ Complete API documentation for TurboHTTP.
 
 ## Table of Contents
 
+*   [Module Deep Dives](#module-deep-dives)
 *   [Core Classes](#core-classes)
     *   [UHttpClient](#uhttpclient)
     *   [UHttpRequestBuilder](#uhttprequestbuilder)
@@ -13,6 +14,21 @@ Complete API documentation for TurboHTTP.
 *   [Middleware](#middleware)
 *   [Error Handling](#error-handling)
 *   [Advanced Features](#advanced-features)
+
+---
+
+## Module Deep Dives
+
+For comprehensive, architectural details on specific parts of TurboHTTP, refer to the individual module documentation:
+
+*   [Core](Modules/Core.md)
+*   [Transport](Modules/Transport.md)
+*   [WebSocket](Modules/WebSocket.md)
+*   [Unity Integration](Modules/Unity.md)
+*   [UniTask Support](Modules/UniTask.md)
+*   [Authentication](Modules/Auth.md)
+*   [Middleware](Modules/Middleware.md)
+*   [Testing](Modules/Testing.md)
 
 ---
 

@@ -8,6 +8,9 @@ namespace TurboHTTP.Samples.BasicUsage
     /// <summary>
     /// Basic usage examples for TurboHTTP.
     /// Demonstrates GET, POST, PUT, DELETE requests.
+    /// Note: `SendAsync()` returns a zero-allocation `ValueTask`. 
+    /// These samples use `Task` for simplicity, but in hot paths, 
+    /// consider returning `ValueTask` or using `UniTask`.
     /// </summary>
     public class BasicUsageExample : MonoBehaviour
     {

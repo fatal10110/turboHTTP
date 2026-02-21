@@ -114,5 +114,9 @@ Debug.Log($"User: {user.name}");
 ## Next Steps
 
 *   [**API Reference**](APIReference.md): Explore the full API.
+*   **Modules deeply explained:**
+    *   [Core](Modules/Core.md), [Transport & HTTP/2](Modules/Transport.md), [WebSockets](Modules/WebSocket.md)
+    *   [Unity Integration](Modules/Unity.md), [UniTask Support](Modules/UniTask.md)
+    *   [Auth](Modules/Auth.md), [Middleware](Modules/Middleware.md), [Testing](Modules/Testing.md)
 *   [**Advanced Features**](../Samples~/05-AdvancedFeatures): See the sample projects in the package.
 *   [**Troubleshooting**](Troubleshooting.md): If you run into issues.
