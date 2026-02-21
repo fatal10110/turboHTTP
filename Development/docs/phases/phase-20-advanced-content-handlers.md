@@ -93,27 +93,7 @@ Extend the content handler system with additional Unity asset types and serializ
 
 ---
 
-### Task 20.5: Protobuf Content Handler
-
-**Goal:** Support Protocol Buffer serialization/deserialization in HTTP responses.
-
-**Deliverables:**
-- `ProtobufContentHandler<T>` — deserializes `application/x-protobuf` responses
-- Support for both `Google.Protobuf` (protobuf-net is secondary)
-- IL2CPP AOT-safe: uses pre-generated serializers, no runtime reflection
-- `response.AsProtobuf<MyMessage>()` convenience API
-
-**Platform Notes:**
-- Requires pre-generated C# protobuf classes (no runtime codegen)
-- AOT-safe: tested on IL2CPP iOS/Android
-
-**Estimated Effort:** 1 week
-
-**Note:** Overlaps conceptually with Phase 21 (gRPC) — protobuf handler should be designed as a reusable foundation.
-
----
-
-### Task 20.6: Test Suite & Documentation
+### Task 20.5: Test Suite & Documentation
 
 **Goal:** Integration tests for all handlers plus platform compatibility documentation.
 
@@ -135,8 +115,7 @@ Extend the content handler system with additional Unity asset types and serializ
 | 20.2 AssetBundle | High | 1-2w | Phase 15 |
 | 20.3 Video | Medium | 1w | Phase 15 |
 | 20.4 glTF | Low | 1w | Phase 5 |
-| 20.5 Protobuf | Medium | 1w | Phase 5 |
-| 20.6 Tests & Docs | High | 1w | All above |
+| 20.5 Tests & Docs | High | 1w | All above |
 
 ## Delivery Strategy
 
@@ -147,7 +126,6 @@ Handlers ship incrementally. Suggested release mapping:
 | Compression (gzip/brotli) | v1.2.0 |
 | AssetBundle | v1.2.0 |
 | Video | v1.3.0 |
-| Protobuf | v1.3.0 |
 | glTF | v1.4.0 |
 
 ## Verification Plan
@@ -156,10 +134,8 @@ Handlers ship incrementally. Suggested release mapping:
 2. Handlers are compatible with Phase 15 memory/concurrency guardrails.
 3. Platform support is documented per handler.
 4. Deterministic fallback/error behavior verified when required decoders are unavailable.
-5. IL2CPP AOT validation for Protobuf handler.
 
 ## Notes
 
 - Compression handlers (20.1) are the highest-value item and should ship first — they benefit every HTTP response, not just specific content types.
-- Each handler is independent — tasks 20.1–20.5 can proceed in any order.
-- Protobuf handler (20.5) is a foundation for Phase 21 (gRPC).
+- Each handler is independent — tasks 20.1–20.4 can proceed in any order.

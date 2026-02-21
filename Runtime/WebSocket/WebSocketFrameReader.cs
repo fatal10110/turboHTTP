@@ -69,6 +69,7 @@ namespace TurboHTTP.WebSocket
 
                 byte first = headerBuffer[0];
                 byte second = headerBuffer[1];
+                int headerByteCount = 2;
 
                 bool isFinal = (first & 0x80) != 0;
                 byte rsvBits = (byte)(first & 0x70);
@@ -104,6 +105,7 @@ namespace TurboHTTP.WebSocket
 
                     payloadLength = BinaryPrimitives.ReadUInt16BigEndian(
                         new ReadOnlySpan<byte>(headerBuffer, 0, 2));
+                    headerByteCount += 2;
                 }
                 else if (payloadLength == 127)
                 {
@@ -119,6 +121,8 @@ namespace TurboHTTP.WebSocket
                             WebSocketError.PayloadLengthOverflow,
                             "Invalid 64-bit payload length. Most significant bit must be zero.");
                     }
+
+                    headerByteCount += 8;
                 }
 
                 if (payloadLength > (ulong)_maxFrameSize)
@@ -183,9 +187,11 @@ namespace TurboHTTP.WebSocket
 
                     maskKey = BinaryPrimitives.ReadUInt32BigEndian(
                         new ReadOnlySpan<byte>(headerBuffer, 0, 4));
+                    headerByteCount += 4;
                 }
 
                 int payloadLengthInt = (int)payloadLength;
+                int frameByteCount = checked(headerByteCount + payloadLengthInt);
                 if (payloadLengthInt > 0)
                 {
                     payloadBuffer = ArrayPool<byte>.Shared.Rent(payloadLengthInt);
@@ -200,9 +206,14 @@ namespace TurboHTTP.WebSocket
                         isFinal,
                         isMasked,
                         maskKey,
-                        new ReadOnlyMemory<byte>(payloadBuffer, 0, payloadLengthInt));
+                        new ReadOnlyMemory<byte>(payloadBuffer, 0, payloadLengthInt),
+                        rsvBits);
 
-                    return new WebSocketFrameReadLease(frameWithPayload, payloadBuffer, payloadLengthInt);
+                    return new WebSocketFrameReadLease(
+                        frameWithPayload,
+                        payloadBuffer,
+                        payloadLengthInt,
+                        frameByteCount);
                 }
 
                 var frame = new WebSocketFrame(
@@ -210,9 +221,10 @@ namespace TurboHTTP.WebSocket
                     isFinal,
                     isMasked,
                     maskKey,
-                    ReadOnlyMemory<byte>.Empty);
+                    ReadOnlyMemory<byte>.Empty,
+                    rsvBits);
 
-                return new WebSocketFrameReadLease(frame, null, 0);
+                return new WebSocketFrameReadLease(frame, null, 0, frameByteCount);
             }
             catch (ObjectDisposedException) when (ct.IsCancellationRequested)
             {
@@ -289,14 +301,21 @@ namespace TurboHTTP.WebSocket
         private byte[] _payloadBuffer;
         private int _payloadLength;
 
-        internal WebSocketFrameReadLease(WebSocketFrame frame, byte[] payloadBuffer, int payloadLength)
+        internal WebSocketFrameReadLease(
+            WebSocketFrame frame,
+            byte[] payloadBuffer,
+            int payloadLength,
+            int frameByteCount)
         {
             Frame = frame;
             _payloadBuffer = payloadBuffer;
             _payloadLength = payloadLength;
+            FrameByteCount = frameByteCount;
         }
 
         public WebSocketFrame Frame { get; }
+
+        public int FrameByteCount { get; }
 
         public void Dispose()
         {

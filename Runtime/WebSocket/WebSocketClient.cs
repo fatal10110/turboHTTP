@@ -1,6 +1,5 @@
 using System;
-using System.Buffers;
-using System.Reflection;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -12,9 +11,6 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public class WebSocketClient : IWebSocketClient
     {
-        private const string RawSocketTransportTypeName =
-            "TurboHTTP.WebSocket.Transport.RawSocketWebSocketTransport, TurboHTTP.WebSocket.Transport";
-
         private readonly object _sync = new object();
         private readonly IWebSocketTransport _providedTransport;
 
@@ -22,18 +18,21 @@ namespace TurboHTTP.WebSocket
         private bool _ownsTransport;
         private WebSocketConnection _connection;
         private WebSocketConnectionOptions _options;
-        private AsyncBoundedQueue<WebSocketMessage> _messageQueue;
+        private BoundedAsyncQueue<WebSocketMessage> _messageQueue;
         private CancellationTokenSource _listenerCts;
         private Task _listenerTask;
 
         private int _disposed;
         private int _receiveInProgress;
+        private int _receiveAllInProgress;
         private int _closeEventRaised;
 
         public event Action OnConnected;
         public event Action<WebSocketMessage> OnMessage;
         public event Action<WebSocketException> OnError;
         public event Action<WebSocketCloseCode, string> OnClosed;
+        public event Action<WebSocketMetrics> OnMetricsUpdated;
+        public event Action<ConnectionQuality> OnConnectionQualityChanged;
 
         public WebSocketClient()
         {
@@ -77,6 +76,24 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        public WebSocketMetrics Metrics
+        {
+            get
+            {
+                var connection = Volatile.Read(ref _connection);
+                return connection?.Metrics ?? default;
+            }
+        }
+
+        public WebSocketHealthSnapshot Health
+        {
+            get
+            {
+                var connection = Volatile.Read(ref _connection);
+                return connection?.Health ?? WebSocketHealthSnapshot.Unknown;
+            }
+        }
+
         public Task ConnectAsync(Uri uri, CancellationToken ct = default)
         {
             return ConnectAsync(uri, new WebSocketConnectionOptions(), ct);
@@ -109,6 +126,8 @@ namespace TurboHTTP.WebSocket
                 {
                     _connection.StateChanged -= HandleConnectionStateChanged;
                     _connection.Error -= HandleConnectionError;
+                    _connection.MetricsUpdated -= HandleConnectionMetricsUpdated;
+                    _connection.ConnectionQualityChanged -= HandleConnectionQualityChanged;
                     _connection.Dispose();
                     _connection = null;
                 }
@@ -121,13 +140,15 @@ namespace TurboHTTP.WebSocket
                 _listenerCts = null;
 
                 _options = options;
-                _messageQueue = new AsyncBoundedQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
+                _messageQueue = new BoundedAsyncQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
                 _listenerCts = new CancellationTokenSource();
                 _closeEventRaised = 0;
 
                 connection = new WebSocketConnection();
                 connection.StateChanged += HandleConnectionStateChanged;
                 connection.Error += HandleConnectionError;
+                connection.MetricsUpdated += HandleConnectionMetricsUpdated;
+                connection.ConnectionQualityChanged += HandleConnectionQualityChanged;
                 _connection = connection;
 
                 if (_providedTransport != null)
@@ -167,27 +188,7 @@ namespace TurboHTTP.WebSocket
                 throw new ArgumentNullException(nameof(message));
 
             EnsureOpenState();
-
-            int byteCount = WebSocketConstants.StrictUtf8.GetByteCount(message);
-            if (byteCount == 0)
-            {
-                await Volatile.Read(ref _connection).SendTextAsync(ReadOnlyMemory<byte>.Empty, ct)
-                    .ConfigureAwait(false);
-                return;
-            }
-
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(byteCount);
-            try
-            {
-                int written = WebSocketConstants.StrictUtf8.GetBytes(message, 0, message.Length, buffer, 0);
-                await Volatile.Read(ref _connection).SendTextAsync(
-                    new ReadOnlyMemory<byte>(buffer, 0, written),
-                    ct).ConfigureAwait(false);
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
+            await Volatile.Read(ref _connection).SendTextAsync(message, ct).ConfigureAwait(false);
         }
 
         public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
@@ -207,6 +208,40 @@ namespace TurboHTTP.WebSocket
         }
 
         public async ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct = default)
+        {
+            return await ReceiveCoreAsync(ct, fromAsyncEnumerable: false).ConfigureAwait(false);
+        }
+
+        public IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default)
+        {
+            ThrowIfDisposed();
+
+            var state = State;
+            if (state != WebSocketState.Open &&
+                state != WebSocketState.Closing &&
+                state != WebSocketState.Closed)
+            {
+                throw new InvalidOperationException(
+                    "ReceiveAllAsync requires Open, Closing, or Closed state. Current state: " + state + ".");
+            }
+
+            if (Interlocked.CompareExchange(ref _receiveAllInProgress, 1, 0) != 0)
+                throw new InvalidOperationException("Concurrent ReceiveAllAsync calls are not supported.");
+
+            if (Volatile.Read(ref _receiveInProgress) != 0)
+            {
+                Interlocked.Exchange(ref _receiveAllInProgress, 0);
+                throw new InvalidOperationException("ReceiveAllAsync cannot start while ReceiveAsync is in progress.");
+            }
+
+            return new WebSocketAsyncEnumerable(
+                token => ReceiveCoreAsync(token, fromAsyncEnumerable: true),
+                () => State,
+                () => Interlocked.Exchange(ref _receiveAllInProgress, 0),
+                ct);
+        }
+
+        private async ValueTask<WebSocketMessage> ReceiveCoreAsync(CancellationToken ct, bool fromAsyncEnumerable)
         {
             ThrowIfDisposed();
 
@@ -228,6 +263,9 @@ namespace TurboHTTP.WebSocket
                 throw new InvalidOperationException(
                     "ReceiveAsync requires Open or Closing state. Current state: " + state + ".");
             }
+
+            if (!fromAsyncEnumerable && Volatile.Read(ref _receiveAllInProgress) != 0)
+                throw new InvalidOperationException("ReceiveAsync cannot run while ReceiveAllAsync is active.");
 
             if (Interlocked.CompareExchange(ref _receiveInProgress, 1, 0) != 0)
                 throw new InvalidOperationException("Concurrent ReceiveAsync calls are not supported.");
@@ -289,6 +327,8 @@ namespace TurboHTTP.WebSocket
             {
                 connection.StateChanged -= HandleConnectionStateChanged;
                 connection.Error -= HandleConnectionError;
+                connection.MetricsUpdated -= HandleConnectionMetricsUpdated;
+                connection.ConnectionQualityChanged -= HandleConnectionQualityChanged;
                 connection.Dispose();
             }
 
@@ -310,6 +350,8 @@ namespace TurboHTTP.WebSocket
             {
                 connection.StateChanged -= HandleConnectionStateChanged;
                 connection.Error -= HandleConnectionError;
+                connection.MetricsUpdated -= HandleConnectionMetricsUpdated;
+                connection.ConnectionQualityChanged -= HandleConnectionQualityChanged;
             }
 
             try
@@ -416,6 +458,18 @@ namespace TurboHTTP.WebSocket
             errorHandler?.Invoke(wsError);
         }
 
+        private void HandleConnectionMetricsUpdated(WebSocketConnection connection, WebSocketMetrics metrics)
+        {
+            var handler = OnMetricsUpdated;
+            handler?.Invoke(metrics);
+        }
+
+        private void HandleConnectionQualityChanged(WebSocketConnection connection, ConnectionQuality quality)
+        {
+            var handler = OnConnectionQualityChanged;
+            handler?.Invoke(quality);
+        }
+
         private void RaiseClosedFromConnection(WebSocketConnection connection)
         {
             if (Interlocked.CompareExchange(ref _closeEventRaised, 1, 0) != 0)
@@ -459,6 +513,8 @@ namespace TurboHTTP.WebSocket
 
             failedConnection.StateChanged -= HandleConnectionStateChanged;
             failedConnection.Error -= HandleConnectionError;
+            failedConnection.MetricsUpdated -= HandleConnectionMetricsUpdated;
+            failedConnection.ConnectionQualityChanged -= HandleConnectionQualityChanged;
 
             try
             {
@@ -520,46 +576,7 @@ namespace TurboHTTP.WebSocket
 
         private static IWebSocketTransport CreateDefaultTransport(TlsBackend tlsBackend)
         {
-            var type = Type.GetType(RawSocketTransportTypeName, throwOnError: false);
-            if (type == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.WebSocket.Transport assembly is required to create default WebSocket transport.");
-            }
-
-            if (!typeof(IWebSocketTransport).IsAssignableFrom(type))
-            {
-                throw new InvalidOperationException(
-                    "Resolved default transport type does not implement IWebSocketTransport.");
-            }
-
-            try
-            {
-                var instance = Activator.CreateInstance(type, tlsBackend, null) as IWebSocketTransport;
-                if (instance != null)
-                    return instance;
-            }
-            catch (MissingMethodException)
-            {
-                // Fall back to default constructor below.
-            }
-            catch (TargetInvocationException tie) when (tie.InnerException != null)
-            {
-                throw tie.InnerException;
-            }
-
-            try
-            {
-                var fallback = Activator.CreateInstance(type) as IWebSocketTransport;
-                if (fallback != null)
-                    return fallback;
-            }
-            catch (TargetInvocationException tie) when (tie.InnerException != null)
-            {
-                throw tie.InnerException;
-            }
-
-            throw new InvalidOperationException("Failed to create default WebSocket transport instance.");
+            return WebSocketTransportFactory.Create(tlsBackend);
         }
 
         private void ThrowIfDisposed()

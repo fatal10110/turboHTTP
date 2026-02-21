@@ -10,7 +10,7 @@
 
 Reduce async overhead in hot paths (allocation and scheduling churn) by migrating internal execution paths to `ValueTask`-first patterns, while keeping `TurboHTTP.Core` free of third-party runtime dependencies. The existing public `Task`-based API remains source-compatible for v1.x consumers. UniTask support is provided as an optional adapter module in a separate assembly.
 
-This is a cross-cutting architectural refactor — similar in nature to Phase 6 (Performance) — not a feature addition.
+This is a cross-cutting architectural refactor — similar in nature to Phase 6 (Performance) — not a feature addition. (Note: For absolute zero-allocation strategies including buffer pooling and non-blocking SAEA socket wrappers targeting extreme concurrency, see **Phase 19a: Extreme Performance & Zero-Allocation Networking**).
 
 ## Design Constraints
 

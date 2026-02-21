@@ -1,13 +1,15 @@
 using System;
-using System.Security.Cryptography;
+using System.Threading;
 
 namespace TurboHTTP.WebSocket
 {
     public sealed class WebSocketReconnectPolicy
     {
         private readonly Func<WebSocketCloseCode, bool> _reconnectOnCloseCode;
-        private readonly Random _jitterRng;
-        private readonly object _rngLock = new object();
+        private static int _threadSeed = Environment.TickCount;
+
+        [ThreadStatic]
+        private static Random _threadJitterRng;
 
         public static readonly WebSocketReconnectPolicy None = new WebSocketReconnectPolicy(maxRetries: 0);
 
@@ -50,18 +52,6 @@ namespace TurboHTTP.WebSocket
             BackoffMultiplier = backoffMultiplier;
             JitterFactor = jitterFactor;
             _reconnectOnCloseCode = reconnectOnCloseCode ?? DefaultReconnectOnCloseCode;
-
-            var seedBytes = new byte[4];
-            using (var rng = RandomNumberGenerator.Create())
-            {
-                if (rng == null)
-                    throw new PlatformNotSupportedException("Random number generator is unavailable.");
-
-                rng.GetBytes(seedBytes);
-            }
-
-            int seed = BitConverter.ToInt32(seedBytes, 0);
-            _jitterRng = new Random(seed);
         }
 
         public int MaxRetries { get; }
@@ -101,11 +91,7 @@ namespace TurboHTTP.WebSocket
             if (JitterFactor > 0d && rawDelayMs > 0d)
             {
                 double jitterRange = rawDelayMs * JitterFactor;
-                double jitter;
-                lock (_rngLock)
-                {
-                    jitter = (_jitterRng.NextDouble() * 2d - 1d) * jitterRange;
-                }
+                double jitter = (NextThreadJitter() * 2d - 1d) * jitterRange;
 
                 rawDelayMs += jitter;
                 if (rawDelayMs < 0d)
@@ -140,6 +126,19 @@ namespace TurboHTTP.WebSocket
             return closeCode == WebSocketCloseCode.GoingAway ||
                    closeCode == WebSocketCloseCode.AbnormalClosure ||
                    closeCode == WebSocketCloseCode.InternalServerError;
+        }
+
+        private static double NextThreadJitter()
+        {
+            var rng = _threadJitterRng;
+            if (rng == null)
+            {
+                int seed = Interlocked.Increment(ref _threadSeed) ^ Environment.CurrentManagedThreadId;
+                rng = new Random(seed);
+                _threadJitterRng = rng;
+            }
+
+            return rng.NextDouble();
         }
     }
 }

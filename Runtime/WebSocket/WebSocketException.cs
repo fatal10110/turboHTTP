@@ -55,6 +55,7 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.PongTimeout:
                 case WebSocketError.SendFailed:
                 case WebSocketError.ReceiveFailed:
+                case WebSocketError.ProxyConnectionFailed:
                     return true;
 
                 case WebSocketError.InvalidFrame:
@@ -65,8 +66,14 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.ReservedOpcode:
                 case WebSocketError.ProtocolViolation:
                 case WebSocketError.PayloadLengthOverflow:
+                case WebSocketError.SerializationFailed:
+                case WebSocketError.ProxyAuthenticationRequired:
                 case WebSocketError.HandshakeFailed:
+                case WebSocketError.ExtensionNegotiationFailed:
                 case WebSocketError.MessageTooLarge:
+                case WebSocketError.CompressionFailed:
+                case WebSocketError.DecompressionFailed:
+                case WebSocketError.DecompressedMessageTooLarge:
                 default:
                     return false;
             }
@@ -77,6 +84,7 @@ namespace TurboHTTP.WebSocket
             switch (error)
             {
                 case WebSocketError.HandshakeFailed:
+                case WebSocketError.ExtensionNegotiationFailed:
                 case WebSocketError.InvalidFrame:
                 case WebSocketError.InvalidCloseCode:
                 case WebSocketError.InvalidUtf8:
@@ -85,13 +93,20 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.ReservedOpcode:
                 case WebSocketError.ProtocolViolation:
                 case WebSocketError.PayloadLengthOverflow:
+                case WebSocketError.SerializationFailed:
+                case WebSocketError.ProxyAuthenticationRequired:
                 case WebSocketError.MessageTooLarge:
+                case WebSocketError.CompressionFailed:
+                case WebSocketError.DecompressionFailed:
+                case WebSocketError.DecompressedMessageTooLarge:
                     return UHttpErrorType.InvalidRequest;
 
                 case WebSocketError.ConnectionClosed:
                 case WebSocketError.PongTimeout:
                 case WebSocketError.SendFailed:
                 case WebSocketError.ReceiveFailed:
+                case WebSocketError.ProxyConnectionFailed:
+                case WebSocketError.ProxyTunnelFailed:
                     return UHttpErrorType.NetworkError;
 
                 default:

@@ -3,7 +3,6 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -518,13 +517,23 @@ namespace TurboHTTP.WebSocket
             if (left == null || right == null)
                 return false;
 
-            var leftBytes = Encoding.ASCII.GetBytes(left);
-            var rightBytes = Encoding.ASCII.GetBytes(right);
-
-            if (leftBytes.Length != rightBytes.Length)
+            if (left.Length != right.Length)
                 return false;
 
-            return CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+            int diff = 0;
+            int nonAscii = 0;
+
+            for (int i = 0; i < left.Length; i++)
+            {
+                char leftChar = left[i];
+                char rightChar = right[i];
+
+                diff |= leftChar ^ rightChar;
+                nonAscii |= leftChar & ~0x7F;
+                nonAscii |= rightChar & ~0x7F;
+            }
+
+            return diff == 0 && nonAscii == 0;
         }
 
         private static async Task<byte[]> ReadErrorBodyAsync(

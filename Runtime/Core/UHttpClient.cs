@@ -36,6 +36,15 @@ namespace TurboHTTP.Core
         /// </summary>
         public IHttpTransport Transport => _transport;
 
+        /// <summary>
+        /// Returns a cloned snapshot of the options used to construct this client.
+        /// </summary>
+        public UHttpClientOptions GetOptionsSnapshot()
+        {
+            ThrowIfDisposed();
+            return _options.Clone();
+        }
+
         private sealed class PluginRegistration
         {
             public IHttpPlugin Plugin { get; }

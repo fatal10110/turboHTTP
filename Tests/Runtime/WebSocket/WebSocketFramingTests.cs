@@ -90,6 +90,102 @@ namespace TurboHTTP.Tests.WebSocket
         }
 
         [Test]
+        public void Writer_AppliesRsvBits_OnlyToFirstFragment()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var stream = new MemoryStream();
+                using var writer = new WebSocketFrameWriter(fragmentationThreshold: 4);
+                var reader = new WebSocketFrameReader(allowedRsvMask: 0x40, rejectMaskedServerFrames: false);
+
+                byte[] payload = Encoding.UTF8.GetBytes("fragment-me");
+                await writer.WriteMessageAsync(
+                    stream,
+                    WebSocketOpcode.Binary,
+                    payload,
+                    CancellationToken.None,
+                    rsvBits: 0x40).ConfigureAwait(false);
+                stream.Position = 0;
+
+                using var first = await reader.ReadAsync(stream, fragmentedMessageInProgress: false, CancellationToken.None)
+                    .ConfigureAwait(false);
+                using var second = await reader.ReadAsync(stream, fragmentedMessageInProgress: true, CancellationToken.None)
+                    .ConfigureAwait(false);
+                using var third = await reader.ReadAsync(stream, fragmentedMessageInProgress: true, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                Assert.IsTrue(first.Frame.IsRsv1Set);
+                Assert.IsFalse(second.Frame.IsRsv1Set);
+                Assert.IsFalse(third.Frame.IsRsv1Set);
+            });
+        }
+
+        [Test]
+        public void Reader_PreservesRsvBits()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var stream = new MemoryStream(BuildFrame(
+                    opcode: WebSocketOpcode.Text,
+                    payload: Encoding.UTF8.GetBytes("rsv"),
+                    masked: false,
+                    maskKey: 0,
+                    rsvBits: 0x40));
+
+                var reader = new WebSocketFrameReader(allowedRsvMask: 0x40, rejectMaskedServerFrames: false);
+                using var lease = await reader.ReadAsync(stream, false, CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(0x40, lease.Frame.RsvBits);
+                Assert.IsTrue(lease.Frame.IsRsv1Set);
+            });
+        }
+
+        [Test]
+        public void Assembler_RejectsContinuationFrameWithRsv1Set()
+        {
+            AssertAsync.Run(async () =>
+            {
+                byte[] firstFrame = BuildFrame(
+                    opcode: WebSocketOpcode.Binary,
+                    payload: Encoding.UTF8.GetBytes("hello"),
+                    masked: false,
+                    maskKey: 0,
+                    isFinal: false);
+
+                byte[] secondFrame = BuildFrame(
+                    opcode: WebSocketOpcode.Continuation,
+                    payload: Encoding.UTF8.GetBytes("world"),
+                    masked: false,
+                    maskKey: 0,
+                    isFinal: true,
+                    rsvBits: 0x40);
+
+                using var stream = new MemoryStream(new byte[firstFrame.Length + secondFrame.Length]);
+                await stream.WriteAsync(firstFrame, 0, firstFrame.Length).ConfigureAwait(false);
+                await stream.WriteAsync(secondFrame, 0, secondFrame.Length).ConfigureAwait(false);
+                stream.Position = 0;
+
+                var reader = new WebSocketFrameReader(allowedRsvMask: 0x40, rejectMaskedServerFrames: false);
+                var assembler = new MessageAssembler();
+
+                using var firstLease = await reader.ReadAsync(stream, fragmentedMessageInProgress: false, CancellationToken.None)
+                    .ConfigureAwait(false);
+                bool completed = assembler.TryAssemble(firstLease, out var _);
+                Assert.IsFalse(completed);
+
+                using var secondLease = await reader.ReadAsync(stream, fragmentedMessageInProgress: true, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                var ex = Assert.Throws<WebSocketProtocolException>(() =>
+                {
+                    assembler.TryAssemble(secondLease, out var _);
+                });
+
+                Assert.AreEqual(WebSocketError.ProtocolViolation, ex.Error);
+            });
+        }
+
+        [Test]
         public void Reader_RejectsMaskedServerFrame_ByDefault()
         {
             using var stream = new MemoryStream(BuildFrame(
@@ -143,7 +239,9 @@ namespace TurboHTTP.Tests.WebSocket
             WebSocketOpcode opcode,
             byte[] payload,
             bool masked,
-            uint maskKey)
+            uint maskKey,
+            bool isFinal = true,
+            byte rsvBits = 0)
         {
             payload ??= Array.Empty<byte>();
             int payloadLength = payload.Length;
@@ -158,7 +256,7 @@ namespace TurboHTTP.Tests.WebSocket
 
             var result = new byte[headerLength + payloadLength];
             int offset = 0;
-            result[offset++] = (byte)(0x80 | (byte)opcode);
+            result[offset++] = (byte)((isFinal ? 0x80 : 0x00) | (rsvBits & 0x70) | (byte)opcode);
 
             if (payloadLength <= 125)
             {

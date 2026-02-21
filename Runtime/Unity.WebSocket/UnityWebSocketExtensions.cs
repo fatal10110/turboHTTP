@@ -1,5 +1,4 @@
 using System;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -12,10 +11,6 @@ namespace TurboHTTP.Unity.WebSocket
     /// </summary>
     public static class UnityWebSocketExtensions
     {
-        private static readonly PropertyInfo ClientOptionsProperty = typeof(UHttpClient).GetProperty(
-            "ClientOptions",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-
         public static Task<IWebSocketClient> WebSocket(
             this UHttpClient client,
             string url,
@@ -49,12 +44,10 @@ namespace TurboHTTP.Unity.WebSocket
         private static WebSocketConnectionOptions BuildWebSocketOptions(UHttpClient client)
         {
             var options = new WebSocketConnectionOptions();
+            var clientOptions = client.GetOptionsSnapshot();
 
-            if (ClientOptionsProperty?.GetValue(client) is UHttpClientOptions clientOptions)
-            {
-                options.TlsBackend = clientOptions.TlsBackend;
-                options.CustomHeaders = clientOptions.DefaultHeaders?.Clone() ?? new HttpHeaders();
-            }
+            options.TlsBackend = clientOptions.TlsBackend;
+            options.CustomHeaders = clientOptions.DefaultHeaders?.Clone() ?? new HttpHeaders();
 
             return options;
         }

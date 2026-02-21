@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,6 +22,8 @@ namespace TurboHTTP.Unity.WebSocket
         public event Action<WebSocketMessage> OnMessage;
         public event Action<WebSocketException> OnError;
         public event Action<WebSocketCloseCode, string> OnClosed;
+        public event Action<WebSocketMetrics> OnMetricsUpdated;
+        public event Action<ConnectionQuality> OnConnectionQualityChanged;
         public event Action<int, TimeSpan> OnReconnecting;
         public event Action OnReconnected;
         public event Action OnMessageDropped;
@@ -34,6 +37,8 @@ namespace TurboHTTP.Unity.WebSocket
             _client.OnMessage += HandleMessage;
             _client.OnError += HandleError;
             _client.OnClosed += HandleClosed;
+            _client.OnMetricsUpdated += HandleMetricsUpdated;
+            _client.OnConnectionQualityChanged += HandleConnectionQualityChanged;
 
             if (_resilientClient != null)
             {
@@ -45,6 +50,10 @@ namespace TurboHTTP.Unity.WebSocket
         public WebSocketState State => _client.State;
 
         public string SubProtocol => _client.SubProtocol;
+
+        public WebSocketMetrics Metrics => _client.Metrics;
+
+        public WebSocketHealthSnapshot Health => _client.Health;
 
         public Task ConnectAsync(Uri uri, CancellationToken ct = default)
         {
@@ -80,6 +89,12 @@ namespace TurboHTTP.Unity.WebSocket
         {
             ThrowIfDisposed();
             return _client.ReceiveAsync(ct);
+        }
+
+        public IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default)
+        {
+            ThrowIfDisposed();
+            return _client.ReceiveAllAsync(ct);
         }
 
         public Task CloseAsync(
@@ -170,6 +185,8 @@ namespace TurboHTTP.Unity.WebSocket
             _client.OnMessage -= HandleMessage;
             _client.OnError -= HandleError;
             _client.OnClosed -= HandleClosed;
+            _client.OnMetricsUpdated -= HandleMetricsUpdated;
+            _client.OnConnectionQualityChanged -= HandleConnectionQualityChanged;
 
             if (_resilientClient != null)
             {
@@ -194,29 +211,19 @@ namespace TurboHTTP.Unity.WebSocket
             if (message == null)
                 return;
 
-            WebSocketMessage detachedCopy = null;
-            try
-            {
-                detachedCopy = WebSocketMessage.CreateDetachedCopy(message);
-            }
-            finally
-            {
-                message.Dispose();
-            }
-
             var handler = OnMessage;
             if (handler == null)
             {
-                detachedCopy.Dispose();
+                message.Dispose();
                 return;
             }
 
             Dispatch(
-                () => handler(detachedCopy),
+                () => handler(message),
                 "OnMessage",
                 onDropped: () =>
                 {
-                    detachedCopy.Dispose();
+                    message.Dispose();
                 });
         }
 
@@ -240,6 +247,28 @@ namespace TurboHTTP.Unity.WebSocket
             Dispatch(
                 () => handler(code, reason),
                 "OnClosed");
+        }
+
+        private void HandleMetricsUpdated(WebSocketMetrics metrics)
+        {
+            var handler = OnMetricsUpdated;
+            if (handler == null)
+                return;
+
+            Dispatch(
+                () => handler(metrics),
+                "OnMetricsUpdated");
+        }
+
+        private void HandleConnectionQualityChanged(ConnectionQuality quality)
+        {
+            var handler = OnConnectionQualityChanged;
+            if (handler == null)
+                return;
+
+            Dispatch(
+                () => handler(quality),
+                "OnConnectionQualityChanged");
         }
 
         private void HandleReconnecting(int attempt, TimeSpan delay)
@@ -321,6 +350,8 @@ namespace TurboHTTP.Unity.WebSocket
                     callbackName + ".");
                 return;
             }
+
+            onDropped?.Invoke();
 
             if (exception != null)
                 Debug.LogException(exception);

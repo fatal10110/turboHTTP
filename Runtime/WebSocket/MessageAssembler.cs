@@ -16,6 +16,7 @@ namespace TurboHTTP.WebSocket
 
         private bool _fragmentedMessageInProgress;
         private WebSocketOpcode _fragmentedOpcode;
+        private byte _fragmentedFirstRsvBits;
         private int _fragmentCount;
         private int _accumulatedPayloadBytes;
 
@@ -74,6 +75,15 @@ namespace TurboHTTP.WebSocket
                         "Continuation frame received without an active fragmented message.");
                 }
 
+                if (frame.IsRsv1Set)
+                {
+                    frameLease.Dispose();
+                    Reset();
+                    throw new WebSocketProtocolException(
+                        WebSocketError.ProtocolViolation,
+                        "Continuation frame must not set RSV1.");
+                }
+
                 if (!TryStageFragment(frameLease))
                     return false;
 
@@ -106,6 +116,7 @@ namespace TurboHTTP.WebSocket
 
             _fragmentedMessageInProgress = true;
             _fragmentedOpcode = frame.Opcode;
+            _fragmentedFirstRsvBits = frame.RsvBits;
 
             if (!TryStageFragment(frameLease))
                 return false;
@@ -122,6 +133,7 @@ namespace TurboHTTP.WebSocket
             ReturnStagedFragments();
             _fragmentedMessageInProgress = false;
             _fragmentedOpcode = WebSocketOpcode.Continuation;
+            _fragmentedFirstRsvBits = 0;
             _fragmentCount = 0;
             _accumulatedPayloadBytes = 0;
         }
@@ -209,8 +221,9 @@ namespace TurboHTTP.WebSocket
                 }
 
                 var opcode = _fragmentedOpcode;
+                var rsvBits = _fragmentedFirstRsvBits;
                 Reset();
-                return new WebSocketAssembledMessage(opcode, payload, payloadLength);
+                return new WebSocketAssembledMessage(opcode, payload, payloadLength, rsvBits);
             }
             catch
             {
@@ -226,9 +239,10 @@ namespace TurboHTTP.WebSocket
             WebSocketFrameReadLease frameLease,
             WebSocketOpcode opcode)
         {
+            var rsvBits = frameLease.Frame.RsvBits;
             var buffer = frameLease.DetachPayloadBuffer(out var length);
             frameLease.Dispose();
-            return new WebSocketAssembledMessage(opcode, buffer, length);
+            return new WebSocketAssembledMessage(opcode, buffer, length, rsvBits);
         }
 
         private void ReturnStagedFragments()
@@ -270,7 +284,11 @@ namespace TurboHTTP.WebSocket
         private byte[] _payloadBuffer;
         private int _payloadLength;
 
-        internal WebSocketAssembledMessage(WebSocketOpcode opcode, byte[] payloadBuffer, int payloadLength)
+        internal WebSocketAssembledMessage(
+            WebSocketOpcode opcode,
+            byte[] payloadBuffer,
+            int payloadLength,
+            byte rsvBits = 0)
         {
             if (payloadLength < 0)
                 throw new ArgumentOutOfRangeException(nameof(payloadLength), payloadLength, "Length cannot be negative.");
@@ -282,12 +300,29 @@ namespace TurboHTTP.WebSocket
                     "Non-empty message requires a payload buffer.");
             }
 
+            if ((rsvBits & ~0x70) != 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(rsvBits),
+                    rsvBits,
+                    "RSV bits must be a subset of mask 0x70.");
+            }
+
             Opcode = opcode;
+            RsvBits = (byte)(rsvBits & 0x70);
             _payloadBuffer = payloadBuffer;
             _payloadLength = payloadLength;
         }
 
         public WebSocketOpcode Opcode { get; }
+
+        public byte RsvBits { get; }
+
+        public bool IsRsv1Set => (RsvBits & 0x40) != 0;
+
+        public bool IsRsv2Set => (RsvBits & 0x20) != 0;
+
+        public bool IsRsv3Set => (RsvBits & 0x10) != 0;
 
         public ReadOnlyMemory<byte> Payload
         {

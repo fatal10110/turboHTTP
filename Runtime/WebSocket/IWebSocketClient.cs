@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -17,9 +18,17 @@ namespace TurboHTTP.WebSocket
 
         event Action<WebSocketCloseCode, string> OnClosed;
 
+        event Action<WebSocketMetrics> OnMetricsUpdated;
+
+        event Action<ConnectionQuality> OnConnectionQualityChanged;
+
         WebSocketState State { get; }
 
         string SubProtocol { get; }
+
+        WebSocketMetrics Metrics { get; }
+
+        WebSocketHealthSnapshot Health { get; }
 
         Task ConnectAsync(Uri uri, CancellationToken ct = default);
 
@@ -32,6 +41,8 @@ namespace TurboHTTP.WebSocket
         Task SendAsync(byte[] data, CancellationToken ct = default);
 
         ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct = default);
+
+        IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default);
 
         Task CloseAsync(
             WebSocketCloseCode code = WebSocketCloseCode.NormalClosure,

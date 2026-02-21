@@ -16,7 +16,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Lightweight bounded async queue used in the WebSocket API layer.
     /// </summary>
-    internal sealed class AsyncBoundedQueue<T>
+    internal sealed class BoundedAsyncQueue<T>
     {
         private readonly Queue<T> _queue = new Queue<T>();
         private readonly SemaphoreSlim _items = new SemaphoreSlim(0);
@@ -27,7 +27,7 @@ namespace TurboHTTP.WebSocket
         private bool _completed;
         private Exception _completionError;
 
-        public AsyncBoundedQueue(int capacity)
+        public BoundedAsyncQueue(int capacity)
         {
             if (capacity < 1)
                 throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be greater than zero.");

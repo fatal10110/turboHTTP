@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
 using System.Threading;
@@ -123,9 +124,13 @@ namespace TurboHTTP.Tests.UnityModule
             public event Action<WebSocketMessage> OnMessage;
             public event Action<WebSocketException> OnError;
             public event Action<WebSocketCloseCode, string> OnClosed;
+            public event Action<WebSocketMetrics> OnMetricsUpdated;
+            public event Action<ConnectionQuality> OnConnectionQualityChanged;
 
             public WebSocketState State { get; private set; } = WebSocketState.None;
             public string SubProtocol => null;
+            public WebSocketMetrics Metrics => default;
+            public WebSocketHealthSnapshot Health => WebSocketHealthSnapshot.Unknown;
 
             public Task ConnectAsync(Uri uri, CancellationToken ct = default)
             {
@@ -157,6 +162,11 @@ namespace TurboHTTP.Tests.UnityModule
             }
 
             public ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct = default)
+            {
+                throw new InvalidOperationException("Not used by this fake.");
+            }
+
+            public IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default)
             {
                 throw new InvalidOperationException("Not used by this fake.");
             }

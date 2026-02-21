@@ -252,9 +252,6 @@ namespace TurboHTTP.WebSocket
                 if (value.AsSpan().IndexOfAny('\r', '\n') >= 0)
                     throw new ArgumentException("Extension value contains CR/LF characters.", nameof(values));
 
-                if (value.IndexOf(',') >= 0)
-                    throw new ArgumentException("Extension entries must not contain commas.", nameof(values));
-
                 if (seen.Add(value))
                     normalized.Add(value);
             }

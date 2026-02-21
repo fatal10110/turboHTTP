@@ -30,6 +30,8 @@ namespace TurboHTTP.WebSocket
         internal static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
 
         private static volatile bool _sha1Checked;
+        private static readonly object SharedRngGate = new object();
+        private static readonly RandomNumberGenerator SharedRng = CreateSharedRng();
 
         /// <summary>
         /// Computes Sec-WebSocket-Accept for handshake validation (RFC 6455 Section 4.2.2).
@@ -59,12 +61,9 @@ namespace TurboHTTP.WebSocket
         public static string GenerateClientKey()
         {
             var keyBytes = new byte[16];
-            using (var rng = RandomNumberGenerator.Create())
+            lock (SharedRngGate)
             {
-                if (rng == null)
-                    throw new PlatformNotSupportedException("Random number generator is unavailable on this platform.");
-
-                rng.GetBytes(keyBytes);
+                SharedRng.GetBytes(keyBytes);
             }
 
             return Convert.ToBase64String(keyBytes);
@@ -208,6 +207,18 @@ namespace TurboHTTP.WebSocket
                     ex);
             }
         }
+
+        private static RandomNumberGenerator CreateSharedRng()
+        {
+            var rng = RandomNumberGenerator.Create();
+            if (rng == null)
+            {
+                throw new PlatformNotSupportedException(
+                    "Random number generator is unavailable on this platform.");
+            }
+
+            return rng;
+        }
     }
 
     /// <summary>
@@ -216,6 +227,7 @@ namespace TurboHTTP.WebSocket
     public enum WebSocketError
     {
         HandshakeFailed,
+        ExtensionNegotiationFailed,
         ConnectionClosed,
         SendFailed,
         ReceiveFailed,
@@ -229,7 +241,14 @@ namespace TurboHTTP.WebSocket
         UnexpectedContinuation,
         ReservedOpcode,
         ProtocolViolation,
-        PayloadLengthOverflow
+        PayloadLengthOverflow,
+        SerializationFailed,
+        ProxyAuthenticationRequired,
+        ProxyConnectionFailed,
+        ProxyTunnelFailed,
+        CompressionFailed,
+        DecompressionFailed,
+        DecompressedMessageTooLarge
     }
 
     /// <summary>

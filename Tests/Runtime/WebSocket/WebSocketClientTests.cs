@@ -114,6 +114,108 @@ namespace TurboHTTP.Tests.WebSocket
         }
 
         [Test]
+        public void ReceiveAllAsync_ConsumesMessages_AndEndsOnClose()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer();
+                using var transport = new TestTcpWebSocketTransport();
+                await using var client = new WebSocketClient(transport);
+
+                await client.ConnectAsync(server.CreateUri("/receive-all"), CreateOptions(), CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                await using var enumerator = client.ReceiveAllAsync(CancellationToken.None).GetAsyncEnumerator();
+
+                await client.SendAsync("one", CancellationToken.None).ConfigureAwait(false);
+                bool moved = await WaitWithTimeout(
+                    enumerator.MoveNextAsync().AsTask(),
+                    TimeSpan.FromSeconds(2),
+                    "Timed out waiting for first streamed message.").ConfigureAwait(false);
+                Assert.IsTrue(moved);
+                using (var message = enumerator.Current)
+                {
+                    Assert.AreEqual("one", message.Text);
+                }
+
+                await client.SendAsync("two", CancellationToken.None).ConfigureAwait(false);
+                moved = await WaitWithTimeout(
+                    enumerator.MoveNextAsync().AsTask(),
+                    TimeSpan.FromSeconds(2),
+                    "Timed out waiting for second streamed message.").ConfigureAwait(false);
+                Assert.IsTrue(moved);
+                using (var message = enumerator.Current)
+                {
+                    Assert.AreEqual("two", message.Text);
+                }
+
+                await client.CloseAsync(WebSocketCloseCode.NormalClosure, "done", CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                bool hasMore = await WaitWithTimeout(
+                    enumerator.MoveNextAsync().AsTask(),
+                    TimeSpan.FromSeconds(2),
+                    "Timed out waiting for streamed close completion.").ConfigureAwait(false);
+                Assert.IsFalse(hasMore);
+            });
+        }
+
+        [Test]
+        public void ReceiveAllAsync_Cancellation_ThrowsOperationCanceledException()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer();
+                using var transport = new TestTcpWebSocketTransport();
+                await using var client = new WebSocketClient(transport);
+
+                await client.ConnectAsync(server.CreateUri("/receive-all-cancel"), CreateOptions(), CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+                await using var enumerator = client.ReceiveAllAsync(cts.Token).GetAsyncEnumerator();
+
+                AssertAsync.ThrowsAsync<OperationCanceledException>(async () =>
+                    await enumerator.MoveNextAsync().AsTask().ConfigureAwait(false));
+
+                await client.CloseAsync(WebSocketCloseCode.NormalClosure, "done", CancellationToken.None)
+                    .ConfigureAwait(false);
+            });
+        }
+
+        [Test]
+        public void ReceiveAllAsync_RejectsConcurrentEnumerators_AndAllowsNewAfterDispose()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer();
+                using var transport = new TestTcpWebSocketTransport();
+                await using var client = new WebSocketClient(transport);
+
+                await client.ConnectAsync(server.CreateUri("/receive-all-exclusive"), CreateOptions(), CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                var enumerator1 = client.ReceiveAllAsync(CancellationToken.None).GetAsyncEnumerator();
+
+                Assert.Throws<InvalidOperationException>(() =>
+                {
+                    _ = client.ReceiveAllAsync(CancellationToken.None);
+                });
+
+                AssertAsync.ThrowsAsync<InvalidOperationException>(async () =>
+                    await client.ReceiveAsync(CancellationToken.None).ConfigureAwait(false));
+
+                await enumerator1.DisposeAsync().ConfigureAwait(false);
+
+                await using var enumerator2 = client.ReceiveAllAsync(CancellationToken.None).GetAsyncEnumerator();
+                await enumerator2.DisposeAsync().ConfigureAwait(false);
+
+                await client.CloseAsync(WebSocketCloseCode.NormalClosure, "done", CancellationToken.None)
+                    .ConfigureAwait(false);
+            });
+        }
+
+        [Test]
         public void MethodsThrowObjectDisposedException_AfterDispose()
         {
             var client = new WebSocketClient(new TestTcpWebSocketTransport());
@@ -145,6 +247,15 @@ namespace TurboHTTP.Tests.WebSocket
                 throw new TimeoutException(errorMessage);
 
             await task.ConfigureAwait(false);
+        }
+
+        private static async Task<T> WaitWithTimeout<T>(Task<T> task, TimeSpan timeout, string errorMessage)
+        {
+            var completed = await Task.WhenAny(task, Task.Delay(timeout)).ConfigureAwait(false);
+            if (!ReferenceEquals(completed, task))
+                throw new TimeoutException(errorMessage);
+
+            return await task.ConfigureAwait(false);
         }
     }
 }

@@ -194,7 +194,8 @@ namespace TurboHTTP.WebSocket
             Stream stream,
             WebSocketOpcode opcode,
             ReadOnlyMemory<byte> payload,
-            CancellationToken ct)
+            CancellationToken ct,
+            byte rsvBits = 0)
         {
             ThrowIfDisposed();
 
@@ -210,7 +211,7 @@ namespace TurboHTTP.WebSocket
 
             if (payload.Length <= _fragmentationThreshold)
             {
-                await WriteFrameAsync(stream, opcode, isFinal: true, payload, ct)
+                await WriteFrameAsync(stream, opcode, isFinal: true, payload, ct, rsvBits)
                     .ConfigureAwait(false);
                 return;
             }
@@ -228,7 +229,8 @@ namespace TurboHTTP.WebSocket
                     fragmentOpcode,
                     isFinal,
                     payload.Slice(offset, fragmentLength),
-                    ct).ConfigureAwait(false);
+                    ct,
+                    first ? rsvBits : (byte)0).ConfigureAwait(false);
 
                 offset += fragmentLength;
                 first = false;
@@ -243,7 +245,8 @@ namespace TurboHTTP.WebSocket
             WebSocketOpcode opcode,
             bool isFinal,
             ReadOnlyMemory<byte> payload,
-            CancellationToken ct)
+            CancellationToken ct,
+            byte rsvBits = 0)
         {
             ThrowIfDisposed();
 
@@ -253,6 +256,14 @@ namespace TurboHTTP.WebSocket
             if (!WebSocketConstants.TryParseOpcode((byte)opcode, out _))
             {
                 throw new ArgumentOutOfRangeException(nameof(opcode), opcode, "Unsupported or reserved opcode.");
+            }
+
+            if ((rsvBits & ~0x70) != 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(rsvBits),
+                    rsvBits,
+                    "Only RSV bits (0x70) can be set.");
             }
 
             if (WebSocketFrame.IsControlOpcode(opcode))
@@ -270,13 +281,25 @@ namespace TurboHTTP.WebSocket
                         "Control frame payload exceeds 125 bytes.",
                         nameof(payload));
                 }
+
+                if (rsvBits != 0)
+                {
+                    throw new ArgumentException(
+                        "Control frames must not set RSV bits.",
+                        nameof(rsvBits));
+                }
             }
 
             var maskKey = NextMaskKey();
-            int headerLength = BuildHeader(_headerBuffer, opcode, isFinal, payload.Length, maskKey);
+            int headerLength = BuildHeader(_headerBuffer, opcode, isFinal, rsvBits, payload.Length, maskKey);
 
-            await stream.WriteAsync(_headerBuffer, 0, headerLength, ct).ConfigureAwait(false);
-            await WriteMaskedPayloadAsync(stream, payload, maskKey, ct).ConfigureAwait(false);
+            if (!await TryWriteSmallFrameSingleWriteAsync(stream, headerLength, payload, maskKey, ct)
+                .ConfigureAwait(false))
+            {
+                await stream.WriteAsync(_headerBuffer, 0, headerLength, ct).ConfigureAwait(false);
+                await WriteMaskedPayloadAsync(stream, payload, maskKey, ct).ConfigureAwait(false);
+            }
+
             await stream.FlushAsync(ct).ConfigureAwait(false);
         }
 
@@ -303,22 +326,47 @@ namespace TurboHTTP.WebSocket
                 int toCopy = Math.Min(_maskingChunkBuffer.Length, payload.Length - offset);
                 payload.Slice(offset, toCopy).CopyTo(new Memory<byte>(_maskingChunkBuffer, 0, toCopy));
 
-                ApplyMaskInPlace(_maskingChunkBuffer, toCopy, maskKey, offset);
+                ApplyMaskInPlace(_maskingChunkBuffer, 0, toCopy, maskKey, offset);
                 await stream.WriteAsync(_maskingChunkBuffer, 0, toCopy, ct).ConfigureAwait(false);
 
                 offset += toCopy;
             }
         }
 
+        private async Task<bool> TryWriteSmallFrameSingleWriteAsync(
+            Stream stream,
+            int headerLength,
+            ReadOnlyMemory<byte> payload,
+            uint maskKey,
+            CancellationToken ct)
+        {
+            if (payload.Length == 0)
+                return false;
+
+            int totalLength = headerLength + payload.Length;
+            if (totalLength > _maskingChunkBuffer.Length)
+                return false;
+
+            new ReadOnlySpan<byte>(_headerBuffer, 0, headerLength)
+                .CopyTo(new Span<byte>(_maskingChunkBuffer, 0, headerLength));
+
+            payload.CopyTo(new Memory<byte>(_maskingChunkBuffer, headerLength, payload.Length));
+            ApplyMaskInPlace(_maskingChunkBuffer, headerLength, payload.Length, maskKey, payloadOffset: 0);
+
+            await stream.WriteAsync(_maskingChunkBuffer, 0, totalLength, ct).ConfigureAwait(false);
+            return true;
+        }
+
         private static int BuildHeader(
             byte[] buffer,
             WebSocketOpcode opcode,
             bool isFinal,
+            byte rsvBits,
             int payloadLength,
             uint maskKey)
         {
             int offset = 0;
-            buffer[offset++] = (byte)(((isFinal ? 1 : 0) << 7) | ((byte)opcode & 0x0F));
+            buffer[offset++] = (byte)(((isFinal ? 1 : 0) << 7) | (rsvBits & 0x70) | ((byte)opcode & 0x0F));
 
             if (payloadLength <= 125)
             {
@@ -361,7 +409,12 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private static void ApplyMaskInPlace(byte[] buffer, int count, uint maskKey, int payloadOffset)
+        private static void ApplyMaskInPlace(
+            byte[] buffer,
+            int start,
+            int count,
+            uint maskKey,
+            int payloadOffset)
         {
             byte key0 = (byte)(maskKey >> 24);
             byte key1 = (byte)(maskKey >> 16);
@@ -370,19 +423,20 @@ namespace TurboHTTP.WebSocket
 
             for (int i = 0; i < count; i++)
             {
+                int index = start + i;
                 switch ((payloadOffset + i) & 0x3)
                 {
                     case 0:
-                        buffer[i] ^= key0;
+                        buffer[index] ^= key0;
                         break;
                     case 1:
-                        buffer[i] ^= key1;
+                        buffer[index] ^= key1;
                         break;
                     case 2:
-                        buffer[i] ^= key2;
+                        buffer[index] ^= key2;
                         break;
                     default:
-                        buffer[i] ^= key3;
+                        buffer[index] ^= key3;
                         break;
                 }
             }

@@ -608,3 +608,514 @@ All Revision 1 critical and warning findings are confirmed fixed. Three new **lo
 ### Verdict: **PASS**
 
 Phase 18.1–18.3 implementation review is complete. All blocking findings resolved. R2 warnings are non-blocking. Ready to proceed to Phase 18.4.
+
+---
+
+## Revision 3 — Full Phase 18 Review (Phases 18.4–18.6) — 2026-02-21
+
+Comprehensive review of all remaining Phase 18 implementation files (Phases 18.4 Send/Receive API, 18.5 Reconnection & Resilience, 18.6 Unity Integration) by both specialist agents (**unity-infrastructure-architect** and **unity-network-architect**). Includes cross-verification of agent findings against actual codebase.
+
+### Review Scope — Revision 3
+
+**New files reviewed (8):**
+- `Runtime/WebSocket/IWebSocketClient.cs` — Public API surface with events
+- `Runtime/WebSocket/WebSocketClient.cs` — Default client implementation with reflection-based transport factory
+- `Runtime/WebSocket/WebSocketMessage.cs` — Message type with eager text decode, detached copy pattern
+- `Runtime/WebSocket/WebSocketException.cs` — Exception type mapping to UHttpErrorType
+- `Runtime/WebSocket/AsyncBoundedQueue.cs` — Top-level bounded queue implementation
+- `Runtime/WebSocket/WebSocketReconnectPolicy.cs` — Exponential backoff with jitter
+- `Runtime/WebSocket/ResilientWebSocketClient.cs` — IWebSocketClient wrapper with reconnection loop
+- `Runtime/WebSocket.Transport/RawSocketWebSocketTransport.cs` — DNS + Happy Eyeballs + TLS transport
+- `Runtime/Unity.WebSocket/UnityWebSocketBridge.cs` — Main-thread dispatch bridge
+- `Runtime/Unity.WebSocket/UnityWebSocketClient.cs` — MonoBehaviour component
+- `Runtime/Unity.WebSocket/UnityWebSocketExtensions.cs` — Extension methods on UHttpClient
+
+**Assembly definitions verified (3 new + 2 modified):**
+- `Runtime/WebSocket/TurboHTTP.WebSocket.asmdef` — refs Core only, `noEngineReferences: true`
+- `Runtime/WebSocket.Transport/TurboHTTP.WebSocket.Transport.asmdef` — refs Core+WebSocket+Transport, excludes WebGL
+- `Runtime/Unity.WebSocket/TurboHTTP.Unity.WebSocket.asmdef` — refs Core+WebSocket+Unity
+- `Runtime/TurboHTTP.Complete.asmdef` — Already includes all 3 WebSocket assembly refs
+- `Tests/Runtime/TurboHTTP.Tests.Runtime.asmdef` — Already includes all 3 WebSocket assembly refs
+
+### Agent Finding Cross-Verification
+
+Several agent findings were invalidated upon direct codebase verification:
+
+| Agent Finding | Verdict | Evidence |
+|---|---|---|
+| `TlsBackend` type in Transport assembly (Infra C1) | **False alarm** | `TlsBackend` enum is in `Runtime/Core/TlsBackend.cs` (TurboHTTP.Core), accessible to all assemblies |
+| Missing `link.xml` (both agents) | **False alarm** | `Runtime/WebSocket/link.xml` exists, preserves SHA1, SHA1Managed, RandomNumberGenerator in both mscorlib and System.Security.Cryptography.Algorithms |
+| Missing `PrefetchedStream` (Infra I3) | **False alarm** | Defined as nested class in `WebSocketConnection.cs` lines 1021–1168 |
+| `BoundedAsyncQueue` naming (Infra I2) | **Partially valid** | The *nested* class in WebSocketConnection is `BoundedAsyncQueue<T>` and the *top-level* class is `AsyncBoundedQueue<T>` — these are separate types, confirming C-4 below |
+
+---
+
+### R3 Critical Issues
+
+#### R3-C1: Duplicate `AsyncQueueCompletedException` and Queue Types
+
+**Agents:** Both
+**Files:** `WebSocketConnection.cs` (nested private classes) + `AsyncBoundedQueue.cs` (top-level internal classes)
+
+`WebSocketConnection` defines a private nested `BoundedAsyncQueue<T>` and `AsyncQueueCompletedException`. Separately, `AsyncBoundedQueue.cs` defines a top-level internal `AsyncBoundedQueue<T>` and `AsyncQueueCompletedException`. These are distinct C# types despite similar names.
+
+**Impact:** `catch (AsyncQueueCompletedException)` in `WebSocketClient.ReceiveAsync` catches the top-level type, while `WebSocketConnection` throws its nested type. If the wrong exception type propagates across the boundary, it will not be caught, surfacing as an unhandled exception.
+
+**Fix:** Remove the nested duplicates from `WebSocketConnection`. Use the top-level `AsyncBoundedQueue<T>` and `AsyncQueueCompletedException` throughout. Rename `AsyncBoundedQueue` to `BoundedAsyncQueue` for spec consistency.
+
+---
+
+#### R3-C2: Reflection-Based Transport Creation Not IL2CPP-Safe
+
+**Agent:** Both
+**File:** `WebSocketClient.cs` lines 521–563
+
+`Type.GetType("TurboHTTP.WebSocket.Transport.RawSocketWebSocketTransport, TurboHTTP.WebSocket.Transport")` followed by `Activator.CreateInstance` is reflection-heavy and will return null under IL2CPP stripping. The existing HTTP transport uses `[ModuleInitializer]` with `Register(Func<IHttpTransport>)` precisely to avoid this pattern.
+
+**Impact:** WebSocket will fail to connect on IL2CPP builds (iOS/Android) when no explicit transport is provided.
+
+**Fix:** Add a `[ModuleInitializer]` registration pattern in `TurboHTTP.WebSocket.Transport` (matching `TransportModuleInitializer` from Phase 3), or add `link.xml` entries preserving `RawSocketWebSocketTransport` and its constructors. Module initializer approach is strongly preferred for consistency.
+
+---
+
+#### R3-C3: Private Property Reflection in UnityWebSocketExtensions Not IL2CPP-Safe
+
+**Agent:** Both
+**File:** `UnityWebSocketExtensions.cs` lines 15–17
+
+```csharp
+private static readonly PropertyInfo ClientOptionsProperty = typeof(UHttpClient).GetProperty(
+    "ClientOptions",
+    BindingFlags.Instance | BindingFlags.NonPublic);
+```
+
+Accessing private members via reflection will fail under IL2CPP code stripping. If the property is stripped or renamed, the extension silently returns default options (no TLS settings, no default headers).
+
+**Impact:** WebSocket connections created via `client.WebSocket(uri)` on IL2CPP builds will not inherit TLS/header settings from the HTTP client.
+
+**Fix:** Either expose a public method/property on `UHttpClient` for WebSocket option extraction, or use `InternalsVisibleTo` from Core to Unity.WebSocket, or accept `WebSocketConnectionOptions` parameter directly.
+
+---
+
+### R3 Important Issues
+
+#### R3-I1: `_lifecycleCts` Disposed While Receive Loop May Still Reference Token
+
+**Agent:** Network
+**File:** `WebSocketConnection.cs` lines 847–912
+
+`FinalizeClose` cancels `_lifecycleCts` then disposes it. If the receive loop checks `ct.IsCancellationRequested` after disposal, this may throw `ObjectDisposedException` on some .NET implementations.
+
+**Fix:** Defer `_lifecycleCts` disposal to `Dispose()`/`DisposeAsync()` after the receive loop task has been observed.
+
+---
+
+#### R3-I2: Separate Stream Writes for Header and Payload (TLS Record Overhead)
+
+**Agent:** Network
+**File:** `WebSocketFrameWriter.cs` lines 278–280
+
+Header and payload are written as separate `WriteAsync` calls. For SslStream, each call results in a separate TLS record. The spec says "frame header + mask key should be written in a single buffer to minimize stream write calls."
+
+**Fix:** For small payloads (control frames especially), combine header + masked payload into a single write.
+
+---
+
+#### R3-I3: `Span.ToArray()` Allocation in `ParseCloseStatus`
+
+**Agent:** Network
+**File:** `WebSocketConnection.cs` lines 610–614
+
+`Span.ToArray()` creates an unnecessary heap allocation. .NET Standard 2.1 provides `Encoding.GetString(ReadOnlySpan<byte>)`.
+
+**Fix:** Use `WebSocketConstants.StrictUtf8.GetString(payload.Slice(2).Span)`.
+
+---
+
+#### R3-I4: Duplicate UTF-8 Encode in `WebSocketClient.SendAsync(string)`
+
+**Agent:** Network
+**File:** `WebSocketClient.cs` lines 162–191
+
+`WebSocketClient.SendAsync(string)` manually encodes to UTF-8 then calls the `ReadOnlyMemory<byte>` overload. `WebSocketConnection.SendTextAsync(string)` already exists and does the same encoding. The client bypasses the connection's string overload.
+
+**Fix:** Delegate to `connection.SendTextAsync(string)` directly, eliminating the duplicate encoding path.
+
+---
+
+#### R3-I5: Resilient Client Doesn't Await Previous Receive Pump
+
+**Agent:** Network
+**File:** `ResilientWebSocketClient.cs` lines 231–268
+
+`ConnectReplacementClientAsync` assigns `_receivePumpTask` to a new task without awaiting the previous one. The spec explicitly states "Prevent two receive loops running simultaneously during the transition."
+
+**Fix:** Await `StopReceivePumpAsync()` in `ConnectReplacementClientAsync` before creating the new pump.
+
+---
+
+#### R3-I6: `WebSocketReconnectPolicy.None` Allocates RNG Unnecessarily
+
+**Agent:** Network
+**File:** `WebSocketReconnectPolicy.cs`
+
+The static `None` instance (MaxRetries = 0) still allocates `RandomNumberGenerator`, `Random`, and a lock object that will never be used.
+
+**Fix:** Add fast path in constructor: if `maxRetries == 0`, skip RNG initialization.
+
+---
+
+#### R3-I7: `OnDestroy` Blocks Main Thread for Up to 1 Second
+
+**Agent:** Network
+**File:** `UnityWebSocketClient.cs` lines 389–418
+
+```csharp
+client.CloseAsync(...).GetAwaiter().GetResult();
+```
+
+Synchronously blocks the Unity main thread during `OnDestroy`. Problematic during scene transitions or application shutdown.
+
+**Fix:** Use `Abort()` directly in `OnDestroy()` instead of attempting synchronous close handshake. The `DisconnectAsync()` path handles clean close properly for intentional disconnects.
+
+---
+
+#### R3-I8: Double Message Copy in Unity Bridge Pipeline
+
+**Agent:** Network
+**File:** `UnityWebSocketBridge.cs` lines 192–221
+
+`WebSocketClient.RunReceiveListenerAsync` creates a detached copy for the event, then the bridge creates another detached copy for main-thread dispatch. Two copies of every message payload.
+
+**Fix:** Consider having the bridge subscribe to the connection's events directly, or have the client pass the original pooled message and let the bridge manage the single copy.
+
+---
+
+### R3 Minor Issues
+
+| ID | File | Issue |
+|---|---|---|
+| R3-M1 | `WebSocketConstants.cs:59–71` | `GenerateClientKey` creates/disposes RNG per call. Acceptable (once per connection). |
+| R3-M2 | `WebSocketHandshakeValidator.cs:516–528` | `FixedTimeEqualsAscii` allocates two byte arrays per handshake. Could use stackalloc. |
+| R3-M3 | `WebSocketConnectionOptions.cs:94` | `Validate()` does not check sub-protocol token validity. Caught at connect time instead. |
+| R3-M4 | `WebSocketConnection.cs:342–349` | `Dispose()` does not dispose `_frameWriter` (owns RNG). Minor resource leak. |
+| R3-M5 | `WebSocketReconnectPolicy.cs:105–108` | Lock contention on shared `Default` instance under concurrent reconnects. Acceptable for infrequent reconnections. |
+
+---
+
+### R3 Correct Implementation Highlights
+
+1. **IWebSocketClient interface** — Clean public API with events (`OnConnected`, `OnMessage`, `OnError`, `OnClosed`), `ConnectAsync` overloads, `SendAsync` overloads (string, `ReadOnlyMemory<byte>`, `byte[]`), `ReceiveAsync` (ValueTask), `CloseAsync`, `Abort`. Extends both `IDisposable` and `IAsyncDisposable`.
+2. **WebSocketMessage** — Eager text decode, `ReadOnlyMemory<byte> Data`, `IDisposable` for pooled buffer return, `_returnToPool` flag for detached copies.
+3. **WebSocketException** — Correctly extends `UHttpException`, maps `WebSocketError` to `UHttpErrorType`, `IsRetryable()` returns true for ConnectionClosed/PongTimeout/SendFailed/ReceiveFailed.
+4. **ResilientWebSocketClient** — Events: `OnReconnecting(attempt, delay)`, `OnReconnected`. Policy-based retry loop with full client disposal before replacement.
+5. **WebSocketReconnectPolicy** — Exponential backoff with crypto-seeded jitter, lock-protected RNG, `MaxDelay` cap, close code predicate filtering.
+6. **RawSocketWebSocketTransport** — DNS with timeout, `HappyEyeballsConnector` reuse, empty ALPN (`Array.Empty<string>()`) for WSS, `TlsProviderSelector.GetProvider` for backend selection.
+7. **UnityWebSocketBridge** — All events dispatched via `MainThreadDispatcher.ExecuteAsync`, detached message copies with regular `byte[]`, dispatcher saturation logging + `OnMessageDropped` event, `ReceiveAsCoroutine` with `LifecycleCancellation.Bind`.
+8. **UnityWebSocketClient** — Full Inspector surface (URI, AutoConnect, AutoReconnect, SubProtocol, PingInterval, DisconnectOnPause). Lifecycle binding (OnEnable→connect, OnDisable→disconnect, OnDestroy→abort). `ResetStatics` for domain reload. `Application.quitting` handler aborts all active connections. UnityEvent callbacks for Inspector wiring.
+9. **Assembly dependency graph** — All three assemblies correctly implement module isolation rules. No circular dependencies. `autoReferenced: false` on all. `noEngineReferences: true` on WebSocket and WebSocket.Transport.
+10. **Complete.asmdef and Tests.asmdef** — Both already include references to all 3 WebSocket assemblies.
+
+---
+
+### R3 Platform Compatibility Assessment
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Editor (Mono) | **Works** | Full functionality expected |
+| Standalone (Win/Mac/Linux) | **Works** | Full functionality expected |
+| iOS (IL2CPP) | **At Risk** | R3-C2 (reflection transport), R3-C3 (private property reflection) |
+| Android (IL2CPP) | **At Risk** | Same as iOS |
+| WebGL | N/A | WebSocket.Transport excluded; core WebSocket assembly is WebGL-compatible |
+
+---
+
+### R3 Recommended Fix Order
+
+1. **R3-C1** (duplicate types) — Build correctness / catch handler mismatch
+2. **R3-C2** (reflection transport) — IL2CPP platform support
+3. **R3-C3** (private property reflection) — IL2CPP platform support
+4. **R3-I7** (OnDestroy blocking) — Main thread safety
+5. **R3-I5** (dual receive pumps) — Spec compliance
+6. **R3-I1** (CTS disposal) — Runtime stability
+7. **R3-I4** (duplicate encoding) — Maintainability
+8. **R3-I2** (TLS record overhead) — Performance
+9. Remaining I and M issues — Non-blocking
+
+---
+
+### R3 Overall Assessment
+
+Phase 18.4–18.6 implementation is **architecturally sound** with proper layering, clean module isolation, and correct protocol semantics. The three critical issues are all related to IL2CPP compatibility (R3-C1 is a type mismatch, R3-C2 and R3-C3 are reflection patterns). These must be resolved before any iOS/Android testing.
+
+The important issues are primarily performance/correctness refinements (double copies, blocking main thread, duplicate encoding). None are blocking for Editor/Standalone use.
+
+### Verdict: **CONDITIONAL PASS**
+
+Phase 18 full implementation review is complete. Three critical IL2CPP issues must be resolved before platform validation. All R1/R2 findings remain resolved. Implementation is ready for Editor/Standalone use and Phase 18.7 test suite development.
+
+---
+
+## Revision 4 — Phase 18a Plan Review (2026-02-21)
+
+Full plan review of `Development/docs/phases/phase-18a-websocket-advanced.md` by both specialist agents (**unity-infrastructure-architect** and **unity-network-architect**). This is a **plan review**, not a code review — evaluating the design document before implementation begins.
+
+### Review Scope
+
+All 7 sub-phases of Phase 18a:
+- 18a.1: Extension Framework & `permessage-deflate`
+- 18a.2: `IAsyncEnumerable` Streaming Receive
+- 18a.3: Connection Metrics & Observability
+- 18a.4: HTTP Proxy Tunneling
+- 18a.5: Typed Message Serialization
+- 18a.6: Connection Health & Diagnostics
+- 18a.7: Test Suite
+
+### Summary
+
+| Severity | Count |
+|----------|-------|
+| Critical | 5 |
+| High | 8 |
+| Medium | 8 |
+| Low | 7 |
+
+**Verdict: CONDITIONAL APPROVAL — Revisions Required**
+
+The plan is architecturally sound with proper module isolation and correct sub-phase decomposition. However, several critical issues around IL2CPP compatibility, memory management, RFC compliance gaps, and API design must be addressed before implementation.
+
+---
+
+### Critical Issues
+
+#### PC-1: `TransformOutbound`/`TransformInbound` Return Type Creates Ownership Ambiguity (18a.1)
+
+**Agents:** Both
+
+The plan specifies `byte[]` return from `ArrayPool` with "Caller returns buffer after use." Problems:
+1. **No valid data length** — `ArrayPool.Rent` returns buffers larger than requested. Caller cannot know valid range.
+2. **Ownership ambiguity** — Caller can't distinguish pooled buffer from regular allocation.
+3. **Inconsistent with codebase** — Existing code uses `ReadOnlyMemory<byte>` and the `WebSocketFrameReadLease` pattern.
+
+**Fix:** Use `IMemoryOwner<byte>` (from `System.Buffers`) so ownership and valid length are explicit:
+```csharp
+IMemoryOwner<byte> TransformOutbound(ReadOnlyMemory<byte> payload, WebSocketOpcode opcode, out byte rsvBits);
+IMemoryOwner<byte> TransformInbound(ReadOnlyMemory<byte> payload, WebSocketOpcode opcode, byte rsvBits);
+```
+Return `null` for passthrough. Caller disposes via `using`.
+
+---
+
+#### PC-2: RSV Bit Propagation Through Frame Reader and Message Assembler Missing (18a.1)
+
+**Agents:** Both (Network primary)
+
+The plan adds RSV bits to `WebSocketFrame` but does not address:
+1. **Reader propagation** — `WebSocketFrameReader` reads RSV bits from wire (line 74) but **discards them**. Must propagate into `WebSocketFrame` constructor.
+2. **Assembler propagation** — Per RFC 7692 Section 6, RSV1 is set only on the **first fragment** of a compressed message. The `MessageAssembler` must preserve RSV1 from the first fragment and pass it to the transform layer alongside the assembled payload.
+3. **Continuation frame validation** — Continuation frames must NOT have RSV1 set (RFC 7692 Section 6.1).
+
+**Fix:** Add explicit steps for: (a) reader propagating RSV bits into frame, (b) assembler preserving first-fragment RSV bits, (c) continuation frame RSV validation.
+
+---
+
+#### PC-3: `IAsyncEnumerable<T>` Compatibility Strategy Unclear (18a.2)
+
+**Agents:** Both
+
+The plan says "Requires `Microsoft.Bcl.AsyncInterfaces` NuGet package or `IAsyncEnumerable` polyfill." This is partially incorrect:
+- .NET Standard 2.1 **does** include `IAsyncEnumerable<T>` natively
+- Unity 2021.3 LTS with .NET Standard 2.1 profile includes it
+- The actual risk is **IL2CPP code stripping** of async enumerable state machine infrastructure
+- Adding NuGet dependencies to a UPM/Asset Store package has distribution friction
+
+**Fix:** (a) Remove `Microsoft.Bcl.AsyncInterfaces` references — not needed, (b) add a concrete validation spike: test `await foreach` compilation and runtime in Unity 2021.3 LTS with IL2CPP on iOS/Android, (c) add `link.xml` entries if stripping occurs, (d) this should be a pre-implementation validation, not a post-implementation "verify."
+
+---
+
+#### PC-4: `permessage-deflate` Context Takeover Memory Model Underspecified (18a.1)
+
+**Agents:** Both
+
+Plan states "Context takeover costs ~64KB per connection (two 32KB sliding windows)." This is significantly underestimated:
+1. **`DeflateStream` internal state** — zlib deflate state is ~256KB for compression at default level, ~44KB for decompression. Total with context takeover: **300–600KB per connection**, not 64KB.
+2. **`DeflateStream` does not expose sliding window management** — Context takeover requires keeping `DeflateStream` alive across messages (never disposing it). The plan's `Reset()` method semantics are unclear.
+3. **`DeflateStream.Flush()` behavior varies across runtimes** — Unity Mono may produce `Z_FINISH` instead of `Z_SYNC_FLUSH`, breaking RFC 7692 §7.2.1 trailing bytes handling.
+
+**Fix:** (a) Revise memory estimate to 300–600KB, (b) make `no_context_takeover` the hard requirement for v1 (plan already suggests this but should mandate it), (c) gate full context takeover behind a separate implementation phase with benchmarking, (d) **add a pre-implementation spike** to verify `DeflateStream.Flush()` produces `Z_SYNC_FLUSH` output on Unity Mono.
+
+---
+
+#### PC-5: Proxy `NetworkCredential` Not IL2CPP-Safe (18a.4)
+
+**Agent:** Infrastructure
+
+`System.Net.NetworkCredential` may be stripped by IL2CPP linker if not used elsewhere. It's also a mutable reference type with lifecycle management complexity.
+
+**Fix:** Replace with a custom immutable struct:
+```csharp
+public readonly struct ProxyCredentials
+{
+    public string Username { get; }
+    public string Password { get; }
+}
+```
+Also remove Digest auth claim — start with Basic only.
+
+---
+
+### High Issues
+
+#### PH-1: Decompression Buffer Growth Strategy Unspecified (18a.1)
+
+**Agent:** Infrastructure
+
+Plan says "Decompression buffer starts at 4× compressed size, caps at `MaxMessageSize`." But:
+- DEFLATE ratios can exceed 10:1 for compressible data
+- No reallocation strategy specified when 4× is insufficient
+
+**Fix:** Use chunk-based streaming decompression: read from `DeflateStream` in 16KB chunks, append to `ArrayBufferWriter<byte>`, check `MaxMessageSize` after each chunk (zip bomb protection).
+
+---
+
+#### PH-2: Metrics `CompressionRatio` Division-by-Zero and Missing Field (18a.3)
+
+**Agent:** Network
+
+`CompressionRatio` defined as "original / compressed, 1.0 if no compression" but the plan has no `UncompressedBytesSent` field. `BytesSent` includes frame overhead, making ratio computation incorrect.
+
+**Fix:** Add `UncompressedBytesSent` (pre-compression application payload size). Define ratio as: `CompressedBytesSent > 0 ? (double)UncompressedBytesSent / CompressedBytesSent : 1.0`.
+
+---
+
+#### PH-3: Metrics Counters Need 32-bit IL2CPP-Safe Pattern (18a.3)
+
+**Agent:** Infrastructure
+
+`Interlocked.Add` on `long` fields is not truly atomic on 32-bit IL2CPP. Phase 6 `HttpMetrics` already solved this: public fields for `Interlocked` compatibility, `double` stored as `long` bits via `BitConverter.DoubleToInt64Bits`.
+
+**Fix:** Document that 18a.3 must follow the Phase 6 `HttpMetrics` pattern exactly. Add 32-bit Android IL2CPP to validation plan.
+
+---
+
+#### PH-4: HTTP CONNECT Proxy Credentials Sent in Cleartext (18a.4)
+
+**Agent:** Network
+
+Basic auth over `http://` proxy sends credentials unencrypted. Plan excludes HTTPS proxies as "rare and complex."
+
+**Fix:** (a) Document the security implication explicitly, (b) log a warning when Basic auth used over unencrypted proxy, (c) consider `SecureString` or at minimum document that `ProxyCredentials` stores passwords in plaintext in managed memory.
+
+---
+
+#### PH-5: Proxy Bypass List Pattern Matching Unspecified (18a.4)
+
+**Agents:** Both
+
+`BypassList` as `IReadOnlyList<string>` with "hostnames/patterns" — no matching semantics specified. Wildcard? CIDR? Regex?
+
+**Fix:** Specify: exact hostname match + leading wildcard (`*.domain`) for v1. CIDR and port-specific matching deferred.
+
+---
+
+#### PH-6: `DeflateStream.Flush()` Behavior Differs Across Runtimes (18a.1)
+
+**Agent:** Network
+
+RFC 7692 §7.2.1 requires stripping trailing `0x00 0x00 0xFF 0xFF` (from `Z_SYNC_FLUSH`). On Unity Mono, `DeflateStream.Flush()` may produce `Z_FINISH` instead. `FlushMode` is not exposed in .NET Standard 2.1.
+
+**Fix:** Add pre-implementation spike to verify flush behavior on Unity Mono. If `Z_SYNC_FLUSH` not produced, evaluate native zlib P/Invoke as fallback.
+
+---
+
+#### PH-7: Health Monitor RTT Should Be Event-Driven, Not Polling (18a.6)
+
+**Agent:** Infrastructure
+
+Phase 18 review (R2-W2) already identified 50ms pong polling as timer churn. Health monitor should subscribe to pong receipt events rather than polling.
+
+**Fix:** Add internal `OnPongReceived(TimeSpan rtt)` event/callback on `WebSocketConnection`. Health monitor subscribes to it instead of polling.
+
+---
+
+#### PH-8: WebSocketFrame Constructor Change Is Breaking (18a.1)
+
+**Agent:** Infrastructure
+
+`WebSocketFrame` is a `readonly struct` with a public constructor. Adding `rsvBits` parameter is a breaking change.
+
+**Fix:** Add overloaded constructor with `byte rsvBits = 0` default parameter, maintaining backward compatibility.
+
+---
+
+### Medium Issues
+
+| ID | Sub-Phase | Issue | Fix |
+|---|---|---|---|
+| PM-1 | 18a.1 | Extension framework operates at message level, not frame level. Not stated. | Document explicitly: transforms operate post-assembly, per-frame extensions would need different hook point. |
+| PM-2 | 18a.4 | `UseSystemProxy` platform availability unspecified. | Remove from 18a.4 (defer to future phase) or specify Standalone-only for v1. |
+| PM-3 | 18a.5 | `JsonWebSocketSerializer<T>` generic type needs IL2CPP `link.xml` / `[Preserve]`. | Constrain to `where T : class` or document `link.xml` requirements. |
+| PM-4 | 18a.6 | Health monitor rolling window thread safety unspecified. | Specify: lock-protected circular buffer, or single-threaded (keep-alive loop only). |
+| PM-5 | 18a.4 | Missing proxy-specific `WebSocketError` codes. | Add `ProxyAuthenticationRequired`, `ProxyConnectionFailed`, `ProxyTunnelFailed`. |
+| PM-6 | 18a.3 | `OnMetricsUpdated` event threading model unspecified. | Specify: fires on network thread. Unity consumers must marshal via `MainThreadDispatcher`. |
+| PM-7 | 18a.5 | Typed serialization creates double payload copy (serialize → encode → compress). | Serializer should always produce `ReadOnlyMemory<byte>` (UTF-8 bytes directly), not `string`. |
+| PM-8 | 18a.6 | Quality scoring algorithm undefined (factor weights, baseline method, "message delivery success rate" inapplicable to TCP). | Simplify: RTT + pong loss rate only. Remove "message delivery success rate." Specify weights and baseline sample count. |
+
+---
+
+### Low Issues
+
+| ID | Sub-Phase | Issue |
+|---|---|---|
+| PL-1 | 18a.1 | `WebSocketExtensionParameters.Parse` complexity understated — RFC 7230 §3.2.6 quoted-string grammar needed. |
+| PL-2 | 18a.7 | Test echo server `permessage-deflate` support is non-trivial — should be called out as separate effort. |
+| PL-3 | 18a.5 | `ProtocolViolation` wrong error type for JSON deserialization failures — add `SerializationFailed`. |
+| PL-4 | 18a.2 | `ReceiveAllAsync` reconnection semantics unclear — does enumerator block during reconnect? What about queued messages? |
+| PL-5 | 18a.1 | Extension disposal order not specified — should be reverse of negotiation order. |
+| PL-6 | 18a.2 | Concurrent enumeration rejection needs `Interlocked.CompareExchange` tracking + `DisposeAsync` cleanup. |
+| PL-7 | 18a.7 | Missing test for compression + fragmentation interaction (large compressed message fragments). |
+
+---
+
+### Pre-Implementation Spikes Required
+
+Before 18a.1 implementation begins:
+1. **DeflateStream Flush Spike** — Verify `DeflateStream.Flush()` on Unity Mono produces `Z_SYNC_FLUSH` (not `Z_FINISH`). Test trailing `0x00 0x00 0xFF 0xFF` presence. If fails, evaluate native zlib P/Invoke.
+2. **DeflateStream Memory Spike** — Benchmark actual memory usage with/without context takeover on Unity Mono and IL2CPP.
+
+Before 18a.2 implementation begins:
+3. **IAsyncEnumerable IL2CPP Spike** — Test `await foreach` with `async IAsyncEnumerable` method bodies in Unity 2021.3 LTS IL2CPP builds (iOS/Android). Verify no stripping.
+
+---
+
+### RFC Compliance Gaps
+
+| RFC | Section | Plan Reference | Status |
+|-----|---------|---------------|--------|
+| RFC 7692 | Section 6 (RSV1 first-fragment-only) | 18a.1 Step 3/5 | **MISSING** — see PC-2 |
+| RFC 7692 | Section 7.2.1 (Z_SYNC_FLUSH) | 18a.1 Step 4 | **AT RISK** — see PH-6 |
+| RFC 7230 | Section 3.2.6 (parameter grammar) | 18a.1 Step 1 | **UNDERSTATED** — see PL-1 |
+
+All other RFC references (6455 §9.1, 7692 §7.1/7.2/8, 1951) are correctly applied.
+
+---
+
+### Plan Revision Checklist
+
+Before proceeding to implementation, revise the plan document to address:
+
+- [ ] PC-1: Change transform return type to `IMemoryOwner<byte>`
+- [ ] PC-2: Add RSV bit propagation through reader/assembler with RFC 7692 §6 semantics
+- [ ] PC-3: Remove `Microsoft.Bcl.AsyncInterfaces` reference, add IL2CPP validation spike
+- [ ] PC-4: Revise context takeover memory estimate (300–600KB), mandate `no_context_takeover` for v1
+- [ ] PC-5: Replace `NetworkCredential` with custom immutable struct
+- [ ] PH-1: Specify chunk-based streaming decompression
+- [ ] PH-2: Add `UncompressedBytesSent` metric field
+- [ ] PH-3: Document 32-bit IL2CPP metrics pattern requirement
+- [ ] PH-4: Add cleartext credential security documentation
+- [ ] PH-5: Specify proxy bypass matching semantics
+- [ ] PH-6: Add `DeflateStream.Flush()` pre-implementation spike
+- [ ] PH-7: Specify event-driven RTT measurement
+- [ ] PH-8: Use overloaded constructor for backward compat
+- [ ] PM-1 through PM-8: Address during plan revision or document for implementation phase
+- [ ] Add pre-implementation spikes section to plan

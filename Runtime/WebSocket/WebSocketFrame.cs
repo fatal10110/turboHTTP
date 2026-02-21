@@ -43,7 +43,8 @@ namespace TurboHTTP.WebSocket
             bool isFinal,
             bool isMasked,
             uint maskKey,
-            ReadOnlyMemory<byte> payload)
+            ReadOnlyMemory<byte> payload,
+            byte rsvBits = 0)
         {
             if (!WebSocketConstants.TryParseOpcode((byte)opcode, out _))
             {
@@ -77,12 +78,21 @@ namespace TurboHTTP.WebSocket
                     nameof(maskKey));
             }
 
+            if ((rsvBits & ~0x70) != 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(rsvBits),
+                    rsvBits,
+                    "RSV bits must be a subset of mask 0x70.");
+            }
+
             Opcode = opcode;
             IsFinal = isFinal;
             IsMasked = isMasked;
             MaskKey = isMasked ? maskKey : 0u;
             Payload = payload;
             PayloadLength = payload.Length;
+            RsvBits = (byte)(rsvBits & 0x70);
         }
 
         public WebSocketOpcode Opcode { get; }
@@ -96,6 +106,14 @@ namespace TurboHTTP.WebSocket
         public ReadOnlyMemory<byte> Payload { get; }
 
         public long PayloadLength { get; }
+
+        public byte RsvBits { get; }
+
+        public bool IsRsv1Set => (RsvBits & 0x40) != 0;
+
+        public bool IsRsv2Set => (RsvBits & 0x20) != 0;
+
+        public bool IsRsv3Set => (RsvBits & 0x10) != 0;
 
         public bool IsControlFrame => IsControlOpcode(Opcode);
 

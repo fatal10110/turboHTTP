@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
@@ -53,6 +54,8 @@ namespace TurboHTTP.WebSocket
 
         private string _subProtocol;
         private IReadOnlyList<string> _negotiatedExtensions = Array.Empty<string>();
+        private IReadOnlyList<IWebSocketExtension> _activeExtensions = Array.Empty<IWebSocketExtension>();
+        private byte _allowedRsvMask;
 
         private Uri _remoteUri;
         private DateTimeOffset _connectedAtUtc;
@@ -65,10 +68,16 @@ namespace TurboHTTP.WebSocket
         private long _pingCounter;
         private long _lastPongCounter;
         private TaskCompletionSource<long> _pongWaiter;
+        private WebSocketMetricsCollector _metrics;
+        private WebSocketHealthMonitor _healthMonitor;
 
         public event Action<WebSocketConnection, WebSocketState> StateChanged;
 
         public event Action<WebSocketConnection, Exception> Error;
+
+        public event Action<WebSocketConnection, WebSocketMetrics> MetricsUpdated;
+
+        public event Action<WebSocketConnection, ConnectionQuality> ConnectionQualityChanged;
 
         public WebSocketState State => (WebSocketState)Volatile.Read(ref _state);
 
@@ -95,6 +104,10 @@ namespace TurboHTTP.WebSocket
 
         public WebSocketCloseStatus? CloseStatus => _hasCloseStatus ? _closeStatus : (WebSocketCloseStatus?)null;
 
+        public WebSocketMetrics Metrics => _metrics?.GetSnapshot() ?? default;
+
+        public WebSocketHealthSnapshot Health => _healthMonitor?.GetSnapshot() ?? WebSocketHealthSnapshot.Unknown;
+
         public async Task ConnectAsync(
             Uri uri,
             IWebSocketTransport transport,
@@ -119,12 +132,12 @@ namespace TurboHTTP.WebSocket
 
             _transport = transport;
             _options = options;
-            _frameReader = new WebSocketFrameReader(options.MaxFrameSize);
             _frameWriter = new WebSocketFrameWriter(options.FragmentationThreshold);
             _messageAssembler = new MessageAssembler(options.MaxMessageSize, options.MaxFragmentCount);
             _receiveQueue = new BoundedAsyncQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
             _lifecycleCts = new CancellationTokenSource();
 
+            List<IWebSocketExtension> configuredExtensions = null;
             try
             {
                 using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -134,10 +147,17 @@ namespace TurboHTTP.WebSocket
 
                 _stream = await transport.ConnectAsync(uri, options, handshakeToken).ConfigureAwait(false);
 
+                configuredExtensions = CreateConnectionExtensions(options);
+                var extensionNegotiator = configuredExtensions.Count > 0
+                    ? new WebSocketExtensionNegotiator(configuredExtensions)
+                    : null;
+
+                var requestedExtensions = BuildRequestedExtensions(options.Extensions, extensionNegotiator);
+
                 var handshakeRequest = WebSocketHandshake.BuildRequest(
                     uri,
                     options.SubProtocols,
-                    options.Extensions,
+                    requestedExtensions,
                     options.CustomHeaders);
 
                 await WebSocketHandshake.WriteRequestAsync(_stream, handshakeRequest, handshakeToken)
@@ -151,10 +171,57 @@ namespace TurboHTTP.WebSocket
                 if (!handshakeResult.Success)
                     throw new WebSocketHandshakeException(handshakeResult);
 
+                string serverExtensionsHeader = JoinHeaderValues(
+                    handshakeResult.ResponseHeaders.GetValues("Sec-WebSocket-Extensions"));
+
+                var extensionNegotiationResult = extensionNegotiator != null
+                    ? extensionNegotiator.ProcessNegotiation(serverExtensionsHeader)
+                    : WebSocketExtensionNegotiationResult.Success(Array.Empty<IWebSocketExtension>(), 0);
+
+                if (extensionNegotiator != null && !extensionNegotiationResult.IsSuccess)
+                {
+                    if (options.RequireNegotiatedExtensions)
+                    {
+                        await TrySendMandatoryExtensionCloseAsync(
+                            extensionNegotiationResult.ErrorMessage,
+                            handshakeToken).ConfigureAwait(false);
+
+                        throw CreateMandatoryExtensionException(extensionNegotiationResult.ErrorMessage);
+                    }
+
+                    extensionNegotiationResult = WebSocketExtensionNegotiationResult.Success(
+                        Array.Empty<IWebSocketExtension>(),
+                        allowedRsvMask: 0);
+                }
+
+                if (extensionNegotiator != null &&
+                    options.RequireNegotiatedExtensions &&
+                    extensionNegotiationResult.ActiveExtensions.Count == 0)
+                {
+                    const string message =
+                        "Server did not negotiate any required WebSocket extension.";
+
+                    await TrySendMandatoryExtensionCloseAsync(message, handshakeToken).ConfigureAwait(false);
+                    throw CreateMandatoryExtensionException(message);
+                }
+
                 _remoteUri = uri;
                 _subProtocol = handshakeResult.NegotiatedSubProtocol;
-                _negotiatedExtensions = handshakeResult.NegotiatedExtensions;
+                _activeExtensions = extensionNegotiationResult.ActiveExtensions;
+                _negotiatedExtensions = extensionNegotiator != null
+                    ? BuildNegotiatedExtensionNames(_activeExtensions)
+                    : handshakeResult.NegotiatedExtensions;
+                DisposeUnselectedExtensions(configuredExtensions, _activeExtensions);
+                configuredExtensions = null;
+                _allowedRsvMask = extensionNegotiationResult.AllowedRsvMask;
+                _metrics = new WebSocketMetricsCollector();
+                _healthMonitor = options.EnableHealthMonitoring
+                    ? new WebSocketHealthMonitor()
+                    : null;
+                if (_healthMonitor != null)
+                    _healthMonitor.OnQualityChanged += HandleHealthQualityChanged;
                 _connectedAtUtc = DateTimeOffset.UtcNow;
+                _frameReader = new WebSocketFrameReader(options.MaxFrameSize, _allowedRsvMask);
 
                 if (handshakeResult.PrefetchedBytes.Length > 0)
                 {
@@ -180,6 +247,7 @@ namespace TurboHTTP.WebSocket
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                DisposeExtensions(configuredExtensions);
                 FinalizeClose(
                     new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure),
                     new WebSocketException(WebSocketError.ConnectionClosed, "WebSocket connect was canceled."));
@@ -188,8 +256,13 @@ namespace TurboHTTP.WebSocket
             }
             catch (Exception ex)
             {
+                DisposeExtensions(configuredExtensions);
                 WebSocketException mapped;
-                if (ex is WebSocketHandshakeException)
+                if (ex is WebSocketException wsEx)
+                {
+                    mapped = wsEx;
+                }
+                else if (ex is WebSocketHandshakeException)
                 {
                     mapped = new WebSocketException(WebSocketError.HandshakeFailed, ex.Message, ex);
                 }
@@ -198,12 +271,50 @@ namespace TurboHTTP.WebSocket
                     mapped = new WebSocketException(WebSocketError.ConnectionClosed, ex.Message, ex);
                 }
 
+                var closeStatus = mapped.CloseCode.HasValue
+                    ? new WebSocketCloseStatus(mapped.CloseCode.Value, mapped.CloseReason ?? string.Empty)
+                    : new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure);
+
                 FinalizeClose(
-                    new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure),
+                    closeStatus,
                     mapped);
                 await ObserveReceiveLoopTerminationAsync().ConfigureAwait(false);
                 throw mapped;
             }
+        }
+
+        private async Task TrySendMandatoryExtensionCloseAsync(string reason, CancellationToken ct)
+        {
+            var stream = _stream;
+            var frameWriter = _frameWriter;
+            if (stream == null || frameWriter == null)
+                return;
+
+            try
+            {
+                await frameWriter.WriteCloseAsync(
+                    stream,
+                    WebSocketCloseCode.MandatoryExtension,
+                    reason ?? string.Empty,
+                    ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort close signaling during failed extension negotiation.
+            }
+        }
+
+        private static WebSocketException CreateMandatoryExtensionException(string message)
+        {
+            var effectiveMessage = string.IsNullOrWhiteSpace(message)
+                ? "Required WebSocket extension negotiation failed."
+                : message;
+
+            return new WebSocketException(
+                WebSocketError.ExtensionNegotiationFailed,
+                effectiveMessage,
+                closeCode: WebSocketCloseCode.MandatoryExtension,
+                closeReason: effectiveMessage);
         }
 
         public async Task SendTextAsync(string message, CancellationToken ct)
@@ -211,39 +322,51 @@ namespace TurboHTTP.WebSocket
             if (message == null)
                 throw new ArgumentNullException(nameof(message));
 
-            await SendLockedAsync(
-                allowClosingState: false,
-                applicationMessage: true,
-                async (stream, token) =>
-                {
-                    await _frameWriter.WriteTextAsync(stream, message, token).ConfigureAwait(false);
-                },
-                ct).ConfigureAwait(false);
+            int byteCount;
+            try
+            {
+                byteCount = WebSocketConstants.StrictUtf8.GetByteCount(message);
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException("Message is not valid UTF-8 encodable text.", nameof(message), ex);
+            }
+
+            if (byteCount == 0)
+            {
+                await SendMessageAsync(WebSocketOpcode.Text, ReadOnlyMemory<byte>.Empty, ct).ConfigureAwait(false);
+                return;
+            }
+
+            byte[] payloadBuffer = ArrayPool<byte>.Shared.Rent(byteCount);
+            try
+            {
+                int written = WebSocketConstants.StrictUtf8.GetBytes(
+                    message,
+                    0,
+                    message.Length,
+                    payloadBuffer,
+                    0);
+
+                await SendMessageAsync(
+                    WebSocketOpcode.Text,
+                    new ReadOnlyMemory<byte>(payloadBuffer, 0, written),
+                    ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(payloadBuffer);
+            }
         }
 
         public async Task SendTextAsync(ReadOnlyMemory<byte> utf8Payload, CancellationToken ct)
         {
-            await SendLockedAsync(
-                allowClosingState: false,
-                applicationMessage: true,
-                async (stream, token) =>
-                {
-                    await _frameWriter.WriteMessageAsync(stream, WebSocketOpcode.Text, utf8Payload, token)
-                        .ConfigureAwait(false);
-                },
-                ct).ConfigureAwait(false);
+            await SendMessageAsync(WebSocketOpcode.Text, utf8Payload, ct).ConfigureAwait(false);
         }
 
         public async Task SendBinaryAsync(ReadOnlyMemory<byte> payload, CancellationToken ct)
         {
-            await SendLockedAsync(
-                allowClosingState: false,
-                applicationMessage: true,
-                async (stream, token) =>
-                {
-                    await _frameWriter.WriteBinaryAsync(stream, payload, token).ConfigureAwait(false);
-                },
-                ct).ConfigureAwait(false);
+            await SendMessageAsync(WebSocketOpcode.Binary, payload, ct).ConfigureAwait(false);
         }
 
         public async ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct)
@@ -330,6 +453,14 @@ namespace TurboHTTP.WebSocket
 
         public void Abort()
         {
+            AbortCore(validateDisposed: true);
+        }
+
+        private void AbortCore(bool validateDisposed)
+        {
+            if (validateDisposed)
+                ThrowIfDisposed();
+
             if (State == WebSocketState.Closed)
                 return;
 
@@ -343,7 +474,7 @@ namespace TurboHTTP.WebSocket
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            Abort();
+            AbortCore(validateDisposed: false);
 
             _sendLock.Dispose();
         }
@@ -363,12 +494,12 @@ namespace TurboHTTP.WebSocket
                 }
                 else
                 {
-                    Abort();
+                    AbortCore(validateDisposed: false);
                 }
             }
             catch
             {
-                Abort();
+                AbortCore(validateDisposed: false);
             }
             finally
             {
@@ -409,6 +540,8 @@ namespace TurboHTTP.WebSocket
                         throw new IOException("Unexpected end of stream while reading WebSocket frame.");
                     }
 
+                    _metrics?.RecordFrameReceived(frameLease.FrameByteCount);
+
                     if (frameLease.Frame.IsControlFrame)
                     {
                         bool shouldClose = await HandleControlFrameAsync(frameLease, ct).ConfigureAwait(false);
@@ -428,8 +561,15 @@ namespace TurboHTTP.WebSocket
 
                     try
                     {
+                        if (IsCompressionRsvBitSet(assembledMessage.RsvBits))
+                            _metrics?.RecordCompressedInboundBytes(assembledMessage.PayloadLength);
+
+                        using var transformedInbound = ApplyInboundExtensions(assembledMessage);
                         string decodedText = null;
-                        var buffer = assembledMessage.DetachPayloadBuffer(out int payloadLength);
+                        var buffer = AcquireMessagePayloadBuffer(
+                            assembledMessage,
+                            transformedInbound,
+                            out int payloadLength);
 
                         if (assembledMessage.Opcode == WebSocketOpcode.Text)
                         {
@@ -442,7 +582,7 @@ namespace TurboHTTP.WebSocket
                             catch (Exception ex)
                             {
                                 if (buffer != null)
-                                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                                    ArrayPool<byte>.Shared.Return(buffer);
 
                                 throw new WebSocketProtocolException(
                                     WebSocketError.InvalidUtf8,
@@ -468,6 +608,8 @@ namespace TurboHTTP.WebSocket
                             throw;
                         }
 
+                        _metrics?.RecordMessageReceived();
+                        TryPublishMetricsUpdate();
                         TouchActivity(applicationMessage: true);
                     }
                     finally
@@ -488,6 +630,18 @@ namespace TurboHTTP.WebSocket
             catch (WebSocketProtocolException ex)
             {
                 await TryHandleProtocolErrorAsync(ex, ct).ConfigureAwait(false);
+            }
+            catch (WebSocketException ex) when (
+                ex.Error == WebSocketError.DecompressionFailed ||
+                ex.Error == WebSocketError.DecompressedMessageTooLarge)
+            {
+                var protocolEx = new WebSocketProtocolException(
+                    WebSocketError.ProtocolViolation,
+                    ex.Message,
+                    WebSocketCloseCode.ProtocolError,
+                    ex);
+
+                await TryHandleProtocolErrorAsync(protocolEx, ct).ConfigureAwait(false);
             }
             catch (SocketException ex)
             {
@@ -535,6 +689,9 @@ namespace TurboHTTP.WebSocket
                         applicationMessage: false,
                         (stream, token) => _frameWriter.WritePongAsync(stream, frame.Payload, token),
                         ct).ConfigureAwait(false);
+
+                    _metrics?.RecordFrameSent(CalculateFrameWireLength(frame.Payload.Length, masked: true));
+                    TryPublishMetricsUpdate();
                     return false;
                 }
 
@@ -549,6 +706,18 @@ namespace TurboHTTP.WebSocket
                     }
 
                     Interlocked.Exchange(ref _pongWaiter, null)?.TrySetResult(pongTimestamp);
+                    _metrics?.RecordPongReceived();
+
+                    long lastPingTimestamp = Volatile.Read(ref _lastPingTimestamp);
+                    if (_healthMonitor != null &&
+                        lastPingTimestamp > 0 &&
+                        pongTimestamp >= lastPingTimestamp)
+                    {
+                        var rtt = ElapsedBetweenStopwatch(lastPingTimestamp, pongTimestamp);
+                        _healthMonitor.RecordRttSample(rtt, Metrics);
+                    }
+
+                    TryPublishMetricsUpdate();
 
                     return false;
                 }
@@ -608,10 +777,7 @@ namespace TurboHTTP.WebSocket
             {
                 try
                 {
-                    reason = WebSocketConstants.StrictUtf8.GetString(
-                        payload.Slice(2).Span.ToArray(),
-                        0,
-                        payload.Length - 2);
+                    reason = WebSocketConstants.StrictUtf8.GetString(payload.Slice(2).Span);
                 }
                 catch (Exception ex)
                 {
@@ -659,6 +825,162 @@ namespace TurboHTTP.WebSocket
                 applicationMessage: false,
                 (stream, token) => _frameWriter.WriteCloseAsync(stream, code, reason, token),
                 ct).ConfigureAwait(false);
+
+            int closePayloadLength = GetClosePayloadLength(reason);
+            _metrics?.RecordFrameSent(CalculateFrameWireLength(closePayloadLength, masked: true));
+            TryPublishMetricsUpdate();
+        }
+
+        private async Task SendMessageAsync(WebSocketOpcode opcode, ReadOnlyMemory<byte> payload, CancellationToken ct)
+        {
+            await SendLockedAsync(
+                allowClosingState: false,
+                applicationMessage: true,
+                (stream, token) => WriteMessageWithExtensionsAsync(stream, opcode, payload, token),
+                ct).ConfigureAwait(false);
+        }
+
+        private async Task WriteMessageWithExtensionsAsync(
+            Stream stream,
+            WebSocketOpcode opcode,
+            ReadOnlyMemory<byte> payload,
+            CancellationToken ct)
+        {
+            ReadOnlyMemory<byte> transformedPayload = payload;
+            IMemoryOwner<byte> currentOwner = null;
+            byte rsvBits = 0;
+
+            try
+            {
+                for (int i = 0; i < _activeExtensions.Count; i++)
+                {
+                    var extension = _activeExtensions[i];
+                    if (extension == null)
+                        continue;
+
+                    var transformed = extension.TransformOutbound(transformedPayload, opcode, out byte extensionRsvBits);
+
+                    if ((extensionRsvBits & ~extension.RsvBitMask) != 0)
+                    {
+                        throw new WebSocketException(
+                            WebSocketError.ProtocolViolation,
+                            "Extension attempted to set RSV bits outside its declared mask.");
+                    }
+
+                    if ((rsvBits & extensionRsvBits) != 0)
+                    {
+                        throw new WebSocketException(
+                            WebSocketError.ProtocolViolation,
+                            "Multiple extensions attempted to set overlapping RSV bits.");
+                    }
+
+                    rsvBits |= extensionRsvBits;
+
+                    if (transformed == null)
+                        continue;
+
+                    currentOwner?.Dispose();
+                    currentOwner = transformed;
+                    transformedPayload = transformed.Memory;
+                }
+
+                await _frameWriter.WriteMessageAsync(stream, opcode, transformedPayload, ct, rsvBits)
+                    .ConfigureAwait(false);
+
+                CalculateMessageWireStats(
+                    transformedPayload.Length,
+                    _options.FragmentationThreshold,
+                    out int frameCount,
+                    out int byteCount);
+
+                _metrics?.RecordFramesSent(frameCount, byteCount);
+                _metrics?.RecordMessageSent();
+
+                if (IsCompressionRsvBitSet(rsvBits))
+                    _metrics?.RecordCompression(payload.Length, transformedPayload.Length);
+
+                TryPublishMetricsUpdate();
+            }
+            finally
+            {
+                currentOwner?.Dispose();
+            }
+        }
+
+        private IMemoryOwner<byte> ApplyInboundExtensions(WebSocketAssembledMessage assembledMessage)
+        {
+            if (assembledMessage == null)
+                throw new ArgumentNullException(nameof(assembledMessage));
+
+            if (_activeExtensions.Count == 0 || assembledMessage.RsvBits == 0)
+                return null;
+
+            ReadOnlyMemory<byte> payload = assembledMessage.Payload;
+            IMemoryOwner<byte> currentOwner = null;
+            byte remainingRsvBits = assembledMessage.RsvBits;
+
+            for (int i = _activeExtensions.Count - 1; i >= 0; i--)
+            {
+                var extension = _activeExtensions[i];
+                if (extension == null)
+                    continue;
+
+                if ((remainingRsvBits & extension.RsvBitMask) == 0)
+                    continue;
+
+                var transformed = extension.TransformInbound(payload, assembledMessage.Opcode, remainingRsvBits);
+                remainingRsvBits = (byte)(remainingRsvBits & ~extension.RsvBitMask);
+
+                if (transformed == null)
+                    continue;
+
+                currentOwner?.Dispose();
+                currentOwner = transformed;
+                payload = transformed.Memory;
+            }
+
+            if (remainingRsvBits != 0)
+            {
+                currentOwner?.Dispose();
+                throw new WebSocketProtocolException(
+                    WebSocketError.ProtocolViolation,
+                    "Incoming frame set RSV bits without a matching negotiated extension.");
+            }
+
+            return currentOwner;
+        }
+
+        private byte[] AcquireMessagePayloadBuffer(
+            WebSocketAssembledMessage assembledMessage,
+            IMemoryOwner<byte> transformedInbound,
+            out int payloadLength)
+        {
+            if (transformedInbound == null)
+                return assembledMessage.DetachPayloadBuffer(out payloadLength);
+
+            var transformedMemory = transformedInbound.Memory;
+            payloadLength = transformedMemory.Length;
+
+            if (payloadLength > _options.MaxMessageSize)
+            {
+                throw new WebSocketException(
+                    WebSocketError.DecompressedMessageTooLarge,
+                    "Decompressed payload exceeds configured MaxMessageSize.");
+            }
+
+            if (payloadLength == 0)
+                return null;
+
+            if (transformedInbound is ArrayPoolMemoryOwner<byte> poolOwner &&
+                poolOwner.TryDetach(out var detachedBuffer, out int detachedLength))
+            {
+                payloadLength = detachedLength;
+                return detachedBuffer;
+            }
+
+            var buffer = ArrayPool<byte>.Shared.Rent(payloadLength);
+            transformedMemory.CopyTo(new Memory<byte>(buffer, 0, payloadLength));
+            return buffer;
         }
 
         private async Task SendLockedAsync(
@@ -715,6 +1037,13 @@ namespace TurboHTTP.WebSocket
                 FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
                 throw wsEx;
             }
+            catch (WebSocketException ex) when (
+                ex.Error == WebSocketError.CompressionFailed ||
+                ex.Error == WebSocketError.ProtocolViolation)
+            {
+                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), ex);
+                throw;
+            }
             finally
             {
                 _sendLock.Release();
@@ -770,6 +1099,10 @@ namespace TurboHTTP.WebSocket
                                     new ReadOnlyMemory<byte>(pingPayload, 0, 8),
                                     token),
                                 ct).ConfigureAwait(false);
+
+                            _metrics?.RecordFrameSent(CalculateFrameWireLength(8, masked: true));
+                            _metrics?.RecordPingSent();
+                            TryPublishMetricsUpdate();
                         }
                         catch (InvalidOperationException) when (State != WebSocketState.Open)
                         {
@@ -861,8 +1194,8 @@ namespace TurboHTTP.WebSocket
 
             _remoteCloseTcs.TrySetResult(status);
 
-            _keepAliveCts?.Cancel();
-            _lifecycleCts?.Cancel();
+            CancelAndDisposeAfterTaskCompletion(ref _keepAliveCts, _keepAliveTask);
+            CancelAndDisposeAfterTaskCompletion(ref _lifecycleCts, _receiveLoopTask);
             Interlocked.Exchange(ref _pongWaiter, null)?.TrySetCanceled();
 
             _messageAssembler?.Reset();
@@ -905,11 +1238,14 @@ namespace TurboHTTP.WebSocket
             SafeDispose(_frameWriter);
             _frameWriter = null;
 
-            _keepAliveCts?.Dispose();
-            _keepAliveCts = null;
+            DisposeExtensions(_activeExtensions);
+            _activeExtensions = Array.Empty<IWebSocketExtension>();
 
-            _lifecycleCts?.Dispose();
-            _lifecycleCts = null;
+            if (_healthMonitor != null)
+            {
+                _healthMonitor.OnQualityChanged -= HandleHealthQualityChanged;
+                _healthMonitor = null;
+            }
         }
 
         private static void SafeDispose(IDisposable disposable)
@@ -925,6 +1261,271 @@ namespace TurboHTTP.WebSocket
             {
                 // Best effort shutdown path.
             }
+        }
+
+        private static void DisposeExtensions(IReadOnlyList<IWebSocketExtension> extensions)
+        {
+            if (extensions == null || extensions.Count == 0)
+                return;
+
+            for (int i = extensions.Count - 1; i >= 0; i--)
+            {
+                SafeDispose(extensions[i]);
+            }
+        }
+
+        private static void DisposeUnselectedExtensions(
+            IReadOnlyList<IWebSocketExtension> configuredExtensions,
+            IReadOnlyList<IWebSocketExtension> selectedExtensions)
+        {
+            if (configuredExtensions == null || configuredExtensions.Count == 0)
+                return;
+
+            var selected = new HashSet<IWebSocketExtension>();
+            if (selectedExtensions != null)
+            {
+                for (int i = 0; i < selectedExtensions.Count; i++)
+                {
+                    if (selectedExtensions[i] != null)
+                        selected.Add(selectedExtensions[i]);
+                }
+            }
+
+            for (int i = 0; i < configuredExtensions.Count; i++)
+            {
+                var extension = configuredExtensions[i];
+                if (extension != null && !selected.Contains(extension))
+                    SafeDispose(extension);
+            }
+        }
+
+        private static List<IWebSocketExtension> CreateConnectionExtensions(WebSocketConnectionOptions options)
+        {
+            var result = new List<IWebSocketExtension>();
+            if (options?.ExtensionFactories == null)
+                return result;
+
+            for (int i = 0; i < options.ExtensionFactories.Count; i++)
+            {
+                var factory = options.ExtensionFactories[i];
+                if (factory == null)
+                    continue;
+
+                var extension = factory();
+                if (extension == null)
+                {
+                    throw new InvalidOperationException(
+                        "Extension factory at index " + i + " returned null.");
+                }
+
+                result.Add(extension);
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyList<string> BuildRequestedExtensions(
+            IReadOnlyList<string> rawExtensions,
+            WebSocketExtensionNegotiator negotiator)
+        {
+            var result = new List<string>();
+
+            if (negotiator != null)
+            {
+                string structuredOffers = negotiator.BuildOffersHeader();
+                if (!string.IsNullOrWhiteSpace(structuredOffers))
+                    result.Add(structuredOffers);
+            }
+
+            if (rawExtensions != null)
+            {
+                for (int i = 0; i < rawExtensions.Count; i++)
+                {
+                    if (string.IsNullOrWhiteSpace(rawExtensions[i]))
+                        continue;
+
+                    result.Add(rawExtensions[i]);
+                }
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyList<string> BuildNegotiatedExtensionNames(
+            IReadOnlyList<IWebSocketExtension> activeExtensions)
+        {
+            if (activeExtensions == null || activeExtensions.Count == 0)
+                return Array.Empty<string>();
+
+            var names = new List<string>(activeExtensions.Count);
+            for (int i = 0; i < activeExtensions.Count; i++)
+            {
+                var extension = activeExtensions[i];
+                if (extension == null || string.IsNullOrWhiteSpace(extension.Name))
+                    continue;
+
+                names.Add(extension.Name);
+            }
+
+            return names;
+        }
+
+        private static string JoinHeaderValues(IReadOnlyList<string> values)
+        {
+            if (values == null || values.Count == 0)
+                return string.Empty;
+
+            if (values.Count == 1)
+                return values[0] ?? string.Empty;
+
+            return string.Join(", ", values);
+        }
+
+        private static void CancelAndDisposeAfterTaskCompletion(
+            ref CancellationTokenSource ctsField,
+            Task ownerTask)
+        {
+            var cts = Interlocked.Exchange(ref ctsField, null);
+            if (cts == null)
+                return;
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch
+            {
+                // Cancellation source may already be disposed in racey shutdown paths.
+            }
+
+            if (ownerTask == null || ownerTask.IsCompleted)
+            {
+                cts.Dispose();
+                return;
+            }
+
+            _ = ownerTask.ContinueWith(
+                static (_, state) =>
+                {
+                    try
+                    {
+                        ((CancellationTokenSource)state).Dispose();
+                    }
+                    catch
+                    {
+                        // Best effort cleanup.
+                    }
+                },
+                cts,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private void TryPublishMetricsUpdate()
+        {
+            var metrics = _metrics;
+            var options = _options;
+            if (metrics == null || options == null)
+                return;
+
+            if (!metrics.ShouldPublishSnapshot(
+                options.MetricsUpdateMessageInterval,
+                options.MetricsUpdateInterval))
+            {
+                return;
+            }
+
+            var snapshot = metrics.GetSnapshot();
+            _healthMonitor?.RecordMetricsSnapshot(snapshot);
+
+            var handler = MetricsUpdated;
+            handler?.Invoke(this, snapshot);
+        }
+
+        private void HandleHealthQualityChanged(ConnectionQuality quality)
+        {
+            var handler = ConnectionQualityChanged;
+            handler?.Invoke(this, quality);
+        }
+
+        private bool IsCompressionRsvBitSet(byte rsvBits)
+        {
+            const byte rsv1Mask = 0x40;
+            if ((rsvBits & rsv1Mask) == 0)
+                return false;
+
+            if (_activeExtensions == null || _activeExtensions.Count == 0)
+                return false;
+
+            for (int i = 0; i < _activeExtensions.Count; i++)
+            {
+                var extension = _activeExtensions[i];
+                if (extension == null)
+                    continue;
+
+                if ((extension.RsvBitMask & rsv1Mask) == 0)
+                    continue;
+
+                if (string.Equals(extension.Name, "permessage-deflate", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static void CalculateMessageWireStats(
+            int payloadLength,
+            int fragmentationThreshold,
+            out int frameCount,
+            out int totalBytes)
+        {
+            if (payloadLength <= fragmentationThreshold)
+            {
+                frameCount = 1;
+                totalBytes = CalculateFrameWireLength(payloadLength, masked: true);
+                return;
+            }
+
+            int bytes = 0;
+            int count = 0;
+            int remaining = payloadLength;
+            while (remaining > 0)
+            {
+                int fragmentLength = Math.Min(fragmentationThreshold, remaining);
+                bytes = checked(bytes + CalculateFrameWireLength(fragmentLength, masked: true));
+                count++;
+                remaining -= fragmentLength;
+            }
+
+            frameCount = count;
+            totalBytes = bytes;
+        }
+
+        private static int CalculateFrameWireLength(int payloadLength, bool masked)
+        {
+            int headerLength = 2;
+            if (payloadLength > ushort.MaxValue)
+            {
+                headerLength += 8;
+            }
+            else if (payloadLength > 125)
+            {
+                headerLength += 2;
+            }
+
+            if (masked)
+                headerLength += 4;
+
+            return checked(headerLength + payloadLength);
+        }
+
+        private static int GetClosePayloadLength(string reason)
+        {
+            reason = reason ?? string.Empty;
+
+            int reasonBytes = WebSocketConstants.GetTruncatedCloseReasonByteCount(reason, out _);
+            return checked(2 + reasonBytes);
         }
 
         private void TouchActivity(bool applicationMessage)
@@ -950,6 +1551,19 @@ namespace TurboHTTP.WebSocket
                 return TimeSpan.Zero;
 
             double seconds = delta / StopwatchFrequency;
+            return TimeSpan.FromSeconds(seconds);
+        }
+
+        private static TimeSpan ElapsedBetweenStopwatch(long startTimestamp, long endTimestamp)
+        {
+            if (startTimestamp <= 0 || endTimestamp <= startTimestamp)
+                return TimeSpan.Zero;
+
+            long delta = endTimestamp - startTimestamp;
+            double seconds = delta / StopwatchFrequency;
+            if (seconds <= 0)
+                return TimeSpan.Zero;
+
             return TimeSpan.FromSeconds(seconds);
         }
 
@@ -1168,108 +1782,5 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private sealed class AsyncQueueCompletedException : Exception
-        {
-            public AsyncQueueCompletedException(Exception innerException)
-                : base("Queue is completed.", innerException)
-            {
-            }
-        }
-
-        /// <summary>
-        /// Bounded async queue implementation used to provide receive-side backpressure
-        /// without taking a dependency on System.Threading.Channels in netstandard2.1.
-        /// </summary>
-        private sealed class BoundedAsyncQueue<T>
-        {
-            private readonly Queue<T> _queue = new Queue<T>();
-            private readonly SemaphoreSlim _items = new SemaphoreSlim(0);
-            private readonly SemaphoreSlim _spaces;
-            private readonly object _gate = new object();
-            private readonly int _capacity;
-
-            private int _waitingReaders;
-            private bool _completed;
-            private Exception _completionError;
-
-            public BoundedAsyncQueue(int capacity)
-            {
-                if (capacity < 1)
-                    throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be > 0.");
-
-                _capacity = capacity;
-                _spaces = new SemaphoreSlim(capacity, capacity);
-            }
-
-            public async ValueTask EnqueueAsync(T value, CancellationToken ct)
-            {
-                await _spaces.WaitAsync(ct).ConfigureAwait(false);
-                try
-                {
-                    lock (_gate)
-                    {
-                        if (_completed)
-                            throw new AsyncQueueCompletedException(_completionError);
-
-                        _queue.Enqueue(value);
-                    }
-
-                    _items.Release();
-                }
-                catch
-                {
-                    _spaces.Release();
-                    throw;
-                }
-            }
-
-            public async ValueTask<T> DequeueAsync(CancellationToken ct)
-            {
-                while (true)
-                {
-                    lock (_gate)
-                    {
-                        if (_queue.Count > 0)
-                        {
-                            var item = _queue.Dequeue();
-                            _spaces.Release();
-                            return item;
-                        }
-
-                        if (_completed)
-                            throw new AsyncQueueCompletedException(_completionError);
-
-                        _waitingReaders++;
-                    }
-
-                    try
-                    {
-                        await _items.WaitAsync(ct).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        lock (_gate)
-                        {
-                            _waitingReaders--;
-                        }
-                    }
-                }
-            }
-
-            public void Complete(Exception error)
-            {
-                lock (_gate)
-                {
-                    if (_completed)
-                        return;
-
-                    _completed = true;
-                    _completionError = error;
-
-                    if (_waitingReaders > 0)
-                        _items.Release(_waitingReaders);
-                }
-            }
-        }
     }
 }

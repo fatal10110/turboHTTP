@@ -122,6 +122,87 @@ namespace TurboHTTP.Tests.WebSocket
             });
         }
 
+        [Test]
+        public void ReceiveAllAsync_BlocksDuringReconnect_ThenResumesAfterReconnected()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer(
+                    new WebSocketTestServerOptions
+                    {
+                        DisconnectFirstConnectionAfterHandshake = true
+                    });
+
+                await using var client = new ResilientWebSocketClient(new TestTcpWebSocketTransport());
+
+                var reconnectedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                client.OnReconnected += () => reconnectedTcs.TrySetResult(true);
+
+                var options = CreateReconnectOptions(maxRetries: 4);
+                await client.ConnectAsync(server.CreateUri("/receive-all-reconnect"), options, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                await using var enumerator = client.ReceiveAllAsync(CancellationToken.None).GetAsyncEnumerator();
+                var moveNextTask = enumerator.MoveNextAsync().AsTask();
+
+                await Task.Delay(50).ConfigureAwait(false);
+                Assert.IsFalse(moveNextTask.IsCompleted, "Expected MoveNextAsync to wait for inbound data.");
+
+                await WaitWithTimeout(
+                    reconnectedTcs.Task,
+                    TimeSpan.FromSeconds(3),
+                    "Reconnect did not complete.").ConfigureAwait(false);
+
+                await client.SendAsync("after-reconnect", CancellationToken.None).ConfigureAwait(false);
+
+                bool moved = await WaitWithTimeout(
+                    moveNextTask,
+                    TimeSpan.FromSeconds(3),
+                    "Timed out waiting for streamed message after reconnection.").ConfigureAwait(false);
+                Assert.IsTrue(moved);
+                using (var message = enumerator.Current)
+                {
+                    Assert.AreEqual("after-reconnect", message.Text);
+                }
+
+                await client.CloseAsync(WebSocketCloseCode.NormalClosure, "done", CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                bool hasMore = await WaitWithTimeout(
+                    enumerator.MoveNextAsync().AsTask(),
+                    TimeSpan.FromSeconds(2),
+                    "Timed out waiting for stream completion after close.").ConfigureAwait(false);
+                Assert.IsFalse(hasMore);
+            });
+        }
+
+        [Test]
+        public void ReceiveAllAsync_ReturnsFalse_WhenReconnectExhausted()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer(
+                    new WebSocketTestServerOptions
+                    {
+                        DisconnectEveryConnectionAfterHandshake = true
+                    });
+
+                await using var client = new ResilientWebSocketClient(new TestTcpWebSocketTransport());
+                var options = CreateReconnectOptions(maxRetries: 1);
+
+                await client.ConnectAsync(server.CreateUri("/receive-all-exhausted"), options, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                await using var enumerator = client.ReceiveAllAsync(CancellationToken.None).GetAsyncEnumerator();
+                bool moved = await WaitWithTimeout(
+                    enumerator.MoveNextAsync().AsTask(),
+                    TimeSpan.FromSeconds(5),
+                    "Timed out waiting for stream completion after reconnect exhaustion.").ConfigureAwait(false);
+
+                Assert.IsFalse(moved);
+            });
+        }
+
         private static WebSocketConnectionOptions CreateReconnectOptions(int maxRetries)
         {
             return new WebSocketConnectionOptions
@@ -146,6 +227,15 @@ namespace TurboHTTP.Tests.WebSocket
                 throw new TimeoutException(errorMessage);
 
             await task.ConfigureAwait(false);
+        }
+
+        private static async Task<T> WaitWithTimeout<T>(Task<T> task, TimeSpan timeout, string errorMessage)
+        {
+            var completed = await Task.WhenAny(task, Task.Delay(timeout)).ConfigureAwait(false);
+            if (!ReferenceEquals(completed, task))
+                throw new TimeoutException(errorMessage);
+
+            return await task.ConfigureAwait(false);
         }
     }
 }

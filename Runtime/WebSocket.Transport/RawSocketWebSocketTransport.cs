@@ -27,6 +27,15 @@ namespace TurboHTTP.WebSocket.Transport
             _happyEyeballsOptions = happyEyeballsOptions?.Clone() ?? new HappyEyeballsOptions();
         }
 
+        /// <summary>
+        /// Explicitly registers this transport as the default WebSocket transport factory.
+        /// </summary>
+        public static void EnsureRegistered()
+        {
+            WebSocketTransportFactory.Register(
+                tlsBackend => new RawSocketWebSocketTransport(tlsBackend));
+        }
+
         public async Task<Stream> ConnectAsync(
             Uri uri,
             WebSocketConnectionOptions options,
@@ -49,16 +58,57 @@ namespace TurboHTTP.WebSocket.Transport
                 ? (secure ? 443 : 80)
                 : uri.Port;
 
-            var addresses = await ResolveDnsAsync(host, options.DnsTimeoutMs, ct).ConfigureAwait(false);
+            var proxySettings = options.ProxySettings ?? WebSocketProxySettings.None;
+            bool useProxy = proxySettings.IsConfigured && !proxySettings.ShouldBypass(host);
 
-            var socket = await ConnectSocketAsync(addresses, port, options.ConnectTimeout, ct)
-                .ConfigureAwait(false);
+            string connectHost = useProxy ? proxySettings.ProxyUri.Host : host;
+            int connectPort = useProxy
+                ? (proxySettings.ProxyUri.IsDefaultPort ? 80 : proxySettings.ProxyUri.Port)
+                : port;
+
+            var addresses = await ResolveDnsAsync(connectHost, options.DnsTimeoutMs, ct).ConfigureAwait(false);
+
+            Socket socket;
+            try
+            {
+                socket = await ConnectSocketAsync(addresses, connectPort, options.ConnectTimeout, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (useProxy && !(ex is WebSocketException))
+            {
+                throw new WebSocketException(
+                    WebSocketError.ProxyConnectionFailed,
+                    "Failed to connect to configured proxy endpoint '" + proxySettings.ProxyUri + "'.",
+                    ex);
+            }
 
             Stream stream = new NetworkStream(socket, ownsSocket: true);
             if (Volatile.Read(ref _disposed) != 0)
             {
                 stream.Dispose();
                 throw new ObjectDisposedException(nameof(RawSocketWebSocketTransport));
+            }
+
+            if (useProxy)
+            {
+                try
+                {
+                    stream = await ProxyTunnelConnector.EstablishAsync(stream, uri, proxySettings, ct)
+                        .ConfigureAwait(false);
+                }
+                catch (WebSocketException)
+                {
+                    stream.Dispose();
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    stream.Dispose();
+                    throw new WebSocketException(
+                        WebSocketError.ProxyTunnelFailed,
+                        "Failed to establish HTTP CONNECT tunnel through proxy.",
+                        ex);
+                }
             }
 
             if (!secure)

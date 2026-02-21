@@ -35,6 +35,12 @@ namespace TurboHTTP.Tests.WebSocket
         public bool SendReservedOpcodeFrameOnFirstMessage { get; set; }
 
         public bool SendInvalidUtf8TextOnFirstMessage { get; set; }
+
+        public string HandshakeExtensionsHeader { get; set; }
+
+        public bool EnablePerMessageDeflate { get; set; }
+
+        public PerMessageDeflateOptions PerMessageDeflateOptions { get; set; }
     }
 
     /// <summary>
@@ -190,16 +196,35 @@ namespace TurboHTTP.Tests.WebSocket
                     return;
                 }
 
-                await WriteHandshakeSuccessAsync(stream, clientKey.Trim(), ct).ConfigureAwait(false);
+                IWebSocketExtension compressionExtension = null;
+                byte allowedRsvMask = 0;
+                string extensionsHeader = _options.HandshakeExtensionsHeader;
+
+                if (_options.EnablePerMessageDeflate &&
+                    TryNegotiatePerMessageDeflate(requestHead, out var negotiatedCompressionHeader, out var negotiatedExtension))
+                {
+                    extensionsHeader = CombineExtensionsHeaderValues(extensionsHeader, negotiatedCompressionHeader);
+                    compressionExtension = negotiatedExtension;
+                    allowedRsvMask |= negotiatedExtension.RsvBitMask;
+                }
+
+                await WriteHandshakeSuccessAsync(
+                    stream,
+                    clientKey.Trim(),
+                    extensionsHeader,
+                    ct).ConfigureAwait(false);
 
                 if (_options.DisconnectEveryConnectionAfterHandshake ||
                     (_options.DisconnectFirstConnectionAfterHandshake && connectionIndex == 1))
                 {
                     tcpClient.Close();
+                    compressionExtension?.Dispose();
                     return;
                 }
 
-                var frameReader = new WebSocketFrameReader(rejectMaskedServerFrames: false);
+                var frameReader = new WebSocketFrameReader(
+                    allowedRsvMask: allowedRsvMask,
+                    rejectMaskedServerFrames: false);
                 var assembler = new MessageAssembler();
 
                 try
@@ -222,6 +247,8 @@ namespace TurboHTTP.Tests.WebSocket
 
                         using (assembledMessage)
                         {
+                            IMemoryOwner<byte> transformedInbound = null;
+                            IMemoryOwner<byte> transformedOutbound = null;
                             if (assembledMessage.IsControl)
                             {
                                 if (assembledMessage.Opcode == WebSocketOpcode.Ping)
@@ -247,68 +274,101 @@ namespace TurboHTTP.Tests.WebSocket
                                 continue;
                             }
 
-                            int messageIndex = Interlocked.Increment(ref _messageCount);
-
-                            if (_options.SendMaskedFrameOnFirstMessage && messageIndex == 1)
+                            ReadOnlyMemory<byte> applicationPayload = assembledMessage.Payload;
+                            if (compressionExtension != null &&
+                                (assembledMessage.RsvBits & compressionExtension.RsvBitMask) != 0)
                             {
-                                await WriteServerFrameAsync(
-                                    stream,
-                                    WebSocketOpcode.Text,
-                                    Encoding.UTF8.GetBytes("masked-server-frame"),
-                                    masked: true,
-                                    ct).ConfigureAwait(false);
-                                continue;
+                                transformedInbound = compressionExtension.TransformInbound(
+                                    assembledMessage.Payload,
+                                    assembledMessage.Opcode,
+                                    assembledMessage.RsvBits);
+
+                                if (transformedInbound != null)
+                                    applicationPayload = transformedInbound.Memory;
                             }
 
-                            if (_options.SendReservedOpcodeFrameOnFirstMessage && messageIndex == 1)
+                            try
                             {
-                                await WriteRawOpcodeFrameAsync(
-                                    stream,
-                                    rawOpcode: 0x03,
-                                    Encoding.UTF8.GetBytes("reserved-opcode"),
-                                    ct).ConfigureAwait(false);
-                                continue;
-                            }
+                                int messageIndex = Interlocked.Increment(ref _messageCount);
 
-                            if (_options.SendInvalidUtf8TextOnFirstMessage && messageIndex == 1)
-                            {
+                                if (_options.SendMaskedFrameOnFirstMessage && messageIndex == 1)
+                                {
+                                    await WriteServerFrameAsync(
+                                        stream,
+                                        WebSocketOpcode.Text,
+                                        Encoding.UTF8.GetBytes("masked-server-frame"),
+                                        masked: true,
+                                        ct).ConfigureAwait(false);
+                                    continue;
+                                }
+
+                                if (_options.SendReservedOpcodeFrameOnFirstMessage && messageIndex == 1)
+                                {
+                                    await WriteRawOpcodeFrameAsync(
+                                        stream,
+                                        rawOpcode: 0x03,
+                                        Encoding.UTF8.GetBytes("reserved-opcode"),
+                                        ct).ConfigureAwait(false);
+                                    continue;
+                                }
+
+                                if (_options.SendInvalidUtf8TextOnFirstMessage && messageIndex == 1)
+                                {
+                                    await WriteServerFrameAsync(
+                                        stream,
+                                        WebSocketOpcode.Text,
+                                        new byte[] { 0xC3, 0x28 },
+                                        masked: false,
+                                        ct).ConfigureAwait(false);
+                                    continue;
+                                }
+
+                                if (_options.EchoDelayMs > 0)
+                                {
+                                    await Task.Delay(_options.EchoDelayMs, ct).ConfigureAwait(false);
+                                }
+
+                                byte rsvBits = 0;
+                                if (compressionExtension != null)
+                                {
+                                    transformedOutbound = compressionExtension.TransformOutbound(
+                                        applicationPayload,
+                                        assembledMessage.Opcode,
+                                        out rsvBits);
+                                    if (transformedOutbound != null)
+                                        applicationPayload = transformedOutbound.Memory;
+                                }
+
                                 await WriteServerFrameAsync(
                                     stream,
-                                    WebSocketOpcode.Text,
-                                    new byte[] { 0xC3, 0x28 },
+                                    assembledMessage.Opcode,
+                                    applicationPayload,
                                     masked: false,
-                                    ct).ConfigureAwait(false);
-                                continue;
+                                    ct,
+                                    rsvBits).ConfigureAwait(false);
+
+                                if (_options.CloseAfterMessageCount > 0 &&
+                                    messageIndex >= _options.CloseAfterMessageCount)
+                                {
+                                    await WriteCloseFrameAsync(
+                                        stream,
+                                        WebSocketCloseCode.NormalClosure,
+                                        "server-close",
+                                        ct).ConfigureAwait(false);
+                                    break;
+                                }
+
+                                if (_options.AbortAfterMessageCount > 0 &&
+                                    messageIndex >= _options.AbortAfterMessageCount)
+                                {
+                                    tcpClient.Close();
+                                    break;
+                                }
                             }
-
-                            if (_options.EchoDelayMs > 0)
+                            finally
                             {
-                                await Task.Delay(_options.EchoDelayMs, ct).ConfigureAwait(false);
-                            }
-
-                            await WriteServerFrameAsync(
-                                stream,
-                                assembledMessage.Opcode,
-                                assembledMessage.Payload,
-                                masked: false,
-                                ct).ConfigureAwait(false);
-
-                            if (_options.CloseAfterMessageCount > 0 &&
-                                messageIndex >= _options.CloseAfterMessageCount)
-                            {
-                                await WriteCloseFrameAsync(
-                                    stream,
-                                    WebSocketCloseCode.NormalClosure,
-                                    "server-close",
-                                    ct).ConfigureAwait(false);
-                                break;
-                            }
-
-                            if (_options.AbortAfterMessageCount > 0 &&
-                                messageIndex >= _options.AbortAfterMessageCount)
-                            {
-                                tcpClient.Close();
-                                break;
+                                transformedOutbound?.Dispose();
+                                transformedInbound?.Dispose();
                             }
                         }
                     }
@@ -328,6 +388,7 @@ namespace TurboHTTP.Tests.WebSocket
                 finally
                 {
                     assembler.Reset();
+                    compressionExtension?.Dispose();
                 }
             }
         }
@@ -381,18 +442,153 @@ namespace TurboHTTP.Tests.WebSocket
             return null;
         }
 
+        private bool TryNegotiatePerMessageDeflate(
+            string requestHead,
+            out string negotiatedHeader,
+            out IWebSocketExtension extension)
+        {
+            negotiatedHeader = null;
+            extension = null;
+
+            string offeredExtensions = TryGetHeaderValue(requestHead, "Sec-WebSocket-Extensions");
+            if (!ContainsExtensionToken(offeredExtensions, "permessage-deflate"))
+                return false;
+
+            string responseHeader =
+                "permessage-deflate; server_no_context_takeover; client_no_context_takeover";
+            var perMessageDeflate = new PerMessageDeflateExtension(
+                _options.PerMessageDeflateOptions ?? PerMessageDeflateOptions.Default);
+
+            try
+            {
+                bool accepted = perMessageDeflate.AcceptNegotiation(
+                    WebSocketExtensionParameters.Parse(responseHeader));
+                if (!accepted)
+                {
+                    perMessageDeflate.Dispose();
+                    return false;
+                }
+
+                negotiatedHeader = responseHeader;
+                extension = perMessageDeflate;
+                return true;
+            }
+            catch
+            {
+                perMessageDeflate.Dispose();
+                throw;
+            }
+        }
+
+        private static bool ContainsExtensionToken(string extensionsHeader, string token)
+        {
+            if (string.IsNullOrWhiteSpace(extensionsHeader) || string.IsNullOrWhiteSpace(token))
+                return false;
+
+            var entries = SplitHeaderEntries(extensionsHeader);
+            for (int i = 0; i < entries.Count; i++)
+            {
+                try
+                {
+                    var parsed = WebSocketExtensionParameters.Parse(entries[i]);
+                    if (string.Equals(parsed.ExtensionToken, token, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                catch
+                {
+                    // Ignore malformed extension values in tests and continue matching other entries.
+                }
+            }
+
+            return false;
+        }
+
+        private static List<string> SplitHeaderEntries(string headerValue)
+        {
+            var entries = new List<string>();
+            if (string.IsNullOrWhiteSpace(headerValue))
+                return entries;
+
+            bool inQuotes = false;
+            bool escaped = false;
+            int start = 0;
+
+            for (int i = 0; i < headerValue.Length; i++)
+            {
+                char c = headerValue[i];
+
+                if (escaped)
+                {
+                    escaped = false;
+                    continue;
+                }
+
+                if (inQuotes && c == '\\')
+                {
+                    escaped = true;
+                    continue;
+                }
+
+                if (c == '"')
+                {
+                    inQuotes = !inQuotes;
+                    continue;
+                }
+
+                if (c != ',' || inQuotes)
+                    continue;
+
+                AddHeaderEntry(entries, headerValue, start, i - start);
+                start = i + 1;
+            }
+
+            AddHeaderEntry(entries, headerValue, start, headerValue.Length - start);
+            return entries;
+        }
+
+        private static void AddHeaderEntry(List<string> entries, string headerValue, int start, int length)
+        {
+            if (length <= 0)
+                return;
+
+            string value = headerValue.Substring(start, length).Trim();
+            if (value.Length > 0)
+                entries.Add(value);
+        }
+
+        private static string CombineExtensionsHeaderValues(string current, string next)
+        {
+            bool hasCurrent = !string.IsNullOrWhiteSpace(current);
+            bool hasNext = !string.IsNullOrWhiteSpace(next);
+
+            if (!hasCurrent)
+                return hasNext ? next : null;
+
+            if (!hasNext)
+                return current;
+
+            return current + ", " + next;
+        }
+
         private static async Task WriteHandshakeSuccessAsync(
             Stream stream,
             string clientKey,
+            string extensionsHeader,
             CancellationToken ct)
         {
             string accept = WebSocketConstants.ComputeAcceptKey(clientKey);
-            string response =
+            var response =
                 "HTTP/1.1 101 Switching Protocols\r\n" +
                 "Upgrade: websocket\r\n" +
                 "Connection: Upgrade\r\n" +
-                "Sec-WebSocket-Accept: " + accept + "\r\n" +
-                "\r\n";
+                "Sec-WebSocket-Accept: " + accept + "\r\n";
+
+            if (!string.IsNullOrWhiteSpace(extensionsHeader))
+            {
+                response += "Sec-WebSocket-Extensions: " + extensionsHeader + "\r\n";
+            }
+
+            response += "\r\n";
 
             byte[] bytes = Encoding.ASCII.GetBytes(response);
             await stream.WriteAsync(bytes, 0, bytes.Length, ct).ConfigureAwait(false);
@@ -509,13 +705,14 @@ namespace TurboHTTP.Tests.WebSocket
             WebSocketOpcode opcode,
             ReadOnlyMemory<byte> payload,
             bool masked,
-            CancellationToken ct)
+            CancellationToken ct,
+            byte rsvBits = 0)
         {
             int payloadLength = payload.Length;
             byte[] header = new byte[14];
             int headerLength = 0;
 
-            header[headerLength++] = (byte)(0x80 | (byte)opcode);
+            header[headerLength++] = (byte)(0x80 | (rsvBits & 0x70) | (byte)opcode);
             if (payloadLength <= 125)
             {
                 header[headerLength++] = (byte)((masked ? 0x80 : 0x00) | payloadLength);
@@ -622,6 +819,273 @@ namespace TurboHTTP.Tests.WebSocket
 
             await connectTask.ConfigureAwait(false);
             return new NetworkStream(tcpClient.Client, ownsSocket: true);
+        }
+    }
+
+    internal sealed class WebSocketTestProxyServer : IDisposable
+    {
+        private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
+        private readonly TcpListener _listener;
+        private readonly string _expectedAuthHeader;
+        private readonly int _forcedConnectStatusCode;
+        private readonly string _forcedConnectReason;
+        private readonly Task _acceptLoopTask;
+
+        public WebSocketTestProxyServer(
+            string username = null,
+            string password = null,
+            int forcedConnectStatusCode = 0,
+            string forcedConnectReason = null)
+        {
+            if (!string.IsNullOrEmpty(username))
+            {
+                string userPass = username + ":" + (password ?? string.Empty);
+                _expectedAuthHeader = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(userPass));
+            }
+
+            _forcedConnectStatusCode = forcedConnectStatusCode;
+            _forcedConnectReason = string.IsNullOrWhiteSpace(forcedConnectReason)
+                ? "CONNECT Rejected"
+                : forcedConnectReason;
+
+            _listener = new TcpListener(IPAddress.Loopback, 0);
+            _listener.Start();
+            _acceptLoopTask = Task.Run(AcceptLoopAsync);
+        }
+
+        public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+
+        public string LastAuthority { get; private set; }
+
+        public int AuthenticatedConnectCount { get; private set; }
+
+        public void Dispose()
+        {
+            _shutdown.Cancel();
+            try
+            {
+                _listener.Stop();
+            }
+            catch
+            {
+                // Best effort.
+            }
+
+            try
+            {
+                _acceptLoopTask.GetAwaiter().GetResult();
+            }
+            catch
+            {
+                // Best effort.
+            }
+
+            _shutdown.Dispose();
+        }
+
+        private async Task AcceptLoopAsync()
+        {
+            while (!_shutdown.IsCancellationRequested)
+            {
+                TcpClient client;
+                try
+                {
+                    client = await _listener.AcceptTcpClientAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    if (_shutdown.IsCancellationRequested)
+                        break;
+                    continue;
+                }
+
+                _ = Task.Run(() => HandleClientAsync(client, _shutdown.Token), _shutdown.Token);
+            }
+        }
+
+        private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
+        {
+            using (client)
+            using (var clientStream = client.GetStream())
+            {
+                bool established = false;
+                while (!ct.IsCancellationRequested && !established)
+                {
+                    string head;
+                    try
+                    {
+                        head = await ReadHeaderBlockAsync(clientStream, ct).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        return;
+                    }
+
+                    if (!TryParseConnect(head, out var authority))
+                    {
+                        await WriteStatusAsync(clientStream, 400, "Bad Request", ct).ConfigureAwait(false);
+                        return;
+                    }
+
+                    LastAuthority = authority;
+                    string proxyAuth = TryGetHeaderValue(head, "Proxy-Authorization");
+
+                    if (!string.IsNullOrEmpty(_expectedAuthHeader) &&
+                        !string.Equals(proxyAuth, _expectedAuthHeader, StringComparison.Ordinal))
+                    {
+                        await WriteStatusAsync(
+                            clientStream,
+                            407,
+                            "Proxy Authentication Required",
+                            ct,
+                            "Proxy-Authenticate: Basic realm=\"TurboHTTP-Test\"").ConfigureAwait(false);
+                        continue;
+                    }
+
+                    if (!string.IsNullOrEmpty(_expectedAuthHeader))
+                        AuthenticatedConnectCount++;
+
+                    if (_forcedConnectStatusCode > 0 && _forcedConnectStatusCode != 200)
+                    {
+                        await WriteStatusAsync(
+                            clientStream,
+                            _forcedConnectStatusCode,
+                            _forcedConnectReason,
+                            ct).ConfigureAwait(false);
+                        return;
+                    }
+
+                    await WriteStatusAsync(clientStream, 200, "Connection Established", ct).ConfigureAwait(false);
+                    established = true;
+
+                    if (!TrySplitAuthority(authority, out var host, out var port))
+                        return;
+
+                    using var upstream = new TcpClient();
+                    await upstream.ConnectAsync(host, port).ConfigureAwait(false);
+                    using var upstreamStream = upstream.GetStream();
+
+                    var pumpToUpstream = PumpAsync(clientStream, upstreamStream, ct);
+                    var pumpToClient = PumpAsync(upstreamStream, clientStream, ct);
+                    await Task.WhenAny(pumpToUpstream, pumpToClient).ConfigureAwait(false);
+                }
+            }
+        }
+
+        private static async Task<string> ReadHeaderBlockAsync(Stream stream, CancellationToken ct)
+        {
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(1024);
+            var builder = new StringBuilder(1024);
+
+            try
+            {
+                while (true)
+                {
+                    int read = await stream.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
+                    if (read == 0)
+                        throw new IOException("EOF");
+
+                    builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
+                    string text = builder.ToString();
+                    int end = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                    if (end >= 0)
+                        return text.Substring(0, end + 4);
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private static string TryGetHeaderValue(string head, string name)
+        {
+            string[] lines = head.Split(new[] { "\r\n" }, StringSplitOptions.None);
+            string prefix = name + ":";
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (lines[i].StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return lines[i].Substring(prefix.Length).Trim();
+            }
+
+            return null;
+        }
+
+        private static bool TryParseConnect(string head, out string authority)
+        {
+            authority = null;
+            if (string.IsNullOrWhiteSpace(head))
+                return false;
+
+            int lineEnd = head.IndexOf("\r\n", StringComparison.Ordinal);
+            string line = lineEnd >= 0 ? head.Substring(0, lineEnd) : head;
+            string[] parts = line.Split(' ');
+            if (parts.Length < 3)
+                return false;
+
+            if (!string.Equals(parts[0], "CONNECT", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            authority = parts[1];
+            return !string.IsNullOrWhiteSpace(authority);
+        }
+
+        private static bool TrySplitAuthority(string authority, out string host, out int port)
+        {
+            host = null;
+            port = 0;
+
+            int separator = authority.LastIndexOf(':');
+            if (separator <= 0 || separator >= authority.Length - 1)
+                return false;
+
+            host = authority.Substring(0, separator);
+            return int.TryParse(authority.Substring(separator + 1), out port);
+        }
+
+        private static async Task WriteStatusAsync(
+            Stream stream,
+            int statusCode,
+            string reason,
+            CancellationToken ct,
+            string extraHeader = null)
+        {
+            var builder = new StringBuilder(256);
+            builder.Append("HTTP/1.1 ").Append(statusCode).Append(' ').Append(reason).Append("\r\n");
+            if (!string.IsNullOrWhiteSpace(extraHeader))
+                builder.Append(extraHeader).Append("\r\n");
+            builder.Append("Content-Length: 0\r\n");
+            builder.Append("Connection: keep-alive\r\n");
+            builder.Append("\r\n");
+
+            byte[] bytes = Encoding.ASCII.GetBytes(builder.ToString());
+            await stream.WriteAsync(bytes, 0, bytes.Length, ct).ConfigureAwait(false);
+            await stream.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        private static async Task PumpAsync(Stream source, Stream destination, CancellationToken ct)
+        {
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(4096);
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    int read = await source.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
+                    if (read == 0)
+                        break;
+
+                    await destination.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
+                    await destination.FlushAsync(ct).ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                // Tunnel pumps terminate on normal socket close/cancel paths.
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
     }
 }

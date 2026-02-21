@@ -122,7 +122,7 @@ namespace TurboHTTP.Unity.WebSocket
             _lifecycleBinding?.Dispose();
             _lifecycleBinding = null;
 
-            TryCloseWithShortTimeoutThenAbort();
+            TryAbortAndDispose();
             CleanupClientReferences();
         }
 
@@ -386,7 +386,7 @@ namespace TurboHTTP.Unity.WebSocket
             OnDisconnectedEvent?.Invoke((int)code);
         }
 
-        private void TryCloseWithShortTimeoutThenAbort()
+        private void TryAbortAndDispose()
         {
             var client = _client;
             if (client == null)
@@ -394,15 +394,11 @@ namespace TurboHTTP.Unity.WebSocket
 
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-                client.CloseAsync(
-                    WebSocketCloseCode.GoingAway,
-                    "Unity object destroyed.",
-                    cts.Token).GetAwaiter().GetResult();
+                client.Abort();
             }
             catch
             {
-                client.Abort();
+                // Best effort teardown.
             }
             finally
             {

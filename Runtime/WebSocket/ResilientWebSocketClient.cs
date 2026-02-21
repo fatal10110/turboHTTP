@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -17,18 +18,23 @@ namespace TurboHTTP.WebSocket
         private IWebSocketClient _client;
         private CancellationTokenSource _lifecycleCts;
         private Task _receivePumpTask;
-        private AsyncBoundedQueue<WebSocketMessage> _incomingQueue;
+        private BoundedAsyncQueue<WebSocketMessage> _incomingQueue;
 
         private int _disposed;
         private int _manualClose;
         private int _receiveInProgress;
+        private int _receiveAllInProgress;
         private int _reconnectLoopActive;
         private int _closedEventRaised;
+        private WebSocketMetrics _latestMetrics;
+        private WebSocketHealthSnapshot _latestHealth;
 
         public event Action OnConnected;
         public event Action<WebSocketMessage> OnMessage;
         public event Action<WebSocketException> OnError;
         public event Action<WebSocketCloseCode, string> OnClosed;
+        public event Action<WebSocketMetrics> OnMetricsUpdated;
+        public event Action<ConnectionQuality> OnConnectionQualityChanged;
         public event Action<int, TimeSpan> OnReconnecting;
         public event Action OnReconnected;
 
@@ -58,6 +64,24 @@ namespace TurboHTTP.WebSocket
 
         public string SubProtocol => Volatile.Read(ref _client)?.SubProtocol;
 
+        public WebSocketMetrics Metrics
+        {
+            get
+            {
+                var client = Volatile.Read(ref _client);
+                return client?.Metrics ?? _latestMetrics;
+            }
+        }
+
+        public WebSocketHealthSnapshot Health
+        {
+            get
+            {
+                var client = Volatile.Read(ref _client);
+                return client?.Health ?? _latestHealth;
+            }
+        }
+
         public Task ConnectAsync(Uri uri, CancellationToken ct = default)
         {
             return ConnectAsync(uri, new WebSocketConnectionOptions(), ct);
@@ -83,11 +107,13 @@ namespace TurboHTTP.WebSocket
 
                 _uri = uri;
                 _options = options;
-                _incomingQueue = new AsyncBoundedQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
+                _incomingQueue = new BoundedAsyncQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
                 _lifecycleCts?.Dispose();
                 _lifecycleCts = new CancellationTokenSource();
                 _closedEventRaised = 0;
                 _manualClose = 0;
+                _latestMetrics = default;
+                _latestHealth = WebSocketHealthSnapshot.Unknown;
             }
 
             await ConnectReplacementClientAsync(initialConnect: true, ct).ConfigureAwait(false);
@@ -122,7 +148,42 @@ namespace TurboHTTP.WebSocket
 
         public async ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct = default)
         {
+            return await ReceiveCoreAsync(ct, fromAsyncEnumerable: false).ConfigureAwait(false);
+        }
+
+        public IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default)
+        {
             ThrowIfDisposed();
+
+            var state = State;
+            if (state == WebSocketState.None)
+            {
+                throw new InvalidOperationException(
+                    "ReceiveAllAsync requires Open, Connecting, Closing, or Closed state. Current state: " + state + ".");
+            }
+
+            if (Interlocked.CompareExchange(ref _receiveAllInProgress, 1, 0) != 0)
+                throw new InvalidOperationException("Concurrent ReceiveAllAsync calls are not supported.");
+
+            if (Volatile.Read(ref _receiveInProgress) != 0)
+            {
+                Interlocked.Exchange(ref _receiveAllInProgress, 0);
+                throw new InvalidOperationException("ReceiveAllAsync cannot start while ReceiveAsync is in progress.");
+            }
+
+            return new WebSocketAsyncEnumerable(
+                token => ReceiveCoreAsync(token, fromAsyncEnumerable: true),
+                () => State,
+                () => Interlocked.Exchange(ref _receiveAllInProgress, 0),
+                ct);
+        }
+
+        private async ValueTask<WebSocketMessage> ReceiveCoreAsync(CancellationToken ct, bool fromAsyncEnumerable)
+        {
+            ThrowIfDisposed();
+
+            if (!fromAsyncEnumerable && Volatile.Read(ref _receiveAllInProgress) != 0)
+                throw new InvalidOperationException("ReceiveAsync cannot run while ReceiveAllAsync is active.");
 
             if (Interlocked.CompareExchange(ref _receiveInProgress, 1, 0) != 0)
                 throw new InvalidOperationException("Concurrent ReceiveAsync calls are not supported.");
@@ -156,6 +217,8 @@ namespace TurboHTTP.WebSocket
             var client = Interlocked.Exchange(ref _client, null);
             if (client != null)
             {
+                client.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                client.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
                 await client.CloseAsync(code, reason, ct).ConfigureAwait(false);
                 await client.DisposeAsync().ConfigureAwait(false);
             }
@@ -171,8 +234,13 @@ namespace TurboHTTP.WebSocket
             Interlocked.Exchange(ref _manualClose, 1);
 
             var client = Interlocked.Exchange(ref _client, null);
-            client?.Abort();
-            client?.Dispose();
+            if (client != null)
+            {
+                client.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                client.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
+                client.Abort();
+                client.Dispose();
+            }
 
             CompleteAndDrainQueue(null);
             RaiseClosed(WebSocketCloseCode.AbnormalClosure, string.Empty);
@@ -187,8 +255,13 @@ namespace TurboHTTP.WebSocket
             _lifecycleCts?.Cancel();
 
             var client = Interlocked.Exchange(ref _client, null);
-            client?.Abort();
-            client?.Dispose();
+            if (client != null)
+            {
+                client.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                client.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
+                client.Abort();
+                client.Dispose();
+            }
 
             CompleteAndDrainQueue(new ObjectDisposedException(nameof(ResilientWebSocketClient)));
             RaiseClosed(WebSocketCloseCode.AbnormalClosure, string.Empty);
@@ -208,6 +281,8 @@ namespace TurboHTTP.WebSocket
             var client = Interlocked.Exchange(ref _client, null);
             if (client != null)
             {
+                client.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                client.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
                 try
                 {
                     await client.DisposeAsync().ConfigureAwait(false);
@@ -228,14 +303,22 @@ namespace TurboHTTP.WebSocket
             _lifecycleCts = null;
         }
 
-        private async Task ConnectReplacementClientAsync(bool initialConnect, CancellationToken externalCt)
+        private async Task ConnectReplacementClientAsync(
+            bool initialConnect,
+            CancellationToken externalCt,
+            bool stopPreviousReceivePump = true)
         {
             var lifecycle = _lifecycleCts;
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(externalCt, lifecycle.Token);
 
+            if (stopPreviousReceivePump)
+                await StopReceivePumpAsync().ConfigureAwait(false);
+
             var nextClient = _providedTransport != null
                 ? (IWebSocketClient)new WebSocketClient(_providedTransport)
                 : new WebSocketClient();
+            nextClient.OnMetricsUpdated += HandleChildMetricsUpdated;
+            nextClient.OnConnectionQualityChanged += HandleChildConnectionQualityChanged;
 
             var connectOptions = _options?.Clone() ?? new WebSocketConnectionOptions();
             connectOptions.ReconnectPolicy = WebSocketReconnectPolicy.None;
@@ -246,13 +329,22 @@ namespace TurboHTTP.WebSocket
             }
             catch
             {
+                nextClient.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                nextClient.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
                 await nextClient.DisposeAsync().ConfigureAwait(false);
                 throw;
             }
 
             var previous = Interlocked.Exchange(ref _client, nextClient);
             if (previous != null)
+            {
+                previous.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                previous.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
                 await previous.DisposeAsync().ConfigureAwait(false);
+            }
+
+            _latestMetrics = nextClient.Metrics;
+            _latestHealth = nextClient.Health;
 
             _receivePumpTask = RunReceivePumpAsync(nextClient, lifecycle.Token);
 
@@ -370,11 +462,18 @@ namespace TurboHTTP.WebSocket
 
                     var current = Interlocked.Exchange(ref _client, null);
                     if (current != null)
+                    {
+                        current.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                        current.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
                         await current.DisposeAsync().ConfigureAwait(false);
+                    }
 
                     try
                     {
-                        await ConnectReplacementClientAsync(initialConnect: false, ct).ConfigureAwait(false);
+                        await ConnectReplacementClientAsync(
+                            initialConnect: false,
+                            externalCt: ct,
+                            stopPreviousReceivePump: false).ConfigureAwait(false);
                         return;
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -401,6 +500,8 @@ namespace TurboHTTP.WebSocket
 
                 if (!ReferenceEquals(disconnectedClient, _client))
                 {
+                    disconnectedClient.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                    disconnectedClient.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
                     try
                     {
                         await disconnectedClient.DisposeAsync().ConfigureAwait(false);
@@ -458,6 +559,23 @@ namespace TurboHTTP.WebSocket
         {
             var handler = OnError;
             handler?.Invoke(error);
+        }
+
+        private void HandleChildMetricsUpdated(WebSocketMetrics metrics)
+        {
+            _latestMetrics = metrics;
+            _latestHealth = Health;
+
+            var handler = OnMetricsUpdated;
+            handler?.Invoke(metrics);
+        }
+
+        private void HandleChildConnectionQualityChanged(ConnectionQuality quality)
+        {
+            _latestHealth = Health;
+
+            var handler = OnConnectionQualityChanged;
+            handler?.Invoke(quality);
         }
 
         private void RaiseClosed(WebSocketCloseCode code, string reason)

@@ -19,5 +19,19 @@ namespace TurboHTTP.Tests.WebSocket
             var ex = new WebSocketException(WebSocketError.ProtocolViolation, "protocol");
             Assert.IsFalse(ex.IsRetryable());
         }
+
+        [Test]
+        public void WebSocketException_IsRetryable_ForProxyConnectionFailure()
+        {
+            var ex = new WebSocketException(WebSocketError.ProxyConnectionFailed, "proxy");
+            Assert.IsTrue(ex.IsRetryable());
+        }
+
+        [Test]
+        public void WebSocketException_IsRetryable_FalseForSerializationFailure()
+        {
+            var ex = new WebSocketException(WebSocketError.SerializationFailed, "serialization");
+            Assert.IsFalse(ex.IsRetryable());
+        }
     }
 }

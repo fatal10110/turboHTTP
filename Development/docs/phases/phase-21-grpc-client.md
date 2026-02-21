@@ -1,7 +1,7 @@
 # Phase 21: gRPC Client
 
 **Milestone:** v2.0
-**Dependencies:** Phase 3B (HTTP/2), Phase 3C (TLS), Phase 19 (Async Runtime Refactor), Phase 20 Task 20.5 (Protobuf Handler)
+**Dependencies:** Phase 3B (HTTP/2), Phase 3C (TLS), Phase 19 (Async Runtime Refactor)
 **Estimated Complexity:** Very High
 **Estimated Effort:** 5-7 weeks
 **Critical:** No - v2.0 future feature
@@ -25,7 +25,7 @@ gRPC Layer
 ├── GrpcChannel              ← Connection management, load balancing
 ├── GrpcCall<TReq, TRes>     ← Single RPC call abstraction
 ├── GrpcInterceptor          ← Middleware for gRPC (auth, logging, retry)
-└── GrpcProtobufMarshaller   ← Serialization bridge (reuses Phase 20.5)
+└── GrpcProtobufMarshaller   ← Serialization bridge
 
 HTTP/2 Transport (Phase 3B)
 ├── Http2Connection           ← Existing multiplexed streams
@@ -34,7 +34,25 @@ HTTP/2 Transport (Phase 3B)
 
 ## Tasks
 
-### Task 21.1: gRPC Framing & Message Encoding
+### Task 21.1: Protobuf Content Handler
+
+**Goal:** Support Protocol Buffer serialization/deserialization in HTTP responses.
+
+**Deliverables:**
+- `ProtobufContentHandler<T>` — deserializes `application/x-protobuf` responses
+- Support for both `Google.Protobuf` (protobuf-net is secondary)
+- IL2CPP AOT-safe: uses pre-generated serializers, no runtime reflection
+- `response.AsProtobuf<MyMessage>()` convenience API
+
+**Platform Notes:**
+- Requires pre-generated C# protobuf classes (no runtime codegen)
+- AOT-safe: tested on IL2CPP iOS/Android
+
+**Estimated Effort:** 1 week
+
+---
+
+### Task 21.2: gRPC Framing & Message Encoding
 
 **Goal:** Implement the gRPC wire format (length-prefixed protobuf messages over HTTP/2 DATA frames).
 
@@ -48,7 +66,7 @@ HTTP/2 Transport (Phase 3B)
 
 ---
 
-### Task 21.2: gRPC Channel & Call Abstraction
+### Task 21.3: gRPC Channel & Call Abstraction
 
 **Goal:** Core abstractions for making gRPC calls.
 
@@ -62,7 +80,7 @@ HTTP/2 Transport (Phase 3B)
 
 ---
 
-### Task 21.3: Unary & Server-Streaming RPCs
+### Task 21.4: Unary & Server-Streaming RPCs
 
 **Goal:** Support the two most common gRPC call patterns.
 
@@ -77,7 +95,7 @@ HTTP/2 Transport (Phase 3B)
 
 ---
 
-### Task 21.4: Client-Streaming & Bidirectional RPCs
+### Task 21.5: Client-Streaming & Bidirectional RPCs
 
 **Goal:** Support the two advanced gRPC call patterns.
 
@@ -91,7 +109,7 @@ HTTP/2 Transport (Phase 3B)
 
 ---
 
-### Task 21.5: gRPC Interceptors
+### Task 21.6: gRPC Interceptors
 
 **Goal:** Middleware pattern for cross-cutting gRPC concerns.
 
@@ -107,7 +125,7 @@ HTTP/2 Transport (Phase 3B)
 
 ---
 
-### Task 21.6: gRPC Metadata, Status Codes & Error Handling
+### Task 21.7: gRPC Metadata, Status Codes & Error Handling
 
 **Goal:** Full gRPC status/metadata support.
 
@@ -121,7 +139,7 @@ HTTP/2 Transport (Phase 3B)
 
 ---
 
-### Task 21.7: Test Suite
+### Task 21.8: Test Suite
 
 **Goal:** Comprehensive tests covering protocol correctness and IL2CPP safety.
 
@@ -141,13 +159,14 @@ HTTP/2 Transport (Phase 3B)
 
 | Task | Priority | Effort | Dependencies |
 |------|----------|--------|--------------|
-| 21.1 Framing | Highest | 1w | Phase 20.5 (Protobuf) |
-| 21.2 Channel/Call | Highest | 1w | 21.1, Phase 3B |
-| 21.3 Unary/Server-Stream | Highest | 1w | 21.2 |
-| 21.4 Client/Bidi-Stream | High | 1-2w | 21.2 |
-| 21.5 Interceptors | Medium | 1w | 21.2 |
-| 21.6 Metadata/Status | High | 3-4d | 21.3 |
-| 21.7 Test Suite | High | 1w | All above |
+| 21.1 Protobuf Handler | Medium | 1w | Phase 5 |
+| 21.2 Framing | Highest | 1w | 21.1 |
+| 21.3 Channel/Call | Highest | 1w | 21.2, Phase 3B |
+| 21.4 Unary/Server-Stream | Highest | 1w | 21.3 |
+| 21.5 Client/Bidi-Stream | High | 1-2w | 21.3 |
+| 21.6 Interceptors | Medium | 1w | 21.3 |
+| 21.7 Metadata/Status | High | 3-4d | 21.4 |
+| 21.8 Test Suite | High | 1w | All above |
 
 ## Verification Plan
 
@@ -155,12 +174,11 @@ HTTP/2 Transport (Phase 3B)
 2. Server-streaming: receive 1000+ messages without data loss.
 3. Bidirectional: ping-pong echo test with concurrent send/receive.
 4. Deadline: verify `DEADLINE_EXCEEDED` status after configured timeout.
-5. IL2CPP AOT build and execution on iOS and Android.
+5. IL2CPP AOT build and execution on iOS and Android (including Protobuf handler).
 6. Interceptor chain ordering verified.
 
 ## Notes
 
 - This phase should only begin after Phase 19 (Async Refactor) is complete to benefit from `ValueTask`-first paths.
-- Phase 20 Task 20.5 (Protobuf Handler) is a direct prerequisite — the protobuf marshalling layer is shared.
-- Consider whether to support `grpc-web` for browser compatibility (could be a Task 21.8 if needed).
+- Consider whether to support `grpc-web` for browser compatibility (could be a Task 21.9 if needed).
 - gRPC reflection and health checking are out of scope for v2.0; they can be added later.

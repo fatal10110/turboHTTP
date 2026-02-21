@@ -118,6 +118,141 @@ namespace TurboHTTP.Tests.WebSocket
             }
         }
 
+        [Test]
+        public void ConnectAsync_RequiredExtensionMissing_FailsWithMandatoryExtension()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer();
+                using var transport = new TestTcpWebSocketTransport();
+                await using var connection = new WebSocketConnection();
+
+                var options = CreateOptions().WithRequiredCompression();
+
+                var ex = AssertAsync.ThrowsAsync<WebSocketException>(async () =>
+                    await connection.ConnectAsync(
+                        server.CreateUri("/required-extension-missing"),
+                        transport,
+                        options,
+                        CancellationToken.None).ConfigureAwait(false));
+
+                Assert.AreEqual(WebSocketError.ExtensionNegotiationFailed, ex.Error);
+                Assert.AreEqual(WebSocketCloseCode.MandatoryExtension, ex.CloseCode);
+                Assert.AreEqual(WebSocketState.Closed, connection.State);
+                Assert.IsTrue(connection.CloseStatus.HasValue);
+                Assert.AreEqual(WebSocketCloseCode.MandatoryExtension, connection.CloseStatus.Value.Code);
+            });
+        }
+
+        [Test]
+        public void ConnectAsync_OptionalExtensionNegotiationFailure_FallsBackToNoExtensions()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer(
+                    new WebSocketTestServerOptions
+                    {
+                        HandshakeExtensionsHeader = "x-unknown-extension"
+                    });
+
+                using var transport = new TestTcpWebSocketTransport();
+                await using var connection = new WebSocketConnection();
+
+                var options = CreateOptions().WithCompression();
+                await connection.ConnectAsync(
+                    server.CreateUri("/optional-extension-fallback"),
+                    transport,
+                    options,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(WebSocketState.Open, connection.State);
+                Assert.AreEqual(0, connection.NegotiatedExtensions.Count);
+
+                await connection.CloseAsync(
+                    WebSocketCloseCode.NormalClosure,
+                    "done",
+                    CancellationToken.None).ConfigureAwait(false);
+            });
+        }
+
+        [Test]
+        public void ConnectAsync_RequiredExtensionNegotiated_Succeeds()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer(
+                    new WebSocketTestServerOptions
+                    {
+                        HandshakeExtensionsHeader =
+                            "permessage-deflate; server_no_context_takeover; client_no_context_takeover"
+                    });
+
+                using var transport = new TestTcpWebSocketTransport();
+                await using var connection = new WebSocketConnection();
+
+                var options = CreateOptions().WithRequiredCompression();
+                await connection.ConnectAsync(
+                    server.CreateUri("/required-extension-negotiated"),
+                    transport,
+                    options,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(WebSocketState.Open, connection.State);
+                Assert.AreEqual(1, connection.NegotiatedExtensions.Count);
+                Assert.AreEqual("permessage-deflate", connection.NegotiatedExtensions[0]);
+
+                await connection.CloseAsync(
+                    WebSocketCloseCode.NormalClosure,
+                    "done",
+                    CancellationToken.None).ConfigureAwait(false);
+            });
+        }
+
+        [Test]
+        public void Compression_EndToEndRoundTrip_WithNegotiatedPerMessageDeflate()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer(
+                    new WebSocketTestServerOptions
+                    {
+                        EnablePerMessageDeflate = true
+                    });
+
+                using var transport = new TestTcpWebSocketTransport();
+                await using var connection = new WebSocketConnection();
+
+                var options = CreateOptions().WithRequiredCompression();
+                options.FragmentationThreshold = 128;
+
+                string payload = new string('a', 4096) + "|turbohttp-compression-e2e|";
+
+                await connection.ConnectAsync(
+                    server.CreateUri("/compression-e2e"),
+                    transport,
+                    options,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(1, connection.NegotiatedExtensions.Count);
+                Assert.AreEqual("permessage-deflate", connection.NegotiatedExtensions[0]);
+
+                await connection.SendTextAsync(payload, CancellationToken.None).ConfigureAwait(false);
+                using var message = await connection.ReceiveAsync(CancellationToken.None).ConfigureAwait(false);
+
+                Assert.AreEqual(payload, message.Text);
+
+                var metrics = connection.Metrics;
+                Assert.Greater(metrics.UncompressedBytesSent, 0);
+                Assert.Greater(metrics.CompressedBytesSent, 0);
+                Assert.Greater(metrics.CompressionRatio, 1.0d);
+
+                await connection.CloseAsync(
+                    WebSocketCloseCode.NormalClosure,
+                    "done",
+                    CancellationToken.None).ConfigureAwait(false);
+            });
+        }
+
         private static WebSocketConnectionOptions CreateOptions()
         {
             return new WebSocketConnectionOptions
