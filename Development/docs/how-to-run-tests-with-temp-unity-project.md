@@ -126,3 +126,27 @@ PY
 3. EditMode run
 4. Review XML summaries and logs
 
+## Phase 19.5 Allocation Regression Gate
+
+Run the dedicated Phase 19 allocation/throughput benchmark gate (PlayMode default):
+
+```bash
+/Users/arturkoshtei/workspace/turboHTTP/Development/scripts/phase19/run-allocation-gate.sh gate
+```
+
+Optional threshold override (default is `10` percent over baseline):
+
+```bash
+TURBOHTTP_ALLOCATION_REGRESSION_THRESHOLD_PERCENT=15 \
+  /Users/arturkoshtei/workspace/turboHTTP/Development/scripts/phase19/run-allocation-gate.sh gate
+```
+
+Record observed measurements to an output baseline artifact (does not enforce regression checks):
+
+```bash
+/Users/arturkoshtei/workspace/turboHTTP/Development/scripts/phase19/run-allocation-gate.sh record
+```
+
+Baseline source of truth:
+
+- `Tests/Benchmarks/phase19-allocation-baselines.json`

@@ -430,8 +430,8 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
                 var context = new RequestContext(request);
-                AssertAsync.ThrowsAsync<UHttpException>(
-                    async () => await conn.SendRequestAsync(request, context, cts.Token));
+                AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(
+                    () => conn.SendRequestAsync(request, context, cts.Token));
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();
@@ -516,6 +516,83 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 var response = await task1;
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        [Category("Stress")]
+        public void GoAwayFrame_WithConcurrentInFlightRequests_CompletesOrFailsByLastStreamId()
+        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(20000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                const int totalRequests = 50;
+                var responseTasks = new ValueTask<UHttpResponse>[totalRequests];
+                var streamIds = new int[totalRequests];
+
+                for (int i = 0; i < totalRequests; i++)
+                {
+                    var request = new UHttpRequest(
+                        HttpMethod.GET,
+                        new Uri("https://test.example.com/stress/" + i));
+                    var context = new RequestContext(request);
+                    responseTasks[i] = conn.SendRequestAsync(request, context, cts.Token);
+
+                    var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                    Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                    streamIds[i] = headersFrame.StreamId;
+                }
+
+                var lastAllowedStreamId = streamIds[(totalRequests / 2) - 1];
+                var goawayPayload = new byte[8];
+                goawayPayload[0] = (byte)((lastAllowedStreamId >> 24) & 0x7F);
+                goawayPayload[1] = (byte)((lastAllowedStreamId >> 16) & 0xFF);
+                goawayPayload[2] = (byte)((lastAllowedStreamId >> 8) & 0xFF);
+                goawayPayload[3] = (byte)(lastAllowedStreamId & 0xFF);
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.GoAway,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = 0,
+                    Payload = goawayPayload,
+                    Length = 8
+                }, cts.Token);
+
+                for (int i = 0; i < totalRequests; i++)
+                {
+                    if (streamIds[i] > lastAllowedStreamId)
+                        continue;
+
+                    await serverCodec.WriteFrameAsync(
+                        BuildResponseHeadersFrame(streamIds[i], 200, endStream: true),
+                        cts.Token);
+                }
+
+                var successCount = 0;
+                var failureCount = 0;
+
+                for (int i = 0; i < totalRequests; i++)
+                {
+                    if (streamIds[i] <= lastAllowedStreamId)
+                    {
+                        using var response = await responseTasks[i].ConfigureAwait(false);
+                        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                        successCount++;
+                        continue;
+                    }
+
+                    AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(() => responseTasks[i]);
+                    failureCount++;
+                }
+
+                Assert.AreEqual(totalRequests / 2, successCount);
+                Assert.AreEqual(totalRequests / 2, failureCount);
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();

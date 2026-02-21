@@ -1,38 +1,26 @@
 # Phase 19a.3: Segmented Sequences (`ReadOnlySequence<byte>`)
 
-**Depends on:** 19a.1 (`ArrayPool<byte>` Completion Sweep)
+**Depends on:** 19a.1 (`ArrayPool<byte>` completion)
 **Estimated Effort:** 1 week
 
 ---
 
-## Step 0: Implement `PooledSegment` and `SegmentedBuffer`
+## Step 0: Implement `PooledSegment` + `SegmentedBuffer`
 
 **File:** `Runtime/Performance/PooledSegment.cs` (new)
 **File:** `Runtime/Performance/SegmentedBuffer.cs` (new)
 
 Required behavior:
 
-1. **`PooledSegment`** — A `ReadOnlySequenceSegment<byte>` subclass that wraps a pooled `byte[]` from `ArrayPool<byte>.Shared`:
-   - Stores the rented array and the actual written length.
-   - `Memory` property returns `ReadOnlyMemory<byte>` sliced to the written length.
-   - Provides `SetNext(PooledSegment)` to link segments into a chain.
-   - Implements `IDisposable` to return the array to the pool.
-
-2. **`SegmentedBuffer`** — A builder that manages a linked list of `PooledSegment` instances:
-   - `Write(ReadOnlySpan<byte> data)` — appends data to the current segment; if the segment is full, rents a new one and links it.
-   - `GetSequence()` — returns a `ReadOnlySequence<byte>` spanning all segments.
-   - `TotalLength` (long) — total bytes written across all segments.
-   - `Dispose()` — returns all rented segments to the pool.
-   - `Reset()` — returns all segments except the first, resets write position (for reuse).
-3. Each segment has a fixed size (configurable, default: 16KB) to avoid LOH allocations (LOH threshold is ~85KB).
+1. `PooledSegment` extends `ReadOnlySequenceSegment<byte>` and owns one pooled array slice.
+2. `SegmentedBuffer` manages append, sequence projection, reset, and dispose.
+3. Default segment size is 16KB (LOH-safe).
+4. `Dispose()` returns all arrays deterministically.
 
 Implementation constraints:
 
-1. Segment chain must form a valid `ReadOnlySequence<byte>` — first segment's `RunningIndex` is 0; each subsequent segment's `RunningIndex` is the sum of all previous segments' lengths.
-2. `PooledSegment` must extend `ReadOnlySequenceSegment<byte>` (the .NET base class for multi-segment sequences).
-3. Thread safety: NOT thread-safe — designed for single-writer, single-reader use within a connection's receive loop.
-4. Mark both classes as `sealed` for IL2CPP devirtualization.
-5. Segment size should be a power-of-two multiple of page size for optimal memory alignment.
+1. Running indexes must produce valid multi-segment `ReadOnlySequence<byte>`.
+2. Classes are `sealed` and single-writer/single-reader by design.
 
 ---
 
@@ -42,86 +30,77 @@ Implementation constraints:
 
 Required behavior:
 
-1. Create a `SegmentedReadStream : Stream` wrapper that allows `DeflateStream` (and other `Stream`-based consumers) to read from a `ReadOnlySequence<byte>` input.
-2. The stream reads sequentially across segment boundaries — when one segment is exhausted, it advances to the next.
-3. `Read(byte[] buffer, int offset, int count)` — synchronous read, copies data from the current segment position into the provided buffer.
-4. `ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)` — async version (synchronous internally since all data is in memory, but must return `Task<int>` for API compatibility).
-5. Support `Position` (get/set) and `Length` properties.
-6. Support `Seek` for full `Stream` compatibility (required by some decompression libraries).
+1. Add a `Stream` adapter over `ReadOnlySequence<byte>`.
+2. Correctly read across segment boundaries.
+3. Provide `Read`, `ReadAsync`, `Seek`, `Position`, and `Length`.
+4. Never flatten entire sequence just to satisfy reads.
 
 Implementation constraints:
 
-1. The stream does NOT own the segments — it reads from a `ReadOnlySequence<byte>` provided at construction time. The caller manages segment lifecycle.
-2. Do NOT copy the entire sequence into a contiguous buffer — that defeats the purpose. Read directly from segment memory.
-3. `ReadAsync` is synchronous (returns `Task.FromResult`) since the data is already in memory. This avoids async state machine allocation for in-memory reads.
-4. Track current position via a `SequencePosition` field to efficiently resume reads across segments.
-5. Mark `CanRead = true`, `CanSeek = true`, `CanWrite = false`. Write methods throw `NotSupportedException`.
+1. The stream does not own segment lifetimes.
+2. `ReadAsync` may complete synchronously for in-memory data.
 
 ---
 
-## Step 2: Integrate Segmented Sequences into HTTP Chunked Transfer
+## Step 2: Integrate Into HTTP/1.1 Chunked + Decompression Paths
 
-**File:** `Runtime/Transport/Http11ResponseParser.cs` (modified) or equivalent response body reader
+**File:** `Runtime/Transport/Http1/Http11ResponseParser.cs` (modified)
 
 Required behavior:
 
-1. When reading chunked HTTP response bodies, instead of allocating a growing contiguous buffer:
-   - Rent a 16KB `PooledSegment` for the first chunk.
-   - If the chunk exceeds 16KB, rent additional segments and link them.
-   - Each HTTP chunk boundary is handled by the reader; data may span segment boundaries.
-2. The final response body is represented as a `ReadOnlySequence<byte>` via `SegmentedBuffer.GetSequence()`.
-3. If decompression is needed (Content-Encoding: gzip/deflate):
-   - Wrap the segmented input in a `SegmentedReadStream`.
-   - Pass to `DeflateStream` / `GZipStream` for decompression.
-   - Decompression output is written into a **new** `SegmentedBuffer` (segmented output, not contiguous).
-4. This is gated behind `UseZeroAllocPipeline` — when disabled, use the existing contiguous buffer path.
+1. Chunked-body assembly uses `SegmentedBuffer` (no growing contiguous arrays).
+2. Decompression input/output use segmented adapters.
+3. Keep all existing chunk-size and body-limit safety checks.
 
 Implementation constraints:
 
-1. Chunk boundaries in chunked transfer encoding may not align with segment boundaries — the reader must handle data spanning across segments correctly.
-2. The `SegmentedReadStream` adapter must provide correct `Read()` results even when a single `Read()` call spans multiple segments.
-3. If `SegmentedStream` performance proves insufficient for the decompression subsystem, document the issue and fall back to flattening with a pooled buffer — but this must be measured and justified.
-4. The existing response body API (`UHttpResponse.Body`, `.BodyBytes`, `.BodyString`) must continue to work. For the segmented path, provide lazy flattening: `BodyBytes` flattens the sequence on first access and caches the result.
-5. Do NOT change the public `UHttpResponse` API — add an internal `BodySequence` property for internal consumers that can process segmented data.
+1. Correct handling when chunk boundaries and segment boundaries do not align.
+2. Keep protocol error mapping unchanged.
 
 ---
 
-## Step 3: Integrate Segmented Sequences into WebSocket Message Assembly
+## Step 3: Add Sequence-Aware Response Body Handling
 
-**File:** `Runtime/WebSocket/MessageAssembler.cs` (modified)
+**File:** `Runtime/Core/UHttpResponse.cs` (modified)
 
 Required behavior:
 
-1. When assembling fragmented WebSocket messages, instead of copying all fragments into a single contiguous buffer:
-   - Each fragment's payload buffer (already rented from the pool) becomes a segment in a `SegmentedBuffer`.
-   - Fragments are linked as segments without copying.
-   - The assembled message payload is represented as a `ReadOnlySequence<byte>`.
-2. For `permessage-deflate` decompression (if implemented):
-   - Wrap the segmented payload in `SegmentedReadStream`.
-   - Decompress into a new `SegmentedBuffer`.
-3. For text messages requiring UTF-8 validation, validate across segment boundaries (multi-byte UTF-8 characters may span segments).
-4. This is gated behind `UseZeroAllocPipeline` — when disabled, use the existing contiguous copy path.
+1. Add internal segmented-body representation (`ReadOnlySequence<byte>` or equivalent).
+2. Keep public body APIs functional.
+3. Flatten lazily only when callers require contiguous data.
+4. Cache flattened data to avoid repeated copies.
 
 Implementation constraints:
 
-1. Fragment ownership transfers to the `SegmentedBuffer` — individual fragment buffers must NOT be returned to the pool until the assembled message is disposed.
-2. UTF-8 validation across segment boundaries requires a `Utf8SegmentValidator` that tracks partial character state between segments. Use `System.Text.Encoding.UTF8.GetDecoder()` with `flush: false` for intermediate segments and `flush: true` for the final segment.
-3. `WebSocketMessage.Data` (the public property) must continue to return contiguous data. For the segmented path, flatten lazily on first access — or provide an alternative `DataSequence` property.
-4. The `MaxMessageSize` check must still be enforced during accumulation — check total segment length before linking each new fragment.
+1. Public API behavior stays deterministic.
+2. Disposal returns any pooled segmented storage.
+
+---
+
+## Step 4: Integrate Into WebSocket Fragment Assembly
+
+**Files modified:**
+- `Runtime/WebSocket/MessageAssembler.cs`
+- `Runtime/WebSocket/WebSocketMessage.cs`
+
+Required behavior:
+
+1. Fragmented payloads are assembled as linked segments without mandatory contiguous copy.
+2. UTF-8 validation for text messages supports multi-byte sequences across boundaries.
+3. Keep max message size enforcement during accumulation.
+4. Provide contiguous flattening only when required by existing `Data` access pattern.
+
+Implementation constraints:
+
+1. Ownership transfer from fragment buffers to assembled message is explicit.
+2. All pooled buffers are returned on reset/dispose/error.
 
 ---
 
 ## Verification Criteria
 
-1. `PooledSegment` correctly wraps pooled arrays and forms valid `ReadOnlySequence<byte>` chains.
-2. `SegmentedBuffer` correctly manages segment lifecycle (rent, link, dispose).
-3. `SegmentedReadStream` correctly reads across segment boundaries without data corruption.
-4. `SegmentedReadStream.Seek` works correctly for arbitrary positions.
-5. Chunked HTTP response bodies spanning multiple segments are correctly assembled.
-6. Decompression via `SegmentedReadStream` produces identical output to the contiguous buffer path.
-7. WebSocket fragmented message assembly via segments produces identical payloads to the contiguous copy path.
-8. UTF-8 validation works correctly for multi-byte characters spanning segment boundaries.
-9. No LOH allocations (> 85KB contiguous) during large message processing.
-10. Memory profiler shows segmented path eliminates growing-buffer copy allocations.
-11. `BodyBytes` lazy flattening works correctly and caches the result.
-12. All existing tests pass with `UseZeroAllocPipeline = true` and `UseZeroAllocPipeline = false`.
+1. Segment chain integrity is valid and leak-free.
+2. HTTP chunked/decompression outputs match prior behavior.
+3. WebSocket fragmented message payloads are byte-identical to prior behavior.
+4. UTF-8 boundary validation remains correct.
+5. Large-message processing avoids LOH growth from contiguous expansion.

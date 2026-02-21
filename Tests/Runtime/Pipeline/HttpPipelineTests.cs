@@ -91,8 +91,8 @@ namespace TurboHTTP.Tests.Pipeline
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
             var context = new RequestContext(request);
 
-            AssertAsync.ThrowsAsync<InvalidOperationException>(
-                async () => await pipeline.ExecuteAsync(request, context));
+            AssertAsync.ThrowsAsync<InvalidOperationException, UHttpResponse>(
+                () => pipeline.ExecuteAsync(request, context));
         }
 
         [Test]
@@ -111,8 +111,8 @@ namespace TurboHTTP.Tests.Pipeline
             var context = new RequestContext(
                 new UHttpRequest(HttpMethod.GET, new Uri("https://test.com")));
 
-            AssertAsync.ThrowsAsync<ArgumentNullException>(
-                async () => await pipeline.ExecuteAsync(null, context));
+            AssertAsync.ThrowsAsync<ArgumentNullException, UHttpResponse>(
+                () => pipeline.ExecuteAsync(null, context));
         }
 
         // --- Helper middleware classes ---

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "capturedAtUtc": "2026-02-21T00:00:00Z",
+  "defaultThresholdPercent": 10,
+  "scenarios": [
+    {
+      "name": "http11_warm_request_mock_transport",
+      "maxBytesPerOperation": 32768,
+      "minSamples": 384,
+      "notes": "Warm UHttpClient request path over MockTransport."
+    },
+    {
+      "name": "middleware_chain_sync_fast_path_mock_transport",
+      "maxBytesPerOperation": 49152,
+      "minSamples": 320,
+      "notes": "Request path with 8 synchronous fast-path middleware."
+    },
+    {
+      "name": "http2_poolable_source_single_completion",
+      "maxBytesPerOperation": 2048,
+      "minSamples": 1024,
+      "notes": "Poolable IValueTaskSource single completion hot-path proxy."
+    },
+    {
+      "name": "http2_poolable_source_multiplexed_burst_100",
+      "maxBytesPerOperation": 8192,
+      "minSamples": 160,
+      "notes": "Poolable IValueTaskSource burst completion proxy for multiplexed streams."
+    }
+  ]
+}

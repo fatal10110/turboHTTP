@@ -1,33 +1,31 @@
 # Phase 19a.1: `ArrayPool<byte>` Completion Sweep
 
-**Depends on:** Phase 19 (Async Runtime Refactor)
-**Estimated Effort:** 1-2 days
+**Depends on:** Phase 19 (async runtime refactor)
+**Estimated Effort:** 2-3 days
 
 ---
 
-## Step 0: Promote `ArrayPoolMemoryOwner<T>` to Performance Namespace
+## Step 0: Promote `ArrayPoolMemoryOwner<T>` to Shared Performance Namespace
 
-**File:** `Runtime/Performance/ArrayPoolMemoryOwner.cs` (new — moved from WebSocket)
-**File:** `Runtime/WebSocket/ArrayPoolMemoryOwner.cs` (deleted or redirected)
+**File:** `Runtime/Performance/ArrayPoolMemoryOwner.cs` (new)
+**File:** `Runtime/WebSocket/ArrayPoolMemoryOwner.cs` (deleted after migration)
 
 Required behavior:
 
-1. Move `ArrayPoolMemoryOwner<T>` from `TurboHTTP.WebSocket` namespace to `TurboHTTP.Performance` namespace.
-2. Ensure the type implements `IMemoryOwner<T>` with deterministic `Dispose()` that returns the array to `ArrayPool<T>.Shared`.
-3. Add a `Length` property returning the originally requested length (not the pooled array length).
-4. Integrate with `PooledBuffer<T>` debug wrapper from 19a.0 — in debug builds, `ArrayPoolMemoryOwner<T>` should be constructable via `PooledBuffer<T>` for use-after-return detection.
-5. Update all existing WebSocket references to use the new namespace location.
+1. Move `ArrayPoolMemoryOwner<T>` from `TurboHTTP.WebSocket` to `TurboHTTP.Performance`.
+2. Keep deterministic `Dispose()` returning rented arrays to `ArrayPool<T>.Shared`.
+3. Keep logical-length semantics (`Memory` sliced to requested length).
+4. Update all runtime references (WebSocket + transport code) to the new namespace.
 
 Implementation constraints:
 
-1. Use `[assembly: TypeForwardedTo]` or a simple `using` alias in the WebSocket assembly to avoid breaking internal references during transition, if needed.
-2. The type must remain `sealed` for IL2CPP devirtualization.
-3. Add XML doc comments explaining ownership semantics: the caller who creates an `ArrayPoolMemoryOwner<T>` owns the buffer and must dispose it.
-4. Ensure `.Memory` returns `Memory<T>` sliced to the requested length, not the full pooled array length.
+1. Type remains `sealed`.
+2. `Rent(0)` behavior remains allocation-free.
+3. Keep optional `TryDetach(...)` for ownership transfer paths.
 
 ---
 
-## Step 1: Convert Remaining `new byte[]` in HTTP/2 Subsystem
+## Step 1: Remove Remaining Hot-Path `new byte[]` in HTTP/2
 
 **Files modified:**
 - `Runtime/Transport/Http2/Http2Connection.Lifecycle.cs`
@@ -38,23 +36,19 @@ Implementation constraints:
 
 Required behavior:
 
-1. **`Http2Connection.Lifecycle`** — Replace `new byte[]` at GOAWAY payload construction (lines ~258, 274) with `ArrayPool<byte>.Shared.Rent()` + `try/finally` return. Wrap in `ArrayPoolMemoryOwner<byte>` for deterministic disposal.
-2. **`Http2FrameCodec`** — Replace `new byte[frame.Length]` (line ~67) with pooled buffer. The frame payload buffer must be returned after the frame is processed.
-3. **`Http2Settings`** — Replace settings payload `new byte[]` (line ~113) with pooled buffer. Settings frames are small (6 bytes per setting) but frequent.
-4. **`HpackEncoder`** — Replace result array allocation (line ~211) with pooled buffer. The result buffer must be returned by the caller after the encoded headers are written to the stream.
-5. **`HpackHuffman`** — Replace `new byte[]` allocations (lines ~335, 466) with pooled buffers. Huffman encode/decode buffers are hot-path in header-heavy workloads.
+1. Replace remaining per-operation `new byte[]` allocations with pooled rents.
+2. Use `try/finally` or owner disposal for every rent.
+3. Use owner types when lifetime crosses method boundaries.
+4. Clear sensitive buffers on return when needed.
 
 Implementation constraints:
 
-1. Every `Rent()` must have a corresponding `Return()` in a `finally` block or via `IMemoryOwner<T>.Dispose()`.
-2. Use `ArrayPoolMemoryOwner<byte>` where buffer lifetime crosses method boundaries (ownership transfer).
-3. Use raw `ArrayPool<byte>.Shared.Rent()/Return()` with try/finally where buffer is used and returned within the same method scope.
-4. Pass data as `Memory<byte>` or `ReadOnlyMemory<byte>` — never expose raw pooled arrays to consumers.
-5. Clear sensitive data (TLS-related, auth headers) before returning buffers to the pool via `clearArray: true` parameter.
+1. No raw pooled-array exposure outside internal ownership boundaries.
+2. Preserve existing HTTP/2 behavior exactly.
 
 ---
 
-## Step 2: Convert Remaining `new byte[]` in WebSocket Subsystem
+## Step 2: Remove Remaining Hot-Path `new byte[]` in WebSocket
 
 **Files modified:**
 - `Runtime/WebSocket/WebSocketConstants.cs`
@@ -63,49 +57,54 @@ Implementation constraints:
 
 Required behavior:
 
-1. **`WebSocketConstants`** — Replace key bytes allocation (line ~63) with pooled buffer. The key is 16 bytes; use `ArrayPool<byte>.Shared.Rent(16)` with immediate return after base64 encoding.
-2. **`WebSocketHandshakeValidator`** — Replace header, trailing, and prefetch array allocations (lines ~283, 290, 554) with pooled buffers. These are transient buffers used during handshake validation only.
-3. **`WebSocketMessage`** — Replace copy array allocation (line ~91) with pooled buffer. The message payload buffer ownership must be tracked via `IMemoryOwner<byte>` for the `IDisposable` lease pattern already present in `WebSocketMessage`.
+1. Replace transient handshake/key allocations with pooled buffers.
+2. Keep `WebSocketMessage` lease ownership explicit and deterministic.
+3. Keep detached-copy helper for explicit copy semantics, but mark as cold path.
 
 Implementation constraints:
 
-1. `WebSocketMessage` already uses `IDisposable` buffer lease — integrate `ArrayPoolMemoryOwner<byte>` as the backing implementation.
-2. Handshake buffers are cold-path (once per connection) but still should be pooled for consistency.
-3. Key generation buffer is tiny (16 bytes) — pooling avoids allocation but rent/return overhead is comparable to allocation. Pool anyway for consistency and to avoid `new byte[]` in the codebase.
+1. Return all handshake buffers in all error paths.
+2. Preserve existing protocol validation and error behavior.
 
 ---
 
-## Step 3: Convert `EncodingHelper` and `MultipartFormDataBuilder`
+## Step 3: Remove Transport Encoding Helper Byte Allocations
 
-**Files modified:**
-- `Runtime/Core/EncodingHelper.cs`
-- `Runtime/Content/MultipartFormDataBuilder.cs`
+**File:** `Runtime/Transport/Internal/EncodingHelper.cs` (modified)
 
 Required behavior:
 
-1. **`EncodingHelper`** — Replace encoding buffer allocation (line ~69) with `ArrayPool<byte>.Shared.Rent()`. The buffer must be returned after encoding is complete.
-2. **`MultipartFormDataBuilder.Build()`** — Replace internal `MemoryStream` with a pooled buffer strategy:
-   - Use `ArrayPoolMemoryOwner<byte>` to back the output buffer.
-   - Size the initial buffer based on estimated content size (sum of part sizes + boundary overhead).
-   - If the initial buffer is too small, rent a larger buffer, copy, and return the original.
-   - Return an `IMemoryOwner<byte>` from `Build()` instead of `byte[]` — callers are responsible for disposal.
-   - This is an **internal API change** — update all internal callers to handle `IMemoryOwner<byte>`.
+1. Avoid allocating `byte[]` for routine header encoding paths.
+2. Provide span/buffer-writer based helpers used by serializers/parsers.
+3. Keep Latin-1 fallback behavior for IL2CPP stripping cases.
 
 Implementation constraints:
 
-1. `MultipartFormDataBuilder.Build()` return type change is internal-only — no public API break. The public `MultipartFormDataContent` type that wraps this must manage the `IMemoryOwner<byte>` lifecycle.
-2. `EncodingHelper` buffer size must be calculated via `Encoding.GetMaxByteCount()` for rent, but actual written length must be tracked for the returned `Memory<byte>` slice.
-3. Do NOT over-optimize `MultipartFormDataBuilder` — it is a cold-path (used once per multipart request). The goal is eliminating `MemoryStream` and `ToArray()` copy, not micro-optimizing.
+1. Do not regress correctness for non-ASCII fallback replacement behavior.
+2. Keep existing encoding fallback safety.
+
+---
+
+## Step 4: Prepare Multipart Builder for Buffer-Writer Migration
+
+**File:** `Runtime/Files/MultipartFormDataBuilder.cs` (modified)
+
+Required behavior:
+
+1. Remove `MemoryStream`-specific internals so 19a.2 can switch to `IBufferWriter<byte>` cleanly.
+2. Keep current public behavior in this step; full buffer-writer output lands in 19a.2.
+
+Implementation constraints:
+
+1. Avoid introducing additional temporary allocations while refactoring internals.
+2. Keep generated multipart payload byte-identical.
 
 ---
 
 ## Verification Criteria
 
-1. All `new byte[]` allocations in the listed files are replaced with pooled equivalents.
-2. Every `Rent()` has a corresponding `Return()` (verified by code review and `PooledBuffer<T>` debug mode).
-3. `ArrayPoolMemoryOwner<T>` is accessible from all assemblies that need it (Core, Transport, WebSocket).
-4. No buffer leaks under normal operation — `ActiveCount` diagnostic returns to zero after a full request/response cycle.
-5. `MultipartFormDataBuilder.Build()` returns `IMemoryOwner<byte>` and all callers dispose correctly.
-6. All existing tests pass without modification (API changes are internal-only).
-7. Memory profiler shows zero `new byte[]` allocations on hot paths during a sustained request benchmark.
-8. Sensitive data (HPACK headers, TLS handshake) is cleared before buffer return.
+1. Listed HTTP/2 and WebSocket hot-path `new byte[]` allocations are removed.
+2. Every pooled rent has deterministic return/dispose coverage.
+3. `ArrayPoolMemoryOwner<T>` works across all dependent assemblies.
+4. No buffer leaks (`ActiveCount` returns to baseline after request cycles).
+5. Existing tests pass with `EnableZeroAllocPipeline = true`.

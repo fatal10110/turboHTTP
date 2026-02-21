@@ -55,12 +55,13 @@ namespace TurboHTTP.Transport.Http2
         private int _lastGoawayStreamId;
         private int _disposed;
         private static readonly TimeSpan KeepAlivePingInterval = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan SettingsAckTimeout = TimeSpan.FromSeconds(5);
 
         // CONTINUATION tracking
         private int _continuationStreamId;
 
         // Initialization handshake
-        private readonly PoolableValueTaskSource<bool> _settingsAckSource;
+        private readonly ResettableValueTaskSource<bool> _settingsAckSource;
 
         // HPACK table size tracking (for detecting changes including back-to-default)
         private int _lastHeaderTableSize = Http2Constants.DefaultHeaderTableSize;
@@ -90,7 +91,7 @@ namespace TurboHTTP.Transport.Http2
             _hpackDecoder = new HpackDecoder(maxDecodedHeaderBytes: options.MaxDecodedHeaderBytes);
             _localSettings = new Http2Settings(options);
             _localSettings.Apply(Http2SettingId.EnablePush, options.EnablePush ? 1u : 0u);
-            _settingsAckSource = new PoolableValueTaskSource<bool>(_ => { });
+            _settingsAckSource = new ResettableValueTaskSource<bool>();
             _settingsAckSource.PrepareForUse();
         }
 
@@ -106,6 +107,8 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public async Task InitializeAsync(CancellationToken ct)
         {
+            _settingsAckSource.PrepareForUse();
+
             // 1. Write connection preface
             await _codec.WritePrefaceAsync(ct);
 
@@ -124,41 +127,40 @@ namespace TurboHTTP.Transport.Http2
             _readLoopTask = Task.Run(() => ReadLoopAsync(_cts.Token));
 
             // 4. Wait for SETTINGS ACK with timeout
-            var ackTask = _settingsAckSource.CreateValueTask().AsTask();
-            var timeoutTask = Task.Delay(5000, ct);
-            var completed = await Task.WhenAny(ackTask, timeoutTask).ConfigureAwait(false);
-
-            if (completed == timeoutTask)
+            using (var ackTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                if (ct.IsCancellationRequested)
-                {
-                    try
-                    {
-                        _settingsAckSource.SetCanceled(ct);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // ACK may have raced and completed the source concurrently.
-                    }
+                ackTimeoutCts.CancelAfter(SettingsAckTimeout);
+                using (ackTimeoutCts.Token.Register(() =>
+                       {
+                           if (ct.IsCancellationRequested)
+                           {
+                               try
+                               {
+                                   _settingsAckSource.SetCanceled(ct);
+                               }
+                               catch (InvalidOperationException)
+                               {
+                                   // ACK may have raced and completed the source concurrently.
+                               }
+                               return;
+                           }
 
-                    ct.ThrowIfCancellationRequested();
-                }
-
-                var timeoutError = new UHttpException(new UHttpError(UHttpErrorType.Timeout,
-                    "HTTP/2 SETTINGS ACK timeout"));
-                try
+                           var timeoutError = new UHttpException(new UHttpError(
+                               UHttpErrorType.Timeout,
+                               "HTTP/2 SETTINGS ACK timeout"));
+                           try
+                           {
+                               _settingsAckSource.SetException(timeoutError);
+                           }
+                           catch (InvalidOperationException)
+                           {
+                               // ACK may have raced and completed the source concurrently.
+                           }
+                       }))
                 {
-                    _settingsAckSource.SetException(timeoutError);
+                    await _settingsAckSource.CreateValueTask().ConfigureAwait(false);
                 }
-                catch (InvalidOperationException)
-                {
-                    // ACK may have raced and completed the source concurrently.
-                }
-
-                throw timeoutError;
             }
-
-            await ackTask.ConfigureAwait(false); // propagate any exception
 
             // Keep idle HTTP/2 connections active on mobile NATs.
             if (_keepAliveTask == null)

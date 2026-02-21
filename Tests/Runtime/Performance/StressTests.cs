@@ -121,6 +121,98 @@ namespace TurboHTTP.Tests.Performance
         }
 
         [Test]
+        [Category("Stress")]
+        public void TimeoutStorm_AggressiveTimeouts_ClientRecovers()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport(
+                    (Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>>)(async (req, ctx, ct) =>
+                {
+                    var segments = req.Uri.Segments;
+                    var lastSegment = segments.Length == 0
+                        ? "0"
+                        : segments[segments.Length - 1].Trim('/');
+
+                    var delayMs = 0;
+                    if (!int.TryParse(lastSegment, out delayMs))
+                        delayMs = 0;
+
+                    using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeoutCts.CancelAfter(req.Timeout);
+
+                    try
+                    {
+                        await Task.Delay(delayMs, timeoutCts.Token).ConfigureAwait(false);
+                        return new UHttpResponse(
+                            HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                    {
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.Timeout,
+                            "Simulated timeout in TimeoutStorm transport."));
+                    }
+                }));
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = false
+                });
+
+                const int total = 400;
+                var tasks = new Task<UHttpResponse>[total];
+                for (int i = 0; i < total; i++)
+                {
+                    var delayMs = (i * 37) % 201; // deterministic spread: [0,200]
+                    tasks[i] = client
+                        .Get("https://test.com/timeout/" + delayMs)
+                        .WithTimeout(TimeSpan.FromMilliseconds(50))
+                        .SendAsync()
+                        .AsTask();
+                }
+
+                var timedOut = 0;
+                var succeeded = 0;
+
+                for (int i = 0; i < total; i++)
+                {
+                    try
+                    {
+                        using var response = await tasks[i].ConfigureAwait(false);
+                        if (response.IsSuccessStatusCode)
+                            succeeded++;
+                    }
+                    catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Timeout)
+                    {
+                        timedOut++;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Preserve robustness if timeout is surfaced as cancellation.
+                        timedOut++;
+                    }
+                }
+
+                Assert.Greater(timedOut, 0, "Expected timeout errors under aggressive timeout storm.");
+                Assert.Greater(succeeded, 0, "Expected non-timed-out requests to succeed.");
+
+                using var followUp = await client
+                    .Get("https://test.com/timeout/0")
+                    .WithTimeout(TimeSpan.FromMilliseconds(250))
+                    .SendAsync()
+                    .ConfigureAwait(false);
+
+                Assert.AreEqual(HttpStatusCode.OK, followUp.StatusCode);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void HighConcurrency_WithConcurrencyMiddleware()
         {
             Task.Run(async () =>

@@ -38,6 +38,32 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
+        /// Zero-overhead UniTask wrapper for UHttpClient.Head(...).SendAsync(...).
+        /// </summary>
+        public static UniTask<UHttpResponse> HeadAsync(
+            this UHttpClient client,
+            string url,
+            CancellationToken cancellationToken = default,
+            PlayerLoopTiming? playerLoopTiming = null)
+        {
+            if (client == null) throw new System.ArgumentNullException(nameof(client));
+            return client.Head(url).AsUniTask(cancellationToken, playerLoopTiming);
+        }
+
+        /// <summary>
+        /// Zero-overhead UniTask wrapper for UHttpClient.Options(...).SendAsync(...).
+        /// </summary>
+        public static UniTask<UHttpResponse> OptionsAsync(
+            this UHttpClient client,
+            string url,
+            CancellationToken cancellationToken = default,
+            PlayerLoopTiming? playerLoopTiming = null)
+        {
+            if (client == null) throw new System.ArgumentNullException(nameof(client));
+            return client.Options(url).AsUniTask(cancellationToken, playerLoopTiming);
+        }
+
+        /// <summary>
         /// Zero-overhead UniTask wrapper for UHttpClient.Post(...).WithBody(byte[]).SendAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PostAsync(
@@ -150,12 +176,8 @@ namespace TurboHTTP.UniTask
             ValueTask<UHttpResponse> operation,
             PlayerLoopTiming playerLoopTiming)
         {
-            var response = await operation.AsUniTask();
-            if (playerLoopTiming != PlayerLoopTiming.Update)
-            {
-                await UniTask.Yield(playerLoopTiming);
-            }
-
+            var response = await operation;
+            await UniTask.Yield(playerLoopTiming);
             return response;
         }
     }

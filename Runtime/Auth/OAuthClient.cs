@@ -289,7 +289,7 @@ namespace TurboHTTP.Auth
             // Keep the dictionary intact so in-flight operations can release safely.
         }
 
-        private async Task<UHttpResponse> SendTokenRequestAsync(
+        private async ValueTask<UHttpResponse> SendTokenRequestAsync(
             Uri endpoint,
             IDictionary<string, string> formFields,
             CancellationToken ct)

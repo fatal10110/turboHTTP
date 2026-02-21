@@ -23,3 +23,6 @@ MemoryCaptures/
 *.unityproj
 *.svd
 *.pdb
+
+# Benchmark capture artifacts
+Tests/Benchmarks/*.observed.json

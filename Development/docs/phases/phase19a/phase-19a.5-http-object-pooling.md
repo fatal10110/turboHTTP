@@ -1,109 +1,101 @@
-# Phase 19a.5: HTTP Object Pooling
+# Phase 19a.5: Internal HTTP Object Pooling
 
-**Depends on:** Phase 19 (Async Runtime Refactor)
-**Estimated Effort:** 2-3 days
+**Depends on:** 19a.0, 19a.1
+**Estimated Effort:** 3-4 days
 
 ---
 
-## Step 0: Pool `UHttpResponse` Objects
+## Step 0: Keep `UHttpResponse` Non-Pooled (Safety Decision)
 
-**File:** `Runtime/Core/UHttpResponse.cs` (modified)
-**File:** `Runtime/Performance/HttpResponsePool.cs` (new)
+**File:** `Runtime/Core/UHttpResponse.cs` (reviewed, no pooling integration)
 
 Required behavior:
 
-1. Create an `HttpResponsePool` static class that manages `UHttpResponse` instances via the existing `ObjectPool<T>`.
-2. `Rent()` returns a pre-allocated `UHttpResponse` with all fields reset to defaults.
-3. `Return(UHttpResponse response)` resets state and returns to pool:
-   - Clear `StatusCode`, `ReasonPhrase`.
-   - Clear headers dictionary (`.Clear()`, do NOT recreate).
-   - Return body buffer to `ArrayPool<byte>` if pooled.
-   - Clear `Body`, `BodyBytes`, `BodyString` cached values.
-   - Reset error state and internal flags.
-4. `UHttpResponse` must implement a `Reset()` method for the above operations.
-5. Pool size: configurable, default 64 instances.
+1. Do **not** pool `UHttpResponse` instances.
+2. Preserve user-owned response lifetime and disposal semantics.
+3. Focus pooling on short-lived internal objects instead.
 
-Implementation constraints:
+Rationale:
 
-1. `Reset()` must clear ALL fields — stale data from a previous response is a security bug.
-2. Uses existing `ObjectPool<T>` reset callback mechanism.
-3. Gated behind `UseZeroAllocPipeline`.
-4. Body buffer lifecycle: if backed by `IMemoryOwner<byte>`, `Reset()` must dispose it.
+1. `UHttpResponse` is user-visible and may outlive transport internals.
+2. Reuse risks stale-data leaks and aliasing bugs.
 
 ---
 
-## Step 1: Pool `Http2Stream` Objects
+## Step 1: Pool `ParsedResponse` Instances
+
+**File:** `Runtime/Transport/Http1/Http11ResponseParser.cs` (modified)
+**File:** `Runtime/Transport/Http1/ParsedResponsePool.cs` (new)
+
+Required behavior:
+
+1. Pool internal `ParsedResponse` objects.
+2. Add reset logic for status, headers, body metadata, and keep-alive flags.
+3. Return to pool after `UHttpResponse` construction is complete.
+
+Implementation constraints:
+
+1. Reset must clear all references to avoid retention/leaks.
+2. Pool usage remains internal to transport assembly.
+
+---
+
+## Step 2: Pool `Http2Stream` Instances
 
 **File:** `Runtime/Transport/Http2/Http2Stream.cs` (modified)
 **File:** `Runtime/Transport/Http2/Http2StreamPool.cs` (new)
 
 Required behavior:
 
-1. Create `Http2StreamPool` managing `Http2Stream` instances via `ObjectPool<T>`.
-2. `Rent(int streamId)` returns a reset `Http2Stream` with the new stream ID.
-3. `Return(Http2Stream stream)` resets per-stream state:
-   - Clear stream ID, state flags, flow control window.
-   - Clear request/response references.
-   - Return pending data buffers to `ArrayPool`.
-   - Reset `ValueTaskSource` state.
-4. Pool size: configurable, default 128 (HTTP/2 default concurrent streams is 100).
+1. Pool stream state objects used per HTTP/2 stream lifecycle.
+2. Reset stream IDs, flow-control state, awaitable/completion state, and buffered data references.
+3. Use pool capacity defaults aligned to expected concurrency.
 
 Implementation constraints:
 
-1. Stream ID assignment at rent time, not construction.
-2. `Reset()` must handle partial states (stream returned before response complete).
-3. Window size reset to connection's initial window size.
-4. Thread-safe — streams rented/returned from different threads.
+1. Safe reset on partial/incomplete stream states.
+2. Deterministic return of pooled buffers held by stream state.
 
 ---
 
-## Step 2: Pool Header Dictionary Collections
+## Step 3: Pool Header Parsing Scratch Objects
 
-**File:** `Runtime/Performance/HeaderDictionaryPool.cs` (new)
+**File:** `Runtime/Transport/Http1/Http11ResponseParser.cs` (modified)
+**File:** `Runtime/Performance/HeaderParseScratchPool.cs` (new)
 
 Required behavior:
 
-1. Pool `Dictionary<string, string>` instances for HTTP headers.
-2. `Rent()` returns a cleared dictionary. `Return()` calls `.Clear()` and returns to pool.
-3. Pool size: configurable, default 128.
-4. Dictionaries use `StringComparer.OrdinalIgnoreCase` for HTTP header semantics.
+1. Pool temporary dictionaries/lists used during header parsing/normalization.
+2. Keep final `HttpHeaders` instances independent from pooled scratch state.
+3. Ensure all scratch containers are cleared before return.
 
 Implementation constraints:
 
-1. `Clear()` retains internal bucket array — desired behavior (avoids reallocation).
-2. Initial capacity: 16 (typical 8-15 headers per response).
-3. Integrated with `UHttpResponse.Reset()` — header dictionary returned alongside response.
-4. Sensitive headers (Authorization, Cookie) cleared by `Clear()`.
+1. No cross-request header data leakage.
+2. Preserve case-insensitive HTTP header semantics.
 
 ---
 
-## Step 3: Pool `HpackEncoder` Internal State
+## Step 4: Pool `HpackEncoder` Writer State
 
 **File:** `Runtime/Transport/Http2/HpackEncoder.cs` (modified)
 
 Required behavior:
 
-1. Pool the `BufferWriter` internal state used during HPACK encoding.
-2. Rent from pool before encode, return after encoding complete.
-3. Reset buffer writer state (clear position, reset capacity) on return.
+1. Pool reusable encoder state objects (metadata, scratch structures, writer wrappers).
+2. Return pooled state in `finally` blocks.
 
 Implementation constraints:
 
-1. Return in `finally` block even on encoding failure.
-2. This pools the writer OBJECT, not the backing array (handled by 19a.1).
-3. Stateless encoder: straightforward pool integration.
+1. Encoding output must remain byte-identical.
+2. Pooling must not change dynamic table correctness.
 
 ---
 
 ## Verification Criteria
 
-1. `UHttpResponse` pool rents and returns without data leaks between requests.
-2. `Reset()` clears ALL fields — unit tests assert every property is default after reset.
-3. `Http2Stream` pool handles stream ID reassignment and partial state cleanup.
-4. Header dictionary pool returns cleared dictionaries with case-insensitive comparison.
-5. `HpackEncoder` state pooling does not affect encoding correctness.
-6. Pool diagnostic counters show expected rent/return/miss patterns.
-7. No security data leaks — auth headers, cookies, bodies cleared on return.
-8. All existing tests pass with `UseZeroAllocPipeline = true`.
-9. Memory profiler shows elimination of per-request object allocations under sustained load.
-10. Under 10,000 RPS benchmark, GC pause time is measurably reduced.
+1. `UHttpResponse` lifetime semantics are unchanged.
+2. Internal pooled objects reset fully and safely.
+3. Pool diagnostics show stable active counts under steady load.
+4. No security leaks across pooled internal state.
+5. Existing HTTP/1.1 and HTTP/2 tests pass.

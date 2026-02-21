@@ -6,6 +6,64 @@ using System.Threading.Tasks.Sources;
 
 namespace TurboHTTP.Transport.Http2
 {
+    internal sealed class ResettableValueTaskSource<T> : IValueTaskSource<T>
+    {
+        private ManualResetValueTaskSourceCore<T> _core;
+
+        public ResettableValueTaskSource()
+        {
+            _core = new ManualResetValueTaskSourceCore<T>
+            {
+                RunContinuationsAsynchronously = true
+            };
+        }
+
+        public void PrepareForUse()
+        {
+            _core.Reset();
+        }
+
+        public ValueTask<T> CreateValueTask()
+        {
+            return new ValueTask<T>(this, _core.Version);
+        }
+
+        public void SetResult(T result)
+        {
+            _core.SetResult(result);
+        }
+
+        public void SetException(Exception exception)
+        {
+            if (exception == null) throw new ArgumentNullException(nameof(exception));
+            _core.SetException(exception);
+        }
+
+        public void SetCanceled(CancellationToken cancellationToken = default)
+        {
+            _core.SetException(new OperationCanceledException(cancellationToken));
+        }
+
+        public T GetResult(short token)
+        {
+            return _core.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _core.GetStatus(token);
+        }
+
+        public void OnCompleted(
+            Action<object> continuation,
+            object state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags)
+        {
+            _core.OnCompleted(continuation, state, token, flags);
+        }
+    }
+
     internal sealed class PoolableValueTaskSource<T> : IValueTaskSource<T>
     {
         private readonly Action<PoolableValueTaskSource<T>> _returnToPool;
@@ -93,7 +151,7 @@ namespace TurboHTTP.Transport.Http2
         private readonly ConcurrentQueue<PoolableValueTaskSource<T>> _pool =
             new ConcurrentQueue<PoolableValueTaskSource<T>>();
         private readonly int _maxSize;
-        private int _count;
+        private int _reservedOrQueuedCount;
 
         public PoolableValueTaskSourcePool(int maxSize)
         {
@@ -103,13 +161,15 @@ namespace TurboHTTP.Transport.Http2
             _maxSize = maxSize;
         }
 
-        public int Count => Math.Max(0, Volatile.Read(ref _count));
+        // Exact queue snapshot; capacity reservation is tracked separately.
+        public int Count => _pool.Count;
 
         public PoolableValueTaskSource<T> Rent()
         {
             if (_pool.TryDequeue(out var source))
             {
-                Interlocked.Decrement(ref _count);
+                if (Interlocked.Decrement(ref _reservedOrQueuedCount) < 0)
+                    Interlocked.Exchange(ref _reservedOrQueuedCount, 0);
                 source.PrepareForUse();
                 return source;
             }
@@ -124,14 +184,23 @@ namespace TurboHTTP.Transport.Http2
             if (source == null)
                 return;
 
-            int nextCount = Interlocked.Increment(ref _count);
-            if (nextCount <= _maxSize)
+            while (true)
             {
+                var snapshot = Volatile.Read(ref _reservedOrQueuedCount);
+                if (snapshot >= _maxSize)
+                    return;
+
+                if (Interlocked.CompareExchange(
+                        ref _reservedOrQueuedCount,
+                        snapshot + 1,
+                        snapshot) != snapshot)
+                {
+                    continue;
+                }
+
                 _pool.Enqueue(source);
                 return;
             }
-
-            Interlocked.Decrement(ref _count);
         }
     }
 }

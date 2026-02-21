@@ -382,3 +382,18 @@ The one critical finding (C-1) is low-impact — it affects the per-connection S
 ### Verdict: **CONDITIONAL PASS**
 
 Phase 19.1–19.4 implementation review passes with the above findings documented. Phase 19.5 is required before Phase 19 can be considered complete.
+
+---
+
+## Resolution Update — 2026-02-21
+
+Follow-up implementation work has addressed the open code-level findings from this review:
+
+- **C-1** resolved: `Http2Connection.InitializeAsync` no longer uses `.AsTask()`/`Task.WhenAny` for SETTINGS ACK waiting; timeout/cancellation now complete a dedicated resettable `IValueTaskSource<bool>`.
+- **W-1** resolved: `PoolableValueTaskSourcePool<T>` return path now reserves capacity atomically before enqueue, avoiding the increment-before-enqueue race in count tracking.
+- **W-2** resolved: `OAuthClient.SendTokenRequestAsync` now returns `ValueTask<UHttpResponse>`.
+- **W-3** resolved: `Runtime/UniTask/WebSocketUniTaskExtensions.cs` now contains concrete WebSocket UniTask adapters, including an `IUniTaskAsyncEnumerable<WebSocketMessage>` bridge.
+- **W-4** resolved: UniTask convenience adapters now include `HeadAsync` and `OptionsAsync`.
+- **W-5** resolved: `ConvertWithTiming` now awaits the original `ValueTask<UHttpResponse>` directly (no intermediate `AsUniTask()` conversion before scheduling).
+
+Phase 19.5 implementation artifacts (allocation baselines + regression gate suite + CI-ready runner script) are now present; IL2CPP evidence remains tracked separately in implementation status.
