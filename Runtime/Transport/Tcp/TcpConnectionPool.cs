@@ -285,7 +285,7 @@ namespace TurboHTTP.Transport.Tcp
         /// Acquire a connection (pooled or new) to the specified host.
         /// Returns a ConnectionLease that guarantees semaphore release on disposal.
         /// </summary>
-        public async Task<ConnectionLease> GetConnectionAsync(
+        public ValueTask<ConnectionLease> GetConnectionAsync(
             string host, int port, bool secure, CancellationToken ct)
         {
             if (Volatile.Read(ref _disposed) != 0)
@@ -297,8 +297,43 @@ namespace TurboHTTP.Transport.Tcp
 
             EvictSemaphoresIfNeeded(key);
 
-            await semaphore.WaitAsync(ct).ConfigureAwait(false);
+            var waitTask = semaphore.WaitAsync(ct);
+            if (waitTask.IsCompletedSuccessfully)
+            {
+                return AcquireConnectionWithOwnedPermit(key, host, port, secure, semaphore, ct);
+            }
 
+            return new ValueTask<ConnectionLease>(AcquireConnectionAfterWaitAsync(
+                waitTask,
+                key,
+                host,
+                port,
+                secure,
+                semaphore,
+                ct));
+        }
+
+        private async Task<ConnectionLease> AcquireConnectionAfterWaitAsync(
+            Task waitTask,
+            string key,
+            string host,
+            int port,
+            bool secure,
+            SemaphoreSlim semaphore,
+            CancellationToken ct)
+        {
+            await waitTask.ConfigureAwait(false);
+            return await AcquireConnectionWithOwnedPermit(key, host, port, secure, semaphore, ct).ConfigureAwait(false);
+        }
+
+        private ValueTask<ConnectionLease> AcquireConnectionWithOwnedPermit(
+            string key,
+            string host,
+            int port,
+            bool secure,
+            SemaphoreSlim semaphore,
+            CancellationToken ct)
+        {
             // From this point, the semaphore permit is owned. ALL paths must release it.
             try
             {
@@ -320,13 +355,31 @@ namespace TurboHTTP.Transport.Tcp
 
                             candidate.IsReused = true;
                             candidate.LastUsed = DateTime.UtcNow;
-                            return new ConnectionLease(this, semaphore, candidate);
+                            return new ValueTask<ConnectionLease>(new ConnectionLease(this, semaphore, candidate));
                         }
                         candidate.Dispose();
                     }
                 }
 
                 // No reusable connection — create new
+                return new ValueTask<ConnectionLease>(CreateConnectionLeaseAsync(host, port, secure, semaphore, ct));
+            }
+            catch
+            {
+                semaphore.Release();
+                throw;
+            }
+        }
+
+        private async Task<ConnectionLease> CreateConnectionLeaseAsync(
+            string host,
+            int port,
+            bool secure,
+            SemaphoreSlim semaphore,
+            CancellationToken ct)
+        {
+            try
+            {
                 var connection = await CreateConnectionAsync(host, port, secure, ct).ConfigureAwait(false);
                 return new ConnectionLease(this, semaphore, connection);
             }

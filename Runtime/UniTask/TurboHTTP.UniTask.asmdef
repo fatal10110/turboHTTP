@@ -1,0 +1,25 @@
+{
+  "name": "TurboHTTP.UniTask",
+  "rootNamespace": "TurboHTTP.UniTask",
+  "references": [
+    "TurboHTTP.Core",
+    "UniTask"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "TURBOHTTP_UNITASK"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.cysharp.unitask",
+      "expression": "2.0.0",
+      "define": "TURBOHTTP_UNITASK"
+    }
+  ],
+  "noEngineReferences": false
+}

@@ -395,8 +395,9 @@ namespace TurboHTTP.Tests.Transport.Http2
             {
                 // Verify Http2Stream.WindowSize uses Interlocked [GPT-6]
                 var testRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
+                var responseSourcePool = new PoolableValueTaskSourcePool<UHttpResponse>(maxSize: 1);
                 var stream = new Http2Stream(1, testRequest,
-                    new RequestContext(testRequest), 65535, 65535);
+                    new RequestContext(testRequest), 65535, 65535, responseSourcePool);
 
                 Assert.AreEqual(65535, stream.SendWindowSize);
 

@@ -97,7 +97,7 @@ namespace TurboHTTP.Tests.Observability
             var context = new RequestContext(request);
 
             var ex = AssertAsync.ThrowsAsync<UHttpException>(
-                () => pipeline.ExecuteAsync(request, context));
+                async () => await pipeline.ExecuteAsync(request, context));
             Assert.That(ex.HttpError.Type, Is.EqualTo(UHttpErrorType.NetworkError));
 
             var snapshot = new List<HttpMonitorEvent>();

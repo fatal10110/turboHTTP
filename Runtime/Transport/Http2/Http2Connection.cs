@@ -32,6 +32,8 @@ namespace TurboHTTP.Transport.Http2
             = new ConcurrentDictionary<int, Http2Stream>();
         private readonly object _streamCreateLock = new object();
         private int _nextStreamId = 1;
+        private static readonly PoolableValueTaskSourcePool<UHttpResponse> s_responseSourcePool =
+            new PoolableValueTaskSourcePool<UHttpResponse>(maxSize: 256);
 
         // Settings
         private readonly Http2Settings _localSettings = new Http2Settings();
@@ -58,8 +60,7 @@ namespace TurboHTTP.Transport.Http2
         private int _continuationStreamId;
 
         // Initialization handshake
-        private TaskCompletionSource<bool> _settingsAckTcs =
-            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly PoolableValueTaskSource<bool> _settingsAckSource;
 
         // HPACK table size tracking (for detecting changes including back-to-default)
         private int _lastHeaderTableSize = Http2Constants.DefaultHeaderTableSize;
@@ -89,6 +90,8 @@ namespace TurboHTTP.Transport.Http2
             _hpackDecoder = new HpackDecoder(maxDecodedHeaderBytes: options.MaxDecodedHeaderBytes);
             _localSettings = new Http2Settings(options);
             _localSettings.Apply(Http2SettingId.EnablePush, options.EnablePush ? 1u : 0u);
+            _settingsAckSource = new PoolableValueTaskSource<bool>(_ => { });
+            _settingsAckSource.PrepareForUse();
         }
 
         // Backward-compatible constructor that uses default HTTP/2 options.
@@ -121,15 +124,38 @@ namespace TurboHTTP.Transport.Http2
             _readLoopTask = Task.Run(() => ReadLoopAsync(_cts.Token));
 
             // 4. Wait for SETTINGS ACK with timeout
-            var ackTask = _settingsAckTcs.Task;
+            var ackTask = _settingsAckSource.CreateValueTask().AsTask();
             var timeoutTask = Task.Delay(5000, ct);
             var completed = await Task.WhenAny(ackTask, timeoutTask).ConfigureAwait(false);
 
             if (completed == timeoutTask)
             {
-                ct.ThrowIfCancellationRequested();
-                throw new UHttpException(new UHttpError(UHttpErrorType.Timeout,
+                if (ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        _settingsAckSource.SetCanceled(ct);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // ACK may have raced and completed the source concurrently.
+                    }
+
+                    ct.ThrowIfCancellationRequested();
+                }
+
+                var timeoutError = new UHttpException(new UHttpError(UHttpErrorType.Timeout,
                     "HTTP/2 SETTINGS ACK timeout"));
+                try
+                {
+                    _settingsAckSource.SetException(timeoutError);
+                }
+                catch (InvalidOperationException)
+                {
+                    // ACK may have raced and completed the source concurrently.
+                }
+
+                throw timeoutError;
             }
 
             await ackTask.ConfigureAwait(false); // propagate any exception
@@ -142,7 +168,7 @@ namespace TurboHTTP.Transport.Http2
         /// <summary>
         /// Send an HTTP/2 request and wait for the response.
         /// </summary>
-        public async Task<UHttpResponse> SendRequestAsync(
+        public async ValueTask<UHttpResponse> SendRequestAsync(
             UHttpRequest request, RequestContext context, CancellationToken ct)
         {
             Http2Stream stream;
@@ -173,7 +199,9 @@ namespace TurboHTTP.Transport.Http2
 
                 // Step 4: Create stream object (with both send and recv windows)
                 stream = new Http2Stream(streamId, request, context,
-                    _remoteSettings.InitialWindowSize, _localSettings.InitialWindowSize);
+                    _remoteSettings.InitialWindowSize,
+                    _localSettings.InitialWindowSize,
+                    s_responseSourcePool);
                 _activeStreams[streamId] = stream;
             }
 
@@ -181,7 +209,7 @@ namespace TurboHTTP.Transport.Http2
             if (ct.IsCancellationRequested)
             {
                 _activeStreams.TryRemove(streamId, out _);
-                stream.Cancel();
+                stream.CancelWithoutConsumption(ct);
                 stream.Dispose();
                 throw new OperationCanceledException(ct);
             }
@@ -262,7 +290,7 @@ namespace TurboHTTP.Transport.Http2
                 context.RecordEvent("TransportH2RequestSent");
 
                 // Step 8: Wait for response
-                return await stream.ResponseTcs.Task;
+                return await stream.ResponseTask.ConfigureAwait(false);
             }
             catch (ObjectDisposedException ex)
             {
@@ -274,6 +302,22 @@ namespace TurboHTTP.Transport.Http2
             finally
             {
                 _activeStreams.TryRemove(streamId, out _);
+                try
+                {
+                    if (stream.IsResponseCompleted)
+                    {
+                        stream.ReturnResponseSourceIfUnconsumed();
+                    }
+                    else
+                    {
+                        stream.CancelWithoutConsumption(ct);
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    stream.ReturnResponseSourceIfUnconsumed();
+                }
+
                 stream.Dispose();
             }
         }

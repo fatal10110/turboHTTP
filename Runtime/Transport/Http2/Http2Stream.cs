@@ -46,6 +46,9 @@ namespace TurboHTTP.Transport.Http2
         private byte[] _responseBodyBuffer;
         private int _responseBodyLength;
         private int _disposed;
+        private int _responseCompleted;
+        private readonly PoolableValueTaskSource<UHttpResponse> _responseSource;
+        private readonly ValueTask<UHttpResponse> _responseTask;
 
         private int _sendWindowSize;
         public int SendWindowSize
@@ -63,12 +66,18 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public int RecvWindowSize { get; set; }
 
-        public TaskCompletionSource<UHttpResponse> ResponseTcs { get; }
+        public ValueTask<UHttpResponse> ResponseTask => _responseTask;
+        public bool IsResponseCompleted => Volatile.Read(ref _responseCompleted) != 0;
 
         public CancellationTokenRegistration CancellationRegistration { get; set; }
 
-        public Http2Stream(int streamId, UHttpRequest request, RequestContext context,
-            int initialSendWindowSize, int initialRecvWindowSize)
+        public Http2Stream(
+            int streamId,
+            UHttpRequest request,
+            RequestContext context,
+            int initialSendWindowSize,
+            int initialRecvWindowSize,
+            PoolableValueTaskSourcePool<UHttpResponse> responseSourcePool)
         {
             StreamId = streamId;
             Request = request;
@@ -79,9 +88,8 @@ namespace TurboHTTP.Transport.Http2
             HeadersReceived = false;
             SendWindowSize = initialSendWindowSize;
             RecvWindowSize = initialRecvWindowSize;
-
-            ResponseTcs = new TaskCompletionSource<UHttpResponse>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
+            _responseSource = (responseSourcePool ?? throw new ArgumentNullException(nameof(responseSourcePool))).Rent();
+            _responseTask = _responseSource.CreateValueTask();
         }
 
         public void AppendHeaderBlock(byte[] data, int offset, int length)
@@ -131,6 +139,9 @@ namespace TurboHTTP.Transport.Http2
 
         public void Complete()
         {
+            if (Interlocked.Exchange(ref _responseCompleted, 1) != 0)
+                return;
+
             State = Http2StreamState.Closed;
 
             var bodyBuffer = _responseBodyBuffer;
@@ -153,19 +164,36 @@ namespace TurboHTTP.Transport.Http2
                 bodyFromPool: bodyFromPool
             );
 
-            ResponseTcs.TrySetResult(response);
+            _responseSource.SetResult(response);
         }
 
         public void Fail(Exception exception)
         {
+            if (Interlocked.Exchange(ref _responseCompleted, 1) != 0)
+                return;
+
             State = Http2StreamState.Closed;
-            ResponseTcs.TrySetException(exception);
+            _responseSource.SetException(exception ?? new InvalidOperationException("HTTP/2 stream failed."));
         }
 
-        public void Cancel()
+        public void Cancel(CancellationToken cancellationToken = default)
         {
+            if (Interlocked.Exchange(ref _responseCompleted, 1) != 0)
+                return;
+
             State = Http2StreamState.Closed;
-            ResponseTcs.TrySetCanceled();
+            _responseSource.SetCanceled(cancellationToken);
+        }
+
+        public void CancelWithoutConsumption(CancellationToken cancellationToken = default)
+        {
+            Cancel(cancellationToken);
+            _responseSource.ReturnWithoutConsumption();
+        }
+
+        public void ReturnResponseSourceIfUnconsumed()
+        {
+            _responseSource.ReturnWithoutConsumption();
         }
 
         public void Dispose()

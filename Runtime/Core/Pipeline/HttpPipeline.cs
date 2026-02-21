@@ -26,7 +26,11 @@ namespace TurboHTTP.Core
         /// <summary>
         /// Execute the pipeline for a given request.
         /// </summary>
-        public Task<UHttpResponse> ExecuteAsync(
+        /// <remarks>
+        /// The returned ValueTask must be awaited exactly once and must not be stored for later consumption.
+        /// Convert to Task via <see cref="ValueTask{TResult}.AsTask"/> only when Task combinators are required.
+        /// </remarks>
+        public ValueTask<UHttpResponse> ExecuteAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default)

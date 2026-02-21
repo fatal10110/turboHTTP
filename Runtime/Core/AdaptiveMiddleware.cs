@@ -18,7 +18,7 @@ namespace TurboHTTP.Core
             _detector = detector ?? throw new ArgumentNullException(nameof(detector));
         }
 
-        public async Task<UHttpResponse> InvokeAsync(
+        public async ValueTask<UHttpResponse> InvokeAsync(
             UHttpRequest request,
             RequestContext context,
             HttpPipelineDelegate next,

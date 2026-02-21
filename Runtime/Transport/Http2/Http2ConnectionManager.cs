@@ -53,7 +53,7 @@ namespace TurboHTTP.Transport.Http2
         /// Otherwise, create a new one using the provided tlsStream.
         /// Prevents thundering herd via per-key locking.
         /// </summary>
-        public async Task<Http2Connection> GetOrCreateAsync(
+        public ValueTask<Http2Connection> GetOrCreateAsync(
             string host, int port, Stream tlsStream, CancellationToken ct)
         {
             if (Volatile.Read(ref _disposed) != 0)
@@ -68,8 +68,25 @@ namespace TurboHTTP.Transport.Http2
             if (_connections.TryGetValue(key, out var existing) && existing.IsAlive)
             {
                 tlsStream.Dispose();
-                return existing;
+                return new ValueTask<Http2Connection>(existing);
             }
+
+            return new ValueTask<Http2Connection>(GetOrCreateSlowAsync(
+                key,
+                host,
+                port,
+                tlsStream,
+                ct));
+        }
+
+        private async Task<Http2Connection> GetOrCreateSlowAsync(
+            string key,
+            string host,
+            int port,
+            Stream tlsStream,
+            CancellationToken ct)
+        {
+            Http2Connection existing;
 
             // Slow path: create with per-key lock
             var initLock = _initLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));

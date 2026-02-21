@@ -87,7 +87,7 @@ namespace TurboHTTP.Tests.Pipeline
             var context = new RequestContext(request);
 
             AssertAsync.ThrowsAsync<UHttpException>(
-                () => pipeline.ExecuteAsync(request, context));
+                async () => await pipeline.ExecuteAsync(request, context));
 
             Assert.AreEqual(2, logs.Count); // Request log + error log
             Assert.That(logs[1], Does.Contain("[ERROR]"));

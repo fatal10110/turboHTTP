@@ -85,7 +85,7 @@ namespace TurboHTTP.Transport.Http2
             while (offset < body.Length)
             {
                 // M6: Stop sending if the stream was reset by the peer
-                if (stream.ResponseTcs.Task.IsCompleted)
+                if (stream.IsResponseCompleted)
                     break;
 
                 int available = Math.Min(

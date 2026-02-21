@@ -34,7 +34,7 @@ namespace TurboHTTP.Tests.Performance
 
                 for (int i = 0; i < 1000; i++)
                 {
-                    tasks.Add(client.Get($"https://test.com/api/{i}").SendAsync());
+                    tasks.Add(client.Get($"https://test.com/api/{i}").SendAsync().AsTask());
                 }
 
                 var responses = await Task.WhenAll(tasks);
@@ -50,6 +50,77 @@ namespace TurboHTTP.Tests.Performance
         }
 
         [Test]
+        [Category("Stress")]
+        public void CancellationStorm_HalfCanceled_ClientRecovers()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new MockTransport(
+                    (Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>>)(async (req, ctx, ct) =>
+                    {
+                        await Task.Delay(80, ct).ConfigureAwait(false);
+                        return new UHttpResponse(
+                            HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req);
+                    }));
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = false
+                });
+
+                const int total = 500;
+                var ctsList = new CancellationTokenSource[total];
+                var tasks = new Task<UHttpResponse>[total];
+
+                for (int i = 0; i < total; i++)
+                {
+                    var cts = new CancellationTokenSource();
+                    ctsList[i] = cts;
+                    tasks[i] = client.Get("https://test.com/cancel/" + i).SendAsync(cts.Token).AsTask();
+                }
+
+                for (int i = 0; i < total; i += 2)
+                {
+                    // Use timer-based cancellation to avoid scheduler jitter from 250 Task.Run workers.
+                    ctsList[i].CancelAfter(i % 20);
+                }
+
+                int canceled = 0;
+                int succeeded = 0;
+                for (int i = 0; i < tasks.Length; i++)
+                {
+                    try
+                    {
+                        var response = await tasks[i].ConfigureAwait(false);
+                        if (response != null && response.StatusCode == HttpStatusCode.OK)
+                            succeeded++;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        canceled++;
+                    }
+                }
+
+                for (int i = 0; i < ctsList.Length; i++)
+                    ctsList[i].Dispose();
+
+                const int cancellationTolerance = 5;
+                var minExpectedCanceled = (total / 2) - cancellationTolerance;
+                Assert.GreaterOrEqual(canceled, minExpectedCanceled,
+                    $"Expected at least {minExpectedCanceled} cancellations, observed {canceled}.");
+                Assert.Greater(succeeded, 0, "Expected some non-canceled requests to succeed.");
+
+                var followUp = await client.Get("https://test.com/follow-up").SendAsync().ConfigureAwait(false);
+                Assert.AreEqual(HttpStatusCode.OK, followUp.StatusCode);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void HighConcurrency_WithConcurrencyMiddleware()
         {
             Task.Run(async () =>
@@ -58,7 +129,8 @@ namespace TurboHTTP.Tests.Performance
                 int currentConcurrent = 0;
                 var lockObj = new object();
 
-                var transport = new MockTransport(async (req, ctx, ct) =>
+                var transport = new MockTransport(
+                    (Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>>)(async (req, ctx, ct) =>
                 {
                     var current = Interlocked.Increment(ref currentConcurrent);
                     lock (lockObj)
@@ -72,7 +144,7 @@ namespace TurboHTTP.Tests.Performance
 
                     return new UHttpResponse(
                         HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req);
-                });
+                }));
 
                 var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 4, maxTotalConnections: 8);
 
@@ -90,7 +162,7 @@ namespace TurboHTTP.Tests.Performance
 
                 for (int i = 0; i < 100; i++)
                 {
-                    tasks.Add(client.Get("https://test.com/api/data").SendAsync());
+                    tasks.Add(client.Get("https://test.com/api/data").SendAsync().AsTask());
                 }
 
                 await Task.WhenAll(tasks);
@@ -111,7 +183,8 @@ namespace TurboHTTP.Tests.Performance
                 var perHostCurrent = new Dictionary<string, int>();
                 var lockObj = new object();
 
-                var transport = new MockTransport(async (req, ctx, ct) =>
+                var transport = new MockTransport(
+                    (Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>>)(async (req, ctx, ct) =>
                 {
                     var host = req.Uri.Host;
 
@@ -136,7 +209,7 @@ namespace TurboHTTP.Tests.Performance
 
                     return new UHttpResponse(
                         HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req);
-                });
+                }));
 
                 var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 3, maxTotalConnections: 20);
 
@@ -156,7 +229,7 @@ namespace TurboHTTP.Tests.Performance
                 for (int i = 0; i < 90; i++)
                 {
                     var host = hosts[i % hosts.Length];
-                    tasks.Add(client.Get($"https://{host}/api/{i}").SendAsync());
+                    tasks.Add(client.Get($"https://{host}/api/{i}").SendAsync().AsTask());
                 }
 
                 await Task.WhenAll(tasks);
@@ -395,7 +468,7 @@ namespace TurboHTTP.Tests.Performance
                     await middleware.InvokeAsync(
                         request,
                         context,
-                        (req, ctx, ct) => Task.FromResult(new UHttpResponse(
+                        (req, ctx, ct) => new ValueTask<UHttpResponse>(new UHttpResponse(
                             HttpStatusCode.OK,
                             new HttpHeaders(),
                             Array.Empty<byte>(),

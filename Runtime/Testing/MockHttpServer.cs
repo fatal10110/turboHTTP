@@ -107,7 +107,7 @@ namespace TurboHTTP.Testing
             return new MockTransport(DispatchAsync);
         }
 
-        public async Task<UHttpResponse> DispatchAsync(
+        public async ValueTask<UHttpResponse> DispatchAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default)

@@ -91,7 +91,7 @@ namespace TurboHTTP.Unity
             Task<UHttpResponse> task;
             try
             {
-                task = builder.SendAsync(lifecycleBinding.Token);
+                task = builder.SendAsync(lifecycleBinding.Token).AsTask();
             }
             catch (Exception ex)
             {

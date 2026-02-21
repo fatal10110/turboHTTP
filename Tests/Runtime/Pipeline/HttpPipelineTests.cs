@@ -92,7 +92,7 @@ namespace TurboHTTP.Tests.Pipeline
             var context = new RequestContext(request);
 
             AssertAsync.ThrowsAsync<InvalidOperationException>(
-                () => pipeline.ExecuteAsync(request, context));
+                async () => await pipeline.ExecuteAsync(request, context));
         }
 
         [Test]
@@ -112,7 +112,7 @@ namespace TurboHTTP.Tests.Pipeline
                 new UHttpRequest(HttpMethod.GET, new Uri("https://test.com")));
 
             AssertAsync.ThrowsAsync<ArgumentNullException>(
-                () => pipeline.ExecuteAsync(null, context));
+                async () => await pipeline.ExecuteAsync(null, context));
         }
 
         // --- Helper middleware classes ---
@@ -128,7 +128,7 @@ namespace TurboHTTP.Tests.Pipeline
                 _order = order;
             }
 
-            public async Task<UHttpResponse> InvokeAsync(
+            public async ValueTask<UHttpResponse> InvokeAsync(
                 UHttpRequest request, RequestContext context,
                 HttpPipelineDelegate next, CancellationToken ct)
             {
@@ -141,7 +141,7 @@ namespace TurboHTTP.Tests.Pipeline
 
         private class ShortCircuitMiddleware : IHttpMiddleware
         {
-            public Task<UHttpResponse> InvokeAsync(
+            public ValueTask<UHttpResponse> InvokeAsync(
                 UHttpRequest request, RequestContext context,
                 HttpPipelineDelegate next, CancellationToken ct)
             {
@@ -149,13 +149,13 @@ namespace TurboHTTP.Tests.Pipeline
                 var response = new UHttpResponse(
                     HttpStatusCode.Forbidden, new HttpHeaders(), Array.Empty<byte>(),
                     context.Elapsed, request);
-                return Task.FromResult(response);
+                return new ValueTask<UHttpResponse>(response);
             }
         }
 
         private class ThrowingMiddleware : IHttpMiddleware
         {
-            public Task<UHttpResponse> InvokeAsync(
+            public ValueTask<UHttpResponse> InvokeAsync(
                 UHttpRequest request, RequestContext context,
                 HttpPipelineDelegate next, CancellationToken ct)
             {

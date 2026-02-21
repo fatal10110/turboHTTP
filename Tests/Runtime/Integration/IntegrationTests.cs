@@ -448,7 +448,7 @@ namespace TurboHTTP.Tests.Integration
                     var replayTasks = new Task<UHttpResponse>[sampleCount];
                     for (int i = 0; i < sampleCount; i++)
                     {
-                        replayTasks[i] = replayClient.Get("https://example.test/repeat").SendAsync();
+                        replayTasks[i] = replayClient.Get("https://example.test/repeat").SendAsync().AsTask();
                     }
 
                     var responses = await Task.WhenAll(replayTasks);

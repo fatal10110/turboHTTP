@@ -431,7 +431,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
                 var context = new RequestContext(request);
                 AssertAsync.ThrowsAsync<UHttpException>(
-                    () => conn.SendRequestAsync(request, context, cts.Token));
+                    async () => await conn.SendRequestAsync(request, context, cts.Token));
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();

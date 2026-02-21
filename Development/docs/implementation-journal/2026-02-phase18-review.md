@@ -1104,18 +1104,135 @@ All other RFC references (6455 §9.1, 7692 §7.1/7.2/8, 1951) are correctly appl
 
 Before proceeding to implementation, revise the plan document to address:
 
-- [ ] PC-1: Change transform return type to `IMemoryOwner<byte>`
-- [ ] PC-2: Add RSV bit propagation through reader/assembler with RFC 7692 §6 semantics
-- [ ] PC-3: Remove `Microsoft.Bcl.AsyncInterfaces` reference, add IL2CPP validation spike
-- [ ] PC-4: Revise context takeover memory estimate (300–600KB), mandate `no_context_takeover` for v1
-- [ ] PC-5: Replace `NetworkCredential` with custom immutable struct
-- [ ] PH-1: Specify chunk-based streaming decompression
-- [ ] PH-2: Add `UncompressedBytesSent` metric field
-- [ ] PH-3: Document 32-bit IL2CPP metrics pattern requirement
-- [ ] PH-4: Add cleartext credential security documentation
-- [ ] PH-5: Specify proxy bypass matching semantics
-- [ ] PH-6: Add `DeflateStream.Flush()` pre-implementation spike
-- [ ] PH-7: Specify event-driven RTT measurement
-- [ ] PH-8: Use overloaded constructor for backward compat
-- [ ] PM-1 through PM-8: Address during plan revision or document for implementation phase
-- [ ] Add pre-implementation spikes section to plan
+- [x] PC-1: Change transform return type to `IMemoryOwner<byte>`
+- [x] PC-2: Add RSV bit propagation through reader/assembler with RFC 7692 §6 semantics
+- [x] PC-3: Remove `Microsoft.Bcl.AsyncInterfaces` reference, add IL2CPP validation spike
+- [x] PC-4: Revise context takeover memory estimate (300–600KB), mandate `no_context_takeover` for v1
+- [x] PC-5: Replace `NetworkCredential` with custom immutable struct
+- [x] PH-1: Specify chunk-based streaming decompression
+- [x] PH-2: Add `UncompressedBytesSent` metric field
+- [x] PH-3: Document 32-bit IL2CPP metrics pattern requirement
+- [x] PH-4: Add cleartext credential security documentation
+- [x] PH-5: Specify proxy bypass matching semantics
+- [x] PH-6: Add `DeflateStream.Flush()` pre-implementation spike
+- [x] PH-7: Specify event-driven RTT measurement
+- [x] PH-8: Use overloaded constructor for backward compat
+- [x] PM-1 through PM-8: Address during plan revision or document for implementation phase
+- [x] Add pre-implementation spikes section to plan
+
+---
+
+### Revision 4a — Verification Re-Review (2026-02-21)
+
+Re-review of revised Phase 18a plan by both specialist agents after all R4 findings were addressed.
+
+#### Verification Matrix
+
+| ID | Original Issue | Status | Evidence |
+|---|---|---|---|
+| PC-1 | Transform return type → `IMemoryOwner<byte>` | ✅ Resolved | Plan lines 138–139, 155 |
+| PC-2 | RSV bit propagation reader/assembler | ✅ Resolved | Plan lines 187–211 (Step 3: reader, assembler, continuation validation) |
+| PC-3 | `IAsyncEnumerable` polyfill removed, spike added | ✅ Resolved | Plan lines 50–54 (Spike 3), lines 363–365 |
+| PC-4 | Context takeover memory revised, `no_context_takeover` mandated | ✅ Resolved | Plan lines 46–47, 109, 253, 711–712 |
+| PC-5 | `NetworkCredential` → custom `ProxyCredentials` struct | ✅ Resolved | Plan lines 461–468 |
+| PH-1 | Chunk-based streaming decompression | ✅ Resolved | Plan lines 243, 253–254 |
+| PH-2 | `UncompressedBytesSent` + ratio formula | ✅ Resolved | Plan lines 406–409 |
+| PH-3 | 32-bit IL2CPP metrics pattern | ✅ Resolved | Plan lines 414–415 |
+| PH-4 | Cleartext proxy credential security | ✅ Resolved | Plan lines 472–473 (WARNING box), line 488 |
+| PH-5 | Bypass list matching semantics | ✅ Resolved | Plan line 460 |
+| PH-6 | `DeflateStream.Flush()` spike | ✅ Resolved | Plan lines 33–42 (Spike 1) |
+| PH-7 | Event-driven RTT | ✅ Resolved | Plan lines 575–578 |
+| PH-8 | Overloaded constructor backward compat | ✅ Resolved | Plan line 195 |
+| PM-1 | Message-level transforms documented | ✅ Resolved | Plan lines 101–102 |
+| PM-2 | `UseSystemProxy` removed | ✅ Resolved | Plan line 470 |
+| PM-3 | `JsonWebSocketSerializer` IL2CPP constraints | ✅ Resolved | Plan lines 554–555 |
+| PM-4 | Health monitor rolling window thread safety | ✅ Resolved | Plan lines 593–594 |
+| PM-5 | Proxy-specific `WebSocketError` codes | ✅ Resolved | Plan lines 499–502 |
+| PM-6 | `OnMetricsUpdated` threading model | ✅ Resolved | Plan line 437 |
+| PM-7 | Serializer produces `ReadOnlyMemory<byte>` | ✅ Resolved | Plan lines 523, 531–532 |
+| PM-8 | Quality scoring: RTT + pong loss only, weights specified | ✅ Resolved | Plan lines 580–590 |
+| PL-1 | RFC 7230 §3.2.6 quoted-string parsing | ✅ Resolved | Plan line 151, test line 632 |
+| PL-2 | Test echo server effort called out | ✅ Resolved | Plan lines 695–698 (IMPORTANT box) |
+| PL-3 | `SerializationFailed` error type | ✅ Resolved | Plan line 553 |
+| PL-4 | `ReceiveAllAsync` reconnection semantics | ✅ Resolved | Plan line 377 |
+| PL-5 | Extension disposal reverse order | ✅ Resolved | Plan line 125 |
+| PL-6 | Concurrent enumeration `Interlocked` tracking | ✅ Resolved | Plan lines 367–368 |
+| PL-7 | Compression + fragmentation test | ✅ Resolved | Plan line 630 |
+
+#### RFC Compliance Re-Check
+
+| RFC | Section | Original Status | Revised Status |
+|-----|---------|----------------|----------------|
+| RFC 7692 §6 (RSV1 first-fragment-only) | **MISSING** | ✅ **ADDRESSED** — Plan lines 107, 208–209, test line 621 |
+| RFC 7692 §7.2.1 (Z_SYNC_FLUSH) | **AT RISK** | ✅ **MITIGATED** — Spike 1 validates; v1 `no_context_takeover` sidesteps |
+| RFC 7230 §3.2.6 (parameter grammar) | **UNDERSTATED** | ✅ **ADDRESSED** — Plan line 151, test line 632 |
+
+#### New Issues from Revision (Non-Blocking)
+
+| ID | Severity | Issue |
+|---|---|---|
+| N-1 | Info | `ArrayPoolMemoryOwner<byte>` helper referenced (line 155) but not in any file list. Standard pattern — implementer will create it. |
+| N-2 | Info | File count mismatch in summary table: 18a.1 lists "6 new, 4 modified" but actual count from steps is ~4 new, ~8 modified. Documentation-only. |
+
+#### Verdict: **PASS**
+
+All 28 original findings (5 Critical, 8 High, 8 Medium, 7 Low) are confirmed resolved in the revised plan. Three RFC compliance gaps are addressed. Two new info-level items are non-blocking. The plan is **approved for implementation**, gated by the three pre-implementation spikes passing.
+
+---
+
+## Revision 5 — R3 Fix Verification Re-Review (2026-02-21)
+
+Full verification re-review of all R3 critical and important issues after fixes were applied. Both specialist agents (**unity-infrastructure-architect** and **unity-network-architect**) independently verified each fix against the codebase.
+
+### Verification Matrix — R3 Critical Issues
+
+| ID | Original Issue | Status | Evidence |
+|---|---|---|---|
+| R3-C1 | Duplicate `AsyncQueueCompletedException` / `BoundedAsyncQueue` types | **FIXED** | `AsyncBoundedQueue.cs` contains single top-level definitions: `AsyncQueueCompletedException` (line 8) and `BoundedAsyncQueue<T>` (line 19). No nested duplicates in `WebSocketConnection.cs`. `WebSocketClient.cs` catches `AsyncQueueCompletedException` correctly (lines 277, 387, 418). |
+| R3-C2 | Reflection-based transport creation (`Type.GetType` + `Activator.CreateInstance`) | **FIXED** | New `WebSocketTransportFactory.cs` with `Register(Func<TlsBackend, IWebSocketTransport>)` pattern (volatile + lock). `WebSocketTransportModuleInitializer.cs` uses `[ModuleInitializer]` to call `RawSocketWebSocketTransport.EnsureRegistered()`. `WebSocketClient.CreateDefaultTransport()` delegates to `WebSocketTransportFactory.Create(tlsBackend)` (line 579). Zero reflection usage. |
+| R3-C3 | Private property reflection in `UnityWebSocketExtensions` | **FIXED** | `UnityWebSocketExtensions.BuildWebSocketOptions()` now calls `client.GetOptionsSnapshot()` (line 47) — a public method on `UHttpClient` (line 41). No `BindingFlags`, no `PropertyInfo`, no reflection. |
+
+### Verification Matrix — R3 Important Issues
+
+| ID | Original Issue | Status | Evidence |
+|---|---|---|---|
+| R3-I1 | `_lifecycleCts` disposed while receive loop may still reference token | **FIXED** | `FinalizeClose()` (line 1198) uses `CancelAndDisposeAfterTaskCompletion(ref _lifecycleCts, _receiveLoopTask)`. This method (lines 1384–1423) atomically swaps CTS to null via `Interlocked.Exchange`, cancels it, then defers disposal via `ContinueWith` until the owning task completes. |
+| R3-I2 | Separate stream writes for header and payload (TLS record overhead) | **FIXED** | `WebSocketFrameWriter.WriteFrameAsync()` (line 296) calls `TryWriteSmallFrameSingleWriteAsync()` (lines 336–358) which combines header + masked payload into a single write for frames that fit in the chunk buffer. Falls back to separate writes only for large payloads. |
+| R3-I3 | `Span.ToArray()` allocation in `ParseCloseStatus` | **FIXED** | `ParseCloseStatus()` (line 780) now uses `WebSocketConstants.StrictUtf8.GetString(payload.Slice(2).Span)` directly. No `.ToArray()` allocation. |
+| R3-I4 | Duplicate UTF-8 encode in `WebSocketClient.SendAsync(string)` | **FIXED** | `WebSocketClient.SendAsync(string)` (line 191) delegates directly to `connection.SendTextAsync(message, ct)`. Single UTF-8 encoding path. No manual encoding in the client. |
+| R3-I5 | Resilient client doesn't await previous receive pump | **FIXED** | `ConnectReplacementClientAsync()` (lines 320–321) calls `await StopReceivePumpAsync().ConfigureAwait(false)` when `stopPreviousReceivePump` is true (default). During reconnection, passes `stopPreviousReceivePump: false` since pump already terminated (line 487). |
+| R3-I6 | `WebSocketReconnectPolicy.None` allocates RNG unnecessarily | **FIXED** | Uses `[ThreadStatic] private static Random _threadJitterRng` with lazy initialization (lines 131–142). `NextThreadJitter()` only creates `Random` instance when first called. `None` policy (maxRetries=0) never computes delays, so never allocates RNG. Seeding uses `Interlocked.Increment(ref _threadSeed) ^ Environment.CurrentManagedThreadId`. |
+| R3-I7 | `OnDestroy` blocks main thread for up to 1 second | **FIXED** | `OnDestroy()` (line 125) calls `TryAbortAndDispose()` (lines 389–414) which uses synchronous `client.Abort()` + `client.Dispose()`. No `CloseAsync().GetAwaiter().GetResult()`. No main thread blocking. |
+| R3-I8 | Double message copy in Unity bridge pipeline | **IMPROVED** | `UnityWebSocketBridge.HandleMessage()` (lines 221–222) passes original message reference directly to the dispatch handler — no `CreateDetachedCopy()` call. Text messages use `message.Text` directly (zero copy). Binary messages require one `Data.ToArray()` copy (unavoidable due to `UnityEvent<byte[]>` signature). `ReceiveAsCoroutine` path (line 153) still creates one detached copy — acceptable for coroutine pattern where message may outlive the frame. |
+
+### R3 Minor Issues (R3-M4)
+
+| ID | Original Issue | Status | Evidence |
+|---|---|---|---|
+| R3-M4 | `Dispose()` does not dispose `_frameWriter` | **FIXED** | `FinalizeClose()` (line 1238) calls `SafeDispose(_frameWriter)` before nulling reference. |
+
+### Platform Compatibility Assessment (Post-Fix)
+
+| Platform | R3 Status | Post-Fix Status |
+|----------|-----------|-----------------|
+| Editor (Mono) | Works | **Works** |
+| Standalone (Win/Mac/Linux) | Works | **Works** |
+| iOS (IL2CPP) | **At Risk** (C2, C3) | **Works** — reflection eliminated |
+| Android (IL2CPP) | **At Risk** (C2, C3) | **Works** — reflection eliminated |
+| WebGL | N/A | N/A (WebSocket.Transport excluded) |
+
+### New Issues Identified
+
+**None.** No new critical, important, or minor issues were discovered during this verification re-review by either specialist agent.
+
+### Positive Findings
+
+1. **IL2CPP Safety** — All reflection usage eliminated. Module initializer + factory registration pattern is consistent with existing HTTP transport pattern (`TransportModuleInitializer` from Phase 3).
+2. **Resource Lifecycle** — `CancelAndDisposeAfterTaskCompletion` pattern (atomic swap + deferred disposal via `ContinueWith`) is robust and prevents use-after-dispose races.
+3. **Allocation Optimization** — Single-write TLS optimization, lazy ThreadStatic RNG, direct Span-to-string decoding, single UTF-8 encoding path.
+4. **Thread Safety** — All shared state accessed via `Interlocked` or `Volatile`. `BoundedAsyncQueue<T>` uses proper lock-based synchronization.
+5. **Unity Integration** — Non-blocking `Abort()` + `Dispose()` in `OnDestroy`. Message ownership properly managed through dispatch lifecycle.
+
+### Verdict: **PASS**
+
+All 3 critical and 8 important R3 issues are confirmed fixed. No new issues identified. Phase 18 implementation (18.1–18.6) is approved for Phase 18.7 test suite development and IL2CPP platform validation.

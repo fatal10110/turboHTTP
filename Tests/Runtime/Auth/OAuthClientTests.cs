@@ -113,7 +113,8 @@ namespace TurboHTTP.Tests.Auth
             Task.Run(async () =>
             {
                 var refreshCalls = 0;
-                var transport = new MockTransport(async (request, context, ct) =>
+                var transport = new MockTransport(
+                    (Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>>)(async (request, context, ct) =>
                 {
                     Interlocked.Increment(ref refreshCalls);
                     await Task.Delay(40, ct);
@@ -124,7 +125,7 @@ namespace TurboHTTP.Tests.Auth
                         body,
                         context.Elapsed,
                         request);
-                });
+                }));
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {

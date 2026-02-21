@@ -41,7 +41,7 @@ namespace TurboHTTP.Tests.Performance
                 var tasks = new Task<UHttpResponse>[ThroughputRequestCount];
                 for (int i = 0; i < ThroughputRequestCount; i++)
                 {
-                    tasks[i] = client.Get("https://benchmark.local/" + i).SendAsync();
+                    tasks[i] = client.Get("https://benchmark.local/" + i).SendAsync().AsTask();
                 }
 
                 await Task.WhenAll(tasks).ConfigureAwait(false);

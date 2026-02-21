@@ -422,7 +422,14 @@ namespace TurboHTTP.Transport.Http2
                 if (frame.Length != 0)
                     throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
                         "SETTINGS ACK with non-zero payload");
-                _settingsAckTcs.TrySetResult(true);
+                try
+                {
+                    _settingsAckSource.SetResult(true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // ACK source was already completed (timeout/cancellation race).
+                }
                 return;
             }
 

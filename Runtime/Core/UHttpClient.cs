@@ -288,7 +288,11 @@ namespace TurboHTTP.Core
         /// Does NOT use ConfigureAwait(false) — continuations return to the
         /// caller's SynchronizationContext (typically Unity main thread).
         /// </summary>
-        public async Task<UHttpResponse> SendAsync(
+        /// <remarks>
+        /// The returned ValueTask must be awaited exactly once and must not be stored for later consumption.
+        /// Convert to Task via <see cref="ValueTask{TResult}.AsTask"/> only when Task combinators are required.
+        /// </remarks>
+        public async ValueTask<UHttpResponse> SendAsync(
             UHttpRequest request, CancellationToken cancellationToken = default)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
@@ -419,7 +423,7 @@ namespace TurboHTTP.Core
                 throw new ObjectDisposedException(nameof(UHttpClient));
         }
 
-        private async Task<UHttpResponse> ExecuteWithInterceptorsAsync(
+        private async ValueTask<UHttpResponse> ExecuteWithInterceptorsAsync(
             IReadOnlyList<IHttpInterceptor> interceptors,
             UHttpRequest request,
             RequestContext context,

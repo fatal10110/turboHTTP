@@ -6,7 +6,7 @@ namespace TurboHTTP.Core
     /// <summary>
     /// Delegate representing the next step in the HTTP middleware pipeline.
     /// </summary>
-    public delegate Task<UHttpResponse> HttpPipelineDelegate(
+    public delegate ValueTask<UHttpResponse> HttpPipelineDelegate(
         UHttpRequest request, RequestContext context, CancellationToken cancellationToken);
 
     /// <summary>
@@ -15,7 +15,7 @@ namespace TurboHTTP.Core
     /// </summary>
     public interface IHttpMiddleware
     {
-        Task<UHttpResponse> InvokeAsync(
+        ValueTask<UHttpResponse> InvokeAsync(
             UHttpRequest request, RequestContext context,
             HttpPipelineDelegate next, CancellationToken cancellationToken);
     }

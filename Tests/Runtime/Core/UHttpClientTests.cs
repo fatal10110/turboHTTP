@@ -19,14 +19,14 @@ namespace TurboHTTP.Tests.Core
         private sealed class TrackingTransport : IHttpTransport
         {
             public bool Disposed { get; private set; }
-            public Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>> OnSendAsync { get; set; }
+            public Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>> OnSendAsync { get; set; }
 
-            public Task<UHttpResponse> SendAsync(UHttpRequest request, RequestContext context, CancellationToken cancellationToken = default)
+            public ValueTask<UHttpResponse> SendAsync(UHttpRequest request, RequestContext context, CancellationToken cancellationToken = default)
             {
                 if (OnSendAsync != null)
                     return OnSendAsync(request, context, cancellationToken);
 
-                return Task.FromResult(new UHttpResponse(
+                return new ValueTask<UHttpResponse>(new UHttpResponse(
                     HttpStatusCode.OK,
                     new HttpHeaders(),
                     Array.Empty<byte>(),
@@ -55,7 +55,7 @@ namespace TurboHTTP.Tests.Core
                 _throwOnDispose = throwOnDispose;
             }
 
-            public Task<UHttpResponse> InvokeAsync(
+            public ValueTask<UHttpResponse> InvokeAsync(
                 UHttpRequest request,
                 RequestContext context,
                 HttpPipelineDelegate next,
@@ -89,12 +89,12 @@ namespace TurboHTTP.Tests.Core
                 _throwOnDispose = throwOnDispose;
             }
 
-            public Task<UHttpResponse> SendAsync(
+            public ValueTask<UHttpResponse> SendAsync(
                 UHttpRequest request,
                 RequestContext context,
                 CancellationToken cancellationToken = default)
             {
-                return Task.FromResult(new UHttpResponse(
+                return new ValueTask<UHttpResponse>(new UHttpResponse(
                     HttpStatusCode.OK,
                     new HttpHeaders(),
                     Array.Empty<byte>(),
@@ -607,7 +607,7 @@ namespace TurboHTTP.Tests.Core
                         capturedContext = ctx;
                         ctx.SetState("k", 123);
                         ctx.RecordEvent("TransportEvent");
-                        return Task.FromResult(new UHttpResponse(
+                        return new ValueTask<UHttpResponse>(new UHttpResponse(
                             HttpStatusCode.OK,
                             new HttpHeaders(),
                             Array.Empty<byte>(),

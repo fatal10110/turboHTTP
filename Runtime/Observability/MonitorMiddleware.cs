@@ -162,7 +162,7 @@ namespace TurboHTTP.Observability
             PublishEvent(null);
         }
 
-        public async Task<UHttpResponse> InvokeAsync(
+        public async ValueTask<UHttpResponse> InvokeAsync(
             UHttpRequest request,
             RequestContext context,
             HttpPipelineDelegate next,

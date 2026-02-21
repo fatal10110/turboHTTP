@@ -76,7 +76,7 @@ namespace TurboHTTP.Transport
                         http2Options: http2Options));
         }
 
-        public async Task<UHttpResponse> SendAsync(
+        public async ValueTask<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default)
@@ -310,7 +310,7 @@ namespace TurboHTTP.Transport
         /// <summary>
         /// Sends a request through an HTTP proxy (forward for HTTP, CONNECT tunnel for HTTPS).
         /// </summary>
-        private async Task<UHttpResponse> SendViaProxyAsync(
+        private async ValueTask<UHttpResponse> SendViaProxyAsync(
             UHttpRequest request,
             RequestContext context,
             string host,

@@ -16,7 +16,7 @@ namespace TurboHTTP.Testing
     /// </summary>
     public class MockTransport : IHttpTransport
     {
-        private readonly Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>> _fallbackHandler;
+        private readonly Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>> _fallbackHandler;
         private readonly ConcurrentQueue<QueuedResponse> _queuedResponses = new ConcurrentQueue<QueuedResponse>();
         private readonly ConcurrentQueue<UHttpRequest> _capturedRequests = new ConcurrentQueue<UHttpRequest>();
         private int _requestCount;
@@ -71,8 +71,21 @@ namespace TurboHTTP.Testing
             byte[] body = null,
             UHttpError error = null)
         {
-            _fallbackHandler = (req, ctx, ct) => Task.FromResult(
+            _fallbackHandler = (req, ctx, ct) => new ValueTask<UHttpResponse>(
                 CreateResponse(statusCode, headers, body, error, req, ctx));
+        }
+
+        /// <summary>
+        /// Create a MockTransport with a custom handler for advanced scenarios
+        /// (e.g., fail first N requests, return different responses per request).
+        /// </summary>
+        public MockTransport(
+            Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>> handler,
+            bool preferValueTaskHandler = true)
+        {
+            // Keeps Task-returning lambda call-sites from becoming ambiguous with the Task overload.
+            _ = preferValueTaskHandler;
+            _fallbackHandler = handler ?? throw new ArgumentNullException(nameof(handler));
         }
 
         /// <summary>
@@ -82,7 +95,8 @@ namespace TurboHTTP.Testing
         public MockTransport(
             Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>> handler)
         {
-            _fallbackHandler = handler ?? throw new ArgumentNullException(nameof(handler));
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            _fallbackHandler = (req, ctx, ct) => new ValueTask<UHttpResponse>(handler(req, ctx, ct));
         }
 
         /// <summary>
@@ -91,7 +105,7 @@ namespace TurboHTTP.Testing
         public MockTransport(Func<UHttpRequest, UHttpResponse> handler)
         {
             if (handler == null) throw new ArgumentNullException(nameof(handler));
-            _fallbackHandler = (req, ctx, ct) => Task.FromResult(handler(req));
+            _fallbackHandler = (req, ctx, ct) => new ValueTask<UHttpResponse>(handler(req));
         }
 
         /// <summary>
@@ -169,7 +183,7 @@ namespace TurboHTTP.Testing
             }
         }
 
-        public async Task<UHttpResponse> SendAsync(
+        public async ValueTask<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default)

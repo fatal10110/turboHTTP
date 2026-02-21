@@ -164,7 +164,7 @@ namespace TurboHTTP.Tests.Observability
             var context = new RequestContext(request);
 
             AssertAsync.ThrowsAsync<UHttpException>(
-                () => pipeline.ExecuteAsync(request, context));
+                async () => await pipeline.ExecuteAsync(request, context));
 
             Assert.AreEqual(1, middleware.Metrics.TotalRequests);
             Assert.AreEqual(1, middleware.Metrics.FailedRequests);

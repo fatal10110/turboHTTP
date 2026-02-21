@@ -33,7 +33,7 @@ namespace TurboHTTP.Middleware
             _defaultEnforceRedirectTotalTimeout = defaultEnforceRedirectTotalTimeout;
         }
 
-        public async Task<UHttpResponse> InvokeAsync(
+        public async ValueTask<UHttpResponse> InvokeAsync(
             UHttpRequest request,
             RequestContext context,
             HttpPipelineDelegate next,

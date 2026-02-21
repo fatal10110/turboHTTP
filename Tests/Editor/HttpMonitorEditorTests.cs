@@ -228,12 +228,12 @@ namespace TurboHTTP.Tests.Editor
 
         private sealed class SuccessfulStubTransport : IHttpTransport
         {
-            public Task<UHttpResponse> SendAsync(
+            public ValueTask<UHttpResponse> SendAsync(
                 UHttpRequest request,
                 RequestContext context,
                 CancellationToken cancellationToken = default)
             {
-                return Task.FromResult(new UHttpResponse(
+                return new ValueTask<UHttpResponse>(new UHttpResponse(
                     HttpStatusCode.OK,
                     new HttpHeaders(),
                     Array.Empty<byte>(),

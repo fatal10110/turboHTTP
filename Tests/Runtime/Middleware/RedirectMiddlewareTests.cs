@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
@@ -602,7 +603,8 @@ namespace TurboHTTP.Tests.Middleware
         {
             Task.Run(() =>
             {
-                var transport = new MockTransport(async (req, ctx, ct) =>
+                var transport = new MockTransport(
+                    (Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>>)(async (req, ctx, ct) =>
                 {
                     var headers = new HttpHeaders();
                     if (req.Uri.AbsolutePath == "/start")
@@ -624,7 +626,7 @@ namespace TurboHTTP.Tests.Middleware
                         Array.Empty<byte>(),
                         ctx.Elapsed,
                         req);
-                });
+                }));
 
                 var middleware = new RedirectMiddleware(defaultEnforceRedirectTotalTimeout: true);
                 var pipeline = new HttpPipeline(new[] { middleware }, transport);

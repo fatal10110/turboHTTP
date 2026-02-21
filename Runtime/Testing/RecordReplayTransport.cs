@@ -260,7 +260,7 @@ namespace TurboHTTP.Testing
         {
         }
 
-        public async Task<UHttpResponse> SendAsync(
+        public async ValueTask<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default)
@@ -353,7 +353,7 @@ namespace TurboHTTP.Testing
                 throw disposeException;
         }
 
-        private async Task<UHttpResponse> SendAndRecordAsync(
+        private async ValueTask<UHttpResponse> SendAndRecordAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken)
@@ -380,7 +380,7 @@ namespace TurboHTTP.Testing
             }
         }
 
-        private Task<UHttpResponse> ReplayAsync(
+        private ValueTask<UHttpResponse> ReplayAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken)
@@ -390,7 +390,7 @@ namespace TurboHTTP.Testing
             var strictKey = BuildRequestKey(request);
             if (TryDequeue(_replayByRequestKey, strictKey, out var strictEntry))
             {
-                return Task.FromResult(BuildReplayResponse(strictEntry, request, context));
+                return new ValueTask<UHttpResponse>(BuildReplayResponse(strictEntry, request, context));
             }
 
             if (_mismatchPolicy == RecordReplayMismatchPolicy.Relaxed)
@@ -399,7 +399,7 @@ namespace TurboHTTP.Testing
                 if (TryDequeue(_replayByRelaxedKey, relaxedKey, out var relaxedEntry))
                 {
                     Log($"RecordReplay mismatch relaxed: using relaxed key match for '{request.Method} {request.Uri}'.");
-                    return Task.FromResult(BuildReplayResponse(relaxedEntry, request, context));
+                    return new ValueTask<UHttpResponse>(BuildReplayResponse(relaxedEntry, request, context));
                 }
             }
 

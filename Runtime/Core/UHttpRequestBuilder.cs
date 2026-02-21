@@ -134,7 +134,11 @@ namespace TurboHTTP.Core
         /// <summary>
         /// Build and send the request via the owning <see cref="UHttpClient"/>.
         /// </summary>
-        public Task<UHttpResponse> SendAsync(CancellationToken cancellationToken = default)
+        /// <remarks>
+        /// The returned ValueTask must be awaited exactly once and must not be stored for later consumption.
+        /// Convert to Task via <see cref="ValueTask{TResult}.AsTask"/> only when Task combinators are required.
+        /// </remarks>
+        public ValueTask<UHttpResponse> SendAsync(CancellationToken cancellationToken = default)
         {
             var request = Build();
             return _client.SendAsync(request, cancellationToken);

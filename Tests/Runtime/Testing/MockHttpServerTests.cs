@@ -184,7 +184,7 @@ namespace TurboHTTP.Tests.Testing
                 var tasks = new List<Task<UHttpResponse>>();
                 for (int i = 0; i < 40; i++)
                 {
-                    tasks.Add(client.Get("https://example.test/parallel/" + i).SendAsync());
+                    tasks.Add(client.Get("https://example.test/parallel/" + i).SendAsync().AsTask());
                 }
 
                 await Task.WhenAll(tasks);

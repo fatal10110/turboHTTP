@@ -142,7 +142,7 @@ namespace TurboHTTP.Cache
                 throw new ArgumentNullException(nameof(policy), "CachePolicy.Storage cannot be null.");
         }
 
-        public async Task<UHttpResponse> InvokeAsync(
+        public async ValueTask<UHttpResponse> InvokeAsync(
             UHttpRequest request,
             RequestContext context,
             HttpPipelineDelegate next,
@@ -238,7 +238,7 @@ namespace TurboHTTP.Cache
             return upstreamResponse;
         }
 
-        private async Task<UHttpResponse> HandleUnsafeInvalidationAsync(
+        private async ValueTask<UHttpResponse> HandleUnsafeInvalidationAsync(
             UHttpRequest request,
             RequestContext context,
             HttpPipelineDelegate next,
@@ -262,7 +262,7 @@ namespace TurboHTTP.Cache
             return response;
         }
 
-        private async Task<UHttpResponse> RevalidateAsync(
+        private async ValueTask<UHttpResponse> RevalidateAsync(
             UHttpRequest request,
             RequestContext context,
             HttpPipelineDelegate next,

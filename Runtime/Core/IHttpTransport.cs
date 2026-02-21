@@ -19,7 +19,7 @@ namespace TurboHTTP.Core
         /// <param name="context">Execution context for timeline tracking</param>
         /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>The HTTP response</returns>
-        Task<UHttpResponse> SendAsync(
+        ValueTask<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default);
