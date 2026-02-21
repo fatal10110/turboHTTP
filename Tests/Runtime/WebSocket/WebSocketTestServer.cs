@@ -829,13 +829,17 @@ namespace TurboHTTP.Tests.WebSocket
         private readonly string _expectedAuthHeader;
         private readonly int _forcedConnectStatusCode;
         private readonly string _forcedConnectReason;
+        private readonly bool _authChallengeConnectionClose;
+        private readonly bool _authChallengeChunkedBody;
         private readonly Task _acceptLoopTask;
 
         public WebSocketTestProxyServer(
             string username = null,
             string password = null,
             int forcedConnectStatusCode = 0,
-            string forcedConnectReason = null)
+            string forcedConnectReason = null,
+            bool authChallengeConnectionClose = false,
+            bool authChallengeChunkedBody = false)
         {
             if (!string.IsNullOrEmpty(username))
             {
@@ -847,6 +851,8 @@ namespace TurboHTTP.Tests.WebSocket
             _forcedConnectReason = string.IsNullOrWhiteSpace(forcedConnectReason)
                 ? "CONNECT Rejected"
                 : forcedConnectReason;
+            _authChallengeConnectionClose = authChallengeConnectionClose;
+            _authChallengeChunkedBody = authChallengeChunkedBody;
 
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
@@ -933,12 +939,30 @@ namespace TurboHTTP.Tests.WebSocket
                     if (!string.IsNullOrEmpty(_expectedAuthHeader) &&
                         !string.Equals(proxyAuth, _expectedAuthHeader, StringComparison.Ordinal))
                     {
-                        await WriteStatusAsync(
-                            clientStream,
-                            407,
-                            "Proxy Authentication Required",
-                            ct,
-                            "Proxy-Authenticate: Basic realm=\"TurboHTTP-Test\"").ConfigureAwait(false);
+                        if (_authChallengeChunkedBody)
+                        {
+                            await WriteChunkedStatusAsync(
+                                clientStream,
+                                407,
+                                "Proxy Authentication Required",
+                                ct,
+                                "Proxy-Authenticate: Basic realm=\"TurboHTTP-Test\"",
+                                _authChallengeConnectionClose).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await WriteStatusAsync(
+                                clientStream,
+                                407,
+                                "Proxy Authentication Required",
+                                ct,
+                                "Proxy-Authenticate: Basic realm=\"TurboHTTP-Test\"",
+                                _authChallengeConnectionClose).ConfigureAwait(false);
+                        }
+
+                        if (_authChallengeConnectionClose)
+                            return;
+
                         continue;
                     }
 
@@ -1048,15 +1072,44 @@ namespace TurboHTTP.Tests.WebSocket
             int statusCode,
             string reason,
             CancellationToken ct,
-            string extraHeader = null)
+            string extraHeader = null,
+            bool connectionClose = false)
         {
+            string connectionValue = connectionClose ? "close" : "keep-alive";
             var builder = new StringBuilder(256);
             builder.Append("HTTP/1.1 ").Append(statusCode).Append(' ').Append(reason).Append("\r\n");
             if (!string.IsNullOrWhiteSpace(extraHeader))
                 builder.Append(extraHeader).Append("\r\n");
             builder.Append("Content-Length: 0\r\n");
-            builder.Append("Connection: keep-alive\r\n");
+            builder.Append("Connection: ").Append(connectionValue).Append("\r\n");
             builder.Append("\r\n");
+
+            byte[] bytes = Encoding.ASCII.GetBytes(builder.ToString());
+            await stream.WriteAsync(bytes, 0, bytes.Length, ct).ConfigureAwait(false);
+            await stream.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        private static async Task WriteChunkedStatusAsync(
+            Stream stream,
+            int statusCode,
+            string reason,
+            CancellationToken ct,
+            string extraHeader = null,
+            bool connectionClose = false)
+        {
+            const string chunkBody = "proxy-auth-required";
+            string connectionValue = connectionClose ? "close" : "keep-alive";
+
+            var builder = new StringBuilder(320);
+            builder.Append("HTTP/1.1 ").Append(statusCode).Append(' ').Append(reason).Append("\r\n");
+            if (!string.IsNullOrWhiteSpace(extraHeader))
+                builder.Append(extraHeader).Append("\r\n");
+            builder.Append("Transfer-Encoding: chunked\r\n");
+            builder.Append("Connection: ").Append(connectionValue).Append("\r\n");
+            builder.Append("\r\n");
+            builder.Append(chunkBody.Length.ToString("X")).Append("\r\n");
+            builder.Append(chunkBody).Append("\r\n");
+            builder.Append("0\r\n\r\n");
 
             byte[] bytes = Encoding.ASCII.GetBytes(builder.ToString());
             await stream.WriteAsync(bytes, 0, bytes.Length, ct).ConfigureAwait(false);

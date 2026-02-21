@@ -137,7 +137,7 @@ namespace TurboHTTP.WebSocket
         private void UpdateThroughput(WebSocketMetrics metrics)
         {
             long now = System.Diagnostics.Stopwatch.GetTimestamp();
-            long totalBytes = checked(metrics.BytesSent + metrics.BytesReceived);
+            long totalBytes = unchecked(metrics.BytesSent + metrics.BytesReceived);
 
             if (_lastThroughputStopwatchTimestamp > 0)
             {

@@ -26,6 +26,7 @@ namespace TurboHTTP.WebSocket
         private int _receiveAllInProgress;
         private int _reconnectLoopActive;
         private int _closedEventRaised;
+        private int _nextReconnectAttempt = 1;
         private WebSocketMetrics _latestMetrics;
         private WebSocketHealthSnapshot _latestHealth;
 
@@ -112,6 +113,7 @@ namespace TurboHTTP.WebSocket
                 _lifecycleCts = new CancellationTokenSource();
                 _closedEventRaised = 0;
                 _manualClose = 0;
+                _nextReconnectAttempt = 1;
                 _latestMetrics = default;
                 _latestHealth = WebSocketHealthSnapshot.Unknown;
             }
@@ -213,6 +215,7 @@ namespace TurboHTTP.WebSocket
             ThrowIfDisposed();
 
             Interlocked.Exchange(ref _manualClose, 1);
+            Interlocked.Exchange(ref _nextReconnectAttempt, 1);
 
             var client = Interlocked.Exchange(ref _client, null);
             if (client != null)
@@ -232,6 +235,7 @@ namespace TurboHTTP.WebSocket
         public void Abort()
         {
             Interlocked.Exchange(ref _manualClose, 1);
+            Interlocked.Exchange(ref _nextReconnectAttempt, 1);
 
             var client = Interlocked.Exchange(ref _client, null);
             if (client != null)
@@ -252,6 +256,7 @@ namespace TurboHTTP.WebSocket
                 return;
 
             Interlocked.Exchange(ref _manualClose, 1);
+            Interlocked.Exchange(ref _nextReconnectAttempt, 1);
             _lifecycleCts?.Cancel();
 
             var client = Interlocked.Exchange(ref _client, null);
@@ -276,6 +281,7 @@ namespace TurboHTTP.WebSocket
                 return;
 
             Interlocked.Exchange(ref _manualClose, 1);
+            Interlocked.Exchange(ref _nextReconnectAttempt, 1);
             _lifecycleCts?.Cancel();
 
             var client = Interlocked.Exchange(ref _client, null);
@@ -380,6 +386,9 @@ namespace TurboHTTP.WebSocket
                         throw;
                     }
 
+                    // A successfully received application message marks the connection as healthy again.
+                    Interlocked.Exchange(ref _nextReconnectAttempt, 1);
+
                     var messageHandler = OnMessage;
                     if (messageHandler != null)
                     {
@@ -450,7 +459,9 @@ namespace TurboHTTP.WebSocket
                 RaiseError(terminalError);
 
                 WebSocketReconnectPolicy policy = _options?.ReconnectPolicy ?? WebSocketReconnectPolicy.None;
-                int attempt = 1;
+                int attempt = Volatile.Read(ref _nextReconnectAttempt);
+                if (attempt < 1)
+                    attempt = 1;
 
                 while (!ct.IsCancellationRequested && policy.ShouldReconnect(attempt, terminalError.CloseCode))
                 {
@@ -474,6 +485,7 @@ namespace TurboHTTP.WebSocket
                             initialConnect: false,
                             externalCt: ct,
                             stopPreviousReceivePump: false).ConfigureAwait(false);
+                        Interlocked.Exchange(ref _nextReconnectAttempt, attempt + 1);
                         return;
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -486,6 +498,7 @@ namespace TurboHTTP.WebSocket
                             new WebSocketException(WebSocketError.ConnectionClosed, ex.Message, ex);
                         RaiseError(terminalError);
                         attempt++;
+                        Interlocked.Exchange(ref _nextReconnectAttempt, attempt);
                     }
                 }
 

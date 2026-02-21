@@ -229,16 +229,32 @@ namespace TurboHTTP.WebSocket
                     }
                     else
                     {
-                        var payloadBytes = payload.ToArray();
-                        deflate.Write(payloadBytes, 0, payloadBytes.Length);
+                        deflate.Write(payload.Span);
                     }
                 }
 
                 deflate.Flush();
             }
 
-            byte[] compressed = output.ToArray();
-            int compressedLength = compressed.Length;
+            if (!output.TryGetBuffer(out ArraySegment<byte> compressedSegment) ||
+                compressedSegment.Array == null)
+            {
+                byte[] compressedFallback = output.ToArray();
+                int fallbackLength = compressedFallback.Length;
+                if (HasTail(compressedFallback, fallbackLength, DeflateTail))
+                    fallbackLength -= DeflateTail.Length;
+
+                var fallbackOwner = ArrayPoolMemoryOwner<byte>.Rent(fallbackLength);
+                if (fallbackLength > 0)
+                {
+                    new ReadOnlyMemory<byte>(compressedFallback, 0, fallbackLength).CopyTo(fallbackOwner.Memory);
+                }
+
+                return fallbackOwner;
+            }
+
+            int compressedLength = (int)output.Length;
+            byte[] compressed = compressedSegment.Array;
 
             if (HasTail(compressed, compressedLength, DeflateTail))
                 compressedLength -= DeflateTail.Length;
@@ -246,7 +262,7 @@ namespace TurboHTTP.WebSocket
             var owner = ArrayPoolMemoryOwner<byte>.Rent(compressedLength);
             if (compressedLength > 0)
             {
-                new ReadOnlyMemory<byte>(compressed, 0, compressedLength).CopyTo(owner.Memory);
+                new ReadOnlyMemory<byte>(compressed, compressedSegment.Offset, compressedLength).CopyTo(owner.Memory);
             }
 
             return owner;
@@ -298,11 +314,28 @@ namespace TurboHTTP.WebSocket
                     output.Write(chunk, 0, read);
                 }
 
-                byte[] decompressed = output.ToArray();
-                var owner = ArrayPoolMemoryOwner<byte>.Rent(decompressed.Length);
-                if (decompressed.Length > 0)
+                if (!output.TryGetBuffer(out ArraySegment<byte> decompressedSegment) ||
+                    decompressedSegment.Array == null)
                 {
-                    new ReadOnlyMemory<byte>(decompressed, 0, decompressed.Length).CopyTo(owner.Memory);
+                    byte[] decompressedFallback = output.ToArray();
+                    var fallbackOwner = ArrayPoolMemoryOwner<byte>.Rent(decompressedFallback.Length);
+                    if (decompressedFallback.Length > 0)
+                    {
+                        new ReadOnlyMemory<byte>(decompressedFallback, 0, decompressedFallback.Length)
+                            .CopyTo(fallbackOwner.Memory);
+                    }
+
+                    return fallbackOwner;
+                }
+
+                int decompressedLength = (int)output.Length;
+                var owner = ArrayPoolMemoryOwner<byte>.Rent(decompressedLength);
+                if (decompressedLength > 0)
+                {
+                    new ReadOnlyMemory<byte>(
+                        decompressedSegment.Array,
+                        decompressedSegment.Offset,
+                        decompressedLength).CopyTo(owner.Memory);
                 }
 
                 return owner;

@@ -1,11 +1,12 @@
 using System;
-using System.Threading;
 
 namespace TurboHTTP.WebSocket
 {
     internal sealed class WebSocketMetricsCollector
     {
         private static readonly double StopwatchFrequency = System.Diagnostics.Stopwatch.Frequency;
+        // Lock-based counters avoid torn 64-bit writes/reads on 32-bit IL2CPP targets.
+        private readonly object _gate = new object();
 
         private long _bytesSent;
         private long _bytesReceived;
@@ -27,147 +28,170 @@ namespace TurboHTTP.WebSocket
         public WebSocketMetricsCollector()
         {
             long now = System.Diagnostics.Stopwatch.GetTimestamp();
-            _connectedAtStopwatchTimestamp = now;
+            _connectedAtStopwatchTimestamp = now > 0 ? now - 1 : 0;
             _lastActivityStopwatchTimestamp = now;
             _lastPublishStopwatchTimestamp = now;
         }
 
         public void RecordFrameSent(int byteCount)
         {
-            if (byteCount > 0)
-                Interlocked.Add(ref _bytesSent, byteCount);
+            lock (_gate)
+            {
+                if (byteCount > 0)
+                    _bytesSent += byteCount;
 
-            Interlocked.Increment(ref _framesSent);
-            TouchActivity();
+                _framesSent++;
+                TouchActivity_NoLock();
+            }
         }
 
         public void RecordFramesSent(int frameCount, int byteCount)
         {
-            if (byteCount > 0)
-                Interlocked.Add(ref _bytesSent, byteCount);
+            lock (_gate)
+            {
+                if (byteCount > 0)
+                    _bytesSent += byteCount;
 
-            if (frameCount > 0)
-                Interlocked.Add(ref _framesSent, frameCount);
+                if (frameCount > 0)
+                    _framesSent += frameCount;
 
-            TouchActivity();
+                TouchActivity_NoLock();
+            }
         }
 
         public void RecordFrameReceived(int byteCount)
         {
-            if (byteCount > 0)
-                Interlocked.Add(ref _bytesReceived, byteCount);
+            lock (_gate)
+            {
+                if (byteCount > 0)
+                    _bytesReceived += byteCount;
 
-            Interlocked.Increment(ref _framesReceived);
-            TouchActivity();
+                _framesReceived++;
+                TouchActivity_NoLock();
+            }
         }
 
         public void RecordFramesReceived(int frameCount, int byteCount)
         {
-            if (byteCount > 0)
-                Interlocked.Add(ref _bytesReceived, byteCount);
+            lock (_gate)
+            {
+                if (byteCount > 0)
+                    _bytesReceived += byteCount;
 
-            if (frameCount > 0)
-                Interlocked.Add(ref _framesReceived, frameCount);
+                if (frameCount > 0)
+                    _framesReceived += frameCount;
 
-            TouchActivity();
+                TouchActivity_NoLock();
+            }
         }
 
         public void RecordMessageSent()
         {
-            Interlocked.Increment(ref _messagesSent);
-            Interlocked.Increment(ref _messageEventsSinceLastPublish);
-            TouchActivity();
+            lock (_gate)
+            {
+                _messagesSent++;
+                _messageEventsSinceLastPublish++;
+                TouchActivity_NoLock();
+            }
         }
 
         public void RecordMessageReceived()
         {
-            Interlocked.Increment(ref _messagesReceived);
-            Interlocked.Increment(ref _messageEventsSinceLastPublish);
-            TouchActivity();
+            lock (_gate)
+            {
+                _messagesReceived++;
+                _messageEventsSinceLastPublish++;
+                TouchActivity_NoLock();
+            }
         }
 
         public void RecordCompression(int originalSize, int compressedSize)
         {
-            if (originalSize > 0)
-                Interlocked.Add(ref _uncompressedBytesSent, originalSize);
+            lock (_gate)
+            {
+                if (originalSize > 0)
+                    _uncompressedBytesSent += originalSize;
 
-            if (compressedSize > 0)
-                Interlocked.Add(ref _compressedBytesSent, compressedSize);
+                if (compressedSize > 0)
+                    _compressedBytesSent += compressedSize;
+            }
         }
 
         public void RecordCompressedInboundBytes(int compressedSize)
         {
-            if (compressedSize > 0)
-                Interlocked.Add(ref _compressedBytesReceived, compressedSize);
+            lock (_gate)
+            {
+                if (compressedSize > 0)
+                    _compressedBytesReceived += compressedSize;
+            }
         }
 
         public void RecordPingSent()
         {
-            Interlocked.Increment(ref _pingsSent);
-            TouchActivity();
+            lock (_gate)
+            {
+                _pingsSent++;
+                TouchActivity_NoLock();
+            }
         }
 
         public void RecordPongReceived()
         {
-            Interlocked.Increment(ref _pongsReceived);
-            TouchActivity();
+            lock (_gate)
+            {
+                _pongsReceived++;
+                TouchActivity_NoLock();
+            }
         }
 
         public bool ShouldPublishSnapshot(int messageInterval, TimeSpan minInterval)
         {
-            bool reachedMessageInterval = messageInterval > 0 &&
-                Volatile.Read(ref _messageEventsSinceLastPublish) >= messageInterval;
-            bool reachedTimeInterval = minInterval > TimeSpan.Zero &&
-                ElapsedSince(Volatile.Read(ref _lastPublishStopwatchTimestamp)) >= minInterval;
+            lock (_gate)
+            {
+                bool reachedMessageInterval = messageInterval > 0 &&
+                    _messageEventsSinceLastPublish >= messageInterval;
+                bool reachedTimeInterval = minInterval > TimeSpan.Zero &&
+                    ElapsedSince(_lastPublishStopwatchTimestamp) >= minInterval;
 
-            if (!reachedMessageInterval && !reachedTimeInterval)
-                return false;
+                if (!reachedMessageInterval && !reachedTimeInterval)
+                    return false;
 
-            Interlocked.Exchange(ref _messageEventsSinceLastPublish, 0);
-            Interlocked.Exchange(
-                ref _lastPublishStopwatchTimestamp,
-                System.Diagnostics.Stopwatch.GetTimestamp());
-            return true;
+                _messageEventsSinceLastPublish = 0;
+                _lastPublishStopwatchTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+                return true;
+            }
         }
 
         public WebSocketMetrics GetSnapshot()
         {
-            long bytesSent = Volatile.Read(ref _bytesSent);
-            long bytesReceived = Volatile.Read(ref _bytesReceived);
-            long messagesSent = Volatile.Read(ref _messagesSent);
-            long messagesReceived = Volatile.Read(ref _messagesReceived);
-            long framesSent = Volatile.Read(ref _framesSent);
-            long framesReceived = Volatile.Read(ref _framesReceived);
-            long pingsSent = Volatile.Read(ref _pingsSent);
-            long pongsReceived = Volatile.Read(ref _pongsReceived);
-            long uncompressedBytesSent = Volatile.Read(ref _uncompressedBytesSent);
-            long compressedBytesSent = Volatile.Read(ref _compressedBytesSent);
-            long compressedBytesReceived = Volatile.Read(ref _compressedBytesReceived);
+            lock (_gate)
+            {
+                TimeSpan uptime = ElapsedSince(_connectedAtStopwatchTimestamp);
+                if (uptime <= TimeSpan.Zero)
+                    uptime = TimeSpan.FromTicks(1);
 
-            TimeSpan uptime = ElapsedSince(Volatile.Read(ref _connectedAtStopwatchTimestamp));
-            TimeSpan lastActivityAge = ElapsedSince(Volatile.Read(ref _lastActivityStopwatchTimestamp));
+                TimeSpan lastActivityAge = ElapsedSince(_lastActivityStopwatchTimestamp);
 
-            return new WebSocketMetrics(
-                bytesSent,
-                bytesReceived,
-                messagesSent,
-                messagesReceived,
-                framesSent,
-                framesReceived,
-                pingsSent,
-                pongsReceived,
-                uncompressedBytesSent,
-                compressedBytesSent,
-                compressedBytesReceived,
-                uptime,
-                lastActivityAge);
+                return new WebSocketMetrics(
+                    _bytesSent,
+                    _bytesReceived,
+                    _messagesSent,
+                    _messagesReceived,
+                    _framesSent,
+                    _framesReceived,
+                    _pingsSent,
+                    _pongsReceived,
+                    _uncompressedBytesSent,
+                    _compressedBytesSent,
+                    _compressedBytesReceived,
+                    uptime,
+                    lastActivityAge);
+            }
         }
 
-        private void TouchActivity()
+        private void TouchActivity_NoLock()
         {
-            Interlocked.Exchange(
-                ref _lastActivityStopwatchTimestamp,
-                System.Diagnostics.Stopwatch.GetTimestamp());
+            _lastActivityStopwatchTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
         }
 
         private static TimeSpan ElapsedSince(long fromTimestamp)

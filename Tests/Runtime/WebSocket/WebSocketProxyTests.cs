@@ -87,6 +87,64 @@ namespace TurboHTTP.Tests.WebSocket
         }
 
         [Test]
+        public void ProxyAuthentication_407ConnectionClose_DoesNotRetryUnsafeConnection()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer();
+                using var proxy = new WebSocketTestProxyServer(
+                    username: "user",
+                    password: "pass",
+                    authChallengeConnectionClose: true);
+                await using var client = new WebSocketClient(new RawSocketWebSocketTransport());
+
+                var options = CreateOptions();
+                options.ProxySettings = new WebSocketProxySettings(
+                    new Uri("http://127.0.0.1:" + proxy.Port),
+                    new ProxyCredentials("user", "pass"));
+
+                var ex = AssertAsync.ThrowsAsync<WebSocketException>(async () =>
+                    await client.ConnectAsync(
+                        server.CreateUri("/proxy-auth-close"),
+                        options,
+                        CancellationToken.None).ConfigureAwait(false));
+
+                Assert.AreEqual(WebSocketError.ProxyTunnelFailed, ex.Error);
+                StringAssert.Contains("cannot be safely retried", ex.Message);
+                Assert.AreEqual(0, proxy.AuthenticatedConnectCount);
+            });
+        }
+
+        [Test]
+        public void ProxyAuthentication_407ChunkedBody_DoesNotRetryUnsafeConnection()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new WebSocketTestServer();
+                using var proxy = new WebSocketTestProxyServer(
+                    username: "user",
+                    password: "pass",
+                    authChallengeChunkedBody: true);
+                await using var client = new WebSocketClient(new RawSocketWebSocketTransport());
+
+                var options = CreateOptions();
+                options.ProxySettings = new WebSocketProxySettings(
+                    new Uri("http://127.0.0.1:" + proxy.Port),
+                    new ProxyCredentials("user", "pass"));
+
+                var ex = AssertAsync.ThrowsAsync<WebSocketException>(async () =>
+                    await client.ConnectAsync(
+                        server.CreateUri("/proxy-auth-chunked"),
+                        options,
+                        CancellationToken.None).ConfigureAwait(false));
+
+                Assert.AreEqual(WebSocketError.ProxyTunnelFailed, ex.Error);
+                StringAssert.Contains("cannot be safely retried", ex.Message);
+                Assert.AreEqual(0, proxy.AuthenticatedConnectCount);
+            });
+        }
+
+        [Test]
         public void ProxySettings_BypassList_MatchesExactAndWildcard()
         {
             var settings = new WebSocketProxySettings(

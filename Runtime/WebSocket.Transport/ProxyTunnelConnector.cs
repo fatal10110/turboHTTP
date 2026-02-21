@@ -41,7 +41,20 @@ namespace TurboHTTP.WebSocket.Transport
                         "[TurboHTTP] Using Basic proxy authentication over an unencrypted proxy connection.");
                 }
 
-                await WriteConnectRequestAsync(stream, authority, proxyAuthorization, ct).ConfigureAwait(false);
+                try
+                {
+                    await WriteConnectRequestAsync(stream, authority, proxyAuthorization, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (
+                    attemptedAuth &&
+                    !(ex is OperationCanceledException))
+                {
+                    throw new WebSocketException(
+                        WebSocketError.ProxyTunnelFailed,
+                        "Proxy closed the connection while retrying CONNECT after 407.",
+                        ex);
+                }
+
                 var response = await ReadResponseAsync(stream, ct).ConfigureAwait(false);
 
                 if (response.StatusCode == 200)
@@ -68,6 +81,15 @@ namespace TurboHTTP.WebSocket.Transport
                             "Proxy rejected CONNECT after Basic authentication.");
                     }
 
+                    if (!response.CanRetryOnSameConnection)
+                    {
+                        throw new WebSocketException(
+                            WebSocketError.ProxyTunnelFailed,
+                            "Proxy 407 response cannot be safely retried on the same connection " +
+                            "(unsupported body framing or connection close).");
+                    }
+
+                    // Assumes proxies keep the TCP connection alive after 407 when framing permits reuse.
                     attemptedAuth = true;
                     continue;
                 }
@@ -101,23 +123,50 @@ namespace TurboHTTP.WebSocket.Transport
         {
             var head = await ReadHeaderBlockAsync(stream, ct).ConfigureAwait(false);
             int statusCode = ParseStatusCode(head.HeaderBlock);
-            int contentLength = ParseContentLength(head.HeaderBlock);
+            int contentLength = ParseContentLength(head.HeaderBlock, out bool hasContentLength);
+            bool transferChunked = HeaderContainsToken(head.HeaderBlock, "Transfer-Encoding", "chunked");
+            bool connectionClose = HeaderContainsToken(head.HeaderBlock, "Connection", "close");
 
             byte[] prefetchedBytes = Array.Empty<byte>();
             int bufferedByteCount = head.PrefetchedBytes.Length;
+            bool canRetryOnSameConnection = !connectionClose;
 
-            if (contentLength > 0)
+            if (hasContentLength)
             {
-                int remainingBodyBytes = contentLength - bufferedByteCount;
+                int bodyBytesFromPrefetch = Math.Min(bufferedByteCount, contentLength);
+                int remainingBodyBytes = contentLength - bodyBytesFromPrefetch;
                 if (remainingBodyBytes > 0)
                     await DrainBodyAsync(stream, remainingBodyBytes, ct).ConfigureAwait(false);
+
+                if (statusCode == 200 && bufferedByteCount > contentLength)
+                {
+                    int tunnelPrefetchedLength = bufferedByteCount - contentLength;
+                    prefetchedBytes = new byte[tunnelPrefetchedLength];
+                    Buffer.BlockCopy(
+                        head.PrefetchedBytes,
+                        contentLength,
+                        prefetchedBytes,
+                        0,
+                        tunnelPrefetchedLength);
+                }
+            }
+            else if (transferChunked)
+            {
+                // Chunked CONNECT response bodies are not supported for retry flow; fail clearly.
+                if (statusCode != 200)
+                    canRetryOnSameConnection = false;
             }
             else if (statusCode == 200 && bufferedByteCount > 0)
             {
                 prefetchedBytes = head.PrefetchedBytes;
             }
+            else if (statusCode != 200)
+            {
+                // Without explicit framing, the body boundary is unknown; avoid retry on same connection.
+                canRetryOnSameConnection = false;
+            }
 
-            return new ConnectResponse(statusCode, prefetchedBytes);
+            return new ConnectResponse(statusCode, prefetchedBytes, canRetryOnSameConnection);
         }
 
         private static async Task<HeaderBlockReadResult> ReadHeaderBlockAsync(Stream stream, CancellationToken ct)
@@ -210,8 +259,9 @@ namespace TurboHTTP.WebSocket.Transport
             return code;
         }
 
-        private static int ParseContentLength(string headerBlock)
+        private static int ParseContentLength(string headerBlock, out bool hasContentLength)
         {
+            hasContentLength = false;
             string[] lines = headerBlock.Split(new[] { "\r\n" }, StringSplitOptions.None);
             for (int i = 0; i < lines.Length; i++)
             {
@@ -220,12 +270,45 @@ namespace TurboHTTP.WebSocket.Transport
                 if (!line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                hasContentLength = true;
                 string value = line.Substring(prefix.Length).Trim();
-                if (int.TryParse(value, out int contentLength) && contentLength > 0)
+                if (int.TryParse(value, out int contentLength) && contentLength >= 0)
                     return contentLength;
+
+                return 0;
             }
 
             return 0;
+        }
+
+        private static bool HeaderContainsToken(string headerBlock, string headerName, string token)
+        {
+            if (string.IsNullOrWhiteSpace(headerBlock) ||
+                string.IsNullOrWhiteSpace(headerName) ||
+                string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            string[] lines = headerBlock.Split(new[] { "\r\n" }, StringSplitOptions.None);
+            string prefix = headerName + ":";
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                if (!line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string value = line.Substring(prefix.Length).Trim();
+                string[] tokens = value.Split(',');
+                for (int j = 0; j < tokens.Length; j++)
+                {
+                    if (string.Equals(tokens[j].Trim(), token, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private static async Task DrainBodyAsync(Stream stream, int bodyLength, CancellationToken ct)
@@ -260,15 +343,18 @@ namespace TurboHTTP.WebSocket.Transport
 
         private readonly struct ConnectResponse
         {
-            public ConnectResponse(int statusCode, byte[] prefetchedBytes)
+            public ConnectResponse(int statusCode, byte[] prefetchedBytes, bool canRetryOnSameConnection)
             {
                 StatusCode = statusCode;
                 PrefetchedBytes = prefetchedBytes ?? Array.Empty<byte>();
+                CanRetryOnSameConnection = canRetryOnSameConnection;
             }
 
             public int StatusCode { get; }
 
             public byte[] PrefetchedBytes { get; }
+
+            public bool CanRetryOnSameConnection { get; }
         }
 
         private readonly struct HeaderBlockReadResult
