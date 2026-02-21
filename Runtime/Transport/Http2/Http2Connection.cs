@@ -74,14 +74,11 @@ namespace TurboHTTP.Transport.Http2
             Stream stream,
             string host,
             int port,
-            int maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
+            Http2Options options)
         {
-            if (maxDecodedHeaderBytes <= 0)
+            if (options == null)
             {
-                throw new ArgumentOutOfRangeException(
-                    nameof(maxDecodedHeaderBytes),
-                    maxDecodedHeaderBytes,
-                    "Must be greater than 0.");
+                throw new ArgumentNullException(nameof(options));
             }
 
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
@@ -89,8 +86,15 @@ namespace TurboHTTP.Transport.Http2
             Port = port;
             _codec = new Http2FrameCodec(stream);
             _hpackEncoder = new HpackEncoder();
-            _hpackDecoder = new HpackDecoder(maxDecodedHeaderBytes: maxDecodedHeaderBytes);
-            _localSettings.Apply(Http2SettingId.EnablePush, 0);
+            _hpackDecoder = new HpackDecoder(maxDecodedHeaderBytes: options.MaxDecodedHeaderBytes);
+            _localSettings = new Http2Settings(options);
+            _localSettings.Apply(Http2SettingId.EnablePush, options.EnablePush ? 1u : 0u);
+        }
+
+        // Backward-compatible constructor that uses default HTTP/2 options.
+        public Http2Connection(Stream stream, string host, int port)
+            : this(stream, host, port, new Http2Options())
+        {
         }
 
         /// <summary>

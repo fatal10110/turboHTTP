@@ -67,6 +67,8 @@ namespace TurboHTTP.Retry
                         return response; // Return last failed response
                     }
 
+                    response.Dispose();
+
                     // Wait before retry
                     _log($"[RetryMiddleware] Attempt {attempt} failed with {(int)response.StatusCode}, retrying in {delay.TotalSeconds:F1}s...");
                     await Task.Delay(delay, cancellationToken);

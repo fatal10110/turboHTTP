@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using TurboHTTP.Core;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -22,6 +23,21 @@ namespace TurboHTTP.Transport.Http2
         /// This is a client-side limit, not part of the HTTP/2 protocol.
         /// </summary>
         public long MaxResponseBodySize { get; set; } = 100 * 1024 * 1024; // 100 MB default
+
+        public Http2Settings() { }
+
+        public Http2Settings(Http2Options options)
+        {
+            if (options != null)
+            {
+                EnablePush = options.EnablePush;
+                MaxConcurrentStreams = options.MaxConcurrentStreams;
+                InitialWindowSize = options.InitialWindowSize;
+                MaxFrameSize = options.MaxFrameSize;
+                MaxHeaderListSize = options.MaxHeaderListSize;
+                MaxResponseBodySize = options.MaxResponseBodySize;
+            }
+        }
 
         /// <summary>
         /// Apply a single setting received from the server.

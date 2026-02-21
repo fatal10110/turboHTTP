@@ -1,17 +1,27 @@
 using System;
+using System.Buffers;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace TurboHTTP.Core
 {
     /// <summary>
     /// Represents an HTTP response.
     /// </summary>
-    public class UHttpResponse
+    public class UHttpResponse : IDisposable
     {
         public HttpStatusCode StatusCode { get; }
         public HttpHeaders Headers { get; }
-        public ReadOnlyMemory<byte> Body { get; }
+        public ReadOnlyMemory<byte> Body
+        {
+            get
+            {
+                ThrowIfDisposed();
+                return _body;
+            }
+        }
         public TimeSpan ElapsedTime { get; }
 
         /// <summary>
@@ -25,20 +35,39 @@ namespace TurboHTTP.Core
         /// </summary>
         public UHttpError Error { get; }
 
+        private ReadOnlyMemory<byte> _body;
+        private readonly byte[] _pooledBodyBuffer;
+        private readonly bool _bodyBufferRented;
+        private int _disposed;
+
         public UHttpResponse(
             HttpStatusCode statusCode,
             HttpHeaders headers,
             ReadOnlyMemory<byte> body,
             TimeSpan elapsedTime,
             UHttpRequest request,
-            UHttpError error = null)
+            UHttpError error = null,
+            bool bodyFromPool = false)
         {
             StatusCode = statusCode;
             Headers = headers ?? new HttpHeaders();
-            Body = body;
+            _body = body;
             ElapsedTime = elapsedTime;
             Request = request ?? throw new ArgumentNullException(nameof(request));
             Error = error;
+
+            if (bodyFromPool && !body.IsEmpty)
+            {
+                if (!MemoryMarshal.TryGetArray(body, out var segment) || segment.Array == null)
+                {
+                    throw new ArgumentException(
+                        "Body must be array-backed when bodyFromPool is true.",
+                        nameof(body));
+                }
+
+                _pooledBodyBuffer = segment.Array;
+                _bodyBufferRented = true;
+            }
         }
 
         /// <summary>
@@ -149,6 +178,34 @@ namespace TurboHTTP.Core
         public override string ToString()
         {
             return $"{(int)StatusCode} {StatusCode} ({ElapsedTime.TotalMilliseconds:F0}ms)";
+        }
+
+        ~UHttpResponse()
+        {
+            Dispose(false);
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        private void Dispose(bool disposing)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            if (_bodyBufferRented && _pooledBodyBuffer != null)
+                ArrayPool<byte>.Shared.Return(_pooledBodyBuffer);
+
+            _body = ReadOnlyMemory<byte>.Empty;
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(UHttpResponse));
         }
     }
 }

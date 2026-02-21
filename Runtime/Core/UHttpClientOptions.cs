@@ -14,6 +14,16 @@ namespace TurboHTTP.Core
         public const int DefaultHttp2MaxDecodedHeaderBytes = 256 * 1024;
 
         /// <summary>
+        /// Configuration for the TCP connection pool used by the default transport.
+        /// </summary>
+        public ConnectionPoolOptions ConnectionPool { get; set; } = new ConnectionPoolOptions();
+
+        /// <summary>
+        /// HTTP/2 specific client settings.
+        /// </summary>
+        public Http2Options Http2 { get; set; } = new Http2Options();
+
+        /// <summary>
         /// Base URL for resolving relative request URLs.
         /// </summary>
         public string BaseUrl { get; set; }
@@ -126,7 +136,12 @@ namespace TurboHTTP.Core
         /// transport instance (default transport path). It does not mutate behavior
         /// of a user-supplied custom <see cref="Transport"/> instance.
         /// </remarks>
-        public int Http2MaxDecodedHeaderBytes { get; set; } = DefaultHttp2MaxDecodedHeaderBytes;
+        [Obsolete("Use Http2.MaxDecodedHeaderBytes instead.")]
+        public int Http2MaxDecodedHeaderBytes
+        {
+            get => Http2.MaxDecodedHeaderBytes;
+            set => Http2.MaxDecodedHeaderBytes = value;
+        }
 
         /// <summary>
         /// Creates a deep copy of these options. Headers and middleware list are
@@ -157,7 +172,8 @@ namespace TurboHTTP.Core
                 MaxRedirects = MaxRedirects,
                 DisposeTransport = DisposeTransport,
                 TlsBackend = TlsBackend,
-                Http2MaxDecodedHeaderBytes = Http2MaxDecodedHeaderBytes
+                ConnectionPool = ConnectionPool?.Clone() ?? new ConnectionPoolOptions(),
+                Http2 = Http2?.Clone() ?? new Http2Options()
             };
         }
     }

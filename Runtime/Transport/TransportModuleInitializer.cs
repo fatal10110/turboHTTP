@@ -18,14 +18,7 @@ namespace TurboHTTP.Transport
         [ModuleInitializer]
         internal static void Initialize()
         {
-            HttpTransportFactory.Register(
-                () => new RawSocketTransport(),
-                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend),
-                (tlsBackend, http2MaxDecodedHeaderBytes) =>
-                    new RawSocketTransport(
-                        pool: null,
-                        tlsBackend: tlsBackend,
-                        http2MaxDecodedHeaderBytes: http2MaxDecodedHeaderBytes));
+            RawSocketTransport.EnsureRegistered();
         }
     }
 }

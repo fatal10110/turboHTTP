@@ -75,43 +75,46 @@ namespace TurboHTTP.Middleware
                 if (!TryResolveRedirectTarget(currentRequest.Uri, response, out var targetUri, out var statusCode))
                     return response;
 
-                if (redirectCount >= maxRedirects)
+                using (response)
                 {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.InvalidRequest,
-                        $"Redirect limit exceeded ({maxRedirects}). Last redirect target: {targetUri}"));
+                    if (redirectCount >= maxRedirects)
+                    {
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.InvalidRequest,
+                            $"Redirect limit exceeded ({maxRedirects}). Last redirect target: {targetUri}"));
+                    }
+
+                    if (IsHttpsToHttpDowngrade(currentRequest.Uri, targetUri) && !allowHttpsToHttpDowngrade)
+                    {
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.InvalidRequest,
+                            $"Blocked insecure redirect downgrade from '{currentRequest.Uri}' to '{targetUri}'."));
+                    }
+
+                    var loopKey = BuildLoopKey(targetUri);
+                    if (!visitedTargets.Add(loopKey))
+                    {
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.InvalidRequest,
+                            $"Redirect loop detected for target '{targetUri}'."));
+                    }
+
+                    var fromUri = currentRequest.Uri;
+                    var crossOrigin = IsCrossOrigin(currentRequest.Uri, targetUri);
+                    currentRequest = BuildRedirectRequest(currentRequest, targetUri, statusCode, crossOrigin);
+
+                    redirectChain.Add(targetUri.AbsoluteUri);
+                    context.SetState("RedirectChain", redirectChain.ToArray());
+                    context.RecordEvent("RedirectHop", new Dictionary<string, object>
+                    {
+                        { "from", fromUri.AbsoluteUri },
+                        { "to", targetUri.AbsoluteUri },
+                        { "status", (int)statusCode },
+                        { "hop", redirectCount + 1 }
+                    });
+
+                    context.UpdateRequest(currentRequest);
                 }
-
-                if (IsHttpsToHttpDowngrade(currentRequest.Uri, targetUri) && !allowHttpsToHttpDowngrade)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.InvalidRequest,
-                        $"Blocked insecure redirect downgrade from '{currentRequest.Uri}' to '{targetUri}'."));
-                }
-
-                var loopKey = BuildLoopKey(targetUri);
-                if (!visitedTargets.Add(loopKey))
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.InvalidRequest,
-                        $"Redirect loop detected for target '{targetUri}'."));
-                }
-
-                var fromUri = currentRequest.Uri;
-                var crossOrigin = IsCrossOrigin(currentRequest.Uri, targetUri);
-                currentRequest = BuildRedirectRequest(currentRequest, targetUri, statusCode, crossOrigin);
-
-                redirectChain.Add(targetUri.AbsoluteUri);
-                context.SetState("RedirectChain", redirectChain.ToArray());
-                context.RecordEvent("RedirectHop", new Dictionary<string, object>
-                {
-                    { "from", fromUri.AbsoluteUri },
-                    { "to", targetUri.AbsoluteUri },
-                    { "status", (int)statusCode },
-                    { "hop", redirectCount + 1 }
-                });
-
-                context.UpdateRequest(currentRequest);
             }
         }
 

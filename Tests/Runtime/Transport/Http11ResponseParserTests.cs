@@ -95,7 +95,7 @@ namespace TurboHTTP.Tests.Transport
                 var parsed = await ParseAsync(response);
                 Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
                 Assert.AreEqual("A", parsed.Headers.Get("X-Test"));
-                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -129,7 +129,7 @@ namespace TurboHTTP.Tests.Transport
                                "0\r\n\r\n";
 
                 var parsed = await ParseAsync(response);
-                Assert.AreEqual("HelloWorld", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("HelloWorld", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -143,7 +143,7 @@ namespace TurboHTTP.Tests.Transport
                                "X-Trailer: yes\r\n\r\n";
 
                 var parsed = await ParseAsync(response);
-                Assert.AreEqual("A", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("A", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -174,7 +174,7 @@ namespace TurboHTTP.Tests.Transport
             {
                 var response = "HTTP/1.1 200 OK\r\n\r\nHello";
                 var parsed = await ParseAsync(response);
-                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -296,7 +296,7 @@ namespace TurboHTTP.Tests.Transport
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n" +
                                "3\r\nabc\r\n0\r\n\r\n";
                 var parsed = await ParseAsync(response);
-                Assert.AreEqual("abc", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("abc", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -315,7 +315,7 @@ namespace TurboHTTP.Tests.Transport
                                "1\r\na\r\n0\r\n\r\n";
                 var parsed = await ParseAsync(response);
                 Assert.AreEqual(1, parsed.Body.Length);
-                Assert.AreEqual("a", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("a", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -332,7 +332,7 @@ namespace TurboHTTP.Tests.Transport
             {
                 var response = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\nHey";
                 var parsed = await ParseAsync(response);
-                Assert.AreEqual("Hey", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("Hey", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -352,7 +352,7 @@ namespace TurboHTTP.Tests.Transport
             {
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: identity\r\nContent-Length: 5\r\n\r\nHello";
                 var parsed = await ParseAsync(response);
-                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -422,7 +422,7 @@ namespace TurboHTTP.Tests.Transport
                                "Test\r\n" +
                                "0\r\n\r\n";
                 var parsed = await ParseAsync(response);
-                Assert.AreEqual("Test", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("Test", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -515,7 +515,7 @@ namespace TurboHTTP.Tests.Transport
                 Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
                 Assert.AreEqual("A", parsed.Headers.Get("X-One"));
                 Assert.AreEqual("B", parsed.Headers.Get("X-Two"));
-                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -530,7 +530,7 @@ namespace TurboHTTP.Tests.Transport
 
                 Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
                 Assert.AreEqual("value", parsed.Headers.Get("X-Test"));
-                Assert.AreEqual("OK", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("OK", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
 
@@ -565,7 +565,7 @@ namespace TurboHTTP.Tests.Transport
                 Buffer.BlockCopy(bodyBytes, 0, responseBytes, Encoding.ASCII.GetByteCount(header), bodyBytes.Length);
 
                 var parsed = await ParseFragmentedAsync(responseBytes, new[] { 5, 2, 1, 3, 4, 1, 2 });
-                Assert.AreEqual(payload, Encoding.UTF8.GetString(parsed.Body));
+                Assert.AreEqual(payload, Encoding.UTF8.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }
     }

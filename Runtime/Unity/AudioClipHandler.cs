@@ -89,9 +89,11 @@ namespace TurboHTTP.Unity
             lock (OptionsLock)
             {
                 _options = new AudioClipPipelineOptions();
+                var oldLimiter = _decodeLimiter;
                 _decodeLimiter = new SemaphoreSlim(
                     _options.MaxConcurrentDecodes,
                     _options.MaxConcurrentDecodes);
+                oldLimiter?.Dispose();
             }
         }
 
@@ -208,7 +210,7 @@ namespace TurboHTTP.Unity
             if (string.IsNullOrWhiteSpace(url))
                 throw new ArgumentException("URL cannot be null or empty.", nameof(url));
 
-            var response = await client
+            using var response = await client
                 .Get(url)
                 .WithHeader("Accept", BuildAcceptHeader(audioType))
                 .SendAsync(cancellationToken).ConfigureAwait(false);

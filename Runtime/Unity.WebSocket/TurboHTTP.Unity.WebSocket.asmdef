@@ -1,0 +1,18 @@
+{
+  "name": "TurboHTTP.Unity.WebSocket",
+  "rootNamespace": "TurboHTTP.Unity.WebSocket",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.WebSocket",
+    "TurboHTTP.Unity"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

@@ -142,9 +142,9 @@ namespace TurboHTTP.Transport.Http2
                 throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
                     $"DATA exceeds stream {frame.StreamId} receive window");
 
-            // Enforce MaxResponseBodySize limit to prevent unbounded MemoryStream growth
+            // Enforce MaxResponseBodySize limit to prevent unbounded response buffering.
             long maxBodySize = _localSettings.MaxResponseBodySize;
-            if (maxBodySize > 0 && stream.ResponseBody.Length + dataLength > maxBodySize)
+            if (maxBodySize > 0 && stream.ResponseBodyLength + dataLength > maxBodySize)
             {
                 _connectionRecvWindow -= flowControlledLength;
                 if (_activeStreams.TryRemove(frame.StreamId, out _))
@@ -165,7 +165,7 @@ namespace TurboHTTP.Transport.Http2
             {
                 try
                 {
-                    stream.ResponseBody.Write(frame.Payload, dataOffset, dataLength);
+                    stream.AppendResponseData(frame.Payload, dataOffset, dataLength);
                 }
                 catch (ObjectDisposedException)
                 {

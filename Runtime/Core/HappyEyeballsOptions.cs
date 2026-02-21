@@ -22,6 +22,15 @@ namespace TurboHTTP.Transport.Connection
             };
         }
 
+        internal bool IsDefault()
+        {
+            return FamilyStaggerDelay == TimeSpan.FromMilliseconds(250) &&
+                   AttemptSpacingDelay == TimeSpan.FromMilliseconds(125) &&
+                   MaxConcurrentAttempts == 2 &&
+                   PreferIpv6 == true &&
+                   Enable == true;
+        }
+
         public void Validate()
         {
             if (FamilyStaggerDelay < TimeSpan.Zero)

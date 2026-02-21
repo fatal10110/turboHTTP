@@ -3,6 +3,14 @@ using System.Threading.Tasks;
 
 public static class AssertAsync
 {
+    public static void Run(Func<Task> asyncDelegate)
+    {
+        if (asyncDelegate == null)
+            throw new ArgumentNullException(nameof(asyncDelegate));
+
+        Task.Run(asyncDelegate).GetAwaiter().GetResult();
+    }
+
     public static T ThrowsAsync<T>(Func<Task> asyncDelegate) where T : Exception
     {
         if (asyncDelegate == null)

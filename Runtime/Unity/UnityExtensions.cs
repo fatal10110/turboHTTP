@@ -127,7 +127,7 @@ namespace TurboHTTP.Unity
                 relativePath,
                 nameof(relativePath));
 
-            var response = await client.Get(url).SendAsync(cancellationToken).ConfigureAwait(false);
+            using var response = await client.Get(url).SendAsync(cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             cancellationToken.ThrowIfCancellationRequested();
 

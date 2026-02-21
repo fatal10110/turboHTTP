@@ -325,29 +325,32 @@ namespace TurboHTTP.Cache
                 return response;
             }
 
-            context.RecordEvent("CacheRevalidateNotModified");
-
-            var merged = MergeNotModifiedEntry(request, lookup.Entry, response, baseKey);
-            if (merged.Entry != null)
+            using (response)
             {
-                if (!string.Equals(lookup.StorageKey, merged.Entry.Key, StringComparison.Ordinal))
+                context.RecordEvent("CacheRevalidateNotModified");
+
+                var merged = MergeNotModifiedEntry(request, lookup.Entry, response, baseKey);
+                if (merged.Entry != null)
                 {
-                    await _policy.Storage.RemoveAsync(lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                    UnregisterStoredVariant(baseKey, lookup.StorageKey);
+                    if (!string.Equals(lookup.StorageKey, merged.Entry.Key, StringComparison.Ordinal))
+                    {
+                        await _policy.Storage.RemoveAsync(lookup.StorageKey, cancellationToken).ConfigureAwait(false);
+                        UnregisterStoredVariant(baseKey, lookup.StorageKey);
+                    }
+
+                    await _policy.Storage
+                        .SetAsync(merged.Entry.Key, merged.Entry, cancellationToken)
+                        .ConfigureAwait(false);
+                    RegisterStoredVariant(baseKey, merged.Signature, merged.Entry.Key);
+
+                    return CreateResponseFromEntry(merged.Entry, request, context, "REVALIDATED");
                 }
 
-                await _policy.Storage
-                    .SetAsync(merged.Entry.Key, merged.Entry, cancellationToken)
-                    .ConfigureAwait(false);
-                RegisterStoredVariant(baseKey, merged.Signature, merged.Entry.Key);
-
-                return CreateResponseFromEntry(merged.Entry, request, context, "REVALIDATED");
+                // If merge becomes non-cacheable, keep serving cached snapshot for this response only.
+                await _policy.Storage.RemoveAsync(lookup.StorageKey, cancellationToken).ConfigureAwait(false);
+                UnregisterStoredVariant(baseKey, lookup.StorageKey);
+                return CreateResponseFromEntry(lookup.Entry, request, context, "REVALIDATED");
             }
-
-            // If merge becomes non-cacheable, keep serving cached snapshot for this response only.
-            await _policy.Storage.RemoveAsync(lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-            UnregisterStoredVariant(baseKey, lookup.StorageKey);
-            return CreateResponseFromEntry(lookup.Entry, request, context, "REVALIDATED");
         }
 
         private async Task InvalidateUriAsync(Uri uri, CancellationToken cancellationToken)

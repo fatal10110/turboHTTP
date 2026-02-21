@@ -80,7 +80,7 @@ namespace TurboHTTP.JSON
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
 
-            var response = await client
+            using var response = await client
                 .Get(url)
                 .WithHeader("Accept", ContentTypes.Json)
                 .SendAsync(cancellationToken)
@@ -102,7 +102,7 @@ namespace TurboHTTP.JSON
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
 
-            var response = await client
+            using var response = await client
                 .Post(url)
                 .WithJsonBody(data)
                 .WithHeader("Accept", ContentTypes.Json)
@@ -125,7 +125,7 @@ namespace TurboHTTP.JSON
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
 
-            var response = await client
+            using var response = await client
                 .Put(url)
                 .WithJsonBody(data)
                 .WithHeader("Accept", ContentTypes.Json)
@@ -148,7 +148,7 @@ namespace TurboHTTP.JSON
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
 
-            var response = await client
+            using var response = await client
                 .Patch(url)
                 .WithJsonBody(data)
                 .WithHeader("Accept", ContentTypes.Json)
@@ -170,7 +170,7 @@ namespace TurboHTTP.JSON
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
 
-            var response = await client
+            using var response = await client
                 .Delete(url)
                 .WithHeader("Accept", ContentTypes.Json)
                 .SendAsync(cancellationToken)

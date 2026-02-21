@@ -124,6 +124,41 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void UHttpResponse_Dispose_BodyAccessThrowsObjectDisposedException()
+        {
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));
+            var response = new UHttpResponse(
+                HttpStatusCode.OK,
+                new HttpHeaders(),
+                Encoding.UTF8.GetBytes("body"),
+                TimeSpan.Zero,
+                request);
+
+            response.Dispose();
+
+            Assert.Throws<ObjectDisposedException>(() =>
+            {
+                _ = response.Body;
+            });
+            Assert.Throws<ObjectDisposedException>(() => response.GetBodyAsString());
+        }
+
+        [Test]
+        public void UHttpResponse_Dispose_IsIdempotent()
+        {
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));
+            var response = new UHttpResponse(
+                HttpStatusCode.OK,
+                new HttpHeaders(),
+                ReadOnlyMemory<byte>.Empty,
+                TimeSpan.Zero,
+                request);
+
+            response.Dispose();
+            Assert.DoesNotThrow(() => response.Dispose());
+        }
+
+        [Test]
         public void UHttpResponse_EnsureSuccessStatusCode_WithHttpError_ThrowsUHttpException()
         {
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));

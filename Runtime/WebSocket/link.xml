@@ -1,0 +1,18 @@
+<linker>
+  <!--
+    WebSocket handshake and masking primitives.
+    SHA-1 is required for Sec-WebSocket-Accept computation.
+    RandomNumberGenerator is required for Sec-WebSocket-Key and mask key generation.
+  -->
+  <assembly fullname="System.Security.Cryptography.Algorithms">
+    <type fullname="System.Security.Cryptography.SHA1" preserve="all"/>
+    <type fullname="System.Security.Cryptography.SHA1Managed" preserve="all"/>
+    <type fullname="System.Security.Cryptography.RandomNumberGenerator" preserve="all"/>
+  </assembly>
+
+  <assembly fullname="mscorlib">
+    <type fullname="System.Security.Cryptography.SHA1" preserve="all"/>
+    <type fullname="System.Security.Cryptography.SHA1Managed" preserve="all"/>
+    <type fullname="System.Security.Cryptography.RandomNumberGenerator" preserve="all"/>
+  </assembly>
+</linker>

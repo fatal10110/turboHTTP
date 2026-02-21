@@ -13,7 +13,7 @@ namespace TurboHTTP.Core
     {
         private static volatile Func<IHttpTransport> _factory;
         private static volatile Func<TlsBackend, IHttpTransport> _backendFactory;
-        private static volatile Func<TlsBackend, int, IHttpTransport> _advancedFactory;
+        private static volatile Func<TlsBackend, ConnectionPoolOptions, Http2Options, IHttpTransport> _advancedFactory;
         private static volatile Lazy<IHttpTransport> _lazy;
         private static readonly object _lock = new object();
 
@@ -27,7 +27,33 @@ namespace TurboHTTP.Core
             Func<IHttpTransport> factory,
             Func<TlsBackend, IHttpTransport> backendFactory = null)
         {
-            Register(factory, backendFactory, advancedFactory: null);
+            Register(factory, backendFactory, (Func<TlsBackend, ConnectionPoolOptions, Http2Options, IHttpTransport>)null);
+        }
+
+        /// <summary>
+        /// Backward-compatible registration overload that maps legacy
+        /// HTTP/2 decoded-header-byte limits into <see cref="Http2Options"/>.
+        /// </summary>
+        public static void Register(
+            Func<IHttpTransport> factory,
+            Func<TlsBackend, IHttpTransport> backendFactory,
+            Func<TlsBackend, int, IHttpTransport> advancedFactory)
+        {
+            if (advancedFactory == null)
+            {
+                Register(factory, backendFactory, (Func<TlsBackend, ConnectionPoolOptions, Http2Options, IHttpTransport>)null);
+                return;
+            }
+
+            Register(
+                factory,
+                backendFactory,
+                (tlsBackend, poolOptions, http2Options) =>
+                {
+                    int maxDecodedHeaderBytes = http2Options?.MaxDecodedHeaderBytes
+                        ?? UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes;
+                    return advancedFactory(tlsBackend, maxDecodedHeaderBytes);
+                });
         }
 
         /// <summary>
@@ -39,7 +65,7 @@ namespace TurboHTTP.Core
         public static void Register(
             Func<IHttpTransport> factory,
             Func<TlsBackend, IHttpTransport> backendFactory,
-            Func<TlsBackend, int, IHttpTransport> advancedFactory)
+            Func<TlsBackend, ConnectionPoolOptions, Http2Options, IHttpTransport> advancedFactory)
         {
             if (factory == null) throw new ArgumentNullException(nameof(factory));
             lock (_lock)
@@ -99,11 +125,12 @@ namespace TurboHTTP.Core
         /// </summary>
         public static IHttpTransport CreateWithOptions(
             TlsBackend tlsBackend,
-            int http2MaxDecodedHeaderBytes)
+            ConnectionPoolOptions poolOptions,
+            Http2Options http2Options)
         {
             var advancedFactory = _advancedFactory;
             if (advancedFactory != null)
-                return advancedFactory(tlsBackend, http2MaxDecodedHeaderBytes);
+                return advancedFactory(tlsBackend, poolOptions, http2Options);
 
             return CreateWithBackend(tlsBackend);
         }

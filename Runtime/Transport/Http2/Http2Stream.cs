@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -31,15 +32,20 @@ namespace TurboHTTP.Transport.Http2
 
         public int StatusCode { get; set; }
         public HttpHeaders ResponseHeaders { get; set; }
-        public MemoryStream ResponseBody { get; }
+        public int ResponseBodyLength => _responseBodyLength;
+        public int ResponseBodyCapacity => _responseBodyBuffer?.Length ?? 0;
 
         /// <summary>
-    /// Buffer for accumulating HEADERS + CONTINUATION header blocks.
-    /// Uses MemoryStream instead of List&lt;byte&gt; for efficient bulk appending.
-    /// </summary>
-    public MemoryStream HeaderBlockBuffer { get; }
+        /// Buffer for accumulating HEADERS + CONTINUATION header blocks.
+        /// Uses MemoryStream instead of List&lt;byte&gt; for efficient bulk appending.
+        /// </summary>
+        public MemoryStream HeaderBlockBuffer { get; }
         public bool HeadersReceived { get; set; }
         public bool PendingEndStream { get; set; }
+
+        private byte[] _responseBodyBuffer;
+        private int _responseBodyLength;
+        private int _disposed;
 
         private int _sendWindowSize;
         public int SendWindowSize
@@ -69,7 +75,6 @@ namespace TurboHTTP.Transport.Http2
             Context = context;
             State = Http2StreamState.Idle;
             StatusCode = 0;
-            ResponseBody = new MemoryStream();
             HeaderBlockBuffer = new MemoryStream();
             HeadersReceived = false;
             SendWindowSize = initialSendWindowSize;
@@ -104,8 +109,19 @@ namespace TurboHTTP.Transport.Http2
         {
             if (capacity <= 0)
                 return;
-            if (ResponseBody.Capacity < capacity)
-                ResponseBody.Capacity = capacity;
+
+            EnsureBodyCapacity(capacity);
+        }
+
+        public void AppendResponseData(byte[] source, int offset, int length)
+        {
+            if (length <= 0)
+                return;
+
+            ThrowIfDisposed();
+            EnsureBodyCapacity(_responseBodyLength + length);
+            Buffer.BlockCopy(source, offset, _responseBodyBuffer, _responseBodyLength, length);
+            _responseBodyLength += length;
         }
 
         public void ClearHeaderBlock()
@@ -117,13 +133,24 @@ namespace TurboHTTP.Transport.Http2
         {
             State = Http2StreamState.Closed;
 
+            var bodyBuffer = _responseBodyBuffer;
+            var bodyLength = _responseBodyLength;
+            var bodyFromPool = bodyBuffer != null && bodyLength > 0;
+
+            // Transfer ownership of the pooled body to UHttpResponse.
+            _responseBodyBuffer = null;
+            _responseBodyLength = 0;
+
             var response = new UHttpResponse(
                 statusCode: (HttpStatusCode)StatusCode,
                 headers: ResponseHeaders ?? new HttpHeaders(),
-                body: ResponseBody.ToArray(),
+                body: bodyFromPool
+                    ? new ReadOnlyMemory<byte>(bodyBuffer, 0, bodyLength)
+                    : ReadOnlyMemory<byte>.Empty,
                 elapsedTime: Context.Elapsed,
                 request: Request,
-                error: null
+                error: null,
+                bodyFromPool: bodyFromPool
             );
 
             ResponseTcs.TrySetResult(response);
@@ -143,9 +170,54 @@ namespace TurboHTTP.Transport.Http2
 
         public void Dispose()
         {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
             CancellationRegistration.Dispose();
-            ResponseBody?.Dispose();
+            if (_responseBodyBuffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(_responseBodyBuffer);
+                _responseBodyBuffer = null;
+                _responseBodyLength = 0;
+            }
             HeaderBlockBuffer?.Dispose();
+        }
+
+        private void EnsureBodyCapacity(int required)
+        {
+            ThrowIfDisposed();
+            if (required <= 0)
+                return;
+
+            if (_responseBodyBuffer == null)
+            {
+                _responseBodyBuffer = ArrayPool<byte>.Shared.Rent(Math.Max(1024, required));
+                return;
+            }
+
+            if (_responseBodyBuffer.Length >= required)
+                return;
+
+            var resized = ArrayPool<byte>.Shared.Rent(Math.Max(required, _responseBodyBuffer.Length * 2));
+            try
+            {
+                if (_responseBodyLength > 0)
+                    Buffer.BlockCopy(_responseBodyBuffer, 0, resized, 0, _responseBodyLength);
+            }
+            catch
+            {
+                ArrayPool<byte>.Shared.Return(resized);
+                throw;
+            }
+
+            ArrayPool<byte>.Shared.Return(_responseBodyBuffer);
+            _responseBodyBuffer = resized;
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(Http2Stream));
         }
     }
 }

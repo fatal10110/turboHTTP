@@ -13,7 +13,7 @@ namespace TurboHTTP.Transport.Http2
     /// </summary>
     internal class Http2ConnectionManager : IDisposable
     {
-        private readonly int _maxDecodedHeaderBytes;
+        private readonly Http2Options _options;
 
         private readonly ConcurrentDictionary<string, Http2Connection> _connections
             = new ConcurrentDictionary<string, Http2Connection>(StringComparer.OrdinalIgnoreCase);
@@ -22,18 +22,9 @@ namespace TurboHTTP.Transport.Http2
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
         private int _disposed;
 
-        public Http2ConnectionManager(
-            int maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
+        public Http2ConnectionManager(Http2Options options)
         {
-            if (maxDecodedHeaderBytes <= 0)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(maxDecodedHeaderBytes),
-                    maxDecodedHeaderBytes,
-                    "Must be greater than 0.");
-            }
-
-            _maxDecodedHeaderBytes = maxDecodedHeaderBytes;
+            _options = options ?? throw new ArgumentNullException(nameof(options));
         }
 
         /// <summary>
@@ -107,7 +98,7 @@ namespace TurboHTTP.Transport.Http2
                     tlsStream,
                     host,
                     port,
-                    maxDecodedHeaderBytes: _maxDecodedHeaderBytes);
+                    _options);
                 try
                 {
                     await conn.InitializeAsync(ct);

@@ -21,7 +21,8 @@ namespace TurboHTTP.Transport.Http1
         /// </summary>
         public HttpStatusCode StatusCode { get; set; }
         public HttpHeaders Headers { get; set; }
-        public byte[] Body { get; set; }
+        public ReadOnlyMemory<byte> Body { get; set; }
+        public bool BodyFromPool { get; set; }
         public bool KeepAlive { get; set; }
     }
 
@@ -112,7 +113,8 @@ namespace TurboHTTP.Transport.Http1
 
             // 2. Determine body reading strategy
             bool usedReadToEnd = false;
-            byte[] body;
+            ReadOnlyMemory<byte> body;
+            bool bodyFromPool = false;
 
             bool skipBody = requestMethod == HttpMethod.HEAD
                          || statusCode == 101
@@ -121,7 +123,7 @@ namespace TurboHTTP.Transport.Http1
 
             if (skipBody)
             {
-                body = Array.Empty<byte>();
+                body = ReadOnlyMemory<byte>.Empty;
             }
             else
             {
@@ -136,11 +138,14 @@ namespace TurboHTTP.Transport.Http1
                     {
                         var result = await ReadBodyByContentLengthOrEnd(reader, headers, ct).ConfigureAwait(false);
                         body = result.Body;
+                        bodyFromPool = result.BodyFromPool;
                         usedReadToEnd = result.UsedReadToEnd;
                     }
                     else if (te.EndsWith("chunked", StringComparison.OrdinalIgnoreCase))
                     {
-                        body = await ReadChunkedBodyAsync(reader, ct).ConfigureAwait(false);
+                        var chunked = await ReadChunkedBodyAsync(reader, ct).ConfigureAwait(false);
+                        body = chunked.Body;
+                        bodyFromPool = chunked.BodyFromPool;
 
                         // RFC 9112 Section 6.1: ignore Content-Length when Transfer-Encoding is present.
                         if (contentLengthStr != null)
@@ -156,6 +161,7 @@ namespace TurboHTTP.Transport.Http1
                 {
                     var result = await ReadBodyByContentLengthOrEnd(reader, headers, ct).ConfigureAwait(false);
                     body = result.Body;
+                    bodyFromPool = result.BodyFromPool;
                     usedReadToEnd = result.UsedReadToEnd;
                 }
             }
@@ -170,11 +176,13 @@ namespace TurboHTTP.Transport.Http1
                 StatusCode = (HttpStatusCode)statusCode,
                 Headers = headers,
                 Body = body,
+                BodyFromPool = bodyFromPool,
                 KeepAlive = keepAlive
             };
         }
 
-        private static async Task<(byte[] Body, bool UsedReadToEnd)> ReadBodyByContentLengthOrEnd(
+        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool, bool UsedReadToEnd)>
+            ReadBodyByContentLengthOrEnd(
             BufferedStreamReader reader,
             HttpHeaders headers,
             CancellationToken ct)
@@ -205,14 +213,16 @@ namespace TurboHTTP.Transport.Http1
                     throw new IOException("Response body exceeds maximum size");
 
                 if (contentLength == 0)
-                    return (Array.Empty<byte>(), false);
+                    return (ReadOnlyMemory<byte>.Empty, false, false);
 
                 int length = (int)contentLength;
-                return (await ReadFixedBodyAsync(reader, length, ct).ConfigureAwait(false), false);
+                var fixedBody = await ReadFixedBodyAsync(reader, length, ct).ConfigureAwait(false);
+                return (fixedBody.Body, fixedBody.BodyFromPool, false);
             }
 
             // Neither Transfer-Encoding nor Content-Length — read to end.
-            return (await ReadToEndAsync(reader, ct).ConfigureAwait(false), true);
+            var readToEnd = await ReadToEndAsync(reader, ct).ConfigureAwait(false);
+            return (readToEnd.Body, readToEnd.BodyFromPool, true);
         }
 
         // TODO Phase 10: Handle multi-token Connection header (e.g., "close, Upgrade")
@@ -248,12 +258,17 @@ namespace TurboHTTP.Transport.Http1
             return await reader.ReadLineAsync(ct, maxLength).ConfigureAwait(false);
         }
 
-        private static async Task<byte[]> ReadChunkedBodyAsync(BufferedStreamReader reader, CancellationToken ct)
+        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool)> ReadChunkedBodyAsync(
+            BufferedStreamReader reader,
+            CancellationToken ct)
         {
-            using (var body = new MemoryStream())
-            {
-                long totalBodyBytes = 0;
+            long totalBodyBytes = 0;
+            byte[] bodyBuffer = null;
+            int bodyLength = 0;
+            byte[] readBuf = ArrayPool<byte>.Shared.Rent(8192);
 
+            try
+            {
                 while (true)
                 {
                     var sizeLine = await reader.ReadLineAsync(ct, maxLength: 256).ConfigureAwait(false);
@@ -281,21 +296,17 @@ namespace TurboHTTP.Transport.Http1
                     if (chunkSize > int.MaxValue)
                         throw new IOException("Chunk size exceeds supported range");
 
-                    int remaining = (int)chunkSize;
-                    var readBuf = ArrayPool<byte>.Shared.Rent(Math.Min(remaining, 8192));
-                    try
+                    int chunkLength = (int)chunkSize;
+                    EnsureCapacity(ref bodyBuffer, bodyLength + chunkLength, bodyLength);
+
+                    int remaining = chunkLength;
+                    while (remaining > 0)
                     {
-                        while (remaining > 0)
-                        {
-                            int toRead = Math.Min(remaining, readBuf.Length);
-                            await reader.ReadExactAsync(readBuf, 0, toRead, ct).ConfigureAwait(false);
-                            body.Write(readBuf, 0, toRead);
-                            remaining -= toRead;
-                        }
-                    }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(readBuf);
+                        int toRead = Math.Min(remaining, readBuf.Length);
+                        await reader.ReadExactAsync(readBuf, 0, toRead, ct).ConfigureAwait(false);
+                        Buffer.BlockCopy(readBuf, 0, bodyBuffer, bodyLength, toRead);
+                        bodyLength += toRead;
+                        remaining -= toRead;
                     }
 
                     // Read and validate trailing CRLF after chunk data (RFC 9112 Section 7.1)
@@ -312,45 +323,118 @@ namespace TurboHTTP.Transport.Http1
                         break;
                 }
 
-                return body.ToArray();
+                if (bodyLength == 0)
+                {
+                    if (bodyBuffer != null)
+                        ArrayPool<byte>.Shared.Return(bodyBuffer);
+                    return (ReadOnlyMemory<byte>.Empty, false);
+                }
+
+                return (new ReadOnlyMemory<byte>(bodyBuffer, 0, bodyLength), true);
+            }
+            catch
+            {
+                if (bodyBuffer != null)
+                    ArrayPool<byte>.Shared.Return(bodyBuffer);
+                throw;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(readBuf);
             }
         }
 
-        private static async Task<byte[]> ReadFixedBodyAsync(BufferedStreamReader reader, int length, CancellationToken ct)
+        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool)> ReadFixedBodyAsync(
+            BufferedStreamReader reader,
+            int length,
+            CancellationToken ct)
         {
             if (length > MaxResponseBodySize)
                 throw new IOException("Response body exceeds maximum size");
 
-            var buffer = new byte[length];
-            await reader.ReadExactAsync(buffer, 0, length, ct).ConfigureAwait(false);
-            return buffer;
+            var buffer = ArrayPool<byte>.Shared.Rent(length);
+            try
+            {
+                await reader.ReadExactAsync(buffer, 0, length, ct).ConfigureAwait(false);
+                return (new ReadOnlyMemory<byte>(buffer, 0, length), true);
+            }
+            catch
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+                throw;
+            }
         }
 
-        private static async Task<byte[]> ReadToEndAsync(BufferedStreamReader reader, CancellationToken ct)
+        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool)> ReadToEndAsync(
+            BufferedStreamReader reader,
+            CancellationToken ct)
         {
-            using (var ms = new MemoryStream())
+            byte[] readBuffer = ArrayPool<byte>.Shared.Rent(8192);
+            byte[] bodyBuffer = null;
+            int bodyLength = 0;
+
+            try
             {
-                var buffer = ArrayPool<byte>.Shared.Rent(8192);
-                try
+                while (true)
                 {
-                    while (true)
-                    {
-                        int read = await reader.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
-                        if (read == 0)
-                            break;
+                    int read = await reader.ReadAsync(readBuffer, 0, readBuffer.Length, ct).ConfigureAwait(false);
+                    if (read == 0)
+                        break;
 
-                        ms.Write(buffer, 0, read);
-                        if (ms.Length > MaxResponseBodySize)
-                            throw new IOException("Response body exceeds maximum size");
-                    }
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(buffer);
+                    if ((long)bodyLength + read > MaxResponseBodySize)
+                        throw new IOException("Response body exceeds maximum size");
+
+                    EnsureCapacity(ref bodyBuffer, bodyLength + read, bodyLength);
+                    Buffer.BlockCopy(readBuffer, 0, bodyBuffer, bodyLength, read);
+                    bodyLength += read;
                 }
 
-                return ms.ToArray();
+                if (bodyLength == 0)
+                {
+                    if (bodyBuffer != null)
+                        ArrayPool<byte>.Shared.Return(bodyBuffer);
+                    return (ReadOnlyMemory<byte>.Empty, false);
+                }
+
+                return (new ReadOnlyMemory<byte>(bodyBuffer, 0, bodyLength), true);
             }
+            catch
+            {
+                if (bodyBuffer != null)
+                    ArrayPool<byte>.Shared.Return(bodyBuffer);
+                throw;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(readBuffer);
+            }
+        }
+
+        private static void EnsureCapacity(ref byte[] buffer, int required, int bytesToCopy)
+        {
+            if (buffer == null)
+            {
+                buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1024, required));
+                return;
+            }
+
+            if (buffer.Length >= required)
+                return;
+
+            var resized = ArrayPool<byte>.Shared.Rent(Math.Max(required, buffer.Length * 2));
+            try
+            {
+                if (bytesToCopy > 0)
+                    Buffer.BlockCopy(buffer, 0, resized, 0, bytesToCopy);
+            }
+            catch
+            {
+                ArrayPool<byte>.Shared.Return(resized);
+                throw;
+            }
+
+            ArrayPool<byte>.Shared.Return(buffer);
+            buffer = resized;
         }
 
         private sealed class BufferedStreamReader : IDisposable

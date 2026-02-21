@@ -64,7 +64,7 @@ namespace TurboHTTP.Tests.Transport
                 var parsed = await Http11ResponseParser.ParseAsync(stream, HttpMethod.GET, CancellationToken.None);
 
                 Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
-                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body));
+                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body.Span));
                 Assert.AreEqual(0, stream.SingleByteReadRequestCount,
                     "Parser regression: single-byte read requests reintroduced.");
                 Assert.LessOrEqual(stream.ReadCallCount, 64,

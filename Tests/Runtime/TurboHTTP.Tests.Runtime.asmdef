@@ -4,6 +4,9 @@
   "references": [
     "TurboHTTP.Core",
     "TurboHTTP.Transport",
+    "TurboHTTP.WebSocket",
+    "TurboHTTP.WebSocket.Transport",
+    "TurboHTTP.Unity.WebSocket",
     "TurboHTTP.Retry",
     "TurboHTTP.Cache",
     "TurboHTTP.Auth",

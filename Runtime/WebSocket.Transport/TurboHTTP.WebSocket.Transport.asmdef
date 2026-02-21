@@ -1,0 +1,20 @@
+{
+  "name": "TurboHTTP.WebSocket.Transport",
+  "rootNamespace": "TurboHTTP.WebSocket.Transport",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.WebSocket",
+    "TurboHTTP.Transport"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [
+    "WebGL"
+  ],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": true
+}

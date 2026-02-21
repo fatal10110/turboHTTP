@@ -130,7 +130,8 @@ namespace TurboHTTP.Auth
             if (!string.IsNullOrEmpty(request.CodeVerifier))
                 form["code_verifier"] = request.CodeVerifier;
 
-            var response = await SendTokenRequestAsync(request.Config.TokenEndpoint, form, ct).ConfigureAwait(false);
+            using var response = await SendTokenRequestAsync(request.Config.TokenEndpoint, form, ct)
+                .ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             var token = ParseTokenResponse(response.GetBodyAsString());
@@ -173,7 +174,7 @@ namespace TurboHTTP.Auth
                 if (!string.IsNullOrWhiteSpace(request.Scope))
                     form["scope"] = request.Scope;
 
-                var response = await SendTokenRequestAsync(request.Config.TokenEndpoint, form, ct)
+                using var response = await SendTokenRequestAsync(request.Config.TokenEndpoint, form, ct)
                     .ConfigureAwait(false);
 
                 if (!response.IsSuccessStatusCode)
@@ -209,7 +210,8 @@ namespace TurboHTTP.Auth
                 throw new ArgumentException("OIDC discovery endpoint must use HTTPS.", nameof(discoveryEndpoint));
             }
 
-            var response = await _client.Get(discoveryEndpoint.ToString()).SendAsync(ct).ConfigureAwait(false);
+            using var response = await _client.Get(discoveryEndpoint.ToString()).SendAsync(ct)
+                .ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             var data = DeserializeToDictionary(response.GetBodyAsString());

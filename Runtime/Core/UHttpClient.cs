@@ -31,6 +31,11 @@ namespace TurboHTTP.Core
         /// </summary>
         internal UHttpClientOptions ClientOptions => _options;
 
+        /// <summary>
+        /// The transport instance used by this client.
+        /// </summary>
+        public IHttpTransport Transport => _transport;
+
         private sealed class PluginRegistration
         {
             public IHttpPlugin Plugin { get; }
@@ -82,14 +87,16 @@ namespace TurboHTTP.Core
                 _ownsTransport = _options.DisposeTransport;
             }
             else if (_options.TlsBackend != TlsBackend.Auto ||
-                _options.Http2MaxDecodedHeaderBytes != UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
+                     !_options.ConnectionPool.IsDefault() ||
+                     !_options.Http2.IsDefault())
             {
                 // Non-default TLS backend or custom transport hardening options require
                 // a dedicated transport instance because the shared default singleton
                 // uses default configuration.
                 _transport = HttpTransportFactory.CreateWithOptions(
                     _options.TlsBackend,
-                    _options.Http2MaxDecodedHeaderBytes);
+                    _options.ConnectionPool,
+                    _options.Http2);
                 _ownsTransport = true;
             }
             else
@@ -281,10 +288,11 @@ namespace TurboHTTP.Core
             var context = new RequestContext(request);
             context.RecordEvent("RequestStart");
             var interceptorSnapshot = Volatile.Read(ref _interceptors) ?? Array.Empty<IHttpInterceptor>();
+            UHttpResponse response = null;
 
             try
             {
-                var response = interceptorSnapshot.Count == 0
+                response = interceptorSnapshot.Count == 0
                     ? await _pipeline.ExecuteAsync(request, context, cancellationToken)
                     : await ExecuteWithInterceptorsAsync(interceptorSnapshot, request, context, cancellationToken);
 
@@ -295,18 +303,21 @@ namespace TurboHTTP.Core
             }
             catch (UHttpException)
             {
+                response?.Dispose();
                 context.RecordEvent("RequestFailed");
                 context.Stop();
                 throw;
             }
             catch (OperationCanceledException)
             {
+                response?.Dispose();
                 context.RecordEvent("RequestCancelled");
                 context.Stop();
                 throw;
             }
             catch (Exception ex)
             {
+                response?.Dispose();
                 context.RecordEvent("RequestFailed");
                 context.Stop();
                 throw new UHttpException(
@@ -408,97 +419,112 @@ namespace TurboHTTP.Core
             var requestForPipeline = request;
             var enteredInterceptors = new List<IHttpInterceptor>(interceptors.Count);
             UHttpResponse response = null;
+            bool shouldReturnResponse = false;
 
-            for (int i = 0; i < interceptors.Count; i++)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var interceptor = interceptors[i];
-                enteredInterceptors.Add(interceptor);
-                context.RecordEvent("interceptor.request.enter", CreateInterceptorEventData(interceptor, i));
-
-                InterceptorRequestResult requestResult;
-                try
+                for (int i = 0; i < interceptors.Count; i++)
                 {
-                    requestResult = await interceptor.OnRequestAsync(
-                        requestForPipeline, context, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    requestResult = HandleRequestInterceptorException(
-                        interceptor, requestForPipeline, context, ex);
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                context.RecordEvent("interceptor.request.exit", CreateInterceptorEventData(interceptor, i));
+                    var interceptor = interceptors[i];
+                    enteredInterceptors.Add(interceptor);
+                    context.RecordEvent("interceptor.request.enter", CreateInterceptorEventData(interceptor, i));
 
-                if (requestResult.Action == InterceptorRequestAction.Continue)
-                {
-                    if (requestResult.Request != null)
+                    InterceptorRequestResult requestResult;
+                    try
                     {
-                        requestForPipeline = requestResult.Request;
-                        context.UpdateRequest(requestForPipeline);
+                        requestResult = await interceptor.OnRequestAsync(
+                            requestForPipeline, context, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        requestResult = HandleRequestInterceptorException(
+                            interceptor, requestForPipeline, context, ex);
                     }
 
-                    continue;
+                    context.RecordEvent("interceptor.request.exit", CreateInterceptorEventData(interceptor, i));
+
+                    if (requestResult.Action == InterceptorRequestAction.Continue)
+                    {
+                        if (requestResult.Request != null)
+                        {
+                            requestForPipeline = requestResult.Request;
+                            context.UpdateRequest(requestForPipeline);
+                        }
+
+                        continue;
+                    }
+
+                    if (requestResult.Action == InterceptorRequestAction.ShortCircuit)
+                    {
+                        context.RecordEvent("interceptor.shortcircuit", CreateInterceptorEventData(interceptor, i));
+                        response = requestResult.Response
+                            ?? throw new InvalidOperationException(
+                                "Interceptor returned ShortCircuit without a response.");
+                        break;
+                    }
+
+                    throw requestResult.Exception
+                        ?? new InvalidOperationException("Interceptor returned Fail without exception.");
                 }
 
-                if (requestResult.Action == InterceptorRequestAction.ShortCircuit)
+                if (response == null)
                 {
-                    context.RecordEvent("interceptor.shortcircuit", CreateInterceptorEventData(interceptor, i));
-                    response = requestResult.Response
-                        ?? throw new InvalidOperationException(
-                            "Interceptor returned ShortCircuit without a response.");
-                    break;
+                    response = await _pipeline.ExecuteAsync(requestForPipeline, context, cancellationToken);
                 }
 
-                throw requestResult.Exception
-                    ?? new InvalidOperationException("Interceptor returned Fail without exception.");
-            }
+                for (int i = enteredInterceptors.Count - 1; i >= 0; i--)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
 
-            if (response == null)
+                    var interceptor = enteredInterceptors[i];
+                    context.RecordEvent("interceptor.response.enter", CreateInterceptorEventData(interceptor, i));
+
+                    InterceptorResponseResult responseResult;
+                    try
+                    {
+                        responseResult = await interceptor.OnResponseAsync(
+                            requestForPipeline, response, context, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        responseResult = HandleResponseInterceptorException(
+                            interceptor, requestForPipeline, response, context, ex);
+                    }
+
+                    context.RecordEvent("interceptor.response.exit", CreateInterceptorEventData(interceptor, i));
+
+                    if (responseResult.Action == InterceptorResponseAction.Continue)
+                    {
+                        continue;
+                    }
+
+                    if (responseResult.Action == InterceptorResponseAction.Replace)
+                    {
+                        var replacement = responseResult.Response
+                            ?? throw new InvalidOperationException(
+                                "Interceptor returned Replace without a response.");
+
+                        if (!ReferenceEquals(response, replacement))
+                            response?.Dispose();
+
+                        response = replacement;
+                        continue;
+                    }
+
+                    throw responseResult.Exception
+                        ?? new InvalidOperationException("Interceptor returned Fail without exception.");
+                }
+
+                shouldReturnResponse = true;
+                return response;
+            }
+            finally
             {
-                response = await _pipeline.ExecuteAsync(requestForPipeline, context, cancellationToken);
+                if (!shouldReturnResponse)
+                    response?.Dispose();
             }
-
-            for (int i = enteredInterceptors.Count - 1; i >= 0; i--)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var interceptor = enteredInterceptors[i];
-                context.RecordEvent("interceptor.response.enter", CreateInterceptorEventData(interceptor, i));
-
-                InterceptorResponseResult responseResult;
-                try
-                {
-                    responseResult = await interceptor.OnResponseAsync(
-                        requestForPipeline, response, context, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    responseResult = HandleResponseInterceptorException(
-                        interceptor, requestForPipeline, response, context, ex);
-                }
-
-                context.RecordEvent("interceptor.response.exit", CreateInterceptorEventData(interceptor, i));
-
-                if (responseResult.Action == InterceptorResponseAction.Continue)
-                {
-                    continue;
-                }
-
-                if (responseResult.Action == InterceptorResponseAction.Replace)
-                {
-                    response = responseResult.Response
-                        ?? throw new InvalidOperationException(
-                            "Interceptor returned Replace without a response.");
-                    continue;
-                }
-
-                throw responseResult.Exception
-                    ?? new InvalidOperationException("Interceptor returned Fail without exception.");
-            }
-
-            return response;
         }
 
         private InterceptorRequestResult HandleRequestInterceptorException(

@@ -7,7 +7,7 @@
 
 ## Overview
 
-This phase aggregates focused, self-contained features that enhance the TurboHTTP platform after the v1.0 core release. Larger protocol-level features (WebSocket, gRPC) and deep refactoring (async runtime, content handlers) have been extracted to their own dedicated phases.
+This phase aggregates focused, self-contained features that enhance the TurboHTTP platform after the v1.0 core release. Larger protocol-level features (core WebSocket client, gRPC) and deep refactoring (async runtime, content handlers) have been extracted to their own dedicated phases.
 
 ## Features
 
@@ -73,6 +73,8 @@ IHttpTransport
 
 **Value:** High (expands platform support)
 
+**Boundary with Phase 18:** Core WebSocket protocol/client implementation lives in Phase 18. WebGL-specific WebSocket transport integration (browser WebSocket bridge) is part of the WebGL workstream in this phase and consumes the Phase 18 transport abstraction.
+
 ---
 
 ### 3. GraphQL Client (Medium Priority)
@@ -122,7 +124,7 @@ The following features were originally part of Phase 16 but have been promoted t
 
 | Feature | New Phase | Reason |
 |---------|-----------|--------|
-| WebSocket Support | [Phase 18](phase-18-websocket-client.md) | Full new protocol (RFC 6455), comparable to Phase 3B HTTP/2 |
+| WebSocket Support | [Phase 18](phase-18-websocket-client.md) | Core protocol/client (RFC 6455). WebGL-specific WebSocket transport integration remains in Phase 16 WebGL workstream. |
 | Async Runtime Refactor + UniTask | [Phase 19](phase-19-async-runtime-refactor.md) | Deep cross-cutting architectural refactor |
 | Advanced Content Handlers | [Phase 20](phase-20-advanced-content-handlers.md) | Aggregate ~6-8 weeks across 5+ handlers |
 | gRPC Support | [Phase 21](phase-21-grpc-client.md) | Largest item in roadmap, v2.0 feature |

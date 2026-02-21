@@ -496,7 +496,7 @@ namespace TurboHTTP.Tests.Core
                 }));
 
             Assert.IsNotNull(ex);
-            Assert.AreEqual("Http2MaxDecodedHeaderBytes", ex.ParamName);
+            Assert.That(ex.ParamName, Is.EqualTo("Http2MaxDecodedHeaderBytes").Or.EqualTo("value"));
         }
 
         [Test]

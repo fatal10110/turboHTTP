@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -32,27 +33,24 @@ namespace TurboHTTP.Transport
         /// Backward-compatible constructor signature retained for binary compatibility.
         /// </summary>
         public RawSocketTransport(TcpConnectionPool pool = null, TlsBackend tlsBackend = TlsBackend.Auto)
-            : this(pool, tlsBackend, UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes)
+            : this(pool, tlsBackend, new Http2Options())
         {
         }
 
         public RawSocketTransport(
             TcpConnectionPool pool,
             TlsBackend tlsBackend,
-            int http2MaxDecodedHeaderBytes)
+            Http2Options http2Options)
         {
-            if (http2MaxDecodedHeaderBytes <= 0)
+            if (http2Options == null)
             {
-                throw new ArgumentOutOfRangeException(
-                    nameof(http2MaxDecodedHeaderBytes),
-                    http2MaxDecodedHeaderBytes,
-                    "Must be greater than 0.");
+                throw new ArgumentNullException(nameof(http2Options));
             }
 
             _pool = pool ?? new TcpConnectionPool(
                 maxConnectionsPerHost: PlatformConfig.RecommendedMaxConcurrency,
                 tlsBackend: tlsBackend);
-            _h2Manager = new Http2ConnectionManager(http2MaxDecodedHeaderBytes);
+            _h2Manager = new Http2ConnectionManager(http2Options);
             _tlsBackend = tlsBackend;
         }
 
@@ -66,11 +64,16 @@ namespace TurboHTTP.Transport
             HttpTransportFactory.Register(
                 () => new RawSocketTransport(),
                 tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend),
-                (tlsBackend, http2MaxDecodedHeaderBytes) =>
+                (tlsBackend, poolOptions, http2Options) =>
                     new RawSocketTransport(
-                        pool: null,
+                        pool: new TcpConnectionPool(
+                            maxConnectionsPerHost: poolOptions.MaxConnectionsPerHost,
+                            connectionIdleTimeout: poolOptions.ConnectionIdleTimeout,
+                            tlsBackend: tlsBackend,
+                            dnsTimeout: TimeSpan.FromMilliseconds(poolOptions.DnsTimeoutMs),
+                            happyEyeballsOptions: poolOptions.HappyEyeballs),
                         tlsBackend: tlsBackend,
-                        http2MaxDecodedHeaderBytes: http2MaxDecodedHeaderBytes));
+                        http2Options: http2Options));
         }
 
         public async Task<UHttpResponse> SendAsync(
@@ -603,40 +606,77 @@ namespace TurboHTTP.Transport
             if (!int.TryParse(contentLength, out var length) || length <= 0)
                 return;
 
-            var buffer = new byte[Math.Min(4096, length)];
-            var remaining = length;
-            while (remaining > 0)
+            var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(4096, length));
+            try
             {
-                var toRead = Math.Min(remaining, buffer.Length);
-                var read = await stream.ReadAsync(buffer, 0, toRead, ct).ConfigureAwait(false);
-                if (read <= 0)
-                    break;
-                remaining -= read;
+                var remaining = length;
+                while (remaining > 0)
+                {
+                    var toRead = Math.Min(remaining, buffer.Length);
+                    var read = await stream.ReadAsync(buffer, 0, toRead, ct).ConfigureAwait(false);
+                    if (read <= 0)
+                        break;
+                    remaining -= read;
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
             }
         }
 
         private static async Task<string> ReadAsciiLineAsync(Stream stream, CancellationToken ct)
         {
-            var lineBytes = new List<byte>(128);
-            var single = new byte[1];
+            var single = ArrayPool<byte>.Shared.Rent(1);
+            var lineBytes = ArrayPool<byte>.Shared.Rent(128);
+            var count = 0;
 
-            while (true)
+            try
             {
-                var read = await stream.ReadAsync(single, 0, 1, ct).ConfigureAwait(false);
-                if (read == 0)
+                while (true)
                 {
-                    if (lineBytes.Count == 0)
-                        return string.Empty;
-                    break;
+                    var read = await stream.ReadAsync(single, 0, 1, ct).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        if (count == 0)
+                            return string.Empty;
+                        break;
+                    }
+
+                    if (single[0] == (byte)'\n')
+                        break;
+                    if (single[0] == (byte)'\r')
+                        continue;
+
+                    if (count == lineBytes.Length)
+                    {
+                        var resized = ArrayPool<byte>.Shared.Rent(lineBytes.Length * 2);
+                        try
+                        {
+                            Buffer.BlockCopy(lineBytes, 0, resized, 0, count);
+                        }
+                        catch
+                        {
+                            ArrayPool<byte>.Shared.Return(resized);
+                            throw;
+                        }
+
+                        ArrayPool<byte>.Shared.Return(lineBytes);
+                        lineBytes = resized;
+                    }
+
+                    lineBytes[count++] = single[0];
                 }
 
-                if (single[0] == (byte)'\n')
-                    break;
-                if (single[0] != (byte)'\r')
-                    lineBytes.Add(single[0]);
+                return count == 0
+                    ? string.Empty
+                    : Encoding.ASCII.GetString(lineBytes, 0, count);
             }
-
-            return Encoding.ASCII.GetString(lineBytes.ToArray());
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(single);
+                ArrayPool<byte>.Shared.Return(lineBytes);
+            }
         }
 
         private static string BuildProxyAuthorizationHeaderValue(ProxySettings proxy)
@@ -713,7 +753,8 @@ namespace TurboHTTP.Transport
                 headers: parsed.Headers,
                 body: parsed.Body,
                 elapsedTime: context.Elapsed,
-                request: request);
+                request: request,
+                bodyFromPool: parsed.BodyFromPool);
         }
 
         internal bool HasHttp2Connection(string host, int port)

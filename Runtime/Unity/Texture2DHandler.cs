@@ -127,7 +127,7 @@ namespace TurboHTTP.Unity
             if (string.IsNullOrWhiteSpace(url))
                 throw new ArgumentException("URL cannot be null or empty.", nameof(url));
 
-            var response = await client
+            using var response = await client
                 .Get(url)
                 .WithHeader("Accept", "image/*")
                 .SendAsync(cancellationToken)

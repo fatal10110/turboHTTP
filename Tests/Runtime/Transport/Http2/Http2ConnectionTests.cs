@@ -21,10 +21,14 @@ namespace TurboHTTP.Tests.Transport.Http2
         /// and return an initialized Http2Connection.
         /// </summary>
         private async Task<(Http2Connection conn, Stream serverStream, TestDuplexStream duplex)>
-            CreateInitializedConnectionAsync(CancellationToken ct = default)
+            CreateInitializedConnectionAsync(CancellationToken ct = default, Http2Options options = null)
         {
             var duplex = new TestDuplexStream();
-            var conn = new Http2Connection(duplex.ClientStream, "test.example.com", 443);
+            var conn = new Http2Connection(
+                duplex.ClientStream,
+                "test.example.com",
+                443,
+                options ?? new Http2Options());
 
             // Start server simulation in background
             var serverCodec = new Http2FrameCodec(duplex.ServerStream);
@@ -555,7 +559,9 @@ namespace TurboHTTP.Tests.Transport.Http2
             Task.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
-                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(
+                    cts.Token,
+                    new Http2Options { EnablePush = false });
                 var serverCodec = new Http2FrameCodec(serverStream);
 
                 // Open a stream so a connection-level protocol error will fail active work.
@@ -1531,7 +1537,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var activeStreams = (System.Collections.Concurrent.ConcurrentDictionary<int, Http2Stream>)
                     activeStreamsField.GetValue(conn);
                 Assert.IsTrue(activeStreams.TryGetValue(streamId, out var stream));
-                Assert.LessOrEqual(stream.ResponseBody.Capacity, 4096);
+                Assert.LessOrEqual(stream.ResponseBodyCapacity, 4096);
 
                 var bodyBytes = System.Text.Encoding.UTF8.GetBytes("ok");
                 await serverCodec.WriteFrameAsync(new Http2Frame
