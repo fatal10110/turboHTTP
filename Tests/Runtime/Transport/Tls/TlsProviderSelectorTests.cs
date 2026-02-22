@@ -42,19 +42,10 @@ namespace TurboHTTP.Tests.Transport.Tls
 
 #if UNITY_IOS || UNITY_ANDROID
         [Test]
-        public void Auto_OnMobile_UsesBouncyCastleIfAlpnUnsupported()
+        public void Auto_OnMobile_PrefersSslStream()
         {
             var autoProvider = TlsProviderSelector.GetProvider(TlsBackend.Auto);
-            var sslProvider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
-
-            if (!sslProvider.IsAlpnSupported() && TlsProviderSelector.IsBouncyCastleAvailable())
-            {
-                Assert.AreEqual("BouncyCastle", autoProvider.ProviderName);
-            }
-            else
-            {
-                Assert.AreEqual("SslStream", autoProvider.ProviderName);
-            }
+            Assert.AreEqual("SslStream", autoProvider.ProviderName);
         }
 #endif
 
@@ -140,6 +131,131 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void ForceBouncyCastle_WhenNotAvailable_ThrowsException()
         {
             ForceBouncyCastle_WhenNotAvailable_ThrowsInvalidOperationException();
+        }
+
+        // --- SslStream viability probe state tests ---
+
+        [TearDown]
+        public void ResetProbeState()
+        {
+            TlsProviderSelector.ResetProbeState();
+        }
+
+        [Test]
+        public void IsSslStreamKnownBroken_InitiallyFalse()
+        {
+            Assert.IsFalse(TlsProviderSelector.IsSslStreamKnownBroken());
+        }
+
+        [Test]
+        public void MarkSslStreamViable_SetsViableState()
+        {
+            TlsProviderSelector.MarkSslStreamViable();
+            Assert.IsFalse(TlsProviderSelector.IsSslStreamKnownBroken());
+        }
+
+        [Test]
+        public void MarkSslStreamBroken_SetsBrokenState()
+        {
+            TlsProviderSelector.MarkSslStreamBroken();
+            Assert.IsTrue(TlsProviderSelector.IsSslStreamKnownBroken());
+        }
+
+        [Test]
+        public void MarkSslStreamBroken_OverridesViable()
+        {
+            TlsProviderSelector.MarkSslStreamViable();
+            TlsProviderSelector.MarkSslStreamBroken();
+            Assert.IsTrue(TlsProviderSelector.IsSslStreamKnownBroken(),
+                "Broken state should override viable — a platform failure after a lucky success is still broken");
+        }
+
+        [Test]
+        public void MarkSslStreamViable_DoesNotOverrideBroken()
+        {
+            TlsProviderSelector.MarkSslStreamBroken();
+            TlsProviderSelector.MarkSslStreamViable();
+            Assert.IsTrue(TlsProviderSelector.IsSslStreamKnownBroken(),
+                "Viable should not overwrite broken (CompareExchange only transitions from unknown)");
+        }
+
+        [Test]
+        public void Auto_WhenSslStreamBroken_ReturnsBouncyCastle()
+        {
+            if (!TlsProviderSelector.IsBouncyCastleAvailable())
+            {
+                Assert.Ignore("BouncyCastle not available in this build");
+                return;
+            }
+
+            TlsProviderSelector.MarkSslStreamBroken();
+            var provider = TlsProviderSelector.GetProvider(TlsBackend.Auto);
+            Assert.AreEqual("BouncyCastle", provider.ProviderName);
+        }
+
+        [Test]
+        public void Auto_WhenSslStreamBroken_AndNoBouncyCastle_ThrowsPlatformNotSupported()
+        {
+            if (TlsProviderSelector.IsBouncyCastleAvailable())
+            {
+                Assert.Ignore("BouncyCastle is available — cannot test missing-fallback path");
+                return;
+            }
+
+            TlsProviderSelector.MarkSslStreamBroken();
+            Assert.Throws<PlatformNotSupportedException>(() =>
+                TlsProviderSelector.GetProvider(TlsBackend.Auto));
+        }
+
+        [Test]
+        public void ForceSslStream_IgnoresProbeState()
+        {
+            TlsProviderSelector.MarkSslStreamBroken();
+            // Explicit SslStream backend bypasses the probe — user asked for it explicitly
+            var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
+            Assert.AreEqual("SslStream", provider.ProviderName);
+        }
+
+        [Test]
+        public void ResetProbeState_ClearsBrokenFlag()
+        {
+            TlsProviderSelector.MarkSslStreamBroken();
+            Assert.IsTrue(TlsProviderSelector.IsSslStreamKnownBroken());
+            TlsProviderSelector.ResetProbeState();
+            Assert.IsFalse(TlsProviderSelector.IsSslStreamKnownBroken());
+        }
+
+        [Test]
+        public void IsPlatformTlsException_ClassifiesCorrectly()
+        {
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(new PlatformNotSupportedException()));
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(new NotSupportedException()));
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(new TypeLoadException()));
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(new TypeInitializationException("T", null)));
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(new MissingMethodException()));
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(new EntryPointNotFoundException()));
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(new System.IO.FileNotFoundException()));
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(new DllNotFoundException()));
+
+            Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(
+                new System.Security.Authentication.AuthenticationException()));
+            Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(new System.IO.IOException()));
+            Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(new OperationCanceledException()));
+            Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(new InvalidOperationException()));
+        }
+
+        [Test]
+        public void IsPlatformTlsException_UnwrapsTargetInvocationException()
+        {
+            var inner = new PlatformNotSupportedException("ALPN unavailable");
+            var wrapped = new System.Reflection.TargetInvocationException(inner);
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(wrapped),
+                "Should unwrap TargetInvocationException from reflection-based ALPN auth");
+
+            var nonPlatformInner = new System.IO.IOException("network error");
+            var wrappedNonPlatform = new System.Reflection.TargetInvocationException(nonPlatformInner);
+            Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(wrappedNonPlatform),
+                "Should not treat wrapped IOException as platform exception");
         }
     }
 }

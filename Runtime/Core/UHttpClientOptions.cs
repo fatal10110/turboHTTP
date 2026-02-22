@@ -117,7 +117,8 @@ namespace TurboHTTP.Core
         /// Default is Auto, which selects the best provider for the current platform.
         /// </summary>
         /// <remarks>
-        /// - Auto: Try SslStream first, fall back to BouncyCastle if ALPN unavailable
+        /// - Auto: Prefer SslStream; use BouncyCastle only if platform TLS is unavailable.
+        ///   The first TLS handshake probes SslStream viability; failures are cached process-wide.
         /// - SslStream: Force use of System.Net.Security.SslStream (may not support ALPN on all platforms)
         /// - BouncyCastle: Force use of BouncyCastle TLS (guaranteed ALPN support everywhere)
         /// 

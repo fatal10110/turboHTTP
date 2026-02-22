@@ -1221,9 +1221,14 @@ Full verification re-review of all R3 critical and important issues after fixes 
 | Android (IL2CPP) | **At Risk** (C2, C3) | **Works** — reflection eliminated |
 | WebGL | N/A | N/A (WebSocket.Transport excluded) |
 
-### New Issues Identified
+### New Issues Identified (Non-Blocking)
 
-**None.** No new critical, important, or minor issues were discovered during this verification re-review by either specialist agent.
+The network architect identified two minor documentation items. No code changes required.
+
+| ID | Severity | Issue | Recommendation |
+|---|---|---|---|
+| R5-N1 | Info | `WebSocketFrameWriter` single-write optimization is limited to `_maskingChunkBuffer.Length` (8KB). Frames larger than ~8KB fall back to separate writes. | Document the threshold in class summary. By-design trade-off. |
+| R5-N2 | Info | `ResilientWebSocketClient.SendAsync` may throw `ObjectDisposedException` during active reconnection due to `_client` swap race. | Add XML doc comment noting transient failures during reconnection window. Low likelihood. |
 
 ### Positive Findings
 

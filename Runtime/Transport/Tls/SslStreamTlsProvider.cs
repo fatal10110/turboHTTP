@@ -15,10 +15,11 @@ namespace TurboHTTP.Transport.Tls
     /// Uses reflection to access ALPN APIs on .NET Standard 2.1.
     /// On IL2CPP with aggressive stripping, preserve SslStream ALPN types (e.g., via
     /// link.xml or [Preserve]) to keep HTTP/2 ALPN negotiation available. Without that
-    /// preservation, TurboHTTP falls back to BouncyCastle in Auto mode.
+    /// preservation, TLS still works but ALPN may be unavailable (HTTP/1.1 fallback).
     /// </summary>
     internal sealed class SslStreamTlsProvider : ITlsProvider
     {
+        private static readonly string[] EmptyAlpnProtocols = Array.Empty<string>();
         public static readonly SslStreamTlsProvider Instance = new();
 
         public string ProviderName => "SslStream";
@@ -124,6 +125,22 @@ namespace TurboHTTP.Transport.Tls
             string[] alpnProtocols,
             CancellationToken ct)
         {
+            if (innerStream == null)
+                throw new ArgumentNullException(nameof(innerStream));
+            if (string.IsNullOrEmpty(host))
+                throw new ArgumentNullException(nameof(host));
+
+            ct.ThrowIfCancellationRequested();
+
+            alpnProtocols ??= EmptyAlpnProtocols;
+            bool requiresHttp2Alpn = RequiresProtocol(alpnProtocols, "h2");
+            if (requiresHttp2Alpn && !_alpnSupported)
+            {
+                throw new PlatformNotSupportedException(
+                    "SslStream ALPN APIs are unavailable on this runtime. " +
+                    "HTTP/2 requires an ALPN-capable TLS provider.");
+            }
+
             var sslStream = new SslStream(
                 innerStream,
                 leaveInnerStreamOpen: false,
@@ -134,20 +151,37 @@ namespace TurboHTTP.Transport.Tls
                 bool alpnAttempted = false;
 
                 // Authenticate as client
-                if (_alpnSupported && alpnProtocols != null && alpnProtocols.Length > 0)
+                if (_alpnSupported && alpnProtocols.Length > 0)
                 {
                     try
                     {
                         await AuthenticateWithAlpnAsync(sslStream, host, alpnProtocols, ct).ConfigureAwait(false);
                         alpnAttempted = true;
                     }
-                    catch (Exception ex) when (!(ex is OperationCanceledException))
+                    catch (OperationCanceledException)
                     {
-                        // ALPN reflection failed (e.g. MakeGenericType under IL2CPP/AOT).
-                        // Since BouncyCastle is available as a fallback TLS provider with
-                        // guaranteed ALPN support, we fall back to non-ALPN authentication
-                        // here. TlsProviderSelector.Auto will route to BouncyCastle on
-                        // platforms where this path consistently fails.
+                        throw;
+                    }
+                    catch (Exception ex) when (
+                        ex is System.Reflection.TargetInvocationException
+                        || ex is MemberAccessException
+                        || ex is InvalidOperationException
+                        || ex is TypeLoadException
+                        || ex is MissingMethodException
+                        || ex is PlatformNotSupportedException)
+                    {
+                        // ALPN reflection failed (e.g. AOT/stripping edge case).
+                        // Only catch reflection-related exceptions here. Security exceptions
+                        // (AuthenticationException, IOException) must propagate — they indicate
+                        // real TLS errors (bad cert, network down), not platform limitations.
+                        if (requiresHttp2Alpn)
+                        {
+                            throw new PlatformNotSupportedException(
+                                "SslStream ALPN negotiation failed on this runtime. " +
+                                "Use an ALPN-capable TLS provider for HTTP/2.", ex);
+                        }
+
+                        // ALPN was optional (e.g. only http/1.1 requested). Continue with non-ALPN auth.
                         alpnAttempted = false;
                     }
                 }
@@ -252,7 +286,20 @@ namespace TurboHTTP.Transport.Tls
                 _alpnOptionsProperty.SetValue(options, alpnList);
             }
 
-            var task = (Task)_authWithOptionsMethod.Invoke(sslStream, new[] { options, ct });
+            Task task;
+            try
+            {
+                task = (Task)_authWithOptionsMethod.Invoke(sslStream, new[] { options, ct });
+            }
+            catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException != null)
+            {
+                // MethodInfo.Invoke wraps all target exceptions in TargetInvocationException.
+                // Unwrap so the caller sees the real exception (AuthenticationException,
+                // IOException, etc.) instead of a misleading reflection wrapper.
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
+                throw; // unreachable, satisfies compiler
+            }
+
             await task.ConfigureAwait(false);
         }
 
@@ -271,6 +318,20 @@ namespace TurboHTTP.Transport.Tls
             {
                 return null;
             }
+        }
+
+        private static bool RequiresProtocol(string[] protocols, string target)
+        {
+            if (protocols == null || protocols.Length == 0 || string.IsNullOrEmpty(target))
+                return false;
+
+            for (int i = 0; i < protocols.Length; i++)
+            {
+                if (string.Equals(protocols[i], target, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
         }
 
         private bool ValidateServerCertificate(

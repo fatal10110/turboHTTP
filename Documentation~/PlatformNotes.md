@@ -22,7 +22,7 @@ TurboHTTP automatically allows the runtime platform to determine optimal default
 | :--- | :--- | :--- |
 | **Request Timeout** | 30 seconds | 45 seconds |
 | **Max Concurrency** | 16 requests | 8 requests |
-| **TLS Provider** | SslStream | SslStream (if ALPN supported) or BouncyCastle fallback |
+| **TLS Provider** | SslStream | SslStream (preferred); BouncyCastle only if platform TLS is unavailable |
 
 ### Overriding Defaults
 

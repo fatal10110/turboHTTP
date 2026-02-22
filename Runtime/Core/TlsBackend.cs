@@ -7,8 +7,9 @@ namespace TurboHTTP.Core
     {
         /// <summary>
         /// Automatically select the best TLS provider for the current platform.
-        /// Uses SslStream on desktop platforms; falls back to BouncyCastle on mobile/IL2CPP
-        /// if ALPN support is not available.
+        /// Always prefers SslStream for best performance. On the first TLS handshake,
+        /// if SslStream fails with a platform-level exception, caches the failure and
+        /// falls back to BouncyCastle for all future connections in this process.
         /// </summary>
         Auto = 0,
 

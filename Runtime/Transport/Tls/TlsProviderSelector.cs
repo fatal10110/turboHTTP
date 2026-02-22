@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Threading;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Transport.Tls
@@ -15,6 +17,11 @@ namespace TurboHTTP.Transport.Tls
         // Thread-safe availability check cache (avoids non-atomic nullable writes on 32-bit IL2CPP).
         private static readonly Lazy<bool> _bouncyCastleAvailable =
             new Lazy<bool>(DetectBouncyCastleAvailability, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
+
+        // SslStream handshake viability probe state.
+        // 0 = not yet probed, 1 = viable (handshake succeeded), 2 = broken (platform exception).
+        // Written by TcpConnectionPool after the first real TLS handshake attempt.
+        private static int _sslStreamViabilityState;
 
         /// <summary>
         /// Get the TLS provider for the specified backend strategy.
@@ -94,63 +101,108 @@ namespace TurboHTTP.Transport.Tls
         }
 
         /// <summary>
+        /// Returns true if a previous TLS handshake marked SslStream as broken on this platform.
+        /// Used by TcpConnectionPool to skip SslStream and go directly to BouncyCastle.
+        /// </summary>
+        internal static bool IsSslStreamKnownBroken() =>
+            Volatile.Read(ref _sslStreamViabilityState) == 2;
+
+        /// <summary>
+        /// Mark SslStream as viable after a successful TLS handshake.
+        /// Only transitions from unknown (0) to viable (1); does not overwrite a broken (2) state.
+        /// </summary>
+        internal static void MarkSslStreamViable() =>
+            Interlocked.CompareExchange(ref _sslStreamViabilityState, 1, 0);
+
+        /// <summary>
+        /// Mark SslStream as broken after a platform-level TLS handshake failure.
+        /// Uses Exchange (not CompareExchange) so a broken result always wins,
+        /// even if a concurrent connection succeeded first.
+        /// </summary>
+        internal static void MarkSslStreamBroken() =>
+            Interlocked.Exchange(ref _sslStreamViabilityState, 2);
+
+        /// <summary>
+        /// Reset probe state. Internal, for testing only.
+        /// </summary>
+        internal static void ResetProbeState() =>
+            Interlocked.Exchange(ref _sslStreamViabilityState, 0);
+
+        /// <summary>
+        /// Returns true if the given exception indicates a platform-level TLS failure
+        /// (SslStream is fundamentally broken on this runtime), as opposed to a
+        /// normal handshake error (bad cert, network down, timeout).
+        /// </summary>
+        internal static bool IsPlatformTlsException(Exception ex)
+        {
+            // Unwrap reflection-invoked exceptions (e.g., from AuthenticateWithAlpnAsync
+            // which uses MethodInfo.Invoke — platform exceptions get wrapped).
+            if (ex is System.Reflection.TargetInvocationException tie && tie.InnerException != null)
+                ex = tie.InnerException;
+
+            return ex is PlatformNotSupportedException
+                || ex is NotSupportedException
+                || ex is TypeLoadException
+                || ex is TypeInitializationException
+                || ex is MissingMethodException
+                || ex is EntryPointNotFoundException
+                || ex is FileNotFoundException
+                || ex is DllNotFoundException;
+        }
+
+        /// <summary>
         /// Platform-specific auto-selection logic.
-        /// 
-        /// IMPORTANT: This selector checks API presence (IsAlpnSupported), not runtime behavior.
-        /// On IL2CPP/AOT where ALPN APIs exist but MakeGenericType fails at runtime,
-        /// SslStreamTlsProvider.WrapAsync handles this internally — it wraps the ALPN path
-        /// in try/catch and falls back to non-ALPN authentication. This is by-design:
-        /// the selector picks the provider, the provider handles runtime edge cases.
-        /// For guaranteed ALPN on all platforms, use TlsBackend.BouncyCastle explicitly.
+        ///
+        /// Auto mode always prefers platform TLS (SslStream) for best performance.
+        /// If a prior handshake proved SslStream is broken on this runtime, returns
+        /// BouncyCastle directly (zero overhead after the first probe).
+        /// BouncyCastle is used only when SslStream cannot be initialized on this runtime.
         /// </summary>
         private static ITlsProvider GetAutoProvider()
         {
-#if UNITY_EDITOR || UNITY_STANDALONE_WIN || UNITY_STANDALONE_OSX
-            // Desktop platforms: SslStream works reliably
-            return GetSslStreamProvider();
+            // Fast path: if a prior handshake already proved SslStream broken, skip it.
+            if (IsSslStreamKnownBroken())
+                return GetBouncyCastleFallbackOrThrow();
 
-#elif UNITY_IOS || UNITY_ANDROID
-            // Mobile platforms: Check if SslStream supports ALPN
-            var sslStreamProvider = SslStreamTlsProvider.Instance;
-            if (sslStreamProvider.IsAlpnSupported())
-            {
-                // ALPN works via reflection, use SslStream
+            if (TryGetSslStreamProvider(out var sslStreamProvider))
                 return sslStreamProvider;
-            }
-            else
+
+            // Platform TLS unavailable (or failed to initialize): fallback to BouncyCastle.
+            return GetBouncyCastleFallbackOrThrow();
+        }
+
+        private static ITlsProvider GetBouncyCastleFallbackOrThrow()
+        {
+            if (IsBouncyCastleAvailable())
             {
-                // ALPN not supported, fall back to BouncyCastle
                 try
                 {
                     return GetBouncyCastleProvider();
                 }
-                catch (InvalidOperationException)
+                catch (InvalidOperationException ex)
                 {
-                    // BouncyCastle not available, use SslStream anyway
-                    // (ALPN will be null, HTTP/1.1 fallback)
-                    System.Diagnostics.Debug.WriteLine(
-                        "[TurboHTTP] WARNING: BouncyCastle TLS provider not available. " +
-                        "ALPN negotiation may not work. HTTP/2 will be unavailable.");
-                    return sslStreamProvider;
+                    throw new PlatformNotSupportedException(
+                        "No usable TLS provider found. SslStream is unavailable and BouncyCastle failed to initialize.",
+                        ex);
                 }
             }
 
-#elif UNITY_STANDALONE_LINUX
-            // Linux: Prefer BouncyCastle due to Mono inconsistencies
+            throw new PlatformNotSupportedException(
+                "No usable TLS provider found. SslStream is unavailable and BouncyCastle is not present.");
+        }
+
+        private static bool TryGetSslStreamProvider(out ITlsProvider provider)
+        {
             try
             {
-                return GetBouncyCastleProvider();
+                provider = GetSslStreamProvider();
+                return provider != null;
             }
-            catch (InvalidOperationException)
+            catch (Exception ex) when (IsPlatformTlsException(ex))
             {
-                // BouncyCastle not available, fall back to SslStream
-                return GetSslStreamProvider();
+                provider = null;
+                return false;
             }
-
-#else
-            // Unknown platform or non-Unity: Try SslStream
-            return GetSslStreamProvider();
-#endif
         }
     }
 }

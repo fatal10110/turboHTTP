@@ -468,15 +468,51 @@ namespace TurboHTTP.Transport.Tcp
             {
                 try
                 {
-                    // Use ITlsProvider abstraction for TLS handshake
                     var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
                     var tlsResult = await tlsProvider.WrapAsync(
                         stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
-                    
+
+                    // CAS only transitions 0→1; safe to call after any provider succeeds.
+                    // If state is already 2 (broken), CAS fails harmlessly.
+                    if (_tlsBackend == TlsBackend.Auto)
+                        TlsProviderSelector.MarkSslStreamViable();
+
                     stream = tlsResult.SecureStream;
                     negotiatedAlpn = tlsResult.NegotiatedAlpn;
                     tlsVersion = tlsResult.TlsVersion;
                     tlsProviderName = tlsResult.ProviderName;
+                }
+                catch (Exception ex) when (
+                    _tlsBackend == TlsBackend.Auto
+                    && TlsProviderSelector.IsPlatformTlsException(ex)
+                    && TlsProviderSelector.IsBouncyCastleAvailable())
+                {
+                    // SslStream is fundamentally broken on this platform.
+                    // Cache the result so all future Auto calls skip SslStream entirely.
+                    TlsProviderSelector.MarkSslStreamBroken();
+
+                    // The failed SslStream handshake left the stream in an indeterminate state.
+                    // Dispose it and reconnect with a fresh socket for the BouncyCastle retry.
+                    stream.Dispose();
+                    socket = await ConnectSocketAsync(addresses, port, ct).ConfigureAwait(false);
+                    stream = new NetworkStream(socket, ownsSocket: true);
+
+                    try
+                    {
+                        var bcProvider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
+                        var tlsResult = await bcProvider.WrapAsync(
+                            stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
+
+                        stream = tlsResult.SecureStream;
+                        negotiatedAlpn = tlsResult.NegotiatedAlpn;
+                        tlsVersion = tlsResult.TlsVersion;
+                        tlsProviderName = tlsResult.ProviderName;
+                    }
+                    catch
+                    {
+                        stream.Dispose();
+                        throw;
+                    }
                 }
                 catch
                 {
