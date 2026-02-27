@@ -1,0 +1,12 @@
+<linker>
+  <!--
+    Preserve System.Diagnostics.StackTrace and StackFrame for PooledBuffer<T> debug guard.
+    Required when building with IL2CPP high stripping level and TURBOHTTP_POOL_DIAGNOSTICS
+    or DEBUG scripting defines are active. Without this, the StackTrace constructor and
+    StackFrame.GetFileName/GetFileLineNumber may be stripped, causing link errors.
+  -->
+  <assembly fullname="System">
+    <type fullname="System.Diagnostics.StackTrace" preserve="all"/>
+    <type fullname="System.Diagnostics.StackFrame" preserve="all"/>
+  </assembly>
+</linker>

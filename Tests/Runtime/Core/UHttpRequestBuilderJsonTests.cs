@@ -3,12 +3,13 @@ using TurboHTTP.Core;
 using TurboHTTP.JSON;
 using TurboHTTP.Transport;
 using System.Collections.Generic;
+using System.Buffers;
 using System.Text;
 
 namespace TurboHTTP.Tests.Core
 {
     [TestFixture]
-    public class UHttpRequestBuilderJsonTests
+    public class UHttpRequestJsonTests
     {
         private UHttpClient _client;
 
@@ -34,9 +35,8 @@ namespace TurboHTTP.Tests.Core
         [Test]
         public void WithJsonBody_String_SetsBodyAndContentType()
         {
-            var request = _client.Post("/api")
-                .WithJsonBody("{\"name\":\"test\"}")
-                .Build();
+            using var request = _client.Post("/api")
+                .WithJsonBody("{\"name\":\"test\"}");
 
             var body = Encoding.UTF8.GetString(request.Body);
             Assert.That(body, Is.EqualTo("{\"name\":\"test\"}"));
@@ -47,9 +47,8 @@ namespace TurboHTTP.Tests.Core
         public void WithJsonBody_Dictionary_UsesDefaultSerializer()
         {
             var data = new Dictionary<string, object> { { "name", "test" } };
-            var request = _client.Post("/api")
-                .WithJsonBody(data)
-                .Build();
+            using var request = _client.Post("/api")
+                .WithJsonBody(data);
 
             var body = Encoding.UTF8.GetString(request.Body);
             Assert.That(body, Does.Contain("name"));
@@ -61,9 +60,8 @@ namespace TurboHTTP.Tests.Core
         {
             var mock = new MockSerializer("{\"custom\":true}");
             var data = new Dictionary<string, object> { { "name", "test" } };
-            var request = _client.Post("/api")
-                .WithJsonBody(data, mock)
-                .Build();
+            using var request = _client.Post("/api")
+                .WithJsonBody(data, mock);
 
             var body = Encoding.UTF8.GetString(request.Body);
             Assert.That(body, Is.EqualTo("{\"custom\":true}"));
@@ -77,6 +75,15 @@ namespace TurboHTTP.Tests.Core
             public T Deserialize<T>(string json) => default;
             public string Serialize(object value, System.Type type) => _output;
             public object Deserialize(string json, System.Type type) => null;
+            public void Serialize<T>(T value, IBufferWriter<byte> output)
+            {
+                var bytes = Encoding.UTF8.GetBytes(_output);
+                var span = output.GetSpan(bytes.Length);
+                for (int i = 0; i < bytes.Length; i++)
+                    span[i] = bytes[i];
+                output.Advance(bytes.Length);
+            }
+            public T Deserialize<T>(ReadOnlySequence<byte> input) => default;
         }
     }
 }

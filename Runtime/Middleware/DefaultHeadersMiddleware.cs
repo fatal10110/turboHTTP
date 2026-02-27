@@ -29,30 +29,25 @@ namespace TurboHTTP.Middleware
             if (_defaultHeaders.Count == 0)
                 return await next(request, context, cancellationToken);
 
-            // Clone headers to avoid modifying original request
-            var headers = request.Headers.Clone();
-
             // Add default headers (preserving multi-value headers)
             foreach (var name in _defaultHeaders.Names)
             {
-                if (_overrideExisting || !headers.Contains(name))
+                if (_overrideExisting || !request.Headers.Contains(name))
                 {
                     var values = _defaultHeaders.GetValues(name);
                     if (values != null)
                     {
-                        headers.Set(name, values[0]);
+                        request.Headers.Set(name, values[0]);
                         for (int i = 1; i < values.Count; i++)
-                            headers.Add(name, values[i]);
+                            request.Headers.Add(name, values[i]);
                     }
                 }
             }
 
-            // Create new request with updated headers
-            var modifiedRequest = request.WithHeaders(headers);
-            context.UpdateRequest(modifiedRequest);
+            context.UpdateRequest(request);
 
             // Continue pipeline
-            return await next(modifiedRequest, context, cancellationToken);
+            return await next(request, context, cancellationToken);
         }
     }
 }

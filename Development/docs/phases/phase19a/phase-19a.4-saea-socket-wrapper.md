@@ -1,4 +1,4 @@
-# Phase 19a.4: SAEA Socket I/O Mode (Opt-In)
+# Phase 19a.4: SAEA & Poll/Select Socket I/O Modes (Opt-In)
 
 **Depends on:** Phase 19 Tasks 19.1 + 19.2
 **Estimated Effort:** 2 weeks
@@ -13,14 +13,11 @@ Required behavior:
 
 1. Add `SocketIoMode` enum:
    - `NetworkStream` (default)
-   - `Saea` (opt-in)
+   - `Saea` (opt-in, high-performance, uses OS async I/O completion ports)
+   - `PollSelect` (opt-in, stable on IL2CPP, uses synchronous non-blocking `Socket.Poll`/`Select`)
 2. Add `ConnectionPoolOptions.SocketIoMode` property.
 3. Wire property through `Clone()` and `IsDefault()`.
-
-Implementation constraints:
-
-1. Keep default behavior unchanged (`NetworkStream`).
-2. Document that SAEA mode is not available on targets where Transport assembly is excluded (WebGL).
+4. Document that `Saea` relies on runtime async callbacks which may be unstable under IL2CPP on some platforms, and that `PollSelect` is the recommended alternative for consoles and mobile.
 
 ---
 
@@ -75,7 +72,40 @@ Implementation constraints:
 
 ---
 
-## Step 4: TLS Behavior in SAEA Mode
+## Step 3b: Implement Poll/Select Socket Channel
+
+**File:** `Runtime/Transport/Tcp/PollSelectSocketChannel.cs` (new)
+
+Required behavior:
+
+1. Add connection-level send/receive primitives using `Socket.Poll` + synchronous `Socket.Send`/`Socket.Receive`.
+2. Run a tight poll loop on a dedicated thread (or multiplexed `Socket.Select` loop) — read/write only when the socket signals readiness.
+3. Bridge to `ValueTask<int>` via `TaskCompletionSource` or `ManualResetValueTaskSourceCore` so the rest of the pipeline stays async.
+4. Maintain pinned pooled buffers per channel (same pattern as `SaeaSocketChannel`).
+5. Support chunked send for payloads larger than pinned buffer.
+
+Implementation constraints:
+
+1. No reliance on `SocketAsyncEventArgs` or runtime async callbacks.
+2. Deterministic disposal stops the poll thread and returns pinned buffers.
+3. Cancellation closes the socket, causing `Poll` to return immediately.
+4. Poll timeout should be configurable (default ~1ms) to balance latency vs CPU.
+
+---
+
+## Step 3c: Add `PollSelectStream` Adapter
+
+**File:** `Runtime/Transport/Tcp/PollSelectStream.cs` (new)
+
+Required behavior:
+
+1. Thin `Stream` adapter over `PollSelectSocketChannel` (same pattern as `SaeaStream`).
+2. Owns the channel and disposes it.
+3. TLS works via `SslStream` wrapping this stream.
+
+---
+
+## Step 4: TLS Behavior in SAEA and PollSelect Modes
 
 **Files modified:**
 - `Runtime/Transport/Tcp/TcpConnectionPool.cs`
@@ -84,9 +114,9 @@ Implementation constraints:
 Required behavior:
 
 1. TLS still uses `ITlsProvider` abstraction.
-2. Initial integration may use socket -> stream adapter -> `SslStream` for handshake and encrypted I/O.
-3. Benchmark SAEA gains with and without TLS.
-4. If needed, implement a custom stream adapter over SAEA to retain gains under TLS.
+2. Both SAEA and PollSelect modes use socket → stream adapter → `SslStream` for handshake and encrypted I/O.
+3. Benchmark gains with and without TLS in each mode.
+4. If needed, implement custom stream adapters to retain gains under TLS.
 
 Implementation constraints:
 
@@ -103,7 +133,8 @@ Required behavior:
 
 1. Detect expected completion model per platform (IOCP/kqueue/epoll/thread-pool fallback).
 2. Expose support/benefit metadata for diagnostics.
-3. Log selected mode once per transport instance.
+3. Log selected mode once per transport instance (including `PollSelect`).
+4. For `PollSelect`, log that synchronous non-blocking mode is active.
 
 Implementation constraints:
 
@@ -115,7 +146,9 @@ Implementation constraints:
 ## Verification Criteria
 
 1. SAEA mode passes existing transport integration tests on desktop targets.
-2. Receive hot path avoids `Task` allocation.
-3. Idle pooling, health checks, and disposal remain correct.
-4. TLS handshakes and ALPN remain correct in both socket I/O modes.
-5. `NetworkStream` mode remains behaviorally unchanged.
+2. PollSelect mode passes existing transport integration tests on all targets.
+3. Receive hot path avoids `Task` allocation in both SAEA and PollSelect modes.
+4. Idle pooling, health checks, and disposal remain correct in all three modes.
+5. TLS handshakes and ALPN remain correct in all socket I/O modes.
+6. `NetworkStream` mode remains behaviorally unchanged.
+7. PollSelect mode is stable under IL2CPP on mobile (iOS/Android) builds.

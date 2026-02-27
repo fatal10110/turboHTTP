@@ -26,17 +26,17 @@ namespace TurboHTTP.Unity
         /// is destroyed), callbacks are intentionally suppressed.
         /// </remarks>
         public static IEnumerator SendCoroutine(
-            this UHttpRequestBuilder builder,
+            this UHttpRequest request,
             Action<UHttpResponse> onSuccess,
             Action<Exception> onError = null,
             CancellationToken cancellationToken = default,
             UnityEngine.Object callbackOwner = null,
             bool cancelOnOwnerInactive = false)
         {
-            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            if (request == null) throw new ArgumentNullException(nameof(request));
 
             return SendCoroutineImpl(
-                builder,
+                request,
                 onSuccess,
                 onError,
                 cancellationToken,
@@ -76,7 +76,7 @@ namespace TurboHTTP.Unity
         }
 
         private static IEnumerator SendCoroutineImpl(
-            UHttpRequestBuilder builder,
+            UHttpRequest request,
             Action<UHttpResponse> onSuccess,
             Action<Exception> onError,
             CancellationToken cancellationToken,
@@ -91,7 +91,7 @@ namespace TurboHTTP.Unity
             Task<UHttpResponse> task;
             try
             {
-                task = builder.SendAsync(lifecycleBinding.Token).AsTask();
+                task = request.SendAsync(lifecycleBinding.Token).AsTask();
             }
             catch (Exception ex)
             {

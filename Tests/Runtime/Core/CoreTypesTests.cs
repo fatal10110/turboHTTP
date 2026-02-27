@@ -34,7 +34,7 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void UHttpRequest_WithHeaders_DoesNotMutateOriginalRequest()
+        public void UHttpRequest_WithHeaders_MutatesRequestAndClonesInput()
         {
             var originalHeaders = new HttpHeaders();
             originalHeaders.Set("X-Original", "value");
@@ -50,8 +50,9 @@ namespace TurboHTTP.Tests.Core
             var changed = request.WithHeaders(replacementHeaders);
             replacementHeaders.Set("X-New", "mutated");
 
-            Assert.IsNull(request.Headers.Get("X-New"));
-            Assert.AreEqual("value", changed.Headers.Get("X-New"));
+            Assert.AreSame(request, changed);
+            Assert.IsNull(request.Headers.Get("X-Original"));
+            Assert.AreEqual("value", request.Headers.Get("X-New"));
         }
 
         [Test]

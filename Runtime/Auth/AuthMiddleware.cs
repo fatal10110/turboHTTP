@@ -37,13 +37,9 @@ namespace TurboHTTP.Auth
                 if (token.Contains('\r') || token.Contains('\n'))
                     throw new ArgumentException("Auth token must not contain CR or LF characters");
 
-                var headers = request.Headers.Clone();
-                headers.Set("Authorization", $"{_scheme} {token}");
-
-                var modifiedRequest = request.WithHeaders(headers);
-                context.UpdateRequest(modifiedRequest);
-
-                return await next(modifiedRequest, context, cancellationToken);
+                request.Headers.Set("Authorization", $"{_scheme} {token}");
+                context.UpdateRequest(request);
+                return await next(request, context, cancellationToken);
             }
 
             return await next(request, context, cancellationToken);

@@ -6,11 +6,11 @@ using System.Threading.Tasks.Sources;
 
 namespace TurboHTTP.Transport.Http2
 {
-    internal sealed class ResettableValueTaskSource<T> : IValueTaskSource<T>
+    internal abstract class ValueTaskSourceCoreWrapper<T> : IValueTaskSource<T>
     {
         private ManualResetValueTaskSourceCore<T> _core;
 
-        public ResettableValueTaskSource()
+        protected ValueTaskSourceCoreWrapper()
         {
             _core = new ManualResetValueTaskSourceCore<T>
             {
@@ -18,20 +18,11 @@ namespace TurboHTTP.Transport.Http2
             };
         }
 
-        public void PrepareForUse()
-        {
-            _core.Reset();
-        }
+        protected void PrepareCoreForUse() => _core.Reset();
 
-        public ValueTask<T> CreateValueTask()
-        {
-            return new ValueTask<T>(this, _core.Version);
-        }
+        public ValueTask<T> CreateValueTask() => new ValueTask<T>(this, _core.Version);
 
-        public void SetResult(T result)
-        {
-            _core.SetResult(result);
-        }
+        public void SetResult(T result) => _core.SetResult(result);
 
         public void SetException(Exception exception)
         {
@@ -39,102 +30,57 @@ namespace TurboHTTP.Transport.Http2
             _core.SetException(exception);
         }
 
-        public void SetCanceled(CancellationToken cancellationToken = default)
-        {
+        public void SetCanceled(CancellationToken cancellationToken = default) =>
             _core.SetException(new OperationCanceledException(cancellationToken));
-        }
 
-        public T GetResult(short token)
-        {
-            return _core.GetResult(token);
-        }
-
-        public ValueTaskSourceStatus GetStatus(short token)
-        {
-            return _core.GetStatus(token);
-        }
+        public ValueTaskSourceStatus GetStatus(short token) => _core.GetStatus(token);
 
         public void OnCompleted(
             Action<object> continuation,
             object state,
             short token,
-            ValueTaskSourceOnCompletedFlags flags)
-        {
+            ValueTaskSourceOnCompletedFlags flags) =>
             _core.OnCompleted(continuation, state, token, flags);
+
+        public virtual T GetResult(short token)
+        {
+            return _core.GetResult(token);
         }
     }
 
-    internal sealed class PoolableValueTaskSource<T> : IValueTaskSource<T>
+    internal sealed class ResettableValueTaskSource<T> : ValueTaskSourceCoreWrapper<T>
+    {
+        public void PrepareForUse() => PrepareCoreForUse();
+    }
+
+    internal sealed class PoolableValueTaskSource<T> : ValueTaskSourceCoreWrapper<T>
     {
         private readonly Action<PoolableValueTaskSource<T>> _returnToPool;
-        private ManualResetValueTaskSourceCore<T> _core;
         private int _returned;
 
         public PoolableValueTaskSource(Action<PoolableValueTaskSource<T>> returnToPool)
         {
             _returnToPool = returnToPool ?? throw new ArgumentNullException(nameof(returnToPool));
-            _core = new ManualResetValueTaskSourceCore<T>
-            {
-                RunContinuationsAsynchronously = true
-            };
         }
 
         public void PrepareForUse()
         {
-            _core.Reset();
+            PrepareCoreForUse();
             Volatile.Write(ref _returned, 0);
         }
 
-        public ValueTask<T> CreateValueTask()
-        {
-            return new ValueTask<T>(this, _core.Version);
-        }
+        public void ReturnWithoutConsumption() => TryReturnToPool();
 
-        public void SetResult(T result)
-        {
-            _core.SetResult(result);
-        }
-
-        public void SetException(Exception exception)
-        {
-            if (exception == null) throw new ArgumentNullException(nameof(exception));
-            _core.SetException(exception);
-        }
-
-        public void SetCanceled(CancellationToken cancellationToken = default)
-        {
-            _core.SetException(new OperationCanceledException(cancellationToken));
-        }
-
-        public void ReturnWithoutConsumption()
-        {
-            TryReturnToPool();
-        }
-
-        public T GetResult(short token)
+        public override T GetResult(short token)
         {
             try
             {
-                return _core.GetResult(token);
+                return base.GetResult(token);
             }
             finally
             {
                 TryReturnToPool();
             }
-        }
-
-        public ValueTaskSourceStatus GetStatus(short token)
-        {
-            return _core.GetStatus(token);
-        }
-
-        public void OnCompleted(
-            Action<object> continuation,
-            object state,
-            short token,
-            ValueTaskSourceOnCompletedFlags flags)
-        {
-            _core.OnCompleted(continuation, state, token, flags);
         }
 
         private void TryReturnToPool()

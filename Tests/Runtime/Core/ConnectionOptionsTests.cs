@@ -45,12 +45,10 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void LegacyHttp2MaxDecodedHeaderBytes_ShouldUpdateHttp2Options()
+        public void Http2MaxDecodedHeaderBytes_ShouldBeConfiguredOnHttp2Options()
         {
             var options = new UHttpClientOptions();
-#pragma warning disable CS0618 // Type or member is obsolete
-            options.Http2MaxDecodedHeaderBytes = 50000;
-#pragma warning restore CS0618 // Type or member is obsolete
+            options.Http2.MaxDecodedHeaderBytes = 50000;
 
             Assert.That(options.Http2.MaxDecodedHeaderBytes, Is.EqualTo(50000));
         }

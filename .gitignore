@@ -11,6 +11,7 @@ Build/
 Builds/
 UserSettings/
 MemoryCaptures/
+*.meta
 
 # Visual Studio / Rider / Unity
 *.csproj

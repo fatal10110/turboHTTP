@@ -125,14 +125,14 @@ namespace TurboHTTP.Transport.Http2
             if (!stream.HeadersReceived)
             {
                 _connectionRecvWindow -= flowControlledLength;
-                // Remove from active streams BEFORE Fail() to prevent race with Dispose().
-                // Fail() triggers user continuations which could call Dispose() concurrently.
+                // Remove from active streams BEFORE Fail() to prevent race with pool return.
+                // Fail() triggers SendRequestAsync's finally which calls Http2StreamPool.Return.
                 if (_activeStreams.TryRemove(frame.StreamId, out _))
                 {
                     stream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                         $"DATA received before HEADERS on stream {frame.StreamId}"));
                     await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError);
-                    stream.Dispose();
+                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
                 return;
             }
@@ -152,7 +152,7 @@ namespace TurboHTTP.Transport.Http2
                     stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                         $"Response body exceeds maximum size limit ({maxBodySize} bytes)")));
                     await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
-                    stream.Dispose();
+                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
                 return;
             }
@@ -185,8 +185,11 @@ namespace TurboHTTP.Transport.Http2
                 _connectionRecvWindow = Http2Constants.DefaultInitialWindowSize;
             }
 
-            // Send stream-level WINDOW_UPDATE if needed (Fix 1)
-            if (stream.RecvWindowSize < _localSettings.InitialWindowSize / 2)
+            // Send stream-level WINDOW_UPDATE if needed (Fix 1).
+            // Guard on !responseBodyDisposed: do not send WINDOW_UPDATE for a stream whose
+            // body MemoryStream was already disposed mid-receive (RFC 7540 Section 6.9 —
+            // sending WINDOW_UPDATE on a closed stream is a protocol error).
+            if (!responseBodyDisposed && stream.RecvWindowSize < _localSettings.InitialWindowSize / 2)
             {
                 int increment = _localSettings.InitialWindowSize - stream.RecvWindowSize;
                 await SendWindowUpdateAsync(frame.StreamId, increment, ct);
@@ -206,7 +209,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     stream.Complete();
                     _activeStreams.TryRemove(frame.StreamId, out _);
-                    stream.Dispose();
+                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
             }
         }
@@ -262,7 +265,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     stream.Complete();
                     _activeStreams.TryRemove(frame.StreamId, out _);
-                    stream.Dispose();
+                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
             }
             else
@@ -295,7 +298,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     stream.Complete();
                     _activeStreams.TryRemove(frame.StreamId, out _);
-                    stream.Dispose();
+                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
             }
         }
@@ -318,7 +321,7 @@ namespace TurboHTTP.Transport.Http2
                 stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                     $"Response header list size {headerListSize} exceeds limit {_localSettings.MaxHeaderListSize}")));
                 _activeStreams.TryRemove(stream.StreamId, out _);
-                stream.Dispose();
+                // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 return;
             }
 
@@ -335,7 +338,7 @@ namespace TurboHTTP.Transport.Http2
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                             "Unexpected :status pseudo-header in trailing headers")));
                         _activeStreams.TryRemove(stream.StreamId, out _);
-                        stream.Dispose();
+                        // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                         return;
                     }
 
@@ -350,7 +353,7 @@ namespace TurboHTTP.Transport.Http2
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                             $"Invalid :status value: {value}")));
                         _activeStreams.TryRemove(stream.StreamId, out _);
-                        stream.Dispose();
+                        // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                         return;
                     }
                 }
@@ -363,7 +366,7 @@ namespace TurboHTTP.Transport.Http2
                     stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                         $"Unexpected pseudo-header in trailing headers: {name}")));
                     _activeStreams.TryRemove(stream.StreamId, out _);
-                    stream.Dispose();
+                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                     return;
                 }
             }
@@ -373,7 +376,7 @@ namespace TurboHTTP.Transport.Http2
                 stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                     "Missing :status pseudo-header in HTTP/2 response")));
                 _activeStreams.TryRemove(stream.StreamId, out _);
-                stream.Dispose();
+                // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 return;
             }
 
@@ -556,7 +559,10 @@ namespace TurboHTTP.Transport.Http2
             _goawayReceived = true;
             _lastGoawayStreamId = lastStreamId;
 
-            // Fail streams above lastStreamId
+            // Fail streams above lastStreamId. Do NOT call stream.Dispose() — the
+            // ValueTask continuation (RunContinuationsAsynchronously = true) will reach
+            // SendRequestAsync's finally block and call Http2StreamPool.Return(stream).
+            // Calling Dispose() here would destroy the reusable MemoryStream.
             foreach (var kvp in _activeStreams)
             {
                 if (kvp.Key > lastStreamId)
@@ -565,7 +571,6 @@ namespace TurboHTTP.Transport.Http2
                     {
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                             $"Server sent GOAWAY (error={errorCode}), stream {kvp.Key} was not processed")));
-                        stream.Dispose();
                     }
                 }
             }
@@ -594,7 +599,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     erroredStream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                         $"Invalid WINDOW_UPDATE increment=0 on stream {frame.StreamId}"));
-                    erroredStream.Dispose();
+                    // Do NOT call erroredStream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
 
                 await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError).ConfigureAwait(false);
@@ -662,7 +667,7 @@ namespace TurboHTTP.Transport.Http2
                 else
                     stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                         $"RST_STREAM: {(Http2ErrorCode)errorCode}")));
-                stream.Dispose();
+                // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
             }
         }
 

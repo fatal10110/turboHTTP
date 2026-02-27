@@ -39,7 +39,7 @@ namespace TurboHTTP.Tests.Cache
                 Assert.AreEqual(HttpStatusCode.OK, response2.StatusCode);
                 Assert.AreEqual(1, transport.RequestCount);
                 Assert.AreEqual("HIT", response2.Headers.Get("X-Cache"));
-                Assert.AreEqual("payload", Encoding.UTF8.GetString(response2.Body.Span));
+                Assert.AreEqual("payload", response2.GetBodyAsString());
                 Assert.AreEqual(1, await storage.GetCountAsync());
             }).GetAwaiter().GetResult();
         }
@@ -95,7 +95,7 @@ namespace TurboHTTP.Tests.Cache
 
                 var hit = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual("HIT", hit.Headers.Get("X-Cache"));
-                Assert.AreEqual("payload", Encoding.UTF8.GetString(hit.Body.Span));
+                Assert.AreEqual("payload", hit.GetBodyAsString());
             }).GetAwaiter().GetResult();
         }
 
@@ -170,7 +170,7 @@ namespace TurboHTTP.Tests.Cache
                 Assert.AreEqual(2, callCount);
                 Assert.AreEqual(HttpStatusCode.OK, revalidated.StatusCode);
                 Assert.AreEqual("REVALIDATED", revalidated.Headers.Get("X-Cache"));
-                Assert.AreEqual("payload", Encoding.UTF8.GetString(revalidated.Body.Span));
+                Assert.AreEqual("payload", revalidated.GetBodyAsString());
             }).GetAwaiter().GetResult();
         }
 
@@ -325,19 +325,19 @@ namespace TurboHTTP.Tests.Cache
 
                 var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
                 var first = await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
-                Assert.AreEqual("v1", Encoding.UTF8.GetString(first.Body.Span));
+                Assert.AreEqual("v1", first.GetBodyAsString());
 
                 var secondHeaders = new HttpHeaders();
                 secondHeaders.Set("Cache-Control", "no-cache");
                 var secondRequest = new UHttpRequest(HttpMethod.GET, uri, secondHeaders);
                 var second = await pipeline.ExecuteAsync(secondRequest, new RequestContext(secondRequest));
-                Assert.AreEqual("v2", Encoding.UTF8.GetString(second.Body.Span));
+                Assert.AreEqual("v2", second.GetBodyAsString());
 
                 // Because the modified response was non-cacheable (no-store), the old entry
                 // must be evicted and the next request should go to transport again.
                 var thirdRequest = new UHttpRequest(HttpMethod.GET, uri);
                 var third = await pipeline.ExecuteAsync(thirdRequest, new RequestContext(thirdRequest));
-                Assert.AreEqual("v3", Encoding.UTF8.GetString(third.Body.Span));
+                Assert.AreEqual("v3", third.GetBodyAsString());
 
                 Assert.AreEqual(3, callCount);
             }).GetAwaiter().GetResult();
@@ -463,7 +463,7 @@ namespace TurboHTTP.Tests.Cache
 
                 Assert.AreEqual(2, transport.RequestCount);
                 Assert.AreEqual("HIT", gzipCached.Headers.Get("X-Cache"));
-                Assert.AreEqual("gzip-body", Encoding.UTF8.GetString(gzipCached.Body.Span));
+                Assert.AreEqual("gzip-body", gzipCached.GetBodyAsString());
             }).GetAwaiter().GetResult();
         }
 
@@ -592,9 +592,9 @@ namespace TurboHTTP.Tests.Cache
                 await pipeline.ExecuteAsync(postRequest, new RequestContext(postRequest));
                 var third = await pipeline.ExecuteAsync(getRequest, new RequestContext(getRequest));
 
-                Assert.AreEqual("v1", Encoding.UTF8.GetString(first.Body.Span));
-                Assert.AreEqual("v1", Encoding.UTF8.GetString(second.Body.Span));
-                Assert.AreEqual("v2", Encoding.UTF8.GetString(third.Body.Span));
+                Assert.AreEqual("v1", first.GetBodyAsString());
+                Assert.AreEqual("v1", second.GetBodyAsString());
+                Assert.AreEqual("v2", third.GetBodyAsString());
                 Assert.AreEqual(3, transport.RequestCount);
             }).GetAwaiter().GetResult();
         }
@@ -673,8 +673,8 @@ namespace TurboHTTP.Tests.Cache
                 var summaryAfterRequest = new UHttpRequest(HttpMethod.GET, summaryUri);
                 var summaryAfter = await pipeline.ExecuteAsync(summaryAfterRequest, new RequestContext(summaryAfterRequest));
 
-                Assert.AreEqual("profile-v2", Encoding.UTF8.GetString(profileAfter.Body.Span));
-                Assert.AreEqual("summary-v2", Encoding.UTF8.GetString(summaryAfter.Body.Span));
+                Assert.AreEqual("profile-v2", profileAfter.GetBodyAsString());
+                Assert.AreEqual("summary-v2", summaryAfter.GetBodyAsString());
             }).GetAwaiter().GetResult();
         }
 
@@ -721,7 +721,7 @@ namespace TurboHTTP.Tests.Cache
 
                 Assert.AreEqual(2, callCount);
                 Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
-                Assert.AreEqual("payload", Encoding.UTF8.GetString(second.Body.Span));
+                Assert.AreEqual("payload", second.GetBodyAsString());
             }).GetAwaiter().GetResult();
         }
 
@@ -976,7 +976,7 @@ namespace TurboHTTP.Tests.Cache
                 for (int i = 0; i < responses.Length; i++)
                 {
                     Assert.AreEqual(HttpStatusCode.OK, responses[i].StatusCode);
-                    Assert.AreEqual("payload", Encoding.UTF8.GetString(responses[i].Body.Span));
+                    Assert.AreEqual("payload", responses[i].GetBodyAsString());
                 }
 
                 var finalRequest = new UHttpRequest(HttpMethod.GET, uri);

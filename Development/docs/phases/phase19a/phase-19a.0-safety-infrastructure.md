@@ -5,25 +5,6 @@
 
 ---
 
-## Step 0: Add Zero-Allocation Runtime Switch (Greenfield Default)
-
-**File:** `Runtime/Core/UHttpClientOptions.cs` (modified)
-
-Required behavior:
-
-1. Add `EnableZeroAllocPipeline` boolean option to `UHttpClientOptions`.
-2. Default value is `true` (greenfield default path).
-3. `false` is a temporary alpha rollback/debug mode only.
-4. Include the new option in `Clone()`.
-
-Implementation constraints:
-
-1. This switch is not a migration promise. It exists for stabilization and diagnostics.
-2. New phase19a code should target the zero-allocation path first; `false` mode is best-effort.
-3. Option naming must clearly indicate temporary status in XML docs.
-
----
-
 ## Step 1: Implement `PooledBuffer<T>` Debug Guard Wrapper
 
 **File:** `Runtime/Performance/PooledBufferDebug.cs` (new)
@@ -76,7 +57,7 @@ Implementation constraints:
 
 ## Step 3: Add Pool Health Reporter
 
-**File:** `Runtime/Performance/PoolHealthReporter.cs` (new)
+**File:** `Runtime/Observability/PoolHealthReporter.cs` (new)
 
 Required behavior:
 
@@ -99,4 +80,3 @@ Implementation constraints:
 2. Requested-length slicing is enforced in diagnostics mode.
 3. ByteArrayPool/ObjectPool diagnostics are correct under concurrency.
 4. Pool health logging is stable under sustained traffic.
-5. `EnableZeroAllocPipeline` defaults to `true` and clones correctly.

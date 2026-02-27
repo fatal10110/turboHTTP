@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -60,7 +61,7 @@ namespace TurboHTTP.Testing
             return result;
         }
 
-        private byte[] RedactJsonBodyIfNeeded(ReadOnlyMemory<byte> body, HttpHeaders headers)
+        private byte[] RedactJsonBodyIfNeeded(ReadOnlySequence<byte> body, HttpHeaders headers)
         {
             if (body.IsEmpty)
                 return null;
@@ -77,7 +78,9 @@ namespace TurboHTTP.Testing
             object parsedBody;
             try
             {
-                var json = Utf8.GetString(body.Span);
+                var json = body.IsSingleSegment
+                    ? Utf8.GetString(body.FirstSpan)
+                    : Utf8.GetString(body.ToArray());
                 parsedBody = DeserializeJson(json, typeof(object));
             }
             catch
@@ -148,12 +151,14 @@ namespace TurboHTTP.Testing
             return Utf8.GetBytes(redactedJson);
         }
 
-        private static byte[] ToExactByteArray(ReadOnlyMemory<byte> body)
+        private static byte[] ToExactByteArray(ReadOnlySequence<byte> body)
         {
             if (body.IsEmpty)
                 return null;
 
-            if (MemoryMarshal.TryGetArray(body, out var segment))
+            if (body.IsSingleSegment &&
+                MemoryMarshal.TryGetArray(body.First, out var segment) &&
+                segment.Array != null)
             {
                 if (segment.Offset == 0 && segment.Count == segment.Array.Length)
                     return segment.Array;

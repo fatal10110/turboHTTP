@@ -24,7 +24,8 @@ namespace TurboHTTP.Core
             HttpPipelineDelegate next,
             CancellationToken cancellationToken)
         {
-            if (!_policy.Enable)
+            var adaptationEnabled = _policy.Enable;
+            if (!adaptationEnabled)
                 return await next(request, context, cancellationToken);
 
             var snapshot = _detector.GetSnapshot();
@@ -44,7 +45,8 @@ namespace TurboHTTP.Core
                 var adaptedTimeout = TimeSpan.FromMilliseconds(adapted);
                 if (adaptedTimeout != request.Timeout)
                 {
-                    requestForNext = request.WithTimeout(adaptedTimeout);
+                    request.SetTimeoutInternal(adaptedTimeout);
+                    requestForNext = request;
                     context.UpdateRequest(requestForNext);
                 }
             }

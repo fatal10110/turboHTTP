@@ -212,8 +212,14 @@ namespace TurboHTTP.Files
                     var body = response.Body;
                     if (!body.IsEmpty)
                     {
-                        await fileStream.WriteAsync(body, cancellationToken)
-                            .ConfigureAwait(false);
+                        foreach (var segment in body)
+                        {
+                            if (segment.IsEmpty)
+                                continue;
+
+                            await fileStream.WriteAsync(segment, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
                     }
                 }
 

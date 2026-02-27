@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Threading;
@@ -22,11 +21,23 @@ namespace TurboHTTP.Transport.Http2
     /// Represents a single HTTP/2 stream — one request/response pair multiplexed
     /// on a shared TCP connection. RFC 7540 Section 5.1.
     /// </summary>
+    /// <remarks>
+    /// Instances are obtained from <see cref="Http2StreamPool"/> rather than allocated
+    /// directly. The pool reuses the internal <see cref="HeaderBlockBuffer"/> (a
+    /// <see cref="MemoryStream"/> allocated once per instance) across streams by
+    /// calling <see cref="Initialize"/> for each new request. This avoids the
+    /// MemoryStream allocation on the per-request hot path.
+    /// </remarks>
     internal class Http2Stream : IDisposable
     {
-        public int StreamId { get; }
-        public UHttpRequest Request { get; }
-        public RequestContext Context { get; }
+        // Backing fields for per-request identity. Set by Initialize(), cleared by PrepareForPool().
+        private int _streamId;
+        private UHttpRequest _request;
+        private RequestContext _context;
+
+        public int StreamId => _streamId;
+        public UHttpRequest Request => _request;
+        public RequestContext Context => _context;
 
         public Http2StreamState State { get; set; }
 
@@ -37,9 +48,11 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// Buffer for accumulating HEADERS + CONTINUATION header blocks.
-        /// Uses MemoryStream instead of List&lt;byte&gt; for efficient bulk appending.
+        /// Allocated once in the constructor; reset via <see cref="MemoryStream.SetLength"/>
+        /// between pool uses rather than disposed and reallocated.
         /// </summary>
         public MemoryStream HeaderBlockBuffer { get; }
+
         public bool HeadersReceived { get; set; }
         public bool PendingEndStream { get; set; }
 
@@ -47,8 +60,8 @@ namespace TurboHTTP.Transport.Http2
         private int _responseBodyLength;
         private int _disposed;
         private int _responseCompleted;
-        private readonly PoolableValueTaskSource<UHttpResponse> _responseSource;
-        private readonly ValueTask<UHttpResponse> _responseTask;
+        private PoolableValueTaskSource<UHttpResponse> _responseSource;
+        private ValueTask<UHttpResponse> _responseTask;
 
         private int _sendWindowSize;
         public int SendWindowSize
@@ -71,6 +84,22 @@ namespace TurboHTTP.Transport.Http2
 
         public CancellationTokenRegistration CancellationRegistration { get; set; }
 
+        // ── Construction ─────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Parameterless constructor for the pool factory. Allocates the long-lived
+        /// <see cref="HeaderBlockBuffer"/> once; per-request state is set by
+        /// <see cref="Initialize"/>.
+        /// </summary>
+        internal Http2Stream()
+        {
+            HeaderBlockBuffer = new MemoryStream();
+        }
+
+        /// <summary>
+        /// Single-step constructor — allocates the MemoryStream then immediately
+        /// initialises per-request state. Used in unit tests and outside pool paths.
+        /// </summary>
         public Http2Stream(
             int streamId,
             UHttpRequest request,
@@ -79,18 +108,98 @@ namespace TurboHTTP.Transport.Http2
             int initialRecvWindowSize,
             PoolableValueTaskSourcePool<UHttpResponse> responseSourcePool)
         {
-            StreamId = streamId;
-            Request = request;
-            Context = context;
+            HeaderBlockBuffer = new MemoryStream();
+            Initialize(streamId, request, context,
+                initialSendWindowSize, initialRecvWindowSize, responseSourcePool);
+        }
+
+        // ── Pool lifecycle ───────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Sets all per-request state on a pooled (or freshly created) instance.
+        /// Called by <see cref="Http2StreamPool.Rent"/> immediately after renting.
+        /// </summary>
+        public void Initialize(
+            int streamId,
+            UHttpRequest request,
+            RequestContext context,
+            int initialSendWindowSize,
+            int initialRecvWindowSize,
+            PoolableValueTaskSourcePool<UHttpResponse> responseSourcePool)
+        {
+            _streamId = streamId;
+            _request = request ?? throw new ArgumentNullException(nameof(request));
+            _context = context ?? throw new ArgumentNullException(nameof(context));
+
             State = Http2StreamState.Idle;
             StatusCode = 0;
-            HeaderBlockBuffer = new MemoryStream();
+            ResponseHeaders = null;
+
+            // Reset MemoryStream position without releasing its backing buffer.
+            HeaderBlockBuffer.SetLength(0);
             HeadersReceived = false;
-            SendWindowSize = initialSendWindowSize;
+            PendingEndStream = false;
+
+            _sendWindowSize = initialSendWindowSize;
             RecvWindowSize = initialRecvWindowSize;
+
+            _responseBodyBuffer = null;
+            _responseBodyLength = 0;
+            _disposed = 0;
+            _responseCompleted = 0;
+
             _responseSource = (responseSourcePool ?? throw new ArgumentNullException(nameof(responseSourcePool))).Rent();
             _responseTask = _responseSource.CreateValueTask();
+
+            CancellationRegistration = default;
         }
+
+        /// <summary>
+        /// Clears all per-request state and returns pooled resources so this instance
+        /// can be stored in <see cref="Http2StreamPool"/> and reused. Called by the
+        /// pool's reset delegate via <see cref="Http2StreamPool.Return"/>.
+        /// </summary>
+        /// <remarks>
+        /// Does NOT dispose <see cref="HeaderBlockBuffer"/>; it is intentionally kept
+        /// alive for reuse. When the pool is full and discards a stream the MemoryStream
+        /// is GC'd — safe because MemoryStream holds no finalizable native resources.
+        /// </remarks>
+        public void PrepareForPool()
+        {
+            // Return any partial response body buffer not already consumed by Complete().
+            if (_responseBodyBuffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(_responseBodyBuffer);
+                _responseBodyBuffer = null;
+            }
+            _responseBodyLength = 0;
+
+            // Deregister the per-request cancellation callback.
+            CancellationRegistration.Dispose();
+            CancellationRegistration = default;
+
+            // Reset MemoryStream to empty without disposing it (reuse for next request).
+            HeaderBlockBuffer.SetLength(0);
+
+            // Clear all per-request references to prevent retention after pool return.
+            _streamId = 0;
+            _request = null;
+            _context = null;
+            ResponseHeaders = null;
+            State = Http2StreamState.Idle;
+            StatusCode = 0;
+            HeadersReceived = false;
+            PendingEndStream = false;
+            _sendWindowSize = 0;
+            RecvWindowSize = 0;
+            _responseSource = null;  // Already returned to its own pool by the caller.
+            // Use Volatile.Write to establish a release fence on ARM — ensures all preceding
+            // field clears are visible to any thread that subsequently observes _disposed == 0.
+            Volatile.Write(ref _disposed, 0);
+            Volatile.Write(ref _responseCompleted, 0);
+        }
+
+        // ── Public API ───────────────────────────────────────────────────────────
 
         public void AppendHeaderBlock(byte[] data, int offset, int length)
         {

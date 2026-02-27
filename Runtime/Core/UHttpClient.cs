@@ -5,12 +5,14 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
     /// <summary>
-    /// Main HTTP client for TurboHTTP. Provides fluent verb methods for building
-    /// and sending HTTP requests. Thread-safe for concurrent use.
+    /// Main HTTP client for TurboHTTP.
+    /// Provides fluent verb helpers and pooled request creation.
+    /// Thread-safe for concurrent use.
     /// </summary>
     public class UHttpClient : IDisposable
     {
@@ -19,15 +21,19 @@ namespace TurboHTTP.Core
         private readonly UHttpClientOptions _options;
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
-        private readonly HttpPipeline _pipeline;
-        private IReadOnlyList<IHttpInterceptor> _interceptors;
+        private readonly IReadOnlyList<IHttpMiddleware> _baseMiddlewares;
+        private readonly ObjectPool<UHttpRequest> _requestPool;
+
+        private HttpPipeline _pipeline;
+
         private readonly SemaphoreSlim _pluginLifecycleGate = new SemaphoreSlim(1, 1);
         private readonly object _pluginLock = new object();
         private readonly List<PluginRegistration> _plugins = new List<PluginRegistration>();
-        private int _disposed; // 0 = not disposed, 1 = disposed (for Interlocked)
+
+        private int _disposed;
 
         /// <summary>
-        /// The snapshotted options for this client (read-only access for builder).
+        /// The snapshotted options for this client.
         /// </summary>
         internal UHttpClientOptions ClientOptions => _options;
 
@@ -36,34 +42,25 @@ namespace TurboHTTP.Core
         /// </summary>
         public IHttpTransport Transport => _transport;
 
-        /// <summary>
-        /// Returns a cloned snapshot of the options used to construct this client.
-        /// </summary>
-        public UHttpClientOptions GetOptionsSnapshot()
-        {
-            ThrowIfDisposed();
-            return _options.Clone();
-        }
-
         private sealed class PluginRegistration
         {
             public IHttpPlugin Plugin { get; }
             public string Name { get; }
             public string Version { get; }
             public PluginCapabilities Capabilities { get; }
-            public IReadOnlyList<IHttpInterceptor> Interceptors { get; }
+            public IReadOnlyList<IHttpMiddleware> Middlewares { get; }
             public PluginLifecycleState State { get; set; }
 
             public PluginRegistration(
                 IHttpPlugin plugin,
-                IReadOnlyList<IHttpInterceptor> interceptors,
+                IReadOnlyList<IHttpMiddleware> middlewares,
                 PluginLifecycleState state)
             {
                 Plugin = plugin ?? throw new ArgumentNullException(nameof(plugin));
                 Name = string.IsNullOrWhiteSpace(plugin.Name) ? plugin.GetType().FullName : plugin.Name;
                 Version = plugin.Version ?? string.Empty;
                 Capabilities = plugin.Capabilities;
-                Interceptors = interceptors ?? Array.Empty<IHttpInterceptor>();
+                Middlewares = middlewares ?? Array.Empty<IHttpMiddleware>();
                 State = state;
             }
 
@@ -74,19 +71,26 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Create a new HTTP client with optional configuration.
-        /// Options are snapshotted at construction — mutations after this call
-        /// have no effect. Transport is a shared reference (not cloned).
+        /// Returns a cloned snapshot of the options used to construct this client.
         /// </summary>
+        public UHttpClientOptions GetOptionsSnapshot()
+        {
+            ThrowIfDisposed();
+            return _options.Clone();
+        }
+
         public UHttpClient(UHttpClientOptions options = null)
         {
             _options = options?.Clone() ?? new UHttpClientOptions();
 
-            if (_options.Http2MaxDecodedHeaderBytes <= 0)
+            if (_options.Http2 == null)
+                _options.Http2 = new Http2Options();
+
+            if (_options.Http2.MaxDecodedHeaderBytes <= 0)
             {
                 throw new ArgumentOutOfRangeException(
-                    nameof(_options.Http2MaxDecodedHeaderBytes),
-                    _options.Http2MaxDecodedHeaderBytes,
+                    nameof(_options.Http2.MaxDecodedHeaderBytes),
+                    _options.Http2.MaxDecodedHeaderBytes,
                     "Must be greater than 0.");
             }
 
@@ -99,9 +103,6 @@ namespace TurboHTTP.Core
                      !_options.ConnectionPool.IsDefault() ||
                      !_options.Http2.IsDefault())
             {
-                // Non-default TLS backend or custom transport hardening options require
-                // a dedicated transport instance because the shared default singleton
-                // uses default configuration.
                 _transport = HttpTransportFactory.CreateWithOptions(
                     _options.TlsBackend,
                     _options.ConnectionPool,
@@ -114,51 +115,51 @@ namespace TurboHTTP.Core
                 _ownsTransport = false;
             }
 
-            _pipeline = new HttpPipeline(BuildPipelineMiddlewares(_options), _transport);
-            Volatile.Write(ref _interceptors, BuildInterceptors(_options.Interceptors));
+            _baseMiddlewares = BuildPipelineMiddlewares(_options);
+            _pipeline = new HttpPipeline(_baseMiddlewares, _transport);
+
+            var poolCapacity = Math.Max(
+                16,
+                (_options.ConnectionPool?.MaxConnectionsPerHost ?? PlatformConfig.RecommendedMaxConcurrency) * 4);
+            _requestPool = new ObjectPool<UHttpRequest>(
+                () => new UHttpRequest(this),
+                poolCapacity);
         }
 
-        public UHttpRequestBuilder Get(string url)
+        /// <summary>
+        /// Rent a mutable request object from the pool.
+        /// Dispose the returned request to return it to the pool.
+        /// </summary>
+        public UHttpRequest CreateRequest(HttpMethod method, string url)
         {
+            if (url == null)
+                throw new ArgumentNullException(nameof(url));
+
             ThrowIfDisposed();
-            return new UHttpRequestBuilder(this, HttpMethod.GET, url);
+
+            var uri = ResolveUri(url);
+            var request = _requestPool.Rent();
+            try
+            {
+                request.ActivateLease(method, uri, _options.DefaultTimeout);
+                request.ApplyDefaultHeaders(_options.DefaultHeaders);
+                ApplyDefaultMetadata(request, uri);
+                return request;
+            }
+            catch
+            {
+                request.Dispose();
+                throw;
+            }
         }
 
-        public UHttpRequestBuilder Post(string url)
-        {
-            ThrowIfDisposed();
-            return new UHttpRequestBuilder(this, HttpMethod.POST, url);
-        }
-
-        public UHttpRequestBuilder Put(string url)
-        {
-            ThrowIfDisposed();
-            return new UHttpRequestBuilder(this, HttpMethod.PUT, url);
-        }
-
-        public UHttpRequestBuilder Delete(string url)
-        {
-            ThrowIfDisposed();
-            return new UHttpRequestBuilder(this, HttpMethod.DELETE, url);
-        }
-
-        public UHttpRequestBuilder Patch(string url)
-        {
-            ThrowIfDisposed();
-            return new UHttpRequestBuilder(this, HttpMethod.PATCH, url);
-        }
-
-        public UHttpRequestBuilder Head(string url)
-        {
-            ThrowIfDisposed();
-            return new UHttpRequestBuilder(this, HttpMethod.HEAD, url);
-        }
-
-        public UHttpRequestBuilder Options(string url)
-        {
-            ThrowIfDisposed();
-            return new UHttpRequestBuilder(this, HttpMethod.OPTIONS, url);
-        }
+        public UHttpRequest Get(string url) => CreateRequest(HttpMethod.GET, url);
+        public UHttpRequest Post(string url) => CreateRequest(HttpMethod.POST, url);
+        public UHttpRequest Put(string url) => CreateRequest(HttpMethod.PUT, url);
+        public UHttpRequest Delete(string url) => CreateRequest(HttpMethod.DELETE, url);
+        public UHttpRequest Patch(string url) => CreateRequest(HttpMethod.PATCH, url);
+        public UHttpRequest Head(string url) => CreateRequest(HttpMethod.HEAD, url);
+        public UHttpRequest Options(string url) => CreateRequest(HttpMethod.OPTIONS, url);
 
         public async Task RegisterPluginAsync(IHttpPlugin plugin, CancellationToken ct = default)
         {
@@ -178,21 +179,21 @@ namespace TurboHTTP.Core
                         $"Plugin '{pluginName}' is already registered.");
                 }
 
-                var contributedInterceptors = new List<IHttpInterceptor>();
+                var contributedMiddlewares = new List<IHttpMiddleware>();
                 var context = new PluginContext(
                     _options.Clone(),
                     pluginName,
                     plugin.Capabilities,
-                    interceptor => contributedInterceptors.Add(interceptor),
+                    middleware => contributedMiddlewares.Add(middleware),
                     message => Debug.WriteLine("[TurboHTTP][Plugin:" + pluginName + "] " + message));
 
-                PluginRegistration registration = null;
+                PluginRegistration registration;
                 try
                 {
                     await plugin.InitializeAsync(context, ct);
                     registration = new PluginRegistration(
                         plugin,
-                        contributedInterceptors,
+                        contributedMiddlewares,
                         PluginLifecycleState.Initialized);
                 }
                 catch (Exception ex)
@@ -207,7 +208,7 @@ namespace TurboHTTP.Core
                 lock (_pluginLock)
                 {
                     _plugins.Add(registration);
-                    RebuildInterceptorSnapshot_NoLock();
+                    RebuildPipelineSnapshot_NoLock();
                 }
             }
             finally
@@ -232,9 +233,10 @@ namespace TurboHTTP.Core
                     registration = FindPluginByName_NoLock(pluginName);
                     if (registration == null)
                         return;
+
                     registration.State = PluginLifecycleState.ShuttingDown;
                     _plugins.Remove(registration);
-                    RebuildInterceptorSnapshot_NoLock();
+                    RebuildPipelineSnapshot_NoLock();
                 }
 
                 try
@@ -285,33 +287,40 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Send an HTTP request and return the response.
-        /// Does NOT use ConfigureAwait(false) — continuations return to the
-        /// caller's SynchronizationContext (typically Unity main thread).
         /// </summary>
         /// <remarks>
         /// The returned ValueTask must be awaited exactly once and must not be stored for later consumption.
         /// Convert to Task via <see cref="ValueTask{TResult}.AsTask"/> only when Task combinators are required.
         /// </remarks>
         public async ValueTask<UHttpResponse> SendAsync(
-            UHttpRequest request, CancellationToken cancellationToken = default)
+            UHttpRequest request,
+            CancellationToken cancellationToken = default)
         {
-            if (request == null) throw new ArgumentNullException(nameof(request));
+            if (request == null)
+                throw new ArgumentNullException(nameof(request));
+
             ThrowIfDisposed();
+            request.BeginSend();
 
             var context = new RequestContext(request);
             context.RecordEvent("RequestStart");
-            var interceptorSnapshot = Volatile.Read(ref _interceptors) ?? Array.Empty<IHttpInterceptor>();
             UHttpResponse response = null;
 
             try
             {
-                response = interceptorSnapshot.Count == 0
-                    ? await _pipeline.ExecuteAsync(request, context, cancellationToken)
-                    : await ExecuteWithInterceptorsAsync(interceptorSnapshot, request, context, cancellationToken);
+                var pipelineSnapshot = Volatile.Read(ref _pipeline)
+                    ?? new HttpPipeline(_baseMiddlewares, _transport);
+
+                response = await pipelineSnapshot.ExecuteAsync(request, context, cancellationToken);
+
+                if (request.IsPooled)
+                {
+                    request.RetainForResponse();
+                    response.AttachRequestRelease(request.ReleaseResponseHold);
+                }
 
                 context.RecordEvent("RequestComplete");
                 context.Stop();
-
                 return response;
             }
             catch (UHttpException)
@@ -333,11 +342,11 @@ namespace TurboHTTP.Core
                 response?.Dispose();
                 context.RecordEvent("RequestFailed");
                 context.Stop();
-                throw new UHttpException(
-                    new UHttpError(UHttpErrorType.Unknown, ex.Message, ex));
+                throw new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex.Message, ex));
             }
             finally
             {
+                request.EndSend();
                 context.Clear();
             }
         }
@@ -354,7 +363,7 @@ namespace TurboHTTP.Core
             {
                 pluginsToShutdown = _plugins.ToArray();
                 _plugins.Clear();
-                Volatile.Write(ref _interceptors, BuildInterceptors(_options.Interceptors));
+                Volatile.Write(ref _pipeline, new HttpPipeline(_baseMiddlewares, _transport));
             }
 
             for (int i = pluginsToShutdown.Length - 1; i >= 0; i--)
@@ -367,6 +376,7 @@ namespace TurboHTTP.Core
                     {
                         await plugin.Plugin.ShutdownAsync(CancellationToken.None).ConfigureAwait(false);
                     });
+
                     if (!shutdownTask.Wait(_options.PluginShutdownTimeout))
                     {
                         throw new TimeoutException(
@@ -384,7 +394,6 @@ namespace TurboHTTP.Core
 
             if (_options.Middlewares != null)
             {
-                // Dispose in reverse registration order (LIFO).
                 for (int i = _options.Middlewares.Count - 1; i >= 0; i--)
                 {
                     if (!(_options.Middlewares[i] is IDisposable disposable))
@@ -401,7 +410,6 @@ namespace TurboHTTP.Core
                 }
             }
 
-            // Transport is disposed last.
             if (_ownsTransport)
             {
                 try
@@ -417,186 +425,21 @@ namespace TurboHTTP.Core
             _pluginLifecycleGate.Dispose();
         }
 
+        internal void ReturnRequestToPool(UHttpRequest request)
+        {
+            if (request == null)
+                return;
+
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
+            _requestPool.Return(request);
+        }
+
         private void ThrowIfDisposed()
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(UHttpClient));
-        }
-
-        private async ValueTask<UHttpResponse> ExecuteWithInterceptorsAsync(
-            IReadOnlyList<IHttpInterceptor> interceptors,
-            UHttpRequest request,
-            RequestContext context,
-            CancellationToken cancellationToken)
-        {
-            var requestForPipeline = request;
-            var enteredInterceptors = new List<IHttpInterceptor>(interceptors.Count);
-            UHttpResponse response = null;
-            bool shouldReturnResponse = false;
-
-            try
-            {
-                for (int i = 0; i < interceptors.Count; i++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    var interceptor = interceptors[i];
-                    enteredInterceptors.Add(interceptor);
-                    context.RecordEvent("interceptor.request.enter", CreateInterceptorEventData(interceptor, i));
-
-                    InterceptorRequestResult requestResult;
-                    try
-                    {
-                        requestResult = await interceptor.OnRequestAsync(
-                            requestForPipeline, context, cancellationToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        requestResult = HandleRequestInterceptorException(
-                            interceptor, requestForPipeline, context, ex);
-                    }
-
-                    context.RecordEvent("interceptor.request.exit", CreateInterceptorEventData(interceptor, i));
-
-                    if (requestResult.Action == InterceptorRequestAction.Continue)
-                    {
-                        if (requestResult.Request != null)
-                        {
-                            requestForPipeline = requestResult.Request;
-                            context.UpdateRequest(requestForPipeline);
-                        }
-
-                        continue;
-                    }
-
-                    if (requestResult.Action == InterceptorRequestAction.ShortCircuit)
-                    {
-                        context.RecordEvent("interceptor.shortcircuit", CreateInterceptorEventData(interceptor, i));
-                        response = requestResult.Response
-                            ?? throw new InvalidOperationException(
-                                "Interceptor returned ShortCircuit without a response.");
-                        break;
-                    }
-
-                    throw requestResult.Exception
-                        ?? new InvalidOperationException("Interceptor returned Fail without exception.");
-                }
-
-                if (response == null)
-                {
-                    response = await _pipeline.ExecuteAsync(requestForPipeline, context, cancellationToken);
-                }
-
-                for (int i = enteredInterceptors.Count - 1; i >= 0; i--)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    var interceptor = enteredInterceptors[i];
-                    context.RecordEvent("interceptor.response.enter", CreateInterceptorEventData(interceptor, i));
-
-                    InterceptorResponseResult responseResult;
-                    try
-                    {
-                        responseResult = await interceptor.OnResponseAsync(
-                            requestForPipeline, response, context, cancellationToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        responseResult = HandleResponseInterceptorException(
-                            interceptor, requestForPipeline, response, context, ex);
-                    }
-
-                    context.RecordEvent("interceptor.response.exit", CreateInterceptorEventData(interceptor, i));
-
-                    if (responseResult.Action == InterceptorResponseAction.Continue)
-                    {
-                        continue;
-                    }
-
-                    if (responseResult.Action == InterceptorResponseAction.Replace)
-                    {
-                        var replacement = responseResult.Response
-                            ?? throw new InvalidOperationException(
-                                "Interceptor returned Replace without a response.");
-
-                        if (!ReferenceEquals(response, replacement))
-                            response?.Dispose();
-
-                        response = replacement;
-                        continue;
-                    }
-
-                    throw responseResult.Exception
-                        ?? new InvalidOperationException("Interceptor returned Fail without exception.");
-                }
-
-                shouldReturnResponse = true;
-                return response;
-            }
-            finally
-            {
-                if (!shouldReturnResponse)
-                    response?.Dispose();
-            }
-        }
-
-        private InterceptorRequestResult HandleRequestInterceptorException(
-            IHttpInterceptor interceptor,
-            UHttpRequest request,
-            RequestContext context,
-            Exception exception)
-        {
-            context.RecordEvent("interceptor.failure", CreateFailureEventData(interceptor, "request", exception));
-
-            switch (_options.InterceptorFailurePolicy)
-            {
-                case InterceptorFailurePolicy.IgnoreAndContinue:
-                    return InterceptorRequestResult.Continue();
-                case InterceptorFailurePolicy.ConvertToResponse:
-                    return InterceptorRequestResult.ShortCircuit(
-                        CreateInterceptorErrorResponse(request, context, "request", interceptor, exception));
-                case InterceptorFailurePolicy.Propagate:
-                default:
-                    return InterceptorRequestResult.Fail(exception);
-            }
-        }
-
-        private InterceptorResponseResult HandleResponseInterceptorException(
-            IHttpInterceptor interceptor,
-            UHttpRequest request,
-            UHttpResponse currentResponse,
-            RequestContext context,
-            Exception exception)
-        {
-            context.RecordEvent("interceptor.failure", CreateFailureEventData(interceptor, "response", exception));
-
-            switch (_options.InterceptorFailurePolicy)
-            {
-                case InterceptorFailurePolicy.IgnoreAndContinue:
-                    return InterceptorResponseResult.Continue();
-                case InterceptorFailurePolicy.ConvertToResponse:
-                    return InterceptorResponseResult.Replace(
-                        CreateInterceptorErrorResponse(request, context, "response", interceptor, exception));
-                case InterceptorFailurePolicy.Propagate:
-                default:
-                    return InterceptorResponseResult.Fail(exception);
-            }
-        }
-
-        private static IReadOnlyList<IHttpInterceptor> BuildInterceptors(
-            IReadOnlyList<IHttpInterceptor> configuredInterceptors)
-        {
-            if (configuredInterceptors == null || configuredInterceptors.Count == 0)
-                return Array.Empty<IHttpInterceptor>();
-
-            var interceptors = new List<IHttpInterceptor>(configuredInterceptors.Count);
-            for (int i = 0; i < configuredInterceptors.Count; i++)
-            {
-                if (configuredInterceptors[i] != null)
-                    interceptors.Add(configuredInterceptors[i]);
-            }
-
-            return interceptors;
         }
 
         private PluginRegistration FindPluginByName_NoLock(string pluginName)
@@ -610,21 +453,14 @@ namespace TurboHTTP.Core
             return null;
         }
 
-        private void RebuildInterceptorSnapshot_NoLock()
+        private void RebuildPipelineSnapshot_NoLock()
         {
-            var combined = new List<IHttpInterceptor>();
-            if (_options.Interceptors != null)
-            {
-                for (int i = 0; i < _options.Interceptors.Count; i++)
-                {
-                    if (_options.Interceptors[i] != null)
-                        combined.Add(_options.Interceptors[i]);
-                }
-            }
+            var combined = new List<IHttpMiddleware>(_baseMiddlewares.Count + 8);
+            combined.AddRange(_baseMiddlewares);
 
             for (int i = 0; i < _plugins.Count; i++)
             {
-                var contributions = _plugins[i].Interceptors;
+                var contributions = _plugins[i].Middlewares;
                 if (contributions == null)
                     continue;
 
@@ -635,56 +471,37 @@ namespace TurboHTTP.Core
                 }
             }
 
-            Volatile.Write(
-                ref _interceptors,
-                combined.Count == 0
-                    ? Array.Empty<IHttpInterceptor>()
-                    : combined);
+            Volatile.Write(ref _pipeline, new HttpPipeline(combined, _transport));
         }
 
-        private static Dictionary<string, object> CreateInterceptorEventData(IHttpInterceptor interceptor, int index)
+        private Uri ResolveUri(string url)
         {
-            return new Dictionary<string, object>
+            if (Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
+                return absoluteUri;
+
+            var baseUrl = _options.BaseUrl;
+            if (string.IsNullOrEmpty(baseUrl))
             {
-                ["id"] = GetInterceptorId(interceptor),
-                ["index"] = index
-            };
+                throw new InvalidOperationException(
+                    $"Cannot resolve relative URL '{url}' without a BaseUrl configured in UHttpClientOptions.");
+            }
+
+            var baseUri = new Uri(baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/");
+            return new Uri(baseUri, url);
         }
 
-        private static Dictionary<string, object> CreateFailureEventData(
-            IHttpInterceptor interceptor,
-            string phase,
-            Exception exception)
+        private void ApplyDefaultMetadata(UHttpRequest request, Uri uri)
         {
-            return new Dictionary<string, object>
+            request.WithMetadata(RequestMetadataKeys.FollowRedirects, _options.FollowRedirects);
+            request.WithMetadata(RequestMetadataKeys.MaxRedirects, _options.MaxRedirects);
+
+            if (!request.Metadata.ContainsKey(RequestMetadataKeys.ProxyDisabled) &&
+                !request.Metadata.ContainsKey(RequestMetadataKeys.ProxySettings))
             {
-                ["id"] = GetInterceptorId(interceptor),
-                ["phase"] = phase,
-                ["exceptionType"] = exception.GetType().Name
-            };
-        }
-
-        private static string GetInterceptorId(IHttpInterceptor interceptor)
-        {
-            return interceptor?.GetType().FullName ?? "unknown";
-        }
-
-        private static UHttpResponse CreateInterceptorErrorResponse(
-            UHttpRequest request,
-            RequestContext context,
-            string phase,
-            IHttpInterceptor interceptor,
-            Exception exception)
-        {
-            var message = $"Interceptor failure during {phase} phase ({GetInterceptorId(interceptor)}): {exception.Message}";
-            var error = new UHttpError(UHttpErrorType.Unknown, message, exception, statusCode: System.Net.HttpStatusCode.InternalServerError);
-            return new UHttpResponse(
-                statusCode: System.Net.HttpStatusCode.InternalServerError,
-                headers: new HttpHeaders(),
-                body: Array.Empty<byte>(),
-                elapsedTime: context.Elapsed,
-                request: request,
-                error: error);
+                var resolvedProxy = ProxyEnvironmentResolver.Resolve(uri, _options.Proxy);
+                if (resolvedProxy != null)
+                    request.WithMetadata(RequestMetadataKeys.ProxySettings, resolvedProxy);
+            }
         }
 
         private static IReadOnlyList<IHttpMiddleware> BuildPipelineMiddlewares(UHttpClientOptions options)
@@ -754,8 +571,6 @@ namespace TurboHTTP.Core
             bool isPlaying;
             try
             {
-                // Some test paths construct clients on worker threads; Unity API calls
-                // are main-thread only in the editor. Skip monitor auto-wiring there.
                 isPlaying = UnityEngine.Application.isPlaying;
             }
             catch
@@ -792,7 +607,6 @@ namespace TurboHTTP.Core
 
                 if (Activator.CreateInstance(monitorType) is IHttpMiddleware monitorMiddleware)
                 {
-                    // Append to capture final request/response payload that reaches transport.
                     middlewares.Add(monitorMiddleware);
                 }
             }

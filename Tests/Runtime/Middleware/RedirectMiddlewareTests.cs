@@ -48,7 +48,7 @@ namespace TurboHTTP.Tests.Middleware
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-                Assert.AreEqual("done", Encoding.UTF8.GetString(response.Body.Span));
+                Assert.AreEqual("done", response.GetBodyAsString());
                 Assert.AreEqual(2, transport.RequestCount);
             }).GetAwaiter().GetResult();
         }

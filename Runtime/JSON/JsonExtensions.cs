@@ -1,5 +1,4 @@
 using System;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -27,8 +26,7 @@ namespace TurboHTTP.JSON
             if (response.Body.IsEmpty)
                 return default;
 
-            var json = Encoding.UTF8.GetString(response.Body.Span);
-            return JsonSerializer.Deserialize<T>(json);
+            return JsonSerializer.Default.Deserialize<T>(response.Body);
         }
 
         /// <summary>
@@ -42,8 +40,7 @@ namespace TurboHTTP.JSON
             if (response.Body.IsEmpty)
                 return default;
 
-            var json = Encoding.UTF8.GetString(response.Body.Span);
-            return serializer.Deserialize<T>(json);
+            return serializer.Deserialize<T>(response.Body);
         }
 
         /// <summary>

@@ -23,6 +23,29 @@ namespace TurboHTTP.Transport.Tls
         // Written by TcpConnectionPool after the first real TLS handshake attempt.
         private static int _sslStreamViabilityState;
 
+        // Volatile backing field ensures writes from the main thread are visible to
+        // connection pool threads on ARM IL2CPP without requiring a lock on every read.
+        private static Action<string> _diagnosticLogger;
+
+        /// <summary>
+        /// Optional diagnostic logger. When set, receives one-line messages describing
+        /// TLS provider selection events (first-use selection and capability fallbacks).
+        /// Defaults to null (silent).
+        /// </summary>
+        /// <remarks>
+        /// Set once during application startup, before any TLS connections are established.
+        /// Setting this concurrently with active connections may cause sporadic missed log
+        /// messages on the first provider transition. Example usage:
+        /// <c>TlsProviderSelector.DiagnosticLogger = msg => Debug.Log(msg);</c>
+        /// </remarks>
+        public static Action<string> DiagnosticLogger
+        {
+            get => Volatile.Read(ref _diagnosticLogger);
+            set => Volatile.Write(ref _diagnosticLogger, value);
+        }
+
+        private static void Log(string message) => DiagnosticLogger?.Invoke(message);
+
         /// <summary>
         /// Get the TLS provider for the specified backend strategy.
         /// </summary>
@@ -110,17 +133,27 @@ namespace TurboHTTP.Transport.Tls
         /// <summary>
         /// Mark SslStream as viable after a successful TLS handshake.
         /// Only transitions from unknown (0) to viable (1); does not overwrite a broken (2) state.
+        /// Logs at most once (on the first 0→1 transition).
         /// </summary>
-        internal static void MarkSslStreamViable() =>
-            Interlocked.CompareExchange(ref _sslStreamViabilityState, 1, 0);
+        internal static void MarkSslStreamViable()
+        {
+            if (Interlocked.CompareExchange(ref _sslStreamViabilityState, 1, 0) == 0)
+                Log("[TurboHTTP TLS] Provider selected: SslStream (first successful handshake).");
+        }
 
         /// <summary>
         /// Mark SslStream as broken after a platform-level TLS handshake failure.
         /// Uses Exchange (not CompareExchange) so a broken result always wins,
         /// even if a concurrent connection succeeded first.
+        /// Logs on first transition to broken state.
         /// </summary>
-        internal static void MarkSslStreamBroken() =>
-            Interlocked.Exchange(ref _sslStreamViabilityState, 2);
+        internal static void MarkSslStreamBroken()
+        {
+            int prev = Interlocked.Exchange(ref _sslStreamViabilityState, 2);
+            if (prev != 2)
+                Log("[TurboHTTP TLS] SslStream: platform capability failure detected; " +
+                    "Auto mode will use BouncyCastle for all future connections.");
+        }
 
         /// <summary>
         /// Reset probe state. Internal, for testing only.
@@ -140,6 +173,12 @@ namespace TurboHTTP.Transport.Tls
             if (ex is System.Reflection.TargetInvocationException tie && tie.InnerException != null)
                 ex = tie.InnerException;
 
+            // NotSupportedException is a supertype of PlatformNotSupportedException; it is included
+            // because some Unity/Mono runtimes throw the base type from ALPN reflection paths.
+            // Known false-positive risk: NotSupportedException from half-closed stream writes is
+            // also caught here. This is acceptable because IsPlatformTlsException is only called
+            // from WrapAsync (handshake context), where NotSupportedException reliably indicates
+            // a capability gap rather than an I/O state error.
             return ex is PlatformNotSupportedException
                 || ex is NotSupportedException
                 || ex is TypeLoadException
@@ -167,7 +206,9 @@ namespace TurboHTTP.Transport.Tls
             if (TryGetSslStreamProvider(out var sslStreamProvider))
                 return sslStreamProvider;
 
-            // Platform TLS unavailable (or failed to initialize): fallback to BouncyCastle.
+            // Platform TLS unavailable at initialization (before any real handshake).
+            Log("[TurboHTTP TLS] SslStream unavailable at initialization; " +
+                "Auto mode will use BouncyCastle.");
             return GetBouncyCastleFallbackOrThrow();
         }
 

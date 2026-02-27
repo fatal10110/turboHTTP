@@ -30,7 +30,7 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Default timeout for requests. Defaults to <see cref="PlatformConfig.RecommendedTimeout"/>.
-        /// Can be overridden per-request via <see cref="UHttpRequestBuilder.WithTimeout"/>.
+        /// Can be overridden per-request via <see cref="UHttpRequest.WithTimeout(TimeSpan)"/>.
         /// </summary>
         public TimeSpan DefaultTimeout { get; set; } = PlatformConfig.RecommendedTimeout;
 
@@ -50,16 +50,6 @@ namespace TurboHTTP.Core
         /// Middleware pipeline components. Stub for Phase 4.
         /// </summary>
         public List<IHttpMiddleware> Middlewares { get; set; } = new List<IHttpMiddleware>();
-
-        /// <summary>
-        /// Optional request/response interceptors that run around the middleware pipeline.
-        /// </summary>
-        public List<IHttpInterceptor> Interceptors { get; set; } = new List<IHttpInterceptor>();
-
-        /// <summary>
-        /// How interceptor exceptions are handled.
-        /// </summary>
-        public InterceptorFailurePolicy InterceptorFailurePolicy { get; set; } = InterceptorFailurePolicy.Propagate;
 
         /// <summary>
         /// Max time to wait for plugin shutdown callbacks.
@@ -128,23 +118,6 @@ namespace TurboHTTP.Core
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 
         /// <summary>
-        /// Maximum total decoded HTTP/2 header bytes (name + value) allowed per
-        /// header block. Used as decompression-bomb protection for HPACK decoding.
-        /// Default is 256KB.
-        /// </summary>
-        /// <remarks>
-        /// This option is applied when <see cref="UHttpClient"/> creates its own
-        /// transport instance (default transport path). It does not mutate behavior
-        /// of a user-supplied custom <see cref="Transport"/> instance.
-        /// </remarks>
-        [Obsolete("Use Http2.MaxDecodedHeaderBytes instead.")]
-        public int Http2MaxDecodedHeaderBytes
-        {
-            get => Http2.MaxDecodedHeaderBytes;
-            set => Http2.MaxDecodedHeaderBytes = value;
-        }
-
-        /// <summary>
         /// Creates a deep copy of these options. Headers and middleware list are
         /// cloned; Transport is a shared reference (NOT snapshotted). Middleware
         /// instances are also shared references (typically stateless services —
@@ -161,8 +134,6 @@ namespace TurboHTTP.Core
                 DefaultHeaders = DefaultHeaders?.Clone() ?? new HttpHeaders(),
                 Transport = Transport,
                 Middlewares = Middlewares != null ? new List<IHttpMiddleware>(Middlewares) : new List<IHttpMiddleware>(),
-                Interceptors = Interceptors != null ? new List<IHttpInterceptor>(Interceptors) : new List<IHttpInterceptor>(),
-                InterceptorFailurePolicy = InterceptorFailurePolicy,
                 PluginShutdownTimeout = PluginShutdownTimeout,
                 AdaptivePolicy = AdaptivePolicy?.Clone() ?? new AdaptivePolicy(),
                 Proxy = Proxy?.Clone(),
@@ -177,12 +148,5 @@ namespace TurboHTTP.Core
                 Http2 = Http2?.Clone() ?? new Http2Options()
             };
         }
-    }
-
-    public enum InterceptorFailurePolicy
-    {
-        Propagate,
-        ConvertToResponse,
-        IgnoreAndContinue
     }
 }

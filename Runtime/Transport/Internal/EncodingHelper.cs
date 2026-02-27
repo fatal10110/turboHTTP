@@ -1,3 +1,5 @@
+using System;
+using System.Diagnostics;
 using System.Text;
 
 namespace TurboHTTP.Transport.Internal
@@ -9,6 +11,37 @@ namespace TurboHTTP.Transport.Internal
     internal static class EncodingHelper
     {
         internal static readonly Encoding Latin1 = InitLatin1();
+
+        /// <summary>
+        /// Encodes <paramref name="value"/> into Latin-1 bytes written to
+        /// <paramref name="destination"/> without allocating a temporary byte array.
+        /// Non-Latin-1 characters (code point > 255) are replaced with '?'.
+        /// </summary>
+        /// <param name="value">String to encode. Null or empty returns 0.</param>
+        /// <param name="destination">Output span. Must be at least <paramref name="value"/>.Length bytes.</param>
+        /// <returns>Number of bytes written (equals <paramref name="value"/>.Length).</returns>
+        internal static int GetLatin1Bytes(string value, Span<byte> destination)
+        {
+            if (string.IsNullOrEmpty(value))
+                return 0;
+
+            Debug.Assert(destination.Length >= value.Length,
+                $"Destination span is too small: need {value.Length} bytes, got {destination.Length}.");
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                destination[i] = c < 256 ? (byte)c : (byte)'?';
+            }
+            return value.Length;
+        }
+
+        /// <summary>
+        /// Returns the number of bytes required to Latin-1-encode <paramref name="value"/>.
+        /// Always equals <c>value.Length</c> (Latin-1 is single-byte, one char → one byte).
+        /// </summary>
+        internal static int GetLatin1ByteCount(string value) =>
+            value == null ? 0 : value.Length;
 
         private static Encoding InitLatin1()
         {

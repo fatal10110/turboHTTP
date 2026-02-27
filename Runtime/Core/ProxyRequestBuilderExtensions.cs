@@ -4,22 +4,22 @@ namespace TurboHTTP.Core
 {
     public static class ProxyRequestBuilderExtensions
     {
-        public static UHttpRequestBuilder WithProxy(
-            this UHttpRequestBuilder builder,
+        public static UHttpRequest WithProxy(
+            this UHttpRequest request,
             ProxySettings proxySettings)
         {
-            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            if (request == null) throw new ArgumentNullException(nameof(request));
 
-            return builder.WithMetadata(
+            return request.WithMetadata(
                 RequestMetadataKeys.ProxySettings,
                 proxySettings?.Clone());
         }
 
-        public static UHttpRequestBuilder WithoutProxy(this UHttpRequestBuilder builder)
+        public static UHttpRequest WithoutProxy(this UHttpRequest request)
         {
-            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            if (request == null) throw new ArgumentNullException(nameof(request));
 
-            return builder.WithMetadata(RequestMetadataKeys.ProxyDisabled, true);
+            return request.WithMetadata(RequestMetadataKeys.ProxyDisabled, true);
         }
     }
 }

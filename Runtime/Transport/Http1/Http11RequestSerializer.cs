@@ -1,11 +1,13 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
+using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Http1
 {
@@ -231,13 +233,11 @@ namespace TurboHTTP.Transport.Http1
 
         private sealed class PooledHeaderWriter : IDisposable
         {
-            private byte[] _buffer;
-            private int _length;
-            private bool _disposed;
+            private readonly PooledArrayBufferWriter _writer;
 
             public PooledHeaderWriter(int initialCapacity = 1024)
             {
-                _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+                _writer = new PooledArrayBufferWriter(initialCapacity);
             }
 
             public void Append(string value)
@@ -245,18 +245,17 @@ namespace TurboHTTP.Transport.Http1
                 if (string.IsNullOrEmpty(value))
                     return;
 
-                EnsureCapacity(_length + value.Length);
-                for (int i = 0; i < value.Length; i++)
-                {
-                    var c = value[i];
-                    _buffer[_length++] = c <= byte.MaxValue ? (byte)c : (byte)'?';
-                }
+                int byteCount = EncodingHelper.GetLatin1ByteCount(value);
+                var destination = _writer.GetSpan(byteCount);
+                int written = EncodingHelper.GetLatin1Bytes(value, destination);
+                _writer.Advance(written);
             }
 
             public void Append(char value)
             {
-                EnsureCapacity(_length + 1);
-                _buffer[_length++] = value <= byte.MaxValue ? (byte)value : (byte)'?';
+                var span = _writer.GetSpan(1);
+                span[0] = value <= byte.MaxValue ? (byte)value : (byte)'?';
+                _writer.Advance(1);
             }
 
             public void AppendInt(int value)
@@ -266,46 +265,17 @@ namespace TurboHTTP.Transport.Http1
 
             public Task WriteToAsync(Stream stream, CancellationToken ct)
             {
-                if (_length == 0)
+                if (_writer.WrittenCount == 0)
                     return Task.CompletedTask;
 
-                return stream.WriteAsync(_buffer, 0, _length, ct);
+                var memory = _writer.WrittenMemory;
+                if (!MemoryMarshal.TryGetArray(memory, out var segment) || segment.Array == null)
+                    throw new InvalidOperationException("Header buffer is not array-backed.");
+
+                return stream.WriteAsync(segment.Array, segment.Offset, segment.Count, ct);
             }
 
-            public void Dispose()
-            {
-                if (_disposed)
-                    return;
-
-                _disposed = true;
-                if (_buffer != null)
-                {
-                    ArrayPool<byte>.Shared.Return(_buffer);
-                    _buffer = null;
-                    _length = 0;
-                }
-            }
-
-            private void EnsureCapacity(int required)
-            {
-                if (_buffer.Length >= required)
-                    return;
-
-                var resized = ArrayPool<byte>.Shared.Rent(Math.Max(required, _buffer.Length * 2));
-                try
-                {
-                    if (_length > 0)
-                        Buffer.BlockCopy(_buffer, 0, resized, 0, _length);
-                }
-                catch
-                {
-                    ArrayPool<byte>.Shared.Return(resized);
-                    throw;
-                }
-
-                ArrayPool<byte>.Shared.Return(_buffer);
-                _buffer = resized;
-            }
+            public void Dispose() => _writer.Dispose();
         }
     }
 }

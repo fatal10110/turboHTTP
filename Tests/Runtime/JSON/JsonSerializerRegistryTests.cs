@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using TurboHTTP.JSON;
 using TurboHTTP.JSON.Lite;
+using System.Buffers;
 using System;
 
 namespace TurboHTTP.Tests.JSON
@@ -78,6 +79,15 @@ namespace TurboHTTP.Tests.JSON
             public T Deserialize<T>(string json) { DeserializeCalled = true; return default; }
             public string Serialize(object value, Type type) { SerializeCalled = true; return "{}"; }
             public object Deserialize(string json, Type type) { DeserializeCalled = true; return null; }
+            public void Serialize<T>(T value, IBufferWriter<byte> output)
+            {
+                SerializeCalled = true;
+                var span = output.GetSpan(2);
+                span[0] = (byte)'{';
+                span[1] = (byte)'}';
+                output.Advance(2);
+            }
+            public T Deserialize<T>(ReadOnlySequence<byte> input) { DeserializeCalled = true; return default; }
         }
     }
 }

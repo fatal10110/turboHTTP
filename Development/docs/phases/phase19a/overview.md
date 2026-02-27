@@ -34,8 +34,7 @@ Phase 19 (done: async runtime + ValueTask migration)
 ## Greenfield Decisions (Authoritative)
 
 1. No migration scaffolding is required. Breaking internal contracts is allowed in this phase.
-2. Zero-allocation paths are the primary runtime, not a secondary compatibility lane.
-3. A temporary rollback switch is allowed for debugging (`UHttpClientOptions.EnableZeroAllocPipeline`, default `true`), but dual-path behavior is not a long-term design goal.
+2. Zero-allocation paths are the only runtime path — no dual-path or rollback switches.
 4. File/type references in this phase target the current codebase layout (`Runtime/Core/UHttpClientOptions.cs`, `Runtime/JSON/IJsonSerializer.cs`, `Runtime/Files/MultipartFormDataBuilder.cs`, etc.).
 5. Transport/WebGL fallback logic must respect asmdef boundaries: transport assemblies are excluded from WebGL today.
 6. TLS provider fallback is **capability-based only** (provider unavailable / platform limitation). Never fall back after authentication or certificate validation failure.
@@ -59,8 +58,7 @@ Phase 19 (done: async runtime + ValueTask migration)
 - Track per-request allocation deltas with profiler and microbenchmarks.
 
 ### Correctness
-- All existing tests pass with `EnableZeroAllocPipeline = true`.
-- Optional rollback mode (`EnableZeroAllocPipeline = false`) remains functional during alpha hardening.
+- All existing tests pass with the zero-allocation pipeline.
 - Chunked parsing, decompression, and WebSocket fragment assembly remain byte-for-byte correct.
 
 ### Safety

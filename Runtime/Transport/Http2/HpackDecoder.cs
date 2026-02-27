@@ -137,60 +137,37 @@ namespace TurboHTTP.Transport.Http2
         private void DecodeLiteralIncrementalIndexing(byte[] data, ref int offset, int headerBlockEnd,
             List<(string, string)> headers)
         {
-            int nameIndex = HpackIntegerCodec.Decode(data, ref offset, 6, headerBlockEnd);
-            string name;
-
-            if (nameIndex > 0)
-            {
-                name = _dynamicTable.Get(nameIndex).Name;
-            }
-            else
-            {
-                name = DecodeString(data, ref offset, headerBlockEnd);
-            }
-
-            string value = DecodeString(data, ref offset, headerBlockEnd);
-
-            _dynamicTable.Add(name, value);
-            headers.Add((name, value));
+            DecodeLiteralHeader(
+                data,
+                ref offset,
+                headerBlockEnd,
+                namePrefixBits: 6,
+                addToDynamicTable: true,
+                headers);
         }
 
         private void DecodeLiteralWithoutIndexing(byte[] data, ref int offset, int headerBlockEnd,
             List<(string, string)> headers)
         {
-            int nameIndex = HpackIntegerCodec.Decode(data, ref offset, 4, headerBlockEnd);
-            string name;
-
-            if (nameIndex > 0)
-            {
-                name = _dynamicTable.Get(nameIndex).Name;
-            }
-            else
-            {
-                name = DecodeString(data, ref offset, headerBlockEnd);
-            }
-
-            string value = DecodeString(data, ref offset, headerBlockEnd);
-            headers.Add((name, value));
+            DecodeLiteralHeader(
+                data,
+                ref offset,
+                headerBlockEnd,
+                namePrefixBits: 4,
+                addToDynamicTable: false,
+                headers);
         }
 
         private void DecodeLiteralNeverIndexed(byte[] data, ref int offset, int headerBlockEnd,
             List<(string, string)> headers)
         {
-            int nameIndex = HpackIntegerCodec.Decode(data, ref offset, 4, headerBlockEnd);
-            string name;
-
-            if (nameIndex > 0)
-            {
-                name = _dynamicTable.Get(nameIndex).Name;
-            }
-            else
-            {
-                name = DecodeString(data, ref offset, headerBlockEnd);
-            }
-
-            string value = DecodeString(data, ref offset, headerBlockEnd);
-            headers.Add((name, value));
+            DecodeLiteralHeader(
+                data,
+                ref offset,
+                headerBlockEnd,
+                namePrefixBits: 4,
+                addToDynamicTable: false,
+                headers);
         }
 
         private void DecodeDynamicTableSizeUpdate(byte[] data, ref int offset, int headerBlockEnd)
@@ -203,6 +180,36 @@ namespace TurboHTTP.Transport.Http2
 
             _dynamicTable.SetMaxSize(newSize);
             _expectingSizeUpdate = false;
+        }
+
+        private void DecodeLiteralHeader(
+            byte[] data,
+            ref int offset,
+            int headerBlockEnd,
+            int namePrefixBits,
+            bool addToDynamicTable,
+            List<(string Name, string Value)> headers)
+        {
+            string name = DecodeLiteralHeaderName(data, ref offset, headerBlockEnd, namePrefixBits);
+            string value = DecodeString(data, ref offset, headerBlockEnd);
+
+            if (addToDynamicTable)
+                _dynamicTable.Add(name, value);
+
+            headers.Add((name, value));
+        }
+
+        private string DecodeLiteralHeaderName(
+            byte[] data,
+            ref int offset,
+            int headerBlockEnd,
+            int namePrefixBits)
+        {
+            int nameIndex = HpackIntegerCodec.Decode(data, ref offset, namePrefixBits, headerBlockEnd);
+            if (nameIndex > 0)
+                return _dynamicTable.Get(nameIndex).Name;
+
+            return DecodeString(data, ref offset, headerBlockEnd);
         }
 
         private string DecodeString(byte[] data, ref int offset, int headerBlockEnd)

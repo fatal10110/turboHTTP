@@ -92,6 +92,14 @@ namespace TurboHTTP.Core
         public IEnumerable<string> Names => _headers.Keys;
 
         /// <summary>
+        /// Remove all headers.
+        /// </summary>
+        public void Clear()
+        {
+            _headers.Clear();
+        }
+
+        /// <summary>
         /// Get the number of distinct header names.
         /// </summary>
         public int Count => _headers.Count;

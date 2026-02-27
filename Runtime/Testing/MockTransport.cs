@@ -190,8 +190,9 @@ namespace TurboHTTP.Testing
         {
             ThrowIfDisposed();
             Interlocked.Increment(ref _requestCount);
-            _lastRequest = request;
-            _capturedRequests.Enqueue(request);
+            var snapshot = SnapshotRequest(request);
+            _lastRequest = snapshot;
+            _capturedRequests.Enqueue(snapshot);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -247,6 +248,24 @@ namespace TurboHTTP.Testing
                 context?.Elapsed ?? TimeSpan.Zero,
                 request,
                 error);
+        }
+
+        private static UHttpRequest SnapshotRequest(UHttpRequest request)
+        {
+            if (request == null)
+                return null;
+
+            var bodyCopy = request.Body != null
+                ? (byte[])request.Body.Clone()
+                : null;
+
+            return new UHttpRequest(
+                request.Method,
+                request.Uri,
+                request.Headers,
+                bodyCopy,
+                request.Timeout,
+                request.Metadata);
         }
 
         private static string SerializeViaProjectJson(object payload, Type payloadType)

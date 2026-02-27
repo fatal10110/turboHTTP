@@ -14,7 +14,11 @@ namespace TurboHTTP.Core
     {
         public HttpStatusCode StatusCode { get; }
         public HttpHeaders Headers { get; }
-        public ReadOnlyMemory<byte> Body
+
+        /// <summary>
+        /// Response body sequence. This is the primary body representation.
+        /// </summary>
+        public ReadOnlySequence<byte> Body
         {
             get
             {
@@ -22,6 +26,7 @@ namespace TurboHTTP.Core
                 return _body;
             }
         }
+
         public TimeSpan ElapsedTime { get; }
 
         /// <summary>
@@ -35,9 +40,11 @@ namespace TurboHTTP.Core
         /// </summary>
         public UHttpError Error { get; }
 
-        private ReadOnlyMemory<byte> _body;
+        private ReadOnlySequence<byte> _body;
         private readonly byte[] _pooledBodyBuffer;
         private readonly bool _bodyBufferRented;
+        private IDisposable _segmentedBodyOwner;
+        private Action _onDispose;
         private int _disposed;
 
         public UHttpResponse(
@@ -51,7 +58,9 @@ namespace TurboHTTP.Core
         {
             StatusCode = statusCode;
             Headers = headers ?? new HttpHeaders();
-            _body = body;
+            _body = body.IsEmpty
+                ? ReadOnlySequence<byte>.Empty
+                : new ReadOnlySequence<byte>(body);
             ElapsedTime = elapsedTime;
             Request = request ?? throw new ArgumentNullException(nameof(request));
             Error = error;
@@ -68,6 +77,24 @@ namespace TurboHTTP.Core
                 _pooledBodyBuffer = segment.Array;
                 _bodyBufferRented = true;
             }
+        }
+
+        internal UHttpResponse(
+            HttpStatusCode statusCode,
+            HttpHeaders headers,
+            ReadOnlySequence<byte> body,
+            IDisposable segmentedBodyOwner,
+            TimeSpan elapsedTime,
+            UHttpRequest request,
+            UHttpError error = null)
+        {
+            StatusCode = statusCode;
+            Headers = headers ?? new HttpHeaders();
+            _body = body;
+            _segmentedBodyOwner = segmentedBodyOwner;
+            ElapsedTime = elapsedTime;
+            Request = request ?? throw new ArgumentNullException(nameof(request));
+            Error = error;
         }
 
         /// <summary>
@@ -87,10 +114,15 @@ namespace TurboHTTP.Core
         /// </summary>
         public string GetBodyAsString()
         {
-            if (Body.IsEmpty)
+            var body = Body;
+            if (body.IsEmpty)
                 return null;
 
-            return Encoding.UTF8.GetString(Body.Span);
+            if (body.IsSingleSegment)
+                return Encoding.UTF8.GetString(body.FirstSpan);
+
+            var bytes = body.ToArray();
+            return Encoding.UTF8.GetString(bytes, 0, bytes.Length);
         }
 
         /// <summary>
@@ -100,16 +132,21 @@ namespace TurboHTTP.Core
         public string GetBodyAsString(Encoding encoding)
         {
             if (encoding == null) throw new ArgumentNullException(nameof(encoding));
-            if (Body.IsEmpty)
+
+            var body = Body;
+            if (body.IsEmpty)
                 return null;
 
-            return encoding.GetString(Body.Span);
+            if (body.IsSingleSegment)
+                return encoding.GetString(body.FirstSpan);
+
+            var bytes = body.ToArray();
+            return encoding.GetString(bytes, 0, bytes.Length);
         }
 
         /// <summary>
         /// Detect the character encoding from the Content-Type header's charset parameter.
         /// Falls back to UTF-8 if no charset is specified or the charset is not recognized.
-        /// Uses manual string parsing to avoid Regex allocation (IL2CPP-safe).
         /// </summary>
         public Encoding GetContentEncoding()
         {
@@ -180,6 +217,27 @@ namespace TurboHTTP.Core
             return $"{(int)StatusCode} {StatusCode} ({ElapsedTime.TotalMilliseconds:F0}ms)";
         }
 
+        internal void AttachRequestRelease(Action releaseAction)
+        {
+            if (releaseAction == null)
+                return;
+
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                releaseAction();
+                return;
+            }
+
+            Action prior;
+            Action combined;
+            do
+            {
+                prior = _onDispose;
+                combined = (Action)Delegate.Combine(prior, releaseAction);
+            }
+            while (Interlocked.CompareExchange(ref _onDispose, combined, prior) != prior);
+        }
+
         ~UHttpResponse()
         {
             Dispose(false);
@@ -199,7 +257,12 @@ namespace TurboHTTP.Core
             if (_bodyBufferRented && _pooledBodyBuffer != null)
                 ArrayPool<byte>.Shared.Return(_pooledBodyBuffer);
 
-            _body = ReadOnlyMemory<byte>.Empty;
+            var owner = Interlocked.Exchange(ref _segmentedBodyOwner, null);
+            owner?.Dispose();
+            _body = ReadOnlySequence<byte>.Empty;
+
+            var callback = Interlocked.Exchange(ref _onDispose, null);
+            callback?.Invoke();
         }
 
         private void ThrowIfDisposed()

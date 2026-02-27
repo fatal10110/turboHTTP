@@ -48,7 +48,7 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 - **Platforms (v1.0):** Editor, Standalone (Win/Mac/Linux), iOS, Android
 - **JSON:** System.Text.Json (built-in)
 - **Transport:** Raw TCP sockets with HTTP/1.1 and HTTP/2 (no UnityWebRequest dependency)
-- **Architecture:** Modular - Core + Transport + 9 optional runtime modules (+ optional Editor module)
+- **Architecture:** Modular - Core + Transport + 8 optional runtime modules (+ optional Editor module)
 
 ## Module Structure
 
@@ -60,12 +60,11 @@ All detailed phase documents are in the [`phases/`](phases/) directory:
 - `TurboHTTP.Retry` - Advanced retry with idempotency
 - `TurboHTTP.Cache` - HTTP caching with ETag
 - `TurboHTTP.Auth` - Authentication middleware
-- `TurboHTTP.RateLimit` - Rate limiting
+- `TurboHTTP.RateLimit` - Rate limiting and concurrency controls
 - `TurboHTTP.Observability` - Timeline tracing
 - `TurboHTTP.Files` - File downloads with resume
 - `TurboHTTP.Unity` - Unity asset handlers
 - `TurboHTTP.Testing` - Record/replay, mocking
-- `TurboHTTP.Performance` - Memory pooling, concurrency
 
 ### Optional Editor Module
 - `TurboHTTP.Editor` - HTTP Monitor window (Editor-only)

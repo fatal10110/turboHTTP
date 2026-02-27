@@ -1,5 +1,7 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Text;
 
 namespace TurboHTTP.JSON.Lite
 {
@@ -123,6 +125,78 @@ namespace TurboHTTP.JSON.Lite
                 throw new JsonSerializationException(
                     $"Failed to deserialize to type '{type?.Name ?? "unknown"}'", ex);
             }
+        }
+
+        // ── IJsonSerializer buffer-writer bridge ─────────────────────────────────
+
+        /// <summary>
+        /// Serializes <paramref name="value"/> as UTF-8 JSON directly into
+        /// <paramref name="output"/>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// LiteJson does not have a native <see cref="IBufferWriter{T}"/> writer, so this
+        /// implementation bridges via the string path and encodes the resulting JSON string
+        /// into the writer. There are two temporary allocations:
+        /// <list type="number">
+        /// <item>The intermediate JSON string (unavoidable until LiteJson gains a streaming writer).</item>
+        /// <item>A temporary <c>byte[]</c> from <c>Encoding.UTF8.GetBytes(string)</c> — required
+        ///   because <c>Encoding.UTF8.GetBytes(ReadOnlySpan&lt;char&gt;, Span&lt;byte&gt;)</c>
+        ///   is .NET Core 2.1+ only and not available on .NET Standard 2.1 / Unity IL2CPP.</item>
+        /// </list>
+        /// Both allocations are known limitations of this bridge. The allocation reduction from
+        /// the buffer-writer path is realized in the caller (no intermediate <c>byte[]</c> copy
+        /// needed between the serializer and the request builder). The serializer's internal
+        /// allocations can be eliminated in a future version by adding a span-based writer to
+        /// LiteJson.
+        /// </para>
+        /// </remarks>
+        public void Serialize<T>(T value, IBufferWriter<byte> output)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            var json = Serialize(value);
+
+            // GetByteCount for exact sizing, then GetBytes into a temporary array, copy to writer.
+            // Array-based path required for .NET Standard 2.1 / Unity IL2CPP compatibility —
+            // Encoding.UTF8.GetBytes(ReadOnlySpan<char>, Span<byte>) is .NET Core 2.1+ only.
+            int byteCount = Encoding.UTF8.GetByteCount(json);
+            var span = output.GetSpan(byteCount);
+            var bytes = Encoding.UTF8.GetBytes(json);
+            bytes.CopyTo(span);
+            output.Advance(byteCount);
+        }
+
+        /// <summary>
+        /// Deserializes <typeparamref name="T"/> from a UTF-8 JSON byte sequence.
+        /// Single-segment sequences are decoded directly. Multi-segment sequences are
+        /// flattened into a temporary string before parsing (LiteJson requires contiguous input).
+        /// </summary>
+        public T Deserialize<T>(ReadOnlySequence<byte> input)
+        {
+            string json;
+
+            if (input.IsSingleSegment)
+            {
+                json = Encoding.UTF8.GetString(input.First.Span.ToArray(), 0, (int)input.Length);
+            }
+            else
+            {
+                // Multi-segment: copy to a pooled array, then decode.
+                var length = (int)input.Length;
+                var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
+                try
+                {
+                    input.CopyTo(buffer);
+                    json = Encoding.UTF8.GetString(buffer, 0, length);
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                }
+            }
+
+            return Deserialize<T>(json);
         }
 
         private T ConvertTo<T>(object value)

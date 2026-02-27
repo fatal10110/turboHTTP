@@ -173,154 +173,190 @@ namespace TurboHTTP.Transport.Http2
         public async ValueTask<UHttpResponse> SendRequestAsync(
             UHttpRequest request, RequestContext context, CancellationToken ct)
         {
-            Http2Stream stream;
-            int streamId;
+            Http2Stream stream = null;
+            int streamId = -1;
 
-            lock (_streamCreateLock)
-            {
-                // Step 1: Pre-flight checks
-                if (_goawayReceived)
-                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        "Connection received GOAWAY"));
-                if (_cts.IsCancellationRequested)
-                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        "Connection is closed"));
-
-                // Step 2: Enforce SETTINGS_MAX_CONCURRENT_STREAMS (RFC 7540 Section 5.1.2)
-                if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
-                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        $"MAX_CONCURRENT_STREAMS limit reached ({_remoteSettings.MaxConcurrentStreams})"));
-
-                // Step 3: Allocate stream ID and reject IDs beyond GOAWAY last stream.
-                streamId = AllocateNextStreamId();
-                if (_goawayReceived || (_lastGoawayStreamId > 0 && streamId > _lastGoawayStreamId))
-                {
-                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        "Connection closed during stream creation"));
-                }
-
-                // Step 4: Create stream object (with both send and recv windows)
-                stream = new Http2Stream(streamId, request, context,
-                    _remoteSettings.InitialWindowSize,
-                    _localSettings.InitialWindowSize,
-                    s_responseSourcePool);
-                _activeStreams[streamId] = stream;
-            }
-
-            // Check if already cancelled
-            if (ct.IsCancellationRequested)
-            {
-                _activeStreams.TryRemove(streamId, out _);
-                stream.CancelWithoutConsumption(ct);
-                stream.Dispose();
-                throw new OperationCanceledException(ct);
-            }
-
-            // Register per-request cancellation
-            stream.CancellationRegistration = ct.Register(() =>
-            {
-                if (_activeStreams.TryRemove(streamId, out var canceledStream))
-                {
-                    _ = SendRstStreamAsync(streamId, Http2ErrorCode.Cancel);
-                    canceledStream.Cancel();
-                }
-            });
-
+            // Outer try ensures BodyOwner is disposed on ALL exit paths, including pre-stream
+            // exceptions (GOAWAY, MAX_CONCURRENT_STREAMS, post-lock cancellation). The inner
+            // try/finally disposes it earlier (at body-send time) when possible, so it is
+            // already null or idempotently safe by the time this outer finally runs.
             try
             {
-                // Step 4: Build pseudo-headers + regular headers
-                int headerValueCount = 5; // 4 pseudo-headers + user-agent fallback
-                foreach (var name in request.Headers.Names)
+                lock (_streamCreateLock)
                 {
-                    headerValueCount += request.Headers.GetValues(name).Count;
-                }
+                    // Step 1: Pre-flight checks
+                    if (_goawayReceived)
+                        throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                            "Connection received GOAWAY"));
+                    if (_cts.IsCancellationRequested)
+                        throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                            "Connection is closed"));
 
-                var headerList = new List<(string, string)>(headerValueCount);
-                headerList.Add((":method", request.Method.ToUpperString()));
-                headerList.Add((":scheme", ToLowerAsciiInvariant(request.Uri.Scheme)));
-                headerList.Add((":authority", BuildAuthorityValue(request.Uri)));
-                headerList.Add((":path", request.Uri.PathAndQuery ?? "/"));
+                    // Step 2: Enforce SETTINGS_MAX_CONCURRENT_STREAMS (RFC 7540 Section 5.1.2)
+                    if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
+                        throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                            $"MAX_CONCURRENT_STREAMS limit reached ({_remoteSettings.MaxConcurrentStreams})"));
 
-                foreach (var name in request.Headers.Names)
-                {
-                    if (IsHttp2ForbiddenHeader(name)) continue;
-
-                    // RFC 7540 Section 8.1.2.2: te header is forbidden in HTTP/2
-                    // except with the value "trailers".
-                    if (string.Equals(name, "te", StringComparison.OrdinalIgnoreCase))
+                    // Step 3: Allocate stream ID and reject IDs beyond GOAWAY last stream.
+                    streamId = AllocateNextStreamId();
+                    if (_goawayReceived || (_lastGoawayStreamId > 0 && streamId > _lastGoawayStreamId))
                     {
-                        var teValues = request.Headers.GetValues(name);
-                        foreach (var v in teValues)
-                        {
-                            if (string.Equals(v.Trim(), "trailers", StringComparison.OrdinalIgnoreCase))
-                                headerList.Add(("te", "trailers"));
-                        }
-                        continue;
+                        throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                            "Connection closed during stream creation"));
                     }
 
-                    foreach (var value in request.Headers.GetValues(name))
-                        headerList.Add((ToLowerAsciiInvariant(name), value));
+                    // Step 4: Rent a pooled stream and initialise it for this request.
+                    stream = Http2StreamPool.Rent(streamId, request, context,
+                        _remoteSettings.InitialWindowSize,
+                        _localSettings.InitialWindowSize,
+                        s_responseSourcePool);
+                    _activeStreams[streamId] = stream;
                 }
 
-                if (!request.Headers.Contains("user-agent"))
-                    headerList.Add(("user-agent", "TurboHTTP/1.0"));
-
-                // Step 5: HPACK encode headers + send HEADERS (under write lock)
-                await _writeLock.WaitAsync(ct);
-                try
+                // Check if already cancelled
+                if (ct.IsCancellationRequested)
                 {
-                    byte[] headerBlock = _hpackEncoder.Encode(headerList);
-                    bool hasBody = request.Body != null && request.Body.Length > 0;
-
-                    await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct);
-
-                    stream.State = hasBody ? Http2StreamState.Open : Http2StreamState.HalfClosedLocal;
-                }
-                finally
-                {
-                    _writeLock.Release();
+                    _activeStreams.TryRemove(streamId, out _);
+                    stream.CancelWithoutConsumption(ct);
+                    Http2StreamPool.Return(stream);
+                    stream = null;
+                    throw new OperationCanceledException(ct);
                 }
 
-                // Step 7: Send DATA frames OUTSIDE write lock
-                bool hasBody2 = request.Body != null && request.Body.Length > 0;
-                if (hasBody2)
+                // Register per-request cancellation
+                stream.CancellationRegistration = ct.Register(() =>
                 {
-                    await SendDataAsync(streamId, request.Body, stream, ct);
-                    stream.State = Http2StreamState.HalfClosedLocal;
-                }
-
-                context.RecordEvent("TransportH2RequestSent");
-
-                // Step 8: Wait for response
-                return await stream.ResponseTask.ConfigureAwait(false);
-            }
-            catch (ObjectDisposedException ex)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "HTTP/2 connection disposed during request send.",
-                    ex));
-            }
-            finally
-            {
-                _activeStreams.TryRemove(streamId, out _);
-                try
-                {
-                    if (stream.IsResponseCompleted)
+                    if (_activeStreams.TryRemove(streamId, out var canceledStream))
                     {
-                        stream.ReturnResponseSourceIfUnconsumed();
+                        _ = SendRstStreamAsync(streamId, Http2ErrorCode.Cancel);
+                        canceledStream.Cancel();
+                    }
+                });
+
+                try
+                {
+                    // Step 5: Build pseudo-headers + regular headers
+                    int headerValueCount = 5; // 4 pseudo-headers + user-agent fallback
+                    foreach (var name in request.Headers.Names)
+                    {
+                        headerValueCount += request.Headers.GetValues(name).Count;
+                    }
+
+                    var headerList = new List<(string, string)>(headerValueCount);
+                    headerList.Add((":method", request.Method.ToUpperString()));
+                    headerList.Add((":scheme", ToLowerAsciiInvariant(request.Uri.Scheme)));
+                    headerList.Add((":authority", BuildAuthorityValue(request.Uri)));
+                    headerList.Add((":path", request.Uri.PathAndQuery ?? "/"));
+
+                    foreach (var name in request.Headers.Names)
+                    {
+                        if (IsHttp2ForbiddenHeader(name)) continue;
+
+                        // RFC 7540 Section 8.1.2.2: te header is forbidden in HTTP/2
+                        // except with the value "trailers".
+                        if (string.Equals(name, "te", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var teValues = request.Headers.GetValues(name);
+                            foreach (var v in teValues)
+                            {
+                                if (string.Equals(v.Trim(), "trailers", StringComparison.OrdinalIgnoreCase))
+                                    headerList.Add(("te", "trailers"));
+                            }
+                            continue;
+                        }
+
+                        foreach (var value in request.Headers.GetValues(name))
+                            headerList.Add((ToLowerAsciiInvariant(name), value));
+                    }
+
+                    if (!request.Headers.Contains("user-agent"))
+                        headerList.Add(("user-agent", "TurboHTTP/1.0"));
+
+                    // Step 6: HPACK encode headers + send HEADERS (under write lock)
+                    await _writeLock.WaitAsync(ct);
+                    try
+                    {
+                        byte[] headerBlock = _hpackEncoder.Encode(headerList);
+                        bool hasBody = request.Body != null && request.Body.Length > 0;
+
+                        await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct);
+
+                        stream.State = hasBody ? Http2StreamState.Open : Http2StreamState.HalfClosedLocal;
+                    }
+                    finally
+                    {
+                        _writeLock.Release();
+                    }
+
+                    // Step 7: Send DATA frames OUTSIDE write lock
+                    bool hasBody2 = request.Body != null && request.Body.Length > 0;
+                    if (hasBody2)
+                    {
+                        try
+                        {
+                            await SendDataAsync(streamId, request.Body, stream, ct);
+                        }
+                        finally
+                        {
+                            // Body owner is no longer needed once the bytes are on the wire (or the send failed).
+                            // Disposed here for prompt pool return; outer finally is a safe no-op on idempotent Dispose.
+                            request.DisposeBodyOwner();
+                        }
+                        stream.State = Http2StreamState.HalfClosedLocal;
                     }
                     else
                     {
-                        stream.CancelWithoutConsumption(ct);
+                        // No body data to send; release any pool-owned buffer promptly.
+                        // Outer finally is a safe no-op on idempotent Dispose.
+                        request.DisposeBodyOwner();
+                    }
+
+                    context.RecordEvent("TransportH2RequestSent");
+
+                    // Step 8: Wait for response
+                    return await stream.ResponseTask.ConfigureAwait(false);
+                }
+                catch (ObjectDisposedException ex)
+                {
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        "HTTP/2 connection disposed during request send.",
+                        ex));
+                }
+                finally
+                {
+                    if (stream != null)
+                    {
+                        _activeStreams.TryRemove(streamId, out _);
+                        try
+                        {
+                            if (stream.IsResponseCompleted)
+                            {
+                                stream.ReturnResponseSourceIfUnconsumed();
+                            }
+                            else
+                            {
+                                stream.CancelWithoutConsumption(ct);
+                            }
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            stream.ReturnResponseSourceIfUnconsumed();
+                        }
+
+                        // Return the stream to the pool. The pool's reset delegate calls
+                        // PrepareForPool() which clears per-request references and returns
+                        // any partial body buffer to ArrayPool.
+                        Http2StreamPool.Return(stream);
                     }
                 }
-                catch (InvalidOperationException)
-                {
-                    stream.ReturnResponseSourceIfUnconsumed();
-                }
-
-                stream.Dispose();
+            }
+            finally
+            {
+                // Dispose BodyOwner on any exit path not already covered above (e.g. GOAWAY/limit
+                // exceptions thrown inside the lock, or post-lock cancellation). ArrayPoolMemoryOwner
+                // is idempotent so the double-dispose from the inner body-send finally is safe.
+                request.DisposeBodyOwner();
             }
         }
 

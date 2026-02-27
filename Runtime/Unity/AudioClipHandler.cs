@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections;
 using System.Threading;
 using System.Threading.Tasks;
@@ -260,7 +261,7 @@ namespace TurboHTTP.Unity
             try
             {
                 var decoded = await decoder
-                    .DecodeAsync(response.Body, cancellationToken)
+                    .DecodeAsync(GetBodyMemory(response.Body), cancellationToken)
                     .ConfigureAwait(false);
 
                 return await MainThreadDispatcher.ExecuteAsync(
@@ -317,7 +318,7 @@ namespace TurboHTTP.Unity
             try
             {
                 await UnityTempFileManager.Shared
-                    .WriteBytesAsync(tempPath, response.Body, cancellationToken)
+                    .WriteBytesAsync(tempPath, GetBodyMemory(response.Body), cancellationToken)
                     .ConfigureAwait(false);
 
                 var shouldStream =
@@ -502,6 +503,17 @@ namespace TurboHTTP.Unity
                         audioType,
                         "Unsupported audio format. Supported values: WAV, MP3, OGG, AIFF.");
             }
+        }
+
+        private static ReadOnlyMemory<byte> GetBodyMemory(ReadOnlySequence<byte> body)
+        {
+            if (body.IsEmpty)
+                return ReadOnlyMemory<byte>.Empty;
+
+            if (body.IsSingleSegment)
+                return body.First;
+
+            return body.ToArray();
         }
 
         private static void EnsureStartupCleanup()

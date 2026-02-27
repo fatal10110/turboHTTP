@@ -1,6 +1,6 @@
 {
-  "name": "TurboHTTP.Performance",
-  "rootNamespace": "TurboHTTP.Performance",
+  "name": "TurboHTTP.RateLimit",
+  "rootNamespace": "TurboHTTP.RateLimit",
   "references": ["TurboHTTP.Core"],
   "includePlatforms": [],
   "excludePlatforms": [],
@@ -10,5 +10,5 @@
   "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
-  "noEngineReferences": true
+  "noEngineReferences": false
 }

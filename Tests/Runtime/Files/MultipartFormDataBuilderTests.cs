@@ -157,10 +157,8 @@ namespace TurboHTTP.Tests.Files
 
             var transport = new MockTransport();
             var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
-            var requestBuilder = client.Post("https://test.com/upload");
-            builder.ApplyTo(requestBuilder);
-
-            var request = requestBuilder.Build();
+            using var request = client.Post("https://test.com/upload");
+            builder.ApplyTo(request);
 
             AssertMultipartBoundaryContentType(request.Headers.Get("Content-Type"), "applybnd");
             Assert.IsNotNull(request.Body);

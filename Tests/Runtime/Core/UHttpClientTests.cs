@@ -145,7 +145,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var builder = client.Get("http://example.com/");
             Assert.IsNotNull(builder);
-            Assert.AreEqual(HttpMethod.GET, builder.Build().Method);
+            Assert.AreEqual(HttpMethod.GET, builder.Method);
         }
 
         [Test]
@@ -154,7 +154,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var builder = client.Post("http://example.com/");
             Assert.IsNotNull(builder);
-            Assert.AreEqual(HttpMethod.POST, builder.Build().Method);
+            Assert.AreEqual(HttpMethod.POST, builder.Method);
         }
 
         [Test]
@@ -163,7 +163,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var builder = client.Put("http://example.com/");
             Assert.IsNotNull(builder);
-            Assert.AreEqual(HttpMethod.PUT, builder.Build().Method);
+            Assert.AreEqual(HttpMethod.PUT, builder.Method);
         }
 
         [Test]
@@ -172,7 +172,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var builder = client.Delete("http://example.com/");
             Assert.IsNotNull(builder);
-            Assert.AreEqual(HttpMethod.DELETE, builder.Build().Method);
+            Assert.AreEqual(HttpMethod.DELETE, builder.Method);
         }
 
         [Test]
@@ -181,7 +181,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var builder = client.Patch("http://example.com/");
             Assert.IsNotNull(builder);
-            Assert.AreEqual(HttpMethod.PATCH, builder.Build().Method);
+            Assert.AreEqual(HttpMethod.PATCH, builder.Method);
         }
 
         [Test]
@@ -190,7 +190,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var builder = client.Head("http://example.com/");
             Assert.IsNotNull(builder);
-            Assert.AreEqual(HttpMethod.HEAD, builder.Build().Method);
+            Assert.AreEqual(HttpMethod.HEAD, builder.Method);
         }
 
         [Test]
@@ -199,14 +199,14 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var builder = client.Options("http://example.com/");
             Assert.IsNotNull(builder);
-            Assert.AreEqual(HttpMethod.OPTIONS, builder.Build().Method);
+            Assert.AreEqual(HttpMethod.OPTIONS, builder.Method);
         }
 
         [Test]
         public void RequestBuilder_WithRelativeUrl_ResolvesAgainstBaseUrl()
         {
             using var client = new UHttpClient(new UHttpClientOptions { BaseUrl = "https://example.com/api" });
-            var request = client.Get("users").Build();
+            var request = client.Get("users");
             Assert.AreEqual("https://example.com/api/users", request.Uri.ToString());
         }
 
@@ -214,7 +214,7 @@ namespace TurboHTTP.Tests.Core
         public void RequestBuilder_WithAbsoluteUrl_IgnoresBaseUrl()
         {
             using var client = new UHttpClient(new UHttpClientOptions { BaseUrl = "https://example.com/api" });
-            var request = client.Get("https://other.com/path").Build();
+            var request = client.Get("https://other.com/path");
             Assert.AreEqual("https://other.com/path", request.Uri.ToString());
         }
 
@@ -222,7 +222,7 @@ namespace TurboHTTP.Tests.Core
         public void RequestBuilder_WithRelativeUrl_NoBaseUrl_ThrowsInvalidOperationException()
         {
             using var client = new UHttpClient(new UHttpClientOptions());
-            Assert.Throws<InvalidOperationException>(() => client.Get("users").Build());
+            Assert.Throws<InvalidOperationException>(() => client.Get("users"));
         }
 
         [Test]
@@ -235,7 +235,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient(options);
             var request = client.Get("http://example.com/")
                 .WithHeader("X-Override", "Request")
-                .Build();
+                ;
 
             Assert.AreEqual("A", request.Headers.Get("X-Default"));
             Assert.AreEqual("Request", request.Headers.Get("X-Override"));
@@ -251,7 +251,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var request = client.Get("http://example.com/")
                 .WithHeaders(headers)
-                .Build();
+                ;
 
             var values = request.Headers.GetValues("Set-Cookie");
             Assert.AreEqual(2, values.Count);
@@ -269,7 +269,7 @@ namespace TurboHTTP.Tests.Core
             };
             var request = client.Post("http://example.com/")
                 .WithJsonBody(payload)
-                .Build();
+                ;
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
             Assert.IsNotNull(request.Body);
@@ -288,7 +288,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var request = client.Post("http://example.com/")
                 .WithJsonBody(new { Name = "Test" }, options)
-                .Build();
+                ;
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
             Assert.IsNotNull(request.Body);
@@ -302,7 +302,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient(new UHttpClientOptions { DefaultTimeout = TimeSpan.FromSeconds(10) });
             var request = client.Get("http://example.com/")
                 .WithTimeout(TimeSpan.FromSeconds(2))
-                .Build();
+                ;
             Assert.AreEqual(TimeSpan.FromSeconds(2), request.Timeout);
         }
 
@@ -312,7 +312,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var request = client.Get("http://example.com/")
                 .WithBearerToken("token123")
-                .Build();
+                ;
             Assert.AreEqual("Bearer token123", request.Headers.Get("Authorization"));
         }
 
@@ -334,12 +334,12 @@ namespace TurboHTTP.Tests.Core
         {
             var options = new UHttpClientOptions
             {
-                Http2MaxDecodedHeaderBytes = 512 * 1024
+                Http2 = new Http2Options { MaxDecodedHeaderBytes = 512 * 1024 }
             };
 
             var clone = options.Clone();
 
-            Assert.AreEqual(512 * 1024, clone.Http2MaxDecodedHeaderBytes);
+            Assert.AreEqual(512 * 1024, clone.Http2.MaxDecodedHeaderBytes);
         }
 
         [Test]
@@ -371,7 +371,7 @@ namespace TurboHTTP.Tests.Core
             using var client = new UHttpClient();
             var request = client.Post("http://example.com/")
                 .WithJsonBody("{\"key\":\"value\"}")
-                .Build();
+                ;
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
             Assert.IsNotNull(request.Body);
@@ -394,7 +394,7 @@ namespace TurboHTTP.Tests.Core
             options.DefaultTimeout = TimeSpan.FromSeconds(20);
             options.DefaultHeaders.Set("X-Default", "B");
 
-            var request = client.Get("path").Build();
+            var request = client.Get("path");
             Assert.AreEqual("https://example.com/path", request.Uri.ToString());
             Assert.AreEqual(TimeSpan.FromSeconds(5), request.Timeout);
             Assert.AreEqual("A", request.Headers.Get("X-Default"));
@@ -466,16 +466,16 @@ namespace TurboHTTP.Tests.Core
             HttpTransportFactory.Register(
                 () => defaultTransport,
                 tlsBackend => throw new InvalidOperationException("Backend factory should not be used."),
-                (tlsBackend, http2MaxDecodedHeaderBytes) =>
+                (tlsBackend, poolOptions, http2Options) =>
                 {
                     capturedTlsBackend = tlsBackend;
-                    capturedMaxDecodedHeaderBytes = http2MaxDecodedHeaderBytes;
+                    capturedMaxDecodedHeaderBytes = http2Options.MaxDecodedHeaderBytes;
                     return customTransport;
                 });
 
             var client = new UHttpClient(new UHttpClientOptions
             {
-                Http2MaxDecodedHeaderBytes = 384 * 1024
+                Http2 = new Http2Options { MaxDecodedHeaderBytes = 384 * 1024 }
             });
 
             client.Dispose();
@@ -492,11 +492,11 @@ namespace TurboHTTP.Tests.Core
             var ex = Assert.Throws<ArgumentOutOfRangeException>(() =>
                 new UHttpClient(new UHttpClientOptions
                 {
-                    Http2MaxDecodedHeaderBytes = 0
+                    Http2 = new Http2Options { MaxDecodedHeaderBytes = 0 }
                 }));
 
             Assert.IsNotNull(ex);
-            Assert.That(ex.ParamName, Is.EqualTo("Http2MaxDecodedHeaderBytes").Or.EqualTo("value"));
+            Assert.That(ex.ParamName, Is.EqualTo("MaxDecodedHeaderBytes").Or.EqualTo("value"));
         }
 
         [Test]
@@ -639,7 +639,7 @@ namespace TurboHTTP.Tests.Core
             {
                 DefaultTimeout = TimeSpan.FromSeconds(7)
             });
-            var request = client.Get("http://example.com/").Build();
+            var request = client.Get("http://example.com/");
             Assert.AreEqual(TimeSpan.FromSeconds(7), request.Timeout);
         }
 

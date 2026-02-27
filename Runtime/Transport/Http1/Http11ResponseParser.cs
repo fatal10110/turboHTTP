@@ -6,6 +6,7 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Http1
@@ -21,9 +22,43 @@ namespace TurboHTTP.Transport.Http1
         /// </summary>
         public HttpStatusCode StatusCode { get; set; }
         public HttpHeaders Headers { get; set; }
+
+        /// <summary>
+        /// Contiguous body slice. Non-null only when <see cref="SegmentedBody"/> is null
+        /// (fixed-length responses that fit in a single pooled rent).
+        /// </summary>
         public ReadOnlyMemory<byte> Body { get; set; }
+
+        /// <summary>
+        /// Pool-ownership flag for the <see cref="Body"/> backing array.
+        /// </summary>
         public bool BodyFromPool { get; set; }
+
+        /// <summary>
+        /// Segmented body for chunked and read-to-end responses. Owns pooled segment
+        /// arrays; the consumer is responsible for disposal. When non-null, <see cref="Body"/>
+        /// is <see cref="ReadOnlyMemory{T}.Empty"/> and <see cref="BodyFromPool"/> is false.
+        /// </summary>
+        public SegmentedBuffer SegmentedBody { get; set; }
+
         public bool KeepAlive { get; set; }
+
+        /// <summary>
+        /// Clears all fields so this instance can be safely returned to
+        /// <see cref="ParsedResponsePool"/> and rented again for a new response.
+        /// Ownership of <see cref="Headers"/>, <see cref="Body"/>, and
+        /// <see cref="SegmentedBody"/> must have already been transferred to the caller
+        /// before this is invoked.
+        /// </summary>
+        public void Reset()
+        {
+            StatusCode = default;
+            Headers = null;
+            Body = default;
+            BodyFromPool = false;
+            SegmentedBody = null;
+            KeepAlive = false;
+        }
     }
 
     /// <summary>
@@ -49,8 +84,16 @@ namespace TurboHTTP.Transport.Http1
             string httpVersion;
             HttpHeaders headers;
             int interim1xxCount = 0;
+            ParsedResponse parsedResult = null; // tracked for pool return on exception path
 
             using var reader = new BufferedStreamReader(stream);
+
+            // Rent a scratch accumulator for header pairs. Reused across 1xx interim
+            // responses; returned to pool after the final header block is transferred
+            // to the permanent HttpHeaders instance.
+            var scratch = HeaderParseScratchPool.Rent();
+            try
+            {
 
             // 1. Skip 1xx interim responses
             do
@@ -77,8 +120,11 @@ namespace TurboHTTP.Transport.Http1
                     || statusCode < 100 || statusCode > 999)
                     throw new FormatException($"Invalid HTTP status code: {statusStr}");
 
-                // Headers
-                headers = new HttpHeaders();
+                // Headers — accumulate raw pairs into the pooled scratch list, then
+                // transfer to a fresh HttpHeaders after the block is complete.
+                // This reuses the List<(string, string)> across requests while keeping
+                // the final HttpHeaders independent from the pooled scratch state.
+                scratch.RawHeaders.Clear();
                 int totalHeaderBytes = 0;
                 while (true)
                 {
@@ -95,9 +141,13 @@ namespace TurboHTTP.Transport.Http1
                     {
                         var name = line.Substring(0, colonIndex).Trim();
                         var value = line.Substring(colonIndex + 1).Trim();
-                        headers.Add(name, value);
+                        scratch.RawHeaders.Add((name, value));
                     }
                 }
+
+                headers = new HttpHeaders();
+                foreach (var (n, v) in scratch.RawHeaders)
+                    headers.Add(n, v);
 
                 // 101 Switching Protocols is NOT interim — it signals a protocol upgrade.
                 if (statusCode == 101)
@@ -113,19 +163,16 @@ namespace TurboHTTP.Transport.Http1
 
             // 2. Determine body reading strategy
             bool usedReadToEnd = false;
-            ReadOnlyMemory<byte> body;
+            ReadOnlyMemory<byte> body = ReadOnlyMemory<byte>.Empty;
             bool bodyFromPool = false;
+            SegmentedBuffer segmentedBody = null;
 
             bool skipBody = requestMethod == HttpMethod.HEAD
                          || statusCode == 101
                          || statusCode == 204
                          || statusCode == 304;
 
-            if (skipBody)
-            {
-                body = ReadOnlyMemory<byte>.Empty;
-            }
-            else
+            if (!skipBody)
             {
                 var transferEncoding = headers.Get("Transfer-Encoding");
                 var contentLengthStr = headers.Get("Content-Length");
@@ -139,13 +186,13 @@ namespace TurboHTTP.Transport.Http1
                         var result = await ReadBodyByContentLengthOrEnd(reader, headers, ct).ConfigureAwait(false);
                         body = result.Body;
                         bodyFromPool = result.BodyFromPool;
+                        segmentedBody = result.SegmentedBody;
                         usedReadToEnd = result.UsedReadToEnd;
                     }
                     else if (te.EndsWith("chunked", StringComparison.OrdinalIgnoreCase))
                     {
-                        var chunked = await ReadChunkedBodyAsync(reader, ct).ConfigureAwait(false);
-                        body = chunked.Body;
-                        bodyFromPool = chunked.BodyFromPool;
+                        // Chunked body goes into a SegmentedBuffer — no contiguous copy amplification.
+                        segmentedBody = await ReadChunkedBodyAsync(reader, ct).ConfigureAwait(false);
 
                         // RFC 9112 Section 6.1: ignore Content-Length when Transfer-Encoding is present.
                         if (contentLengthStr != null)
@@ -162,6 +209,7 @@ namespace TurboHTTP.Transport.Http1
                     var result = await ReadBodyByContentLengthOrEnd(reader, headers, ct).ConfigureAwait(false);
                     body = result.Body;
                     bodyFromPool = result.BodyFromPool;
+                    segmentedBody = result.SegmentedBody;
                     usedReadToEnd = result.UsedReadToEnd;
                 }
             }
@@ -171,17 +219,33 @@ namespace TurboHTTP.Transport.Http1
             if (usedReadToEnd)
                 keepAlive = false;
 
-            return new ParsedResponse
+            parsedResult = ParsedResponsePool.Rent();
+            parsedResult.StatusCode = (HttpStatusCode)statusCode;
+            parsedResult.Headers = headers;
+            parsedResult.Body = body;
+            parsedResult.BodyFromPool = bodyFromPool;
+            parsedResult.SegmentedBody = segmentedBody;
+            parsedResult.KeepAlive = keepAlive;
+            // Transfer ownership to caller. Null parsedResult so the finally block
+            // does not attempt to return it to the pool — BuildResponse owns the return.
+            var toReturn = parsedResult;
+            parsedResult = null;
+            return toReturn;
+
+            } // end try
+            finally
             {
-                StatusCode = (HttpStatusCode)statusCode,
-                Headers = headers,
-                Body = body,
-                BodyFromPool = bodyFromPool,
-                KeepAlive = keepAlive
-            };
+                // Return the scratch accumulator to the pool. All raw header string
+                // references have been transferred to HttpHeaders by this point.
+                HeaderParseScratchPool.Return(scratch);
+                // Return ParsedResponse to pool only if an exception fired between
+                // Rent() and the ownership-transfer null assignment above.
+                if (parsedResult != null)
+                    ParsedResponsePool.Return(parsedResult);
+            }
         }
 
-        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool, bool UsedReadToEnd)>
+        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool, SegmentedBuffer SegmentedBody, bool UsedReadToEnd)>
             ReadBodyByContentLengthOrEnd(
             BufferedStreamReader reader,
             HttpHeaders headers,
@@ -213,16 +277,16 @@ namespace TurboHTTP.Transport.Http1
                     throw new IOException("Response body exceeds maximum size");
 
                 if (contentLength == 0)
-                    return (ReadOnlyMemory<byte>.Empty, false, false);
+                    return (ReadOnlyMemory<byte>.Empty, false, null, false);
 
                 int length = (int)contentLength;
                 var fixedBody = await ReadFixedBodyAsync(reader, length, ct).ConfigureAwait(false);
-                return (fixedBody.Body, fixedBody.BodyFromPool, false);
+                return (fixedBody.Body, fixedBody.BodyFromPool, null, false);
             }
 
-            // Neither Transfer-Encoding nor Content-Length — read to end.
+            // Neither Transfer-Encoding nor Content-Length — read to end into a SegmentedBuffer.
             var readToEnd = await ReadToEndAsync(reader, ct).ConfigureAwait(false);
-            return (readToEnd.Body, readToEnd.BodyFromPool, true);
+            return (ReadOnlyMemory<byte>.Empty, false, readToEnd, true);
         }
 
         // TODO Phase 10: Handle multi-token Connection header (e.g., "close, Upgrade")
@@ -258,14 +322,19 @@ namespace TurboHTTP.Transport.Http1
             return await reader.ReadLineAsync(ct, maxLength).ConfigureAwait(false);
         }
 
-        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool)> ReadChunkedBodyAsync(
+        /// <returns>
+        /// A <see cref="SegmentedBuffer"/> containing the reassembled body, or <c>null</c>
+        /// if the chunked body was empty (terminal chunk immediately followed by trailers).
+        /// Callers must check for null before use.
+        /// </returns>
+        private static async Task<SegmentedBuffer> ReadChunkedBodyAsync(
             BufferedStreamReader reader,
             CancellationToken ct)
         {
             long totalBodyBytes = 0;
-            byte[] bodyBuffer = null;
-            int bodyLength = 0;
+            // Read 8KB at a time into a temporary rent; copy directly into the segmented buffer.
             byte[] readBuf = ArrayPool<byte>.Shared.Rent(8192);
+            var segBuffer = new SegmentedBuffer();
 
             try
             {
@@ -296,16 +365,13 @@ namespace TurboHTTP.Transport.Http1
                     if (chunkSize > int.MaxValue)
                         throw new IOException("Chunk size exceeds supported range");
 
-                    int chunkLength = (int)chunkSize;
-                    EnsureCapacity(ref bodyBuffer, bodyLength + chunkLength, bodyLength);
-
-                    int remaining = chunkLength;
+                    int remaining = (int)chunkSize;
                     while (remaining > 0)
                     {
                         int toRead = Math.Min(remaining, readBuf.Length);
                         await reader.ReadExactAsync(readBuf, 0, toRead, ct).ConfigureAwait(false);
-                        Buffer.BlockCopy(readBuf, 0, bodyBuffer, bodyLength, toRead);
-                        bodyLength += toRead;
+                        // Write directly into the segmented buffer — no contiguous copy amplification.
+                        segBuffer.Write(new ReadOnlySpan<byte>(readBuf, 0, toRead));
                         remaining -= toRead;
                     }
 
@@ -315,7 +381,10 @@ namespace TurboHTTP.Transport.Http1
                         throw new FormatException("Unexpected data after chunk body (expected CRLF)");
                 }
 
-                // Read trailers (zero or more header lines until empty line)
+                // Read and discard trailers (RFC 9112 §7.1.2).
+                // Known limitation: trailer fields declared via the Trailer header
+                // (e.g. Content-MD5, Digest) are consumed but not merged into the
+                // response headers. Future work: expose trailers on ParsedResponse.
                 while (true)
                 {
                     var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
@@ -323,19 +392,17 @@ namespace TurboHTTP.Transport.Http1
                         break;
                 }
 
-                if (bodyLength == 0)
+                if (segBuffer.IsEmpty)
                 {
-                    if (bodyBuffer != null)
-                        ArrayPool<byte>.Shared.Return(bodyBuffer);
-                    return (ReadOnlyMemory<byte>.Empty, false);
+                    segBuffer.Dispose();
+                    return null;
                 }
 
-                return (new ReadOnlyMemory<byte>(bodyBuffer, 0, bodyLength), true);
+                return segBuffer;
             }
             catch
             {
-                if (bodyBuffer != null)
-                    ArrayPool<byte>.Shared.Return(bodyBuffer);
+                segBuffer.Dispose();
                 throw;
             }
             finally
@@ -365,13 +432,18 @@ namespace TurboHTTP.Transport.Http1
             }
         }
 
-        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool)> ReadToEndAsync(
+        /// <returns>
+        /// A <see cref="SegmentedBuffer"/> containing the body, or <c>null</c> if the
+        /// server closed the connection without sending any body bytes.
+        /// Callers must check for null before use.
+        /// </returns>
+        private static async Task<SegmentedBuffer> ReadToEndAsync(
             BufferedStreamReader reader,
             CancellationToken ct)
         {
             byte[] readBuffer = ArrayPool<byte>.Shared.Rent(8192);
-            byte[] bodyBuffer = null;
-            int bodyLength = 0;
+            var segBuffer = new SegmentedBuffer();
+            long totalRead = 0;
 
             try
             {
@@ -381,60 +453,30 @@ namespace TurboHTTP.Transport.Http1
                     if (read == 0)
                         break;
 
-                    if ((long)bodyLength + read > MaxResponseBodySize)
+                    totalRead += read;
+                    if (totalRead > MaxResponseBodySize)
                         throw new IOException("Response body exceeds maximum size");
 
-                    EnsureCapacity(ref bodyBuffer, bodyLength + read, bodyLength);
-                    Buffer.BlockCopy(readBuffer, 0, bodyBuffer, bodyLength, read);
-                    bodyLength += read;
+                    segBuffer.Write(new ReadOnlySpan<byte>(readBuffer, 0, read));
                 }
 
-                if (bodyLength == 0)
+                if (segBuffer.IsEmpty)
                 {
-                    if (bodyBuffer != null)
-                        ArrayPool<byte>.Shared.Return(bodyBuffer);
-                    return (ReadOnlyMemory<byte>.Empty, false);
+                    segBuffer.Dispose();
+                    return null;
                 }
 
-                return (new ReadOnlyMemory<byte>(bodyBuffer, 0, bodyLength), true);
+                return segBuffer;
             }
             catch
             {
-                if (bodyBuffer != null)
-                    ArrayPool<byte>.Shared.Return(bodyBuffer);
+                segBuffer.Dispose();
                 throw;
             }
             finally
             {
                 ArrayPool<byte>.Shared.Return(readBuffer);
             }
-        }
-
-        private static void EnsureCapacity(ref byte[] buffer, int required, int bytesToCopy)
-        {
-            if (buffer == null)
-            {
-                buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1024, required));
-                return;
-            }
-
-            if (buffer.Length >= required)
-                return;
-
-            var resized = ArrayPool<byte>.Shared.Rent(Math.Max(required, buffer.Length * 2));
-            try
-            {
-                if (bytesToCopy > 0)
-                    Buffer.BlockCopy(buffer, 0, resized, 0, bytesToCopy);
-            }
-            catch
-            {
-                ArrayPool<byte>.Shared.Return(resized);
-                throw;
-            }
-
-            ArrayPool<byte>.Shared.Return(buffer);
-            buffer = resized;
         }
 
         private sealed class BufferedStreamReader : IDisposable

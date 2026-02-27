@@ -29,119 +29,56 @@ namespace TurboHTTP.Transport.Http2
 
         private async Task SendWindowUpdateAsync(int streamId, int increment, CancellationToken ct)
         {
-            var payload = ArrayPool<byte>.Shared.Rent(4);
-            try
-            {
-                payload[0] = (byte)((increment >> 24) & 0x7F);
-                payload[1] = (byte)((increment >> 16) & 0xFF);
-                payload[2] = (byte)((increment >> 8) & 0xFF);
-                payload[3] = (byte)(increment & 0xFF);
-
-                await _writeLock.WaitAsync(ct).ConfigureAwait(false);
-                try
+            await SendFrameWithPooledPayloadAsync(
+                Http2FrameType.WindowUpdate,
+                streamId,
+                4,
+                ct,
+                payload =>
                 {
-                    await _codec.WriteFrameAsync(new Http2Frame
-                    {
-                        Type = Http2FrameType.WindowUpdate,
-                        Flags = Http2FrameFlags.None,
-                        StreamId = streamId,
-                        Payload = payload,
-                        Length = 4
-                    }, ct).ConfigureAwait(false);
-                }
-                finally
-                {
-                    _writeLock.Release();
-                }
-            }
-            catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
-            {
-                // Connection is shutting down.
-            }
-            catch (ObjectDisposedException)
-            {
-                // Connection is shutting down.
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(payload);
-            }
+                    payload[0] = (byte)((increment >> 24) & 0x7F);
+                    payload[1] = (byte)((increment >> 16) & 0xFF);
+                    payload[2] = (byte)((increment >> 8) & 0xFF);
+                    payload[3] = (byte)(increment & 0xFF);
+                }).ConfigureAwait(false);
         }
 
         private async Task SendGoAwayAsync(Http2ErrorCode errorCode)
         {
-            var payload = ArrayPool<byte>.Shared.Rent(8);
-            try
-            {
-                // Client-initiated GOAWAY should use lastStreamId=0 when server push is disabled.
-                int lastStreamId = 0;
-                payload[0] = (byte)((lastStreamId >> 24) & 0x7F);
-                payload[1] = (byte)((lastStreamId >> 16) & 0xFF);
-                payload[2] = (byte)((lastStreamId >> 8) & 0xFF);
-                payload[3] = (byte)(lastStreamId & 0xFF);
-                payload[4] = (byte)(((uint)errorCode >> 24) & 0xFF);
-                payload[5] = (byte)(((uint)errorCode >> 16) & 0xFF);
-                payload[6] = (byte)(((uint)errorCode >> 8) & 0xFF);
-                payload[7] = (byte)((uint)errorCode & 0xFF);
-
-                await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
-                try
+            await SendFrameWithPooledPayloadAsync(
+                Http2FrameType.GoAway,
+                0,
+                8,
+                _cts.Token,
+                payload =>
                 {
-                    await _codec.WriteFrameAsync(new Http2Frame
-                    {
-                        Type = Http2FrameType.GoAway,
-                        Flags = Http2FrameFlags.None,
-                        StreamId = 0,
-                        Payload = payload,
-                        Length = 8
-                    }, _cts.Token).ConfigureAwait(false);
-                }
-                finally
-                {
-                    _writeLock.Release();
-                }
-            }
-            catch (OperationCanceledException) when (_cts.IsCancellationRequested) { /* Connection being disposed */ }
-            catch (ObjectDisposedException) { /* Connection being disposed, ignore */ }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(payload);
-            }
+                    // Client-initiated GOAWAY should use lastStreamId=0 when server push is disabled.
+                    int lastStreamId = 0;
+                    payload[0] = (byte)((lastStreamId >> 24) & 0x7F);
+                    payload[1] = (byte)((lastStreamId >> 16) & 0xFF);
+                    payload[2] = (byte)((lastStreamId >> 8) & 0xFF);
+                    payload[3] = (byte)(lastStreamId & 0xFF);
+                    payload[4] = (byte)(((uint)errorCode >> 24) & 0xFF);
+                    payload[5] = (byte)(((uint)errorCode >> 16) & 0xFF);
+                    payload[6] = (byte)(((uint)errorCode >> 8) & 0xFF);
+                    payload[7] = (byte)((uint)errorCode & 0xFF);
+                }).ConfigureAwait(false);
         }
 
         private async Task SendRstStreamAsync(int streamId, Http2ErrorCode errorCode)
         {
-            var payload = ArrayPool<byte>.Shared.Rent(4);
-            try
-            {
-                payload[0] = (byte)(((uint)errorCode >> 24) & 0xFF);
-                payload[1] = (byte)(((uint)errorCode >> 16) & 0xFF);
-                payload[2] = (byte)(((uint)errorCode >> 8) & 0xFF);
-                payload[3] = (byte)((uint)errorCode & 0xFF);
-
-                await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
-                try
+            await SendFrameWithPooledPayloadAsync(
+                Http2FrameType.RstStream,
+                streamId,
+                4,
+                _cts.Token,
+                payload =>
                 {
-                    await _codec.WriteFrameAsync(new Http2Frame
-                    {
-                        Type = Http2FrameType.RstStream,
-                        Flags = Http2FrameFlags.None,
-                        StreamId = streamId,
-                        Payload = payload,
-                        Length = 4
-                    }, _cts.Token).ConfigureAwait(false);
-                }
-                finally
-                {
-                    _writeLock.Release();
-                }
-            }
-            catch (OperationCanceledException) when (_cts.IsCancellationRequested) { /* Connection being disposed */ }
-            catch (ObjectDisposedException) { /* Connection being disposed, ignore */ }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(payload);
-            }
+                    payload[0] = (byte)(((uint)errorCode >> 24) & 0xFF);
+                    payload[1] = (byte)(((uint)errorCode >> 16) & 0xFF);
+                    payload[2] = (byte)(((uint)errorCode >> 8) & 0xFF);
+                    payload[3] = (byte)((uint)errorCode & 0xFF);
+                }).ConfigureAwait(false);
         }
 
         private async Task KeepAliveLoopAsync(CancellationToken ct)
@@ -170,20 +107,36 @@ namespace TurboHTTP.Transport.Http2
 
         private async Task SendKeepAlivePingAsync(CancellationToken ct)
         {
-            var payload = ArrayPool<byte>.Shared.Rent(8);
-            Array.Clear(payload, 0, 8);
+            await SendFrameWithPooledPayloadAsync(
+                Http2FrameType.Ping,
+                0,
+                8,
+                ct,
+                payload => Array.Clear(payload, 0, 8)).ConfigureAwait(false);
+        }
+
+        private async Task SendFrameWithPooledPayloadAsync(
+            Http2FrameType type,
+            int streamId,
+            int payloadLength,
+            CancellationToken ct,
+            Action<byte[]> fillPayload)
+        {
+            var payload = ArrayPool<byte>.Shared.Rent(payloadLength);
             try
             {
+                fillPayload?.Invoke(payload);
+
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
                 {
                     await _codec.WriteFrameAsync(new Http2Frame
                     {
-                        Type = Http2FrameType.Ping,
+                        Type = type,
                         Flags = Http2FrameFlags.None,
-                        StreamId = 0,
+                        StreamId = streamId,
                         Payload = payload,
-                        Length = 8
+                        Length = payloadLength
                     }, ct).ConfigureAwait(false);
                 }
                 finally
@@ -191,7 +144,7 @@ namespace TurboHTTP.Transport.Http2
                     _writeLock.Release();
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested || _cts.IsCancellationRequested)
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
             {
                 // Connection is shutting down.
             }
@@ -214,8 +167,12 @@ namespace TurboHTTP.Transport.Http2
             {
                 if (_activeStreams.TryRemove(kvp.Key, out var stream))
                 {
+                    // Signal the pending awaiter only. The ValueTask continuation
+                    // (RunContinuationsAsynchronously = true) will reach
+                    // SendRequestAsync's finally block and call Http2StreamPool.Return(stream).
+                    // Calling Dispose() here would destroy the reusable MemoryStream and
+                    // make the stream unsafe to return to the pool.
                     stream.Fail(ex);
-                    stream.Dispose();
                 }
             }
         }
@@ -250,6 +207,8 @@ namespace TurboHTTP.Transport.Http2
 
             _cts?.Dispose();
             _stream?.Dispose();
+            // Return the HpackEncoder's reusable output buffer to ArrayPool.
+            _hpackEncoder?.Dispose();
         }
 
         private void SendGoAwayOnDisposeBestEffort()

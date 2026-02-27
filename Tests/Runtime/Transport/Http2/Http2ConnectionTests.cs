@@ -1566,7 +1566,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 var response = await responseTask;
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-                Assert.AreEqual("hello", System.Text.Encoding.UTF8.GetString(response.Body.Span));
+                Assert.AreEqual("hello", response.GetBodyAsString());
                 Assert.AreEqual("0", response.Headers.Get("grpc-status"));
 
                 conn.Dispose();

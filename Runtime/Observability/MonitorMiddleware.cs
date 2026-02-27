@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -211,7 +212,7 @@ namespace TurboHTTP.Observability
             var requestSnapshot = CreateBodySnapshot(request?.Body, requestHeaders);
 
             var responseHeaders = CopyHeaders(response?.Headers);
-            var responseSnapshot = CreateBodySnapshot(response?.Body ?? ReadOnlyMemory<byte>.Empty, responseHeaders);
+            var responseSnapshot = CreateBodySnapshot(response?.Body ?? ReadOnlySequence<byte>.Empty, responseHeaders);
 
             var (error, errorType, failureKind) = ResolveError(response, exception);
             var statusCode = response != null ? (int)response.StatusCode : 0;
@@ -329,6 +330,24 @@ namespace TurboHTTP.Observability
             var snapshot = new byte[captureSize];
             body.Slice(0, captureSize).CopyTo(snapshot.AsMemory());
             return new BodySnapshot(snapshot, originalSize, isTruncated, isBinary);
+        }
+
+        private static BodySnapshot CreateBodySnapshot(
+            ReadOnlySequence<byte> body,
+            IReadOnlyDictionary<string, string> headers)
+        {
+            if (body.IsEmpty)
+            {
+                return BodySnapshot.Empty;
+            }
+
+            if (body.IsSingleSegment)
+            {
+                return CreateBodySnapshot(body.First, headers);
+            }
+
+            var flattened = body.ToArray();
+            return CreateBodySnapshot(flattened, headers);
         }
 
         private static IReadOnlyList<HttpMonitorTimelineEvent> CopyTimeline(

@@ -161,12 +161,12 @@ namespace TurboHTTP.UniTask
         }
 
         public static UniTask<UHttpResponse> AsUniTask(
-            this UHttpRequestBuilder builder,
+            this UHttpRequest request,
             CancellationToken cancellationToken = default,
             PlayerLoopTiming? playerLoopTiming = null)
         {
             var timing = playerLoopTiming ?? TurboHttpUniTaskOptions.DefaultPlayerLoopTiming;
-            var operation = builder.SendAsync(cancellationToken);
+            var operation = request.SendAsync(cancellationToken);
             return timing == PlayerLoopTiming.Update
                 ? operation.AsUniTask()
                 : ConvertWithTiming(operation, timing);

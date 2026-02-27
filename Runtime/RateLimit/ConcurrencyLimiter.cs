@@ -3,7 +3,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace TurboHTTP.Performance
+namespace TurboHTTP.RateLimit
 {
     /// <summary>
     /// Limits concurrent operations on a per-host basis using semaphores.

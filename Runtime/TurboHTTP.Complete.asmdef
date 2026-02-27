@@ -14,7 +14,7 @@
     "TurboHTTP.Files",
     "TurboHTTP.Unity",
     "TurboHTTP.Testing",
-    "TurboHTTP.Performance",
+    "TurboHTTP.RateLimit",
     "TurboHTTP.JSON",
     "TurboHTTP.Middleware"
   ],

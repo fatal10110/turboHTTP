@@ -119,20 +119,6 @@ namespace TurboHTTP.Tests.Transport.Tls
             Assert.IsTrue(provider.IsAlpnSupported(), "BouncyCastle should always support ALPN");
         }
 
-        // 3C.11 compatibility aliases (method names from checklist)
-
-        [Test]
-        public void ForceBouncyCastle_ReturnsCorrectProvider()
-        {
-            ForceBouncyCastle_WhenAvailable_ReturnsCorrectProvider();
-        }
-
-        [Test]
-        public void ForceBouncyCastle_WhenNotAvailable_ThrowsException()
-        {
-            ForceBouncyCastle_WhenNotAvailable_ThrowsInvalidOperationException();
-        }
-
         // --- SslStream viability probe state tests ---
 
         [TearDown]
@@ -256,6 +242,74 @@ namespace TurboHTTP.Tests.Transport.Tls
             var wrappedNonPlatform = new System.Reflection.TargetInvocationException(nonPlatformInner);
             Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(wrappedNonPlatform),
                 "Should not treat wrapped IOException as platform exception");
+        }
+
+        // --- DiagnosticLogger tests ---
+
+        [SetUp]
+        public void ClearDiagnosticLogger()
+        {
+            TlsProviderSelector.DiagnosticLogger = null;
+        }
+
+        [Test]
+        public void DiagnosticLogger_DefaultIsNull()
+        {
+            // Logger is null by default; no message is emitted.
+            Assert.IsNull(TlsProviderSelector.DiagnosticLogger);
+        }
+
+        [Test]
+        public void DiagnosticLogger_MarkSslStreamViable_LogsOnFirstTransition()
+        {
+            TlsProviderSelector.ResetProbeState(); // ensure initial state = 0 regardless of prior tests
+            var messages = new System.Collections.Generic.List<string>();
+            TlsProviderSelector.DiagnosticLogger = messages.Add;
+
+            TlsProviderSelector.MarkSslStreamViable(); // first transition 0→1 should log
+            Assert.AreEqual(1, messages.Count, "Should log exactly once on first transition");
+            StringAssert.Contains("SslStream", messages[0]);
+
+            TlsProviderSelector.MarkSslStreamViable(); // already 1, no second log
+            Assert.AreEqual(1, messages.Count, "Should not log again if already viable");
+        }
+
+        [Test]
+        public void DiagnosticLogger_MarkSslStreamBroken_LogsOnFirstTransition()
+        {
+            TlsProviderSelector.ResetProbeState(); // ensure state starts at 0
+            var messages = new System.Collections.Generic.List<string>();
+            TlsProviderSelector.DiagnosticLogger = messages.Add;
+
+            TlsProviderSelector.MarkSslStreamBroken(); // first transition to broken should log
+            Assert.AreEqual(1, messages.Count, "Should log on first broken transition");
+            StringAssert.Contains("BouncyCastle", messages[0]);
+
+            TlsProviderSelector.MarkSslStreamBroken(); // already 2, no second log
+            Assert.AreEqual(1, messages.Count, "Should not log again if already broken");
+        }
+
+        [Test]
+        public void DiagnosticLogger_NullLogger_DoesNotThrow()
+        {
+            TlsProviderSelector.DiagnosticLogger = null;
+            // These should not throw even when logger is null.
+            Assert.DoesNotThrow(() => TlsProviderSelector.MarkSslStreamViable());
+            Assert.DoesNotThrow(() => TlsProviderSelector.MarkSslStreamBroken());
+        }
+
+        [Test]
+        public void DiagnosticLogger_CanBeChangedAtRuntime()
+        {
+            TlsProviderSelector.ResetProbeState(); // ensure state starts at 0
+            var firstLog = new System.Collections.Generic.List<string>();
+            TlsProviderSelector.DiagnosticLogger = firstLog.Add;
+            TlsProviderSelector.MarkSslStreamViable();
+            Assert.AreEqual(1, firstLog.Count);
+
+            TlsProviderSelector.DiagnosticLogger = null;
+            TlsProviderSelector.MarkSslStreamBroken(); // logger is null — should be silent
+            Assert.AreEqual(1, firstLog.Count, "No new messages when logger is null");
         }
     }
 }

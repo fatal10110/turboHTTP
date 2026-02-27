@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Threading;
 using NUnit.Framework;
-using TurboHTTP.Performance;
+using TurboHTTP.RateLimit;
 
 namespace TurboHTTP.Tests.Performance
 {

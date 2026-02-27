@@ -31,32 +31,6 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Backward-compatible registration overload that maps legacy
-        /// HTTP/2 decoded-header-byte limits into <see cref="Http2Options"/>.
-        /// </summary>
-        public static void Register(
-            Func<IHttpTransport> factory,
-            Func<TlsBackend, IHttpTransport> backendFactory,
-            Func<TlsBackend, int, IHttpTransport> advancedFactory)
-        {
-            if (advancedFactory == null)
-            {
-                Register(factory, backendFactory, (Func<TlsBackend, ConnectionPoolOptions, Http2Options, IHttpTransport>)null);
-                return;
-            }
-
-            Register(
-                factory,
-                backendFactory,
-                (tlsBackend, poolOptions, http2Options) =>
-                {
-                    int maxDecodedHeaderBytes = http2Options?.MaxDecodedHeaderBytes
-                        ?? UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes;
-                    return advancedFactory(tlsBackend, maxDecodedHeaderBytes);
-                });
-        }
-
-        /// <summary>
         /// Register transport factory functions including advanced option support.
         /// </summary>
         /// <param name="factory">Factory for the default (Auto) transport singleton.</param>

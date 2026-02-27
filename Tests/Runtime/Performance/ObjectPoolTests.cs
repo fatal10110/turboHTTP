@@ -4,7 +4,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
-using TurboHTTP.Performance;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Tests.Performance
 {

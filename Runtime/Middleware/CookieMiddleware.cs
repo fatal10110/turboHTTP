@@ -63,19 +63,11 @@ namespace TurboHTTP.Middleware
                 var jarCookieHeader = _jar.GetCookieHeader(request.Uri, request.Method, isCrossSite);
                 if (!string.IsNullOrEmpty(jarCookieHeader))
                 {
-                    var headers = request.Headers.Clone();
-                    var existingCookieHeader = headers.Get("Cookie");
-                    headers.Set("Cookie", MergeCookieHeaders(existingCookieHeader, jarCookieHeader));
+                    var existingCookieHeader = request.Headers.Get("Cookie");
+                    request.Headers.Set("Cookie", MergeCookieHeaders(existingCookieHeader, jarCookieHeader));
 
-                    effectiveRequest = new UHttpRequest(
-                        request.Method,
-                        request.Uri,
-                        headers,
-                        request.Body,
-                        request.Timeout,
-                        request.Metadata);
-
-                    context.UpdateRequest(effectiveRequest);
+                    effectiveRequest = request;
+                    context.UpdateRequest(request);
                     context.RecordEvent("CookieAttached");
                 }
             }

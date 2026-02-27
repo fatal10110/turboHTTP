@@ -2,9 +2,8 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
-using TurboHTTP.Performance;
 
-namespace TurboHTTP.Middleware
+namespace TurboHTTP.RateLimit
 {
     /// <summary>
     /// Middleware that enforces per-host and global concurrency limits on HTTP requests.

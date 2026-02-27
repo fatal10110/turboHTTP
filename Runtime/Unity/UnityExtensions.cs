@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -133,7 +134,7 @@ namespace TurboHTTP.Unity
 
             await PathSafety.WriteAtomicAsync(
                     resolvedPath,
-                    response.Body,
+                    ToBodyMemory(response.Body),
                     writeOptions,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -144,6 +145,17 @@ namespace TurboHTTP.Unity
         private static string BuildDefaultUserAgent()
         {
             return "TurboHTTP/1.0 Unity/" + Application.unityVersion + " " + Application.platform;
+        }
+
+        private static ReadOnlyMemory<byte> ToBodyMemory(ReadOnlySequence<byte> body)
+        {
+            if (body.IsEmpty)
+                return ReadOnlyMemory<byte>.Empty;
+
+            if (body.IsSingleSegment)
+                return body.First;
+
+            return body.ToArray();
         }
     }
 }

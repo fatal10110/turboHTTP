@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
@@ -611,7 +612,7 @@ namespace TurboHTTP.Cache
                 source.Timeout,
                 source.Metadata);
         }
-        private static ReadOnlyMemory<byte> SnapshotBodyForCache(ReadOnlyMemory<byte> source)
+        private static ReadOnlyMemory<byte> SnapshotBodyForCache(ReadOnlySequence<byte> source)
         {
             if (source.IsEmpty)
                 return ReadOnlyMemory<byte>.Empty;

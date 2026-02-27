@@ -31,8 +31,7 @@ namespace TurboHTTP.Tests.Transport
                     NetworkQualityDetector = detector
                 });
 
-                var request = client.Get("https://example.test/cold").Build();
-
+                using var request = client.Get("https://example.test/cold");
                 await client.SendAsync(request);
                 Assert.AreEqual(TimeSpan.FromSeconds(10), transport.LastRequest.Timeout);
             }).GetAwaiter().GetResult();
@@ -70,10 +69,11 @@ namespace TurboHTTP.Tests.Transport
                     NetworkQualityDetector = detector
                 });
 
-                var request = client.Get("https://example.test/poor").Build();
+                using var request = client.Get("https://example.test/poor");
+                var baselineTimeout = request.Timeout;
                 await client.SendAsync(request);
 
-                Assert.Greater(transport.LastRequest.Timeout, request.Timeout);
+                Assert.Greater(transport.LastRequest.Timeout, baselineTimeout);
             }).GetAwaiter().GetResult();
         }
 

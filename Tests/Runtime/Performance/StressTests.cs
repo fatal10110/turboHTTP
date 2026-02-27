@@ -5,8 +5,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
-using TurboHTTP.Middleware;
-using TurboHTTP.Performance;
+using TurboHTTP.Core.Internal;
+using TurboHTTP.RateLimit;
 using TurboHTTP.Testing;
 
 namespace TurboHTTP.Tests.Performance

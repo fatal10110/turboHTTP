@@ -22,6 +22,11 @@ namespace TurboHTTP.Transport.Tls
         private static readonly string[] EmptyAlpnProtocols = Array.Empty<string>();
         public static readonly SslStreamTlsProvider Instance = new();
 
+        // Cached static delegate — eliminates per-WrapAsync delegate allocation since
+        // ValidateServerCertificate has no instance state.
+        private static readonly RemoteCertificateValidationCallback s_validateCertCallback =
+            new RemoteCertificateValidationCallback(ValidateServerCertificate);
+
         public string ProviderName => "SslStream";
 
         private static readonly PropertyInfo _alpnOptionsProperty;
@@ -79,10 +84,14 @@ namespace TurboHTTP.Transport.Tls
                         var newExpr = Expression.New(_optionsCtor);
                         _createOptionsInstance = Expression.Lambda<Func<object>>(newExpr).Compile();
                     }
-                    catch
+                    catch (PlatformNotSupportedException)
                     {
-                        // AOT/JIT restrictions may block dynamic delegate compilation.
-                        // Fallback to ConstructorInfo.Invoke in AuthenticateWithAlpnAsync.
+                        // IL2CPP does not support dynamic method compilation.
+                        // Fall back to ConstructorInfo.Invoke in AuthenticateWithAlpnAsync.
+                    }
+                    catch (NotSupportedException)
+                    {
+                        // Mono interpreter or AOT variant that disallows Compile(). Fall back.
                     }
                 }
 
@@ -144,7 +153,7 @@ namespace TurboHTTP.Transport.Tls
             var sslStream = new SslStream(
                 innerStream,
                 leaveInnerStreamOpen: false,
-                userCertificateValidationCallback: ValidateServerCertificate);
+                userCertificateValidationCallback: s_validateCertCallback);
 
             try
             {
@@ -193,6 +202,11 @@ namespace TurboHTTP.Transport.Tls
                     // aware delay to abandon the await when the outer timeout fires.
                     // The underlying handshake may continue to completion on its thread,
                     // but the SslStream will be disposed by the caller (catch block below).
+                    //
+                    // checkCertificateRevocation: false — intentional design choice.
+                    // OCSP/CRL revocation checks are unreliable on mobile networks (servers
+                    // frequently unreachable) and add 50–200 ms per fresh handshake. The
+                    // BCL default for SslClientAuthenticationOptions is also false.
 #pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
                     var authTask = sslStream.AuthenticateAsClientAsync(
                         host,
@@ -334,16 +348,18 @@ namespace TurboHTTP.Transport.Tls
             return false;
         }
 
-        private bool ValidateServerCertificate(
+        // Static: no instance state. Cached via s_validateCertCallback to avoid
+        // per-connection delegate allocation.
+        // Strict by design: only accepts chains with zero policy errors.
+        // Certificate validation failures, hostname mismatches, and untrusted roots
+        // all set sslPolicyErrors != None and propagate as AuthenticationException
+        // to the caller — no silent downgrade behavior.
+        private static bool ValidateServerCertificate(
             object sender,
             X509Certificate certificate,
             X509Chain chain,
             SslPolicyErrors sslPolicyErrors)
         {
-            // OS-level certificate validation. Returns true only if the certificate
-            // chain validates successfully with no policy errors (hostname mismatch,
-            // untrusted root, expired cert, etc. all cause SslPolicyErrors != None).
-            // Certificate pinning support is deferred to a future phase.
             return sslPolicyErrors == SslPolicyErrors.None;
         }
 

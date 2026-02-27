@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
@@ -152,8 +153,8 @@ namespace TurboHTTP.Observability
 
             if (_logLevel >= LogLevel.Detailed && _logBody && !response.Body.IsEmpty)
             {
-                int previewBytes = Math.Min(response.Body.Length, 500);
-                var bodyPreview = System.Text.Encoding.UTF8.GetString(response.Body.Span.Slice(0, previewBytes));
+                int previewBytes = (int)Math.Min(response.Body.Length, 500L);
+                var bodyPreview = GetUtf8Preview(response.Body, previewBytes);
                 if (response.Body.Length > 500)
                     bodyPreview += "...";
                 messageBuilder.Append("\n  Body: ").Append(bodyPreview);
@@ -178,6 +179,19 @@ namespace TurboHTTP.Observability
         private bool ShouldRedact(string headerName)
         {
             return _redactSensitiveHeaders && DefaultSensitiveHeaders.Contains(headerName);
+        }
+
+        private static string GetUtf8Preview(ReadOnlySequence<byte> body, int previewBytes)
+        {
+            if (previewBytes <= 0 || body.IsEmpty)
+                return string.Empty;
+
+            if (body.IsSingleSegment)
+                return Encoding.UTF8.GetString(body.FirstSpan.Slice(0, previewBytes));
+
+            var preview = new byte[previewBytes];
+            body.Slice(0, previewBytes).CopyTo(preview);
+            return Encoding.UTF8.GetString(preview, 0, preview.Length);
         }
     }
 }

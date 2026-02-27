@@ -6,7 +6,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
-using TurboHTTP.Performance;
+using TurboHTTP.RateLimit;
 using UnityEngine.TestTools;
 
 namespace TurboHTTP.Tests.Performance

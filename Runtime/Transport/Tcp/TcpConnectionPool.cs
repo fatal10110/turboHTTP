@@ -231,6 +231,7 @@ namespace TurboHTTP.Transport.Tcp
         private readonly TlsBackend _tlsBackend;
         private readonly int _dnsTimeoutMs;
         private readonly HappyEyeballsOptions _happyEyeballsOptions;
+        private readonly SocketIoMode _socketIoMode;
         private readonly TimeSpan _scavengeInterval;
         private readonly CancellationTokenSource _scavengeCts;
         private readonly Task _scavengeTask;
@@ -246,12 +247,14 @@ namespace TurboHTTP.Transport.Tcp
         /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 2 minutes).</param>
         /// <param name="tlsBackend">TLS backend selection strategy (default Auto).</param>
         /// <param name="dnsTimeout">Timeout for DNS lookups. Default 10 seconds.</param>
+        /// <param name="socketIoMode">Socket I/O implementation (default NetworkStream).</param>
         public TcpConnectionPool(
             int maxConnectionsPerHost = 6,
             TimeSpan? connectionIdleTimeout = null,
             TlsBackend tlsBackend = TlsBackend.Auto,
             TimeSpan? dnsTimeout = null,
-            HappyEyeballsOptions happyEyeballsOptions = null)
+            HappyEyeballsOptions happyEyeballsOptions = null,
+            SocketIoMode socketIoMode = SocketIoMode.NetworkStream)
         {
             if (maxConnectionsPerHost <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
@@ -269,6 +272,7 @@ namespace TurboHTTP.Transport.Tcp
             _dnsTimeoutMs = dnsTimeout.HasValue ? (int)dnsTimeout.Value.TotalMilliseconds : DefaultDnsTimeoutMs;
             _happyEyeballsOptions = (happyEyeballsOptions ?? new HappyEyeballsOptions()).Clone();
             _happyEyeballsOptions.Validate();
+            _socketIoMode = socketIoMode;
 
             var halfIdle = TimeSpan.FromTicks(_connectionIdleTimeout.Ticks / 2);
             var minInterval = TimeSpan.FromSeconds(5);
@@ -279,6 +283,8 @@ namespace TurboHTTP.Transport.Tcp
 
             _scavengeCts = new CancellationTokenSource();
             _scavengeTask = Task.Run(() => RunIdleScavengerAsync(_scavengeCts.Token));
+
+            SaeaPlatformDetection.LogSelectedMode(_socketIoMode);
         }
 
         /// <summary>
@@ -459,7 +465,21 @@ namespace TurboHTTP.Transport.Tcp
             // Socket connection with address fallback (IPv6-safe)
             var socket = await ConnectSocketAsync(addresses, port, ct).ConfigureAwait(false);
 
-            Stream stream = new NetworkStream(socket, ownsSocket: true);
+            // Build the base stream based on the configured socket I/O mode.
+            // All three streams close the socket when disposed (via ownsSocket or channel ownership).
+            Stream stream;
+            switch (_socketIoMode)
+            {
+                case SocketIoMode.Saea:
+                    stream = new SaeaStream(new SaeaSocketChannel(socket));
+                    break;
+                case SocketIoMode.PollSelect:
+                    stream = new PollSelectStream(new PollSelectSocketChannel(socket));
+                    break;
+                default: // NetworkStream
+                    stream = new NetworkStream(socket, ownsSocket: true);
+                    break;
+            }
             string negotiatedAlpn = null;
             string tlsVersion = null;
             string tlsProviderName = null;
@@ -472,9 +492,11 @@ namespace TurboHTTP.Transport.Tcp
                     var tlsResult = await tlsProvider.WrapAsync(
                         stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
 
-                    // CAS only transitions 0→1; safe to call after any provider succeeds.
-                    // If state is already 2 (broken), CAS fails harmlessly.
-                    if (_tlsBackend == TlsBackend.Auto)
+                    // Only mark SslStream as viable when it was actually used.
+                    // In Auto mode after a probe-state transition, GetAutoProvider() may return
+                    // BouncyCastle; calling MarkSslStreamViable() with BC as the active provider
+                    // would be semantically incorrect (even though the CAS guards against promotion).
+                    if (_tlsBackend == TlsBackend.Auto && tlsResult.ProviderName == "SslStream")
                         TlsProviderSelector.MarkSslStreamViable();
 
                     stream = tlsResult.SecureStream;
@@ -492,10 +514,22 @@ namespace TurboHTTP.Transport.Tcp
                     TlsProviderSelector.MarkSslStreamBroken();
 
                     // The failed SslStream handshake left the stream in an indeterminate state.
-                    // Dispose it and reconnect with a fresh socket for the BouncyCastle retry.
+                    // Dispose it and reconnect with a fresh socket for the BouncyCastle retry,
+                    // using the same SocketIoMode as the primary path for consistency.
                     stream.Dispose();
                     socket = await ConnectSocketAsync(addresses, port, ct).ConfigureAwait(false);
-                    stream = new NetworkStream(socket, ownsSocket: true);
+                    switch (_socketIoMode)
+                    {
+                        case SocketIoMode.Saea:
+                            stream = new SaeaStream(new SaeaSocketChannel(socket));
+                            break;
+                        case SocketIoMode.PollSelect:
+                            stream = new PollSelectStream(new PollSelectSocketChannel(socket));
+                            break;
+                        default:
+                            stream = new NetworkStream(socket, ownsSocket: true);
+                            break;
+                    }
 
                     try
                     {

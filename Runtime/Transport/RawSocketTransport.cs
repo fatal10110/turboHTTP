@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Http1;
 using TurboHTTP.Transport.Http2;
 using TurboHTTP.Transport.Tcp;
@@ -71,7 +72,8 @@ namespace TurboHTTP.Transport
                             connectionIdleTimeout: poolOptions.ConnectionIdleTimeout,
                             tlsBackend: tlsBackend,
                             dnsTimeout: TimeSpan.FromMilliseconds(poolOptions.DnsTimeoutMs),
-                            happyEyeballsOptions: poolOptions.HappyEyeballs),
+                            happyEyeballsOptions: poolOptions.HappyEyeballs,
+                            socketIoMode: poolOptions.SocketIoMode),
                         tlsBackend: tlsBackend,
                         http2Options: http2Options));
         }
@@ -339,36 +341,58 @@ namespace TurboHTTP.Transport
             if (!secure)
             {
                 var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
+                // The original request's BodyOwner (if any) is disposed here because
+                // PrepareHttpProxyForwardRequest copies only request.Body (byte[]).
+                // SendOnStreamAsync will dispose forwardedRequest.BodyOwner which is null.
+                try
+                {
+                    var parsed = await SendOnStreamAsync(
+                        stream,
+                        forwardedRequest,
+                        context,
+                        ct).ConfigureAwait(false);
 
-                var parsed = await SendOnStreamAsync(
-                    stream,
-                    forwardedRequest,
-                    context,
-                    ct).ConfigureAwait(false);
-
-                // Do not return proxy-forwarded sockets to the generic host pool:
-                // pool keys currently do not include proxy auth identity or target scheme.
-                return BuildResponse(parsed, context, forwardedRequest);
+                    // Do not return proxy-forwarded sockets to the generic host pool:
+                    // pool keys currently do not include proxy auth identity or target scheme.
+                    return BuildResponse(parsed, context, forwardedRequest);
+                }
+                finally
+                {
+                    request.DisposeBodyOwner();
+                }
             }
 
             context.RecordEvent("TransportProxyConnect");
             context.RecordEvent("TransportProxyConnectHttp11Only");
-            stream = await EstablishConnectTunnelAsync(
-                stream,
-                host,
-                port,
-                proxy,
-                ct).ConfigureAwait(false);
 
-            var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-            var tunneledParsed = await SendOnStreamAsync(
-                stream,
-                tunneledRequest,
-                context,
-                ct).ConfigureAwait(false);
+            // The try/finally starts BEFORE EstablishConnectTunnelAsync so that
+            // request.BodyOwner is disposed even when the CONNECT handshake fails
+            // (407 Proxy Auth Required, network error, etc.).
+            // PrepareHttpsProxyTunnelRequest copies only request.Body (byte[]);
+            // SendOnStreamAsync disposes tunneledRequest.BodyOwner which is null.
+            try
+            {
+                stream = await EstablishConnectTunnelAsync(
+                    stream,
+                    host,
+                    port,
+                    proxy,
+                    ct).ConfigureAwait(false);
 
-            // CONNECT tunnels are authority-bound; do not return this socket to the generic proxy pool.
-            return BuildResponse(tunneledParsed, context, tunneledRequest);
+                var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
+                var tunneledParsed = await SendOnStreamAsync(
+                    stream,
+                    tunneledRequest,
+                    context,
+                    ct).ConfigureAwait(false);
+
+                // CONNECT tunnels are authority-bound; do not return this socket to the generic proxy pool.
+                return BuildResponse(tunneledParsed, context, tunneledRequest);
+            }
+            finally
+            {
+                request.DisposeBodyOwner();
+            }
         }
 
         private static ProxySettings ResolveProxySettings(UHttpRequest request)
@@ -706,6 +730,8 @@ namespace TurboHTTP.Transport
         /// <summary>
         /// Execute a single send attempt on the given lease. Returns the parsed response.
         /// Caller is responsible for lease disposal.
+        /// If the request carries a pool-owned body (<see cref="UHttpRequest.BodyOwner"/>),
+        /// it is disposed immediately after the request bytes are written to the wire.
         /// </summary>
         private async Task<ParsedResponse> SendOnLeaseAsync(
             ConnectionLease lease,
@@ -714,8 +740,16 @@ namespace TurboHTTP.Transport
             CancellationToken ct)
         {
             context.RecordEvent("TransportSending");
-            await Http11RequestSerializer.SerializeAsync(request, lease.Connection.Stream, ct)
-                .ConfigureAwait(false);
+            try
+            {
+                await Http11RequestSerializer.SerializeAsync(request, lease.Connection.Stream, ct)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                // Body owner is no longer needed once the bytes are on the wire (or the write failed).
+                request.DisposeBodyOwner();
+            }
 
             context.RecordEvent("TransportReceiving");
             var parsed = await Http11ResponseParser.ParseAsync(lease.Connection.Stream, request.Method, ct)
@@ -732,8 +766,16 @@ namespace TurboHTTP.Transport
             CancellationToken ct)
         {
             context.RecordEvent("TransportSending");
-            await Http11RequestSerializer.SerializeAsync(request, stream, ct)
-                .ConfigureAwait(false);
+            try
+            {
+                await Http11RequestSerializer.SerializeAsync(request, stream, ct)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                // Body owner is no longer needed once the bytes are on the wire (or the write failed).
+                request.DisposeBodyOwner();
+            }
 
             context.RecordEvent("TransportReceiving");
             var parsed = await Http11ResponseParser.ParseAsync(stream, request.Method, ct)
@@ -748,13 +790,40 @@ namespace TurboHTTP.Transport
             RequestContext context,
             UHttpRequest request)
         {
-            return new UHttpResponse(
-                statusCode: parsed.StatusCode,
-                headers: parsed.Headers,
-                body: parsed.Body,
-                elapsedTime: context.Elapsed,
-                request: request,
-                bodyFromPool: parsed.BodyFromPool);
+            // Extract all values from the parsed result before returning it to the pool.
+            // Ownership of Headers, Body (including the pooled backing array) and
+            // SegmentedBody transfers to the UHttpResponse instance below.
+            UHttpResponse response;
+            if (parsed.SegmentedBody != null)
+            {
+                // Chunked and read-to-end bodies are held in a SegmentedBuffer.
+                // Pass it as IDisposable owner + ReadOnlySequence<byte> so UHttpResponse
+                // can dispose the pooled segments when the response is disposed (or lazily
+                // flatten them into a single array on the first Body access).
+                response = new UHttpResponse(
+                    statusCode: parsed.StatusCode,
+                    headers: parsed.Headers,
+                    body: parsed.SegmentedBody.AsSequence(),
+                    segmentedBodyOwner: parsed.SegmentedBody,
+                    elapsedTime: context.Elapsed,
+                    request: request);
+            }
+            else
+            {
+                response = new UHttpResponse(
+                    statusCode: parsed.StatusCode,
+                    headers: parsed.Headers,
+                    body: parsed.Body,
+                    elapsedTime: context.Elapsed,
+                    request: request,
+                    bodyFromPool: parsed.BodyFromPool);
+            }
+
+            // Return the ParsedResponse shell to the pool now that all values have been
+            // transferred. Reset() nulls Headers and SegmentedBody references so the pool
+            // does not retain ownership of the transferred objects.
+            ParsedResponsePool.Return(parsed);
+            return response;
         }
 
         internal bool HasHttp2Connection(string host, int port)

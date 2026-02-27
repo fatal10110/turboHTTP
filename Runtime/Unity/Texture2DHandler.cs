@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -363,7 +364,7 @@ namespace TurboHTTP.Unity
 
             ValidateContentType(response, options);
             ValidateBodyLength(response, options);
-            ValidatePixelGuardFromHeader(response.Body.Span, options);
+            ValidatePixelGuardFromHeader(response.Body, options);
 
             return new DecodeInput(GetDecodeBytes(response.Body), options);
         }
@@ -463,12 +464,13 @@ namespace TurboHTTP.Unity
             }
         }
 
-        private static void ValidatePixelGuardFromHeader(ReadOnlySpan<byte> imageBytes, TextureOptions options)
+        private static void ValidatePixelGuardFromHeader(ReadOnlySequence<byte> imageBytes, TextureOptions options)
         {
             if (!options.MaxPixels.HasValue)
                 return;
 
-            if (!TryReadImageDimensions(imageBytes, out var width, out var height))
+            var bytes = GetDecodeBytes(imageBytes);
+            if (!TryReadImageDimensions(bytes, out var width, out var height))
                 return;
 
             var pixels = (long)width * height;
@@ -524,7 +526,7 @@ namespace TurboHTTP.Unity
             }
         }
 
-        private static byte[] GetDecodeBytes(ReadOnlyMemory<byte> body)
+        private static byte[] GetDecodeBytes(ReadOnlySequence<byte> body)
         {
             if (TryGetExactArray(body, out var existing))
                 return existing;
@@ -532,9 +534,10 @@ namespace TurboHTTP.Unity
             return body.ToArray();
         }
 
-        private static bool TryGetExactArray(ReadOnlyMemory<byte> memory, out byte[] array)
+        private static bool TryGetExactArray(ReadOnlySequence<byte> sequence, out byte[] array)
         {
-            if (MemoryMarshal.TryGetArray(memory, out var segment) &&
+            if (sequence.IsSingleSegment &&
+                MemoryMarshal.TryGetArray(sequence.First, out var segment) &&
                 segment.Array != null &&
                 segment.Offset == 0 &&
                 segment.Count == segment.Array.Length)

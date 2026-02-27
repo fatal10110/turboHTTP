@@ -37,12 +37,11 @@ TurboHTTP is built on a **modular architecture** with a required core and option
 1. `TurboHTTP.Retry` - Advanced retry logic with idempotency awareness
 2. `TurboHTTP.Cache` - HTTP caching with ETag support
 3. `TurboHTTP.Auth` - Authentication middleware
-4. `TurboHTTP.RateLimit` - Rate limiting per host
+4. `TurboHTTP.RateLimit` - Rate limiting and concurrency control
 5. `TurboHTTP.Observability` - Timeline tracing and metrics
 6. `TurboHTTP.Files` - File downloads with resume support
 7. `TurboHTTP.Unity` - Unity asset handlers (Texture2D, AudioClip, etc.)
 8. `TurboHTTP.Testing` - Record/replay and mock transports
-9. `TurboHTTP.Performance` - Memory pooling and concurrency control
 
 ### Optional Editor Module
 

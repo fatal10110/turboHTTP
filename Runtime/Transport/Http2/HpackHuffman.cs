@@ -1,6 +1,5 @@
 using System;
-using System.Buffers;
-using System.Collections.Generic;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -327,16 +326,28 @@ namespace TurboHTTP.Transport.Http2
 
         public static byte[] Encode(byte[] data, int offset, int length)
         {
-            int totalBits = 0;
-            for (int i = offset; i < offset + length; i++)
-                totalBits += s_encodeTable[data[i]].BitLength;
-
-            int outputLength = (totalBits + 7) / 8;
+            int outputLength = GetEncodedLength(data, offset, length);
             var output = new byte[outputLength];
+            EncodeCore(data, offset, length, output, 0);
+            return output;
+        }
 
+        /// <summary>
+        /// Encodes <paramref name="length"/> bytes starting at <paramref name="offset"/> in
+        /// <paramref name="data"/> directly into <paramref name="destination"/> at
+        /// <paramref name="destOffset"/>.
+        /// The caller must ensure <paramref name="destination"/> has at least
+        /// <see cref="GetEncodedLength"/> bytes available from <paramref name="destOffset"/>.
+        /// </summary>
+        public static void EncodeInto(byte[] data, int offset, int length, byte[] destination, int destOffset)
+        {
+            EncodeCore(data, offset, length, destination, destOffset);
+        }
+
+        private static void EncodeCore(byte[] data, int offset, int length, byte[] output, int outIndex)
+        {
             long bitBuffer = 0;
             int bitCount = 0;
-            int outIndex = 0;
 
             for (int i = offset; i < offset + length; i++)
             {
@@ -360,8 +371,6 @@ namespace TurboHTTP.Transport.Http2
                 int pad = 8 - bitCount;
                 output[outIndex] = (byte)((bitBuffer << pad) | ((1 << pad) - 1));
             }
-
-            return output;
         }
 
         public static int GetEncodedLength(byte[] data, int offset, int length)
@@ -374,7 +383,7 @@ namespace TurboHTTP.Transport.Http2
 
         public static byte[] Decode(byte[] data, int offset, int length)
         {
-            using (var output = new PooledByteAccumulator(Math.Max(16, length)))
+            using (var output = new PooledArrayBufferWriter(Math.Max(16, length)))
             {
                 var node = s_root;
                 int paddingBits = 0; // Count consecutive 1-bits at end
@@ -404,7 +413,7 @@ namespace TurboHTTP.Transport.Http2
                                     throw new HpackDecodingException(
                                         "Invalid Huffman padding (must be all 1-bits)");
                             }
-                            return output.ToArray();
+                            return output.WrittenMemory.ToArray();
                         }
 
                         node = next;
@@ -417,7 +426,9 @@ namespace TurboHTTP.Transport.Http2
                             if (node.Symbol == EosSymbol)
                                 throw new HpackDecodingException("EOS symbol found in Huffman-encoded data");
 
-                            output.Add((byte)node.Symbol);
+                            var destination = output.GetSpan(1);
+                            destination[0] = (byte)node.Symbol;
+                            output.Advance(1);
                             node = s_root;
                             paddingBits = 0;
                         }
@@ -434,49 +445,7 @@ namespace TurboHTTP.Transport.Http2
                         throw new HpackDecodingException("Invalid Huffman padding (more than 7 bits)");
                 }
 
-                return output.ToArray();
-            }
-        }
-
-        private sealed class PooledByteAccumulator : IDisposable
-        {
-            private byte[] _buffer;
-            private int _length;
-
-            public PooledByteAccumulator(int initialCapacity)
-            {
-                _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
-            }
-
-            public void Add(byte value)
-            {
-                if (_length == _buffer.Length)
-                {
-                    var resized = ArrayPool<byte>.Shared.Rent(_buffer.Length * 2);
-                    Buffer.BlockCopy(_buffer, 0, resized, 0, _length);
-                    ArrayPool<byte>.Shared.Return(_buffer);
-                    _buffer = resized;
-                }
-
-                _buffer[_length++] = value;
-            }
-
-            public byte[] ToArray()
-            {
-                var copy = new byte[_length];
-                if (_length > 0)
-                    Buffer.BlockCopy(_buffer, 0, copy, 0, _length);
-                return copy;
-            }
-
-            public void Dispose()
-            {
-                if (_buffer != null)
-                {
-                    ArrayPool<byte>.Shared.Return(_buffer);
-                    _buffer = null;
-                    _length = 0;
-                }
+                return output.WrittenMemory.ToArray();
             }
         }
     }

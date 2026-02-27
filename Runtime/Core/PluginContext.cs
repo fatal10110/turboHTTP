@@ -12,22 +12,22 @@ namespace TurboHTTP.Core
     {
         private readonly string _pluginName;
         private readonly PluginCapabilities _capabilities;
-        private readonly Action<IHttpInterceptor> _registerInterceptor;
+        private readonly Action<IHttpMiddleware> _registerMiddleware;
         private readonly Action<string> _diagnostics;
-        private readonly List<IHttpInterceptor> _registeredInterceptors = new List<IHttpInterceptor>();
+        private readonly List<IHttpMiddleware> _registeredMiddlewares = new List<IHttpMiddleware>();
         private readonly UHttpClientOptions _optionsSnapshot;
 
         internal PluginContext(
             UHttpClientOptions optionsSnapshot,
             string pluginName,
             PluginCapabilities capabilities,
-            Action<IHttpInterceptor> registerInterceptor,
+            Action<IHttpMiddleware> registerMiddleware,
             Action<string> diagnostics)
         {
             _optionsSnapshot = optionsSnapshot?.Clone() ?? throw new ArgumentNullException(nameof(optionsSnapshot));
             _pluginName = pluginName ?? string.Empty;
             _capabilities = capabilities;
-            _registerInterceptor = registerInterceptor ?? throw new ArgumentNullException(nameof(registerInterceptor));
+            _registerMiddleware = registerMiddleware ?? throw new ArgumentNullException(nameof(registerMiddleware));
             _diagnostics = diagnostics;
         }
 
@@ -35,12 +35,12 @@ namespace TurboHTTP.Core
 
         public PluginCapabilities Capabilities => _capabilities;
 
-        internal IReadOnlyList<IHttpInterceptor> RegisteredInterceptors => _registeredInterceptors;
+        internal IReadOnlyList<IHttpMiddleware> RegisteredMiddlewares => _registeredMiddlewares;
 
-        public void RegisterInterceptor(IHttpInterceptor interceptor)
+        public void RegisterMiddleware(IHttpMiddleware middleware)
         {
-            if (interceptor == null)
-                throw new ArgumentNullException(nameof(interceptor));
+            if (middleware == null)
+                throw new ArgumentNullException(nameof(middleware));
 
             var canObserve = (_capabilities & PluginCapabilities.ObserveRequests) != 0
                 || (_capabilities & PluginCapabilities.ReadOnlyMonitoring) != 0;
@@ -52,17 +52,17 @@ namespace TurboHTTP.Core
                 throw new PluginException(
                     _pluginName,
                     "initialize",
-                    "Plugin does not have interceptor capabilities.");
+                    "Plugin does not have middleware capabilities.");
             }
 
-            var guarded = new CapabilityEnforcedInterceptor(
+            var guarded = new CapabilityEnforcedMiddleware(
                 _pluginName,
-                interceptor,
+                middleware,
                 canMutateRequest,
                 canMutateResponse,
                 canHandleErrors);
-            _registerInterceptor(guarded);
-            _registeredInterceptors.Add(guarded);
+            _registerMiddleware(guarded);
+            _registeredMiddlewares.Add(guarded);
         }
 
         public void LogDiagnostic(string message)
@@ -79,17 +79,17 @@ namespace TurboHTTP.Core
             _diagnostics?.Invoke(message ?? string.Empty);
         }
 
-        private sealed class CapabilityEnforcedInterceptor : IHttpInterceptor
+        private sealed class CapabilityEnforcedMiddleware : IHttpMiddleware
         {
             private readonly string _pluginName;
-            private readonly IHttpInterceptor _inner;
+            private readonly IHttpMiddleware _inner;
             private readonly bool _canMutateRequest;
             private readonly bool _canMutateResponse;
             private readonly bool _canHandleErrors;
 
-            public CapabilityEnforcedInterceptor(
+            public CapabilityEnforcedMiddleware(
                 string pluginName,
-                IHttpInterceptor inner,
+                IHttpMiddleware inner,
                 bool canMutateRequest,
                 bool canMutateResponse,
                 bool canHandleErrors)
@@ -101,82 +101,202 @@ namespace TurboHTTP.Core
                 _canHandleErrors = canHandleErrors;
             }
 
-            public async ValueTask<InterceptorRequestResult> OnRequestAsync(
+            public async ValueTask<UHttpResponse> InvokeAsync(
                 UHttpRequest request,
                 RequestContext context,
+                HttpPipelineDelegate next,
                 CancellationToken cancellationToken)
             {
-                var result = await _inner.OnRequestAsync(request, context, cancellationToken).ConfigureAwait(false);
+                var originalSignature = request != null
+                    ? new RequestMutationSignature(request)
+                    : default;
 
-                if (result.Action == InterceptorRequestAction.Continue)
+                var nextCalled = false;
+                UHttpResponse downstreamResponse = null;
+                var signatureAfterNext = default(RequestMutationSignature);
+                var capturedSignatureAfterNext = false;
+
+                async ValueTask<UHttpResponse> GuardedNext(
+                    UHttpRequest nextRequest,
+                    RequestContext nextContext,
+                    CancellationToken nextToken)
                 {
-                    if (result.Request != null &&
-                        !ReferenceEquals(result.Request, request) &&
-                        !_canMutateRequest)
+                    if (!_canMutateRequest && !ReferenceEquals(nextRequest, request))
                     {
                         throw new PluginException(
                             _pluginName,
-                            "interceptor.request",
-                            "Plugin interceptor attempted request mutation without MutateRequests capability.");
+                            "middleware.request",
+                            "Plugin middleware attempted request replacement without MutateRequests capability.");
                     }
 
-                    return result;
+                    if (!_canMutateRequest && request != null && !originalSignature.Matches(request))
+                    {
+                        throw new PluginException(
+                            _pluginName,
+                            "middleware.request",
+                            "Plugin middleware attempted request mutation without MutateRequests capability.");
+                    }
+
+                    if (nextCalled)
+                    {
+                        throw new InvalidOperationException("Plugin middleware called next more than once.");
+                    }
+
+                    nextCalled = true;
+                    downstreamResponse = await next(nextRequest, nextContext, nextToken).ConfigureAwait(false);
+                    if (!_canMutateRequest && request != null)
+                    {
+                        signatureAfterNext = new RequestMutationSignature(request);
+                        capturedSignatureAfterNext = true;
+                    }
+                    return downstreamResponse;
                 }
 
-                if (result.Action == InterceptorRequestAction.ShortCircuit && !_canMutateResponse)
+                UHttpResponse response;
+                try
                 {
-                    throw new PluginException(
-                        _pluginName,
-                        "interceptor.request",
-                        "Plugin interceptor attempted response short-circuit without MutateResponses capability.");
+                    response = await _inner.InvokeAsync(request, context, GuardedNext, cancellationToken)
+                        .ConfigureAwait(false);
                 }
-
-                if (result.Action == InterceptorRequestAction.Fail && !_canHandleErrors)
+                catch (PluginException)
                 {
-                    throw new PluginException(
-                        _pluginName,
-                        "interceptor.request",
-                        "Plugin interceptor attempted failure handling without HandleErrors capability.");
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    if (!_canHandleErrors)
+                    {
+                        throw new PluginException(
+                            _pluginName,
+                            "middleware.error",
+                            "Plugin middleware attempted error handling without HandleErrors capability.",
+                            ex);
+                    }
+
+                    throw;
                 }
 
-                return result;
+                if (!_canMutateRequest && request != null)
+                {
+                    var mutated = !nextCalled
+                        ? !originalSignature.Matches(request)
+                        : capturedSignatureAfterNext && !signatureAfterNext.Matches(request);
+                    if (mutated)
+                    {
+                        throw new PluginException(
+                            _pluginName,
+                            "middleware.request",
+                            "Plugin middleware attempted request mutation without MutateRequests capability.");
+                    }
+                }
+
+                if (!_canMutateResponse)
+                {
+                    if (!nextCalled)
+                    {
+                        throw new PluginException(
+                            _pluginName,
+                            "middleware.response",
+                            "Plugin middleware attempted response short-circuit without MutateResponses capability.");
+                    }
+
+                    if (!ReferenceEquals(response, downstreamResponse))
+                    {
+                        throw new PluginException(
+                            _pluginName,
+                            "middleware.response",
+                            "Plugin middleware attempted response mutation without MutateResponses capability.");
+                    }
+                }
+
+                return response;
             }
 
-            public async ValueTask<InterceptorResponseResult> OnResponseAsync(
-                UHttpRequest request,
-                UHttpResponse response,
-                RequestContext context,
-                CancellationToken cancellationToken)
+            private readonly struct RequestMutationSignature
             {
-                var result = await _inner.OnResponseAsync(request, response, context, cancellationToken).ConfigureAwait(false);
+                public readonly HttpMethod Method;
+                public readonly Uri Uri;
+                public readonly byte[] Body;
+                public readonly TimeSpan Timeout;
+                public readonly int HeaderCount;
+                public readonly int HeaderHash;
+                public readonly int MetadataCount;
+                public readonly int MetadataHash;
 
-                if (result.Action == InterceptorResponseAction.Continue)
+                public RequestMutationSignature(UHttpRequest request)
                 {
-                    return result;
+                    Method = request.Method;
+                    Uri = request.Uri;
+                    Body = request.Body;
+                    Timeout = request.Timeout;
+                    HeaderCount = request.Headers?.Count ?? 0;
+                    HeaderHash = ComputeHeadersHash(request.Headers);
+                    MetadataCount = request.Metadata?.Count ?? 0;
+                    MetadataHash = ComputeMetadataHash(request.Metadata);
                 }
 
-                if (result.Action == InterceptorResponseAction.Replace)
+                public bool Matches(UHttpRequest request)
                 {
-                    if (!ReferenceEquals(result.Response, response) && !_canMutateResponse)
+                    if (request == null)
+                        return false;
+
+                    if (request.Method != Method)
+                        return false;
+                    if (!Equals(request.Uri, Uri))
+                        return false;
+                    if (!ReferenceEquals(request.Body, Body))
+                        return false;
+                    if (request.Timeout != Timeout)
+                        return false;
+                    if ((request.Headers?.Count ?? 0) != HeaderCount)
+                        return false;
+                    if (ComputeHeadersHash(request.Headers) != HeaderHash)
+                        return false;
+                    if ((request.Metadata?.Count ?? 0) != MetadataCount)
+                        return false;
+                    if (ComputeMetadataHash(request.Metadata) != MetadataHash)
+                        return false;
+
+                    return true;
+                }
+
+                private static int ComputeHeadersHash(HttpHeaders headers)
+                {
+                    if (headers == null || headers.Count == 0)
+                        return 0;
+
+                    unchecked
                     {
-                        throw new PluginException(
-                            _pluginName,
-                            "interceptor.response",
-                            "Plugin interceptor attempted response mutation without MutateResponses capability.");
+                        var hash = 17;
+                        foreach (var name in headers.Names)
+                        {
+                            hash = (hash * 31) ^ StringComparer.OrdinalIgnoreCase.GetHashCode(name);
+                            var values = headers.GetValues(name);
+                            for (int i = 0; i < values.Count; i++)
+                                hash = (hash * 31) ^ (values[i]?.GetHashCode() ?? 0);
+                        }
+
+                        return hash;
                     }
-
-                    return result;
                 }
 
-                if (result.Action == InterceptorResponseAction.Fail && !_canHandleErrors)
+                private static int ComputeMetadataHash(IReadOnlyDictionary<string, object> metadata)
                 {
-                    throw new PluginException(
-                        _pluginName,
-                        "interceptor.response",
-                        "Plugin interceptor attempted failure handling without HandleErrors capability.");
-                }
+                    if (metadata == null || metadata.Count == 0)
+                        return 0;
 
-                return result;
+                    unchecked
+                    {
+                        var hash = 17;
+                        foreach (var pair in metadata)
+                        {
+                            hash = (hash * 31) ^ (pair.Key?.GetHashCode() ?? 0);
+                            hash = (hash * 31) ^ (pair.Value?.GetHashCode() ?? 0);
+                        }
+
+                        return hash;
+                    }
+                }
             }
         }
     }

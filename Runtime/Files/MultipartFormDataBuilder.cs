@@ -1,8 +1,10 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Files
 {
@@ -113,6 +115,44 @@ namespace TurboHTTP.Files
         }
 
         /// <summary>
+        /// Write the multipart/form-data body directly into <paramref name="output"/>
+        /// without allocating an intermediate byte array.
+        /// </summary>
+        public void WriteTo(IBufferWriter<byte> output)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+
+            // Wrap the IBufferWriter<byte> in a thin stream adapter so IPart.WriteTo(Stream)
+            // can write to it without changes to the IPart interface.
+            using var adapter = new BufferWriterStream(output);
+            foreach (var part in _parts)
+            {
+                WriteBytes(adapter, $"--{_boundary}\r\n");
+                part.WriteTo(adapter);
+            }
+            WriteBytes(adapter, $"--{_boundary}--\r\n");
+        }
+
+        /// <summary>
+        /// Build the multipart/form-data body as a pool-owned buffer.
+        /// The caller is responsible for disposing the returned owner.
+        /// </summary>
+        public IMemoryOwner<byte> BuildAsOwner()
+        {
+            var writer = new PooledArrayBufferWriter();
+            try
+            {
+                WriteTo(writer);
+                return writer.DetachAsOwner();
+            }
+            catch
+            {
+                writer.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>
         /// Get the Content-Type header value including boundary parameter.
         /// </summary>
         public string GetContentType()
@@ -123,12 +163,14 @@ namespace TurboHTTP.Files
         }
 
         /// <summary>
-        /// Apply this multipart data to a request builder (sets body + Content-Type).
+        /// Apply this multipart data to a request (sets body + Content-Type).
+        /// Uses a pooled buffer to avoid intermediate byte[] allocations.
         /// </summary>
-        public void ApplyTo(UHttpRequestBuilder builder)
+        public void ApplyTo(UHttpRequest request)
         {
-            if (builder == null) throw new ArgumentNullException(nameof(builder));
-            builder.WithBody(Build()).WithHeader("Content-Type", GetContentType());
+            if (request == null) throw new ArgumentNullException(nameof(request));
+            var owner = BuildAsOwner();
+            request.WithLeasedBody(owner).WithHeader("Content-Type", GetContentType());
         }
 
         /// <summary>
@@ -164,7 +206,10 @@ namespace TurboHTTP.Files
                    c == '=' || c == '?';
         }
 
-        private static void WriteBytes(MemoryStream stream, string text)
+        // WriteBytes and IPart.WriteTo accept Stream instead of MemoryStream so that
+        // Phase 19a.2 can substitute an IBufferWriter<byte>-backed stream without
+        // changing the IPart implementations. Public behavior is byte-identical.
+        private static void WriteBytes(Stream stream, string text)
         {
             var bytes = Encoding.UTF8.GetBytes(text);
             stream.Write(bytes, 0, bytes.Length);
@@ -172,7 +217,7 @@ namespace TurboHTTP.Files
 
         private interface IPart
         {
-            void WriteTo(MemoryStream stream);
+            void WriteTo(Stream stream);
         }
 
         private sealed class TextPart : IPart
@@ -186,7 +231,7 @@ namespace TurboHTTP.Files
                 _value = value;
             }
 
-            public void WriteTo(MemoryStream stream)
+            public void WriteTo(Stream stream)
             {
                 var header = Encoding.UTF8.GetBytes(
                     $"Content-Disposition: form-data; name=\"{EscapeQuotedString(_name)}\"\r\n\r\n");
@@ -212,7 +257,7 @@ namespace TurboHTTP.Files
                 _contentType = contentType;
             }
 
-            public void WriteTo(MemoryStream stream)
+            public void WriteTo(Stream stream)
             {
                 var header = Encoding.UTF8.GetBytes(
                     $"Content-Disposition: form-data; name=\"{EscapeQuotedString(_name)}\"; filename=\"{EscapeQuotedString(_filename)}\"\r\n" +
@@ -222,6 +267,58 @@ namespace TurboHTTP.Files
 
                 var crlf = Encoding.UTF8.GetBytes("\r\n");
                 stream.Write(crlf, 0, crlf.Length);
+            }
+        }
+
+        /// <summary>
+        /// Minimal write-only <see cref="Stream"/> adapter over <see cref="IBufferWriter{byte}"/>.
+        /// Allows IPart.WriteTo(Stream) implementations to target an IBufferWriter without changes.
+        /// Only Write(byte[], int, int) is supported; all read/seek operations throw.
+        /// </summary>
+        private sealed class BufferWriterStream : Stream
+        {
+            private readonly IBufferWriter<byte> _writer;
+            private bool _disposed;
+
+            public BufferWriterStream(IBufferWriter<byte> writer)
+            {
+                _writer = writer ?? throw new ArgumentNullException(nameof(writer));
+            }
+
+            public override bool CanWrite => !_disposed;
+            public override bool CanRead => false;
+            public override bool CanSeek => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                if (_disposed) throw new ObjectDisposedException(nameof(BufferWriterStream));
+                if (count <= 0) return;
+                var span = _writer.GetSpan(count);
+                buffer.AsSpan(offset, count).CopyTo(span);
+                _writer.Advance(count);
+            }
+
+            public override void Flush() { }
+
+            public override int Read(byte[] buffer, int offset, int count) =>
+                throw new NotSupportedException("BufferWriterStream is write-only.");
+
+            public override long Seek(long offset, SeekOrigin origin) =>
+                throw new NotSupportedException("BufferWriterStream does not support seeking.");
+
+            public override void SetLength(long value) =>
+                throw new NotSupportedException("BufferWriterStream does not support SetLength.");
+
+            protected override void Dispose(bool disposing)
+            {
+                _disposed = true;
+                base.Dispose(disposing);
             }
         }
     }
