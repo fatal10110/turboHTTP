@@ -80,7 +80,7 @@ namespace TurboHTTP.Tests.Pipeline
         }
 
         [Test]
-        public void DoesNotModifyOriginalRequest()        {
+        public void ModifiesRequestInPlace()        {
             Task.Run(async () =>
             {
                 var defaults = new HttpHeaders();
@@ -95,9 +95,8 @@ namespace TurboHTTP.Tests.Pipeline
 
                 await pipeline.ExecuteAsync(request, context);
 
-                // Original request should NOT have the added header
-                Assert.IsNull(request.Headers.Get("X-Added"));
-                // Transport should have received it
+                // Requests are mutable in the pooled API model.
+                Assert.AreEqual("value", request.Headers.Get("X-Added"));
                 Assert.AreEqual("value", transport.LastRequest.Headers.Get("X-Added"));
             }).GetAwaiter().GetResult();
         }

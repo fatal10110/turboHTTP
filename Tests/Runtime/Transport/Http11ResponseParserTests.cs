@@ -14,17 +14,37 @@ namespace TurboHTTP.Tests.Transport
     [TestFixture]
     public class Http11ResponseParserTests
     {
+        private static ParsedResponse NormalizeBodyForAssertions(ParsedResponse parsed)
+        {
+            if (parsed.SegmentedBody == null)
+                return parsed;
+
+            try
+            {
+                parsed.Body = parsed.SegmentedBody.ToArray();
+            }
+            finally
+            {
+                parsed.SegmentedBody.Dispose();
+                parsed.SegmentedBody = null;
+            }
+
+            return parsed;
+        }
+
         private static async Task<ParsedResponse> ParseAsync(string response, HttpMethod method = HttpMethod.GET)
         {
             var bytes = Encoding.ASCII.GetBytes(response);
             using var ms = new MemoryStream(bytes);
-            return await Http11ResponseParser.ParseAsync(ms, method, CancellationToken.None);
+            var parsed = await Http11ResponseParser.ParseAsync(ms, method, CancellationToken.None);
+            return NormalizeBodyForAssertions(parsed);
         }
 
         private static async Task<ParsedResponse> ParseAsync(byte[] responseBytes, HttpMethod method = HttpMethod.GET)
         {
             using var ms = new MemoryStream(responseBytes);
-            return await Http11ResponseParser.ParseAsync(ms, method, CancellationToken.None);
+            var parsed = await Http11ResponseParser.ParseAsync(ms, method, CancellationToken.None);
+            return NormalizeBodyForAssertions(parsed);
         }
 
         private static async Task<ParsedResponse> ParseFragmentedAsync(
@@ -33,7 +53,8 @@ namespace TurboHTTP.Tests.Transport
             HttpMethod method = HttpMethod.GET)
         {
             using var stream = new FragmentedReadStream(responseBytes, chunkSizes);
-            return await Http11ResponseParser.ParseAsync(stream, method, CancellationToken.None);
+            var parsed = await Http11ResponseParser.ParseAsync(stream, method, CancellationToken.None);
+            return NormalizeBodyForAssertions(parsed);
         }
 
         private sealed class FragmentedReadStream : Stream

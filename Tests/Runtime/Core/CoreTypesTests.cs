@@ -85,9 +85,11 @@ namespace TurboHTTP.Tests.Core
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));
 
             var zeroTimeout = request.WithTimeout(TimeSpan.Zero);
-            var negativeOne = request.WithTimeout(TimeSpan.FromMilliseconds(-1));
-
+            Assert.AreSame(request, zeroTimeout);
             Assert.AreEqual(TimeSpan.Zero, zeroTimeout.Timeout);
+
+            var negativeOne = request.WithTimeout(TimeSpan.FromMilliseconds(-1));
+            Assert.AreSame(request, negativeOne);
             Assert.AreEqual(TimeSpan.FromMilliseconds(-1), negativeOne.Timeout);
         }
 
