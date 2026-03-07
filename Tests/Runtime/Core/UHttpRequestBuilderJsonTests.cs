@@ -38,7 +38,7 @@ namespace TurboHTTP.Tests.Core
             using var request = _client.Post("/api")
                 .WithJsonBody("{\"name\":\"test\"}");
 
-            var body = Encoding.UTF8.GetString(request.Body);
+            var body = Encoding.UTF8.GetString(request.Body.Span);
             Assert.That(body, Is.EqualTo("{\"name\":\"test\"}"));
             Assert.That(request.Headers.Get("Content-Type"), Is.EqualTo("application/json"));
         }
@@ -50,7 +50,7 @@ namespace TurboHTTP.Tests.Core
             using var request = _client.Post("/api")
                 .WithJsonBody(data);
 
-            var body = Encoding.UTF8.GetString(request.Body);
+            var body = Encoding.UTF8.GetString(request.Body.Span);
             Assert.That(body, Does.Contain("name"));
             Assert.That(body, Does.Contain("test"));
         }
@@ -63,7 +63,7 @@ namespace TurboHTTP.Tests.Core
             using var request = _client.Post("/api")
                 .WithJsonBody(data, mock);
 
-            var body = Encoding.UTF8.GetString(request.Body);
+            var body = Encoding.UTF8.GetString(request.Body.Span);
             Assert.That(body, Is.EqualTo("{\"custom\":true}"));
         }
 

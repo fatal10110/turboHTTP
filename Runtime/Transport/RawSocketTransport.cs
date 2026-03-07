@@ -342,7 +342,7 @@ namespace TurboHTTP.Transport
             {
                 var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
                 // The original request's BodyOwner (if any) is disposed here because
-                // PrepareHttpProxyForwardRequest copies only request.Body (byte[]).
+                // PrepareHttpProxyForwardRequest copies request.Body into a detached byte[].
                 // SendOnStreamAsync will dispose forwardedRequest.BodyOwner which is null.
                 try
                 {
@@ -368,7 +368,7 @@ namespace TurboHTTP.Transport
             // The try/finally starts BEFORE EstablishConnectTunnelAsync so that
             // request.BodyOwner is disposed even when the CONNECT handshake fails
             // (407 Proxy Auth Required, network error, etc.).
-            // PrepareHttpsProxyTunnelRequest copies only request.Body (byte[]);
+            // PrepareHttpsProxyTunnelRequest copies request.Body into a detached byte[].
             // SendOnStreamAsync disposes tunneledRequest.BodyOwner which is null.
             try
             {
@@ -434,7 +434,7 @@ namespace TurboHTTP.Transport
                 request.Method,
                 request.Uri,
                 headers,
-                request.Body,
+                request.Body.IsEmpty ? null : request.Body.ToArray(),
                 request.Timeout,
                 metadata);
         }
@@ -449,7 +449,7 @@ namespace TurboHTTP.Transport
                 request.Method,
                 request.Uri,
                 headers,
-                request.Body,
+                request.Body.IsEmpty ? null : request.Body.ToArray(),
                 request.Timeout,
                 metadata);
         }

@@ -34,7 +34,7 @@ namespace TurboHTTP.Observability
             var host = request.Uri.Host;
             _metrics.RequestsByHost.AddOrUpdate(host, 1, IncrementHostCount);
 
-            if (request.Body != null)
+            if (!request.Body.IsEmpty)
             {
                 Interlocked.Add(ref _metrics.TotalBytesSent, request.Body.Length);
             }

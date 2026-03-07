@@ -35,7 +35,14 @@ namespace TurboHTTP.Transport.Http2
         /// Encode a list of headers into HPACK binary format.
         /// Headers should include pseudo-headers (e.g., :method, :path) first.
         /// </summary>
-        public byte[] Encode(IReadOnlyList<(string Name, string Value)> headers)
+        /// <remarks>
+        /// <b>Lifetime warning:</b> The returned <see cref="ReadOnlyMemory{T}"/> is a direct
+        /// slice of this encoder's reusable output buffer. It is only valid until the next call
+        /// to <see cref="Encode"/>. Callers MUST fully consume the data (e.g., await the frame
+        /// write) before releasing the write lock that serialises <see cref="Encode"/> calls.
+        /// Holding the slice across an <see cref="Encode"/> call will silently read garbage.
+        /// </remarks>
+        public ReadOnlyMemory<byte> Encode(IReadOnlyList<(string Name, string Value)> headers)
         {
             // Reset position to 0 — reuse the backing buffer rather than rent a new one.
             _outputBuffer.Reset();
@@ -78,7 +85,7 @@ namespace TurboHTTP.Transport.Http2
                 }
             }
 
-            return output.WrittenMemory.ToArray();
+            return output.WrittenMemory;
         }
 
         /// <summary>

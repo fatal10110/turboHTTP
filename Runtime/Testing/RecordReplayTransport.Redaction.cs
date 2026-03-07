@@ -107,36 +107,36 @@ namespace TurboHTTP.Testing
             return Utf8.GetBytes(redactedJson);
         }
 
-        private byte[] RedactJsonBodyIfNeeded(byte[] body, HttpHeaders headers)
+        private byte[] RedactJsonBodyIfNeeded(ReadOnlyMemory<byte> body, HttpHeaders headers)
         {
-            if (body == null || body.Length == 0)
-                return body;
+            if (body.IsEmpty)
+                return null;
             if (_redactionPolicy.JsonBodyFieldNames.Count == 0)
-                return body;
+                return ToExactByteArray(body);
 
             var contentType = headers?.Get("Content-Type");
             if (string.IsNullOrEmpty(contentType) ||
                 contentType.IndexOf("application/json", StringComparison.OrdinalIgnoreCase) < 0)
             {
-                return body;
+                return ToExactByteArray(body);
             }
 
             object parsedBody;
             try
             {
-                var json = Utf8.GetString(body);
+                var json = Utf8.GetString(body.Span);
                 parsedBody = DeserializeJson(json, typeof(object));
             }
             catch
             {
-                return body;
+                return ToExactByteArray(body);
             }
 
             if (parsedBody == null)
-                return body;
+                return ToExactByteArray(body);
 
             if (!TryRedactParsedJson(parsedBody))
-                return body;
+                return ToExactByteArray(body);
 
             string redactedJson;
             try
@@ -145,10 +145,28 @@ namespace TurboHTTP.Testing
             }
             catch
             {
-                return body;
+                return ToExactByteArray(body);
             }
 
             return Utf8.GetBytes(redactedJson);
+        }
+
+        private static byte[] ToExactByteArray(ReadOnlyMemory<byte> body)
+        {
+            if (body.IsEmpty)
+                return null;
+
+            if (MemoryMarshal.TryGetArray(body, out var segment) && segment.Array != null)
+            {
+                if (segment.Offset == 0 && segment.Count == segment.Array.Length)
+                    return segment.Array;
+
+                var copy = new byte[segment.Count];
+                Buffer.BlockCopy(segment.Array, segment.Offset, copy, 0, segment.Count);
+                return copy;
+            }
+
+            return body.ToArray();
         }
 
         private static byte[] ToExactByteArray(ReadOnlySequence<byte> body)

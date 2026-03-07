@@ -94,7 +94,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                     headerList.Add((kvp.Key, kvp.Value));
             }
 
-            byte[] headerBlock = encoder.Encode(headerList);
+            byte[] headerBlock = encoder.Encode(headerList).ToArray();
 
             var flags = Http2FrameFlags.EndHeaders;
             if (endStream) flags |= Http2FrameFlags.EndStream;
@@ -873,7 +873,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 // Send HEADERS without EndHeaders (expects CONTINUATION)
                 var encoder = new HpackEncoder();
-                var headerBlock = encoder.Encode(new List<(string, string)> { (":status", "200") });
+                var headerBlock = encoder.Encode(new List<(string, string)> { (":status", "200") }).ToArray();
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {
                     Type = Http2FrameType.Headers,
@@ -931,7 +931,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 // Send HEADERS without EndHeaders
                 var encoder = new HpackEncoder();
-                var headerBlock = encoder.Encode(new List<(string, string)> { (":status", "200") });
+                var headerBlock = encoder.Encode(new List<(string, string)> { (":status", "200") }).ToArray();
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {
                     Type = Http2FrameType.Headers,
@@ -1042,14 +1042,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 {
                     (":status", "200"),
                     ("content-type", "text/plain")
-                });
+                }).ToArray();
 
                 // Split: first half in HEADERS, second half in CONTINUATION
                 int split = headerBlock.Length / 2;
                 var firstPart = new byte[split];
                 var secondPart = new byte[headerBlock.Length - split];
-                Array.Copy(headerBlock, 0, firstPart, 0, split);
-                Array.Copy(headerBlock, split, secondPart, 0, secondPart.Length);
+                headerBlock.AsSpan(0, split).CopyTo(firstPart);
+                headerBlock.AsSpan(split, secondPart.Length).CopyTo(secondPart);
 
                 // HEADERS with END_STREAM but NOT EndHeaders
                 await serverCodec.WriteFrameAsync(new Http2Frame
@@ -1464,7 +1464,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 // Send HEADERS without :status — just a regular header
                 var encoder = new HpackEncoder();
                 var noStatusHeaders = new List<(string, string)> { ("content-type", "text/plain") };
-                byte[] headerBlock = encoder.Encode(noStatusHeaders);
+                byte[] headerBlock = encoder.Encode(noStatusHeaders).ToArray();
 
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {
@@ -1501,7 +1501,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 // Send HEADERS with invalid :status
                 var encoder = new HpackEncoder();
                 var badStatusHeaders = new List<(string, string)> { (":status", "abc") };
-                byte[] headerBlock = encoder.Encode(badStatusHeaders);
+                byte[] headerBlock = encoder.Encode(badStatusHeaders).ToArray();
 
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {
@@ -1553,7 +1553,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var trailerBlock = trailerEncoder.Encode(new List<(string, string)>
                 {
                     ("grpc-status", "0")
-                });
+                }).ToArray();
 
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {

@@ -180,7 +180,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
             // Put the encoded data in a larger buffer
             var buffer = new byte[encoded.Length + 100];
-            Array.Copy(encoded, 0, buffer, 0, encoded.Length);
+            encoded.Span.CopyTo(buffer.AsSpan(0, encoded.Length));
 
             // Decode with correct length should work
             var decoded = decoder.Decode(buffer, 0, encoded.Length);
@@ -273,7 +273,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
             // Place in a larger buffer with garbage after the valid data
             var buffer = new byte[encoded.Length + 50];
-            Array.Copy(encoded, 0, buffer, 0, encoded.Length);
+            encoded.Span.CopyTo(buffer.AsSpan(0, encoded.Length));
             // Fill the rest with 0xFF (continuation bytes that could be misinterpreted)
             for (int i = encoded.Length; i < buffer.Length; i++)
                 buffer[i] = 0xFF;

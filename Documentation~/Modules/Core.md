@@ -28,9 +28,9 @@ You must dispose of `UHttpClient` when you are done to release underlying resour
 myClient.Dispose();
 ```
 
-## UHttpRequestBuilder
+## UHttpRequest
 
-`UHttpClient` exposes fluent builder methods (`Get`, `Post`, `Put`, `Delete`, etc.) that return a `UHttpRequestBuilder`. This allows you to construct requests in a chained manner.
+`UHttpClient` exposes fluent methods (`Get`, `Post`, `Put`, `Delete`, etc.) that return a mutable `UHttpRequest` rented from a pool. This allows you to construct requests in a chained manner.
 
 ```csharp
 var response = await client.Post("/users")

@@ -404,15 +404,22 @@ namespace TurboHTTP.Transport.Http2
                             if (!isLastByte || bitVal != 1)
                                 throw new HpackDecodingException("Invalid Huffman code sequence");
 
-                            // We've hit padding — remaining bits in this byte must all be 1s
-                            // (which they are if we got here via bitVal == 1).
-                            // Verify remaining bits are also 1s.
+                            // Verify remaining bits in this byte are also 1s.
                             for (int pb = bit - 1; pb >= 0; pb--)
                             {
                                 if (((b >> pb) & 1) != 1)
                                     throw new HpackDecodingException(
                                         "Invalid Huffman padding (must be all 1-bits)");
                             }
+
+                            // RFC 7541 Section 5.2: padding MUST be fewer than 8 bits.
+                            // Total padding = bits accumulated from previous bytes (paddingBits)
+                            // + the current bit (1) + remaining bits in this byte (bit).
+                            int totalPaddingBits = paddingBits + 1 + bit;
+                            if (totalPaddingBits > 7)
+                                throw new HpackDecodingException(
+                                    "Invalid Huffman padding (more than 7 bits)");
+
                             return output.WrittenMemory.ToArray();
                         }
 

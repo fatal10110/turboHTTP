@@ -7,7 +7,7 @@ Complete API documentation for TurboHTTP.
 *   [Module Deep Dives](#module-deep-dives)
 *   [Core Classes](#core-classes)
     *   [UHttpClient](#uhttpclient)
-    *   [UHttpRequestBuilder](#uhttprequestbuilder)
+    *   [UHttpRequest](#uhttprequest)
     *   [UHttpResponse](#uhttpresponse)
     *   [UHttpClientOptions](#uhttpclientoptions)
 *   [Extension Methods](#extension-methods)
@@ -57,18 +57,18 @@ var client = new UHttpClient(options);
 
 | Method | Description |
 | :--- | :--- |
-| `Get(url)` | Create GET request builder |
-| `Post(url)` | Create POST request builder |
-| `Put(url)` | Create PUT request builder |
-| `Delete(url)` | Create DELETE request builder |
-| `Patch(url)` | Create PATCH request builder |
-| `Head(url)` | Create HEAD request builder |
-| `Options(url)` | Create OPTIONS request builder |
+| `Get(url)` | Create GET request object |
+| `Post(url)` | Create POST request object |
+| `Put(url)` | Create PUT request object |
+| `Delete(url)` | Create DELETE request object |
+| `Patch(url)` | Create PATCH request object |
+| `Head(url)` | Create HEAD request object |
+| `Options(url)` | Create OPTIONS request object |
 | `SendAsync(request)` | Send a pre-built request |
 
-### UHttpRequestBuilder
+### UHttpRequest
 
-Fluent API for building HTTP requests.
+Fluent mutable request rented from the pool. Must be awaited via `SendAsync()` or disposed to be returned to the pool.
 
 **Methods:**
 
@@ -80,8 +80,6 @@ Fluent API for building HTTP requests.
 | `WithJsonBody<T>(data)` | Set JSON body | `.WithJsonBody(myObject)` |
 | `WithTimeout(timespan)` | Set timeout | `.WithTimeout(TimeSpan.FromSeconds(30))` |
 | `WithBearerToken(token)` | Set Bearer auth | `.WithBearerToken("token123")` |
-| `Accept(contentType)` | Set Accept header | `.Accept("application/json")` |
-| `ContentType(contentType)` | Set Content-Type | `.ContentType("text/plain")` |
 | `SendAsync()` | Build and send | `.SendAsync()` |
 
 ### UHttpResponse
@@ -94,7 +92,7 @@ Represents an HTTP response.
 | :--- | :--- | :--- |
 | `StatusCode` | `HttpStatusCode` | HTTP status code |
 | `Headers` | `HttpHeaders` | Response headers |
-| `Body` | `byte[]` | Response body |
+| `Body` | `ReadOnlySequence<byte>` | Response body sequence |
 | `ElapsedTime` | `TimeSpan` | Request duration |
 | `Request` | `UHttpRequest` | Original request |
 | `Error` | `UHttpError` | Error info (if any) |
@@ -122,11 +120,11 @@ Configuration options for `UHttpClient`.
 | `DefaultHeaders` | `HttpHeaders` | Headers applied to every request |
 | `Transport` | `IHttpTransport` | Custom HTTP transport implementation |
 | `Middlewares` | `List<IHttpMiddleware>` | Middleware pipeline |
-| `Http2MaxDecodedHeaderBytes` | `int` | Max decoded header bytes for HTTP/2 (default: `262144`) |
-| `Proxy` | `ProxySettings` | HTTP/HTTPS proxy configuration (Phase 14) |
-| `HappyEyeballs` | `HappyEyeballsOptions` | IPv4/IPv6 dual-stack fallback settings (Phase 14) |
-| `BackgroundNetworking` | `BackgroundNetworkingPolicy` | iOS/Android native background exec settings (Phase 14) |
-| `Plugins` | `List<IHttpPlugin>` | Zero-overhead extension plugins (Phase 14) |
+| `Http2` | `Http2Options` | HTTP/2 specific settings |
+| `ConnectionPool` | `ConnectionPoolOptions` | Connection pool configuration |
+| `Proxy` | `ProxySettings` | HTTP/HTTPS proxy configuration |
+| `BackgroundNetworkingPolicy` | `BackgroundNetworkingPolicy` | iOS/Android native background exec settings |
+| `AdaptivePolicy` | `AdaptivePolicy` | Adaptive networking configuration |
 
 ---
 
@@ -323,7 +321,7 @@ var multipart = new MultipartFormDataBuilder()
 
 var response = await client.Post("https://api.example.com/upload")
     .WithBody(multipart.Build())
-    .ContentType(multipart.GetContentType())
+    .WithHeader("Content-Type", multipart.GetContentType())
     .SendAsync();
 ```
 
@@ -377,23 +375,29 @@ var options = new UHttpClientOptions {
 var mockClient = new UHttpClient(options);
 ```
 
-### Interceptors & Plugins
+### Plugins
 
-Low-level, zero-overhead mutation of requests and responses before middleware execution.
+Zero-overhead extension modules that can contribute to the middleware pipeline dynamically.
 
 ```csharp
 using TurboHTTP.Core;
 
-public class CustomHeaderInterceptor : IHttpInterceptor
+public class CustomLoggerPlugin : IHttpPlugin
 {
-    public ValueTask<InterceptorResponseAction> OnResponseAsync(
-        UHttpResponse response, PluginContext context, CancellationToken ct)
+    public string Name => "CustomLogger";
+    public string Version => "1.0.0";
+    public PluginCapabilities Capabilities => PluginCapabilities.None;
+
+    public ValueTask InitializeAsync(PluginContext context, CancellationToken ct)
     {
-        response.Headers.Add("X-Injected", "true");
-        return new ValueTask<InterceptorResponseAction>(InterceptorResponseAction.Continue);
+        // Contribute standard or custom middlewares dynamically
+        context.ContributeMiddleware(new LoggingMiddleware());
+        return default;
     }
+
+    public ValueTask ShutdownAsync(CancellationToken ct) => default;
 }
 
-// Register via Plugin System
-options.Plugins.Add(new CustomInterceptorPlugin(new CustomHeaderInterceptor()));
+// Register via the client
+await client.RegisterPluginAsync(new CustomLoggerPlugin());
 ```

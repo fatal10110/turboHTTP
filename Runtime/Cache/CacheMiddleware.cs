@@ -602,13 +602,13 @@ namespace TurboHTTP.Cache
             HttpMethod method,
             Uri uri,
             HttpHeaders headers,
-            byte[] body)
+            ReadOnlyMemory<byte> body)
         {
             return new UHttpRequest(
                 method,
                 uri,
                 headers,
-                body,
+                body.IsEmpty ? null : body.ToArray(),
                 source.Timeout,
                 source.Metadata);
         }

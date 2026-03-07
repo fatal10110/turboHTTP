@@ -102,7 +102,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.GET, req.Method);
-                    Assert.IsNull(req.Body);
+                    Assert.IsTrue(req.Body.IsEmpty);
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -144,7 +144,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.GET, req.Method);
-                    Assert.IsNull(req.Body);
+                    Assert.IsTrue(req.Body.IsEmpty);
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -186,7 +186,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.GET, req.Method);
-                    Assert.IsNull(req.Body);
+                    Assert.IsTrue(req.Body.IsEmpty);
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -227,7 +227,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.POST, req.Method);
-                    Assert.AreEqual("body", Encoding.UTF8.GetString(req.Body));
+                    Assert.AreEqual("body", Encoding.UTF8.GetString(req.Body.Span));
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -269,7 +269,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.PUT, req.Method);
-                    Assert.AreEqual("payload", Encoding.UTF8.GetString(req.Body));
+                    Assert.AreEqual("payload", Encoding.UTF8.GetString(req.Body.Span));
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),

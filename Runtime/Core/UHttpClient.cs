@@ -300,6 +300,17 @@ namespace TurboHTTP.Core
                 throw new ArgumentNullException(nameof(request));
 
             ThrowIfDisposed();
+
+            // Reject pooled requests that were created by a different client instance.
+            // Returning a pooled request to the wrong pool corrupts both pools and can
+            // cause reset-while-in-use bugs that are extremely hard to diagnose.
+            if (request.IsPooled && !request.IsOwnedBy(this))
+            {
+                throw new InvalidOperationException(
+                    "Cannot send a pooled request through a different client than the one that created it. " +
+                    "Use the client that created this request, or create a new request from this client.");
+            }
+
             request.BeginSend();
 
             var context = new RequestContext(request);

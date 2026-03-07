@@ -151,7 +151,7 @@ namespace TurboHTTP.Tests.Editor
             Assert.AreEqual("https://api.example.com/replay", replayRequest.Uri.ToString());
             Assert.AreEqual("Bearer token-123", replayRequest.Headers.Get("Authorization"));
             Assert.IsFalse(replayRequest.Headers.Contains("Host"));
-            Assert.IsNotNull(replayRequest.Body);
+            Assert.IsFalse(replayRequest.Body.IsEmpty);
             Assert.AreEqual(4, replayRequest.Body.Length);
             Assert.That(warning, Does.Contain("truncated"));
             Assert.That(warning, Does.Contain("Transport-managed headers"));

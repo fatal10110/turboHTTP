@@ -229,7 +229,7 @@ namespace TurboHTTP.Core
             if (!_policy.RequireReplayableBodyForQueue)
                 return true;
 
-            return request.Body != null;
+            return !request.Body.IsEmpty;
         }
 
         private static bool ShouldQueueOnCancellation(

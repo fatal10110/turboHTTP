@@ -190,6 +190,36 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void Serialize_HeaderNameWithSpace_ThrowsArgumentException()
+        {
+            var headers = new HttpHeaders();
+            headers.Set("Bad Name", "value");
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+        }
+
+        [Test]
+        public void Serialize_HeaderNameWithAtSymbol_ThrowsArgumentException()
+        {
+            var headers = new HttpHeaders();
+            headers.Set("Bad@Name", "value");
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+        }
+
+        [Test]
+        public void Serialize_HeaderNameWithValidRfc9110TChars_AcceptsRequest()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("X-Test_!#$%&'*+-.^`|~", "value");
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("X-Test_!#$%&'*+-.^`|~: value"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void Serialize_NoBody_NoContentLength()        {
             Task.Run(async () =>
             {

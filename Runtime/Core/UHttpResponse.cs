@@ -18,6 +18,14 @@ namespace TurboHTTP.Core
         /// <summary>
         /// Response body sequence. This is the primary body representation.
         /// </summary>
+        /// <remarks>
+        /// The returned <see cref="ReadOnlySequence{T}"/> is valid only for the lifetime of
+        /// this <see cref="UHttpResponse"/>. Disposing this response returns the underlying
+        /// pooled buffers to <see cref="System.Buffers.ArrayPool{T}.Shared"/>. Any segment
+        /// references held past <see cref="Dispose"/> point to memory that may be reused for
+        /// unrelated purposes — this is use-after-pool-return and will cause data corruption.
+        /// Always consume the body before or within a <c>using</c> block.
+        /// </remarks>
         public ReadOnlySequence<byte> Body
         {
             get
@@ -32,7 +40,23 @@ namespace TurboHTTP.Core
         /// <summary>
         /// The original request that generated this response.
         /// </summary>
-        public UHttpRequest Request { get; }
+        /// <remarks>
+        /// For requests created via <see cref="UHttpClient.CreateRequest"/> (pooled requests),
+        /// this property is only valid while the response is alive (before <see cref="Dispose"/>
+        /// is called). Accessing it after disposing the response returns a request object that
+        /// may have already been re-leased to a different caller with different state.
+        /// Do not cache this reference beyond the response lifetime.
+        /// </remarks>
+        public UHttpRequest Request
+        {
+            get
+            {
+                ThrowIfDisposed();
+                return _request;
+            }
+        }
+
+        private readonly UHttpRequest _request;
 
         /// <summary>
         /// Error that occurred during the request, if any.
@@ -62,7 +86,7 @@ namespace TurboHTTP.Core
                 ? ReadOnlySequence<byte>.Empty
                 : new ReadOnlySequence<byte>(body);
             ElapsedTime = elapsedTime;
-            Request = request ?? throw new ArgumentNullException(nameof(request));
+            _request = request ?? throw new ArgumentNullException(nameof(request));
             Error = error;
 
             if (bodyFromPool && !body.IsEmpty)
@@ -93,7 +117,7 @@ namespace TurboHTTP.Core
             _body = body;
             _segmentedBodyOwner = segmentedBodyOwner;
             ElapsedTime = elapsedTime;
-            Request = request ?? throw new ArgumentNullException(nameof(request));
+            _request = request ?? throw new ArgumentNullException(nameof(request));
             Error = error;
         }
 
@@ -254,15 +278,31 @@ namespace TurboHTTP.Core
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
 
+            // Return the pooled byte[] back to ArrayPool. ArrayPool.Return is
+            // documented as thread-safe and safe to call from the finalizer thread.
             if (_bodyBufferRented && _pooledBodyBuffer != null)
                 ArrayPool<byte>.Shared.Return(_pooledBodyBuffer);
 
+            // Release the segmented body owner (returns pooled SegmentedBuffer
+            // segments back to ArrayPool). ArrayPool-backed disposal is safe on
+            // the finalizer thread.
             var owner = Interlocked.Exchange(ref _segmentedBodyOwner, null);
             owner?.Dispose();
             _body = ReadOnlySequence<byte>.Empty;
 
-            var callback = Interlocked.Exchange(ref _onDispose, null);
-            callback?.Invoke();
+            // IMPORTANT: Only invoke managed callbacks on the explicit-Dispose path.
+            // The _onDispose callback triggers ReleaseResponseHold -> TryReturnToPool
+            // -> ObjectPool.Return, which acquires a managed lock. Invoking this from
+            // the finalizer thread risks deadlock (finalizer blocked on a lock held by
+            // a GC-waiting thread) and accessing partially-finalized objects
+            // (_leaseOwner may already be finalized). If the user forgets Dispose(),
+            // the pooled UHttpRequest slot is permanently retained — detectable via
+            // PoolHealthReporter diagnostics.
+            if (disposing)
+            {
+                var callback = Interlocked.Exchange(ref _onDispose, null);
+                callback?.Invoke();
+            }
         }
 
         private void ThrowIfDisposed()

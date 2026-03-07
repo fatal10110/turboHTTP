@@ -26,6 +26,19 @@ namespace TurboHTTP.Transport.Http2
         // HPACK (separate encoder/decoder, each with own dynamic table)
         private readonly HpackEncoder _hpackEncoder;
         private readonly HpackDecoder _hpackDecoder;
+        // Reused across requests to avoid per-request List<> allocation.
+        // Accessed only inside _writeLock — safe because HTTP/2 HEADERS frames are
+        // encoded and sent serially (one HEADERS block at a time per connection).
+        private readonly List<(string Name, string Value)> _headerListScratch =
+            new List<(string Name, string Value)>(24);
+        // Reused across responses to avoid per-response List<> allocation.
+        // Accessed only from the single background ReadLoopAsync task — never shared
+        // with send paths, so no lock is needed.
+        private readonly List<(string Name, string Value)> _decodedHeaderScratch =
+            new List<(string Name, string Value)>(24);
+        // Current client transport negotiates HTTP/2 only over TLS, so :scheme is always https.
+        // If h2c is introduced, this should be promoted to a transport-provided connection property.
+        private readonly string _schemeHeader;
 
         // Stream management
         private readonly ConcurrentDictionary<int, Http2Stream> _activeStreams
@@ -89,6 +102,7 @@ namespace TurboHTTP.Transport.Http2
             _codec = new Http2FrameCodec(stream);
             _hpackEncoder = new HpackEncoder();
             _hpackDecoder = new HpackDecoder(maxDecodedHeaderBytes: options.MaxDecodedHeaderBytes);
+            _schemeHeader = "https";
             _localSettings = new Http2Settings(options);
             _localSettings.Apply(Http2SettingId.EnablePush, options.EnablePush ? 1u : 0u);
             _settingsAckSource = new ResettableValueTaskSource<bool>();
@@ -176,10 +190,8 @@ namespace TurboHTTP.Transport.Http2
             Http2Stream stream = null;
             int streamId = -1;
 
-            // Outer try ensures BodyOwner is disposed on ALL exit paths, including pre-stream
-            // exceptions (GOAWAY, MAX_CONCURRENT_STREAMS, post-lock cancellation). The inner
-            // try/finally disposes it earlier (at body-send time) when possible, so it is
-            // already null or idempotently safe by the time this outer finally runs.
+            // Outer try/finally is the sole BodyOwner disposal site. This guarantees owner-backed
+            // request bodies remain valid through flow-control waits in SendDataAsync.
             try
             {
                 lock (_streamCreateLock)
@@ -223,7 +235,11 @@ namespace TurboHTTP.Transport.Http2
                     throw new OperationCanceledException(ct);
                 }
 
-                // Register per-request cancellation
+                // Register per-request cancellation.
+                // RFC 7540 Section 8.1: when cancellation fires mid-send, RST_STREAM and
+                // any in-flight DATA frames may be delivered out of order. This is acceptable
+                // per the RFC — the peer will reset the stream on receipt of RST_STREAM
+                // regardless of DATA frames that arrive before it.
                 stream.CancellationRegistration = ct.Register(() =>
                 {
                     if (_activeStreams.TryRemove(streamId, out var canceledStream))
@@ -235,49 +251,49 @@ namespace TurboHTTP.Transport.Http2
 
                 try
                 {
-                    // Step 5: Build pseudo-headers + regular headers
-                    int headerValueCount = 5; // 4 pseudo-headers + user-agent fallback
-                    foreach (var name in request.Headers.Names)
-                    {
-                        headerValueCount += request.Headers.GetValues(name).Count;
-                    }
-
-                    var headerList = new List<(string, string)>(headerValueCount);
-                    headerList.Add((":method", request.Method.ToUpperString()));
-                    headerList.Add((":scheme", ToLowerAsciiInvariant(request.Uri.Scheme)));
-                    headerList.Add((":authority", BuildAuthorityValue(request.Uri)));
-                    headerList.Add((":path", request.Uri.PathAndQuery ?? "/"));
-
-                    foreach (var name in request.Headers.Names)
-                    {
-                        if (IsHttp2ForbiddenHeader(name)) continue;
-
-                        // RFC 7540 Section 8.1.2.2: te header is forbidden in HTTP/2
-                        // except with the value "trailers".
-                        if (string.Equals(name, "te", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var teValues = request.Headers.GetValues(name);
-                            foreach (var v in teValues)
-                            {
-                                if (string.Equals(v.Trim(), "trailers", StringComparison.OrdinalIgnoreCase))
-                                    headerList.Add(("te", "trailers"));
-                            }
-                            continue;
-                        }
-
-                        foreach (var value in request.Headers.GetValues(name))
-                            headerList.Add((ToLowerAsciiInvariant(name), value));
-                    }
-
-                    if (!request.Headers.Contains("user-agent"))
-                        headerList.Add(("user-agent", "TurboHTTP/1.0"));
+                    bool hasBody = !request.Body.IsEmpty;
 
                     // Step 6: HPACK encode headers + send HEADERS (under write lock)
                     await _writeLock.WaitAsync(ct);
                     try
                     {
-                        byte[] headerBlock = _hpackEncoder.Encode(headerList);
-                        bool hasBody = request.Body != null && request.Body.Length > 0;
+                        _headerListScratch.Clear();
+                        _headerListScratch.Add((":method", request.Method.ToUpperString()));
+                        _headerListScratch.Add((":scheme", _schemeHeader));
+                        _headerListScratch.Add((":authority", BuildAuthorityValue(request.Uri)));
+                        _headerListScratch.Add((":path", request.Uri.PathAndQuery ?? "/"));
+
+                        foreach (var name in request.Headers.Names)
+                        {
+                            if (IsHttp2ForbiddenHeader(name))
+                                continue;
+
+                            // RFC 7540 Section 8.1.2.2: te header is forbidden in HTTP/2
+                            // except with the value "trailers".
+                            if (string.Equals(name, "te", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var teValues = request.Headers.GetValues(name);
+                                foreach (var v in teValues)
+                                {
+                                    if (string.Equals(v.Trim(), "trailers", StringComparison.OrdinalIgnoreCase))
+                                        _headerListScratch.Add(("te", "trailers"));
+                                }
+                                continue;
+                            }
+
+                            var lowerName = ToLowerAsciiHeaderName(name);
+                            foreach (var value in request.Headers.GetValues(name))
+                                _headerListScratch.Add((lowerName, value));
+                        }
+
+                        if (!request.Headers.Contains("user-agent"))
+                            _headerListScratch.Add(("user-agent", "TurboHTTP/1.0"));
+
+                        // INVARIANT: headerBlock is a direct slice of HpackEncoder._outputBuffer and is
+                        // only valid until the next Encode() call. SendHeadersAsync MUST be awaited
+                        // before releasing _writeLock, which prevents any concurrent Encode() call from
+                        // resetting the backing buffer while the HEADERS frame is being written.
+                        var headerBlock = _hpackEncoder.Encode(_headerListScratch);
 
                         await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct);
 
@@ -289,26 +305,10 @@ namespace TurboHTTP.Transport.Http2
                     }
 
                     // Step 7: Send DATA frames OUTSIDE write lock
-                    bool hasBody2 = request.Body != null && request.Body.Length > 0;
-                    if (hasBody2)
+                    if (!request.Body.IsEmpty)
                     {
-                        try
-                        {
-                            await SendDataAsync(streamId, request.Body, stream, ct);
-                        }
-                        finally
-                        {
-                            // Body owner is no longer needed once the bytes are on the wire (or the send failed).
-                            // Disposed here for prompt pool return; outer finally is a safe no-op on idempotent Dispose.
-                            request.DisposeBodyOwner();
-                        }
+                        await SendDataAsync(streamId, request.Body, stream, ct);
                         stream.State = Http2StreamState.HalfClosedLocal;
-                    }
-                    else
-                    {
-                        // No body data to send; release any pool-owned buffer promptly.
-                        // Outer finally is a safe no-op on idempotent Dispose.
-                        request.DisposeBodyOwner();
                     }
 
                     context.RecordEvent("TransportH2RequestSent");
@@ -353,14 +353,14 @@ namespace TurboHTTP.Transport.Http2
             }
             finally
             {
-                // Dispose BodyOwner on any exit path not already covered above (e.g. GOAWAY/limit
-                // exceptions thrown inside the lock, or post-lock cancellation). ArrayPoolMemoryOwner
-                // is idempotent so the double-dispose from the inner body-send finally is safe.
+                // Dispose BodyOwner on all exit paths (GOAWAY/limit exceptions, cancellation, send
+                // failures, and success). This is intentionally the only disposal site for owner-backed
+                // bodies used by zero-copy request transport.
                 request.DisposeBodyOwner();
             }
         }
 
-        private static string ToLowerAsciiInvariant(string value)
+        private static string ToLowerAsciiHeaderName(string value)
         {
             if (string.IsNullOrEmpty(value))
                 return string.Empty;
@@ -369,7 +369,16 @@ namespace TurboHTTP.Transport.Http2
             {
                 char c = value[i];
                 if (c >= 'A' && c <= 'Z')
-                    return value.ToLowerInvariant();
+                {
+                    return string.Create(value.Length, value, static (destination, source) =>
+                    {
+                        for (int j = 0; j < source.Length; j++)
+                        {
+                            char ch = source[j];
+                            destination[j] = ch >= 'A' && ch <= 'Z' ? (char)(ch | 0x20) : ch;
+                        }
+                    });
+                }
             }
 
             return value;

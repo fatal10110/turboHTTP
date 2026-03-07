@@ -103,22 +103,7 @@ namespace TurboHTTP.Transport.Http1
                 if (string.IsNullOrEmpty(statusLine))
                     throw new FormatException("Empty HTTP status line");
 
-                int firstSpace = statusLine.IndexOf(' ');
-                if (firstSpace < 0)
-                    throw new FormatException("Invalid HTTP status line");
-
-                httpVersion = statusLine.Substring(0, firstSpace);
-                if (!httpVersion.StartsWith("HTTP/", StringComparison.OrdinalIgnoreCase))
-                    throw new FormatException($"Invalid HTTP version: {httpVersion}");
-
-                int secondSpace = statusLine.IndexOf(' ', firstSpace + 1);
-                string statusStr = secondSpace > 0
-                    ? statusLine.Substring(firstSpace + 1, secondSpace - firstSpace - 1)
-                    : statusLine.Substring(firstSpace + 1);
-
-                if (!int.TryParse(statusStr, NumberStyles.None, CultureInfo.InvariantCulture, out statusCode)
-                    || statusCode < 100 || statusCode > 999)
-                    throw new FormatException($"Invalid HTTP status code: {statusStr}");
+                ParseStatusLine(statusLine, out httpVersion, out statusCode);
 
                 // Headers — accumulate raw pairs into the pooled scratch list, then
                 // transfer to a fresh HttpHeaders after the block is complete.
@@ -136,13 +121,8 @@ namespace TurboHTTP.Transport.Http1
                     if (totalHeaderBytes > MaxTotalHeaderBytes)
                         throw new FormatException("Response headers exceed maximum size");
 
-                    var colonIndex = line.IndexOf(':');
-                    if (colonIndex > 0)
-                    {
-                        var name = line.Substring(0, colonIndex).Trim();
-                        var value = line.Substring(colonIndex + 1).Trim();
+                    if (TryParseHeaderLine(line, out var name, out var value))
                         scratch.RawHeaders.Add((name, value));
-                    }
                 }
 
                 headers = new HttpHeaders();
@@ -289,22 +269,153 @@ namespace TurboHTTP.Transport.Http1
             return (ReadOnlyMemory<byte>.Empty, false, readToEnd, true);
         }
 
-        // TODO Phase 10: Handle multi-token Connection header (e.g., "close, Upgrade")
-        // per RFC 9110 Section 7.6.1. Currently only checks single-value which covers
-        // virtually all real-world servers.
         private static bool IsKeepAlive(string httpVersion, HttpHeaders headers)
         {
-            var connection = headers.Get("Connection");
-            if (connection != null)
+            bool sawKeepAliveToken = false;
+            var connectionValues = headers.GetValues("Connection");
+            for (int i = 0; i < connectionValues.Count; i++)
             {
-                if (string.Equals(connection.Trim(), "close", StringComparison.OrdinalIgnoreCase))
-                    return false;
-                if (string.Equals(connection.Trim(), "keep-alive", StringComparison.OrdinalIgnoreCase))
-                    return true;
+                var value = connectionValues[i];
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+
+                var span = value.AsSpan();
+                while (span.Length > 0)
+                {
+                    int comma = span.IndexOf(',');
+                    var token = comma >= 0
+                        ? TrimWhitespace(span.Slice(0, comma))
+                        : TrimWhitespace(span);
+
+                    if (!token.IsEmpty)
+                    {
+                        if (MemoryExtensions.Equals(
+                            token,
+                            "close".AsSpan(),
+                            StringComparison.OrdinalIgnoreCase))
+                            return false;
+
+                        if (MemoryExtensions.Equals(
+                            token,
+                            "keep-alive".AsSpan(),
+                            StringComparison.OrdinalIgnoreCase))
+                            sawKeepAliveToken = true;
+                    }
+
+                    if (comma < 0)
+                        break;
+
+                    span = span.Slice(comma + 1);
+                }
             }
 
+            if (sawKeepAliveToken)
+                return true;
+
             // HTTP/1.1 defaults to keep-alive; HTTP/1.0 defaults to close.
-            return httpVersion.Contains("1.1");
+            // Exact match prevents malformed version strings (e.g., "HTTP/1.10") from
+            // incorrectly being treated as keep-alive, which would cause pool leaks.
+            return string.Equals(httpVersion, "HTTP/1.1", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryParseStatusCode(ReadOnlySpan<char> statusCodeSpan, out int statusCode)
+        {
+            statusCode = 0;
+            if (statusCodeSpan.Length != 3)
+                return false;
+
+            int c0 = statusCodeSpan[0] - '0';
+            int c1 = statusCodeSpan[1] - '0';
+            int c2 = statusCodeSpan[2] - '0';
+            if ((uint)c0 > 9 || (uint)c1 > 9 || (uint)c2 > 9)
+                return false;
+
+            statusCode = (c0 * 100) + (c1 * 10) + c2;
+            return statusCode >= 100 && statusCode <= 999;
+        }
+
+        private static void ParseStatusLine(string statusLine, out string httpVersion, out int statusCode)
+        {
+            var statusSpan = statusLine.AsSpan();
+            int firstSpace = statusSpan.IndexOf(' ');
+            if (firstSpace <= 0)
+                throw new FormatException("Invalid HTTP status line");
+
+            var versionSpan = statusSpan.Slice(0, firstSpace);
+            if (!MemoryExtensions.StartsWith(
+                versionSpan,
+                "HTTP/".AsSpan(),
+                StringComparison.OrdinalIgnoreCase))
+                throw new FormatException($"Invalid HTTP version: {versionSpan.ToString()}");
+
+            httpVersion = versionSpan.ToString();
+            var statusCodeSpan = statusSpan.Slice(firstSpace + 1);
+            int secondSpace = statusCodeSpan.IndexOf(' ');
+            if (secondSpace >= 0)
+                statusCodeSpan = statusCodeSpan.Slice(0, secondSpace);
+            statusCodeSpan = TrimWhitespace(statusCodeSpan);
+
+            if (!TryParseStatusCode(statusCodeSpan, out statusCode))
+                throw new FormatException($"Invalid HTTP status code: {statusCodeSpan.ToString()}");
+        }
+
+        private static bool TryParseHeaderLine(string line, out string name, out string value)
+        {
+            var lineSpan = line.AsSpan();
+            int colonIndex = lineSpan.IndexOf(':');
+            if (colonIndex <= 0)
+            {
+                name = null;
+                value = null;
+                return false;
+            }
+
+            name = TrimWhitespace(lineSpan.Slice(0, colonIndex)).ToString();
+            value = TrimWhitespace(lineSpan.Slice(colonIndex + 1)).ToString();
+            return true;
+        }
+
+        private static long ParseChunkSizeLine(string sizeLine)
+        {
+            // Strip chunk extensions (RFC 9112 Section 7.1.1): "1A; ext=value"
+            var sizeSpan = sizeLine.AsSpan();
+            int semiIndex = sizeSpan.IndexOf(';');
+            if (semiIndex >= 0)
+                sizeSpan = sizeSpan.Slice(0, semiIndex);
+
+            int spaceIndex = sizeSpan.IndexOf(' ');
+            if (spaceIndex >= 0)
+                sizeSpan = sizeSpan.Slice(0, spaceIndex);
+
+            sizeSpan = TrimWhitespace(sizeSpan);
+            if (!long.TryParse(
+                sizeSpan,
+                NumberStyles.HexNumber,
+                CultureInfo.InvariantCulture,
+                out var chunkSize))
+            {
+                throw new FormatException($"Invalid chunk size: {sizeSpan.ToString()}");
+            }
+
+            return chunkSize;
+        }
+
+        private static ReadOnlySpan<char> TrimWhitespace(ReadOnlySpan<char> value)
+        {
+            int start = 0;
+            while (start < value.Length && char.IsWhiteSpace(value[start]))
+                start++;
+
+            int end = value.Length - 1;
+            while (end >= start && char.IsWhiteSpace(value[end]))
+                end--;
+
+            if (start == 0 && end == value.Length - 1)
+                return value;
+            if (start > end)
+                return ReadOnlySpan<char>.Empty;
+
+            return value.Slice(start, end - start + 1);
         }
 
         /// <summary>
@@ -342,15 +453,7 @@ namespace TurboHTTP.Transport.Http1
                 {
                     var sizeLine = await reader.ReadLineAsync(ct, maxLength: 256).ConfigureAwait(false);
 
-                    // Strip chunk extensions (RFC 9112 Section 7.1.1): "1A; ext=value"
-                    int semiIndex = sizeLine.IndexOf(';');
-                    if (semiIndex >= 0) sizeLine = sizeLine.Substring(0, semiIndex);
-                    int spaceIndex = sizeLine.IndexOf(' ');
-                    if (spaceIndex >= 0) sizeLine = sizeLine.Substring(0, spaceIndex);
-                    sizeLine = sizeLine.Trim();
-
-                    if (!long.TryParse(sizeLine, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var chunkSize))
-                        throw new FormatException($"Invalid chunk size: {sizeLine}");
+                    var chunkSize = ParseChunkSizeLine(sizeLine);
 
                     if (chunkSize == 0)
                         break;
@@ -566,7 +669,10 @@ namespace TurboHTTP.Transport.Http1
                 finally
                 {
                     if (accumulator != null)
-                        ArrayPool<byte>.Shared.Return(accumulator);
+                        // clearArray: true — accumulator may contain sensitive header values
+                        // (Authorization, Cookie, etc.). Clearing before pool return prevents
+                        // stale data from being visible to the next renter.
+                        ArrayPool<byte>.Shared.Return(accumulator, clearArray: true);
                 }
             }
 

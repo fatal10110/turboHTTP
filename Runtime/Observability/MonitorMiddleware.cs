@@ -209,7 +209,9 @@ namespace TurboHTTP.Observability
             Exception exception)
         {
             var requestHeaders = CopyHeaders(request?.Headers);
-            var requestSnapshot = CreateBodySnapshot(request?.Body, requestHeaders);
+            var requestSnapshot = CreateBodySnapshot(
+                request != null ? request.Body : ReadOnlyMemory<byte>.Empty,
+                requestHeaders);
 
             var responseHeaders = CopyHeaders(response?.Headers);
             var responseSnapshot = CreateBodySnapshot(response?.Body ?? ReadOnlySequence<byte>.Empty, responseHeaders);

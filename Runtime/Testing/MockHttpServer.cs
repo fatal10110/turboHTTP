@@ -302,7 +302,7 @@ namespace TurboHTTP.Testing
                 Method = request.Method,
                 Path = request.Uri.AbsolutePath,
                 RequestHeaders = request.Headers.Clone(),
-                RequestBody = request.Body != null ? (byte[])request.Body.Clone() : Array.Empty<byte>(),
+                RequestBody = request.Body.IsEmpty ? Array.Empty<byte>() : request.Body.ToArray(),
                 RouteId = routeId,
                 ResponseStatusCode = responseStatusCode,
                 Duration = duration
@@ -462,7 +462,8 @@ namespace TurboHTTP.Testing
             public MockRouteBuilder WithBody(Func<byte[], bool> predicate)
             {
                 if (predicate == null) throw new ArgumentNullException(nameof(predicate));
-                _route.Matchers.Add(ctx => predicate(ctx.Request.Body ?? Array.Empty<byte>()));
+                _route.Matchers.Add(ctx =>
+                    predicate(ctx.Request.Body.IsEmpty ? Array.Empty<byte>() : ctx.Request.Body.ToArray()));
                 return this;
             }
 
@@ -473,12 +474,14 @@ namespace TurboHTTP.Testing
                 _route.Matchers.Add(ctx =>
                 {
                     var body = ctx.Request.Body;
-                    if (body == null || body.Length == 0)
+                    if (body.IsEmpty)
                         return false;
 
                     try
                     {
-                        var value = (T)DeserializeViaProjectJson(Encoding.UTF8.GetString(body), typeof(T));
+                        var value = (T)DeserializeViaProjectJson(
+                            Encoding.UTF8.GetString(body.Span),
+                            typeof(T));
                         return predicate(value);
                     }
                     catch

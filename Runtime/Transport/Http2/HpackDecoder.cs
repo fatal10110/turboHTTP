@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Http2
@@ -35,13 +38,50 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// Decode HPACK binary data into a list of headers.
+        /// Allocates a new <see cref="List{T}"/> on each call; hot paths should prefer
+        /// the Decode overload that accepts a caller-supplied output list.
         /// Returns pseudo-headers mixed with regular headers — the caller
         /// separates :status from the rest.
         /// All bounds checks use headerBlockEnd (offset + length), NOT data.Length.
         /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public List<(string Name, string Value)> Decode(byte[] data, int offset, int length)
         {
-            var headers = new List<(string, string)>();
+            var headers = new List<(string Name, string Value)>();
+            Decode(data, offset, length, headers);
+            return headers;
+        }
+
+        /// <summary>
+        /// Decode HPACK binary data from a <see cref="ReadOnlyMemory{T}"/> payload.
+        /// Allocates a new <see cref="List{T}"/> on each call; hot paths should prefer
+        /// the Decode overload that accepts a caller-supplied output list.
+        /// </summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public List<(string Name, string Value)> Decode(ReadOnlyMemory<byte> data, int offset, int length)
+        {
+            var headers = new List<(string Name, string Value)>();
+            Decode(data, offset, length, headers);
+            return headers;
+        }
+
+        /// <summary>
+        /// Decode HPACK binary data into a caller-supplied header list.
+        /// The output list is cleared before decoded headers are appended.
+        /// </summary>
+        public void Decode(
+            byte[] data,
+            int offset,
+            int length,
+            List<(string Name, string Value)> headers)
+        {
+            if (data == null)
+                throw new System.ArgumentNullException(nameof(data));
+            if (headers == null)
+                throw new System.ArgumentNullException(nameof(headers));
+
+            headers.Clear();
+
             int end = offset + length;
             bool seenHeaderField = false;
             bool sawSizeUpdate = false;
@@ -110,7 +150,29 @@ namespace TurboHTTP.Transport.Http2
             if (sawSizeUpdate)
                 _expectingSizeUpdate = false;
 
-            return headers;
+        }
+
+        /// <summary>
+        /// Decode HPACK binary data from a <see cref="ReadOnlyMemory{T}"/> payload into
+        /// a caller-supplied header list.
+        /// </summary>
+        public void Decode(
+            ReadOnlyMemory<byte> data,
+            int offset,
+            int length,
+            List<(string Name, string Value)> headers)
+        {
+            if (offset < 0 || length < 0 || offset + length > data.Length)
+                throw new ArgumentOutOfRangeException(nameof(length), "Offset/length exceed data bounds.");
+
+            if (MemoryMarshal.TryGetArray(data, out var segment) && segment.Array != null)
+            {
+                Decode(segment.Array, segment.Offset + offset, length, headers);
+                return;
+            }
+
+            var copy = data.Slice(offset, length).ToArray();
+            Decode(copy, 0, copy.Length, headers);
         }
 
         /// <summary>

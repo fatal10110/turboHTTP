@@ -15,11 +15,15 @@ namespace TurboHTTP.Transport.Internal
         /// <summary>
         /// Encodes <paramref name="value"/> into Latin-1 bytes written to
         /// <paramref name="destination"/> without allocating a temporary byte array.
-        /// Non-Latin-1 characters (code point > 255) are replaced with '?'.
+        /// Throws <see cref="ArgumentException"/> if any character has a code point above U+00FF,
+        /// because HTTP header fields are restricted to Latin-1 octets on the wire.
         /// </summary>
         /// <param name="value">String to encode. Null or empty returns 0.</param>
         /// <param name="destination">Output span. Must be at least <paramref name="value"/>.Length bytes.</param>
         /// <returns>Number of bytes written (equals <paramref name="value"/>.Length).</returns>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="value"/> contains a character with code point above U+00FF.
+        /// </exception>
         internal static int GetLatin1Bytes(string value, Span<byte> destination)
         {
             if (string.IsNullOrEmpty(value))
@@ -31,7 +35,12 @@ namespace TurboHTTP.Transport.Internal
             for (int i = 0; i < value.Length; i++)
             {
                 char c = value[i];
-                destination[i] = c < 256 ? (byte)c : (byte)'?';
+                if (c > 255)
+                    throw new ArgumentException(
+                        $"Header string contains non-Latin-1 character U+{(int)c:X4} at index {i}. " +
+                        "HTTP header field values must be Latin-1 (ISO-8859-1) octets. " +
+                        "Encode the value (e.g., percent-encode) before setting the header.");
+                destination[i] = (byte)c;
             }
             return value.Length;
         }
@@ -72,7 +81,11 @@ namespace TurboHTTP.Transport.Internal
                 for (int i = 0; i < charCount; i++)
                 {
                     char c = chars[charIndex + i];
-                    bytes[byteIndex + i] = c < 256 ? (byte)c : (byte)'?';
+                    if (c > 255)
+                        throw new ArgumentException(
+                            $"Header string contains non-Latin-1 character U+{(int)c:X4} at index {charIndex + i}. " +
+                            "HTTP header field values must be Latin-1 (ISO-8859-1) octets.");
+                    bytes[byteIndex + i] = (byte)c;
                 }
                 return charCount;
             }
@@ -103,7 +116,11 @@ namespace TurboHTTP.Transport.Internal
                 for (int i = 0; i < s.Length; i++)
                 {
                     char c = s[i];
-                    bytes[i] = c < 256 ? (byte)c : (byte)'?';
+                    if (c > 255)
+                        throw new ArgumentException(
+                            $"Header string contains non-Latin-1 character U+{(int)c:X4} at index {i}. " +
+                            "HTTP header field values must be Latin-1 (ISO-8859-1) octets.");
+                    bytes[i] = (byte)c;
                 }
                 return bytes;
             }

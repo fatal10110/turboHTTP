@@ -255,9 +255,9 @@ namespace TurboHTTP.Testing
             if (request == null)
                 return null;
 
-            var bodyCopy = request.Body != null
-                ? (byte[])request.Body.Clone()
-                : null;
+            var bodyCopy = request.Body.IsEmpty
+                ? null
+                : request.Body.ToArray();
 
             return new UHttpRequest(
                 request.Method,

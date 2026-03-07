@@ -137,7 +137,7 @@ namespace TurboHTTP.Middleware
                 if (source.Method == HttpMethod.POST)
                 {
                     method = HttpMethod.GET;
-                    body = null;
+                    body = ReadOnlyMemory<byte>.Empty;
                     RemoveBodyHeaders(headers);
                 }
             }
@@ -146,7 +146,7 @@ namespace TurboHTTP.Middleware
                 if (source.Method != HttpMethod.HEAD)
                 {
                     method = HttpMethod.GET;
-                    body = null;
+                    body = ReadOnlyMemory<byte>.Empty;
                     RemoveBodyHeaders(headers);
                 }
             }
@@ -165,7 +165,7 @@ namespace TurboHTTP.Middleware
                 method,
                 targetUri,
                 headers,
-                body,
+                body.IsEmpty ? null : body.ToArray(),
                 source.Timeout,
                 metadata);
         }
@@ -320,7 +320,7 @@ namespace TurboHTTP.Middleware
                 request.Method,
                 request.Uri,
                 request.Headers,
-                request.Body,
+                request.Body.IsEmpty ? null : request.Body.ToArray(),
                 timeout: remaining,
                 metadata: request.Metadata);
         }

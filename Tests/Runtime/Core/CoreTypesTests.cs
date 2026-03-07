@@ -76,7 +76,7 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual(request.Timeout, changed.Timeout);
             Assert.AreEqual("a", changed.Headers.Get("X-Test"));
             Assert.AreEqual(5, changed.Metadata["id"]);
-            Assert.AreEqual("second", Encoding.UTF8.GetString(changed.Body));
+            Assert.AreEqual("second", Encoding.UTF8.GetString(changed.Body.Span));
         }
 
         [Test]

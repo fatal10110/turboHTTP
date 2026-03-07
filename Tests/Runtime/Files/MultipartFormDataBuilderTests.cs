@@ -161,7 +161,7 @@ namespace TurboHTTP.Tests.Files
             builder.ApplyTo(request);
 
             AssertMultipartBoundaryContentType(request.Headers.Get("Content-Type"), "applybnd");
-            Assert.IsNotNull(request.Body);
+            Assert.IsFalse(request.Body.IsEmpty);
             Assert.Greater(request.Body.Length, 0);
         }
 

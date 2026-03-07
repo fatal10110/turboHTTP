@@ -148,51 +148,50 @@ namespace TurboHTTP.Transport.Http2
                     "Frame length exceeds payload buffer length.",
                     nameof(frame));
 
-            if (payloadLength == 0)
-            {
-                // Reuse pre-allocated header buffer (writes serialized by _writeLock)
-                _writeHeaderBuffer[0] = 0;
-                _writeHeaderBuffer[1] = 0;
-                _writeHeaderBuffer[2] = 0;
-                _writeHeaderBuffer[3] = (byte)frame.Type;
-                _writeHeaderBuffer[4] = (byte)frame.Flags;
-                _writeHeaderBuffer[5] = (byte)((frame.StreamId >> 24) & 0x7F); // mask reserved bit
-                _writeHeaderBuffer[6] = (byte)((frame.StreamId >> 16) & 0xFF);
-                _writeHeaderBuffer[7] = (byte)((frame.StreamId >> 8) & 0xFF);
-                _writeHeaderBuffer[8] = (byte)(frame.StreamId & 0xFF);
+            await WriteFrameAsync(
+                    frame.Type,
+                    frame.Flags,
+                    frame.StreamId,
+                    new ReadOnlyMemory<byte>(payload, 0, payloadLength),
+                    ct,
+                    flush)
+                .ConfigureAwait(false);
+        }
 
-                await _stream.WriteAsync(_writeHeaderBuffer, 0, Http2Constants.FrameHeaderSize, ct);
-            }
-            else
-            {
-                var writeBuffer = ArrayPool<byte>.Shared.Rent(Http2Constants.FrameHeaderSize + payloadLength);
-                try
-                {
-                    writeBuffer[0] = (byte)((payloadLength >> 16) & 0xFF);
-                    writeBuffer[1] = (byte)((payloadLength >> 8) & 0xFF);
-                    writeBuffer[2] = (byte)(payloadLength & 0xFF);
-                    writeBuffer[3] = (byte)frame.Type;
-                    writeBuffer[4] = (byte)frame.Flags;
-                    writeBuffer[5] = (byte)((frame.StreamId >> 24) & 0x7F); // mask reserved bit
-                    writeBuffer[6] = (byte)((frame.StreamId >> 16) & 0xFF);
-                    writeBuffer[7] = (byte)((frame.StreamId >> 8) & 0xFF);
-                    writeBuffer[8] = (byte)(frame.StreamId & 0xFF);
-                    Buffer.BlockCopy(payload, 0, writeBuffer, Http2Constants.FrameHeaderSize, payloadLength);
+        /// <summary>
+        /// Write a single HTTP/2 frame payload without requiring an intermediate byte[] copy.
+        /// </summary>
+        public async Task WriteFrameAsync(
+            Http2FrameType type,
+            Http2FrameFlags flags,
+            int streamId,
+            ReadOnlyMemory<byte> payload,
+            CancellationToken ct,
+            bool flush = true)
+        {
+            int payloadLength = payload.Length;
+            if (payloadLength < 0)
+                throw new ArgumentOutOfRangeException(nameof(payloadLength), payloadLength,
+                    "Frame length must be non-negative.");
 
-                    await _stream.WriteAsync(
-                        writeBuffer,
-                        0,
-                        Http2Constants.FrameHeaderSize + payloadLength,
-                        ct);
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(writeBuffer);
-                }
-            }
+            // Reuse pre-allocated header buffer (writes serialized by _writeLock)
+            _writeHeaderBuffer[0] = (byte)((payloadLength >> 16) & 0xFF);
+            _writeHeaderBuffer[1] = (byte)((payloadLength >> 8) & 0xFF);
+            _writeHeaderBuffer[2] = (byte)(payloadLength & 0xFF);
+            _writeHeaderBuffer[3] = (byte)type;
+            _writeHeaderBuffer[4] = (byte)flags;
+            _writeHeaderBuffer[5] = (byte)((streamId >> 24) & 0x7F); // mask reserved bit
+            _writeHeaderBuffer[6] = (byte)((streamId >> 16) & 0xFF);
+            _writeHeaderBuffer[7] = (byte)((streamId >> 8) & 0xFF);
+            _writeHeaderBuffer[8] = (byte)(streamId & 0xFF);
+
+            await _stream.WriteAsync(_writeHeaderBuffer, 0, Http2Constants.FrameHeaderSize, ct)
+                .ConfigureAwait(false);
+            if (payloadLength > 0)
+                await _stream.WriteAsync(payload, ct).ConfigureAwait(false);
 
             if (flush)
-                await _stream.FlushAsync(ct);
+                await _stream.FlushAsync(ct).ConfigureAwait(false);
         }
 
         /// <summary>

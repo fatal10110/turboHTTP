@@ -307,7 +307,14 @@ namespace TurboHTTP.Transport.Http2
         {
             var headerBlock = stream.GetHeaderBlockSegment();
             var headerBytes = headerBlock.Array ?? Array.Empty<byte>();
-            var decoded = _hpackDecoder.Decode(headerBytes, headerBlock.Offset, headerBlock.Count);
+            _hpackDecoder.Decode(
+                headerBytes,
+                headerBlock.Offset,
+                headerBlock.Count,
+                _decodedHeaderScratch);
+            var decoded = _decodedHeaderScratch;
+            try
+            {
 
             // Enforce SETTINGS_MAX_HEADER_LIST_SIZE (RFC 7540 Section 6.5.2).
             // Header list size = sum of (name length + value length + 32) for each header.
@@ -386,6 +393,11 @@ namespace TurboHTTP.Transport.Http2
             stream.ResponseHeaders = responseHeaders;
             stream.HeadersReceived = true;
             stream.ClearHeaderBlock();
+            }
+            finally
+            {
+                decoded.Clear();
+            }
         }
 
         private static bool TryGetContentLength(

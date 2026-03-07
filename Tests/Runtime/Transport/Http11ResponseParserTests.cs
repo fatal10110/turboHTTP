@@ -261,12 +261,42 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void Parse_ConnectionCloseTokenized_ReturnsFalse()        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.1 200 OK\r\nConnection: keep-alive, close\r\nContent-Length: 0\r\n\r\n";
+                var parsed = await ParseAsync(response);
+                Assert.IsFalse(parsed.KeepAlive);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Parse_ConnectionHeaderMultiValue_CloseWins_ReturnsFalse()        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nConnection: close, Upgrade\r\nContent-Length: 0\r\n\r\n";
+                var parsed = await ParseAsync(response);
+                Assert.IsFalse(parsed.KeepAlive);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void Parse_HTTP10_Default_ReturnsFalse()        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n";
                 var parsed = await ParseAsync(response);
                 Assert.IsFalse(parsed.KeepAlive);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Parse_HTTP10_KeepAliveTokenized_ReturnsTrue()        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.0 200 OK\r\nConnection: Upgrade, keep-alive\r\nContent-Length: 0\r\n\r\n";
+                var parsed = await ParseAsync(response);
+                Assert.IsTrue(parsed.KeepAlive);
             }).GetAwaiter().GetResult();
         }
 

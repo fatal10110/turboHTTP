@@ -81,13 +81,14 @@ namespace TurboHTTP.Tests.Performance
                 {
                     var cts = new CancellationTokenSource();
                     ctsList[i] = cts;
-                    tasks[i] = client.Get("https://test.com/cancel/" + i).SendAsync(cts.Token).AsTask();
-                }
+                    if ((i & 1) == 0)
+                    {
+                        // Schedule cancellation when the request is created so cancellation
+                        // timing does not drift behind task-start overhead.
+                        cts.CancelAfter((i % 20) + 1);
+                    }
 
-                for (int i = 0; i < total; i += 2)
-                {
-                    // Use timer-based cancellation to avoid scheduler jitter from 250 Task.Run workers.
-                    ctsList[i].CancelAfter(i % 20);
+                    tasks[i] = client.Get("https://test.com/cancel/" + i).SendAsync(cts.Token).AsTask();
                 }
 
                 int canceled = 0;

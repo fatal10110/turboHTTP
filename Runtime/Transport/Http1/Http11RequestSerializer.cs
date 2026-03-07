@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -24,7 +23,7 @@ namespace TurboHTTP.Transport.Http1
             if (request == null) throw new ArgumentNullException(nameof(request));
             if (stream == null) throw new ArgumentNullException(nameof(stream));
 
-            int actualBodyLength = request.Body?.Length ?? 0;
+            int actualBodyLength = request.Body.Length;
 
             using var headerWriter = new PooledHeaderWriter();
 
@@ -70,7 +69,7 @@ namespace TurboHTTP.Transport.Http1
             if (hasTransferEncoding)
             {
                 var teValues = request.Headers.GetValues("Transfer-Encoding");
-                bool hasBody = request.Body != null && request.Body.Length > 0;
+                bool hasBody = !request.Body.IsEmpty;
                 bool hasChunked = false;
                 for (int i = 0; i < teValues.Count; i++)
                 {
@@ -195,22 +194,58 @@ namespace TurboHTTP.Transport.Http1
             await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
 
             // 11. Write body
-            if (request.Body != null && request.Body.Length > 0)
-                await stream.WriteAsync(request.Body, 0, request.Body.Length, ct).ConfigureAwait(false);
+            if (!request.Body.IsEmpty)
+                await stream.WriteAsync(request.Body, ct).ConfigureAwait(false);
 
             await stream.FlushAsync(ct).ConfigureAwait(false);
         }
 
-        // TODO Phase 10: Validate header names against full RFC 9110 token grammar (1*tchar).
-        // Currently only checks for CRLF, colon, and empty/whitespace (sufficient for security — prevents injection).
         private static void ValidateHeader(string name, string value)
         {
             if (string.IsNullOrWhiteSpace(name))
                 throw new ArgumentException("Header name cannot be null or empty");
-            if (name.AsSpan().IndexOfAny('\r', '\n', ':') >= 0)
-                throw new ArgumentException($"Header name contains invalid characters: {name}");
+
+            var nameSpan = name.AsSpan();
+            for (int i = 0; i < nameSpan.Length; i++)
+            {
+                if (!IsRfc9110TChar(nameSpan[i]))
+                    throw new ArgumentException($"Header name contains invalid characters: {name}");
+            }
+
             if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
                 throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
+        }
+
+        private static bool IsRfc9110TChar(char c)
+        {
+            if ((c >= '0' && c <= '9') ||
+                (c >= 'A' && c <= 'Z') ||
+                (c >= 'a' && c <= 'z'))
+            {
+                return true;
+            }
+
+            switch (c)
+            {
+                case '!':
+                case '#':
+                case '$':
+                case '%':
+                case '&':
+                case '\'':
+                case '*':
+                case '+':
+                case '-':
+                case '.':
+                case '^':
+                case '_':
+                case '`':
+                case '|':
+                case '~':
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private static string GetRequestTarget(UHttpRequest request)
@@ -253,26 +288,44 @@ namespace TurboHTTP.Transport.Http1
 
             public void Append(char value)
             {
+                if (value > 255)
+                    throw new ArgumentException(
+                        $"Header character U+{(int)value:X4} is not a valid Latin-1 octet.");
                 var span = _writer.GetSpan(1);
-                span[0] = value <= byte.MaxValue ? (byte)value : (byte)'?';
+                span[0] = (byte)value;
                 _writer.Advance(1);
             }
 
             public void AppendInt(int value)
             {
-                Append(value.ToString(CultureInfo.InvariantCulture));
+                Span<byte> digits = stackalloc byte[11];
+                int pos = digits.Length;
+
+                bool negative = value < 0;
+                uint uval = negative
+                    ? (uint)(-(long)value)
+                    : (uint)value;
+
+                do
+                {
+                    digits[--pos] = (byte)('0' + (uval % 10));
+                    uval /= 10;
+                } while (uval > 0);
+
+                if (negative)
+                    digits[--pos] = (byte)'-';
+
+                int length = digits.Length - pos;
+                digits.Slice(pos, length).CopyTo(_writer.GetSpan(length));
+                _writer.Advance(length);
             }
 
-            public Task WriteToAsync(Stream stream, CancellationToken ct)
+            public async Task WriteToAsync(Stream stream, CancellationToken ct)
             {
                 if (_writer.WrittenCount == 0)
-                    return Task.CompletedTask;
+                    return;
 
-                var memory = _writer.WrittenMemory;
-                if (!MemoryMarshal.TryGetArray(memory, out var segment) || segment.Array == null)
-                    throw new InvalidOperationException("Header buffer is not array-backed.");
-
-                return stream.WriteAsync(segment.Array, segment.Offset, segment.Count, ct);
+                await stream.WriteAsync(_writer.WrittenMemory, ct).ConfigureAwait(false);
             }
 
             public void Dispose() => _writer.Dispose();

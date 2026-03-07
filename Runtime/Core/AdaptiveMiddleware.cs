@@ -67,7 +67,7 @@ namespace TurboHTTP.Core
                     totalDurationMs: elapsed,
                     wasTimeout: false,
                     wasTransportFailure: false,
-                    bytesTransferred: (requestForNext.Body?.Length ?? 0) + response.Body.Length,
+                    bytesTransferred: requestForNext.Body.Length + response.Body.Length,
                     wasSuccess: response.IsSuccessStatusCode && !response.IsError));
 
                 return response;
@@ -83,7 +83,7 @@ namespace TurboHTTP.Core
                     totalDurationMs: elapsed,
                     wasTimeout: wasTimeout,
                     wasTransportFailure: transportFailure,
-                    bytesTransferred: requestForNext.Body?.Length ?? 0,
+                    bytesTransferred: requestForNext.Body.Length,
                     wasSuccess: false));
 
                 throw;

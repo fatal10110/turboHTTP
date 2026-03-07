@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Testing
@@ -57,10 +58,25 @@ namespace TurboHTTP.Testing
             return false;
         }
 
-        private static string ComputeBodyHash(byte[] body)
+        private static string ComputeBodyHash(ReadOnlyMemory<byte> body)
         {
-            if (body == null || body.Length == 0)
+            if (body.IsEmpty)
                 return "sha256:empty";
+
+            byte[] bodyBytes;
+            int bodyOffset;
+            int bodyLength = body.Length;
+            if (MemoryMarshal.TryGetArray(body, out var segment) && segment.Array != null)
+            {
+                bodyBytes = segment.Array;
+                bodyOffset = segment.Offset;
+                bodyLength = segment.Count;
+            }
+            else
+            {
+                bodyBytes = body.ToArray();
+                bodyOffset = 0;
+            }
 
             try
             {
@@ -73,18 +89,18 @@ namespace TurboHTTP.Testing
                 }
 
                 byte[] hash;
-                if (body.Length > LargeBodyThresholdBytes)
+                if (bodyLength > LargeBodyThresholdBytes)
                 {
-                    var firstLength = Math.Min(BodyEdgeSliceBytes, body.Length);
-                    var lastLength = Math.Min(BodyEdgeSliceBytes, body.Length - firstLength);
-                    sha.TransformBlock(body, 0, firstLength, null, 0);
+                    var firstLength = Math.Min(BodyEdgeSliceBytes, bodyLength);
+                    var lastLength = Math.Min(BodyEdgeSliceBytes, bodyLength - firstLength);
+                    sha.TransformBlock(bodyBytes, bodyOffset, firstLength, null, 0);
                     if (lastLength > 0)
                     {
-                        var lastOffset = body.Length - lastLength;
-                        sha.TransformBlock(body, lastOffset, lastLength, null, 0);
+                        var lastOffset = bodyOffset + bodyLength - lastLength;
+                        sha.TransformBlock(bodyBytes, lastOffset, lastLength, null, 0);
                     }
 
-                    var lengthBytes = BitConverter.GetBytes(body.LongLength);
+                    var lengthBytes = BitConverter.GetBytes((long)bodyLength);
                     if (!BitConverter.IsLittleEndian)
                         Array.Reverse(lengthBytes);
                     sha.TransformFinalBlock(lengthBytes, 0, lengthBytes.Length);
@@ -92,7 +108,7 @@ namespace TurboHTTP.Testing
                 }
                 else
                 {
-                    hash = sha.ComputeHash(body);
+                    hash = sha.ComputeHash(bodyBytes, bodyOffset, bodyLength);
                 }
 
                 return "sha256:" + ToLowerHex(hash);

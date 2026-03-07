@@ -196,7 +196,7 @@ namespace TurboHTTP.Tests.Core
                 };
 
                 // Capture the serialized body via MockTransport
-                byte[] capturedBody = null;
+                ReadOnlyMemory<byte> capturedBody = ReadOnlyMemory<byte>.Empty;
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
                     capturedBody = req.Body;

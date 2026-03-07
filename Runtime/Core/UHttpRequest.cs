@@ -28,7 +28,7 @@ namespace TurboHTTP.Core
         public HttpMethod Method { get; private set; }
         public Uri Uri { get; private set; }
         public HttpHeaders Headers => _headers;
-        public byte[] Body { get; private set; }
+        public ReadOnlyMemory<byte> Body { get; private set; }
         public TimeSpan Timeout { get; private set; }
 
         /// <summary>
@@ -42,6 +42,11 @@ namespace TurboHTTP.Core
         internal IMemoryOwner<byte> BodyOwner => _bodyOwner;
 
         internal bool IsPooled => _leaseOwner != null;
+
+        internal bool IsOwnedBy(UHttpClient client)
+        {
+            return ReferenceEquals(_leaseOwner, client);
+        }
 
         internal UHttpRequest(UHttpClient leaseOwner)
         {
@@ -62,7 +67,9 @@ namespace TurboHTTP.Core
             Method = method;
             Uri = uri ?? throw new ArgumentNullException(nameof(uri));
             _headers = headers?.Clone() ?? new HttpHeaders();
-            Body = body;
+            Body = body != null
+                ? new ReadOnlyMemory<byte>(body)
+                : ReadOnlyMemory<byte>.Empty;
             Timeout = timeout ?? TimeSpan.FromSeconds(30);
             _metadata = metadata != null
                 ? new Dictionary<string, object>(metadata)
@@ -93,7 +100,9 @@ namespace TurboHTTP.Core
         {
             ThrowIfDisposed();
             DisposeBodyOwner();
-            Body = body;
+            Body = body != null
+                ? new ReadOnlyMemory<byte>(body)
+                : ReadOnlyMemory<byte>.Empty;
             return this;
         }
 
@@ -101,7 +110,9 @@ namespace TurboHTTP.Core
         {
             ThrowIfDisposed();
             DisposeBodyOwner();
-            Body = body != null ? Encoding.UTF8.GetBytes(body) : null;
+            Body = body != null
+                ? new ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(body))
+                : ReadOnlyMemory<byte>.Empty;
             return this;
         }
 
@@ -199,7 +210,7 @@ namespace TurboHTTP.Core
             Timeout = timeout;
             _headers.Clear();
             _metadata.Clear();
-            Body = null;
+            Body = ReadOnlyMemory<byte>.Empty;
             DisposeBodyOwner();
         }
 
@@ -260,8 +271,10 @@ namespace TurboHTTP.Core
 
         internal void DisposeBodyOwner()
         {
-            var owner = _bodyOwner;
-            _bodyOwner = null;
+            // Interlocked.Exchange for atomicity: prevents a double-dispose race if this
+            // method is called concurrently (e.g., Http2Connection outer finally and
+            // ResetForPool both calling DisposeBodyOwner on the same pooled request).
+            var owner = Interlocked.Exchange(ref _bodyOwner, null);
             owner?.Dispose();
         }
 
@@ -276,7 +289,7 @@ namespace TurboHTTP.Core
             ThrowIfDisposed();
             DisposeBodyOwner();
             _bodyOwner = bodyOwner;
-            Body = bodyOwner?.Memory.ToArray();
+            Body = bodyOwner?.Memory ?? ReadOnlyMemory<byte>.Empty;
             return this;
         }
 
@@ -304,7 +317,7 @@ namespace TurboHTTP.Core
             Timeout = TimeSpan.FromSeconds(30);
             _headers.Clear();
             _metadata.Clear();
-            Body = null;
+            Body = ReadOnlyMemory<byte>.Empty;
             DisposeBodyOwner();
             Interlocked.Exchange(ref _disposeRequested, 0);
             Interlocked.Exchange(ref _responseHoldCount, 0);

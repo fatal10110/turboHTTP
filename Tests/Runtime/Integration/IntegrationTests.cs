@@ -53,7 +53,7 @@ namespace TurboHTTP.Tests.Integration
         {
             Task.Run(async () =>
             {
-                byte[] echoedRequestBody = null;
+                ReadOnlyMemory<byte> echoedRequestBody = ReadOnlyMemory<byte>.Empty;
                 var transport = new MockTransport((request, context, ct) =>
                 {
                     echoedRequestBody = request.Body;

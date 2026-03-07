@@ -272,7 +272,7 @@ namespace TurboHTTP.Tests.Core
                 ;
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
-            Assert.IsNotNull(request.Body);
+            Assert.IsFalse(request.Body.IsEmpty);
             Assert.IsTrue(request.Body.Length > 0);
         }
 
@@ -291,7 +291,7 @@ namespace TurboHTTP.Tests.Core
                 ;
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
-            Assert.IsNotNull(request.Body);
+            Assert.IsFalse(request.Body.IsEmpty);
             Assert.IsTrue(request.Body.Length > 0);
         }
 #endif
@@ -374,7 +374,7 @@ namespace TurboHTTP.Tests.Core
                 ;
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
-            Assert.IsNotNull(request.Body);
+            Assert.IsFalse(request.Body.IsEmpty);
             Assert.IsTrue(request.Body.Length > 0);
         }
 

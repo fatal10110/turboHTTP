@@ -67,7 +67,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             {
                 (":status", statusCode.ToString())
             };
-            byte[] headerBlock = encoder.Encode(headerList);
+            byte[] headerBlock = encoder.Encode(headerList).ToArray();
             var flags = Http2FrameFlags.EndHeaders;
             if (endStream) flags |= Http2FrameFlags.EndStream;
             return new Http2Frame

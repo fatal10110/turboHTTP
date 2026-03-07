@@ -216,7 +216,7 @@ namespace TurboHTTP.Core
             {
                 public readonly HttpMethod Method;
                 public readonly Uri Uri;
-                public readonly byte[] Body;
+                public readonly ReadOnlyMemory<byte> Body;
                 public readonly TimeSpan Timeout;
                 public readonly int HeaderCount;
                 public readonly int HeaderHash;
@@ -244,7 +244,7 @@ namespace TurboHTTP.Core
                         return false;
                     if (!Equals(request.Uri, Uri))
                         return false;
-                    if (!ReferenceEquals(request.Body, Body))
+                    if (!request.Body.Equals(Body))
                         return false;
                     if (request.Timeout != Timeout)
                         return false;

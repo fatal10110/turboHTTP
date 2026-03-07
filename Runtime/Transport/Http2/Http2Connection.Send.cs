@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,7 +7,10 @@ namespace TurboHTTP.Transport.Http2
 {
     internal partial class Http2Connection
     {
-        private async Task SendHeadersAsync(int streamId, byte[] headerBlock, bool endStream,
+        private async Task SendHeadersAsync(
+            int streamId,
+            ReadOnlyMemory<byte> headerBlock,
+            bool endStream,
             CancellationToken ct)
         {
             int maxPayload = _remoteSettings.MaxFrameSize;
@@ -18,67 +20,49 @@ namespace TurboHTTP.Transport.Http2
                 var flags = Http2FrameFlags.EndHeaders;
                 if (endStream) flags |= Http2FrameFlags.EndStream;
 
-                await _codec.WriteFrameAsync(new Http2Frame
-                {
-                    Type = Http2FrameType.Headers,
-                    Flags = flags,
-                    StreamId = streamId,
-                    Payload = headerBlock,
-                    Length = headerBlock.Length
-                }, ct);
+                await _codec.WriteFrameAsync(
+                        Http2FrameType.Headers,
+                        flags,
+                        streamId,
+                        headerBlock,
+                        ct)
+                    .ConfigureAwait(false);
             }
             else
             {
-                var firstPayload = ArrayPool<byte>.Shared.Rent(maxPayload);
-                Buffer.BlockCopy(headerBlock, 0, firstPayload, 0, maxPayload);
-                int offset = maxPayload;
-
-                var headersFlags = endStream ? Http2FrameFlags.EndStream : Http2FrameFlags.None;
-                try
-                {
-                    await _codec.WriteFrameAsync(new Http2Frame
-                    {
-                        Type = Http2FrameType.Headers,
-                        Flags = headersFlags,
-                        StreamId = streamId,
-                        Payload = firstPayload,
-                        Length = maxPayload
-                    }, ct, flush: false);
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(firstPayload);
-                }
+                int offset = 0;
+                bool first = true;
 
                 while (offset < headerBlock.Length)
                 {
                     int remaining = headerBlock.Length - offset;
                     int chunkSize = Math.Min(remaining, maxPayload);
-                    var chunk = ArrayPool<byte>.Shared.Rent(chunkSize);
-                    Buffer.BlockCopy(headerBlock, offset, chunk, 0, chunkSize);
+                    var payload = headerBlock.Slice(offset, chunkSize);
                     offset += chunkSize;
 
                     bool isLast = offset >= headerBlock.Length;
-                    try
-                    {
-                        await _codec.WriteFrameAsync(new Http2Frame
-                        {
-                            Type = Http2FrameType.Continuation,
-                            Flags = isLast ? Http2FrameFlags.EndHeaders : Http2FrameFlags.None,
-                            StreamId = streamId,
-                            Payload = chunk,
-                            Length = chunkSize
-                        }, ct, flush: isLast);
-                    }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(chunk);
-                    }
+                    var frameType = first ? Http2FrameType.Headers : Http2FrameType.Continuation;
+                    var flags = first && endStream ? Http2FrameFlags.EndStream : Http2FrameFlags.None;
+                    if (isLast)
+                        flags |= Http2FrameFlags.EndHeaders;
+
+                    await _codec.WriteFrameAsync(
+                            frameType,
+                            flags,
+                            streamId,
+                            payload,
+                            ct,
+                            flush: isLast)
+                        .ConfigureAwait(false);
+                    first = false;
                 }
             }
         }
 
-        private async Task SendDataAsync(int streamId, byte[] body, Http2Stream stream,
+        private async Task SendDataAsync(
+            int streamId,
+            ReadOnlyMemory<byte> body,
+            Http2Stream stream,
             CancellationToken ct)
         {
             int offset = 0;
@@ -103,7 +87,6 @@ namespace TurboHTTP.Transport.Http2
                 await _writeLock.WaitAsync(ct);
                 bool lockHeld = true;
                 int bytesSent = 0;
-                byte[] payload = null;
                 try
                 {
                     int connWindow = Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0);
@@ -121,26 +104,24 @@ namespace TurboHTTP.Transport.Http2
                     }
 
                     bool isLast = (offset + actualAvailable) >= body.Length;
-                    payload = ArrayPool<byte>.Shared.Rent(actualAvailable);
-                    Buffer.BlockCopy(body, offset, payload, 0, actualAvailable);
 
                     Interlocked.Add(ref _connectionSendWindow, -actualAvailable);
                     stream.AdjustSendWindowSize(-actualAvailable);
 
-                    await _codec.WriteFrameAsync(new Http2Frame
-                    {
-                        Type = Http2FrameType.Data,
-                        Flags = isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,
-                        StreamId = streamId,
-                        Payload = payload,
-                        Length = actualAvailable
-                    }, ct);
+                    // Zero-copy: pass the body slice directly — no intermediate ArrayPool copy.
+                    // Http2FrameCodec.WriteFrameAsync accepts ReadOnlyMemory<byte> and writes
+                    // it straight to the network stream. The body memory remains valid because
+                    // DisposeBodyOwner() is deferred to the outer SendRequestAsync finally.
+                    await _codec.WriteFrameAsync(
+                        Http2FrameType.Data,
+                        isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,
+                        streamId,
+                        body.Slice(offset, actualAvailable),
+                        ct);
                     bytesSent = actualAvailable;
                 }
                 finally
                 {
-                    if (payload != null)
-                        ArrayPool<byte>.Shared.Return(payload);
                     if (lockHeld) _writeLock.Release();
                 }
 
