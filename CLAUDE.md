@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Start with `AGENTS.md` for the shared repository guidance used across coding agents. Treat this file as the Claude-specific companion document, and keep it aligned with `AGENTS.md` when architecture, workflow, or conventions change.
+
 ## Project Overview
 
 TurboHTTP is a commercial, closed-source HTTP client package for Unity (Asset Store distribution). It uses raw TCP sockets with custom HTTP/1.1 and HTTP/2 implementations — no UnityWebRequest dependency. Target: Unity 2021.3 LTS (.NET Standard 2.1). Platforms: Editor, Standalone, iOS, Android (WebGL deferred to v1.1).
