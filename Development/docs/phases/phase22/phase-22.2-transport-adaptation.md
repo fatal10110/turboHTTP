@@ -1,8 +1,18 @@
 ## 22.2: Transport Adaptation
 
+### Transitional Bridge Removal
+
+Phase 22.1 introduced a transitional bridge where `RawSocketTransport.DispatchAsync` delegates to the legacy `SendAsync` (returning `UHttpResponse`) and re-emits callbacks via `DispatchBridge.DeliverResponse`. Phase 22.2 removes this bridge entirely:
+
+- **Delete** the legacy `SendAsync(UHttpRequest, RequestContext, CancellationToken)` method (the `ValueTask<UHttpResponse>` overload) from `RawSocketTransport`
+- **Delete** all `DispatchBridge.DeliverResponse` calls from the transport — callbacks are driven directly
+- **Delete** `response?.Dispose()` from the `DispatchAsync` finally block — no intermediate `UHttpResponse` exists
+- **Simplify `ResponseCollectorHandler`**: remove `TrySetStoredCancellationException()` and the `DispatchBridge.ResponseErrorStateKey` / `CancellationExceptionStateKey` state-key reads. Error/cancellation context is now delivered directly through handler callbacks and Task faults, not via context state. `Fail()` becomes a straightforward TCS fault, `Cancel()` becomes a straightforward TCS cancel.
+- **Delete `DispatchBridge.DeliverResponse`** if no other callers remain (check `MockTransport` and `RecordReplayTransport` — they drive callbacks directly and should not need it). Retain `DispatchBridge.CollectResponseAsync` and `AttachCompletion` if still used by `UHttpClient.SendAsync`.
+
 ### `Runtime/Transport/RawSocketTransport.cs`
 
-Rename `SendAsync` → `DispatchAsync(request, handler, context, ct)` returning `Task`.
+`DispatchAsync(request, handler, context, ct)` now drives handler callbacks directly (no delegation to legacy `SendAsync`).
 
 Add private helper:
 ```csharp
@@ -99,7 +109,7 @@ public ValueTask CompletionTask => new ValueTask(this, _completionSource.Version
   > `Cancel()` sits below the handler contract boundary. It does **not** call `_handler.OnResponseError`; `Http2Connection.DispatchAsync` / `RawSocketTransport.DispatchAsync` enforce the contract by propagating `OperationCanceledException` upward, recording `RequestCancelled`, and delivering no response-error callback.
 - `PrepareForPool()`: `_handler = NullHandler.Instance`; `_trailers = null`; `_completionSource.Reset()` (in-place reset, zero allocation — C-6 fix)
 
-**`NullHandler`** (private static inner class): no-op `IHttpHandler` — guards against read loop race on pooled stream return.
+**`NullHandler`** (`internal static` class at transport assembly level, e.g., `Runtime/Transport/NullHandler.cs`): no-op `IHttpHandler` — guards against read loop race on pooled stream return. Scoped `internal` rather than `private` to `Http2Stream` so other transport code (e.g., pooled connection health checks) can reuse it without duplicating the implementation.
 
 ### `Runtime/Transport/Http2/Http2StreamPool.cs`
 
@@ -139,6 +149,7 @@ else
 All other read loop logic (frame parsing, flow control, GOAWAY, RST_STREAM) unchanged.
 
 ### Validation
+- **Bridge removal confirmed:** no `DispatchBridge.DeliverResponse` calls remain in transport code; no intermediate `UHttpResponse` allocation on the hot path; `ResponseCollectorHandler` has no `DispatchBridge` state-key reads; `grep -r "DeliverResponse\|ResponseErrorStateKey\|CancellationExceptionStateKey" Runtime/Transport/` returns zero matches
 - `IntegrationTests` deterministic suite passes (HTTP/1.1 + HTTP/2)
 - `Http2ConnectionTests` pass
 - `Http2FlowControlTests` pass

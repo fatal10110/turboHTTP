@@ -47,12 +47,16 @@ namespace TurboHTTP.Core
         public IHttpTransport Transport { get; set; }
 
         /// <summary>
-        /// Middleware pipeline components. Stub for Phase 4.
+        /// Interceptor pipeline components.
+        /// Built-in interceptors contributed from enabled client options
+        /// (for example background networking or adaptive behavior) are prepended ahead of this list.
         /// </summary>
-        public List<IHttpMiddleware> Middlewares { get; set; } = new List<IHttpMiddleware>();
+        public List<IHttpInterceptor> Interceptors { get; set; } = new List<IHttpInterceptor>();
 
         /// <summary>
         /// Max time to wait for plugin shutdown callbacks.
+        /// Used by both <see cref="UHttpClient.UnregisterPluginAsync(string, System.Threading.CancellationToken)"/>
+        /// and the best-effort asynchronous shutdown path triggered during <see cref="UHttpClient.Dispose()"/>.
         /// </summary>
         public TimeSpan PluginShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -72,13 +76,13 @@ namespace TurboHTTP.Core
         public BackgroundNetworkingPolicy BackgroundNetworkingPolicy { get; set; } = new BackgroundNetworkingPolicy();
 
         /// <summary>
-        /// Optional platform bridge used by <see cref="BackgroundNetworkingMiddleware"/>
+        /// Optional platform bridge used by <see cref="BackgroundNetworkingInterceptor"/>
         /// to acquire/release background execution scopes.
         /// </summary>
         public IBackgroundExecutionBridge BackgroundExecutionBridge { get; set; }
 
         /// <summary>
-        /// Detector used by <see cref="AdaptiveMiddleware"/> for quality snapshots.
+        /// Detector used by <see cref="AdaptiveInterceptor"/> for quality snapshots.
         /// </summary>
         public NetworkQualityDetector NetworkQualityDetector { get; set; }
 
@@ -118,12 +122,10 @@ namespace TurboHTTP.Core
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 
         /// <summary>
-        /// Creates a deep copy of these options. Headers and middleware list are
-        /// cloned; Transport is a shared reference (NOT snapshotted). Middleware
-        /// instances are also shared references (typically stateless services —
-        /// mutable middleware shared across cloned options may have thread-safety
-        /// issues). Users must not mutate or dispose a Transport instance passed
-        /// to UHttpClientOptions after constructing a client that uses those options.
+        /// Creates a deep copy of these options. Headers and pipeline component lists are
+        /// cloned; Transport is a shared reference (NOT snapshotted). Interceptor
+        /// instances are shared references. Stateful interceptors are therefore
+        /// shared across option clones by design.
         /// </summary>
         public UHttpClientOptions Clone()
         {
@@ -133,7 +135,7 @@ namespace TurboHTTP.Core
                 DefaultTimeout = DefaultTimeout,
                 DefaultHeaders = DefaultHeaders?.Clone() ?? new HttpHeaders(),
                 Transport = Transport,
-                Middlewares = Middlewares != null ? new List<IHttpMiddleware>(Middlewares) : new List<IHttpMiddleware>(),
+                Interceptors = Interceptors != null ? new List<IHttpInterceptor>(Interceptors) : new List<IHttpInterceptor>(),
                 PluginShutdownTimeout = PluginShutdownTimeout,
                 AdaptivePolicy = AdaptivePolicy?.Clone() ?? new AdaptivePolicy(),
                 Proxy = Proxy?.Clone(),

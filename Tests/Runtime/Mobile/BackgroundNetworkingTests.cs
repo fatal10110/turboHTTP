@@ -15,7 +15,7 @@ namespace TurboHTTP.Tests.Mobile
         {
             Task.Run(async () =>
             {
-                var middleware = new BackgroundNetworkingMiddleware(new BackgroundNetworkingPolicy
+                var interceptor = new BackgroundNetworkingInterceptor(new BackgroundNetworkingPolicy
                 {
                     Enable = false
                 });
@@ -24,14 +24,14 @@ namespace TurboHTTP.Tests.Mobile
                 var context = new RequestContext(request);
                 var transport = new MockTransport();
 
-                var response = await middleware.InvokeAsync(
+                var response = await TransportDispatchHelper.CollectResponseAsync(
+                    interceptor.Wrap(transport.DispatchAsync),
                     request,
                     context,
-                    (req, ctx, ct) => transport.SendAsync(req, ctx, ct),
                     CancellationToken.None);
 
                 Assert.IsTrue(response.IsSuccessStatusCode);
-                Assert.AreEqual(0, middleware.Queued);
+                Assert.AreEqual(0, interceptor.Queued);
             }).GetAwaiter().GetResult();
         }
     }

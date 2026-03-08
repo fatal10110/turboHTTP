@@ -34,13 +34,37 @@ namespace TurboHTTP.Tests.Core
                     request));
             }
 
+            public async Task DispatchAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                handler.OnRequestStart(request, context);
+
+                UHttpResponse response = null;
+                try
+                {
+                    response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
+                    TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+                }
+                catch (UHttpException ex)
+                {
+                    handler.OnResponseError(ex, context);
+                }
+                finally
+                {
+                    response?.Dispose();
+                }
+            }
+
             public void Dispose()
             {
                 Disposed = true;
             }
         }
 
-        private sealed class TrackingDisposeMiddleware : IHttpMiddleware, IDisposable
+        private sealed class TrackingDisposeInterceptor : IHttpInterceptor, IDisposable
         {
             private readonly List<string> _disposeOrder;
             private readonly string _name;
@@ -48,20 +72,19 @@ namespace TurboHTTP.Tests.Core
 
             public bool Disposed { get; private set; }
 
-            public TrackingDisposeMiddleware(List<string> disposeOrder, string name, bool throwOnDispose = false)
+            public TrackingDisposeInterceptor(List<string> disposeOrder, string name, bool throwOnDispose = false)
             {
                 _disposeOrder = disposeOrder;
                 _name = name;
                 _throwOnDispose = throwOnDispose;
             }
 
-            public ValueTask<UHttpResponse> InvokeAsync(
-                UHttpRequest request,
-                RequestContext context,
-                HttpPipelineDelegate next,
-                CancellationToken cancellationToken)
+            public DispatchFunc Wrap(DispatchFunc next)
             {
-                return next(request, context, cancellationToken);
+                return async (request, handler, context, cancellationToken) =>
+                {
+                    await next(request, handler, context, cancellationToken).ConfigureAwait(false);
+                };
             }
 
             public void Dispose()
@@ -102,6 +125,26 @@ namespace TurboHTTP.Tests.Core
                     request));
             }
 
+            public async Task DispatchAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                handler.OnRequestStart(request, context);
+
+                UHttpResponse response = null;
+                try
+                {
+                    response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
+                    TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+                }
+                finally
+                {
+                    response?.Dispose();
+                }
+            }
+
             public void Dispose()
             {
                 Disposed = true;
@@ -109,6 +152,60 @@ namespace TurboHTTP.Tests.Core
 
                 if (_throwOnDispose)
                     throw new InvalidOperationException($"{_name} dispose failed");
+            }
+        }
+
+        private sealed class ErrorObservingInterceptor : IHttpInterceptor
+        {
+            private readonly Action<UHttpException> _onError;
+
+            public ErrorObservingInterceptor(Action<UHttpException> onError)
+            {
+                _onError = onError;
+            }
+
+            public DispatchFunc Wrap(DispatchFunc next)
+            {
+                return (request, handler, context, cancellationToken) =>
+                    next(request, new ErrorObservingHandler(handler, _onError), context, cancellationToken);
+            }
+
+            private sealed class ErrorObservingHandler : IHttpHandler
+            {
+                private readonly IHttpHandler _inner;
+                private readonly Action<UHttpException> _onError;
+
+                public ErrorObservingHandler(IHttpHandler inner, Action<UHttpException> onError)
+                {
+                    _inner = inner;
+                    _onError = onError;
+                }
+
+                public void OnRequestStart(UHttpRequest request, RequestContext context)
+                {
+                    _inner.OnRequestStart(request, context);
+                }
+
+                public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+                {
+                    _inner.OnResponseStart(statusCode, headers, context);
+                }
+
+                public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
+                {
+                    _inner.OnResponseData(chunk, context);
+                }
+
+                public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+                {
+                    _inner.OnResponseEnd(trailers, context);
+                }
+
+                public void OnResponseError(UHttpException error, RequestContext context)
+                {
+                    _onError?.Invoke(error);
+                    _inner.OnResponseError(error, context);
+                }
             }
         }
 
@@ -550,46 +647,46 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void Client_Dispose_DisposesMiddlewaresInReverseOrder_ThenTransport()
+        public void Client_Dispose_DisposesInterceptorsInReverseOrder_ThenTransport()
         {
             var disposeOrder = new List<string>();
-            var middleware1 = new TrackingDisposeMiddleware(disposeOrder, "mw1");
-            var middleware2 = new TrackingDisposeMiddleware(disposeOrder, "mw2");
-            var middleware3 = new TrackingDisposeMiddleware(disposeOrder, "mw3");
+            var interceptor1 = new TrackingDisposeInterceptor(disposeOrder, "i1");
+            var interceptor2 = new TrackingDisposeInterceptor(disposeOrder, "i2");
+            var interceptor3 = new TrackingDisposeInterceptor(disposeOrder, "i3");
             var transport = new TrackingDisposeTransport(disposeOrder);
 
             var client = new UHttpClient(new UHttpClientOptions
             {
                 Transport = transport,
                 DisposeTransport = true,
-                Middlewares = new List<IHttpMiddleware> { middleware1, middleware2, middleware3 }
+                Interceptors = new List<IHttpInterceptor> { interceptor1, interceptor2, interceptor3 }
             });
 
             client.Dispose();
 
-            Assert.AreEqual(new[] { "mw3", "mw2", "mw1", "transport" }, disposeOrder.ToArray());
+            Assert.AreEqual(new[] { "i3", "i2", "i1", "transport" }, disposeOrder.ToArray());
             Assert.IsTrue(transport.Disposed);
         }
 
         [Test]
-        public void Client_Dispose_ContinuesAfterDisposeErrors_DoesNotThrow()
+        public void Client_Dispose_ContinuesAfterInterceptorDisposeErrors_DoesNotThrow()
         {
             var disposeOrder = new List<string>();
-            var middleware1 = new TrackingDisposeMiddleware(disposeOrder, "mw1");
-            var middleware2 = new TrackingDisposeMiddleware(disposeOrder, "mw2", throwOnDispose: true);
+            var interceptor1 = new TrackingDisposeInterceptor(disposeOrder, "i1");
+            var interceptor2 = new TrackingDisposeInterceptor(disposeOrder, "i2", throwOnDispose: true);
             var transport = new TrackingDisposeTransport(disposeOrder);
 
             var client = new UHttpClient(new UHttpClientOptions
             {
                 Transport = transport,
                 DisposeTransport = true,
-                Middlewares = new List<IHttpMiddleware> { middleware1, middleware2 }
+                Interceptors = new List<IHttpInterceptor> { interceptor1, interceptor2 }
             });
 
             Assert.DoesNotThrow(() => client.Dispose());
-            Assert.AreEqual(new[] { "mw2", "mw1", "transport" }, disposeOrder.ToArray());
-            Assert.IsTrue(middleware1.Disposed);
-            Assert.IsTrue(middleware2.Disposed);
+            Assert.AreEqual(new[] { "i2", "i1", "transport" }, disposeOrder.ToArray());
+            Assert.IsTrue(interceptor1.Disposed);
+            Assert.IsTrue(interceptor2.Disposed);
             Assert.IsTrue(transport.Disposed);
             Assert.DoesNotThrow(() => client.Dispose());
         }
@@ -629,6 +726,37 @@ namespace TurboHTTP.Tests.Core
                 Assert.IsNotNull(capturedContext);
                 Assert.AreEqual(0, capturedContext.Timeline.Count);
                 Assert.AreEqual(0, capturedContext.State.Count);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SendAsync_CancelledTransport_TriggersHandlerErrorBeforeThrowingOperationCanceledException()
+        {
+            Task.Run(async () =>
+            {
+                UHttpException observedError = null;
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new MockTransport(
+                        (request, context, ct) => new ValueTask<UHttpResponse>(Task.FromCanceled<UHttpResponse>(ct)),
+                        preferValueTaskHandler: true),
+                    DisposeTransport = true,
+                    Interceptors = new List<IHttpInterceptor>
+                    {
+                        new ErrorObservingInterceptor(error => observedError = error)
+                    }
+                });
+
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
+
+                await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
+                {
+                    await client.Get("https://example.test/cancelled").SendAsync(cts.Token);
+                });
+
+                Assert.IsNotNull(observedError);
+                Assert.AreEqual(UHttpErrorType.Cancelled, observedError.HttpError.Type);
             }).GetAwaiter().GetResult();
         }
 

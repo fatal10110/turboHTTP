@@ -60,6 +60,8 @@ public DispatchFunc Wrap(DispatchFunc next) => async (req, handler, ctx, ct) =>
 ```
 Implements `IDisposable`. `ConcurrencyLimiter` unchanged.
 
+> **Redirect chain note:** The concurrency permit (semaphore) remains held for the entire redirect chain because `RedirectInterceptor` keeps the dispatch Task pending via the completion bridge until the terminal hop completes. This is correct behavior — the logical request is still in flight and should count against the concurrency limit. A 5-hop redirect chain holds one permit for the full duration, not five sequential permits.
+
 **`BackgroundNetworkingInterceptor`** (`Runtime/Core/`): acquire background execution scope, `await next(...)`, release in `finally`. Retain `TryDequeueReplayable(out UHttpRequest request)` public API for Unity integration (M-11) — same method signature as current `BackgroundNetworkingMiddleware`.
 
 `TryDequeueReplayable(out UHttpRequest request)` moves to the new `BackgroundNetworkingInterceptor` because it operates on interceptor-owned queue state. `BackgroundNetworkingPolicy.cs` remains policy/config only after the extraction.
@@ -87,6 +89,7 @@ public DispatchFunc Wrap(DispatchFunc next) => async (req, handler, ctx, ct) =>
 ```
 
 `AdaptiveHandler`:
+- Field: `long _bytesReceived` — use `long` to avoid overflow on large responses (>2GB file downloads)
 - `OnResponseData`: `_bytesReceived += chunk.Length`; forward
 - `OnResponseEnd`: `_detector.AddSample(bytesTransferred: _bytesReceived)`; forward
 
@@ -115,11 +118,55 @@ public DispatchFunc Wrap(DispatchFunc next) => async (req, handler, ctx, ct) =>
   - `OnResponseData`: if compressing, append into `SegmentedBuffer _compressedBuffer` (H-2: **not** `MemoryStream` — `SegmentedBuffer` avoids LOH pressure via linked 16KB pooled segments); else forward directly
   - `OnResponseEnd`: if compressed:
     1. Obtain `ReadOnlySequence<byte>` via `_compressedBuffer.AsSequence()`
-    2. Wrap with a `ReadOnlySequenceStream` adapter (or copy to `MemoryStream` if adapter unavailable); wrap with `GZipStream` / `DeflateStream`
-    3. Read into 64KB `ArrayPool<byte>` buffer in a loop; call `_inner.OnResponseData(span)` per read
+    2. Wrap with `ReadOnlySequenceStream` adapter (see below); wrap with `GZipStream` / `DeflateStream`
+    3. Rent a 64KB buffer from `ArrayPool<byte>.Shared`; read decompressed data in a loop; call `_inner.OnResponseData(span)` per read. **The 64KB buffer must be returned in a `finally` block** covering the decompression loop to prevent pool leak on decompression errors (e.g., corrupt gzip data).
     4. Dispose decompression streams and `_compressedBuffer`
     5. Call `_inner.OnResponseEnd(trailers, ctx)`
     - Note: `GZipStream` validates the checksum when the last compressed block is read, not at stream creation — streaming decompress-per-chunk IS feasible but requires a persistent `GZipStream` wrapping a ring buffer. Deferred to a follow-up phase. Phase 22 buffers the compressed body into `SegmentedBuffer` then decompresses in `OnResponseEnd`. Peak memory = compressed_size + decompressed_size.
+
+#### `ReadOnlySequenceStream` adapter (`Runtime/Core/Internal/ReadOnlySequenceStream.cs`)
+
+`ReadOnlySequenceStream` is a read-only `Stream` adapter over `ReadOnlySequence<byte>`. Required because `GZipStream`/`DeflateStream` accept `Stream`, and copying the `SegmentedBuffer` contents into a `MemoryStream` would defeat LOH avoidance for compressed bodies >85KB. Lives in `Core/Internal` so both `DecompressionHandler` and future consumers can use it.
+
+```csharp
+internal sealed class ReadOnlySequenceStream : Stream
+{
+    private ReadOnlySequence<byte> _sequence;
+    private SequencePosition _position;
+
+    internal ReadOnlySequenceStream(ReadOnlySequence<byte> sequence)
+    {
+        _sequence = sequence;
+        _position = sequence.Start;
+    }
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => _sequence.Length;
+    public override long Position
+    {
+        get => _sequence.Slice(_sequence.Start, _position).Length;
+        set => throw new NotSupportedException();
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        var remaining = _sequence.Slice(_position);
+        if (remaining.IsEmpty) return 0;
+
+        var toCopy = (int)Math.Min(count, remaining.Length);
+        remaining.Slice(0, toCopy).CopyTo(new Span<byte>(buffer, offset, toCopy));
+        _position = _sequence.GetPosition(toCopy, _position);
+        return toCopy;
+    }
+
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+}
+```
   - `OnResponseError`: dispose `_compressedBuffer`; forward — **both** success and error paths must dispose (L-5 pattern, same as `RecordingHandler`)
   - **Brotli deferred** — `BrotliStream` not reliably available on Unity 2021.3 LTS Mono; requires platform probe (see Phase 23 / Phase 24.1 cross-reference below)
 
@@ -183,6 +230,7 @@ public DispatchFunc Wrap(DispatchFunc next) => async (request, handler, ctx, ct)
 
 `RetryDetectorHandler`:
 - `bool _committed`, `bool WasRetryable` (unified flag replacing `WasRetryableStatus`)
+- `OnRequestStart`: **always forward to `_inner`** regardless of retry state — `_inner` (e.g., `LoggingHandler`, `MetricsHandler`) may rely on `OnRequestStart` having fired before `OnResponseError` arrives. Per the `IHttpHandler` contract, `OnResponseError` "may be called at any point after `OnRequestStart`", so `OnRequestStart` must have been delivered.
 - `OnResponseStart`: if 5xx → `WasRetryable = true` (do NOT forward); else → `_committed = true`, forward
 - `OnResponseData`: if `_committed` forward; else discard (zero allocation on retry path)
 - `OnResponseEnd`: if `_committed` forward; else discard
@@ -322,6 +370,7 @@ Partial files `CacheMiddleware.Parsing.cs`, `CacheMiddleware.UriNormalization.cs
 | `Runtime/Core/AdaptiveMiddleware.cs` | `AdaptiveInterceptor.cs` + `AdaptiveHandler.cs` | |
 | `Runtime/Core/BackgroundNetworkingPolicy.cs` | `BackgroundNetworkingPolicy.cs` + `BackgroundNetworkingInterceptor.cs` | Policy remains in-place; queue/replay API (`TryDequeueReplayable`) moves to the interceptor |
 | *(new)* | `Runtime/Middleware/DecompressionInterceptor.cs` + `DecompressionHandler.cs` | |
+| *(new)* | `Runtime/Core/Internal/ReadOnlySequenceStream.cs` | Read-only `Stream` adapter over `ReadOnlySequence<byte>` for decompression |
 
 ### Validation
 - All interceptor unit tests pass

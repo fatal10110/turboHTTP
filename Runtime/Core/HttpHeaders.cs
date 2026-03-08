@@ -11,11 +11,19 @@ namespace TurboHTTP.Core
     /// </summary>
     public class HttpHeaders : IEnumerable<KeyValuePair<string, string>>
     {
-        private readonly Dictionary<string, List<string>> _headers;
+        public static readonly HttpHeaders Empty = new HttpHeaders(true);
 
-        public HttpHeaders()
+        private readonly Dictionary<string, List<string>> _headers;
+        private readonly bool _frozen;
+
+        public HttpHeaders() : this(false)
+        {
+        }
+
+        internal HttpHeaders(bool frozen)
         {
             _headers = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            _frozen = frozen;
         }
 
         /// <summary>
@@ -23,6 +31,8 @@ namespace TurboHTTP.Core
         /// </summary>
         public void Set(string name, string value)
         {
+            ThrowIfFrozen();
+
             if (string.IsNullOrWhiteSpace(name))
                 throw new ArgumentException("Header name cannot be null or empty", nameof(name));
 
@@ -35,6 +45,8 @@ namespace TurboHTTP.Core
         /// </summary>
         public void Add(string name, string value)
         {
+            ThrowIfFrozen();
+
             if (string.IsNullOrWhiteSpace(name))
                 throw new ArgumentException("Header name cannot be null or empty", nameof(name));
 
@@ -83,6 +95,7 @@ namespace TurboHTTP.Core
         /// </summary>
         public bool Remove(string name)
         {
+            ThrowIfFrozen();
             return _headers.Remove(name);
         }
 
@@ -96,6 +109,7 @@ namespace TurboHTTP.Core
         /// </summary>
         public void Clear()
         {
+            ThrowIfFrozen();
             _headers.Clear();
         }
 
@@ -143,6 +157,15 @@ namespace TurboHTTP.Core
         {
             get => Get(name);
             set => Set(name, value);
+        }
+
+        private void ThrowIfFrozen()
+        {
+            if (_frozen)
+            {
+                throw new InvalidOperationException(
+                    "Cannot modify a frozen HttpHeaders instance.");
+            }
         }
     }
 }

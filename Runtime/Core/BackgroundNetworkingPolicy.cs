@@ -44,7 +44,7 @@ namespace TurboHTTP.Core
         }
     }
 
-    public sealed class BackgroundNetworkingMiddleware : IHttpMiddleware
+    public sealed class BackgroundNetworkingInterceptor : IHttpInterceptor
     {
         private readonly BackgroundNetworkingPolicy _policy;
         private readonly IBackgroundExecutionBridge _bridge;
@@ -53,7 +53,7 @@ namespace TurboHTTP.Core
         private int _expired;
         private int _dropped;
 
-        public BackgroundNetworkingMiddleware(
+        public BackgroundNetworkingInterceptor(
             BackgroundNetworkingPolicy policy,
             IBackgroundExecutionBridge bridge = null)
         {
@@ -72,15 +72,27 @@ namespace TurboHTTP.Core
         public int Expired => Volatile.Read(ref _expired);
         public int Dropped => Volatile.Read(ref _dropped);
 
-        public async ValueTask<UHttpResponse> InvokeAsync(
+        public DispatchFunc Wrap(DispatchFunc next)
+        {
+            if (next == null)
+                throw new ArgumentNullException(nameof(next));
+
+            return (request, handler, context, cancellationToken) =>
+            {
+                if (!_policy.Enable)
+                    return next(request, handler, context, cancellationToken);
+
+                return InvokeWithBackgroundPolicyAsync(next, request, handler, context, cancellationToken);
+            };
+        }
+
+        private async Task InvokeWithBackgroundPolicyAsync(
+            DispatchFunc next,
             UHttpRequest request,
+            IHttpHandler handler,
             RequestContext context,
-            HttpPipelineDelegate next,
             CancellationToken cancellationToken)
         {
-            if (!_policy.Enable)
-                return await next(request, context, cancellationToken);
-
             IBackgroundExecutionScope scope = null;
             CancellationTokenSource linkedCts = null;
             var effectiveToken = cancellationToken;
@@ -99,7 +111,7 @@ namespace TurboHTTP.Core
 
             try
             {
-                return await next(request, context, effectiveToken).ConfigureAwait(false);
+                await next(request, handler, context, effectiveToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (
                 _policy.QueueOnAppPause &&
@@ -115,7 +127,7 @@ namespace TurboHTTP.Core
                     throw;
                 }
 
-                if (!_queue.TryEnqueue(request))
+                if (!_queue.TryEnqueue(request.Clone()))
                 {
                     Interlocked.Increment(ref _dropped);
                     throw;
@@ -131,10 +143,12 @@ namespace TurboHTTP.Core
                     }
                 }
 
-                throw new BackgroundRequestQueuedException(
+                var queuedException = new BackgroundRequestQueuedException(
                     replayKey,
                     scope?.ScopeId,
                     effectiveToken);
+                context.SetCancellationException(queuedException);
+                throw queuedException;
             }
             finally
             {

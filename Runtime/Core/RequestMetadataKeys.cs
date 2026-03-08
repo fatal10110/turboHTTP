@@ -1,7 +1,7 @@
 namespace TurboHTTP.Core
 {
     /// <summary>
-    /// Reserved metadata keys used by built-in middleware.
+    /// Reserved metadata keys used by built-in interceptors.
     /// </summary>
     public static class RequestMetadataKeys
     {

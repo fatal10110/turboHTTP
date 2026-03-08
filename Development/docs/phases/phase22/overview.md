@@ -9,6 +9,8 @@
 > `Development/docs/phases/phase22/review.md` have been incorporated into this overview and the
 > linked sub-phase documents.
 
+> **Implementation status:** Phase 22.1 core interfaces are **partially implemented**. `IHttpHandler`, `IHttpInterceptor`, `DispatchFunc`, `InterceptorPipeline`, `ResponseCollectorHandler`, and `DispatchBridge` already exist in code. `UHttpClient.SendAsync` already returns `Task<UHttpResponse>` and uses the collector pattern. The current `RawSocketTransport.DispatchAsync` uses a **transitional bridge** — it delegates to the legacy `SendAsync` (which returns `UHttpResponse`) and then re-emits callbacks via `DispatchBridge.DeliverResponse`. This bridge is removed in 22.2 when the transport drives handler callbacks directly. Sub-phases 22.2–22.4 are the remaining work.
+
 ## Context
 
 The current ASP.NET Core-style middleware pipeline (`IHttpMiddleware` / `HttpPipeline`) has two structural limitations that block important features:
@@ -153,6 +155,8 @@ public interface IHttpTransport : IDisposable
 
 Phase 22's primary gain is composition correctness and a single error-delivery contract. Full HTTP/1.1 streaming and decompress-per-chunk memory reductions are explicitly deferred follow-up work.
 
+> **Transitional bridge overhead (22.1 → 22.2):** Until 22.2 is complete, `RawSocketTransport.DispatchAsync` delegates to the legacy `SendAsync`, builds a full `UHttpResponse`, then re-emits it as handler callbacks via `DispatchBridge.DeliverResponse`. This **double-buffers** the response body (once in the parser's `SegmentedBuffer`, once in `ResponseCollectorHandler`'s `SegmentedBuffer`) and allocates an intermediate `UHttpResponse` that is immediately disposed. Phase 22.2 removes this bridge entirely — validation must confirm zero double-buffering and no intermediate `UHttpResponse` allocation on the hot path.
+
 ---
 
 ## Sub-Phase Index
@@ -171,7 +175,7 @@ Phase 22's primary gain is composition correctness and a single error-delivery c
 | Decision | Rationale |
 |----------|-----------|
 | Handler callbacks synchronous | Eliminates async state machine per callback on data path; async work lives at `DispatchFunc` level |
-| `SendAsync` return type changed to `Task<UHttpResponse>` | Phase 22 is a clean break. `collector.ResponseTask` is always `Task<UHttpResponse>`; wrapping in `ValueTask` provides no benefit and the allocation mismatch causes per-call overhead. Simpler to change the return type than introduce `ManualResetValueTaskSourceCore` in the collector. |
+| `SendAsync` return type changed to `Task<UHttpResponse>` | Phase 22 is a clean break. `collector.ResponseTask` is always `Task<UHttpResponse>`; wrapping in `ValueTask` provides no benefit and the allocation mismatch causes per-call overhead. Simpler to change the return type than introduce `ManualResetValueTaskSourceCore` in the collector. (Already implemented in 22.1.) |
 | HTTP/1.1 parser unchanged in Phase 22 | Parser still accumulates into `SegmentedBuffer`; body enumerated post-parse. True streaming parser is a follow-up phase |
 | `DecompressionHandler` buffers compressed body into `SegmentedBuffer` | `SegmentedBuffer` avoids LOH pressure. Peak memory = compressed + decompressed. Full-buffer approach documented as known limitation; streaming decompression via persistent `GZipStream` + ring buffer deferred |
 | Request mutation is clone-on-write | `UHttpRequest.WithHeader()`, `WithHeaders()`, `WithMetadata()`, and `SetTimeoutInternal()` mutate the instance in place. Interceptors that apply transient headers or timeouts must clone first, call `ctx.UpdateRequest(clone)`, and pass the clone downstream so retries/redirects do not inherit accidental state |
@@ -184,6 +188,7 @@ Phase 22's primary gain is composition correctness and a single error-delivery c
 | Error delivery: single contract per error type | Transport errors → `OnResponseError` + Task completes normally. Cancellation → Task throws. Eliminates double-counting in Logging/Metrics handlers and defines clear contract for all handler implementations |
 | `CacheStoringHandler` ownership transfer (not snapshot) | Zero-copy: buffer ownership transfers to store task; handler sets `_responseBody = null`. Store task takes full dispose responsibility. Error path disposes if still owned. |
 | Stale-while-revalidate uses cloned request/context | Background revalidation races with `RequestContext.Clear()` in `SendAsync`'s `finally`. Clone request; fresh `RequestContext`; `CancellationToken.None` avoids cancelled-token rejection |
+| `HttpHeaders.Empty` must not be shared mutably | `HttpHeaders.Empty` is a `public static readonly` mutable instance. Transports and handlers call `handler.OnResponseEnd(HttpHeaders.Empty, ctx)` — a handler that mutates the trailers object would corrupt the singleton. All call sites that pass `HttpHeaders.Empty` as trailers are safe because trailers are informational and handlers should not mutate them; however, `HttpHeaders` should gain a `Freeze()` / `_frozen` guard so that `Empty` rejects mutation. Added to 22.1 scope. |
 | `MockTransport.DriveHandler` synchronous | Deterministic test execution; delay path wraps in `async Task` only when needed |
 | Plugin `RegisterMiddleware` → `RegisterInterceptor` | `PluginContext` API updated; no compatibility shim. `PluginCapabilities` also gains `AllowRedispatch` so capability enforcement can distinguish observation from repeated downstream dispatch |
 | Handler wrapper pooling deferred | No pool design specified for Phase 22. Accepted baseline: 3 wrapper allocations per request (Logging + Metrics + Decompression). Pooling deferred to follow-up phase. |
@@ -204,11 +209,12 @@ Phase 22's primary gain is composition correctness and a single error-delivery c
 
 ### TurboHTTP.Core
 - **Removed:** `IHttpMiddleware.cs`, `Pipeline/HttpPipeline.cs`
-- **New:** `IHttpHandler.cs`, `IHttpInterceptor.cs`, `DispatchFunc.cs`, `Pipeline/InterceptorPipeline.cs`, `Pipeline/ResponseCollectorHandler.cs`, `BackgroundNetworkingInterceptor.cs`
-- **Modified:** `IHttpTransport.cs`, `UHttpClient.cs` (SendAsync return type → Task; redirect completion bridge expects outer dispatch to stay pending), `UHttpClientOptions.cs` (Interceptors, Clone() doc), `UHttpRequest.cs` (add `Clone()`, reuse `SetTimeoutInternal()` on cloned requests), `RequestContext.cs` (add `CreateForBackground(UHttpRequest request)`), `HttpHeaders.cs` (add Empty), `IHttpPlugin.cs` (`AllowRedispatch` capability), `PluginContext.cs`, `AdaptiveMiddleware.cs` → `AdaptiveInterceptor.cs` + `AdaptiveHandler.cs`, `BackgroundNetworkingPolicy.cs` (policy-only after interceptor extraction)
+- **New:** `IHttpHandler.cs`, `IHttpInterceptor.cs`, `DispatchFunc.cs`, `Pipeline/InterceptorPipeline.cs`, `Pipeline/ResponseCollectorHandler.cs`, `Pipeline/DispatchBridge.cs` (transitional bridge — removed in 22.2), `BackgroundNetworkingInterceptor.cs`, `Internal/ReadOnlySequenceStream.cs` (read-only `Stream` adapter over `ReadOnlySequence<byte>` for decompression)
+- **Modified:** `IHttpTransport.cs`, `UHttpClient.cs` (SendAsync return type → Task; redirect completion bridge expects outer dispatch to stay pending), `UHttpClientOptions.cs` (Interceptors, Clone() doc), `UHttpRequest.cs` (add `Clone()`, reuse `SetTimeoutInternal()` on cloned requests), `RequestContext.cs` (add `CreateForBackground(UHttpRequest request)`), `HttpHeaders.cs` (frozen `Empty` singleton with `ThrowIfFrozen()` mutation guard), `IHttpPlugin.cs` (`AllowRedispatch` capability), `PluginContext.cs`, `AdaptiveMiddleware.cs` → `AdaptiveInterceptor.cs` + `AdaptiveHandler.cs`, `BackgroundNetworkingPolicy.cs` (policy-only after interceptor extraction)
 
 ### TurboHTTP.Transport
-- **Modified (significant):** `Http2/Http2Stream.cs` (ManualResetValueTaskSourceCore, _trailers, NullHandler)
+- **New:** `NullHandler.cs` (`internal static` no-op `IHttpHandler` — scoped at transport level for reuse across `Http2Stream` pool reset and potential health checks)
+- **Modified (significant):** `Http2/Http2Stream.cs` (ManualResetValueTaskSourceCore, _trailers, uses `NullHandler.Instance`)
 - **Modified:** `RawSocketTransport.cs` (DispatchAsync, MapException, OnRequestStart placement, error routing, remove transport-owned body disposal), `Http2/Http2Connection.cs` (DispatchAsync, no request-body disposal), `Http2/Http2StreamPool.cs`
 - **Modified (behavioral):** `Http2/Http2Connection.ReadLoop.cs` (DecodeAndSetHeaders result handling, AppendTrailers)
 - **Modified (minor):** `Http1/Http11ResponseParser.cs` (EnumerateBodySegments using AsSequence)

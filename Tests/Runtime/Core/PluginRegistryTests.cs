@@ -19,7 +19,7 @@ namespace TurboHTTP.Tests.Core
             Task.Run(async () =>
             {
                 using var client = CreateClient();
-                var plugin = new MiddlewarePlugin("dup", new RecordingMiddleware("P"));
+                var plugin = new InterceptorPlugin("dup", new RecordingInterceptor("P"));
 
                 await client.RegisterPluginAsync(plugin);
 
@@ -41,7 +41,7 @@ namespace TurboHTTP.Tests.Core
                 var plugin = new FailingInitPlugin(
                     "failing",
                     PluginCapabilities.MutateRequests | PluginCapabilities.MutateResponses,
-                    new RecordingMiddleware("Failing", recorder));
+                    new RecordingInterceptor("Failing", recorder));
 
                 await TestHelpers.AssertThrowsAsync<PluginException>(async () =>
                 {
@@ -61,9 +61,9 @@ namespace TurboHTTP.Tests.Core
             Task.Run(async () =>
             {
                 using var client = CreateClient();
-                var plugin = new MiddlewarePlugin(
+                var plugin = new InterceptorPlugin(
                     "forbidden",
-                    new RecordingMiddleware("Nope"),
+                    new RecordingInterceptor("Nope"),
                     capabilities: PluginCapabilities.None);
 
                 await TestHelpers.AssertThrowsAsync<PluginException>(async () =>
@@ -74,15 +74,15 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void ReadOnlyCapability_AllowsObserverMiddleware()
+        public void ReadOnlyCapability_AllowsObserverInterceptor()
         {
             Task.Run(async () =>
             {
                 var recorder = new List<string>();
                 using var client = CreateClient(recorder);
-                var plugin = new MiddlewarePlugin(
+                var plugin = new InterceptorPlugin(
                     "observer",
-                    new RecordingMiddleware("Observer", recorder),
+                    new RecordingInterceptor("Observer", recorder),
                     capabilities: PluginCapabilities.ReadOnlyMonitoring);
 
                 await client.RegisterPluginAsync(plugin);
@@ -98,9 +98,9 @@ namespace TurboHTTP.Tests.Core
             Task.Run(async () =>
             {
                 using var client = CreateClient();
-                var plugin = new MiddlewarePlugin(
+                var plugin = new InterceptorPlugin(
                     "observer-mutating",
-                    new MutatingRequestMiddleware(),
+                    new MutatingRequestInterceptor(),
                     capabilities: PluginCapabilities.ObserveRequests);
 
                 await client.RegisterPluginAsync(plugin);
@@ -122,7 +122,7 @@ namespace TurboHTTP.Tests.Core
             {
                 var recorder = new List<string>();
                 using var client = CreateClient(recorder);
-                var plugin = new MiddlewarePlugin("hook", new RecordingMiddleware("Hook", recorder));
+                var plugin = new InterceptorPlugin("hook", new RecordingInterceptor("Hook", recorder));
 
                 await client.RegisterPluginAsync(plugin);
                 await client.Get("https://example.test/one").SendAsync();
@@ -145,9 +145,9 @@ namespace TurboHTTP.Tests.Core
                 var recorder = new List<string>();
                 using var client = CreateClient(recorder);
 
-                await client.RegisterPluginAsync(new MiddlewarePlugin("p1", new RecordingMiddleware("A", recorder)));
-                await client.RegisterPluginAsync(new MiddlewarePlugin("p2", new RecordingMiddleware("B", recorder)));
-                await client.RegisterPluginAsync(new MiddlewarePlugin("p3", new RecordingMiddleware("C", recorder)));
+                await client.RegisterPluginAsync(new InterceptorPlugin("p1", new RecordingInterceptor("A", recorder)));
+                await client.RegisterPluginAsync(new InterceptorPlugin("p2", new RecordingInterceptor("B", recorder)));
+                await client.RegisterPluginAsync(new InterceptorPlugin("p3", new RecordingInterceptor("C", recorder)));
 
                 await client.Get("https://example.test/order").SendAsync();
 
@@ -172,13 +172,13 @@ namespace TurboHTTP.Tests.Core
             {
                 using var client = CreateClient();
 
-                await client.RegisterPluginAsync(new MiddlewarePlugin(
+                await client.RegisterPluginAsync(new InterceptorPlugin(
                     "observer",
-                    new RecordingMiddleware("Observer"),
+                    new RecordingInterceptor("Observer"),
                     capabilities: PluginCapabilities.ObserveRequests));
-                await client.RegisterPluginAsync(new MiddlewarePlugin(
+                await client.RegisterPluginAsync(new InterceptorPlugin(
                     "mutator",
-                    new MutatingRequestMiddleware(),
+                    new MutatingRequestInterceptor(),
                     capabilities: PluginCapabilities.MutateRequests | PluginCapabilities.MutateResponses));
 
                 using var response = await client.Get("https://example.test/ordered-capabilities").SendAsync();
@@ -223,7 +223,7 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void OptionsSnapshot_IsDefensiveClone()
+        public void OptionsSnapshot_IsolatedFromClientOptions()
         {
             Task.Run(async () =>
             {
@@ -237,7 +237,8 @@ namespace TurboHTTP.Tests.Core
                 var plugin = new OptionsSnapshotMutationPlugin("snapshot");
                 await client.RegisterPluginAsync(plugin);
 
-                Assert.IsFalse(plugin.MutationPersisted);
+                Assert.IsTrue(plugin.MutationPersistedWithinPluginContext);
+                Assert.AreEqual(TimeSpan.FromSeconds(30), client.GetOptionsSnapshot().DefaultTimeout);
             }).GetAwaiter().GetResult();
         }
 
@@ -260,18 +261,18 @@ namespace TurboHTTP.Tests.Core
             });
         }
 
-        private sealed class MiddlewarePlugin : IHttpPlugin
+        private sealed class InterceptorPlugin : IHttpPlugin
         {
-            private readonly IHttpMiddleware _middleware;
+            private readonly IHttpInterceptor _interceptor;
             private readonly PluginCapabilities _capabilities;
 
-            public MiddlewarePlugin(
+            public InterceptorPlugin(
                 string name,
-                IHttpMiddleware middleware,
+                IHttpInterceptor interceptor,
                 PluginCapabilities capabilities = PluginCapabilities.MutateRequests | PluginCapabilities.MutateResponses)
             {
                 Name = name;
-                _middleware = middleware;
+                _interceptor = interceptor;
                 _capabilities = capabilities;
             }
 
@@ -281,7 +282,7 @@ namespace TurboHTTP.Tests.Core
 
             public ValueTask InitializeAsync(PluginContext context, CancellationToken cancellationToken)
             {
-                context.RegisterMiddleware(_middleware);
+                context.RegisterInterceptor(_interceptor);
                 return default;
             }
 
@@ -294,13 +295,13 @@ namespace TurboHTTP.Tests.Core
         private sealed class FailingInitPlugin : IHttpPlugin
         {
             private readonly PluginCapabilities _capabilities;
-            private readonly IHttpMiddleware _middleware;
+            private readonly IHttpInterceptor _interceptor;
 
-            public FailingInitPlugin(string name, PluginCapabilities capabilities, IHttpMiddleware middleware)
+            public FailingInitPlugin(string name, PluginCapabilities capabilities, IHttpInterceptor interceptor)
             {
                 Name = name;
                 _capabilities = capabilities;
-                _middleware = middleware;
+                _interceptor = interceptor;
             }
 
             public string Name { get; }
@@ -309,7 +310,7 @@ namespace TurboHTTP.Tests.Core
 
             public ValueTask InitializeAsync(PluginContext context, CancellationToken cancellationToken)
             {
-                context.RegisterMiddleware(_middleware);
+                context.RegisterInterceptor(_interceptor);
                 throw new InvalidOperationException("init failed");
             }
 
@@ -332,7 +333,7 @@ namespace TurboHTTP.Tests.Core
 
             public ValueTask InitializeAsync(PluginContext context, CancellationToken cancellationToken)
             {
-                context.RegisterMiddleware(new RecordingMiddleware("slow"));
+                context.RegisterInterceptor(new RecordingInterceptor("slow"));
                 return default;
             }
 
@@ -352,13 +353,13 @@ namespace TurboHTTP.Tests.Core
             public string Name { get; }
             public string Version => "1.0.0";
             public PluginCapabilities Capabilities => PluginCapabilities.None;
-            public bool MutationPersisted { get; private set; }
+            public bool MutationPersistedWithinPluginContext { get; private set; }
 
             public ValueTask InitializeAsync(PluginContext context, CancellationToken cancellationToken)
             {
                 var snapshot = context.OptionsSnapshot;
                 snapshot.DefaultTimeout = TimeSpan.FromSeconds(1);
-                MutationPersisted = context.OptionsSnapshot.DefaultTimeout == TimeSpan.FromSeconds(1);
+                MutationPersistedWithinPluginContext = context.OptionsSnapshot.DefaultTimeout == TimeSpan.FromSeconds(1);
                 return default;
             }
 
@@ -368,41 +369,38 @@ namespace TurboHTTP.Tests.Core
             }
         }
 
-        private sealed class RecordingMiddleware : IHttpMiddleware
+        private sealed class RecordingInterceptor : IHttpInterceptor
         {
             private readonly string _name;
             private readonly List<string> _recorder;
 
-            public RecordingMiddleware(string name, List<string> recorder = null)
+            public RecordingInterceptor(string name, List<string> recorder = null)
             {
                 _name = name;
                 _recorder = recorder;
             }
 
-            public async ValueTask<UHttpResponse> InvokeAsync(
-                UHttpRequest request,
-                RequestContext context,
-                HttpPipelineDelegate next,
-                CancellationToken cancellationToken)
+            public DispatchFunc Wrap(DispatchFunc next)
             {
-                _recorder?.Add(_name + ":req");
-                var response = await next(request, context, cancellationToken);
-                _recorder?.Add(_name + ":res");
-                return response;
+                return async (request, handler, context, cancellationToken) =>
+                {
+                    _recorder?.Add(_name + ":req");
+                    await next(request, handler, context, cancellationToken).ConfigureAwait(false);
+                    _recorder?.Add(_name + ":res");
+                };
             }
         }
 
-        private sealed class MutatingRequestMiddleware : IHttpMiddleware
+        private sealed class MutatingRequestInterceptor : IHttpInterceptor
         {
-            public ValueTask<UHttpResponse> InvokeAsync(
-                UHttpRequest request,
-                RequestContext context,
-                HttpPipelineDelegate next,
-                CancellationToken cancellationToken)
+            public DispatchFunc Wrap(DispatchFunc next)
             {
-                request.WithTimeout(TimeSpan.FromSeconds(42));
-                context.UpdateRequest(request);
-                return next(request, context, cancellationToken);
+                return (request, handler, context, cancellationToken) =>
+                {
+                    request.WithTimeout(TimeSpan.FromSeconds(42));
+                    context.UpdateRequest(request);
+                    return next(request, handler, context, cancellationToken);
+                };
             }
         }
     }

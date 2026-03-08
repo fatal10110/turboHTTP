@@ -16,7 +16,7 @@ namespace TurboHTTP.Tests.Core
         {
             Task.Run(async () =>
             {
-                var middleware = new BackgroundNetworkingMiddleware(new BackgroundNetworkingPolicy
+                var interceptor = new BackgroundNetworkingInterceptor(new BackgroundNetworkingPolicy
                 {
                     Enable = false
                 });
@@ -25,15 +25,15 @@ namespace TurboHTTP.Tests.Core
                 var context = new RequestContext(request);
                 var transport = new MockTransport();
 
-                var response = await middleware.InvokeAsync(
+                using var response = await TransportDispatchHelper.CollectResponseAsync(
+                    interceptor.Wrap(transport.DispatchAsync),
                     request,
                     context,
-                    (req, ctx, ct) => transport.SendAsync(req, ctx, ct),
                     CancellationToken.None);
 
                 Assert.IsTrue(response.IsSuccessStatusCode);
-                Assert.AreEqual(0, middleware.Queued);
-                Assert.AreEqual(0, middleware.Expired);
+                Assert.AreEqual(0, interceptor.Queued);
+                Assert.AreEqual(0, interceptor.Expired);
             }).GetAwaiter().GetResult();
         }
 
@@ -43,7 +43,7 @@ namespace TurboHTTP.Tests.Core
             Task.Run(async () =>
             {
                 var bridge = new FakeBackgroundExecutionBridge(expireImmediately: true);
-                var middleware = new BackgroundNetworkingMiddleware(new BackgroundNetworkingPolicy
+                var interceptor = new BackgroundNetworkingInterceptor(new BackgroundNetworkingPolicy
                 {
                     Enable = true,
                     QueueOnAppPause = true,
@@ -55,15 +55,15 @@ namespace TurboHTTP.Tests.Core
 
                 await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                 {
-                    await middleware.InvokeAsync(
+                    await TransportDispatchHelper.CollectResponseAsync(
+                        interceptor.Wrap((req, handler, ctx, ct) => throw new OperationCanceledException(ct)),
                         request,
                         context,
-                        (req, ctx, ct) => throw new OperationCanceledException(ct),
                         CancellationToken.None);
                 });
 
-                Assert.AreEqual(0, middleware.Queued);
-                Assert.AreEqual(1, middleware.Dropped);
+                Assert.AreEqual(0, interceptor.Queued);
+                Assert.AreEqual(1, interceptor.Dropped);
             }).GetAwaiter().GetResult();
         }
 
@@ -72,7 +72,7 @@ namespace TurboHTTP.Tests.Core
         {
             Task.Run(async () =>
             {
-                var middleware = new BackgroundNetworkingMiddleware(new BackgroundNetworkingPolicy
+                var interceptor = new BackgroundNetworkingInterceptor(new BackgroundNetworkingPolicy
                 {
                     Enable = true,
                     QueueOnAppPause = true,
@@ -84,16 +84,16 @@ namespace TurboHTTP.Tests.Core
 
                 await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                 {
-                    await middleware.InvokeAsync(
+                    await TransportDispatchHelper.CollectResponseAsync(
+                        interceptor.Wrap((req, handler, ctx, ct) => throw new OperationCanceledException(ct)),
                         request,
                         context,
-                        (req, ctx, ct) => throw new OperationCanceledException(ct),
                         CancellationToken.None);
                 });
 
-                Assert.AreEqual(0, middleware.Queued);
-                Assert.AreEqual(0, middleware.Expired);
-                Assert.AreEqual(0, middleware.Dropped);
+                Assert.AreEqual(0, interceptor.Queued);
+                Assert.AreEqual(0, interceptor.Expired);
+                Assert.AreEqual(0, interceptor.Dropped);
             }).GetAwaiter().GetResult();
         }
 
@@ -103,7 +103,7 @@ namespace TurboHTTP.Tests.Core
             Task.Run(async () =>
             {
                 var bridge = new FakeBackgroundExecutionBridge(expireImmediately: true);
-                var middleware = new BackgroundNetworkingMiddleware(new BackgroundNetworkingPolicy
+                var interceptor = new BackgroundNetworkingInterceptor(new BackgroundNetworkingPolicy
                 {
                     Enable = true,
                     QueueOnAppPause = true,
@@ -115,19 +115,19 @@ namespace TurboHTTP.Tests.Core
 
                 var queued = await TestHelpers.AssertThrowsAsync<BackgroundRequestQueuedException>(async () =>
                 {
-                    await middleware.InvokeAsync(
+                    await TransportDispatchHelper.CollectResponseAsync(
+                        interceptor.Wrap((req, handler, ctx, ct) => throw new OperationCanceledException(ct)),
                         request,
                         context,
-                        (req, ctx, ct) => throw new OperationCanceledException(ct),
                         CancellationToken.None);
                 });
 
                 Assert.AreEqual("GET:https://example.test/get", queued.ReplayDedupeKey);
-                Assert.AreEqual(1, middleware.Queued);
-                Assert.AreEqual(1, middleware.Expired);
-                Assert.IsTrue(middleware.TryDequeueReplayable(out var replay));
+                Assert.AreEqual(1, interceptor.Queued);
+                Assert.AreEqual(1, interceptor.Expired);
+                Assert.IsTrue(interceptor.TryDequeueReplayable(out var replay));
                 Assert.AreEqual(HttpMethod.GET, replay.Method);
-                Assert.AreEqual(1, middleware.Replayed);
+                Assert.AreEqual(1, interceptor.Replayed);
             }).GetAwaiter().GetResult();
         }
 
@@ -137,7 +137,7 @@ namespace TurboHTTP.Tests.Core
             Task.Run(async () =>
             {
                 var bridge = new FakeBackgroundExecutionBridge(expireImmediately: false);
-                var middleware = new BackgroundNetworkingMiddleware(new BackgroundNetworkingPolicy
+                var interceptor = new BackgroundNetworkingInterceptor(new BackgroundNetworkingPolicy
                 {
                     Enable = true,
                     QueueOnAppPause = true,
@@ -150,20 +150,19 @@ namespace TurboHTTP.Tests.Core
 
                 await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                 {
-                    await middleware.InvokeAsync(
-                        request,
-                        context,
-                        async (req, ctx, ct) =>
+                    await TransportDispatchHelper.CollectResponseAsync(
+                        interceptor.Wrap(async (req, handler, ctx, ct) =>
                         {
                             cts.Cancel();
                             ct.ThrowIfCancellationRequested();
                             await Task.Yield();
-                            return new UHttpResponse(System.Net.HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>(), ctx.Elapsed, req);
-                        },
+                        }),
+                        request,
+                        context,
                         cts.Token);
                 });
 
-                Assert.AreEqual(0, middleware.Queued);
+                Assert.AreEqual(0, interceptor.Queued);
             }).GetAwaiter().GetResult();
         }
 
@@ -183,12 +182,46 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void ClientSendAsync_PreservesQueuedBackgroundException()
+        {
+            Task.Run(async () =>
+            {
+                var bridge = new FakeBackgroundExecutionBridge(expireImmediately: true);
+                var interceptor = new BackgroundNetworkingInterceptor(new BackgroundNetworkingPolicy
+                {
+                    Enable = true,
+                    QueueOnAppPause = true,
+                    RequireReplayableBodyForQueue = true
+                }, bridge);
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new MockTransport(
+                        (request, context, ct) => new ValueTask<UHttpResponse>(
+                            Task.FromException<UHttpResponse>(new OperationCanceledException(ct))),
+                        preferValueTaskHandler: true),
+                    DisposeTransport = true,
+                    Interceptors = new System.Collections.Generic.List<IHttpInterceptor> { interceptor }
+                });
+
+                var ex = await TestHelpers.AssertThrowsAsync<BackgroundRequestQueuedException>(async () =>
+                {
+                    await client.Get("https://example.test/client-queue").SendAsync();
+                });
+
+                Assert.AreEqual("GET:https://example.test/client-queue", ex.ReplayDedupeKey);
+                Assert.IsTrue(interceptor.TryDequeueReplayable(out var replay));
+                Assert.AreEqual(HttpMethod.GET, replay.Method);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void DeferredBridge_ReceivesEnqueueAndReplaySignals()
         {
             Task.Run(async () =>
             {
                 var bridge = new FakeDeferredBridge();
-                var middleware = new BackgroundNetworkingMiddleware(new BackgroundNetworkingPolicy
+                var interceptor = new BackgroundNetworkingInterceptor(new BackgroundNetworkingPolicy
                 {
                     Enable = true,
                     QueueOnAppPause = true
@@ -206,15 +239,15 @@ namespace TurboHTTP.Tests.Core
 
                 await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                 {
-                    await middleware.InvokeAsync(
+                    await TransportDispatchHelper.CollectResponseAsync(
+                        interceptor.Wrap((req, handler, ctx, ct) => throw new OperationCanceledException(ct)),
                         request,
                         context,
-                        (req, ctx, ct) => throw new OperationCanceledException(ct),
                         CancellationToken.None);
                 });
 
                 Assert.AreEqual(1, bridge.EnqueueCalls);
-                Assert.IsTrue(middleware.TryDequeueReplayable(out _));
+                Assert.IsTrue(interceptor.TryDequeueReplayable(out _));
                 Assert.AreEqual(1, bridge.CompleteCalls);
             }).GetAwaiter().GetResult();
         }

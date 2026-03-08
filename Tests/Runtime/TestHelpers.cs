@@ -16,7 +16,7 @@ namespace TurboHTTP.Tests
             HttpHeaders responseHeaders = null,
             byte[] responseBody = null,
             UHttpError responseError = null,
-            IEnumerable<IHttpMiddleware> middlewares = null)
+            IEnumerable<IHttpInterceptor> interceptors = null)
         {
             var transport = new MockTransport(
                 statusCode,
@@ -30,9 +30,9 @@ namespace TurboHTTP.Tests
                 DisposeTransport = true
             };
 
-            if (middlewares != null)
+            if (interceptors != null)
             {
-                options.Middlewares = new List<IHttpMiddleware>(middlewares);
+                options.Interceptors = new List<IHttpInterceptor>(interceptors);
             }
 
             return (new UHttpClient(options), transport);

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,15 +15,14 @@ namespace TurboHTTP.Core
     /// </summary>
     public class UHttpClient : IDisposable
     {
-        private const string MonitorMiddlewareTypeName = "TurboHTTP.Observability.MonitorMiddleware, TurboHTTP.Observability";
-
+        private const string MonitorInterceptorTypeName = "TurboHTTP.Observability.MonitorInterceptor, TurboHTTP.Observability";
         private readonly UHttpClientOptions _options;
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
-        private readonly IReadOnlyList<IHttpMiddleware> _baseMiddlewares;
+        private readonly IReadOnlyList<IHttpInterceptor> _baseInterceptors;
         private readonly ObjectPool<UHttpRequest> _requestPool;
 
-        private HttpPipeline _pipeline;
+        private volatile DispatchFunc _pipeline;
 
         private readonly SemaphoreSlim _pluginLifecycleGate = new SemaphoreSlim(1, 1);
         private readonly object _pluginLock = new object();
@@ -48,19 +46,19 @@ namespace TurboHTTP.Core
             public string Name { get; }
             public string Version { get; }
             public PluginCapabilities Capabilities { get; }
-            public IReadOnlyList<IHttpMiddleware> Middlewares { get; }
+            public IReadOnlyList<IHttpInterceptor> Interceptors { get; }
             public PluginLifecycleState State { get; set; }
 
             public PluginRegistration(
                 IHttpPlugin plugin,
-                IReadOnlyList<IHttpMiddleware> middlewares,
+                IReadOnlyList<IHttpInterceptor> interceptors,
                 PluginLifecycleState state)
             {
                 Plugin = plugin ?? throw new ArgumentNullException(nameof(plugin));
                 Name = string.IsNullOrWhiteSpace(plugin.Name) ? plugin.GetType().FullName : plugin.Name;
                 Version = plugin.Version ?? string.Empty;
                 Capabilities = plugin.Capabilities;
-                Middlewares = middlewares ?? Array.Empty<IHttpMiddleware>();
+                Interceptors = interceptors ?? Array.Empty<IHttpInterceptor>();
                 State = state;
             }
 
@@ -115,8 +113,8 @@ namespace TurboHTTP.Core
                 _ownsTransport = false;
             }
 
-            _baseMiddlewares = BuildPipelineMiddlewares(_options);
-            _pipeline = new HttpPipeline(_baseMiddlewares, _transport);
+            _baseInterceptors = BuildInterceptors(_options);
+            _pipeline = new InterceptorPipeline(_baseInterceptors, _transport).Pipeline;
 
             var poolCapacity = Math.Max(
                 16,
@@ -163,11 +161,13 @@ namespace TurboHTTP.Core
 
         public async Task RegisterPluginAsync(IHttpPlugin plugin, CancellationToken ct = default)
         {
-            if (plugin == null) throw new ArgumentNullException(nameof(plugin));
+            if (plugin == null)
+                throw new ArgumentNullException(nameof(plugin));
+
             ThrowIfDisposed();
             ct.ThrowIfCancellationRequested();
 
-            await _pluginLifecycleGate.WaitAsync(ct);
+            await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
                 var pluginName = string.IsNullOrWhiteSpace(plugin.Name) ? plugin.GetType().FullName : plugin.Name;
@@ -179,21 +179,21 @@ namespace TurboHTTP.Core
                         $"Plugin '{pluginName}' is already registered.");
                 }
 
-                var contributedMiddlewares = new List<IHttpMiddleware>();
+                var contributedInterceptors = new List<IHttpInterceptor>();
                 var context = new PluginContext(
                     _options.Clone(),
                     pluginName,
                     plugin.Capabilities,
-                    middleware => contributedMiddlewares.Add(middleware),
+                    interceptor => contributedInterceptors.Add(interceptor),
                     message => Debug.WriteLine("[TurboHTTP][Plugin:" + pluginName + "] " + message));
 
                 PluginRegistration registration;
                 try
                 {
-                    await plugin.InitializeAsync(context, ct);
+                    await plugin.InitializeAsync(context, ct).ConfigureAwait(false);
                     registration = new PluginRegistration(
                         plugin,
-                        contributedMiddlewares,
+                        contributedInterceptors,
                         PluginLifecycleState.Initialized);
                 }
                 catch (Exception ex)
@@ -221,10 +221,11 @@ namespace TurboHTTP.Core
         {
             if (string.IsNullOrWhiteSpace(pluginName))
                 throw new ArgumentException("Plugin name is required.", nameof(pluginName));
+
             ThrowIfDisposed();
             ct.ThrowIfCancellationRequested();
 
-            await _pluginLifecycleGate.WaitAsync(ct);
+            await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
                 PluginRegistration registration;
@@ -243,7 +244,7 @@ namespace TurboHTTP.Core
                 {
                     using var timeoutCts = new CancellationTokenSource(_options.PluginShutdownTimeout);
                     using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-                    await registration.Plugin.ShutdownAsync(linked.Token);
+                    await registration.Plugin.ShutdownAsync(linked.Token).ConfigureAwait(false);
                     registration.State = PluginLifecycleState.Disposed;
                 }
                 catch (OperationCanceledException ex)
@@ -288,11 +289,7 @@ namespace TurboHTTP.Core
         /// <summary>
         /// Send an HTTP request and return the response.
         /// </summary>
-        /// <remarks>
-        /// The returned ValueTask must be awaited exactly once and must not be stored for later consumption.
-        /// Convert to Task via <see cref="ValueTask{TResult}.AsTask"/> only when Task combinators are required.
-        /// </remarks>
-        public async ValueTask<UHttpResponse> SendAsync(
+        public async Task<UHttpResponse> SendAsync(
             UHttpRequest request,
             CancellationToken cancellationToken = default)
         {
@@ -301,9 +298,6 @@ namespace TurboHTTP.Core
 
             ThrowIfDisposed();
 
-            // Reject pooled requests that were created by a different client instance.
-            // Returning a pooled request to the wrong pool corrupts both pools and can
-            // cause reset-while-in-use bugs that are extremely hard to diagnose.
             if (request.IsPooled && !request.IsOwnedBy(this))
             {
                 throw new InvalidOperationException(
@@ -319,10 +313,10 @@ namespace TurboHTTP.Core
 
             try
             {
-                var pipelineSnapshot = Volatile.Read(ref _pipeline)
-                    ?? new HttpPipeline(_baseMiddlewares, _transport);
-
-                response = await pipelineSnapshot.ExecuteAsync(request, context, cancellationToken);
+                var pipelineSnapshot = _pipeline ?? _transport.DispatchAsync;
+                response = await DispatchBridge
+                    .CollectResponseAsync(pipelineSnapshot, request, context, cancellationToken)
+                    .ConfigureAwait(false);
 
                 if (request.IsPooled)
                 {
@@ -374,52 +368,15 @@ namespace TurboHTTP.Core
             {
                 pluginsToShutdown = _plugins.ToArray();
                 _plugins.Clear();
-                Volatile.Write(ref _pipeline, new HttpPipeline(_baseMiddlewares, _transport));
+                _pipeline = null;
             }
 
             for (int i = pluginsToShutdown.Length - 1; i >= 0; i--)
             {
-                var plugin = pluginsToShutdown[i];
-                try
-                {
-                    plugin.State = PluginLifecycleState.ShuttingDown;
-                    var shutdownTask = Task.Run(async () =>
-                    {
-                        await plugin.Plugin.ShutdownAsync(CancellationToken.None).ConfigureAwait(false);
-                    });
-
-                    if (!shutdownTask.Wait(_options.PluginShutdownTimeout))
-                    {
-                        throw new TimeoutException(
-                            $"Plugin '{plugin.Name}' shutdown timed out after {_options.PluginShutdownTimeout.TotalMilliseconds:F0}ms.");
-                    }
-
-                    plugin.State = PluginLifecycleState.Disposed;
-                }
-                catch (Exception ex)
-                {
-                    plugin.State = PluginLifecycleState.Faulted;
-                    Debug.WriteLine($"[TurboHTTP] Plugin dispose failed ({plugin.Name}): {ex}");
-                }
+                SchedulePluginShutdownOnDispose(pluginsToShutdown[i]);
             }
 
-            if (_options.Middlewares != null)
-            {
-                for (int i = _options.Middlewares.Count - 1; i >= 0; i--)
-                {
-                    if (!(_options.Middlewares[i] is IDisposable disposable))
-                        continue;
-
-                    try
-                    {
-                        disposable.Dispose();
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"[TurboHTTP] Middleware dispose failed: {ex}");
-                    }
-                }
-            }
+            DisposeConfiguredInterceptors();
 
             if (_ownsTransport)
             {
@@ -434,6 +391,36 @@ namespace TurboHTTP.Core
             }
 
             _pluginLifecycleGate.Dispose();
+        }
+
+        private void SchedulePluginShutdownOnDispose(PluginRegistration plugin)
+        {
+            if (plugin == null)
+                return;
+
+            plugin.State = PluginLifecycleState.ShuttingDown;
+            _ = ShutdownPluginOnDisposeAsync(plugin);
+        }
+
+        private async Task ShutdownPluginOnDisposeAsync(PluginRegistration plugin)
+        {
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(_options.PluginShutdownTimeout);
+                await plugin.Plugin.ShutdownAsync(timeoutCts.Token).ConfigureAwait(false);
+                plugin.State = PluginLifecycleState.Disposed;
+            }
+            catch (OperationCanceledException ex)
+            {
+                plugin.State = PluginLifecycleState.Faulted;
+                Debug.WriteLine(
+                    $"[TurboHTTP] Plugin dispose timed out ({plugin.Name}) after {_options.PluginShutdownTimeout.TotalMilliseconds:F0}ms: {ex}");
+            }
+            catch (Exception ex)
+            {
+                plugin.State = PluginLifecycleState.Faulted;
+                Debug.WriteLine($"[TurboHTTP] Plugin dispose failed ({plugin.Name}): {ex}");
+            }
         }
 
         internal void ReturnRequestToPool(UHttpRequest request)
@@ -466,12 +453,12 @@ namespace TurboHTTP.Core
 
         private void RebuildPipelineSnapshot_NoLock()
         {
-            var combined = new List<IHttpMiddleware>(_baseMiddlewares.Count + 8);
-            combined.AddRange(_baseMiddlewares);
+            var combined = new List<IHttpInterceptor>(_baseInterceptors.Count + 8);
+            combined.AddRange(_baseInterceptors);
 
             for (int i = 0; i < _plugins.Count; i++)
             {
-                var contributions = _plugins[i].Middlewares;
+                var contributions = _plugins[i].Interceptors;
                 if (contributions == null)
                     continue;
 
@@ -482,7 +469,7 @@ namespace TurboHTTP.Core
                 }
             }
 
-            Volatile.Write(ref _pipeline, new HttpPipeline(combined, _transport));
+            _pipeline = new InterceptorPipeline(combined, _transport).Pipeline;
         }
 
         private Uri ResolveUri(string url)
@@ -515,69 +502,113 @@ namespace TurboHTTP.Core
             }
         }
 
-        private static IReadOnlyList<IHttpMiddleware> BuildPipelineMiddlewares(UHttpClientOptions options)
+        private void DisposeConfiguredInterceptors()
         {
-            var middlewares = options?.Middlewares != null
-                ? new List<IHttpMiddleware>(options.Middlewares)
-                : new List<IHttpMiddleware>();
-
-            TryAppendBackgroundNetworkingMiddleware(options, middlewares);
-            TryAppendAdaptiveMiddleware(options, middlewares);
-
-#if UNITY_EDITOR
-            TryAppendEditorMonitorMiddleware(middlewares);
-#endif
-
-            return middlewares;
+            if (_options.Interceptors != null)
+            {
+                for (int i = _options.Interceptors.Count - 1; i >= 0; i--)
+                {
+                    DisposeComponent(_options.Interceptors[i], "Interceptor");
+                }
+            }
         }
 
-        private static void TryAppendAdaptiveMiddleware(
-            UHttpClientOptions options,
-            List<IHttpMiddleware> middlewares)
+        private static void DisposeComponent(object component, string label)
         {
-            if (options?.AdaptivePolicy == null || !options.AdaptivePolicy.Enable || middlewares == null)
+            if (!(component is IDisposable disposable))
                 return;
 
-            for (int i = 0; i < middlewares.Count; i++)
+            try
             {
-                if (middlewares[i] is AdaptiveMiddleware)
-                    return;
+                disposable.Dispose();
             }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[TurboHTTP] {label} dispose failed: {ex}");
+            }
+        }
+
+        private static IReadOnlyList<IHttpInterceptor> BuildInterceptors(UHttpClientOptions options)
+        {
+            var interceptors = options?.Interceptors != null
+                ? new List<IHttpInterceptor>(options.Interceptors)
+                : new List<IHttpInterceptor>();
+
+            TryAppendBackgroundNetworkingInterceptor(options, interceptors);
+            TryAppendAdaptiveInterceptor(options, interceptors);
+
+#if UNITY_EDITOR
+            TryAppendEditorMonitorInterceptor(interceptors);
+#endif
+
+            return interceptors;
+        }
+
+        private static void TryAppendAdaptiveInterceptor(
+            UHttpClientOptions options,
+            List<IHttpInterceptor> interceptors)
+        {
+            if (options?.AdaptivePolicy == null || !options.AdaptivePolicy.Enable || interceptors == null)
+                return;
+
+            if (ContainsPipelineComponent<AdaptiveInterceptor>(interceptors))
+                return;
 
             var detector = options.NetworkQualityDetector ?? new NetworkQualityDetector();
             options.NetworkQualityDetector = detector;
-            middlewares.Insert(0, new AdaptiveMiddleware(options.AdaptivePolicy.Clone(), detector));
+            interceptors.Insert(0, new AdaptiveInterceptor(options.AdaptivePolicy.Clone(), detector));
         }
 
-        private static void TryAppendBackgroundNetworkingMiddleware(
+        private static void TryAppendBackgroundNetworkingInterceptor(
             UHttpClientOptions options,
-            List<IHttpMiddleware> middlewares)
+            List<IHttpInterceptor> interceptors)
         {
             if (options?.BackgroundNetworkingPolicy == null ||
                 !options.BackgroundNetworkingPolicy.Enable ||
-                middlewares == null)
+                interceptors == null)
             {
                 return;
             }
 
-            for (int i = 0; i < middlewares.Count; i++)
-            {
-                if (middlewares[i] is BackgroundNetworkingMiddleware)
-                    return;
-            }
+            if (ContainsPipelineComponent<BackgroundNetworkingInterceptor>(interceptors))
+                return;
 
-            middlewares.Insert(0, new BackgroundNetworkingMiddleware(
+            interceptors.Insert(0, new BackgroundNetworkingInterceptor(
                 options.BackgroundNetworkingPolicy.Clone(),
                 options.BackgroundExecutionBridge));
         }
 
-#if UNITY_EDITOR
-        private static void TryAppendEditorMonitorMiddleware(List<IHttpMiddleware> middlewares)
+        private static bool ContainsPipelineComponent<T>(IReadOnlyList<IHttpInterceptor> interceptors)
         {
-            if (middlewares == null)
+            return ContainsPipelineComponent(interceptors, typeof(T));
+        }
+
+        private static bool ContainsPipelineComponent(
+            IReadOnlyList<IHttpInterceptor> interceptors,
+            Type componentType)
+        {
+            if (interceptors == null || componentType == null)
+                return false;
+
+            for (int i = 0; i < interceptors.Count; i++)
             {
-                return;
+                var interceptor = interceptors[i];
+                if (interceptor == null)
+                    continue;
+
+                if (componentType.IsInstanceOfType(interceptor))
+                    return true;
+
             }
+
+            return false;
+        }
+
+#if UNITY_EDITOR
+        private static void TryAppendEditorMonitorInterceptor(List<IHttpInterceptor> interceptors)
+        {
+            if (interceptors == null)
+                return;
 
             bool isPlaying;
             try
@@ -590,41 +621,36 @@ namespace TurboHTTP.Core
             }
 
             if (!isPlaying)
-            {
                 return;
-            }
 
             try
             {
-                var monitorType = Type.GetType(MonitorMiddlewareTypeName, throwOnError: false);
-                if (monitorType == null || !typeof(IHttpMiddleware).IsAssignableFrom(monitorType))
-                {
-                    return;
-                }
-
-                if (!IsMonitorCaptureEnabled(monitorType))
-                {
-                    return;
-                }
-
-                for (int i = 0; i < middlewares.Count; i++)
-                {
-                    var middleware = middlewares[i];
-                    if (middleware != null && monitorType.IsInstanceOfType(middleware))
-                    {
-                        return;
-                    }
-                }
-
-                if (Activator.CreateInstance(monitorType) is IHttpMiddleware monitorMiddleware)
-                {
-                    middlewares.Add(monitorMiddleware);
-                }
+                TryAppendEditorMonitorInterceptor(interceptors, MonitorInterceptorTypeName);
             }
             catch
             {
                 // Monitor auto-wiring is optional and must never break client construction.
             }
+        }
+
+        private static bool TryAppendEditorMonitorInterceptor(
+            List<IHttpInterceptor> interceptors,
+            string typeName)
+        {
+            var monitorType = Type.GetType(typeName, throwOnError: false);
+            if (monitorType == null || !typeof(IHttpInterceptor).IsAssignableFrom(monitorType))
+                return false;
+
+            if (!IsMonitorCaptureEnabled(monitorType) ||
+                ContainsPipelineComponent(interceptors, monitorType))
+            {
+                return true;
+            }
+
+            if (Activator.CreateInstance(monitorType) is IHttpInterceptor monitorInterceptor)
+                interceptors.Add(monitorInterceptor);
+
+            return true;
         }
 
         private static bool IsMonitorCaptureEnabled(Type monitorType)
@@ -633,9 +659,7 @@ namespace TurboHTTP.Core
                 "CaptureEnabled",
                 BindingFlags.Public | BindingFlags.Static);
             if (captureEnabledProperty == null || captureEnabledProperty.PropertyType != typeof(bool))
-            {
                 return false;
-            }
 
             var value = captureEnabledProperty.GetValue(null, null);
             return value is bool enabled && enabled;

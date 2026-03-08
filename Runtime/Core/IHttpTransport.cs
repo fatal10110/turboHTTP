@@ -13,14 +13,15 @@ namespace TurboHTTP.Core
     public interface IHttpTransport : IDisposable
     {
         /// <summary>
-        /// Execute an HTTP request and return the response.
+        /// Execute an HTTP request and drive handler callbacks as the response is produced.
         /// </summary>
         /// <param name="request">The request to execute</param>
+        /// <param name="handler">The response handler</param>
         /// <param name="context">Execution context for timeline tracking</param>
         /// <param name="cancellationToken">Cancellation token</param>
-        /// <returns>The HTTP response</returns>
-        ValueTask<UHttpResponse> SendAsync(
+        Task DispatchAsync(
             UHttpRequest request,
+            IHttpHandler handler,
             RequestContext context,
             CancellationToken cancellationToken = default);
     }

@@ -26,7 +26,8 @@ namespace TurboHTTP.Core
         MutateRequests = 1 << 2,
         MutateResponses = 1 << 3,
         HandleErrors = 1 << 4,
-        Diagnostics = 1 << 5
+        Diagnostics = 1 << 5,
+        AllowRedispatch = 1 << 6
     }
 
     public enum PluginLifecycleState

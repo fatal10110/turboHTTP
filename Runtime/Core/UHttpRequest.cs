@@ -76,6 +76,26 @@ namespace TurboHTTP.Core
                 : new Dictionary<string, object>();
         }
 
+        /// <summary>
+        /// Creates a detached copy of this request.
+        /// </summary>
+        public UHttpRequest Clone()
+        {
+            ThrowIfDisposed();
+
+            byte[] bodyCopy = null;
+            if (!Body.IsEmpty)
+                bodyCopy = Body.ToArray();
+
+            return new UHttpRequest(
+                Method,
+                Uri,
+                _headers.Clone(),
+                bodyCopy,
+                Timeout,
+                new Dictionary<string, object>(_metadata));
+        }
+
         public UHttpRequest WithHeader(string name, string value)
         {
             ThrowIfDisposed();

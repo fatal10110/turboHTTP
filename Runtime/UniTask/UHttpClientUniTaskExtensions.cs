@@ -173,6 +173,15 @@ namespace TurboHTTP.UniTask
         }
 
         private static async UniTask<UHttpResponse> ConvertWithTiming(
+            Task<UHttpResponse> operation,
+            PlayerLoopTiming playerLoopTiming)
+        {
+            var response = await operation;
+            await UniTask.Yield(playerLoopTiming);
+            return response;
+        }
+
+        private static async UniTask<UHttpResponse> ConvertWithTiming(
             ValueTask<UHttpResponse> operation,
             PlayerLoopTiming playerLoopTiming)
         {

@@ -12,7 +12,7 @@ namespace TurboHTTP.Tests.Extensibility
     public class PluginRegistryTests
     {
         [Test]
-        public void ReadOnlyCapability_AllowsObserverMiddleware()
+        public void ReadOnlyCapability_AllowsObserverInterceptor()
         {
             Task.Run(async () =>
             {
@@ -48,7 +48,7 @@ namespace TurboHTTP.Tests.Extensibility
 
             public ValueTask InitializeAsync(PluginContext context, CancellationToken cancellationToken)
             {
-                context.RegisterMiddleware(new ObserverMiddleware());
+                context.RegisterInterceptor(new ObserverInterceptor());
                 return default;
             }
 
@@ -58,15 +58,12 @@ namespace TurboHTTP.Tests.Extensibility
             }
         }
 
-        private sealed class ObserverMiddleware : IHttpMiddleware
+        private sealed class ObserverInterceptor : IHttpInterceptor
         {
-            public ValueTask<UHttpResponse> InvokeAsync(
-                UHttpRequest request,
-                RequestContext context,
-                HttpPipelineDelegate next,
-                CancellationToken cancellationToken)
+            public DispatchFunc Wrap(DispatchFunc next)
             {
-                return next(request, context, cancellationToken);
+                return (request, handler, context, cancellationToken) =>
+                    next(request, handler, context, cancellationToken);
             }
         }
     }

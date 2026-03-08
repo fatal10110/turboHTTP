@@ -10,7 +10,7 @@ using TurboHTTP.Core;
 namespace TurboHTTP.Testing
 {
     /// <summary>
-    /// Mock transport for unit testing middleware and client behavior.
+    /// Mock transport for unit testing interceptor and client behavior.
     /// Returns configurable responses without making real network calls.
     /// Thread-safe for concurrent use.
     /// </summary>
@@ -47,7 +47,7 @@ namespace TurboHTTP.Testing
         }
 
         /// <summary>
-        /// Number of times SendAsync has been called.
+        /// Number of times the transport send path has been called.
         /// </summary>
         public int RequestCount => Interlocked.CompareExchange(ref _requestCount, 0, 0);
 
@@ -220,6 +220,52 @@ namespace TurboHTTP.Testing
             throw new InvalidOperationException(
                 "MockTransport has no queued responses and no fallback handler. " +
                 "Call EnqueueResponse/EnqueueJsonResponse before sending.");
+        }
+
+        public async Task DispatchAsync(
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            if (context == null) throw new ArgumentNullException(nameof(context));
+
+            handler.OnRequestStart(request, context);
+
+            UHttpResponse response = null;
+            try
+            {
+                response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
+                TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+            }
+            catch (UHttpException ex) when (
+                ex.HttpError != null &&
+                ex.HttpError.Type == UHttpErrorType.Cancelled &&
+                cancellationToken.IsCancellationRequested)
+            {
+                // Match the real transport: observers see OnResponseError(UHttpException Cancelled)
+                // while buffered collectors still surface OperationCanceledException to callers.
+                TransportDispatchHelper.SetCancellationException(
+                    context,
+                    new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken));
+                handler.OnResponseError(ex, context);
+            }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                TransportDispatchHelper.SetCancellationException(context, ex);
+                handler.OnResponseError(
+                    new UHttpException(new UHttpError(UHttpErrorType.Cancelled, ex.Message, ex)),
+                    context);
+            }
+            catch (UHttpException ex)
+            {
+                handler.OnResponseError(ex, context);
+            }
+            finally
+            {
+                response?.Dispose();
+            }
         }
 
         public void Dispose()

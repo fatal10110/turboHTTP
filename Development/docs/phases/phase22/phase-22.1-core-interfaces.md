@@ -116,14 +116,42 @@ internal sealed class ResponseCollectorHandler : IHttpHandler
 }
 ```
 
+### Transitional Bridge (`DispatchBridge`)
+
+> The current `RawSocketTransport.DispatchAsync` uses a transitional bridge: it delegates to the legacy `SendAsync` (returning `UHttpResponse`), then re-emits the response as handler callbacks via `DispatchBridge.DeliverResponse`. This bridge allows 22.1 to be validated independently of transport internals.
+>
+> `DispatchBridge` provides:
+> - `CollectResponseAsync(DispatchFunc, ...)` — wraps dispatch in a `ResponseCollectorHandler` + `AttachCompletion`
+> - `AttachCompletion(Task, ResponseCollectorHandler)` — the `ContinueWith` fault/cancel/EnsureCompleted bridge
+> - `DeliverResponse(UHttpResponse, IHttpHandler, ...)` — re-emits a fully-formed response as handler callbacks
+>
+> `ResponseCollectorHandler` currently uses two `DispatchBridge` state keys (`ResponseErrorStateKey`, `CancellationExceptionStateKey`) to pass error/cancellation context through the bridge layer. **These are transitional scaffolding removed in 22.2** when the transport drives handler callbacks directly and the legacy `SendAsync` path is deleted.
+>
+> **Double-buffering overhead:** The bridge pattern causes the response body to be buffered twice (once in the parser's `SegmentedBuffer`, once in `ResponseCollectorHandler`'s `SegmentedBuffer`) and allocates an intermediate `UHttpResponse`. This is an accepted 22.1 regression resolved in 22.2.
+
 ### Files Modified
 
-**`Runtime/Core/IHttpTransport.cs`** — replace `SendAsync` with `DispatchAsync` as above.
+**`Runtime/Core/IHttpTransport.cs`** — replace `SendAsync` with `DispatchAsync` as above. (Already implemented.)
 
-**`Runtime/Core/HttpHeaders.cs`** — add static property (L-1):
+**`Runtime/Core/HttpHeaders.cs`** — harden `Empty` singleton against mutation:
 ```csharp
-public static readonly HttpHeaders Empty = new HttpHeaders();
+public static readonly HttpHeaders Empty = new HttpHeaders(frozen: true);
+
+// Internal frozen flag — Set/Add/Remove throw if frozen
+private readonly bool _frozen;
+
+internal HttpHeaders(bool frozen) : this()
+{
+    _frozen = frozen;
+}
+
+private void ThrowIfFrozen()
+{
+    if (_frozen)
+        throw new InvalidOperationException("Cannot modify a frozen HttpHeaders instance.");
+}
 ```
+`Set`, `Add`, and `Remove` call `ThrowIfFrozen()` at entry. `Clone()` always returns an unfrozen copy. This prevents corruption of the shared `Empty` singleton when passed as trailers to handler callbacks.
 
 **`Runtime/Core/UHttpClientOptions.cs`**:
 - `List<IHttpMiddleware> Middlewares` → `List<IHttpInterceptor> Interceptors`

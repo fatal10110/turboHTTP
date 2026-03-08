@@ -27,7 +27,7 @@ namespace TurboHTTP.Core
 
     /// <summary>
     /// Execution context for a single HTTP request.
-    /// Tracks timeline events, metadata, and state across middleware.
+    /// Tracks timeline events, metadata, and state across interceptors.
     /// Thread-safe for concurrent access from async continuations.
     /// </summary>
     public class RequestContext
@@ -40,6 +40,8 @@ namespace TurboHTTP.Core
         private bool _timelineSnapshotDirty;
         private IReadOnlyDictionary<string, object> _stateSnapshot;
         private bool _stateSnapshotDirty;
+        private UHttpError _responseError;
+        private OperationCanceledException _cancellationException;
         private volatile UHttpRequest _request;
 
         public UHttpRequest Request => _request;
@@ -97,6 +99,11 @@ namespace TurboHTTP.Core
             _stateSnapshotDirty = false;
         }
 
+        internal static RequestContext CreateForBackground(UHttpRequest request)
+        {
+            return new RequestContext(request);
+        }
+
         /// <summary>
         /// Record a timeline event.
         /// </summary>
@@ -111,7 +118,7 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Update the request (used by middleware that transforms requests).
+        /// Update the request (used by interceptors that transform requests).
         /// </summary>
         public void UpdateRequest(UHttpRequest newRequest)
         {
@@ -120,7 +127,7 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Store data in the context state.
-        /// This allows middleware to communicate with each other.
+        /// This allows interceptors to communicate with each other.
         /// </summary>
         public void SetState(string key, object value)
         {
@@ -143,6 +150,38 @@ namespace TurboHTTP.Core
                     return typedValue;
                 }
                 return defaultValue;
+            }
+        }
+
+        internal void SetResponseError(UHttpError error)
+        {
+            lock (_lock)
+            {
+                _responseError = error;
+            }
+        }
+
+        internal UHttpError GetResponseError()
+        {
+            lock (_lock)
+            {
+                return _responseError;
+            }
+        }
+
+        internal void SetCancellationException(OperationCanceledException exception)
+        {
+            lock (_lock)
+            {
+                _cancellationException = exception;
+            }
+        }
+
+        internal OperationCanceledException GetCancellationException()
+        {
+            lock (_lock)
+            {
+                return _cancellationException;
             }
         }
 
@@ -170,6 +209,8 @@ namespace TurboHTTP.Core
                 _stateSnapshot = new ReadOnlyDictionary<string, object>(
                     new Dictionary<string, object>());
                 _stateSnapshotDirty = false;
+                _responseError = null;
+                _cancellationException = null;
             }
         }
     }

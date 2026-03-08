@@ -283,7 +283,36 @@ namespace TurboHTTP.Testing
                 default:
                     if (_innerTransport == null)
                         throw new InvalidOperationException("No inner transport configured for passthrough mode.");
-                    return await _innerTransport.SendAsync(request, context, cancellationToken).ConfigureAwait(false);
+                    return await TransportDispatchHelper
+                        .CollectResponseAsync(_innerTransport, request, context, cancellationToken)
+                        .ConfigureAwait(false);
+            }
+        }
+
+        public async Task DispatchAsync(
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            if (context == null) throw new ArgumentNullException(nameof(context));
+
+            handler.OnRequestStart(request, context);
+
+            UHttpResponse response = null;
+            try
+            {
+                response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
+                TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+            }
+            catch (UHttpException ex)
+            {
+                handler.OnResponseError(ex, context);
+            }
+            finally
+            {
+                response?.Dispose();
             }
         }
 
@@ -363,7 +392,9 @@ namespace TurboHTTP.Testing
 
             try
             {
-                var response = await _innerTransport.SendAsync(request, context, cancellationToken).ConfigureAwait(false);
+                var response = await TransportDispatchHelper
+                    .CollectResponseAsync(_innerTransport, request, context, cancellationToken)
+                    .ConfigureAwait(false);
                 RecordInteraction(request, response, null, threwException: false);
                 return response;
             }
@@ -412,13 +443,15 @@ namespace TurboHTTP.Testing
                 Log(message);
                 if (_innerTransport != null)
                 {
-                    return _innerTransport.SendAsync(request, context, cancellationToken);
+                    return new ValueTask<UHttpResponse>(
+                        TransportDispatchHelper.CollectResponseAsync(_innerTransport, request, context, cancellationToken));
                 }
             }
             else if (_mismatchPolicy == RecordReplayMismatchPolicy.Relaxed && _innerTransport != null)
             {
                 Log(message + " Falling back to inner transport due to Relaxed policy.");
-                return _innerTransport.SendAsync(request, context, cancellationToken);
+                return new ValueTask<UHttpResponse>(
+                    TransportDispatchHelper.CollectResponseAsync(_innerTransport, request, context, cancellationToken));
             }
 
             throw new InvalidOperationException(message);

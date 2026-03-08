@@ -160,6 +160,85 @@ In 22.4, `DriveHandler` (line 32–38) checks `r.Error != null` and calls `OnRes
 
 ---
 
+## Second Review — 2026-03-08
+
+**Reviewer:** Claude Opus 4.6 (infrastructure + network architect)
+**Scope:** Post-22.1-partial-implementation review — plan-vs-code divergence, platform, protocol
+
+### High
+
+#### H-19: `ResponseCollectorHandler` diverges from plan spec — transitional `DispatchBridge` scaffolding
+
+The implemented `ResponseCollectorHandler` has logic not in the 22.1 plan: `TrySetStoredCancellationException()` reading from `DispatchBridge.CancellationExceptionStateKey`, and `DispatchBridge.ResponseErrorStateKey` used in `OnResponseEnd`. These are transitional bridge scaffolding needed while `RawSocketTransport` delegates to the legacy `SendAsync`.
+
+**Fix:** Added "Transitional Bridge" section to 22.1 documenting `DispatchBridge` and its state keys. Added explicit removal instructions and validation gate to 22.2.
+
+#### H-20: Double-buffering bridge in 22.1 → 22.2 transition
+
+The current `RawSocketTransport.DispatchAsync` wraps the old `SendAsync` → `UHttpResponse` path and re-emits via `DispatchBridge.DeliverResponse`. The response body is double-buffered and an intermediate `UHttpResponse` is allocated and immediately disposed.
+
+**Fix:** Added transitional bridge overhead note to overview Performance Impact section. Added bridge removal validation gate to 22.2 (`grep` check for zero `DeliverResponse`/state-key references).
+
+#### H-21: `ReadOnlySequenceStream` adapter design missing
+
+`DecompressionHandler` references a `ReadOnlySequenceStream` adapter with fallback "copy to `MemoryStream`". The fallback defeats LOH avoidance for compressed bodies >85KB. `ReadOnlySequenceStream` does not exist in .NET Standard 2.1.
+
+**Fix:** Designed the `ReadOnlySequenceStream` adapter (~40 lines) in 22.3 spec, placed in `Runtime/Core/Internal/ReadOnlySequenceStream.cs`. Added to overview Files Changed Summary.
+
+### Medium
+
+#### M-18: `OnResponseData` span lifetime constraint underdocumented
+
+`IHttpHandler.OnResponseData(ReadOnlySpan<byte>)` requires callers to copy data they wish to retain. This was specified in the plan but not in the actual `IHttpHandler.cs` source.
+
+**Fix:** Added XML docs to `IHttpHandler.cs` source for all five methods, including the "span is valid only for the duration of this call" constraint.
+
+#### M-19: `ConcurrencyInterceptor` semaphore held during redirect chains — undocumented
+
+The concurrency permit remains held for the entire redirect chain. Correct behavior but not documented.
+
+**Fix:** Added redirect chain note to `ConcurrencyInterceptor` spec in 22.3.
+
+#### M-20: `RetryDetectorHandler.OnRequestStart` forwarding behavior unspecified
+
+`RetryDetectorHandler` doesn't specify what `OnRequestStart` does. Per the `IHttpHandler` contract, `OnResponseError` may only be called after `OnRequestStart`. If `RetryDetectorHandler` doesn't forward `OnRequestStart`, inner handlers (Logging, Metrics) may not have initialized their state before receiving `OnResponseError`.
+
+**Fix:** Specified that `RetryDetectorHandler.OnRequestStart` always forwards to `_inner` regardless of retry state.
+
+#### M-21: `HttpHeaders.Empty` is a shared mutable singleton
+
+`HttpHeaders.Empty` is `public static readonly` but `HttpHeaders` is fully mutable (`Set`, `Add`, `Remove`). Any handler that mutates the trailers object corrupts the singleton.
+
+**Fix:** Added `_frozen` flag design to 22.1 spec: `Empty` is constructed with `frozen: true`, mutation methods call `ThrowIfFrozen()`. Updated overview Files Changed and Key Design Decisions.
+
+#### M-22: Plan-vs-code divergence on `SendAsync` return type and 22.1 completion
+
+Plan describes `SendAsync` return type change as future work, but code already returns `Task<UHttpResponse>`. Multiple 22.1 artifacts already exist in code.
+
+**Fix:** Added "Implementation status" note to overview documenting partial 22.1 completion.
+
+### Low
+
+#### L-11: `NullHandler` scoped too narrowly as private inner class
+
+Plan specifies `NullHandler` as private static inner class of `Http2Stream`. Other transport code may need a no-op handler.
+
+**Fix:** Widened to `internal static` class at transport assembly level (`Runtime/Transport/NullHandler.cs`).
+
+#### L-12: Decompression 64KB buffer not guarded by finally
+
+The 64KB `ArrayPool<byte>` buffer used in the decompression loop must be returned on decompression errors (e.g., corrupt gzip data).
+
+**Fix:** Added `finally` block requirement to decompression loop spec in 22.3.
+
+#### L-13: `AdaptiveHandler._bytesReceived` type unspecified — overflow risk
+
+For responses >2GB, `int` would overflow.
+
+**Fix:** Specified as `long` in 22.3 spec.
+
+---
+
 ## Summary Table
 
 | Severity | ID | Title | Status |
@@ -168,15 +247,26 @@ In 22.4, `DriveHandler` (line 32–38) checks `r.Error != null` and calls `OnRes
 | High | H-11 | Missing API prerequisites | ✅ Approved |
 | High | H-12 | Redirect re-dispatch conflicts with collector completion semantics | ✅ Approved |
 | High | H-13 | In-place mutation violates cloning assumption | ✅ Approved |
+| High | H-19 | `ResponseCollectorHandler` transitional `DispatchBridge` scaffolding | ✅ Fixed |
+| High | H-20 | Double-buffering bridge in 22.1 → 22.2 transition | ✅ Fixed |
+| High | H-21 | `ReadOnlySequenceStream` adapter design missing | ✅ Fixed |
 | Medium | M-12 | `Http2Stream.Cancel()` error contract conflict | ✅ Approved |
 | Medium | M-13 | `RedirectHandler` fire-and-forget unobserved Task | ✅ Approved |
 | Medium | M-14 | `CapabilityEnforcedInterceptor` mutation check ambiguity | ✅ Approved |
 | Medium | M-15 | Incomplete test rename table | ✅ Approved |
 | Medium | M-16 | Overview overstates Phase 22 streaming gains | ✅ Approved |
 | Medium | M-17 | `CapabilityEnforcedInterceptor` drops request-replacement guard | ✅ Approved |
+| Medium | M-18 | `OnResponseData` span lifetime underdocumented | ✅ Fixed |
+| Medium | M-19 | `ConcurrencyInterceptor` redirect chain semaphore hold | ✅ Fixed |
+| Medium | M-20 | `RetryDetectorHandler.OnRequestStart` forwarding unspecified | ✅ Fixed |
+| Medium | M-21 | `HttpHeaders.Empty` shared mutable singleton | ✅ Fixed |
+| Medium | M-22 | Plan-vs-code divergence on 22.1 completion | ✅ Fixed |
 | Low | L-8 | `ResponseCollectorHandler` eager SegmentedBuffer alloc | ✅ Acknowledged |
 | Low | L-9 | `BackgroundNetworkingInterceptor` API placement | ✅ Approved |
 | Low | L-10 | `MockTransport.DriveHandler` callback ordering | ✅ Approved |
+| Low | L-11 | `NullHandler` scoped too narrowly | ✅ Fixed |
+| Low | L-12 | Decompression buffer not guarded by finally | ✅ Fixed |
+| Low | L-13 | `AdaptiveHandler._bytesReceived` overflow risk | ✅ Fixed |
 
 ---
 
@@ -185,7 +275,7 @@ In 22.4, `DriveHandler` (line 32–38) checks `r.Error != null` and calls `OnRes
 **Approved by:** Artur Koshtei
 **Date:** 2026-03-08
 
-All 12 findings have been reviewed against the source code and sub-phase documents and are **approved**. Key verification notes:
+All 12 original findings have been reviewed against the source code and sub-phase documents and are **approved**. Key verification notes:
 
 - **C-18**: Confirmed — `DisposeBodyOwner()` is called in `finally` blocks across 4 locations in `RawSocketTransport.cs` and in `Http2Connection.cs`. Must be removed from the transport to avoid use-after-free on retry/redirect re-dispatch.
 - **H-11**: Confirmed — `UHttpRequest.Clone()`, `WithTimeoutInternal()`, and `RequestContext.CreateForBackground()` do not exist. Note: `SetTimeoutInternal()` exists (line 281 of `UHttpRequest.cs`) but the plan references a fluent `WithTimeoutInternal()` variant that does not. These APIs must be created as part of 22.1 or explicitly tracked.
@@ -193,3 +283,5 @@ All 12 findings have been reviewed against the source code and sub-phase documen
 - **M-17**: Confirmed — `PluginContext.cs` line 124 has the `ReferenceEquals(nextRequest, request)` guard that is absent from the `CapabilityEnforcedInterceptor` design.
 
 All recommendations in the findings are accepted. The sub-phase documents should be updated to address each finding before implementation begins.
+
+9 additional findings (H-19 through L-13) from the second review have been fixed directly in the plan documents and source code.

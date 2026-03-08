@@ -78,7 +78,48 @@ namespace TurboHTTP.Transport
                         http2Options: http2Options));
         }
 
-        public async ValueTask<UHttpResponse> SendAsync(
+        public async Task DispatchAsync(
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
+            if (context == null)
+                throw new ArgumentNullException(nameof(context));
+
+            handler.OnRequestStart(request, context);
+
+            UHttpResponse response = null;
+            try
+            {
+                response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
+                TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+            }
+            catch (UHttpException ex) when (
+                ex.HttpError != null &&
+                ex.HttpError.Type == UHttpErrorType.Cancelled &&
+                cancellationToken.IsCancellationRequested)
+            {
+                // Buffered callers still need an OperationCanceledException, but handler observers
+                // should receive the transport error callback for cancellation-aware telemetry.
+                TransportDispatchHelper.SetCancellationException(
+                    context,
+                    new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken));
+                handler.OnResponseError(ex, context);
+            }
+            catch (UHttpException ex)
+            {
+                handler.OnResponseError(ex, context);
+            }
+            finally
+            {
+                response?.Dispose();
+            }
+        }
+
+        internal async ValueTask<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
             CancellationToken cancellationToken = default)
