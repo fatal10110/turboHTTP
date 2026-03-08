@@ -78,8 +78,8 @@ The following features were originally part of Phase 16 but have been promoted t
 |---------|-----------|--------|
 | WebSocket Support | [Phase 18](../phase-18-websocket-client.md) | Full new protocol (RFC 6455) |
 | Async Runtime Refactor + UniTask | [Phase 19](../phase-19-async-runtime-refactor.md) | Deep cross-cutting architectural refactor |
-| Advanced Content Handlers | [Phase 20](../phase-20-advanced-content-handlers.md) | Aggregate ~6-8 weeks across 5+ handlers |
-| gRPC Support | [Phase 21](../phase-21-grpc-client.md) | Largest item in roadmap, v2.0 feature |
+| Advanced Content Handlers | [Phase 24](../Phase-24-advanced-content-handlers.md) | Aggregate ~6-8 weeks across 5+ handlers |
+| gRPC Support | [Phase 25](../Phase-25-grpc-client.md) | Largest item in roadmap, v2.0 feature |
 
 ## Cross-Cutting Design Decisions
 

@@ -126,8 +126,8 @@ The following features were originally part of Phase 16 but have been promoted t
 |---------|-----------|--------|
 | WebSocket Support | [Phase 18](phase-18-websocket-client.md) | Core protocol/client (RFC 6455). WebGL-specific WebSocket transport integration remains in Phase 16 WebGL workstream. |
 | Async Runtime Refactor + UniTask | [Phase 19](phase-19-async-runtime-refactor.md) | Deep cross-cutting architectural refactor |
-| Advanced Content Handlers | [Phase 20](phase-20-advanced-content-handlers.md) | Aggregate ~6-8 weeks across 5+ handlers |
-| gRPC Support | [Phase 21](phase-21-grpc-client.md) | Largest item in roadmap, v2.0 feature |
+| Advanced Content Handlers | [Phase 24](Phase-24-advanced-content-handlers.md) | Aggregate ~6-8 weeks across 5+ handlers |
+| gRPC Support | [Phase 25](Phase-25-grpc-client.md) | Largest item in roadmap, v2.0 feature |
 
 ---
 
@@ -147,8 +147,8 @@ The following features were originally part of Phase 16 but have been promoted t
 |---------|-------|--------|---------|
 | WebSocket Client | Phase 18 | 3-4w | v1.2 |
 | Async Runtime Refactor | Phase 19 | 3-4w | v1.2 |
-| Advanced Content Handlers | Phase 20 | 6-8w | v1.2+ |
-| gRPC Client | Phase 21 | 5-7w | v2.0 |
+| Advanced Content Handlers | Phase 24 | 6-8w | v1.2+ |
+| gRPC Client | Phase 25 | 5-7w | v2.0 |
 
 ## Recommended Roadmap
 
@@ -160,17 +160,17 @@ The following features were originally part of Phase 16 but have been promoted t
 ### v1.2 (Q2)
 - Async runtime refactor (Phase 19)
 - WebSocket client (Phase 18)
-- Advanced content handlers — first batch (Phase 20)
+- Advanced content handlers — first batch (Phase 24)
 
 ### v1.3 (Q3)
 - GraphQL client
-- Advanced content handlers — second batch (Phase 20)
+- Advanced content handlers — second batch (Phase 24)
 
 ### v1.x backlog
 - Parallel request helpers
 
 ### v2.0 (Q4+)
-- gRPC client (Phase 21)
+- gRPC client (Phase 25)
 
 ## Notes
 

@@ -31,59 +31,10 @@ This document serves as the top-level phase plan for the public API refactoring.
 
 | Sub-Phase | Name | Estimated Effort |
 |---|---|---|
-| 19b.1 | Unify Pipeline (Remove Interceptors) | 2-3 days |
-| 19b.2 | Pooled Request Objects (Zero-Allocation Builder) | 1 week |
-| 19b.3 | Expose Zero-Allocation Response Bodies natively | 3-4 days |
-| 19b.4 | Purge Legacy Compatibility Flows | 1-2 days |
-
----
-
-## 19b.1: Unify Pipeline (Remove Interceptors)
-
-**Goal:** Eliminate the overlap between the Pipeline and Interceptor architectures by removing the latter.
-
-Summary:
-1. Delete `IHttpInterceptor`, `InterceptorRequestResult`, `InterceptorResponseResult`, and related structs.
-2. Remove interception invocation loops (`ExecuteWithInterceptorsAsync`) from `UHttpClient`.
-3. Remove `UHttpClientOptions.Interceptors` and `InterceptorFailurePolicy`.
-4. Update the Plugin infrastructure (`IHttpPlugin`) to contribute `IHttpMiddleware` instances instead of interceptors.
-
----
-
-## 19b.2: Pooled Request Objects (Zero-Allocation Builder)
-
-**Goal:** Shift from immutable builders to pooled, mutable request objects returned directly from the client.
-
-Summary:
-1. Implement a request pool inside `UHttpClient` (or `HttpTransportFactory`).
-2. Add `UHttpClient.CreateRequest(HttpMethod, string)` which returns an `IDisposable` request (rented from the pool).
-3. Remove `UHttpRequestBuilder` and the `UHttpRequest` immutable copy constructors (`WithHeaders`, `WithBody`, etc.).
-4. Make `UHttpRequest` state mutable for the renter but internally safe (cleared automatically upon return to the pool).
-5. Update all extensions (JSON, Auth, Multipart) to operate seamlessly on the mutable leased request.
-
----
-
-## 19b.3: Expose Zero-Allocation Response Bodies
-
-**Goal:** Prevent array allocations on large responses by piping `ReadOnlySequence<byte>` through the public API.
-
-Summary:
-1. Refactor `UHttpResponse` to safely expose `ReadOnlySequence<byte>` as the primary body representation.
-2. Remove the internal array-flattening logic currently backing `UHttpResponse.Body`.
-3. Update JSON serialization extensions to deserialize directly from `ReadOnlySequence<byte>`.
-4. Update File download extensions to process and write chunks dynamically from the sequence.
-
----
-
-## 19b.4: Purge Legacy Compatibility Flows
-
-**Goal:** Remove all code paths and compiler `#if` directives maintained solely for backward compatibility.
-
-Summary:
-1. Delete `Http2MaxDecodedHeaderBytes` (currently marked `[Obsolete]`) from `UHttpClientOptions`.
-2. Delete the legacy `Register` overload in `HttpTransportFactory` that takes an `int` parameter.
-3. Review and remove older target framework `#if` switches (e.g. for `NETSTANDARD2_0`, obsolete .NET Core flags, or BouncyCastle legacy shims).
-4. Remove any "legacy" behavior logic (e.g. `UseLegacyResumption`) discovered in TLS or Transport layers unless structurally required for current platforms.
+| [19b.1](phase-19b.1-unify-pipeline.md) | Unify Pipeline (Remove Interceptors) | 2-3 days |
+| [19b.2](phase-19b.2-pooled-request-objects.md) | Pooled Request Objects (Zero-Allocation Builder) | 1 week |
+| [19b.3](phase-19b.3-zero-allocation-response-bodies.md) | Expose Zero-Allocation Response Bodies natively | 3-4 days |
+| [19b.4](phase-19b.4-purge-legacy.md) | Purge Legacy Compatibility Flows | 1-2 days |
 
 ---
 

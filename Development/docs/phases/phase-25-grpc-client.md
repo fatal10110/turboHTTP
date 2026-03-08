@@ -1,4 +1,4 @@
-# Phase 21: gRPC Client
+# Phase 25: gRPC Client
 
 **Milestone:** v2.0
 **Dependencies:** Phase 3B (HTTP/2), Phase 3C (TLS), Phase 19 (Async Runtime Refactor)

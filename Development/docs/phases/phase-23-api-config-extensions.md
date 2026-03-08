@@ -1,4 +1,4 @@
-# Phase 19d: API Configuration & Extension Review
+# Phase 23: API Configuration & Extension Review
 
 ## Objective
 To extend the configuration points of the TurboHTTP library natively via `UHttpClientOptions` and improve the builder developer experience on `UHttpRequest` using extension methods without polluting the core data structures.

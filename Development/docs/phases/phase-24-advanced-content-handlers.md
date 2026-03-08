@@ -1,4 +1,4 @@
-# Phase 20: Advanced Content Handlers
+# Phase 24: Advanced Content Handlers
 
 **Milestone:** M4 (v1.2+)
 **Dependencies:** Phase 4 (Pipeline Infrastructure), Phase 5 (Content Helpers), Phase 15 (Decoder Provider Matrix, Pipeline Hardening)
