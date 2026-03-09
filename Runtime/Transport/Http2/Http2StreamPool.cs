@@ -27,14 +27,14 @@ namespace TurboHTTP.Transport.Http2
         public static Http2Stream Rent(
             int streamId,
             UHttpRequest request,
+            IHttpHandler handler,
             RequestContext context,
             int initialSendWindowSize,
-            int initialRecvWindowSize,
-            PoolableValueTaskSourcePool<UHttpResponse> responseSourcePool)
+            int initialRecvWindowSize)
         {
             var stream = s_pool.Rent();
-            stream.Initialize(streamId, request, context,
-                initialSendWindowSize, initialRecvWindowSize, responseSourcePool);
+            stream.Initialize(streamId, request, handler, context,
+                initialSendWindowSize, initialRecvWindowSize);
             return stream;
         }
 

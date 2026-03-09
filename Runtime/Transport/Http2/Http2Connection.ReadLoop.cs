@@ -125,14 +125,11 @@ namespace TurboHTTP.Transport.Http2
             if (!stream.HeadersReceived)
             {
                 _connectionRecvWindow -= flowControlledLength;
-                // Remove from active streams BEFORE Fail() to prevent race with pool return.
-                // Fail() triggers SendRequestAsync's finally which calls Http2StreamPool.Return.
                 if (_activeStreams.TryRemove(frame.StreamId, out _))
                 {
                     stream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                         $"DATA received before HEADERS on stream {frame.StreamId}"));
                     await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError);
-                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
                 return;
             }
@@ -152,7 +149,6 @@ namespace TurboHTTP.Transport.Http2
                     stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                         $"Response body exceeds maximum size limit ({maxBodySize} bytes)")));
                     await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
-                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
                 return;
             }
@@ -161,11 +157,12 @@ namespace TurboHTTP.Transport.Http2
             // A canceled stream can be disposed concurrently after being removed from
             // _activeStreams; ignore write-after-dispose and retire the stream.
             bool responseBodyDisposed = false;
+            bool handlerAcceptedData = true;
             if (dataLength > 0)
             {
                 try
                 {
-                    stream.AppendResponseData(frame.Payload, dataOffset, dataLength);
+                    handlerAcceptedData = stream.AppendResponseData(frame.Payload, dataOffset, dataLength);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -199,6 +196,14 @@ namespace TurboHTTP.Transport.Http2
             if (responseBodyDisposed)
             {
                 _activeStreams.TryRemove(frame.StreamId, out _);
+                _ = SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
+                return;
+            }
+
+            if (!handlerAcceptedData)
+            {
+                _activeStreams.TryRemove(frame.StreamId, out _);
+                await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
                 return;
             }
 
@@ -209,7 +214,6 @@ namespace TurboHTTP.Transport.Http2
                 {
                     stream.Complete();
                     _activeStreams.TryRemove(frame.StreamId, out _);
-                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
             }
         }
@@ -261,11 +265,18 @@ namespace TurboHTTP.Transport.Http2
             {
                 DecodeAndSetHeaders(stream, isTrailingHeaders: stream.HeadersReceived);
 
+                if (stream.HasHandlerFault)
+                {
+                    _activeStreams.TryRemove(frame.StreamId, out _);
+                    if (!stream.PendingEndStream)
+                        _ = SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
+                    return;
+                }
+
                 if (stream.PendingEndStream && stream.HeadersReceived)
                 {
                     stream.Complete();
                     _activeStreams.TryRemove(frame.StreamId, out _);
-                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
             }
             else
@@ -294,11 +305,18 @@ namespace TurboHTTP.Transport.Http2
                 _continuationStreamId = 0;
                 DecodeAndSetHeaders(stream, isTrailingHeaders: stream.HeadersReceived);
 
+                if (stream.HasHandlerFault)
+                {
+                    _activeStreams.TryRemove(frame.StreamId, out _);
+                    if (!stream.PendingEndStream)
+                        _ = SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
+                    return;
+                }
+
                 if (stream.PendingEndStream && stream.HeadersReceived)
                 {
                     stream.Complete();
                     _activeStreams.TryRemove(frame.StreamId, out _);
-                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
             }
         }
@@ -328,14 +346,12 @@ namespace TurboHTTP.Transport.Http2
                 stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                     $"Response header list size {headerListSize} exceeds limit {_localSettings.MaxHeaderListSize}")));
                 _activeStreams.TryRemove(stream.StreamId, out _);
-                // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 return;
             }
 
-            var responseHeaders = isTrailingHeaders
-                ? stream.ResponseHeaders ?? new HttpHeaders()
-                : new HttpHeaders();
-            bool hasStatus = isTrailingHeaders;
+            var responseHeaders = new HttpHeaders();
+            var statusCode = 0;
+            var hasStatus = false;
             foreach (var (name, value) in decoded)
             {
                 if (name == ":status")
@@ -345,14 +361,12 @@ namespace TurboHTTP.Transport.Http2
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                             "Unexpected :status pseudo-header in trailing headers")));
                         _activeStreams.TryRemove(stream.StreamId, out _);
-                        // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                         return;
                     }
 
-                    if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int statusCode)
+                    if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out statusCode)
                         && statusCode >= 100 && statusCode <= 999)
                     {
-                        stream.StatusCode = statusCode;
                         hasStatus = true;
                     }
                     else
@@ -360,7 +374,6 @@ namespace TurboHTTP.Transport.Http2
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                             $"Invalid :status value: {value}")));
                         _activeStreams.TryRemove(stream.StreamId, out _);
-                        // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                         return;
                     }
                 }
@@ -373,25 +386,33 @@ namespace TurboHTTP.Transport.Http2
                     stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                         $"Unexpected pseudo-header in trailing headers: {name}")));
                     _activeStreams.TryRemove(stream.StreamId, out _);
-                    // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                     return;
                 }
             }
 
-            if (!hasStatus)
+            if (!isTrailingHeaders && !hasStatus)
             {
                 stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                     "Missing :status pseudo-header in HTTP/2 response")));
                 _activeStreams.TryRemove(stream.StreamId, out _);
-                // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
                 return;
             }
 
-            if (TryGetContentLength(responseHeaders, _localSettings.MaxResponseBodySize, out int contentLength))
+            if (!isTrailingHeaders &&
+                TryGetContentLength(responseHeaders, _localSettings.MaxResponseBodySize, out int contentLength))
+            {
                 stream.EnsureResponseBodyCapacity(contentLength);
+                stream.HandleResponseHeaders(statusCode, responseHeaders);
+            }
+            else if (isTrailingHeaders)
+            {
+                stream.AppendTrailers(responseHeaders);
+            }
+            else
+            {
+                stream.HandleResponseHeaders(statusCode, responseHeaders);
+            }
 
-            stream.ResponseHeaders = responseHeaders;
-            stream.HeadersReceived = true;
             stream.ClearHeaderBlock();
             }
             finally
@@ -572,9 +593,7 @@ namespace TurboHTTP.Transport.Http2
             _lastGoawayStreamId = lastStreamId;
 
             // Fail streams above lastStreamId. Do NOT call stream.Dispose() — the
-            // ValueTask continuation (RunContinuationsAsynchronously = true) will reach
-            // SendRequestAsync's finally block and call Http2StreamPool.Return(stream).
-            // Calling Dispose() here would destroy the reusable MemoryStream.
+            // dispatch Task continuation will return the stream to the pool.
             foreach (var kvp in _activeStreams)
             {
                 if (kvp.Key > lastStreamId)
@@ -611,7 +630,6 @@ namespace TurboHTTP.Transport.Http2
                 {
                     erroredStream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                         $"Invalid WINDOW_UPDATE increment=0 on stream {frame.StreamId}"));
-                    // Do NOT call erroredStream.Dispose() — SendRequestAsync's finally owns pool return.
                 }
 
                 await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError).ConfigureAwait(false);
@@ -674,12 +692,9 @@ namespace TurboHTTP.Transport.Http2
 
             if (_activeStreams.TryRemove(frame.StreamId, out var stream))
             {
-                if ((Http2ErrorCode)errorCode == Http2ErrorCode.Cancel)
-                    stream.Cancel();
-                else
-                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        $"RST_STREAM: {(Http2ErrorCode)errorCode}")));
-                // Do NOT call stream.Dispose() — SendRequestAsync's finally owns pool return.
+                stream.Fail(new UHttpException(new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    $"RST_STREAM: {(Http2ErrorCode)errorCode}")));
             }
         }
 

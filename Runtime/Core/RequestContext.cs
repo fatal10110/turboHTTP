@@ -40,8 +40,6 @@ namespace TurboHTTP.Core
         private bool _timelineSnapshotDirty;
         private IReadOnlyDictionary<string, object> _stateSnapshot;
         private bool _stateSnapshotDirty;
-        private UHttpError _responseError;
-        private OperationCanceledException _cancellationException;
         private volatile UHttpRequest _request;
 
         public UHttpRequest Request => _request;
@@ -153,38 +151,6 @@ namespace TurboHTTP.Core
             }
         }
 
-        internal void SetResponseError(UHttpError error)
-        {
-            lock (_lock)
-            {
-                _responseError = error;
-            }
-        }
-
-        internal UHttpError GetResponseError()
-        {
-            lock (_lock)
-            {
-                return _responseError;
-            }
-        }
-
-        internal void SetCancellationException(OperationCanceledException exception)
-        {
-            lock (_lock)
-            {
-                _cancellationException = exception;
-            }
-        }
-
-        internal OperationCanceledException GetCancellationException()
-        {
-            lock (_lock)
-            {
-                return _cancellationException;
-            }
-        }
-
         /// <summary>
         /// Stop the stopwatch and return total elapsed time.
         /// </summary>
@@ -209,8 +175,6 @@ namespace TurboHTTP.Core
                 _stateSnapshot = new ReadOnlyDictionary<string, object>(
                     new Dictionary<string, object>());
                 _stateSnapshotDirty = false;
-                _responseError = null;
-                _cancellationException = null;
             }
         }
     }

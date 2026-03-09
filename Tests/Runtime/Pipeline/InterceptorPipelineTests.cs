@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Tests;
 
 namespace TurboHTTP.Tests.Pipeline
 {
@@ -110,13 +111,37 @@ namespace TurboHTTP.Tests.Pipeline
         }
 
         [Test]
+        public void CollectResponseAsync_SynchronousDerivedCancellation_PropagatesOriginalException()
+        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/queued"));
+                var context = new RequestContext(request);
+                using var cts = new CancellationTokenSource();
+                var expected = new BackgroundRequestQueuedException("dedupe-key", "scope-1", cts.Token);
+
+                var ex = await TestHelpers.AssertThrowsAsync<BackgroundRequestQueuedException>(async () =>
+                {
+                    await TransportDispatchHelper.CollectResponseAsync(
+                        (req, handler, ctx, cancellationToken) => throw expected,
+                        request,
+                        context,
+                        CancellationToken.None);
+                });
+
+                Assert.AreEqual("dedupe-key", ex.ReplayDedupeKey);
+                Assert.AreEqual("scope-1", ex.ScopeId);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void EmptyHeaders_AreFrozen()
         {
             Assert.Throws<InvalidOperationException>(() => HttpHeaders.Empty.Set("X-Leak", "yes"));
         }
 
         [Test]
-        public void Pipeline_DeliverResponse_UsesFrozenEmptyTrailers()
+        public void Pipeline_ResponseEnd_UsesFrozenEmptyTrailers()
         {
             Task.Run(async () =>
             {
@@ -159,7 +184,8 @@ namespace TurboHTTP.Tests.Pipeline
                 try
                 {
                     handler.OnRequestStart(request, context);
-                    TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+                    handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
+                    handler.OnResponseEnd(HttpHeaders.Empty, context);
                     return Task.CompletedTask;
                 }
                 finally

@@ -248,18 +248,6 @@ namespace TurboHTTP.Tests.Editor
                 {
                     response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
                     handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
-                    var body = response.Body;
-                    if (!body.IsEmpty)
-                    {
-                        var enumerator = body.GetEnumerator();
-                        while (enumerator.MoveNext())
-                        {
-                            var segment = enumerator.Current;
-                            if (!segment.IsEmpty)
-                                handler.OnResponseData(segment.Span, context);
-                        }
-                    }
-
                     handler.OnResponseEnd(HttpHeaders.Empty, context);
                 }
                 finally

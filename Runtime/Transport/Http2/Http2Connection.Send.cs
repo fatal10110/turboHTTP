@@ -110,8 +110,8 @@ namespace TurboHTTP.Transport.Http2
 
                     // Zero-copy: pass the body slice directly — no intermediate ArrayPool copy.
                     // Http2FrameCodec.WriteFrameAsync accepts ReadOnlyMemory<byte> and writes
-                    // it straight to the network stream. The body memory remains valid because
-                    // DisposeBodyOwner() is deferred to the outer SendRequestAsync finally.
+                    // it straight to the network stream. Request body ownership stays on
+                    // UHttpRequest until the outer request lifecycle ends.
                     await _codec.WriteFrameAsync(
                         Http2FrameType.Data,
                         isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,

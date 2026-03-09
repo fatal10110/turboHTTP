@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Security.Authentication;
 using System.Text;
 using System.Threading;
@@ -90,37 +91,30 @@ namespace TurboHTTP.Transport
                 throw new ArgumentNullException(nameof(context));
 
             handler.OnRequestStart(request, context);
-
-            UHttpResponse response = null;
             try
             {
-                response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
-                TransportDispatchHelper.DeliverResponse(response, handler, context, request);
-            }
-            catch (UHttpException ex) when (
-                ex.HttpError != null &&
-                ex.HttpError.Type == UHttpErrorType.Cancelled &&
-                cancellationToken.IsCancellationRequested)
-            {
-                // Buffered callers still need an OperationCanceledException, but handler observers
-                // should receive the transport error callback for cancellation-aware telemetry.
-                TransportDispatchHelper.SetCancellationException(
-                    context,
-                    new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken));
-                handler.OnResponseError(ex, context);
+                await DispatchCoreAsync(request, handler, context, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (UHttpException ex)
             {
+                context.RecordEvent("RequestFailed");
                 handler.OnResponseError(ex, context);
             }
-            finally
+            catch (OperationCanceledException)
             {
-                response?.Dispose();
+                context.RecordEvent("RequestCancelled");
+                throw;
             }
         }
 
-        internal async ValueTask<UHttpResponse> SendAsync(
+        private static UHttpException MapException(Exception ex) =>
+            ex as UHttpException ??
+            new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message), ex);
+
+        private async Task DispatchCoreAsync(
             UHttpRequest request,
+            IHttpHandler handler,
             RequestContext context,
             CancellationToken cancellationToken = default)
         {
@@ -161,14 +155,16 @@ namespace TurboHTTP.Transport
             {
                 if (proxy != null)
                 {
-                    return await SendViaProxyAsync(
+                    await DispatchViaProxyAsync(
                         request,
+                        handler,
                         context,
                         host,
                         port,
                         secure,
                         proxy,
                         ct).ConfigureAwait(false);
+                    return;
                 }
 
                 // 4a. HTTP/2 fast path (TLS only)
@@ -180,8 +176,9 @@ namespace TurboHTTP.Transport
                         try
                         {
                             context.RecordEvent("TransportH2Reuse");
-                            return await h2Conn.SendRequestAsync(request, context, ct)
+                            await h2Conn.DispatchAsync(request, handler, context, ct)
                                 .ConfigureAwait(false);
+                            return;
                         }
                         catch (Exception) when (!ct.IsCancellationRequested)
                         {
@@ -211,17 +208,19 @@ namespace TurboHTTP.Transport
                     lease.TransferOwnership();
                     var h2Conn = await _h2Manager.GetOrCreateAsync(
                         host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
-                    return await h2Conn.SendRequestAsync(request, context, ct)
+                    await h2Conn.DispatchAsync(request, handler, context, ct)
                         .ConfigureAwait(false);
+                    return;
                 }
 
                 // 4d. HTTP/1.1 path
                 try
                 {
-                    var parsed = await SendOnLeaseAsync(lease, request, context, ct)
+                    var keepAlive = await DispatchOnLeaseAsync(lease, request, handler, context, ct)
                         .ConfigureAwait(false);
-                    if (parsed.KeepAlive) lease.ReturnToPool();
-                    return BuildResponse(parsed, context, request);
+                    if (keepAlive)
+                        lease.ReturnToPool();
+                    return;
                 }
                 catch (IOException) when (lease.Connection.IsReused && request.Method.IsIdempotent())
                 {
@@ -240,14 +239,16 @@ namespace TurboHTTP.Transport
                         freshLease.TransferOwnership();
                         var h2Conn = await _h2Manager.GetOrCreateAsync(
                             host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
-                        return await h2Conn.SendRequestAsync(request, context, ct)
+                        await h2Conn.DispatchAsync(request, handler, context, ct)
                             .ConfigureAwait(false);
+                        return;
                     }
 
-                    var parsed = await SendOnLeaseAsync(freshLease, request, context, ct)
+                    var keepAlive = await DispatchOnLeaseAsync(freshLease, request, handler, context, ct)
                         .ConfigureAwait(false);
-                    if (parsed.KeepAlive) freshLease.ReturnToPool();
-                    return BuildResponse(parsed, context, request);
+                    if (keepAlive)
+                        freshLease.ReturnToPool();
+                    return;
                 }
             }
             // IMPORTANT: UHttpException MUST be the first catch handler. Moving it will
@@ -268,14 +269,17 @@ namespace TurboHTTP.Transport
                 ex.HttpError.Type == UHttpErrorType.NetworkError &&
                 cancellationToken.IsCancellationRequested)
             {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Cancelled,
-                    "Request was cancelled",
-                    ex));
+                throw new OperationCanceledException("Request was cancelled", ex, cancellationToken);
             }
             catch (UHttpException)
             {
                 // Already mapped by pool/TLS layer — pass through, do NOT re-wrap.
+                throw;
+            }
+            catch (HandlerCallbackException ex)
+            {
+                context.RecordEvent("RequestFailed");
+                ExceptionDispatchInfo.Capture(ex.InnerException ?? ex).Throw();
                 throw;
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -286,9 +290,7 @@ namespace TurboHTTP.Transport
             }
             catch (OperationCanceledException)
             {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Cancelled,
-                    "Request was cancelled"));
+                throw new OperationCanceledException("Request was cancelled", cancellationToken);
             }
             catch (IOException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
@@ -298,9 +300,7 @@ namespace TurboHTTP.Transport
             }
             catch (IOException) when (cancellationToken.IsCancellationRequested)
             {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Cancelled,
-                    "Request was cancelled"));
+                throw new OperationCanceledException("Request was cancelled", cancellationToken);
             }
             catch (IOException ex)
             {
@@ -315,9 +315,7 @@ namespace TurboHTTP.Transport
             }
             catch (SocketException) when (cancellationToken.IsCancellationRequested)
             {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Cancelled,
-                    "Request was cancelled"));
+                throw new OperationCanceledException("Request was cancelled", cancellationToken);
             }
             catch (SocketException ex)
             {
@@ -353,8 +351,9 @@ namespace TurboHTTP.Transport
         /// <summary>
         /// Sends a request through an HTTP proxy (forward for HTTP, CONNECT tunnel for HTTPS).
         /// </summary>
-        private async ValueTask<UHttpResponse> SendViaProxyAsync(
+        private async Task DispatchViaProxyAsync(
             UHttpRequest request,
+            IHttpHandler handler,
             RequestContext context,
             string host,
             int port,
@@ -382,58 +381,31 @@ namespace TurboHTTP.Transport
             if (!secure)
             {
                 var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
-                // The original request's BodyOwner (if any) is disposed here because
-                // PrepareHttpProxyForwardRequest copies request.Body into a detached byte[].
-                // SendOnStreamAsync will dispose forwardedRequest.BodyOwner which is null.
-                try
-                {
-                    var parsed = await SendOnStreamAsync(
-                        stream,
-                        forwardedRequest,
-                        context,
-                        ct).ConfigureAwait(false);
-
-                    // Do not return proxy-forwarded sockets to the generic host pool:
-                    // pool keys currently do not include proxy auth identity or target scheme.
-                    return BuildResponse(parsed, context, forwardedRequest);
-                }
-                finally
-                {
-                    request.DisposeBodyOwner();
-                }
+                await DispatchOnStreamAsync(
+                    stream,
+                    forwardedRequest,
+                    handler,
+                    context,
+                    ct).ConfigureAwait(false);
+                return;
             }
 
             context.RecordEvent("TransportProxyConnect");
             context.RecordEvent("TransportProxyConnectHttp11Only");
+            stream = await EstablishConnectTunnelAsync(
+                stream,
+                host,
+                port,
+                proxy,
+                ct).ConfigureAwait(false);
 
-            // The try/finally starts BEFORE EstablishConnectTunnelAsync so that
-            // request.BodyOwner is disposed even when the CONNECT handshake fails
-            // (407 Proxy Auth Required, network error, etc.).
-            // PrepareHttpsProxyTunnelRequest copies request.Body into a detached byte[].
-            // SendOnStreamAsync disposes tunneledRequest.BodyOwner which is null.
-            try
-            {
-                stream = await EstablishConnectTunnelAsync(
-                    stream,
-                    host,
-                    port,
-                    proxy,
-                    ct).ConfigureAwait(false);
-
-                var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-                var tunneledParsed = await SendOnStreamAsync(
-                    stream,
-                    tunneledRequest,
-                    context,
-                    ct).ConfigureAwait(false);
-
-                // CONNECT tunnels are authority-bound; do not return this socket to the generic proxy pool.
-                return BuildResponse(tunneledParsed, context, tunneledRequest);
-            }
-            finally
-            {
-                request.DisposeBodyOwner();
-            }
+            var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
+            await DispatchOnStreamAsync(
+                stream,
+                tunneledRequest,
+                handler,
+                context,
+                ct).ConfigureAwait(false);
         }
 
         private static ProxySettings ResolveProxySettings(UHttpRequest request)
@@ -771,9 +743,70 @@ namespace TurboHTTP.Transport
         /// <summary>
         /// Execute a single send attempt on the given lease. Returns the parsed response.
         /// Caller is responsible for lease disposal.
-        /// If the request carries a pool-owned body (<see cref="UHttpRequest.BodyOwner"/>),
-        /// it is disposed immediately after the request bytes are written to the wire.
         /// </summary>
+        private static bool EmitParsedResponse(
+            ParsedResponse parsed,
+            IHttpHandler handler,
+            RequestContext context)
+        {
+            if (parsed == null)
+                throw new ArgumentNullException(nameof(parsed));
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
+            if (context == null)
+                throw new ArgumentNullException(nameof(context));
+
+            var keepAlive = parsed.KeepAlive;
+            try
+            {
+                try
+                {
+                    handler.OnResponseStart((int)parsed.StatusCode, parsed.Headers, context);
+                    foreach (var segment in parsed.EnumerateBodySegments())
+                    {
+                        if (!segment.IsEmpty)
+                            handler.OnResponseData(segment.Span, context);
+                    }
+
+                    handler.OnResponseEnd(HttpHeaders.Empty, context);
+                    return keepAlive;
+                }
+                catch (Exception ex)
+                {
+                    throw new HandlerCallbackException(ex);
+                }
+            }
+            finally
+            {
+                parsed.ReleaseBodyBuffers();
+                ParsedResponsePool.Return(parsed);
+            }
+        }
+
+        private async Task<bool> DispatchOnLeaseAsync(
+            ConnectionLease lease,
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            var parsed = await SendOnLeaseAsync(lease, request, context, ct)
+                .ConfigureAwait(false);
+            return EmitParsedResponse(parsed, handler, context);
+        }
+
+        private static async Task<bool> DispatchOnStreamAsync(
+            Stream stream,
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            var parsed = await SendOnStreamAsync(stream, request, context, ct)
+                .ConfigureAwait(false);
+            return EmitParsedResponse(parsed, handler, context);
+        }
+
         private async Task<ParsedResponse> SendOnLeaseAsync(
             ConnectionLease lease,
             UHttpRequest request,
@@ -781,16 +814,8 @@ namespace TurboHTTP.Transport
             CancellationToken ct)
         {
             context.RecordEvent("TransportSending");
-            try
-            {
-                await Http11RequestSerializer.SerializeAsync(request, lease.Connection.Stream, ct)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                // Body owner is no longer needed once the bytes are on the wire (or the write failed).
-                request.DisposeBodyOwner();
-            }
+            await Http11RequestSerializer.SerializeAsync(request, lease.Connection.Stream, ct)
+                .ConfigureAwait(false);
 
             context.RecordEvent("TransportReceiving");
             var parsed = await Http11ResponseParser.ParseAsync(lease.Connection.Stream, request.Method, ct)
@@ -807,16 +832,8 @@ namespace TurboHTTP.Transport
             CancellationToken ct)
         {
             context.RecordEvent("TransportSending");
-            try
-            {
-                await Http11RequestSerializer.SerializeAsync(request, stream, ct)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                // Body owner is no longer needed once the bytes are on the wire (or the write failed).
-                request.DisposeBodyOwner();
-            }
+            await Http11RequestSerializer.SerializeAsync(request, stream, ct)
+                .ConfigureAwait(false);
 
             context.RecordEvent("TransportReceiving");
             var parsed = await Http11ResponseParser.ParseAsync(stream, request.Method, ct)
@@ -824,47 +841,6 @@ namespace TurboHTTP.Transport
 
             context.RecordEvent("TransportComplete");
             return parsed;
-        }
-
-        private static UHttpResponse BuildResponse(
-            ParsedResponse parsed,
-            RequestContext context,
-            UHttpRequest request)
-        {
-            // Extract all values from the parsed result before returning it to the pool.
-            // Ownership of Headers, Body (including the pooled backing array) and
-            // SegmentedBody transfers to the UHttpResponse instance below.
-            UHttpResponse response;
-            if (parsed.SegmentedBody != null)
-            {
-                // Chunked and read-to-end bodies are held in a SegmentedBuffer.
-                // Pass it as IDisposable owner + ReadOnlySequence<byte> so UHttpResponse
-                // can dispose the pooled segments when the response is disposed (or lazily
-                // flatten them into a single array on the first Body access).
-                response = new UHttpResponse(
-                    statusCode: parsed.StatusCode,
-                    headers: parsed.Headers,
-                    body: parsed.SegmentedBody.AsSequence(),
-                    segmentedBodyOwner: parsed.SegmentedBody,
-                    elapsedTime: context.Elapsed,
-                    request: request);
-            }
-            else
-            {
-                response = new UHttpResponse(
-                    statusCode: parsed.StatusCode,
-                    headers: parsed.Headers,
-                    body: parsed.Body,
-                    elapsedTime: context.Elapsed,
-                    request: request,
-                    bodyFromPool: parsed.BodyFromPool);
-            }
-
-            // Return the ParsedResponse shell to the pool now that all values have been
-            // transferred. Reset() nulls Headers and SegmentedBody references so the pool
-            // does not retain ownership of the transferred objects.
-            ParsedResponsePool.Return(parsed);
-            return response;
         }
 
         internal bool HasHttp2Connection(string host, int port)

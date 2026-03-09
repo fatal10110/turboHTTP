@@ -167,11 +167,8 @@ namespace TurboHTTP.Transport.Http2
             {
                 if (_activeStreams.TryRemove(kvp.Key, out var stream))
                 {
-                    // Signal the pending awaiter only. The ValueTask continuation
-                    // (RunContinuationsAsynchronously = true) will reach
-                    // SendRequestAsync's finally block and call Http2StreamPool.Return(stream).
-                    // Calling Dispose() here would destroy the reusable MemoryStream and
-                    // make the stream unsafe to return to the pool.
+                    // Signal the pending awaiter only. DispatchAsync's finally block
+                    // owns returning the stream to the pool.
                     stream.Fail(ex);
                 }
             }

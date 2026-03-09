@@ -147,7 +147,6 @@ namespace TurboHTTP.Core
                     replayKey,
                     scope?.ScopeId,
                     effectiveToken);
-                context.SetCancellationException(queuedException);
                 throw queuedException;
             }
             finally

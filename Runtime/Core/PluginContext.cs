@@ -52,12 +52,20 @@ namespace TurboHTTP.Core
             var canMutateRequest = (_capabilities & PluginCapabilities.MutateRequests) != 0;
             var canMutateResponse = (_capabilities & PluginCapabilities.MutateResponses) != 0;
             var canHandleErrors = (_capabilities & PluginCapabilities.HandleErrors) != 0;
+            var canRedispatch = (_capabilities & PluginCapabilities.AllowRedispatch) != 0;
             if (!canObserve && !canMutateRequest && !canMutateResponse && !canHandleErrors)
             {
                 throw new PluginException(
                     _pluginName,
                     "initialize",
                     "Plugin does not have interceptor capabilities.");
+            }
+
+            if (canMutateRequest && canMutateResponse && canHandleErrors && canRedispatch)
+            {
+                _registerInterceptor(interceptor);
+                _registeredInterceptors.Add(interceptor);
+                return;
             }
 
             var guarded = new CapabilityEnforcedInterceptor(
@@ -239,6 +247,7 @@ namespace TurboHTTP.Core
                 private int _pendingCount;
                 private int _activeDispatchCount;
                 private int _dispatchCount;
+                private bool _observedBufferReleased;
 
                 public InvocationGuard(
                     CapabilityEnforcedInterceptor owner,
@@ -491,6 +500,7 @@ namespace TurboHTTP.Core
 
                     lock (_responseGate)
                     {
+                        ThrowIfObservedBufferReleased_NoLock();
                         if (_pendingCount != 0)
                             throw CreateMutationException();
                     }
@@ -503,6 +513,7 @@ namespace TurboHTTP.Core
 
                     lock (_responseGate)
                     {
+                        ThrowIfObservedBufferReleased_NoLock();
                         EnsureObservedCapacity_NoLock();
                         var index = (_pendingHead + _pendingCount) % _pendingObserved.Length;
                         _pendingObserved[index] = signature;
@@ -517,6 +528,7 @@ namespace TurboHTTP.Core
 
                     lock (_responseGate)
                     {
+                        ThrowIfObservedBufferReleased_NoLock();
                         if (_pendingCount == 0)
                             throw CreateMutationException();
 
@@ -532,6 +544,8 @@ namespace TurboHTTP.Core
 
                 private void EnsureObservedCapacity_NoLock()
                 {
+                    ThrowIfObservedBufferReleased_NoLock();
+
                     if (_pendingObserved == null)
                     {
                         _pendingObserved = ArrayPool<ResponseEventSignature>.Shared.Rent(4);
@@ -549,6 +563,8 @@ namespace TurboHTTP.Core
                         expanded[i] = _pendingObserved[(_pendingHead + i) % _pendingObserved.Length];
                     }
 
+                    // ResponseEventSignature currently contains only value-type fields, so
+                    // returning without clearing is safe and avoids redundant zeroing.
                     ArrayPool<ResponseEventSignature>.Shared.Return(_pendingObserved, clearArray: false);
                     _pendingObserved = expanded;
                     _pendingHead = 0;
@@ -559,13 +575,30 @@ namespace TurboHTTP.Core
                     lock (_responseGate)
                     {
                         if (_pendingObserved == null)
+                        {
+                            _observedBufferReleased = true;
                             return;
+                        }
 
+                        // ResponseEventSignature currently contains only value-type fields, so
+                        // returning without clearing is safe and avoids redundant zeroing.
                         ArrayPool<ResponseEventSignature>.Shared.Return(_pendingObserved, clearArray: false);
                         _pendingObserved = null;
                         _pendingHead = 0;
                         _pendingCount = 0;
+                        _observedBufferReleased = true;
                     }
+                }
+
+                private void ThrowIfObservedBufferReleased_NoLock()
+                {
+                    if (!_observedBufferReleased)
+                        return;
+
+                    throw new PluginException(
+                        _owner._pluginName,
+                        "interceptor.response",
+                        "Plugin interceptor attempted response observation after the dispatch scope completed.");
                 }
 
                 private PluginException CreateMutationException()

@@ -16,18 +16,18 @@ namespace TurboHTTP.Tests.Transport
     {
         private static ParsedResponse NormalizeBodyForAssertions(ParsedResponse parsed)
         {
-            if (parsed.SegmentedBody == null)
+            if (parsed == null)
                 return parsed;
 
-            try
-            {
-                parsed.Body = parsed.SegmentedBody.ToArray();
-            }
-            finally
-            {
-                parsed.SegmentedBody.Dispose();
-                parsed.SegmentedBody = null;
-            }
+            if (parsed.SegmentedBody == null && !parsed.BodyFromPool)
+                return parsed;
+
+            var copiedBody = parsed.SegmentedBody != null
+                ? parsed.SegmentedBody.ToArray()
+                : parsed.Body.ToArray();
+
+            parsed.ReleaseBodyBuffers();
+            parsed.Body = copiedBody;
 
             return parsed;
         }

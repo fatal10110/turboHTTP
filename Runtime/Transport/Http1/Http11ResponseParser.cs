@@ -1,8 +1,10 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -46,18 +48,46 @@ namespace TurboHTTP.Transport.Http1
         /// <summary>
         /// Clears all fields so this instance can be safely returned to
         /// <see cref="ParsedResponsePool"/> and rented again for a new response.
-        /// Ownership of <see cref="Headers"/>, <see cref="Body"/>, and
-        /// <see cref="SegmentedBody"/> must have already been transferred to the caller
-        /// before this is invoked.
+        /// Returns any still-owned pooled buffers as a safety net in case the caller
+        /// did not transfer or release them before returning the object to the pool.
         /// </summary>
         public void Reset()
         {
+            ReleaseBodyBuffers();
             StatusCode = default;
             Headers = null;
+            KeepAlive = false;
+        }
+
+        internal void ReleaseBodyBuffers()
+        {
+            if (BodyFromPool &&
+                MemoryMarshal.TryGetArray(Body, out ArraySegment<byte> bodySegment) &&
+                bodySegment.Array != null)
+            {
+                ArrayPool<byte>.Shared.Return(bodySegment.Array);
+            }
+
+            SegmentedBody?.Dispose();
             Body = default;
             BodyFromPool = false;
             SegmentedBody = null;
-            KeepAlive = false;
+        }
+
+        internal IEnumerable<ReadOnlyMemory<byte>> EnumerateBodySegments()
+        {
+            if (SegmentedBody != null)
+            {
+                var sequence = SegmentedBody.AsSequence();
+                var enumerator = sequence.GetEnumerator();
+                while (enumerator.MoveNext())
+                    yield return enumerator.Current;
+
+                yield break;
+            }
+
+            if (!Body.IsEmpty)
+                yield return Body;
         }
     }
 

@@ -202,6 +202,7 @@ namespace TurboHTTP.Tests.Core
                 RequestContext context,
                 CancellationToken cancellationToken = default)
             {
+                handler.OnRequestStart(request, context);
                 throw new UHttpException(new UHttpError(
                     UHttpErrorType.NetworkError,
                     "Transport failure."));

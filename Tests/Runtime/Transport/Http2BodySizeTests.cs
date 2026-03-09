@@ -3,7 +3,7 @@ using System.IO;
 using System.Text;
 using NUnit.Framework;
 using TurboHTTP.Core;
-using TurboHTTP.Transport;
+using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http2;
 
 namespace TurboHTTP.Tests.Transport.Http2
@@ -17,8 +17,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             // Set up a mock request and stream
             var req = new UHttpRequest(HttpMethod.GET, new Uri("http://localhost"));
             var context = new RequestContext(req);
-            var responseSourcePool = new PoolableValueTaskSourcePool<UHttpResponse>(maxSize: 1);
-            var stream = new Http2Stream(1, req, context, 65535, 65535, responseSourcePool);
+            var stream = new Http2Stream(1, req, NoOpHttpHandler.Instance, context, 65535, 65535);
 
             // Configure settings to restrict body size to 10 bytes
             var options = new Http2Options { MaxResponseBodySize = 10 };

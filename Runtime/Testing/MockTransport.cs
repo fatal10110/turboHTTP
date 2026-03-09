@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
@@ -150,7 +151,7 @@ namespace TurboHTTP.Testing
         }
 
         /// <summary>
-        /// Queue an error response fixture for deterministic error-path tests.
+        /// Queue a transport error fixture for deterministic failure-path tests.
         /// </summary>
         public void EnqueueError(
             UHttpError error,
@@ -230,6 +231,7 @@ namespace TurboHTTP.Testing
         {
             if (handler == null) throw new ArgumentNullException(nameof(handler));
             if (context == null) throw new ArgumentNullException(nameof(context));
+            ThrowIfDisposed();
 
             handler.OnRequestStart(request, context);
 
@@ -237,30 +239,24 @@ namespace TurboHTTP.Testing
             try
             {
                 response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
-                TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+                EmitResponse(response, handler, context);
             }
-            catch (UHttpException ex) when (
-                ex.HttpError != null &&
-                ex.HttpError.Type == UHttpErrorType.Cancelled &&
-                cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                // Match the real transport: observers see OnResponseError(UHttpException Cancelled)
-                // while buffered collectors still surface OperationCanceledException to callers.
-                TransportDispatchHelper.SetCancellationException(
-                    context,
-                    new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken));
-                handler.OnResponseError(ex, context);
+                throw;
             }
-            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Cancelled)
             {
-                TransportDispatchHelper.SetCancellationException(context, ex);
-                handler.OnResponseError(
-                    new UHttpException(new UHttpError(UHttpErrorType.Cancelled, ex.Message, ex)),
-                    context);
+                throw new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken);
             }
             catch (UHttpException ex)
             {
                 handler.OnResponseError(ex, context);
+            }
+            catch (Exception ex)
+            {
+                handler.OnResponseError(new UHttpException(
+                    new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
             }
             finally
             {
@@ -294,6 +290,40 @@ namespace TurboHTTP.Testing
                 context?.Elapsed ?? TimeSpan.Zero,
                 request,
                 error);
+        }
+
+        private static void EmitResponse(
+            UHttpResponse response,
+            IHttpHandler handler,
+            RequestContext context)
+        {
+            if (response == null)
+                throw new InvalidOperationException("MockTransport produced a null response.");
+
+            if (response.Error != null)
+            {
+                handler.OnResponseError(new UHttpException(response.Error), context);
+                return;
+            }
+
+            handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
+
+            var body = response.Body;
+            if (body.IsSingleSegment)
+            {
+                if (!body.FirstSpan.IsEmpty)
+                    handler.OnResponseData(body.FirstSpan, context);
+            }
+            else
+            {
+                foreach (ReadOnlyMemory<byte> segment in body)
+                {
+                    if (!segment.Span.IsEmpty)
+                        handler.OnResponseData(segment.Span, context);
+                }
+            }
+
+            handler.OnResponseEnd(HttpHeaders.Empty, context);
         }
 
         private static UHttpRequest SnapshotRequest(UHttpRequest request)

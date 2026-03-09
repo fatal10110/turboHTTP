@@ -10,7 +10,6 @@ namespace TurboHTTP.Core
     {
         private readonly TaskCompletionSource<UHttpResponse> _tcs =
             new TaskCompletionSource<UHttpResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly RequestContext _context;
         private readonly object _bodyGate = new object();
 
         private UHttpRequest _request;
@@ -22,7 +21,7 @@ namespace TurboHTTP.Core
         internal ResponseCollectorHandler(UHttpRequest request, RequestContext context)
         {
             _request = request;
-            _context = context ?? throw new ArgumentNullException(nameof(context));
+            _ = context ?? throw new ArgumentNullException(nameof(context));
         }
 
         public Task<UHttpResponse> ResponseTask => _tcs.Task;
@@ -59,52 +58,37 @@ namespace TurboHTTP.Core
         public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
         {
             var body = DetachBody();
-
-            var responseError = _context.GetResponseError();
             var response = new UHttpResponse(
                 (HttpStatusCode)_statusCode,
                 _responseHeaders ?? new HttpHeaders(),
                 body?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
                 body,
-                _context.Elapsed,
-                _request,
-                responseError);
+                context.Elapsed,
+                _request);
 
             _tcs.TrySetResult(response);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
         {
-            if (TrySetStoredCancellationException())
-                return;
-
             DisposeBody();
-            _tcs.TrySetException(error ?? new UHttpException(new UHttpError(UHttpErrorType.Unknown, "Unknown response error.")));
+            _tcs.TrySetException(error ?? new UHttpException(
+                new UHttpError(UHttpErrorType.Unknown, "Unknown response error.")));
         }
 
         internal void Fail(Exception ex)
         {
-            if (TrySetStoredCancellationException())
-                return;
-
-            // Exact-type check intentionally keeps plain cancellation as a canceled task while
-            // preserving derived OperationCanceledException subtypes (for example
-            // BackgroundRequestQueuedException) as typed exceptions with attached metadata.
-            if (ex is TaskCanceledException ||
-                (ex != null && ex.GetType() == typeof(OperationCanceledException)))
-            {
-                Cancel();
-                return;
-            }
-
-            if (ex is OperationCanceledException operationCanceled)
-            {
-                DisposeBody();
-                _tcs.TrySetException(operationCanceled);
-                return;
-            }
-
             DisposeBody();
+
+            if (ex is HandlerCallbackException handlerCallback && handlerCallback.InnerException != null)
+                ex = handlerCallback.InnerException;
+
+            if (ex is OperationCanceledException operationCanceledException)
+            {
+                _tcs.TrySetException(operationCanceledException);
+                return;
+            }
+
             _tcs.TrySetException(ex is UHttpException uHttpException
                 ? uHttpException
                 : new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex?.Message ?? "Dispatch failed.", ex)));
@@ -112,9 +96,6 @@ namespace TurboHTTP.Core
 
         internal void Cancel()
         {
-            if (TrySetStoredCancellationException())
-                return;
-
             DisposeBody();
             _tcs.TrySetCanceled();
         }
@@ -140,17 +121,6 @@ namespace TurboHTTP.Core
             }
 
             body?.Dispose();
-        }
-
-        private bool TrySetStoredCancellationException()
-        {
-            var stored = _context.GetCancellationException();
-            if (stored == null)
-                return false;
-
-            DisposeBody();
-            _tcs.TrySetException(stored);
-            return true;
         }
 
         private SegmentedBuffer DetachBody()

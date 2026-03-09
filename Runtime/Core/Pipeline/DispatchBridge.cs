@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -63,6 +62,26 @@ namespace TurboHTTP.Core
 
                     if (task.IsCanceled)
                     {
+                        try
+                        {
+                            task.GetAwaiter().GetResult();
+                        }
+                        catch (TaskCanceledException)
+                        {
+                            responseCollector.Cancel();
+                            return;
+                        }
+                        catch (OperationCanceledException ex) when (ex.GetType() == typeof(OperationCanceledException))
+                        {
+                            responseCollector.Cancel();
+                            return;
+                        }
+                        catch (OperationCanceledException ex)
+                        {
+                            responseCollector.Fail(ex);
+                            return;
+                        }
+
                         responseCollector.Cancel();
                         return;
                     }
@@ -73,41 +92,6 @@ namespace TurboHTTP.Core
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
-        }
-
-        internal static void DeliverResponse(
-            UHttpResponse response,
-            IHttpHandler handler,
-            RequestContext context,
-            UHttpRequest fallbackRequest)
-        {
-            if (response == null)
-                throw new ArgumentNullException(nameof(response));
-            if (handler == null)
-                throw new ArgumentNullException(nameof(handler));
-            if (context == null)
-                throw new ArgumentNullException(nameof(context));
-
-            var request = response.Request ?? context.Request ?? fallbackRequest;
-            if (request != null)
-                context.UpdateRequest(request);
-
-            context.SetResponseError(response.Error);
-            handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
-
-            var body = response.Body;
-            if (!body.IsEmpty)
-            {
-                var enumerator = body.GetEnumerator();
-                while (enumerator.MoveNext())
-                {
-                    ReadOnlyMemory<byte> segment = enumerator.Current;
-                    if (!segment.IsEmpty)
-                        handler.OnResponseData(segment.Span, context);
-                }
-            }
-
-            handler.OnResponseEnd(HttpHeaders.Empty, context);
         }
     }
 }

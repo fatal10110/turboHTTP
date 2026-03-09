@@ -186,10 +186,13 @@ namespace TurboHTTP.Tests.Integration
                 var parsed = jsonResponse.AsJson<Dictionary<string, object>>();
                 Assert.AreEqual("json", parsed["kind"].ToString());
 
-                var errorResponse = await client.Get("https://example.test/error").SendAsync();
-                Assert.IsTrue(errorResponse.IsError);
-                Assert.AreEqual(UHttpErrorType.NetworkError, errorResponse.Error.Type);
-                Assert.AreEqual(HttpStatusCode.ServiceUnavailable, errorResponse.StatusCode);
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
+                {
+                    await client.Get("https://example.test/error").SendAsync();
+                });
+
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.AreEqual(HttpStatusCode.ServiceUnavailable, ex.HttpError.StatusCode);
             }).GetAwaiter().GetResult();
         }
 

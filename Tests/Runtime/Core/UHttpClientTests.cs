@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -9,6 +10,7 @@ using NUnit.Framework;
 using TurboHTTP.Auth;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
+using TurboHTTP.Testing;
 using TurboHTTP.Transport;
 
 namespace TurboHTTP.Tests.Core
@@ -46,16 +48,63 @@ namespace TurboHTTP.Tests.Core
                 try
                 {
                     response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
-                    TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+                    EmitResponse(response, handler, context);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Cancelled)
+                {
+                    throw new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken);
                 }
                 catch (UHttpException ex)
                 {
                     handler.OnResponseError(ex, context);
                 }
+                catch (Exception ex)
+                {
+                    handler.OnResponseError(new UHttpException(
+                        new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
+                }
                 finally
                 {
                     response?.Dispose();
                 }
+            }
+
+            private static void EmitResponse(
+                UHttpResponse response,
+                IHttpHandler handler,
+                RequestContext context)
+            {
+                if (response == null)
+                    throw new InvalidOperationException("TrackingTransport produced a null response.");
+
+                if (response.Error != null)
+                {
+                    handler.OnResponseError(new UHttpException(response.Error), context);
+                    return;
+                }
+
+                handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
+
+                var body = response.Body;
+                if (body.IsSingleSegment)
+                {
+                    if (!body.FirstSpan.IsEmpty)
+                        handler.OnResponseData(body.FirstSpan, context);
+                }
+                else
+                {
+                    foreach (ReadOnlyMemory<byte> segment in body)
+                    {
+                        if (!segment.Span.IsEmpty)
+                            handler.OnResponseData(segment.Span, context);
+                    }
+                }
+
+                handler.OnResponseEnd(HttpHeaders.Empty, context);
             }
 
             public void Dispose()
@@ -137,7 +186,10 @@ namespace TurboHTTP.Tests.Core
                 try
                 {
                     response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
-                    TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+                    handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
+                    if (!response.Body.IsEmpty)
+                        handler.OnResponseData(response.Body.FirstSpan, context);
+                    handler.OnResponseEnd(HttpHeaders.Empty, context);
                 }
                 finally
                 {
@@ -730,7 +782,7 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void SendAsync_CancelledTransport_TriggersHandlerErrorBeforeThrowingOperationCanceledException()
+        public void SendAsync_CancelledTransport_PropagatesOperationCanceledExceptionWithoutHandlerError()
         {
             Task.Run(async () =>
             {
@@ -755,8 +807,44 @@ namespace TurboHTTP.Tests.Core
                     await client.Get("https://example.test/cancelled").SendAsync(cts.Token);
                 });
 
-                Assert.IsNotNull(observedError);
-                Assert.AreEqual(UHttpErrorType.Cancelled, observedError.HttpError.Type);
+                Assert.IsNull(observedError);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SendAsync_CancelledRecordReplayPassthrough_PropagatesOperationCanceledExceptionWithoutHandlerError()
+        {
+            Task.Run(async () =>
+            {
+                UHttpException observedError = null;
+                using var innerTransport = new MockTransport(
+                    (request, context, ct) => new ValueTask<UHttpResponse>(Task.FromCanceled<UHttpResponse>(ct)),
+                    preferValueTaskHandler: true);
+                using var recordReplayTransport = new RecordReplayTransport(
+                    innerTransport,
+                    new RecordReplayTransportOptions
+                    {
+                        Mode = RecordReplayMode.Passthrough
+                    });
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = recordReplayTransport,
+                    DisposeTransport = true,
+                    Interceptors = new List<IHttpInterceptor>
+                    {
+                        new ErrorObservingInterceptor(error => observedError = error)
+                    }
+                });
+
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
+
+                await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
+                {
+                    await client.Get("https://example.test/record-replay-cancelled").SendAsync(cts.Token);
+                });
+
+                Assert.IsNull(observedError);
             }).GetAwaiter().GetResult();
         }
 

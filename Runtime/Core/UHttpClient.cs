@@ -167,9 +167,19 @@ namespace TurboHTTP.Core
             ThrowIfDisposed();
             ct.ThrowIfCancellationRequested();
 
-            await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+            var enteredLifecycleGate = false;
             try
             {
+                try
+                {
+                    await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+                    enteredLifecycleGate = true;
+                }
+                catch (ObjectDisposedException ex)
+                {
+                    throw new ObjectDisposedException(nameof(UHttpClient), ex.Message);
+                }
+
                 var pluginName = string.IsNullOrWhiteSpace(plugin.Name) ? plugin.GetType().FullName : plugin.Name;
                 if (FindPluginByName_NoLock(pluginName) != null)
                 {
@@ -213,7 +223,8 @@ namespace TurboHTTP.Core
             }
             finally
             {
-                _pluginLifecycleGate.Release();
+                if (enteredLifecycleGate)
+                    _pluginLifecycleGate.Release();
             }
         }
 
@@ -225,9 +236,19 @@ namespace TurboHTTP.Core
             ThrowIfDisposed();
             ct.ThrowIfCancellationRequested();
 
-            await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+            var enteredLifecycleGate = false;
             try
             {
+                try
+                {
+                    await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+                    enteredLifecycleGate = true;
+                }
+                catch (ObjectDisposedException ex)
+                {
+                    throw new ObjectDisposedException(nameof(UHttpClient), ex.Message);
+                }
+
                 PluginRegistration registration;
                 lock (_pluginLock)
                 {
@@ -268,7 +289,8 @@ namespace TurboHTTP.Core
             }
             finally
             {
-                _pluginLifecycleGate.Release();
+                if (enteredLifecycleGate)
+                    _pluginLifecycleGate.Release();
             }
         }
 
@@ -580,7 +602,16 @@ namespace TurboHTTP.Core
 
         private static bool ContainsPipelineComponent<T>(IReadOnlyList<IHttpInterceptor> interceptors)
         {
-            return ContainsPipelineComponent(interceptors, typeof(T));
+            if (interceptors == null)
+                return false;
+
+            for (int i = 0; i < interceptors.Count; i++)
+            {
+                if (interceptors[i] is T)
+                    return true;
+            }
+
+            return false;
         }
 
         private static bool ContainsPipelineComponent(

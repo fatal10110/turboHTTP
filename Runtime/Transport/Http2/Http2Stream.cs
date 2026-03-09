@@ -1,9 +1,8 @@
 using System;
-using System.Buffers;
 using System.IO;
-using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Sources;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Transport.Http2
@@ -28,23 +27,30 @@ namespace TurboHTTP.Transport.Http2
     /// calling <see cref="Initialize"/> for each new request. This avoids the
     /// MemoryStream allocation on the per-request hot path.
     /// </remarks>
-    internal class Http2Stream : IDisposable
+    internal sealed class Http2Stream : IDisposable, IValueTaskSource
     {
-        // Backing fields for per-request identity. Set by Initialize(), cleared by PrepareForPool().
+        private struct VoidResult
+        {
+        }
+
         private int _streamId;
         private UHttpRequest _request;
         private RequestContext _context;
+        private IHttpHandler _handler;
+        private HttpHeaders _trailers;
+        private int _responseBodyLength;
+        private int _disposed;
+        private int _handlerFaulted;
+        private int _responseCompleted;
+        private int _sendWindowSize;
+        private ManualResetValueTaskSourceCore<VoidResult> _completionSource;
 
         public int StreamId => _streamId;
         public UHttpRequest Request => _request;
         public RequestContext Context => _context;
-
         public Http2StreamState State { get; set; }
-
-        public int StatusCode { get; set; }
-        public HttpHeaders ResponseHeaders { get; set; }
         public int ResponseBodyLength => _responseBodyLength;
-        public int ResponseBodyCapacity => _responseBodyBuffer?.Length ?? 0;
+        public int ResponseBodyCapacity => 0;
 
         /// <summary>
         /// Buffer for accumulating HEADERS + CONTINUATION header blocks.
@@ -55,15 +61,8 @@ namespace TurboHTTP.Transport.Http2
 
         public bool HeadersReceived { get; set; }
         public bool PendingEndStream { get; set; }
+        public bool HasHandlerFault => Volatile.Read(ref _handlerFaulted) != 0;
 
-        private byte[] _responseBodyBuffer;
-        private int _responseBodyLength;
-        private int _disposed;
-        private int _responseCompleted;
-        private PoolableValueTaskSource<UHttpResponse> _responseSource;
-        private ValueTask<UHttpResponse> _responseTask;
-
-        private int _sendWindowSize;
         public int SendWindowSize
         {
             get => Interlocked.CompareExchange(ref _sendWindowSize, 0, 0);
@@ -79,131 +78,84 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public int RecvWindowSize { get; set; }
 
-        public ValueTask<UHttpResponse> ResponseTask => _responseTask;
+        public ValueTask CompletionTask => new ValueTask(this, _completionSource.Version);
         public bool IsResponseCompleted => Volatile.Read(ref _responseCompleted) != 0;
-
         public CancellationTokenRegistration CancellationRegistration { get; set; }
 
-        // ── Construction ─────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Parameterless constructor for the pool factory. Allocates the long-lived
-        /// <see cref="HeaderBlockBuffer"/> once; per-request state is set by
-        /// <see cref="Initialize"/>.
-        /// </summary>
         internal Http2Stream()
         {
             HeaderBlockBuffer = new MemoryStream();
+            _handler = TurboHTTP.Transport.NullHandler.Instance;
+            _completionSource = new ManualResetValueTaskSourceCore<VoidResult>
+            {
+                RunContinuationsAsynchronously = true
+            };
+            _completionSource.Reset();
+            _disposed = 1;
         }
 
-        /// <summary>
-        /// Single-step constructor — allocates the MemoryStream then immediately
-        /// initialises per-request state. Used in unit tests and outside pool paths.
-        /// </summary>
         public Http2Stream(
             int streamId,
             UHttpRequest request,
+            IHttpHandler handler,
             RequestContext context,
             int initialSendWindowSize,
-            int initialRecvWindowSize,
-            PoolableValueTaskSourcePool<UHttpResponse> responseSourcePool)
+            int initialRecvWindowSize)
+            : this()
         {
-            HeaderBlockBuffer = new MemoryStream();
-            Initialize(streamId, request, context,
-                initialSendWindowSize, initialRecvWindowSize, responseSourcePool);
+            Initialize(streamId, request, handler, context, initialSendWindowSize, initialRecvWindowSize);
         }
 
-        // ── Pool lifecycle ───────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Sets all per-request state on a pooled (or freshly created) instance.
-        /// Called by <see cref="Http2StreamPool.Rent"/> immediately after renting.
-        /// </summary>
         public void Initialize(
             int streamId,
             UHttpRequest request,
+            IHttpHandler handler,
             RequestContext context,
             int initialSendWindowSize,
-            int initialRecvWindowSize,
-            PoolableValueTaskSourcePool<UHttpResponse> responseSourcePool)
+            int initialRecvWindowSize)
         {
             _streamId = streamId;
             _request = request ?? throw new ArgumentNullException(nameof(request));
+            _handler = handler ?? throw new ArgumentNullException(nameof(handler));
             _context = context ?? throw new ArgumentNullException(nameof(context));
-
-            State = Http2StreamState.Idle;
-            StatusCode = 0;
-            ResponseHeaders = null;
-
-            // Reset MemoryStream position without releasing its backing buffer.
-            HeaderBlockBuffer.SetLength(0);
+            _trailers = null;
+            _responseBodyLength = 0;
             HeadersReceived = false;
             PendingEndStream = false;
-
+            State = Http2StreamState.Idle;
+            HeaderBlockBuffer.SetLength(0);
             _sendWindowSize = initialSendWindowSize;
             RecvWindowSize = initialRecvWindowSize;
-
-            _responseBodyBuffer = null;
-            _responseBodyLength = 0;
-            _disposed = 0;
-            _responseCompleted = 0;
-
-            _responseSource = (responseSourcePool ?? throw new ArgumentNullException(nameof(responseSourcePool))).Rent();
-            _responseTask = _responseSource.CreateValueTask();
-
             CancellationRegistration = default;
+            Interlocked.Exchange(ref _handlerFaulted, 0);
+            Interlocked.Exchange(ref _responseCompleted, 0);
+            Volatile.Write(ref _disposed, 0);
         }
 
-        /// <summary>
-        /// Clears all per-request state and returns pooled resources so this instance
-        /// can be stored in <see cref="Http2StreamPool"/> and reused. Called by the
-        /// pool's reset delegate via <see cref="Http2StreamPool.Return"/>.
-        /// </summary>
-        /// <remarks>
-        /// Does NOT dispose <see cref="HeaderBlockBuffer"/>; it is intentionally kept
-        /// alive for reuse. When the pool is full and discards a stream the MemoryStream
-        /// is GC'd — safe because MemoryStream holds no finalizable native resources.
-        /// </remarks>
         public void PrepareForPool()
         {
-            // Return any partial response body buffer not already consumed by Complete().
-            if (_responseBodyBuffer != null)
-            {
-                ArrayPool<byte>.Shared.Return(_responseBodyBuffer);
-                _responseBodyBuffer = null;
-            }
-            _responseBodyLength = 0;
-
-            // Deregister the per-request cancellation callback.
+            Volatile.Write(ref _disposed, 1);
             CancellationRegistration.Dispose();
             CancellationRegistration = default;
-
-            // Reset MemoryStream to empty without disposing it (reuse for next request).
             HeaderBlockBuffer.SetLength(0);
-
-            // Clear all per-request references to prevent retention after pool return.
             _streamId = 0;
             _request = null;
             _context = null;
-            ResponseHeaders = null;
-            State = Http2StreamState.Idle;
-            StatusCode = 0;
+            _handler = TurboHTTP.Transport.NullHandler.Instance;
+            _trailers = null;
+            _responseBodyLength = 0;
             HeadersReceived = false;
             PendingEndStream = false;
+            State = Http2StreamState.Idle;
             _sendWindowSize = 0;
             RecvWindowSize = 0;
-            _responseSource = null;  // Already returned to its own pool by the caller.
-            // Use Volatile.Write to establish a release fence on ARM — ensures all preceding
-            // field clears are visible to any thread that subsequently observes _disposed == 0.
-            Volatile.Write(ref _disposed, 0);
-            Volatile.Write(ref _responseCompleted, 0);
+            Interlocked.Exchange(ref _handlerFaulted, 0);
+            Interlocked.Exchange(ref _responseCompleted, 0);
+            _completionSource.Reset();
         }
-
-        // ── Public API ───────────────────────────────────────────────────────────
 
         public void AppendHeaderBlock(byte[] data, int offset, int length)
         {
-            // Use MemoryStream.Write for efficient bulk copy instead of byte-by-byte
             HeaderBlockBuffer.Write(data, offset, length);
         }
 
@@ -217,28 +169,55 @@ namespace TurboHTTP.Transport.Http2
                     (int)HeaderBlockBuffer.Length);
             }
 
-            // Fallback for non-exposable buffers.
             var copy = HeaderBlockBuffer.ToArray();
             return new ArraySegment<byte>(copy, 0, copy.Length);
         }
 
         public void EnsureResponseBodyCapacity(int capacity)
         {
-            if (capacity <= 0)
-                return;
-
-            EnsureBodyCapacity(capacity);
         }
 
-        public void AppendResponseData(byte[] source, int offset, int length)
+        public bool HandleResponseHeaders(int statusCode, HttpHeaders headers)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return false;
+
+            HeadersReceived = true;
+            try
+            {
+                _handler.OnResponseStart(statusCode, headers ?? new HttpHeaders(), _context);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                return FailFromHandler(ex);
+            }
+        }
+
+        public bool AppendResponseData(byte[] source, int offset, int length)
         {
             if (length <= 0)
-                return;
+                return true;
 
             ThrowIfDisposed();
-            EnsureBodyCapacity(_responseBodyLength + length);
-            Buffer.BlockCopy(source, offset, _responseBodyBuffer, _responseBodyLength, length);
-            _responseBodyLength += length;
+            try
+            {
+                _handler.OnResponseData(new ReadOnlySpan<byte>(source, offset, length), _context);
+                _responseBodyLength += length;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                return FailFromHandler(ex);
+            }
+        }
+
+        public void AppendTrailers(HttpHeaders trailers)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
+            _trailers = trailers;
         }
 
         public void ClearHeaderBlock()
@@ -246,63 +225,48 @@ namespace TurboHTTP.Transport.Http2
             HeaderBlockBuffer.SetLength(0);
         }
 
-        public void Complete()
+        public bool Complete()
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return false;
             if (Interlocked.Exchange(ref _responseCompleted, 1) != 0)
-                return;
+                return false;
 
             State = Http2StreamState.Closed;
-
-            var bodyBuffer = _responseBodyBuffer;
-            var bodyLength = _responseBodyLength;
-            var bodyFromPool = bodyBuffer != null && bodyLength > 0;
-
-            // Transfer ownership of the pooled body to UHttpResponse.
-            _responseBodyBuffer = null;
-            _responseBodyLength = 0;
-
-            var response = new UHttpResponse(
-                statusCode: (HttpStatusCode)StatusCode,
-                headers: ResponseHeaders ?? new HttpHeaders(),
-                body: bodyFromPool
-                    ? new ReadOnlyMemory<byte>(bodyBuffer, 0, bodyLength)
-                    : ReadOnlyMemory<byte>.Empty,
-                elapsedTime: Context.Elapsed,
-                request: Request,
-                error: null,
-                bodyFromPool: bodyFromPool
-            );
-
-            _responseSource.SetResult(response);
+            try
+            {
+                _handler.OnResponseEnd(_trailers ?? HttpHeaders.Empty, _context);
+                TrySetResult();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Exchange(ref _handlerFaulted, 1);
+                TrySetException(new HandlerCallbackException(ex));
+                return false;
+            }
         }
 
         public void Fail(Exception exception)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
             if (Interlocked.Exchange(ref _responseCompleted, 1) != 0)
                 return;
 
             State = Http2StreamState.Closed;
-            _responseSource.SetException(exception ?? new InvalidOperationException("HTTP/2 stream failed."));
+            TrySetException(exception ?? new InvalidOperationException("HTTP/2 stream failed."));
         }
 
         public void Cancel(CancellationToken cancellationToken = default)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
             if (Interlocked.Exchange(ref _responseCompleted, 1) != 0)
                 return;
 
             State = Http2StreamState.Closed;
-            _responseSource.SetCanceled(cancellationToken);
-        }
-
-        public void CancelWithoutConsumption(CancellationToken cancellationToken = default)
-        {
-            Cancel(cancellationToken);
-            _responseSource.ReturnWithoutConsumption();
-        }
-
-        public void ReturnResponseSourceIfUnconsumed()
-        {
-            _responseSource.ReturnWithoutConsumption();
+            TrySetException(new OperationCanceledException(cancellationToken));
         }
 
         public void Dispose()
@@ -311,50 +275,66 @@ namespace TurboHTTP.Transport.Http2
                 return;
 
             CancellationRegistration.Dispose();
-            if (_responseBodyBuffer != null)
-            {
-                ArrayPool<byte>.Shared.Return(_responseBodyBuffer);
-                _responseBodyBuffer = null;
-                _responseBodyLength = 0;
-            }
-            HeaderBlockBuffer?.Dispose();
+            CancellationRegistration = default;
+            _handler = TurboHTTP.Transport.NullHandler.Instance;
+            _request = null;
+            _context = null;
+            _trailers = null;
+            HeaderBlockBuffer.Dispose();
         }
 
-        private void EnsureBodyCapacity(int required)
-        {
-            ThrowIfDisposed();
-            if (required <= 0)
-                return;
+        void IValueTaskSource.GetResult(short token) => _completionSource.GetResult(token);
 
-            if (_responseBodyBuffer == null)
-            {
-                _responseBodyBuffer = ArrayPool<byte>.Shared.Rent(Math.Max(1024, required));
-                return;
-            }
+        ValueTaskSourceStatus IValueTaskSource.GetStatus(short token) => _completionSource.GetStatus(token);
 
-            if (_responseBodyBuffer.Length >= required)
-                return;
-
-            var resized = ArrayPool<byte>.Shared.Rent(Math.Max(required, _responseBodyBuffer.Length * 2));
-            try
-            {
-                if (_responseBodyLength > 0)
-                    Buffer.BlockCopy(_responseBodyBuffer, 0, resized, 0, _responseBodyLength);
-            }
-            catch
-            {
-                ArrayPool<byte>.Shared.Return(resized);
-                throw;
-            }
-
-            ArrayPool<byte>.Shared.Return(_responseBodyBuffer);
-            _responseBodyBuffer = resized;
-        }
+        void IValueTaskSource.OnCompleted(
+            Action<object> continuation,
+            object state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) =>
+            _completionSource.OnCompleted(continuation, state, token, flags);
 
         private void ThrowIfDisposed()
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(Http2Stream));
+        }
+
+        private bool FailFromHandler(Exception exception)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return false;
+            if (Interlocked.Exchange(ref _responseCompleted, 1) != 0)
+                return false;
+
+            State = Http2StreamState.Closed;
+            Interlocked.Exchange(ref _handlerFaulted, 1);
+            TrySetException(new HandlerCallbackException(exception));
+            return false;
+        }
+
+        private void TrySetResult()
+        {
+            try
+            {
+                _completionSource.SetResult(default);
+            }
+            catch (InvalidOperationException)
+            {
+                // Defensive only: _responseCompleted should already prevent double-set races.
+            }
+        }
+
+        private void TrySetException(Exception exception)
+        {
+            try
+            {
+                _completionSource.SetException(exception);
+            }
+            catch (InvalidOperationException)
+            {
+                // Defensive only: _responseCompleted should already prevent double-set races.
+            }
         }
     }
 }

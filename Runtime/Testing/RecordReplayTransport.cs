@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -297,6 +298,17 @@ namespace TurboHTTP.Testing
         {
             if (handler == null) throw new ArgumentNullException(nameof(handler));
             if (context == null) throw new ArgumentNullException(nameof(context));
+            ThrowIfDisposed();
+
+            if (_mode == RecordReplayMode.Passthrough)
+            {
+                if (_innerTransport == null)
+                    throw new InvalidOperationException("No inner transport configured for passthrough mode.");
+
+                await _innerTransport.DispatchAsync(request, handler, context, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
 
             handler.OnRequestStart(request, context);
 
@@ -304,11 +316,24 @@ namespace TurboHTTP.Testing
             try
             {
                 response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
-                TransportDispatchHelper.DeliverResponse(response, handler, context, request);
+                EmitResponse(response, handler, context);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Cancelled)
+            {
+                throw new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken);
             }
             catch (UHttpException ex)
             {
                 handler.OnResponseError(ex, context);
+            }
+            catch (Exception ex)
+            {
+                handler.OnResponseError(new UHttpException(
+                    new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
             }
             finally
             {
@@ -379,7 +404,10 @@ namespace TurboHTTP.Testing
             }
 
             if (disposeException != null)
-                throw disposeException;
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[TurboHTTP] RecordReplayTransport dispose error: {disposeException}");
+            }
         }
 
         private async ValueTask<UHttpResponse> SendAndRecordAsync(
@@ -401,6 +429,15 @@ namespace TurboHTTP.Testing
             catch (UHttpException ex)
             {
                 RecordInteraction(request, response: null, ex.HttpError, threwException: true);
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                RecordInteraction(
+                    request,
+                    response: null,
+                    new UHttpError(UHttpErrorType.Cancelled, ex.Message, ex),
+                    threwException: true);
                 throw;
             }
             catch (Exception ex)
@@ -580,6 +617,41 @@ namespace TurboHTTP.Testing
                 request,
                 error);
         }
+
+        private static void EmitResponse(
+            UHttpResponse response,
+            IHttpHandler handler,
+            RequestContext context)
+        {
+            if (response == null)
+                throw new InvalidOperationException("RecordReplayTransport produced a null response.");
+
+            if (response.Error != null)
+            {
+                handler.OnResponseError(new UHttpException(response.Error), context);
+                return;
+            }
+
+            handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
+
+            var body = response.Body;
+            if (body.IsSingleSegment)
+            {
+                if (!body.FirstSpan.IsEmpty)
+                    handler.OnResponseData(body.FirstSpan, context);
+            }
+            else
+            {
+                foreach (ReadOnlyMemory<byte> segment in body)
+                {
+                    if (!segment.Span.IsEmpty)
+                        handler.OnResponseData(segment.Span, context);
+                }
+            }
+
+            handler.OnResponseEnd(HttpHeaders.Empty, context);
+        }
+
         private void Log(string message)
         {
             _logger?.Invoke(message);

@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Tests;
 using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http2;
 
@@ -626,6 +627,44 @@ namespace TurboHTTP.Tests.Transport.Http2
                 }, cts.Token);
 
                 AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void RstStreamCancel_FrameFailsSpecificStreamAsNetworkError()
+        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/cancelled-by-server"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = headersFrame.StreamId;
+
+                var rstPayload = new byte[4];
+                rstPayload[0] = 0;
+                rstPayload[1] = 0;
+                rstPayload[2] = 0;
+                rstPayload[3] = (byte)Http2ErrorCode.Cancel;
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.RstStream,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = streamId,
+                    Payload = rstPayload,
+                    Length = 4
+                }, cts.Token);
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                StringAssert.Contains("RST_STREAM: Cancel", ex.HttpError.Message);
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();
@@ -1567,7 +1606,104 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var response = await responseTask;
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual("hello", response.GetBodyAsString());
-                Assert.AreEqual("0", response.Headers.Get("grpc-status"));
+                Assert.IsNull(response.Headers.Get("grpc-status"));
+
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void HandlerFault_FailsOnlyAffectedStream_AndKeepsConnectionAlive()
+        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request1 = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/fail"));
+                var context1 = new RequestContext(request1);
+                var throwingHandler = new ThrowingResponseStartHandler();
+                var task1 = conn.DispatchAsync(request1, throwingHandler, context1, cts.Token);
+
+                var requestHeaders1 = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId1 = requestHeaders1.StreamId;
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId1, 200, endStream: false),
+                    cts.Token);
+
+                var rst = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.RstStream, rst.Type);
+                Assert.AreEqual(streamId1, rst.StreamId);
+
+                var handlerEx = await TestHelpers.AssertThrowsAsync<InvalidOperationException>(async () =>
+                {
+                    await task1;
+                });
+
+                StringAssert.Contains("handler-start-failure", handlerEx.Message);
+                Assert.IsFalse(throwingHandler.ResponseErrorCalled);
+
+                var request2 = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/success"));
+                var context2 = new RequestContext(request2);
+                var task2 = conn.SendRequestAsync(request2, context2, cts.Token);
+
+                var requestHeaders2 = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId2 = requestHeaders2.StreamId;
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId2, 200, endStream: true),
+                    cts.Token);
+
+                using var response2 = await task2;
+                Assert.AreEqual(HttpStatusCode.OK, response2.StatusCode);
+                Assert.IsTrue(conn.IsAlive);
+
+                conn.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void PostHeaderFailure_RecordsRequestFailedBeforeOnResponseError()
+        {
+            Task.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(
+                    cts.Token,
+                    new Http2Options { MaxResponseBodySize = 1 });
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/post-header-failure"));
+                var context = new RequestContext(request);
+                var handler = new TimelineRecordingErrorHandler();
+                var dispatchTask = conn.DispatchAsync(request, handler, context, cts.Token);
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 200, endStream: false),
+                    cts.Token);
+
+                var bodyBytes = System.Text.Encoding.UTF8.GetBytes("too-large");
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Data,
+                    Flags = Http2FrameFlags.EndStream,
+                    StreamId = streamId,
+                    Payload = bodyBytes,
+                    Length = bodyBytes.Length
+                }, cts.Token);
+
+                await dispatchTask;
+                var error = await TestHelpers.AssertCompletesWithinAsync(
+                    handler.ErrorTask,
+                    TimeSpan.FromSeconds(1));
+
+                Assert.AreEqual(UHttpErrorType.NetworkError, error.HttpError.Type);
+                Assert.IsTrue(handler.SawRequestFailedBeforeError);
+                Assert.IsTrue(context.Timeline.Any(evt => evt.Name == "RequestFailed"));
 
                 conn.Dispose();
             }).GetAwaiter().GetResult();
@@ -2373,6 +2509,64 @@ namespace TurboHTTP.Tests.Transport.Http2
                 }
 
                 base.Dispose(disposing);
+            }
+        }
+
+        private sealed class ThrowingResponseStartHandler : IHttpHandler
+        {
+            public bool ResponseErrorCalled { get; private set; }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+            }
+
+            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            {
+                throw new InvalidOperationException("handler-start-failure");
+            }
+
+            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
+            {
+            }
+
+            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            {
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                ResponseErrorCalled = true;
+            }
+        }
+
+        private sealed class TimelineRecordingErrorHandler : IHttpHandler
+        {
+            private readonly TaskCompletionSource<UHttpException> _errorSource =
+                new TaskCompletionSource<UHttpException>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public Task<UHttpException> ErrorTask => _errorSource.Task;
+            public bool SawRequestFailedBeforeError { get; private set; }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+            }
+
+            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            {
+            }
+
+            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
+            {
+            }
+
+            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            {
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                SawRequestFailedBeforeError = context.Timeline.Any(evt => evt.Name == "RequestFailed");
+                _errorSource.TrySetResult(error);
             }
         }
     }
