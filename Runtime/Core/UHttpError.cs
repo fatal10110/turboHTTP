@@ -35,11 +35,18 @@ namespace TurboHTTP.Core
     /// </summary>
     public class UHttpError
     {
+        /// <summary> Gets the category of the network or HTTP error. </summary>
         public UHttpErrorType Type { get; }
+        /// <summary> Gets the error message. </summary>
         public string Message { get; }
+        /// <summary> Gets the underlying exception that caused this error, if any. </summary>
         public Exception InnerException { get; }
+        /// <summary> Gets the HTTP status code associated with this error, if applicable. </summary>
         public HttpStatusCode? StatusCode { get; }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="UHttpError"/> class.
+        /// </summary>
         public UHttpError(
             UHttpErrorType type,
             string message,
@@ -96,8 +103,12 @@ namespace TurboHTTP.Core
     /// </summary>
     public class UHttpException : Exception
     {
+        /// <summary> Gets the detailed <see cref="UHttpError"/> associated with this exception. </summary>
         public UHttpError HttpError { get; }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="UHttpException"/> class.
+        /// </summary>
         public UHttpException(UHttpError error)
             : base((error ?? throw new ArgumentNullException(nameof(error))).Message, error.InnerException)
         {

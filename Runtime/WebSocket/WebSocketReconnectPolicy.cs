@@ -3,6 +3,9 @@ using System.Threading;
 
 namespace TurboHTTP.WebSocket
 {
+    /// <summary>
+    /// Configuration policy for automatic WebSocket reconnection.
+    /// </summary>
     public sealed class WebSocketReconnectPolicy
     {
         private readonly Func<WebSocketCloseCode, bool> _reconnectOnCloseCode;
@@ -54,16 +57,22 @@ namespace TurboHTTP.WebSocket
             _reconnectOnCloseCode = reconnectOnCloseCode ?? DefaultReconnectOnCloseCode;
         }
 
+        /// <summary> Maximum number of retry attempts (-1 for infinite). </summary>
         public int MaxRetries { get; }
 
+        /// <summary> Base delay before the first retry attempt. </summary>
         public TimeSpan InitialDelay { get; }
 
+        /// <summary> Maximum allowed retry delay. </summary>
         public TimeSpan MaxDelay { get; }
 
+        /// <summary> Exponential backoff multiplier. </summary>
         public double BackoffMultiplier { get; }
 
+        /// <summary> Randomization factor for backoff delay (0.0 to 1.0). </summary>
         public double JitterFactor { get; }
 
+        /// <summary> True if retries are enabled. </summary>
         public bool Enabled => MaxRetries != 0;
 
         public TimeSpan ComputeDelay(int attempt)

@@ -12,20 +12,36 @@ using TurboHTTP.Core;
 
 namespace TurboHTTP.Cache
 {
+    /// <summary>
+    /// Configuration policy for caching behavior.
+    /// </summary>
     public sealed class CachePolicy
     {
+        /// <summary> Gets or sets whether caching is enabled. Default true. </summary>
         public bool EnableCache { get; set; } = true;
+        /// <summary> Gets or sets whether to cache HEAD requests. </summary>
         public bool CacheHeadRequests { get; set; }
+        /// <summary> Gets or sets whether to revalidate stale entries. Default true. </summary>
         public bool EnableRevalidation { get; set; } = true;
+        /// <summary> Gets or sets whether to require explicit freshness (e.g. max-age). Default true. </summary>
         public bool DoNotCacheWithoutFreshness { get; set; } = true;
+        /// <summary> Gets or sets whether to enable heuristic freshness for responses without explicit expiration. </summary>
         public bool EnableHeuristicFreshness { get; set; }
+        /// <summary> Default lifetime for conditionally cacheable responses using heuristic freshness. </summary>
         public TimeSpan HeuristicFreshnessLifetime { get; set; } = TimeSpan.FromMinutes(1);
+        /// <summary> Gets or sets whether private responses can be cached. Default true. </summary>
         public bool AllowPrivateResponses { get; set; } = true;
+        /// <summary> Gets or sets whether requests with Authorization headers can be cached. </summary>
         public bool AllowCacheForAuthorizedRequests { get; set; }
+        /// <summary> Gets or sets whether responses with Set-Cookie can be cached. </summary>
         public bool AllowSetCookieResponses { get; set; }
+        /// <summary> Gets or sets whether to allow caching when Vary: Cookie is present. </summary>
         public bool AllowVaryCookie { get; set; }
+        /// <summary> Gets or sets whether to allow caching when Vary: Authorization is present. </summary>
         public bool AllowVaryAuthorization { get; set; }
+        /// <summary> Gets or sets whether to invalidate cache on unsafe methods like POST, PUT, DELETE. Default true. </summary>
         public bool InvalidateOnUnsafeMethods { get; set; } = true;
+        /// <summary> Gets or sets the storage backend. Defaults to in-memory storage. </summary>
         public ICacheStorage Storage { get; set; } = new MemoryCacheStorage();
     }
 
@@ -131,6 +147,9 @@ namespace TurboHTTP.Cache
             }
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="CacheInterceptor"/> with an optional policy.
+        /// </summary>
         public CacheInterceptor(CachePolicy policy = null)
         {
             if (policy == null)

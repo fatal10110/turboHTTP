@@ -12,7 +12,9 @@ namespace TurboHTTP.Core
     /// </summary>
     public class UHttpResponse : IDisposable
     {
+        /// <summary> Gets the HTTP status code of the response. </summary>
         public HttpStatusCode StatusCode { get; }
+        /// <summary> Gets the headers returned in the response. </summary>
         public HttpHeaders Headers { get; }
 
         /// <summary>
@@ -35,6 +37,7 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary> Gets the elapsed time taken to complete the request and receive the response. </summary>
         public TimeSpan ElapsedTime { get; }
 
         /// <summary>

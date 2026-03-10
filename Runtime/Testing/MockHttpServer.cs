@@ -34,6 +34,9 @@ namespace TurboHTTP.Testing
             _historyCapacity = historyCapacity;
         }
 
+        /// <summary>
+        /// Registers a new mock route for the given HTTP method and path pattern.
+        /// </summary>
         public MockRouteBuilder When(HttpMethod method, string pathPattern)
         {
             if (string.IsNullOrWhiteSpace(pathPattern))
@@ -58,6 +61,9 @@ namespace TurboHTTP.Testing
             return new MockRouteBuilder(route);
         }
 
+        /// <summary>
+        /// Removes a registered mock route by its ID.
+        /// </summary>
         public bool RemoveRoute(string routeId)
         {
             if (string.IsNullOrWhiteSpace(routeId))
@@ -78,6 +84,9 @@ namespace TurboHTTP.Testing
             return false;
         }
 
+        /// <summary>
+        /// Clears all registered mock routes.
+        /// </summary>
         public void ClearRoutes()
         {
             lock (_lock)
@@ -86,6 +95,9 @@ namespace TurboHTTP.Testing
             }
         }
 
+        /// <summary>
+        /// Gets the history of captured requests.
+        /// </summary>
         public IReadOnlyList<MockHistoryEntry> GetHistory()
         {
             lock (_lock)
@@ -94,6 +106,9 @@ namespace TurboHTTP.Testing
             }
         }
 
+        /// <summary>
+        /// Clears the request history.
+        /// </summary>
         public void ClearHistory()
         {
             lock (_lock)
@@ -102,6 +117,9 @@ namespace TurboHTTP.Testing
             }
         }
 
+        /// <summary>
+        /// Creates a new IHttpTransport bound to this mock server.
+        /// </summary>
         public IHttpTransport CreateTransport()
         {
             return new MockTransport(DispatchAsync);
@@ -176,6 +194,9 @@ namespace TurboHTTP.Testing
             }
         }
 
+        /// <summary>
+        /// Asserts that a specific path has been requested exactly the specified number of times.
+        /// </summary>
         public void AssertReceived(string path, int count)
         {
             if (path == null) throw new ArgumentNullException(nameof(path));
@@ -195,6 +216,9 @@ namespace TurboHTTP.Testing
             }
         }
 
+        /// <summary>
+        /// Asserts that no requests were received that did not match a registered mock route.
+        /// </summary>
         public void AssertNoUnexpectedRequests()
         {
             lock (_lock)
@@ -210,6 +234,9 @@ namespace TurboHTTP.Testing
             }
         }
 
+        /// <summary>
+        /// Asserts that the last received request satisfies the specified condition.
+        /// </summary>
         public void AssertLastRequest(Func<MockHistoryEntry, bool> predicate, string failureMessage = null)
         {
             if (predicate == null) throw new ArgumentNullException(nameof(predicate));

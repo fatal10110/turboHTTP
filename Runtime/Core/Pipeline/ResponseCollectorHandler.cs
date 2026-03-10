@@ -6,6 +6,10 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
+    /// <summary>
+    /// An internal handler that acts as a bridge between the push-based <see cref="IHttpHandler"/> model
+    /// and the pull-based returned <see cref="UHttpResponse"/>. It collects response data into a single object.
+    /// </summary>
     internal sealed class ResponseCollectorHandler : IHttpHandler
     {
         private readonly TaskCompletionSource<UHttpResponse> _tcs =
@@ -24,6 +28,9 @@ namespace TurboHTTP.Core
             _ = context ?? throw new ArgumentNullException(nameof(context));
         }
 
+        /// <summary>
+        /// Gets the task that completes with the fully collected HTTP response.
+        /// </summary>
         public Task<UHttpResponse> ResponseTask => _tcs.Task;
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
@@ -76,6 +83,9 @@ namespace TurboHTTP.Core
                 new UHttpError(UHttpErrorType.Unknown, "Unknown response error.")));
         }
 
+        /// <summary>
+        /// Fails the response task with the specified exception, disposing of any collected body data.
+        /// </summary>
         internal void Fail(Exception ex)
         {
             DisposeBody();
@@ -94,12 +104,19 @@ namespace TurboHTTP.Core
                 : new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex?.Message ?? "Dispatch failed.", ex)));
         }
 
+        /// <summary>
+        /// Cancels the response task, disposing of any collected body data.
+        /// </summary>
         internal void Cancel()
         {
             DisposeBody();
             _tcs.TrySetCanceled();
         }
 
+        /// <summary>
+        /// Ensures that the response task is completed, faulting it if it is not.
+        /// This is a safety net to prevent hanging when the pipeline completes without delivering a response.
+        /// </summary>
         internal void EnsureCompleted()
         {
             if (!_tcs.Task.IsCompleted)

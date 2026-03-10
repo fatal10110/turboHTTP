@@ -5,12 +5,19 @@ namespace TurboHTTP.Core
     /// </summary>
     public enum HttpMethod
     {
+        /// <summary> GET method: Requests a representation of the specified resource. </summary>
         GET,
+        /// <summary> POST method: Submits an entity to the specified resource. </summary>
         POST,
+        /// <summary> PUT method: Replaces all current representations of the target resource. </summary>
         PUT,
+        /// <summary> DELETE method: Deletes the specified resource. </summary>
         DELETE,
+        /// <summary> PATCH method: Applies partial modifications to a resource. </summary>
         PATCH,
+        /// <summary> HEAD method: Asks for a response identical to GET, but without the response body. </summary>
         HEAD,
+        /// <summary> OPTIONS method: Describes the communication options for the target resource. </summary>
         OPTIONS
     }
 

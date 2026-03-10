@@ -77,6 +77,9 @@ namespace TurboHTTP.Core
             return _options.Clone();
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="UHttpClient"/> class with the specified options.
+        /// </summary>
         public UHttpClient(UHttpClientOptions options = null)
         {
             _options = options?.Clone() ?? new UHttpClientOptions();
@@ -151,14 +154,24 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary> Creates a new GET request. </summary>
         public UHttpRequest Get(string url) => CreateRequest(HttpMethod.GET, url);
+        /// <summary> Creates a new POST request. </summary>
         public UHttpRequest Post(string url) => CreateRequest(HttpMethod.POST, url);
+        /// <summary> Creates a new PUT request. </summary>
         public UHttpRequest Put(string url) => CreateRequest(HttpMethod.PUT, url);
+        /// <summary> Creates a new DELETE request. </summary>
         public UHttpRequest Delete(string url) => CreateRequest(HttpMethod.DELETE, url);
+        /// <summary> Creates a new PATCH request. </summary>
         public UHttpRequest Patch(string url) => CreateRequest(HttpMethod.PATCH, url);
+        /// <summary> Creates a new HEAD request. </summary>
         public UHttpRequest Head(string url) => CreateRequest(HttpMethod.HEAD, url);
+        /// <summary> Creates a new OPTIONS request. </summary>
         public UHttpRequest Options(string url) => CreateRequest(HttpMethod.OPTIONS, url);
 
+        /// <summary>
+        /// Registers a plugin and initializes it asynchronously.
+        /// </summary>
         public async Task RegisterPluginAsync(IHttpPlugin plugin, CancellationToken ct = default)
         {
             if (plugin == null)
@@ -228,6 +241,9 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>
+        /// Unregisters a plugin by name and shuts it down asynchronously.
+        /// </summary>
         public async Task UnregisterPluginAsync(string pluginName, CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(pluginName))
@@ -294,6 +310,9 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>
+        /// Gets a list of currently registered plugins.
+        /// </summary>
         public IReadOnlyList<PluginDescriptor> GetRegisteredPlugins()
         {
             lock (_pluginLock)

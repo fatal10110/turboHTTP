@@ -14,6 +14,9 @@ namespace TurboHTTP.Retry
         private readonly Action<string> _log;
         private readonly RetryPolicy _policy;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="RetryInterceptor"/> class.
+        /// </summary>
         public RetryInterceptor(RetryPolicy policy = null, Action<string> log = null)
         {
             _policy = policy ?? RetryPolicy.Default;

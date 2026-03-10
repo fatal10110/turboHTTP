@@ -26,17 +26,34 @@ namespace TurboHTTP.Unity
     /// </summary>
     public sealed class AudioClipPipelineOptions
     {
+        /// <summary> Maximum concurrent audio decoding operations. </summary>
         public int MaxConcurrentDecodes { get; set; } = 2;
+
+        /// <summary> Maximum number of active temporary audio files. </summary>
         public int MaxActiveTempFiles { get; set; } = 128;
+
+        /// <summary> Number of shards for temporary file manager. </summary>
         public int TempShardCount { get; set; } = 32;
+
+        /// <summary> Maximum concurrent IO operations for temp files. </summary>
         public int TempMaxConcurrentIo { get; set; } = 2;
+
+        /// <summary> Number of retries for temp file cleanup. </summary>
         public int CleanupRetryCount { get; set; } = 3;
+
+        /// <summary> Delay between cleanup retries. </summary>
         public TimeSpan CleanupRetryDelay { get; set; } = TimeSpan.FromMilliseconds(100);
 
+        /// <summary> Specifies whether to enable background threaded decode if supported. </summary>
         public bool EnableThreadedDecode { get; set; }
+
+        /// <summary> Minimum size in bytes to trigger threaded decode instead of Unity main thread. </summary>
         public int ThreadedDecodeMinBytes { get; set; } = 512 * 1024;
 
+        /// <summary> Let Unity stream large downloaded clips instead of holding fully in heap memory. </summary>
         public bool EnableStreamingForLargeClips { get; set; } = true;
+
+        /// <summary> Above this size threshold in bytes, the audio will be streamed if enabled. </summary>
         public int StreamingThresholdBytes { get; set; } = 2 * 1024 * 1024;
 
         public AudioClipPipelineOptions Clone()

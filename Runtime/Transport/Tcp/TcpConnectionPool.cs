@@ -19,10 +19,19 @@ namespace TurboHTTP.Transport.Tcp
         private long _lastUsedTicks;
         private int _disposeFlag;
 
+        /// <summary> Gets the raw TCP socket. </summary>
         public Socket Socket { get; }
+
+        /// <summary> Gets the active network or TLS stream. </summary>
         public Stream Stream { get; }
+
+        /// <summary> Gets the target hostname. </summary>
         public string Host { get; }
+
+        /// <summary> Gets the target port. </summary>
         public int Port { get; }
+
+        /// <summary> Gets whether this connection uses TLS. </summary>
         public bool IsSecure { get; }
 
         /// <summary>
@@ -116,6 +125,7 @@ namespace TurboHTTP.Transport.Tcp
         private bool _disposed;
         private bool _semaphoreReleased;
 
+        /// <summary> Gets the active pooled connection owned by this lease. </summary>
         public PooledConnection Connection { get; }
 
         internal ConnectionLease(TcpConnectionPool pool, SemaphoreSlim semaphore, PooledConnection connection)

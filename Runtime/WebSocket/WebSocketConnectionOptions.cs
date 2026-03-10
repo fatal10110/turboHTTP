@@ -10,22 +10,31 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public sealed class WebSocketConnectionOptions
     {
+        /// <summary> Maximum payload size of a single frame. Default is 32KB. </summary>
         public int MaxFrameSize { get; set; } = WebSocketConstants.DefaultMaxFrameSize;
 
+        /// <summary> Maximum total size for a reassembled message. Default is 2MB. </summary>
         public int MaxMessageSize { get; set; } = WebSocketConstants.DefaultMaxMessageSize;
 
+        /// <summary> Maximum number of fragments allowed for a single message. </summary>
         public int MaxFragmentCount { get; set; } = WebSocketConstants.DefaultMaxFragmentCount;
 
+        /// <summary> Frame payload size at which automatic fragmentation triggers. </summary>
         public int FragmentationThreshold { get; set; } = WebSocketConstants.DefaultFragmentationThreshold;
 
+        /// <summary> Maximum number of incoming messages to buffer if not consumed fast enough. </summary>
         public int ReceiveQueueCapacity { get; set; } = WebSocketConstants.DefaultReceiveQueueCapacity;
 
+        /// <summary> Timeout for completing a close handshake. </summary>
         public TimeSpan CloseHandshakeTimeout { get; set; } = WebSocketConstants.DefaultCloseHandshakeTimeout;
 
+        /// <summary> Timeout for the initial HTTP upgrade handshake. </summary>
         public TimeSpan HandshakeTimeout { get; set; } = WebSocketConstants.DefaultHandshakeTimeout;
 
+        /// <summary> Interval for sending automated keep-alive pings. </summary>
         public TimeSpan PingInterval { get; set; } = WebSocketConstants.DefaultPingInterval;
 
+        /// <summary> Timeout waiting for a pong reply after a ping is sent. </summary>
         public TimeSpan PongTimeout { get; set; } = WebSocketConstants.DefaultPongTimeout;
 
         /// <summary>

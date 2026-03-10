@@ -11,6 +11,9 @@ using TurboHTTP.Core;
 
 namespace TurboHTTP.Auth
 {
+    /// <summary>
+    /// A client for performing OAuth 2.0 authorization, token exchange, and refresh operations.
+    /// </summary>
     public sealed class OAuthClient : IDisposable
     {
         private readonly UHttpClient _client;
@@ -22,6 +25,7 @@ namespace TurboHTTP.Auth
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.Ordinal);
         private int _disposed;
 
+        /// <summary> Initializes a new instance of <see cref="OAuthClient"/>. </summary>
         public OAuthClient(
             UHttpClient client = null,
             ITokenStore tokenStore = null,
@@ -35,6 +39,7 @@ namespace TurboHTTP.Auth
             _defaultRefreshSkew = defaultRefreshSkew ?? TimeSpan.FromMinutes(1);
         }
 
+        /// <summary> Creates an authorization request. </summary>
         public Task<OAuthAuthorizationRequest> CreateAuthorizationRequestAsync(
             OAuthConfig config,
             CancellationToken ct)
@@ -107,6 +112,7 @@ namespace TurboHTTP.Auth
             return resolved;
         }
 
+        /// <summary> Exchanges an authorization code for an OAuth token. </summary>
         public async Task<OAuthToken> ExchangeCodeAsync(
             OAuthCodeExchangeRequest request,
             CancellationToken ct)
@@ -139,6 +145,7 @@ namespace TurboHTTP.Auth
             return token;
         }
 
+        /// <summary> Refreshes an expired or expiring OAuth token. </summary>
         public async Task<OAuthToken> RefreshTokenAsync(
             OAuthRefreshRequest request,
             CancellationToken ct)

@@ -25,10 +25,15 @@ namespace TurboHTTP.Core
         private int _sendInProgress;
         private int _disposed;
 
+        /// <summary> Gets the HTTP method for this request. </summary>
         public HttpMethod Method { get; private set; }
+        /// <summary> Gets the target URI for this request. </summary>
         public Uri Uri { get; private set; }
+        /// <summary> Gets the headers associated with this request. </summary>
         public HttpHeaders Headers => _headers;
+        /// <summary> Gets the request body as a read-only memory sequence. </summary>
         public ReadOnlyMemory<byte> Body { get; private set; }
+        /// <summary> Gets the timeout duration for this request. </summary>
         public TimeSpan Timeout { get; private set; }
 
         /// <summary>
@@ -56,6 +61,15 @@ namespace TurboHTTP.Core
             Timeout = TimeSpan.FromSeconds(30);
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="UHttpRequest"/> class.
+        /// </summary>
+        /// <param name="method">The HTTP method.</param>
+        /// <param name="uri">The target URI.</param>
+        /// <param name="headers">Optional headers.</param>
+        /// <param name="body">Optional body as a byte array.</param>
+        /// <param name="timeout">Optional timeout duration.</param>
+        /// <param name="metadata">Optional metadata dictionary.</param>
         public UHttpRequest(
             HttpMethod method,
             Uri uri,
@@ -96,6 +110,9 @@ namespace TurboHTTP.Core
                 new Dictionary<string, object>(_metadata));
         }
 
+        /// <summary>
+        /// Adds or replaces a header on this request. Note: Mutates the request in-place.
+        /// </summary>
         public UHttpRequest WithHeader(string name, string value)
         {
             ThrowIfDisposed();
@@ -105,6 +122,9 @@ namespace TurboHTTP.Core
             return this;
         }
 
+        /// <summary>
+        /// Replaces all headers on this request with the provided set. Note: Mutates the request in-place.
+        /// </summary>
         public UHttpRequest WithHeaders(HttpHeaders newHeaders)
         {
             ThrowIfDisposed();
@@ -116,6 +136,9 @@ namespace TurboHTTP.Core
             return this;
         }
 
+        /// <summary>
+        /// Sets or replaces the request body using a byte array. Note: Mutates the request in-place.
+        /// </summary>
         public UHttpRequest WithBody(byte[] body)
         {
             ThrowIfDisposed();
@@ -126,6 +149,9 @@ namespace TurboHTTP.Core
             return this;
         }
 
+        /// <summary>
+        /// Sets or replaces the request body using a UTF-8 string. Note: Mutates the request in-place.
+        /// </summary>
         public UHttpRequest WithBody(string body)
         {
             ThrowIfDisposed();
@@ -136,6 +162,9 @@ namespace TurboHTTP.Core
             return this;
         }
 
+        /// <summary>
+        /// Sets the timeout for this request. Note: Mutates the request in-place.
+        /// </summary>
         public UHttpRequest WithTimeout(TimeSpan timeout)
         {
             ThrowIfDisposed();
@@ -144,6 +173,9 @@ namespace TurboHTTP.Core
             return this;
         }
 
+        /// <summary>
+        /// Adds or replaces a metadata key-value pair on this request. Note: Mutates the request in-place.
+        /// </summary>
         public UHttpRequest WithMetadata(string key, object value)
         {
             ThrowIfDisposed();
@@ -154,6 +186,9 @@ namespace TurboHTTP.Core
             return this;
         }
 
+        /// <summary>
+        /// Replaces all metadata on this request with the provided dictionary. Note: Mutates the request in-place.
+        /// </summary>
         public UHttpRequest WithMetadata(IReadOnlyDictionary<string, object> metadata)
         {
             ThrowIfDisposed();

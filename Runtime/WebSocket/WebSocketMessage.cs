@@ -3,9 +3,12 @@ using System.Buffers;
 
 namespace TurboHTTP.WebSocket
 {
+    /// <summary> Defines the type of message payload. </summary>
     public enum WebSocketMessageType
     {
+        /// <summary> Text payload (UTF-8). </summary>
         Text = 0,
+        /// <summary> Binary payload. </summary>
         Binary = 1
     }
 
@@ -37,14 +40,19 @@ namespace TurboHTTP.WebSocket
             _returnToPool = returnToPool;
         }
 
+        /// <summary> Gets the payload type (Text or Binary). </summary>
         public WebSocketMessageType Type { get; }
 
+        /// <summary> Gets whether this is a text message. </summary>
         public bool IsText => Type == WebSocketMessageType.Text;
 
+        /// <summary> Gets whether this is a binary message. </summary>
         public bool IsBinary => Type == WebSocketMessageType.Binary;
 
+        /// <summary> Gets the decoded string for text messages. Null for binary messages. </summary>
         public string Text { get; }
 
+        /// <summary> Gets the binary payload data. </summary>
         public ReadOnlyMemory<byte> Data
         {
             get

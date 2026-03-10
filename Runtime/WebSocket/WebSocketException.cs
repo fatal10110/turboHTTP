@@ -41,12 +41,16 @@ namespace TurboHTTP.WebSocket
             CloseReason = closeReason;
         }
 
+        /// <summary> Gets the specific WebSocket error categorization. </summary>
         public WebSocketError Error { get; }
 
+        /// <summary> Gets the closure code provided by the remote endpoint, if applicable. </summary>
         public WebSocketCloseCode? CloseCode { get; }
 
+        /// <summary> Gets the closure reason provided by the remote endpoint, if applicable. </summary>
         public string CloseReason { get; }
 
+        /// <summary> Determines if the error represents a potentially transient state that can be retried. </summary>
         public bool IsRetryable()
         {
             switch (Error)

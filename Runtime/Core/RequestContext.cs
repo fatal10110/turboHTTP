@@ -42,8 +42,10 @@ namespace TurboHTTP.Core
         private bool _stateSnapshotDirty;
         private volatile UHttpRequest _request;
 
+        /// <summary> Gets the current HTTP request. </summary>
         public UHttpRequest Request => _request;
 
+        /// <summary> Gets a snapshot of the recorded timeline events. </summary>
         public IReadOnlyList<TimelineEvent> Timeline
         {
             get
@@ -61,6 +63,7 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary> Gets a snapshot of the request state dictionary. </summary>
         public IReadOnlyDictionary<string, object> State
         {
             get

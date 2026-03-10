@@ -3,13 +3,22 @@ using System.Threading.Tasks;
 
 namespace TurboHTTP.Auth
 {
+    /// <summary>
+    /// Represents a storage mechanism for OAuth tokens.
+    /// </summary>
     public interface ITokenStore
     {
+        /// <summary> Retrieve a token by key. </summary>
         Task<OAuthToken> GetAsync(string key, CancellationToken ct);
+        /// <summary> Store or update a token. </summary>
         Task SetAsync(string key, OAuthToken token, CancellationToken ct);
+        /// <summary> Remove a token by key. </summary>
         Task RemoveAsync(string key, CancellationToken ct);
     }
 
+    /// <summary>
+    /// An in-memory implementation of <see cref="ITokenStore"/>.
+    /// </summary>
     public sealed class InMemoryTokenStore : ITokenStore, System.IDisposable
     {
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, OAuthToken> _tokens

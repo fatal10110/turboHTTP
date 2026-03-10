@@ -3,18 +3,31 @@ using System.Net;
 
 namespace TurboHTTP.Auth
 {
+    /// <summary>
+    /// Configuration settings for OAuth 2.0 flows.
+    /// </summary>
     public sealed class OAuthConfig
     {
+        /// <summary> Gets or sets the OAuth client identifier. </summary>
         public string ClientId { get; set; }
+        /// <summary> Gets or sets the authorization endpoint URI. </summary>
         public Uri AuthorizationEndpoint { get; set; }
+        /// <summary> Gets or sets the token endpoint URI. </summary>
         public Uri TokenEndpoint { get; set; }
+        /// <summary> Gets or sets the redirect URI used in authorization flows. </summary>
         public Uri RedirectUri { get; set; }
+        /// <summary> Gets or sets the scopes to request. </summary>
         public string[] Scopes { get; set; } = Array.Empty<string>();
+        /// <summary> Gets or sets whether to use PKCE (Proof Key for Code Exchange). Default is true. </summary>
         public bool UsePkce { get; set; } = true;
+        /// <summary> Gets or sets whether to attempt discovering endpoints via OIDC discovery. </summary>
         public bool UseOidcDiscovery { get; set; }
+        /// <summary> Gets or sets whether to allow non-HTTPS endpoints for development purposes. </summary>
         public bool AllowInsecureEndpointsForDevelopment { get; set; }
+        /// <summary> Gets or sets whether empty scopes are permitted. </summary>
         public bool AllowEmptyScopes { get; set; }
 
+        /// <summary> Validates that the configuration is complete and correct. </summary>
         public void Validate()
         {
             if (string.IsNullOrWhiteSpace(ClientId))
@@ -70,6 +83,7 @@ namespace TurboHTTP.Auth
         }
     }
 
+    /// <summary> Represents a request to an OAuth authorization endpoint. </summary>
     public sealed class OAuthAuthorizationRequest
     {
         public Uri AuthorizationUri { get; set; }
@@ -79,6 +93,7 @@ namespace TurboHTTP.Auth
         public string CodeChallenge { get; set; }
     }
 
+    /// <summary> Represents a request to exchange an authorization code for tokens. </summary>
     public sealed class OAuthCodeExchangeRequest
     {
         public OAuthConfig Config { get; set; }
@@ -87,6 +102,7 @@ namespace TurboHTTP.Auth
         public string RedirectUri { get; set; }
     }
 
+    /// <summary> Represents a request to refresh an existing OAuth token. </summary>
     public sealed class OAuthRefreshRequest
     {
         public OAuthConfig Config { get; set; }
@@ -95,6 +111,7 @@ namespace TurboHTTP.Auth
         public string TokenStoreKey { get; set; }
     }
 
+    /// <summary> Stores OpenID Provider discovery metadata. </summary>
     public sealed class OpenIdProviderMetadata
     {
         public Uri AuthorizationEndpoint { get; set; }

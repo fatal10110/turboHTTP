@@ -10,22 +10,37 @@ namespace TurboHTTP.Cache
     /// </summary>
     public sealed class CacheEntry
     {
+        /// <summary> Gets the storage key. </summary>
         public string Key { get; }
+        /// <summary> Gets the response status code. </summary>
         public HttpStatusCode StatusCode { get; }
+        /// <summary> Gets the response headers. </summary>
         public HttpHeaders Headers { get; }
+        /// <summary> Gets the response body. </summary>
         public ReadOnlyMemory<byte> Body { get; }
+        /// <summary> Gets the UTC time when this entry was cached. </summary>
         public DateTime CachedAtUtc { get; }
+        /// <summary> Gets the UTC time when this entry expires, or null if it does not expire or requires revalidation. </summary>
         public DateTime? ExpiresAtUtc { get; }
+        /// <summary> Gets the ETag for conditional requests. </summary>
         public string ETag { get; }
+        /// <summary> Gets the Last-Modified date for conditional requests. </summary>
         public string LastModified { get; }
+        /// <summary> Gets the URL of the response. </summary>
         public Uri ResponseUrl { get; }
+        /// <summary> Gets the list of Vary headers used to discriminate this variant. </summary>
         public IReadOnlyList<string> VaryHeaders { get; }
+        /// <summary> Gets the normalized Vary key signature. </summary>
         public string VaryKey { get; }
+        /// <summary> Gets the duration this entry can be served stale while revalidating in the background. </summary>
         public TimeSpan? StaleWhileRevalidate { get; }
+        /// <summary> Gets a value indicating whether this entry must be revalidated with the origin. </summary>
         public bool MustRevalidate { get; }
 
+        /// <summary> Gets the length of the response body. </summary>
         public int BodyLength => Body.Length;
 
+        /// <summary> Initializes a new instance of the <see cref="CacheEntry"/> class. </summary>
         public CacheEntry(
             string key,
             HttpStatusCode statusCode,

@@ -11,6 +11,9 @@ namespace TurboHTTP.Core
     /// </summary>
     public class HttpHeaders : IEnumerable<KeyValuePair<string, string>>
     {
+        /// <summary>
+        /// A frozen, empty instance of <see cref="HttpHeaders"/>.
+        /// </summary>
         public static readonly HttpHeaders Empty = new HttpHeaders(true);
 
         private readonly Dictionary<string, List<string>> _headers;
