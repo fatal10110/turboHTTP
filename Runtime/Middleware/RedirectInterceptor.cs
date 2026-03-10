@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
+using System.Runtime.InteropServices;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Middleware
@@ -145,7 +146,7 @@ namespace TurboHTTP.Middleware
                 method,
                 targetUri,
                 headers,
-                body.IsEmpty ? null : body.ToArray(),
+                CopyBodyForRedirect(body),
                 source.Timeout,
                 metadata);
         }
@@ -171,7 +172,7 @@ namespace TurboHTTP.Middleware
                 request.Method,
                 request.Uri,
                 request.Headers,
-                request.Body.IsEmpty ? null : request.Body.ToArray(),
+                CopyBodyForRedirect(request.Body),
                 timeout: remaining,
                 metadata: request.Metadata);
         }
@@ -216,6 +217,22 @@ namespace TurboHTTP.Middleware
                 return new Dictionary<string, object>();
 
             return new Dictionary<string, object>(metadata);
+        }
+
+        private static byte[] CopyBodyForRedirect(ReadOnlyMemory<byte> body)
+        {
+            if (body.IsEmpty)
+                return null;
+
+            if (MemoryMarshal.TryGetArray(body, out var segment)
+                && segment.Array != null
+                && segment.Offset == 0
+                && segment.Count == segment.Array.Length)
+            {
+                return segment.Array;
+            }
+
+            return body.ToArray();
         }
 
         private static bool IsRedirectStatus(HttpStatusCode statusCode)

@@ -199,11 +199,20 @@ public DispatchFunc Wrap(DispatchFunc next) => async (request, handler, ctx, ct)
 
         if (isLastAttempt)
         {
-            // C-2 fix: terminal attempt uses the real handler — failure flows through naturally.
-            // RetryDetectorHandler NOT used here; collector receives the terminal failure directly.
-            await next(request, handler, ctx, ct).ConfigureAwait(false);
+            // Terminal attempt uses the real handler. Transport failures still flow through
+            // OnResponseError, while HTTP 5xx remains a normal response delivered to the real
+            // handler/collector. Exhaustion is only recorded when the final attempt still ends
+            // in a retryable failure response/error; successful terminal recovery records
+            // RetrySucceeded instead.
+            var terminalObserver = new RetryTerminalObserverHandler(handler);
+            await next(request, terminalObserver, ctx, ct).ConfigureAwait(false);
             if (attempt > 1)
-                ctx.RecordEvent("RetryExhausted", new Dictionary<string, object> { { "attempts", attempt } });
+            {
+                if (terminalObserver.WasRetryableFailure)
+                    ctx.RecordEvent("RetryExhausted", new Dictionary<string, object> { { "attempts", attempt } });
+                else if (terminalObserver.WasCommitted && !terminalObserver.DeliveredError)
+                    ctx.RecordEvent("RetrySucceeded", new Dictionary<string, object> { { "attempts", attempt } });
+            }
             return;
         }
 
@@ -234,7 +243,7 @@ public DispatchFunc Wrap(DispatchFunc next) => async (request, handler, ctx, ct)
 - `OnResponseStart`: if 5xx → `WasRetryable = true` (do NOT forward); else → `_committed = true`, forward
 - `OnResponseData`: if `_committed` forward; else discard (zero allocation on retry path)
 - `OnResponseEnd`: if `_committed` forward; else discard
-- `OnResponseError`: if error is retryable → `WasRetryable = true` (do NOT forward); else → forward to `_inner` (non-retryable transport error, committed to real handler even on non-last attempt)
+- `OnResponseError`: if error is retryable before commitment → `WasRetryable = true` (do NOT forward); if the response path was already committed, forward to `_inner` and stop retrying because the logical response already became visible downstream
 - **No `OnResponseError` → exception exception-path**: error delivery via callbacks only, consistent with Error Delivery Contract
 
 **`RedirectInterceptor`** + **`RedirectHandler`** (`Runtime/Middleware/`):

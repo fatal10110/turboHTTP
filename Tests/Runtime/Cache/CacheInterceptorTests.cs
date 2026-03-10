@@ -839,6 +839,78 @@ namespace TurboHTTP.Tests.Cache
         }
 
         [Test]
+        public void CacheInterceptor_Dispose_CancelsBackgroundRevalidation()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+                var backgroundStarted = new TaskCompletionSource<object>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var backgroundCanceled = new TaskCompletionSource<object>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+                var transport = new MockTransport(async (req, ctx, ct) =>
+                {
+                    var currentCall = Interlocked.Increment(ref callCount);
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=0, stale-while-revalidate=60");
+                    headers.Set("ETag", "\"dispose-v1\"");
+
+                    if (currentCall == 1)
+                    {
+                        return new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req);
+                    }
+
+                    backgroundStarted.TrySetResult(null);
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        backgroundCanceled.TrySetResult(null);
+                        throw;
+                    }
+
+                    throw new AssertionException("Background revalidation should have been canceled.");
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/stale-dispose");
+
+                var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
+                await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
+                await WaitUntilAsync(
+                    async () => await storage.GetCountAsync().ConfigureAwait(false) == 1,
+                    TimeSpan.FromSeconds(1),
+                    "Initial cache store did not complete.");
+
+                var secondRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var stale = await pipeline.ExecuteAsync(secondRequest, new RequestContext(secondRequest));
+                Assert.AreEqual("STALE", stale.Headers.Get("X-Cache"));
+
+                await TestHelpers.AssertCompletesWithinAsync(
+                    backgroundStarted.Task,
+                    TimeSpan.FromSeconds(1),
+                    "Background revalidation did not start.");
+
+                middleware.Dispose();
+
+                await TestHelpers.AssertCompletesWithinAsync(
+                    backgroundCanceled.Task,
+                    TimeSpan.FromSeconds(1),
+                    "Background revalidation was not canceled on dispose.");
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void CacheInterceptor_CachesRfc9111DefaultCacheable404Responses()
         {
             Task.Run(async () =>

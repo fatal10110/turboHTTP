@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Net;
 using System.Threading;
 using TurboHTTP.Core;
 
@@ -24,7 +25,7 @@ namespace TurboHTTP.Observability
         private static int _maxCaptureSizeBytes = DefaultMaxCaptureSizeBytes;
         private static int _binaryPreviewBytes = DefaultBinaryPreviewBytes;
         private static int _captureEnabled = 1;
-        private static DateTime _nextCaptureErrorLogUtc = DateTime.MinValue;
+        private static long _nextCaptureErrorLogUtcTicks = DateTime.MinValue.Ticks;
         private static int _suppressedCaptureErrorCount;
 
         private readonly struct BodySnapshot
@@ -99,7 +100,13 @@ namespace TurboHTTP.Observability
 
         public static int HistoryCapacity
         {
-            get => Volatile.Read(ref _historyCapacity);
+            get
+            {
+                lock (HistoryLock)
+                {
+                    return _historyCapacity;
+                }
+            }
             set
             {
                 var clamped = Math.Max(1, value);
@@ -182,13 +189,21 @@ namespace TurboHTTP.Observability
 
         internal static void Capture(
             UHttpRequest request,
-            UHttpResponse response,
+            int statusCode,
+            HttpHeaders responseHeaders,
+            ReadOnlySequence<byte> responseBody,
             RequestContext context,
             Exception exception)
         {
             try
             {
-                var monitorEvent = BuildMonitorEvent(request, response, context, exception);
+                var monitorEvent = BuildMonitorEvent(
+                    request,
+                    statusCode,
+                    responseHeaders,
+                    responseBody,
+                    context,
+                    exception);
                 StoreEvent(monitorEvent);
                 PublishEvent(monitorEvent);
             }
@@ -200,7 +215,9 @@ namespace TurboHTTP.Observability
 
         private static HttpMonitorEvent BuildMonitorEvent(
             UHttpRequest request,
-            UHttpResponse response,
+            int statusCode,
+            HttpHeaders responseHeaders,
+            ReadOnlySequence<byte> responseBody,
             RequestContext context,
             Exception exception)
         {
@@ -209,13 +226,12 @@ namespace TurboHTTP.Observability
                 request != null ? request.Body : ReadOnlyMemory<byte>.Empty,
                 requestHeaders);
 
-            var responseHeaders = CopyHeaders(response?.Headers);
-            var responseSnapshot = CreateBodySnapshot(response?.Body ?? ReadOnlySequence<byte>.Empty, responseHeaders);
+            var copiedResponseHeaders = CopyHeaders(responseHeaders);
+            var responseSnapshot = CreateBodySnapshot(responseBody, copiedResponseHeaders);
 
-            var (error, errorType, failureKind) = ResolveError(response, exception);
-            var statusCode = response != null ? (int)response.StatusCode : 0;
-            var statusText = response != null ? response.StatusCode.ToString() : string.Empty;
-            var elapsed = context != null ? context.Elapsed : (response?.ElapsedTime ?? TimeSpan.Zero);
+            var (error, errorType, failureKind) = ResolveError(statusCode, exception);
+            var statusText = statusCode != 0 ? ((HttpStatusCode)statusCode).ToString() : string.Empty;
+            var elapsed = context != null ? context.Elapsed : TimeSpan.Zero;
             var timeline = CopyTimeline(context?.Timeline);
 
             return new HttpMonitorEvent(
@@ -230,7 +246,7 @@ namespace TurboHTTP.Observability
                 isRequestBodyBinary: requestSnapshot.IsBinary,
                 statusCode: statusCode,
                 statusText: statusText,
-                responseHeaders: responseHeaders,
+                responseHeaders: copiedResponseHeaders,
                 responseBody: responseSnapshot.Body,
                 originalResponseBodySize: responseSnapshot.OriginalSize,
                 isResponseBodyTruncated: responseSnapshot.IsTruncated,
@@ -344,8 +360,41 @@ namespace TurboHTTP.Observability
                 return CreateBodySnapshot(body.First, headers);
             }
 
-            var flattened = body.ToArray();
-            return CreateBodySnapshot(flattened, headers);
+            var originalSize = body.Length > int.MaxValue
+                ? int.MaxValue
+                : (int)body.Length;
+
+            var sampleLength = (int)Math.Min(body.Length, 512L);
+            var sample = sampleLength > 0
+                ? CopyPrefix(body, sampleLength)
+                : Array.Empty<byte>();
+            var isBinary = HttpMonitorEvent.IsLikelyBinaryPayload(sample, headers);
+            var limit = isBinary ? BinaryPreviewBytes : MaxCaptureSizeBytes;
+            var captureSize = (int)Math.Min(body.Length, Math.Max(0L, limit));
+            var isTruncated = captureSize < body.Length;
+
+            if (captureSize == 0)
+            {
+                return new BodySnapshot(ReadOnlyMemory<byte>.Empty, originalSize, true, isBinary);
+            }
+
+            if (sample.Length == captureSize)
+            {
+                return new BodySnapshot(sample, originalSize, isTruncated, isBinary);
+            }
+
+            byte[] snapshot;
+            if (sample.Length > captureSize)
+            {
+                snapshot = new byte[captureSize];
+                sample.AsSpan(0, captureSize).CopyTo(snapshot);
+            }
+            else
+            {
+                snapshot = CopyPrefix(body, captureSize);
+            }
+
+            return new BodySnapshot(snapshot, originalSize, isTruncated, isBinary);
         }
 
         private static IReadOnlyList<HttpMonitorTimelineEvent> CopyTimeline(
@@ -409,7 +458,7 @@ namespace TurboHTTP.Observability
         }
 
         private static (string Error, UHttpErrorType? ErrorType, HttpMonitorFailureKind FailureKind) ResolveError(
-            UHttpResponse response,
+            int statusCode,
             Exception exception)
         {
             if (exception is UHttpException httpException && httpException.HttpError != null)
@@ -421,29 +470,43 @@ namespace TurboHTTP.Observability
                 return (httpException.HttpError.ToString(), type, failureKind);
             }
 
-            if (response?.Error != null)
-            {
-                var type = response.Error.Type;
-                var failureKind = type == UHttpErrorType.HttpError
-                    ? HttpMonitorFailureKind.HttpStatusError
-                    : HttpMonitorFailureKind.TransportError;
-                return (response.Error.ToString(), type, failureKind);
-            }
-
             if (exception != null)
             {
                 return (exception.Message ?? "Transport failure", null, HttpMonitorFailureKind.TransportError);
             }
 
-            if (response != null && (int)response.StatusCode >= 400)
+            if (statusCode >= 400)
             {
                 return (
-                    $"HTTP {(int)response.StatusCode} {response.StatusCode}",
+                    $"HTTP {statusCode} {((HttpStatusCode)statusCode)}",
                     UHttpErrorType.HttpError,
                     HttpMonitorFailureKind.HttpStatusError);
             }
 
             return (string.Empty, null, HttpMonitorFailureKind.None);
+        }
+
+        private static byte[] CopyPrefix(ReadOnlySequence<byte> body, int length)
+        {
+            if (length <= 0)
+                return Array.Empty<byte>();
+
+            var snapshot = new byte[length];
+            var copied = 0;
+            foreach (var segment in body)
+            {
+                var span = segment.Span;
+                if (span.IsEmpty)
+                    continue;
+
+                var toCopy = Math.Min(span.Length, length - copied);
+                span.Slice(0, toCopy).CopyTo(snapshot.AsSpan(copied));
+                copied += toCopy;
+                if (copied >= length)
+                    break;
+            }
+
+            return snapshot;
         }
 
         private static void StoreEvent(HttpMonitorEvent monitorEvent)
@@ -521,12 +584,13 @@ namespace TurboHTTP.Observability
             lock (HistoryLock)
             {
                 var now = DateTime.UtcNow;
-                if (now >= _nextCaptureErrorLogUtc)
+                var nextCaptureErrorLogUtc = new DateTime(_nextCaptureErrorLogUtcTicks, DateTimeKind.Utc);
+                if (now >= nextCaptureErrorLogUtc)
                 {
                     shouldLog = true;
                     suppressedCount = _suppressedCaptureErrorCount;
                     _suppressedCaptureErrorCount = 0;
-                    _nextCaptureErrorLogUtc = now + CaptureErrorLogCooldown;
+                    _nextCaptureErrorLogUtcTicks = (now + CaptureErrorLogCooldown).Ticks;
                 }
                 else
                 {

@@ -47,7 +47,7 @@ namespace TurboHTTP.Observability
 
         public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
         {
-            if (_statusCode >= 200 && _statusCode < 300)
+            if (_statusCode >= 200 && _statusCode < 400)
                 Interlocked.Increment(ref _metrics.SuccessfulRequests);
             else
                 Interlocked.Increment(ref _metrics.FailedRequests);

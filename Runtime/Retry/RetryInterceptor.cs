@@ -77,6 +77,9 @@ namespace TurboHTTP.Retry
                     var detector = new RetryDetectorHandler(handler);
                     await next(request, detector, context, cancellationToken).ConfigureAwait(false);
 
+                    if (detector.DeliveredError)
+                        return;
+
                     if (!detector.WasRetryable)
                     {
                         if (attempt > 1 && detector.WasCommitted && !detector.DeliveredError)

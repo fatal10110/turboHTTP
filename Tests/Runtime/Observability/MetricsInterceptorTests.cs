@@ -169,5 +169,26 @@ namespace TurboHTTP.Tests.Observability
             Assert.AreEqual(1, middleware.Metrics.TotalRequests);
             Assert.AreEqual(1, middleware.Metrics.FailedRequests);
         }
+
+        [Test]
+        public void RedirectStatus_IsNotCountedAsFailure()
+        {
+            Task.Run(async () =>
+            {
+                var middleware = new MetricsInterceptor();
+                var transport = new MockTransport(HttpStatusCode.Found);
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/redirect"));
+                var context = new RequestContext(request);
+
+                await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(1, middleware.Metrics.TotalRequests);
+                Assert.AreEqual(1, middleware.Metrics.SuccessfulRequests);
+                Assert.AreEqual(0, middleware.Metrics.FailedRequests);
+                Assert.AreEqual(1, middleware.Metrics.RequestsByStatusCode[302]);
+            }).GetAwaiter().GetResult();
+        }
     }
 }

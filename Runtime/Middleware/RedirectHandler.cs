@@ -174,23 +174,7 @@ namespace TurboHTTP.Middleware
                     return;
                 }
 
-                _ = redirectTask.ContinueWith(t =>
-                {
-                    try
-                    {
-                        if (t.IsFaulted)
-                            _completion.TrySetException(t.Exception.GetBaseException());
-                        else if (t.IsCanceled)
-                            _completion.TrySetCanceled();
-                    }
-                    catch (Exception bridgeError)
-                    {
-                        _completion.TrySetException(bridgeError);
-                    }
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.NotOnRanToCompletion,
-                TaskScheduler.Default);
+                BridgeDispatchCompletion(redirectTask);
             }
             catch (UHttpException ex)
             {
@@ -203,6 +187,40 @@ namespace TurboHTTP.Middleware
         {
             _inner.OnResponseError(error, context);
             _completion.TrySetResult(null);
+        }
+
+        private void BridgeDispatchCompletion(Task redirectTask)
+        {
+            _ = redirectTask.ContinueWith(t =>
+            {
+                try
+                {
+                    if (t.IsFaulted)
+                    {
+                        _completion.TrySetException(t.Exception.GetBaseException());
+                        return;
+                    }
+
+                    if (t.IsCanceled)
+                    {
+                        _completion.TrySetCanceled();
+                        return;
+                    }
+
+                    if (!_completion.Task.IsCompleted)
+                    {
+                        _completion.TrySetException(new InvalidOperationException(
+                            "Redirect pipeline completed without delivering a terminal callback."));
+                    }
+                }
+                catch (Exception bridgeError)
+                {
+                    _completion.TrySetException(bridgeError);
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
         }
     }
 }

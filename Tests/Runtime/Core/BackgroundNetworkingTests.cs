@@ -287,7 +287,9 @@ namespace TurboHTTP.Tests.Core
 
             public string ScopeId { get; }
             public DateTime StartedAtUtc { get; }
-            public TimeSpan RemainingBudget => TimeSpan.FromSeconds(10);
+            public TimeSpan RemainingBudget => _cts.IsCancellationRequested
+                ? TimeSpan.Zero
+                : TimeSpan.FromSeconds(10);
             public CancellationToken ExpirationToken => _cts.Token;
 
             public ValueTask DisposeAsync()

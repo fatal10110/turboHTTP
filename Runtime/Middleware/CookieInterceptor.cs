@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Middleware
@@ -60,11 +61,27 @@ namespace TurboHTTP.Middleware
                     }
                 }
 
-                await next(
-                    requestForNext,
-                    new CookieHandler(handler, _jar, requestForNext.Uri),
-                    context,
-                    cancellationToken).ConfigureAwait(false);
+                Task dispatchTask;
+                try
+                {
+                    dispatchTask = next(
+                        requestForNext,
+                        new CookieHandler(handler, _jar, requestForNext.Uri),
+                        context,
+                        cancellationToken);
+                }
+                catch
+                {
+                    if (!ReferenceEquals(requestForNext, request))
+                    {
+                        context.UpdateRequest(request);
+                        requestForNext.Dispose();
+                    }
+
+                    throw;
+                }
+
+                await dispatchTask.ConfigureAwait(false);
             };
         }
 
@@ -97,31 +114,56 @@ namespace TurboHTTP.Middleware
             if (string.IsNullOrWhiteSpace(cookieHeader))
                 return;
 
-            var tokens = cookieHeader.Split(';');
-            for (int i = 0; i < tokens.Length; i++)
+            int start = 0;
+            while (start < cookieHeader.Length)
             {
-                var token = tokens[i].Trim();
-                if (token.Length == 0)
-                    continue;
+                int end = cookieHeader.IndexOf(';', start);
+                if (end < 0)
+                    end = cookieHeader.Length;
 
-                var cookieName = ExtractCookieName(token);
-                if (onlyAppendNewNames && existingNames.Contains(cookieName))
-                    continue;
+                int tokenStart = start;
+                int tokenEnd = end;
+                while (tokenStart < tokenEnd && char.IsWhiteSpace(cookieHeader[tokenStart]))
+                    tokenStart++;
+                while (tokenEnd > tokenStart && char.IsWhiteSpace(cookieHeader[tokenEnd - 1]))
+                    tokenEnd--;
 
-                if (!onlyAppendNewNames)
-                    existingNames.Add(cookieName);
+                if (tokenEnd > tokenStart)
+                {
+                    var cookieName = ExtractCookieName(cookieHeader, tokenStart, tokenEnd);
+                    if (!onlyAppendNewNames || !existingNames.Contains(cookieName))
+                    {
+                        if (!onlyAppendNewNames)
+                            existingNames.Add(cookieName);
 
-                mergedTokens.Add(token);
+                        mergedTokens.Add(cookieHeader.Substring(tokenStart, tokenEnd - tokenStart));
+                    }
+                }
+
+                start = end + 1;
             }
         }
 
-        private static string ExtractCookieName(string cookieToken)
+        private static string ExtractCookieName(string cookieHeader, int start, int end)
         {
-            int equalsIndex = cookieToken.IndexOf('=');
-            if (equalsIndex <= 0)
-                return cookieToken.Trim();
+            int equalsIndex = -1;
+            for (int i = start; i < end; i++)
+            {
+                if (cookieHeader[i] == '=')
+                {
+                    equalsIndex = i;
+                    break;
+                }
+            }
 
-            return cookieToken.Substring(0, equalsIndex).Trim();
+            if (equalsIndex <= 0)
+                return cookieHeader.Substring(start, end - start);
+
+            int nameEnd = equalsIndex;
+            while (nameEnd > start && char.IsWhiteSpace(cookieHeader[nameEnd - 1]))
+                nameEnd--;
+
+            return cookieHeader.Substring(start, nameEnd - start);
         }
 
         public void Dispose()

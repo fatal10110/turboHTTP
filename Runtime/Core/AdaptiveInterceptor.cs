@@ -67,11 +67,27 @@ namespace TurboHTTP.Core
             context.SetState("adaptive.sample_count", snapshot.SampleCount);
             context.RecordEvent("adaptive.applied");
 
-            await next(
-                requestForNext,
-                new AdaptiveHandler(handler, _detector, requestForNext.Body.Length, context.Elapsed),
-                context,
-                cancellationToken).ConfigureAwait(false);
+            Task dispatchTask;
+            try
+            {
+                dispatchTask = next(
+                    requestForNext,
+                    new AdaptiveHandler(handler, _detector, requestForNext.Body.Length, context.Elapsed),
+                    context,
+                    cancellationToken);
+            }
+            catch
+            {
+                if (!ReferenceEquals(requestForNext, request))
+                {
+                    context.UpdateRequest(request);
+                    requestForNext.Dispose();
+                }
+
+                throw;
+            }
+
+            await dispatchTask.ConfigureAwait(false);
         }
 
         private static double GetTimeoutMultiplier(NetworkQuality quality)

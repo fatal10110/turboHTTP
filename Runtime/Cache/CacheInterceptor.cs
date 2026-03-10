@@ -79,6 +79,7 @@ namespace TurboHTTP.Cache
         // signature and cleaned up as storage keys are removed or invalidated.
         // This index is intentionally not persisted across process restarts in v1.
         private readonly Dictionary<string, VariantBucket> _variantIndex = new Dictionary<string, VariantBucket>(StringComparer.Ordinal);
+        private readonly CancellationTokenSource _backgroundWorkCancellation = new CancellationTokenSource();
         private int _disposed;
 
         private sealed class VariantBucket
@@ -395,17 +396,27 @@ namespace TurboHTTP.Cache
             string baseKey,
             CacheLookupResult lookup)
         {
-            _ = RunBackgroundRevalidationAsync(request, next, baseKey, lookup);
+            QueueBackgroundWork(
+                RunBackgroundRevalidationAsync(
+                    request,
+                    next,
+                    baseKey,
+                    lookup,
+                    _backgroundWorkCancellation.Token),
+                "revalidation");
         }
 
         private async Task RunBackgroundRevalidationAsync(
             UHttpRequest request,
             DispatchFunc next,
             string baseKey,
-            CacheLookupResult lookup)
+            CacheLookupResult lookup,
+            CancellationToken cancellationToken)
         {
             // Detach from the foreground cache-hit path before starting revalidation work.
             await Task.Yield();
+            if (cancellationToken.IsCancellationRequested)
+                return;
 
             var context = RequestContext.CreateForBackground(request);
             try
@@ -415,11 +426,11 @@ namespace TurboHTTP.Cache
                     NullHttpHandler.Instance,
                     context,
                     next,
-                    CancellationToken.None,
+                    cancellationToken,
                     baseKey,
                     lookup).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
             }
             catch (Exception ex)
@@ -738,6 +749,8 @@ namespace TurboHTTP.Cache
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
+            _backgroundWorkCancellation.Cancel();
+
             if (_ownsStorage && _policy.Storage is IDisposable disposableStorage)
                 disposableStorage.Dispose();
         }
@@ -757,7 +770,17 @@ namespace TurboHTTP.Cache
             HttpHeaders responseHeaders,
             SegmentedBuffer body)
         {
-            _ = StoreResponseAsync(requestMethod, requestUri, requestHeaders, baseKey, statusCode, responseHeaders, body);
+            QueueBackgroundWork(
+                StoreResponseAsync(
+                    requestMethod,
+                    requestUri,
+                    requestHeaders,
+                    baseKey,
+                    statusCode,
+                    responseHeaders,
+                    body,
+                    _backgroundWorkCancellation.Token),
+                "store");
         }
 
         private async Task StoreResponseAsync(
@@ -767,10 +790,13 @@ namespace TurboHTTP.Cache
             string baseKey,
             int statusCode,
             HttpHeaders responseHeaders,
-            SegmentedBuffer body)
+            SegmentedBuffer body,
+            CancellationToken cancellationToken)
         {
             // Detach from the response completion callback before snapshotting the response body.
             await Task.Yield();
+            if (cancellationToken.IsCancellationRequested)
+                return;
 
             try
             {
@@ -792,7 +818,10 @@ namespace TurboHTTP.Cache
                 if (prepared.Entry == null)
                     return;
 
-                await StorePreparedEntryAsync(baseKey, prepared).ConfigureAwait(false);
+                await StorePreparedEntryAsync(baseKey, prepared, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
             }
             finally
             {
@@ -800,17 +829,40 @@ namespace TurboHTTP.Cache
             }
         }
 
-        private async Task StorePreparedEntryAsync(string baseKey, PreparedCacheEntry prepared)
+        private async Task StorePreparedEntryAsync(
+            string baseKey,
+            PreparedCacheEntry prepared,
+            CancellationToken cancellationToken)
         {
             try
             {
-                await _policy.Storage.SetAsync(prepared.Entry.Key, prepared.Entry, CancellationToken.None).ConfigureAwait(false);
+                await _policy.Storage
+                    .SetAsync(prepared.Entry.Key, prepared.Entry, cancellationToken)
+                    .ConfigureAwait(false);
                 RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
             }
             catch (Exception ex)
             {
                 Debug.WriteLine("[TurboHTTP][Cache] Store failed: " + ex);
             }
+        }
+
+        private static void QueueBackgroundWork(Task task, string operation)
+        {
+            _ = task.ContinueWith(
+                static (t, state) =>
+                {
+                    var ex = t.Exception?.GetBaseException();
+                    if (ex != null)
+                        Debug.WriteLine("[TurboHTTP][Cache] Background " + state + " failed: " + ex);
+                },
+                operation,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
         }
 
         private static void ReplayCollectedResponse(

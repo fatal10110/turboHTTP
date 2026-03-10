@@ -644,5 +644,73 @@ namespace TurboHTTP.Tests.Middleware
                 Assert.AreEqual(2, transport.RequestCount);
             }).GetAwaiter().GetResult();
         }
+
+        [Test]
+        public void RedirectInterceptor_FailsWhenRedirectDispatchCompletesWithoutTerminalCallback()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    callCount++;
+                    handler.OnRequestStart(req, ctx);
+
+                    if (callCount == 1)
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/final");
+                        handler.OnResponseStart((int)HttpStatusCode.Found, headers, ctx);
+                        handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                        return Task.CompletedTask;
+                    }
+
+                    return Task.CompletedTask;
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { new RedirectInterceptor() }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start"));
+                var context = new RequestContext(request);
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                {
+                    using var _ = await pipeline.ExecuteAsync(request, context);
+                });
+
+                Assert.That(ex.HttpError.Message, Does.Contain("terminal callback"));
+                Assert.AreEqual(2, callCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        private sealed class CallbackTransport : IHttpTransport
+        {
+            private readonly Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> _dispatch;
+
+            internal CallbackTransport(Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> dispatch)
+            {
+                _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+            }
+
+            public Task DispatchAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                return _dispatch(request, handler, context, cancellationToken);
+            }
+
+            public ValueTask<UHttpResponse> SendAsync(
+                UHttpRequest request,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                throw new NotSupportedException();
+            }
+
+            public void Dispose()
+            {
+            }
+        }
     }
 }

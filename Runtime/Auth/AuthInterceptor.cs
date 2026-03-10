@@ -44,7 +44,23 @@ namespace TurboHTTP.Auth
                     context.UpdateRequest(requestForNext);
                 }
 
-                await next(requestForNext, handler, context, cancellationToken).ConfigureAwait(false);
+                Task dispatchTask;
+                try
+                {
+                    dispatchTask = next(requestForNext, handler, context, cancellationToken);
+                }
+                catch
+                {
+                    if (!ReferenceEquals(requestForNext, request))
+                    {
+                        context.UpdateRequest(request);
+                        requestForNext.Dispose();
+                    }
+
+                    throw;
+                }
+
+                await dispatchTask.ConfigureAwait(false);
             };
         }
 

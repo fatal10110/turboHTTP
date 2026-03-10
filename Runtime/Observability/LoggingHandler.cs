@@ -19,7 +19,7 @@ namespace TurboHTTP.Observability
         private readonly HashSet<string> _sensitiveHeaders;
         private readonly TimeSpan _started;
 
-        private readonly byte[] _bodyPreview = new byte[MaxPreviewBytes];
+        private byte[] _bodyPreview;
         private int _bodyPreviewLength;
         private bool _bodyPreviewTruncated;
         private long _bytesReceived;
@@ -87,6 +87,9 @@ namespace TurboHTTP.Observability
 
             if (_logLevel >= LoggingInterceptor.LogLevel.Detailed && _logBody && !chunk.IsEmpty)
             {
+                if (_bodyPreview == null)
+                    _bodyPreview = new byte[MaxPreviewBytes];
+
                 var remaining = MaxPreviewBytes - _bodyPreviewLength;
                 if (remaining > 0)
                 {
@@ -126,7 +129,7 @@ namespace TurboHTTP.Observability
             {
                 builder.Append("\n  Body: ")
                     .Append(LoggingInterceptor.FormatResponseBodyPreview(
-                        _bodyPreview,
+                        _bodyPreview ?? Array.Empty<byte>(),
                         _bodyPreviewLength,
                         _bodyPreviewTruncated));
             }

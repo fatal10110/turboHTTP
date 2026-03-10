@@ -51,6 +51,12 @@ namespace TurboHTTP.Retry
             if (error?.HttpError != null && error.HttpError.IsRetryable())
             {
                 WasRetryable = true;
+                if (_committed)
+                {
+                    DeliveredError = true;
+                    _inner.OnResponseError(error, context);
+                }
+
                 return;
             }
 

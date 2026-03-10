@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
@@ -72,26 +73,16 @@ namespace TurboHTTP.Observability
         {
             try
             {
-                UHttpResponse response = null;
-                try
-                {
-                    var bodyBytes = _responseBody?.ToArray();
-                    if (_statusCode != 0 || _headers != null || bodyBytes != null)
-                    {
-                        response = new UHttpResponse(
-                            (System.Net.HttpStatusCode)_statusCode,
-                            _headers ?? new HttpHeaders(),
-                            bodyBytes,
-                            context.Elapsed,
-                            _request);
-                    }
-
-                    MonitorInterceptor.Capture(_request, response, context, exception);
-                }
-                finally
-                {
-                    response?.Dispose();
-                }
+                var body = _responseBody != null
+                    ? _responseBody.AsSequence()
+                    : ReadOnlySequence<byte>.Empty;
+                MonitorInterceptor.Capture(
+                    _request,
+                    _statusCode,
+                    _headers,
+                    body,
+                    context,
+                    exception);
             }
             finally
             {

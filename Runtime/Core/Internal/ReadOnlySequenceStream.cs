@@ -10,11 +10,13 @@ namespace TurboHTTP.Core.Internal
     {
         private readonly ReadOnlySequence<byte> _sequence;
         private SequencePosition _position;
+        private long _consumed;
 
         internal ReadOnlySequenceStream(ReadOnlySequence<byte> sequence)
         {
             _sequence = sequence;
             _position = sequence.Start;
+            _consumed = 0;
         }
 
         public override bool CanRead => true;
@@ -24,7 +26,7 @@ namespace TurboHTTP.Core.Internal
 
         public override long Position
         {
-            get => _sequence.Slice(_sequence.Start, _position).Length;
+            get => _consumed;
             set => throw new NotSupportedException();
         }
 
@@ -45,6 +47,7 @@ namespace TurboHTTP.Core.Internal
             var toCopy = (int)Math.Min(destination.Length, remaining.Length);
             remaining.Slice(0, toCopy).CopyTo(destination);
             _position = _sequence.GetPosition(toCopy, _position);
+            _consumed += toCopy;
             return toCopy;
         }
 

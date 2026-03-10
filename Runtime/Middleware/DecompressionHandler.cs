@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using TurboHTTP.Core;
@@ -10,21 +11,29 @@ namespace TurboHTTP.Middleware
     internal sealed class DecompressionHandler : IHttpHandler
     {
         private readonly IHttpHandler _inner;
+        private readonly long _maxDecompressedBodySizeBytes;
 
         private SegmentedBuffer _compressedBuffer;
-        private CompressionKind _compression;
+        private CompressionKind[] _compressionChain;
         private HttpHeaders _forwardHeaders;
 
         private enum CompressionKind
         {
-            None,
             Gzip,
             Deflate
         }
 
-        internal DecompressionHandler(IHttpHandler inner)
+        internal DecompressionHandler(IHttpHandler inner, long maxDecompressedBodySizeBytes)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            if (maxDecompressedBodySizeBytes <= 0)
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxDecompressedBodySizeBytes),
+                    maxDecompressedBodySizeBytes,
+                    "Must be > 0.");
+
+            _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
+            _compressionChain = Array.Empty<CompressionKind>();
         }
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
@@ -34,8 +43,7 @@ namespace TurboHTTP.Middleware
 
         public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
         {
-            _compression = ResolveCompression(headers);
-            if (_compression == CompressionKind.None)
+            if (!TryResolveCompression(headers, out _compressionChain))
             {
                 _forwardHeaders = headers;
                 _inner.OnResponseStart(statusCode, headers, context);
@@ -50,7 +58,7 @@ namespace TurboHTTP.Middleware
 
         public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
         {
-            if (_compression == CompressionKind.None)
+            if (_compressionChain.Length == 0)
             {
                 _inner.OnResponseData(chunk, context);
                 return;
@@ -67,7 +75,7 @@ namespace TurboHTTP.Middleware
 
         public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
         {
-            if (_compression == CompressionKind.None)
+            if (_compressionChain.Length == 0)
             {
                 _inner.OnResponseEnd(trailers, context);
                 return;
@@ -77,7 +85,7 @@ namespace TurboHTTP.Middleware
             {
                 DecompressBufferedBody(context);
             }
-            catch (InvalidDataException ex)
+            catch (Exception ex) when (ex is InvalidDataException || ex is IOException)
             {
                 _inner.OnResponseError(new UHttpException(
                     new UHttpError(UHttpErrorType.Unknown, "Response decompression failed.", ex)), context);
@@ -106,6 +114,7 @@ namespace TurboHTTP.Middleware
             using var decompressionStream = CreateDecompressionStream(compressedStream);
 
             var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+            long totalDecompressed = 0;
             try
             {
                 while (true)
@@ -113,6 +122,13 @@ namespace TurboHTTP.Middleware
                     var read = decompressionStream.Read(buffer, 0, buffer.Length);
                     if (read <= 0)
                         break;
+
+                    totalDecompressed += read;
+                    if (totalDecompressed > _maxDecompressedBodySizeBytes)
+                    {
+                        throw new IOException(
+                            $"Response decompression exceeded the maximum size ({_maxDecompressedBodySizeBytes} bytes).");
+                    }
 
                     _inner.OnResponseData(new ReadOnlySpan<byte>(buffer, 0, read), context);
                 }
@@ -125,7 +141,24 @@ namespace TurboHTTP.Middleware
 
         private Stream CreateDecompressionStream(Stream compressedStream)
         {
-            switch (_compression)
+            Stream current = compressedStream;
+            for (int i = _compressionChain.Length - 1; i >= 0; i--)
+            {
+                current = CreateSingleDecompressionStream(current, _compressionChain[i]);
+            }
+
+            return current;
+        }
+
+        private void DisposeCompressedBuffer()
+        {
+            _compressedBuffer?.Dispose();
+            _compressedBuffer = null;
+        }
+
+        private static Stream CreateSingleDecompressionStream(Stream compressedStream, CompressionKind compression)
+        {
+            switch (compression)
             {
                 case CompressionKind.Gzip:
                     return new GZipStream(compressedStream, CompressionMode.Decompress, leaveOpen: false);
@@ -136,25 +169,86 @@ namespace TurboHTTP.Middleware
             }
         }
 
-        private void DisposeCompressedBuffer()
+        private static bool TryResolveCompression(HttpHeaders headers, out CompressionKind[] compressionChain)
         {
-            _compressedBuffer?.Dispose();
-            _compressedBuffer = null;
-        }
+            if (headers == null)
+            {
+                compressionChain = Array.Empty<CompressionKind>();
+                return false;
+            }
 
-        private static CompressionKind ResolveCompression(HttpHeaders headers)
-        {
             var contentEncoding = headers.Get("Content-Encoding");
             if (string.IsNullOrWhiteSpace(contentEncoding))
-                return CompressionKind.None;
+            {
+                compressionChain = Array.Empty<CompressionKind>();
+                return false;
+            }
 
-            if (string.Equals(contentEncoding.Trim(), "gzip", StringComparison.OrdinalIgnoreCase))
-                return CompressionKind.Gzip;
+            var resolved = new List<CompressionKind>(4);
+            int start = 0;
+            while (start < contentEncoding.Length)
+            {
+                int end = contentEncoding.IndexOf(',', start);
+                if (end < 0)
+                    end = contentEncoding.Length;
 
-            if (string.Equals(contentEncoding.Trim(), "deflate", StringComparison.OrdinalIgnoreCase))
-                return CompressionKind.Deflate;
+                int tokenStart = start;
+                int tokenEnd = end;
+                while (tokenStart < tokenEnd && char.IsWhiteSpace(contentEncoding[tokenStart]))
+                    tokenStart++;
+                while (tokenEnd > tokenStart && char.IsWhiteSpace(contentEncoding[tokenEnd - 1]))
+                    tokenEnd--;
 
-            return CompressionKind.None;
+                if (tokenEnd > tokenStart)
+                {
+                    if (!TryParseCompressionKind(
+                            contentEncoding.Substring(tokenStart, tokenEnd - tokenStart),
+                            out var compression))
+                    {
+                        compressionChain = Array.Empty<CompressionKind>();
+                        return false;
+                    }
+
+                    if (compression.HasValue)
+                        resolved.Add(compression.Value);
+                }
+
+                start = end + 1;
+            }
+
+            if (resolved.Count == 0)
+            {
+                compressionChain = Array.Empty<CompressionKind>();
+                return false;
+            }
+
+            compressionChain = resolved.ToArray();
+            return true;
+        }
+
+        private static bool TryParseCompressionKind(string token, out CompressionKind? compression)
+        {
+            if (string.Equals(token, "gzip", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(token, "x-gzip", StringComparison.OrdinalIgnoreCase))
+            {
+                compression = CompressionKind.Gzip;
+                return true;
+            }
+
+            if (string.Equals(token, "deflate", StringComparison.OrdinalIgnoreCase))
+            {
+                compression = CompressionKind.Deflate;
+                return true;
+            }
+
+            if (string.Equals(token, "identity", StringComparison.OrdinalIgnoreCase))
+            {
+                compression = null;
+                return true;
+            }
+
+            compression = null;
+            return false;
         }
     }
 }

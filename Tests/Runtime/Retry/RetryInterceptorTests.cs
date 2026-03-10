@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Net;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -269,6 +270,44 @@ namespace TurboHTTP.Tests.Retry
         }
 
         [Test]
+        public void RetryableErrorAfterResponseStart_IsDeliveredWithoutRetry()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    Interlocked.Increment(ref callCount);
+                    handler.OnRequestStart(req, ctx);
+                    handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
+                    handler.OnResponseData(Encoding.UTF8.GetBytes("partial"), ctx);
+                    handler.OnResponseError(
+                        new UHttpException(new UHttpError(UHttpErrorType.NetworkError, "Connection reset")),
+                        ctx);
+                    return Task.CompletedTask;
+                });
+
+                var middleware = new RetryInterceptor(new RetryPolicy
+                {
+                    MaxRetries = 3,
+                    InitialDelay = TimeSpan.FromMilliseconds(1)
+                });
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/partial"));
+                var context = new RequestContext(request);
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                {
+                    using var _ = await pipeline.ExecuteAsync(request, context);
+                });
+
+                Assert.That(ex.HttpError.Type, Is.EqualTo(UHttpErrorType.NetworkError));
+                Assert.AreEqual(1, callCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void NoRetryPolicy_PassesThrough()        {
             Task.Run(async () =>
             {
@@ -283,6 +322,37 @@ namespace TurboHTTP.Tests.Retry
 
                 Assert.AreEqual(1, transport.RequestCount); // No retry
             }).GetAwaiter().GetResult();
+        }
+
+        private sealed class CallbackTransport : IHttpTransport
+        {
+            private readonly Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> _dispatch;
+
+            internal CallbackTransport(Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> dispatch)
+            {
+                _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+            }
+
+            public Task DispatchAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                return _dispatch(request, handler, context, cancellationToken);
+            }
+
+            public ValueTask<UHttpResponse> SendAsync(
+                UHttpRequest request,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                throw new NotSupportedException();
+            }
+
+            public void Dispose()
+            {
+            }
         }
     }
 }

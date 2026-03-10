@@ -9,11 +9,23 @@ namespace TurboHTTP.Middleware
     /// </summary>
     public sealed class DecompressionInterceptor : IHttpInterceptor
     {
-        private readonly bool _automaticDecompression;
+        internal const long DefaultMaxDecompressedBodySizeBytes = 100L * 1024 * 1024;
 
-        public DecompressionInterceptor(bool automaticDecompression = true)
+        private readonly bool _automaticDecompression;
+        private readonly long _maxDecompressedBodySizeBytes;
+
+        public DecompressionInterceptor(
+            bool automaticDecompression = true,
+            long maxDecompressedBodySizeBytes = DefaultMaxDecompressedBodySizeBytes)
         {
+            if (maxDecompressedBodySizeBytes <= 0)
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxDecompressedBodySizeBytes),
+                    maxDecompressedBodySizeBytes,
+                    "Must be > 0.");
+
             _automaticDecompression = automaticDecompression;
+            _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
         }
 
         public DispatchFunc Wrap(DispatchFunc next)
@@ -34,11 +46,24 @@ namespace TurboHTTP.Middleware
                     context.UpdateRequest(requestForNext);
                 }
 
-                return next(
-                    requestForNext,
-                    new DecompressionHandler(handler),
-                    context,
-                    cancellationToken);
+                try
+                {
+                    return next(
+                        requestForNext,
+                        new DecompressionHandler(handler, _maxDecompressedBodySizeBytes),
+                        context,
+                        cancellationToken);
+                }
+                catch
+                {
+                    if (!ReferenceEquals(requestForNext, request))
+                    {
+                        context.UpdateRequest(request);
+                        requestForNext.Dispose();
+                    }
+
+                    throw;
+                }
             };
         }
     }

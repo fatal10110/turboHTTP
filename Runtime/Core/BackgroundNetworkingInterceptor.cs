@@ -93,10 +93,14 @@ namespace TurboHTTP.Core
             {
                 await next(request, handler, context, effectiveToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (
-                _policy.QueueOnAppPause &&
-                ShouldQueueOnCancellation(scope, cancellationToken))
+            catch (OperationCanceledException)
             {
+                if (!_policy.QueueOnAppPause
+                    || !ShouldQueueOnCancellation(scope, cancellationToken, _policy.GracePeriodBeforeQueue))
+                {
+                    throw;
+                }
+
                 Interlocked.Increment(ref _expired);
                 context.RecordEvent("mobile.bg.expired");
 
@@ -171,13 +175,30 @@ namespace TurboHTTP.Core
 
         private static bool ShouldQueueOnCancellation(
             IBackgroundExecutionScope scope,
-            CancellationToken requestToken)
+            CancellationToken requestToken,
+            TimeSpan gracePeriodBeforeQueue)
         {
             if (scope == null)
                 return false;
 
-            return scope.ExpirationToken.IsCancellationRequested &&
-                   !requestToken.IsCancellationRequested;
+            if (requestToken.IsCancellationRequested || !scope.ExpirationToken.IsCancellationRequested)
+                return false;
+
+            if (gracePeriodBeforeQueue < TimeSpan.Zero)
+                gracePeriodBeforeQueue = TimeSpan.Zero;
+
+            try
+            {
+                var remainingBudget = scope.RemainingBudget;
+                if (remainingBudget < TimeSpan.Zero)
+                    remainingBudget = TimeSpan.Zero;
+
+                return remainingBudget <= gracePeriodBeforeQueue;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static string GetReplayDedupeKey(UHttpRequest request)
