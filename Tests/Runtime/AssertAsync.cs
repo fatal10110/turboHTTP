@@ -83,4 +83,25 @@ public static class AssertAsync
 
         throw new Exception($"Expected exception of type {typeof(T).Name}, but no exception was thrown.");
     }
+
+    public static T ThrowsAsync<T, TResult>(Func<Task<TResult>> asyncDelegate) where T : Exception
+    {
+        if (asyncDelegate == null)
+            throw new ArgumentNullException(nameof(asyncDelegate));
+
+        try
+        {
+            asyncDelegate().GetAwaiter().GetResult();
+        }
+        catch (T expected)
+        {
+            return expected;
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Expected exception of type {typeof(T).Name}, but got {ex.GetType().Name}.", ex);
+        }
+
+        throw new Exception($"Expected exception of type {typeof(T).Name}, but no exception was thrown.");
+    }
 }

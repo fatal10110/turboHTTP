@@ -21,6 +21,7 @@ namespace TurboHTTP.Cache
         public Uri ResponseUrl { get; }
         public IReadOnlyList<string> VaryHeaders { get; }
         public string VaryKey { get; }
+        public TimeSpan? StaleWhileRevalidate { get; }
         public bool MustRevalidate { get; }
 
         public int BodyLength => Body.Length;
@@ -37,6 +38,7 @@ namespace TurboHTTP.Cache
             Uri responseUrl,
             IReadOnlyList<string> varyHeaders,
             string varyKey,
+            TimeSpan? staleWhileRevalidate,
             bool mustRevalidate)
         {
             Key = key ?? throw new ArgumentNullException(nameof(key));
@@ -50,7 +52,16 @@ namespace TurboHTTP.Cache
             ResponseUrl = responseUrl;
             VaryHeaders = NormalizeVaryHeaders(varyHeaders);
             VaryKey = varyKey ?? string.Empty;
+            StaleWhileRevalidate = staleWhileRevalidate;
             MustRevalidate = mustRevalidate;
+        }
+
+        /// <summary>
+        /// Returns true when the entry can be served without foreground revalidation.
+        /// </summary>
+        public bool IsFresh(DateTime utcNow)
+        {
+            return !MustRevalidate && !IsExpired(utcNow);
         }
 
         /// <summary>
@@ -80,6 +91,31 @@ namespace TurboHTTP.Cache
             return !string.IsNullOrEmpty(ETag) || !string.IsNullOrEmpty(LastModified);
         }
 
+        /// <summary>
+        /// Returns true when the entry is stale but still inside the stale-while-revalidate window.
+        /// </summary>
+        public bool IsStaleWhileRevalidate(DateTime utcNow)
+        {
+            if (MustRevalidate || !ExpiresAtUtc.HasValue || !StaleWhileRevalidate.HasValue || !CanRevalidate())
+                return false;
+
+            var now = EnsureUtc(utcNow);
+            return now >= ExpiresAtUtc.Value
+                   && now < ExpiresAtUtc.Value + StaleWhileRevalidate.Value;
+        }
+
+        internal bool ShouldEvict(DateTime utcNow)
+        {
+            if (!ExpiresAtUtc.HasValue)
+                return false;
+
+            var now = EnsureUtc(utcNow);
+            if (now < ExpiresAtUtc.Value)
+                return false;
+
+            return !IsStaleWhileRevalidate(now);
+        }
+
         public CacheEntry Clone()
         {
             return new CacheEntry(
@@ -94,6 +130,7 @@ namespace TurboHTTP.Cache
                 responseUrl: ResponseUrl,
                 varyHeaders: VaryHeaders,
                 varyKey: VaryKey,
+                staleWhileRevalidate: StaleWhileRevalidate,
                 mustRevalidate: MustRevalidate);
         }
 

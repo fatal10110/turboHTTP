@@ -93,10 +93,10 @@ namespace TurboHTTP.Editor
 
         private static void ApplyMonitorPreferences()
         {
-            MonitorMiddleware.CaptureEnabled = EnableMonitor;
-            MonitorMiddleware.HistoryCapacity = HistoryCapacity;
-            MonitorMiddleware.MaxCaptureSizeBytes = MaxCaptureSizeMb * 1024 * 1024;
-            MonitorMiddleware.BinaryPreviewBytes = BinaryPreviewKb * 1024;
+            MonitorInterceptor.CaptureEnabled = EnableMonitor;
+            MonitorInterceptor.HistoryCapacity = HistoryCapacity;
+            MonitorInterceptor.MaxCaptureSizeBytes = MaxCaptureSizeMb * 1024 * 1024;
+            MonitorInterceptor.BinaryPreviewBytes = BinaryPreviewKb * 1024;
             HttpMonitorWindow.DefaultMaskConfidentialHeaders = MaskConfidentialHeaders;
         }
 

@@ -189,38 +189,9 @@ namespace TurboHTTP.Testing
             RequestContext context,
             CancellationToken cancellationToken = default)
         {
-            ThrowIfDisposed();
-            Interlocked.Increment(ref _requestCount);
-            var snapshot = SnapshotRequest(request);
-            _lastRequest = snapshot;
-            _capturedRequests.Enqueue(snapshot);
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (_queuedResponses.TryDequeue(out var queued))
-            {
-                if (queued.Delay > TimeSpan.Zero)
-                {
-                    await Task.Delay(queued.Delay, cancellationToken).ConfigureAwait(false);
-                }
-
-                return CreateResponse(
-                    queued.StatusCode,
-                    queued.Headers,
-                    queued.Body,
-                    queued.Error,
-                    request,
-                    context);
-            }
-
-            if (_fallbackHandler != null)
-            {
-                return await _fallbackHandler(request, context, cancellationToken).ConfigureAwait(false);
-            }
-
-            throw new InvalidOperationException(
-                "MockTransport has no queued responses and no fallback handler. " +
-                "Call EnqueueResponse/EnqueueJsonResponse before sending.");
+            return await TransportDispatchHelper
+                .CollectResponseAsync(this, request, context, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         public async Task DispatchAsync(
@@ -233,13 +204,35 @@ namespace TurboHTTP.Testing
             if (context == null) throw new ArgumentNullException(nameof(context));
             ThrowIfDisposed();
 
+            CaptureRequest(request);
             handler.OnRequestStart(request, context);
+
+            if (_queuedResponses.TryDequeue(out var queued))
+            {
+                if (queued.Delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(queued.Delay, cancellationToken).ConfigureAwait(false);
+                }
+
+                DriveHandler(handler, queued, context);
+                return;
+            }
+
+            if (_fallbackHandler == null)
+            {
+                handler.OnResponseError(
+                    new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        "MockTransport: no queued response")),
+                    context);
+                return;
+            }
 
             UHttpResponse response = null;
             try
             {
-                response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
-                EmitResponse(response, handler, context);
+                response = await _fallbackHandler(request, context, cancellationToken).ConfigureAwait(false);
+                DriveHandler(response, handler, context);
             }
             catch (OperationCanceledException)
             {
@@ -273,6 +266,14 @@ namespace TurboHTTP.Testing
             ClearCapturedRequests();
         }
 
+        private void CaptureRequest(UHttpRequest request)
+        {
+            Interlocked.Increment(ref _requestCount);
+            var snapshot = SnapshotRequest(request);
+            _lastRequest = snapshot;
+            _capturedRequests.Enqueue(snapshot);
+        }
+
         private static UHttpResponse CreateResponse(
             HttpStatusCode statusCode,
             HttpHeaders headers,
@@ -281,18 +282,36 @@ namespace TurboHTTP.Testing
             UHttpRequest request,
             RequestContext context)
         {
-            var responseHeaders = headers?.Clone() ?? new HttpHeaders();
-            var responseBody = body != null ? (byte[])body.Clone() : null;
             return new UHttpResponse(
                 statusCode,
-                responseHeaders,
-                responseBody,
+                headers?.Clone() ?? new HttpHeaders(),
+                body != null ? (byte[])body.Clone() : null,
                 context?.Elapsed ?? TimeSpan.Zero,
                 request,
-                error);
+                error != null ? WithStatusCode(error, statusCode) : null);
         }
 
-        private static void EmitResponse(
+        private static void DriveHandler(
+            IHttpHandler handler,
+            QueuedResponse response,
+            RequestContext context)
+        {
+            if (response == null)
+                throw new InvalidOperationException("MockTransport produced a null queued response.");
+
+            if (response.Error != null)
+            {
+                handler.OnResponseError(new UHttpException(WithStatusCode(response.Error, response.StatusCode)), context);
+                return;
+            }
+
+            handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
+            if (response.Body != null && response.Body.Length > 0)
+                handler.OnResponseData(response.Body, context);
+            handler.OnResponseEnd(HttpHeaders.Empty, context);
+        }
+
+        private static void DriveHandler(
             UHttpResponse response,
             IHttpHandler handler,
             RequestContext context)
@@ -324,6 +343,14 @@ namespace TurboHTTP.Testing
             }
 
             handler.OnResponseEnd(HttpHeaders.Empty, context);
+        }
+
+        private static UHttpError WithStatusCode(UHttpError error, HttpStatusCode statusCode)
+        {
+            if (error == null || error.StatusCode.HasValue)
+                return error;
+
+            return new UHttpError(error.Type, error.Message, error.InnerException, statusCode);
         }
 
         private static UHttpRequest SnapshotRequest(UHttpRequest request)

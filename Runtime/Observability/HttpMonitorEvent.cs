@@ -264,7 +264,7 @@ namespace TurboHTTP.Observability
 
         private static ReadOnlyMemory<byte> CloneBody(ReadOnlyMemory<byte> body)
         {
-            // MonitorMiddleware.CreateBodySnapshot already returns a defensive copy.
+            // MonitorInterceptor.CreateBodySnapshot already returns a defensive copy.
             // No additional cloning needed — HttpMonitorEvent is immutable.
             return body;
         }

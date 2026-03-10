@@ -14,6 +14,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Testing
 {
@@ -266,28 +267,9 @@ namespace TurboHTTP.Testing
             RequestContext context,
             CancellationToken cancellationToken = default)
         {
-            if (request == null) throw new ArgumentNullException(nameof(request));
-            if (context == null) throw new ArgumentNullException(nameof(context));
-            ThrowIfDisposed();
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            switch (_mode)
-            {
-                case RecordReplayMode.Record:
-                    return await SendAndRecordAsync(request, context, cancellationToken).ConfigureAwait(false);
-
-                case RecordReplayMode.Replay:
-                    return await ReplayAsync(request, context, cancellationToken).ConfigureAwait(false);
-
-                case RecordReplayMode.Passthrough:
-                default:
-                    if (_innerTransport == null)
-                        throw new InvalidOperationException("No inner transport configured for passthrough mode.");
-                    return await TransportDispatchHelper
-                        .CollectResponseAsync(_innerTransport, request, context, cancellationToken)
-                        .ConfigureAwait(false);
-            }
+            return await TransportDispatchHelper
+                .CollectResponseAsync(this, request, context, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         public async Task DispatchAsync(
@@ -296,6 +278,7 @@ namespace TurboHTTP.Testing
             RequestContext context,
             CancellationToken cancellationToken = default)
         {
+            if (request == null) throw new ArgumentNullException(nameof(request));
             if (handler == null) throw new ArgumentNullException(nameof(handler));
             if (context == null) throw new ArgumentNullException(nameof(context));
             ThrowIfDisposed();
@@ -310,35 +293,31 @@ namespace TurboHTTP.Testing
                 return;
             }
 
-            handler.OnRequestStart(request, context);
+            if (_mode == RecordReplayMode.Record)
+            {
+                await DispatchRecordAsync(request, handler, context, cancellationToken).ConfigureAwait(false);
+                return;
+            }
 
-            UHttpResponse response = null;
-            try
+            if (TryResolveReplay(request, out var entry, out var fallbackToInner, out var mismatchMessage))
             {
-                response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
-                EmitResponse(response, handler, context);
+                handler.OnRequestStart(request, context);
+                cancellationToken.ThrowIfCancellationRequested();
+                DriveReplayHandler(handler, entry, context);
+                return;
             }
-            catch (OperationCanceledException)
+
+            if (fallbackToInner)
             {
-                throw;
+                await _innerTransport.DispatchAsync(request, handler, context, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
             }
-            catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Cancelled)
-            {
-                throw new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken);
-            }
-            catch (UHttpException ex)
-            {
-                handler.OnResponseError(ex, context);
-            }
-            catch (Exception ex)
-            {
-                handler.OnResponseError(new UHttpException(
-                    new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
-            }
-            finally
-            {
-                response?.Dispose();
-            }
+
+            handler.OnRequestStart(request, context);
+            cancellationToken.ThrowIfCancellationRequested();
+            handler.OnResponseError(new UHttpException(
+                new UHttpError(UHttpErrorType.Unknown, mismatchMessage)), context);
         }
 
         public void SaveRecordings()
@@ -410,88 +389,97 @@ namespace TurboHTTP.Testing
             }
         }
 
-        private async ValueTask<UHttpResponse> SendAndRecordAsync(
+        private async Task DispatchRecordAsync(
             UHttpRequest request,
+            IHttpHandler handler,
             RequestContext context,
             CancellationToken cancellationToken)
         {
             if (_innerTransport == null)
                 throw new InvalidOperationException("Record mode requires an inner transport.");
 
+            var recordingHandler = new RecordingHandler(this, request, handler);
+
             try
             {
-                var response = await TransportDispatchHelper
-                    .CollectResponseAsync(_innerTransport, request, context, cancellationToken)
+                await _innerTransport.DispatchAsync(request, recordingHandler, context, cancellationToken)
                     .ConfigureAwait(false);
-                RecordInteraction(request, response, null, threwException: false);
-                return response;
+            }
+            catch (OperationCanceledException)
+            {
+                recordingHandler.DisposeBufferedBody();
+                throw;
+            }
+            catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Cancelled)
+            {
+                recordingHandler.DisposeBufferedBody();
+                throw new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken);
             }
             catch (UHttpException ex)
             {
-                RecordInteraction(request, response: null, ex.HttpError, threwException: true);
-                throw;
-            }
-            catch (OperationCanceledException ex)
-            {
-                RecordInteraction(
-                    request,
-                    response: null,
-                    new UHttpError(UHttpErrorType.Cancelled, ex.Message, ex),
-                    threwException: true);
+                if (!recordingHandler.TerminalCallbackSeen)
+                {
+                    recordingHandler.OnResponseError(ex, context);
+                    return;
+                }
+
                 throw;
             }
             catch (Exception ex)
             {
-                var unknownError = new UHttpError(UHttpErrorType.Unknown, ex.Message, ex);
-                RecordInteraction(request, response: null, unknownError, threwException: true);
+                if (!recordingHandler.TerminalCallbackSeen)
+                {
+                    recordingHandler.OnResponseError(new UHttpException(
+                        new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
+                    return;
+                }
+
                 throw;
             }
         }
 
-        private ValueTask<UHttpResponse> ReplayAsync(
+        private bool TryResolveReplay(
             UHttpRequest request,
-            RequestContext context,
-            CancellationToken cancellationToken)
+            out RecordingEntryDto entry,
+            out bool fallbackToInner,
+            out string mismatchMessage)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            entry = null;
+            fallbackToInner = false;
+            mismatchMessage = null;
 
             var strictKey = BuildRequestKey(request);
-            if (TryDequeue(_replayByRequestKey, strictKey, out var strictEntry))
+            if (TryDequeue(_replayByRequestKey, strictKey, out entry))
             {
-                return new ValueTask<UHttpResponse>(BuildReplayResponse(strictEntry, request, context));
+                return true;
             }
 
             if (_mismatchPolicy == RecordReplayMismatchPolicy.Relaxed)
             {
                 var relaxedKey = BuildRelaxedKey(request.Method.ToUpperString(), NormalizeUriForKey(request.Uri));
-                if (TryDequeue(_replayByRelaxedKey, relaxedKey, out var relaxedEntry))
+                if (TryDequeue(_replayByRelaxedKey, relaxedKey, out entry))
                 {
                     Log($"RecordReplay mismatch relaxed: using relaxed key match for '{request.Method} {request.Uri}'.");
-                    return new ValueTask<UHttpResponse>(BuildReplayResponse(relaxedEntry, request, context));
+                    return true;
                 }
             }
 
-            var message =
+            mismatchMessage =
                 $"No replay recording matched request key '{strictKey}'. " +
                 $"Mode={_mode}, MismatchPolicy={_mismatchPolicy}, RecordingPath='{_recordingPath}'.";
 
-            if (_mismatchPolicy == RecordReplayMismatchPolicy.Warn)
+            if (_mismatchPolicy == RecordReplayMismatchPolicy.Warn && _innerTransport != null)
             {
-                Log(message);
-                if (_innerTransport != null)
-                {
-                    return new ValueTask<UHttpResponse>(
-                        TransportDispatchHelper.CollectResponseAsync(_innerTransport, request, context, cancellationToken));
-                }
+                Log(mismatchMessage);
+                fallbackToInner = true;
             }
             else if (_mismatchPolicy == RecordReplayMismatchPolicy.Relaxed && _innerTransport != null)
             {
-                Log(message + " Falling back to inner transport due to Relaxed policy.");
-                return new ValueTask<UHttpResponse>(
-                    TransportDispatchHelper.CollectResponseAsync(_innerTransport, request, context, cancellationToken));
+                Log(mismatchMessage + " Falling back to inner transport due to Relaxed policy.");
+                fallbackToInner = true;
             }
 
-            throw new InvalidOperationException(message);
+            return false;
         }
 
         private void LoadRecordings()
@@ -543,7 +531,9 @@ namespace TurboHTTP.Testing
 
         private void RecordInteraction(
             UHttpRequest request,
-            UHttpResponse response,
+            HttpStatusCode? statusCode,
+            HttpHeaders responseHeaders,
+            ReadOnlySequence<byte> responseBody,
             UHttpError error,
             bool threwException)
         {
@@ -558,11 +548,11 @@ namespace TurboHTTP.Testing
             var requestHeaders = ToDictionary(request.Headers, redact: true);
             var requestBody = RedactJsonBodyIfNeeded(request.Body, request.Headers);
 
-            var responseHeaders = response != null
-                ? ToDictionary(response.Headers, redact: true)
+            var recordedResponseHeaders = responseHeaders != null
+                ? ToDictionary(responseHeaders, redact: true)
                 : new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-            var responseBody = response != null
-                ? RedactJsonBodyIfNeeded(response.Body, response.Headers)
+            var recordedResponseBody = !responseBody.IsEmpty
+                ? RedactJsonBodyIfNeeded(responseBody, responseHeaders)
                 : null;
 
             var entry = new RecordingEntryDto
@@ -576,12 +566,12 @@ namespace TurboHTTP.Testing
                 RequestBodyBase64 = requestBody != null && requestBody.Length > 0
                     ? Convert.ToBase64String(requestBody)
                     : null,
-                StatusCode = response != null ? (int)response.StatusCode : 0,
-                ResponseHeaders = responseHeaders,
-                ResponseBodyBase64 = responseBody != null && responseBody.Length > 0
-                    ? Convert.ToBase64String(responseBody)
+                StatusCode = statusCode.HasValue ? (int)statusCode.Value : 0,
+                ResponseHeaders = recordedResponseHeaders,
+                ResponseBodyBase64 = recordedResponseBody != null && recordedResponseBody.Length > 0
+                    ? Convert.ToBase64String(recordedResponseBody)
                     : null,
-                Error = ToErrorDto(error ?? response?.Error),
+                Error = ToErrorDto(error),
                 ThrowsException = threwException,
                 TimestampUtcTicks = DateTime.UtcNow.Ticks
             };
@@ -589,69 +579,41 @@ namespace TurboHTTP.Testing
             _recordedEntries.Enqueue(entry);
         }
 
-        private UHttpResponse BuildReplayResponse(
-            RecordingEntryDto entry,
-            UHttpRequest request,
-            RequestContext context)
-        {
-            if (entry.ThrowsException && entry.Error != null)
-            {
-                throw new UHttpException(ToError(entry.Error));
-            }
-
-            var responseHeaders = FromDictionary(entry.ResponseHeaders);
-            var responseBody = string.IsNullOrEmpty(entry.ResponseBodyBase64)
-                ? ReadOnlyMemory<byte>.Empty
-                : Convert.FromBase64String(entry.ResponseBodyBase64);
-
-            var statusCode = entry.StatusCode <= 0
-                ? HttpStatusCode.OK
-                : (HttpStatusCode)entry.StatusCode;
-
-            var error = ToError(entry.Error);
-            return new UHttpResponse(
-                statusCode,
-                responseHeaders,
-                responseBody,
-                context.Elapsed,
-                request,
-                error);
-        }
-
-        private static void EmitResponse(
-            UHttpResponse response,
+        private static void DriveReplayHandler(
             IHttpHandler handler,
+            RecordingEntryDto entry,
             RequestContext context)
         {
-            if (response == null)
-                throw new InvalidOperationException("RecordReplayTransport produced a null response.");
+            if (entry == null)
+                throw new InvalidOperationException("Replay transport produced a null recording entry.");
 
-            if (response.Error != null)
+            var replayError = ToError(entry.Error);
+            if (entry.ThrowsException || replayError != null)
             {
-                handler.OnResponseError(new UHttpException(response.Error), context);
+                handler.OnResponseError(new UHttpException(
+                    replayError ?? new UHttpError(
+                        UHttpErrorType.Unknown,
+                        "Replay entry was marked as failed but did not include an error.")),
+                    context);
                 return;
             }
 
-            handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
+            var responseHeaders = FromDictionary(entry.ResponseHeaders);
+            var statusCode = entry.StatusCode <= 0
+                ? (int)HttpStatusCode.OK
+                : entry.StatusCode;
 
-            var body = response.Body;
-            if (body.IsSingleSegment)
+            handler.OnResponseStart(statusCode, responseHeaders, context);
+
+            if (!string.IsNullOrEmpty(entry.ResponseBodyBase64))
             {
-                if (!body.FirstSpan.IsEmpty)
-                    handler.OnResponseData(body.FirstSpan, context);
-            }
-            else
-            {
-                foreach (ReadOnlyMemory<byte> segment in body)
-                {
-                    if (!segment.Span.IsEmpty)
-                        handler.OnResponseData(segment.Span, context);
-                }
+                var body = Convert.FromBase64String(entry.ResponseBodyBase64);
+                if (body.Length > 0)
+                    handler.OnResponseData(body, context);
             }
 
             handler.OnResponseEnd(HttpHeaders.Empty, context);
         }
-
         private void Log(string message)
         {
             _logger?.Invoke(message);
@@ -661,6 +623,118 @@ namespace TurboHTTP.Testing
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(RecordReplayTransport));
+        }
+
+        private sealed class RecordingHandler : IHttpHandler
+        {
+            private readonly RecordReplayTransport _owner;
+            private readonly IHttpHandler _inner;
+            private SegmentedBuffer _responseBody;
+            private UHttpRequest _request;
+            private HttpHeaders _responseHeaders;
+            private int _statusCode;
+            private bool _requestStarted;
+
+            public RecordingHandler(
+                RecordReplayTransport owner,
+                UHttpRequest request,
+                IHttpHandler inner)
+            {
+                _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+                _request = request ?? throw new ArgumentNullException(nameof(request));
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            }
+
+            public bool TerminalCallbackSeen { get; private set; }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+                _request = request ?? _request;
+                _requestStarted = true;
+                _inner.OnRequestStart(_request, context);
+            }
+
+            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            {
+                EnsureRequestStarted(context);
+                _statusCode = statusCode;
+                _responseHeaders = headers?.Clone() ?? new HttpHeaders();
+                _inner.OnResponseStart(statusCode, headers, context);
+            }
+
+            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
+            {
+                if (!chunk.IsEmpty)
+                {
+                    if (_responseBody == null)
+                        _responseBody = new SegmentedBuffer();
+
+                    _responseBody.Write(chunk);
+                }
+
+                _inner.OnResponseData(chunk, context);
+            }
+
+            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            {
+                EnsureRequestStarted(context);
+                TerminalCallbackSeen = true;
+
+                try
+                {
+                    _owner.RecordInteraction(
+                        _request,
+                        (HttpStatusCode)_statusCode,
+                        _responseHeaders,
+                        _responseBody?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
+                        error: null,
+                        threwException: false);
+                }
+                finally
+                {
+                    DisposeBufferedBody();
+                }
+
+                _inner.OnResponseEnd(trailers, context);
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                EnsureRequestStarted(context);
+                TerminalCallbackSeen = true;
+
+                try
+                {
+                    _owner.RecordInteraction(
+                        _request,
+                        _responseHeaders != null ? (HttpStatusCode?)_statusCode : null,
+                        _responseHeaders,
+                        _responseBody?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
+                        error?.HttpError,
+                        threwException: true);
+                }
+                finally
+                {
+                    DisposeBufferedBody();
+                }
+
+                _inner.OnResponseError(error, context);
+            }
+
+            public void DisposeBufferedBody()
+            {
+                _responseBody?.Dispose();
+                _responseBody = null;
+            }
+
+            private void EnsureRequestStarted(RequestContext context)
+            {
+                if (_requestStarted)
+                    return;
+
+                _requestStarted = true;
+                _inner.OnRequestStart(_request, context);
+            }
         }
 
         [Serializable]

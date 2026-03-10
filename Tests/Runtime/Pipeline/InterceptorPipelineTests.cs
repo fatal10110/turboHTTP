@@ -65,6 +65,29 @@ namespace TurboHTTP.Tests.Pipeline
         }
 
         [Test]
+        public void Pipeline_InterceptorsCanShortCircuit()
+        {
+            Task.Run(async () =>
+            {
+                var transport = new RecordingTransport();
+                var pipeline = new TestInterceptorPipeline(
+                    new IHttpInterceptor[]
+                    {
+                        new ShortCircuitInterceptor(),
+                        new OrderTrackingInterceptor("Never", new List<string>())
+                    },
+                    transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/short-circuit"));
+                var context = new RequestContext(request);
+                using var response = await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
+                Assert.AreEqual(0, transport.DispatchCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void Pipeline_NullInterceptorList_Throws()
         {
             Assert.Throws<ArgumentNullException>(() =>
@@ -101,7 +124,7 @@ namespace TurboHTTP.Tests.Pipeline
                 using var cts = new CancellationTokenSource();
                 cts.Cancel();
 
-                await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                     await TransportDispatchHelper.CollectResponseAsync(
                         pipeline.Pipeline,
                         request,
@@ -151,7 +174,7 @@ namespace TurboHTTP.Tests.Pipeline
 
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/trailers"));
                 var context = new RequestContext(request);
-                var ex = await Assert.ThrowsAsync<UHttpException>(async () =>
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                     await TransportDispatchHelper.CollectResponseAsync(
                         pipeline.Pipeline,
                         request,
@@ -161,6 +184,31 @@ namespace TurboHTTP.Tests.Pipeline
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
                 Assert.IsInstanceOf<InvalidOperationException>(ex.HttpError.InnerException);
             }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Pipeline_PropagatesSynchronousExceptions()
+        {
+            var transport = new RecordingTransport();
+            var pipeline = new TestInterceptorPipeline(
+                new[] { new ThrowingInterceptor() },
+                transport);
+
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/failure"));
+            var context = new RequestContext(request);
+
+            AssertAsync.ThrowsAsync<InvalidOperationException, UHttpResponse>(
+                () => pipeline.ExecuteAsync(request, context));
+        }
+
+        [Test]
+        public void Pipeline_NullRequest_Throws()
+        {
+            var pipeline = new TestInterceptorPipeline(Array.Empty<IHttpInterceptor>(), new RecordingTransport());
+            var context = new RequestContext(new UHttpRequest(HttpMethod.GET, new Uri("https://test.com")));
+
+            AssertAsync.ThrowsAsync<ArgumentNullException, UHttpResponse>(
+                () => pipeline.ExecuteAsync(null, context));
         }
 
         private sealed class RecordingTransport : IHttpTransport
@@ -275,6 +323,29 @@ namespace TurboHTTP.Tests.Pipeline
                 {
                     _inner.OnResponseError(error, context);
                 }
+            }
+        }
+
+        private sealed class ShortCircuitInterceptor : IHttpInterceptor
+        {
+            public DispatchFunc Wrap(DispatchFunc next)
+            {
+                return (request, handler, context, cancellationToken) =>
+                {
+                    handler.OnRequestStart(request, context);
+                    handler.OnResponseStart((int)HttpStatusCode.Forbidden, new HttpHeaders(), context);
+                    handler.OnResponseEnd(HttpHeaders.Empty, context);
+                    return Task.CompletedTask;
+                };
+            }
+        }
+
+        private sealed class ThrowingInterceptor : IHttpInterceptor
+        {
+            public DispatchFunc Wrap(DispatchFunc next)
+            {
+                return (request, handler, context, cancellationToken) =>
+                    throw new InvalidOperationException("Test exception");
             }
         }
 

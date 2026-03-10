@@ -16,7 +16,7 @@ namespace TurboHTTP.Editor
             {
                 if (GUILayout.Button("Clear", EditorStyles.toolbarButton, GUILayout.Width(64f)))
                 {
-                    MonitorMiddleware.ClearHistory();
+                    MonitorInterceptor.ClearHistory();
                     _selectedEvent = null;
                     _historyDirty = true;
                     _filterDirty = true;

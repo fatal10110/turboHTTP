@@ -868,7 +868,11 @@ namespace TurboHTTP.Tests.Core
                 var context = new RequestContext(request);
 
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
-                    await transport.SendAsync(request, context, CancellationToken.None));
+                    await TransportDispatchHelper.CollectResponseAsync(
+                        transport,
+                        request,
+                        context,
+                        CancellationToken.None));
 
                 Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
             }).GetAwaiter().GetResult();

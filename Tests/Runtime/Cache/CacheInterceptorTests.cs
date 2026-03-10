@@ -1,0 +1,1216 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using NUnit.Framework;
+using TurboHTTP.Cache;
+using TurboHTTP.Core;
+using TurboHTTP.Middleware;
+using TurboHTTP.Testing;
+
+namespace TurboHTTP.Tests.Cache
+{
+    [TestFixture]
+    public class CacheInterceptorTests
+    {
+        [Test]
+        public void CacheInterceptor_CachesSuccessfulGetRequests()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    Encoding.UTF8.GetBytes("payload"));
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/data"));
+
+                var response1 = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var response2 = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(HttpStatusCode.OK, response1.StatusCode);
+                Assert.AreEqual(HttpStatusCode.OK, response2.StatusCode);
+                Assert.AreEqual(1, transport.RequestCount);
+                Assert.AreEqual("HIT", response2.Headers.Get("X-Cache"));
+                Assert.AreEqual("payload", response2.GetBodyAsString());
+                Assert.AreEqual(1, await storage.GetCountAsync());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_CacheHit_SetsAgeHeader()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    Encoding.UTF8.GetBytes("payload"));
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/age"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var cached = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual("HIT", cached.Headers.Get("X-Cache"));
+                Assert.IsTrue(int.TryParse(cached.Headers.Get("Age"), out var ageSeconds));
+                Assert.GreaterOrEqual(ageSeconds, 0);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_CacheHit_UsesIndependentBodySnapshot()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+                var upstreamBody = Encoding.UTF8.GetBytes("payload");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    upstreamBody);
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/zerocopy"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                upstreamBody[0] = (byte)'X';
+
+                var hit = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                Assert.AreEqual("HIT", hit.Headers.Get("X-Cache"));
+                Assert.AreEqual("payload", hit.GetBodyAsString());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_RespectsNoStore()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "no-store");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    Encoding.UTF8.GetBytes("payload"));
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/no-store"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, transport.RequestCount);
+                Assert.AreEqual(0, await storage.GetCountAsync());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_RevalidatesWithETag_On304()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                int callCount = 0;
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "no-cache");
+                    headers.Set("ETag", "\"v1\"");
+
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual("\"v1\"", req.Headers.Get("If-None-Match"));
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotModified,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/revalidate"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var revalidated = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual(HttpStatusCode.OK, revalidated.StatusCode);
+                Assert.AreEqual("REVALIDATED", revalidated.Headers.Get("X-Cache"));
+                Assert.AreEqual("payload", revalidated.GetBodyAsString());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_RequestNoCache_ForcesRevalidationOfFreshEntry()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=120");
+                    headers.Set("ETag", "\"fresh-v1\"");
+
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual("\"fresh-v1\"", req.Headers.Get("If-None-Match"));
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotModified,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/request-no-cache");
+                var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
+                await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
+
+                var secondHeaders = new HttpHeaders();
+                secondHeaders.Set("Cache-Control", "no-cache");
+                var secondRequest = new UHttpRequest(HttpMethod.GET, uri, secondHeaders);
+                var second = await pipeline.ExecuteAsync(secondRequest, new RequestContext(secondRequest));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_ResponseNoCacheFieldName_ForcesRevalidation()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "no-cache=\"Set-Cookie\"");
+                    headers.Set("ETag", "\"field-no-cache\"");
+
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual("\"field-no-cache\"", req.Headers.Get("If-None-Match"));
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotModified,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/no-cache-field"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_RevalidateModifiedWithNoStore_EvictsOldEntry()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    var headers = new HttpHeaders();
+
+                    if (callCount == 1)
+                    {
+                        headers.Set("Cache-Control", "max-age=120");
+                        headers.Set("ETag", "\"v1\"");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("v1"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    if (callCount == 2)
+                    {
+                        Assert.AreEqual("\"v1\"", req.Headers.Get("If-None-Match"));
+                        headers.Set("Cache-Control", "no-store");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("v2"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    headers.Set("Cache-Control", "max-age=120");
+                    headers.Set("ETag", "\"v3\"");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        headers,
+                        Encoding.UTF8.GetBytes("v3"),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/revalidate-modified-no-store");
+
+                var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var first = await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
+                Assert.AreEqual("v1", first.GetBodyAsString());
+
+                var secondHeaders = new HttpHeaders();
+                secondHeaders.Set("Cache-Control", "no-cache");
+                var secondRequest = new UHttpRequest(HttpMethod.GET, uri, secondHeaders);
+                var second = await pipeline.ExecuteAsync(secondRequest, new RequestContext(secondRequest));
+                Assert.AreEqual("v2", second.GetBodyAsString());
+
+                // Because the modified response was non-cacheable (no-store), the old entry
+                // must be evicted and the next request should go to transport again.
+                var thirdRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var third = await pipeline.ExecuteAsync(thirdRequest, new RequestContext(thirdRequest));
+                Assert.AreEqual("v3", third.GetBodyAsString());
+
+                Assert.AreEqual(3, callCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_Revalidation304_MergesAllResponseHeaders()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    if (callCount == 1)
+                    {
+                        var initialHeaders = new HttpHeaders();
+                        initialHeaders.Set("Cache-Control", "no-cache");
+                        initialHeaders.Set("ETag", "\"merge-v1\"");
+                        initialHeaders.Set("X-Origin", "initial");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            initialHeaders,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    var notModifiedHeaders = new HttpHeaders();
+                    notModifiedHeaders.Set("ETag", "\"merge-v1\"");
+                    notModifiedHeaders.Set("X-Revalidated", "applied");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotModified,
+                        notModifiedHeaders,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/merge-headers"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
+                Assert.AreEqual("initial", second.Headers.Get("X-Origin"));
+                Assert.AreEqual("applied", second.Headers.Get("X-Revalidated"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_NormalizesQueryParameterOrder()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    Encoding.UTF8.GetBytes("payload"));
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var requestA = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/data?b=2&a=1"));
+                var requestB = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/data?a=1&b=2"));
+
+                await pipeline.ExecuteAsync(requestA, new RequestContext(requestA));
+                var cached = await pipeline.ExecuteAsync(requestB, new RequestContext(requestB));
+
+                Assert.AreEqual(1, transport.RequestCount);
+                Assert.AreEqual("HIT", cached.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_SeparatesAcceptEncodingVariants()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=60");
+                    headers.Set("Vary", "Accept-Encoding");
+
+                    var acceptEncoding = req.Headers.Get("Accept-Encoding");
+                    var body = string.Equals(acceptEncoding, "gzip", StringComparison.OrdinalIgnoreCase)
+                        ? Encoding.UTF8.GetBytes("gzip-body")
+                        : Encoding.UTF8.GetBytes("identity-body");
+
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        headers,
+                        body,
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var gzipHeaders = new HttpHeaders();
+                gzipHeaders.Set("Accept-Encoding", "gzip");
+
+                var gzipRequestA = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/asset"), gzipHeaders);
+                var identityRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/asset"));
+                var gzipRequestB = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/asset"), gzipHeaders);
+
+                await pipeline.ExecuteAsync(gzipRequestA, new RequestContext(gzipRequestA));
+                await pipeline.ExecuteAsync(identityRequest, new RequestContext(identityRequest));
+                var gzipCached = await pipeline.ExecuteAsync(gzipRequestB, new RequestContext(gzipRequestB));
+
+                Assert.AreEqual(2, transport.RequestCount);
+                Assert.AreEqual("HIT", gzipCached.Headers.Get("X-Cache"));
+                Assert.AreEqual("gzip-body", gzipCached.GetBodyAsString());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_StripsHopByHopHeadersBeforeStorage()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=60");
+                    headers.Set("Connection", "keep-alive, X-Hop");
+                    headers.Set("Keep-Alive", "timeout=30");
+                    headers.Set("Transfer-Encoding", "chunked");
+                    headers.Set("X-Hop", "volatile");
+                    headers.Set("X-Stable", "persisted");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        headers,
+                        Encoding.UTF8.GetBytes("payload"),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/hop-strip"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual("HIT", second.Headers.Get("X-Cache"));
+                Assert.IsFalse(second.Headers.Contains("Connection"));
+                Assert.IsFalse(second.Headers.Contains("Keep-Alive"));
+                Assert.IsFalse(second.Headers.Contains("Transfer-Encoding"));
+                Assert.IsFalse(second.Headers.Contains("X-Hop"));
+                Assert.AreEqual("persisted", second.Headers.Get("X-Stable"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_DoesNotStore_WhenVaryHeaderCountExceedsLimit()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var varyBuilder = new StringBuilder();
+                for (int i = 0; i < 40; i++)
+                {
+                    if (i > 0)
+                        varyBuilder.Append(", ");
+                    varyBuilder.Append("x-vary-");
+                    varyBuilder.Append(i);
+                }
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=60");
+                    headers.Set("Vary", varyBuilder.ToString());
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        headers,
+                        Encoding.UTF8.GetBytes("payload"),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/vary-limit"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, transport.RequestCount);
+                Assert.IsNull(second.Headers.Get("X-Cache"));
+                Assert.AreEqual(0, await storage.GetCountAsync());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_InvalidatesOnUnsafeMethodForSameUri()
+        {
+            Task.Run(async () =>
+            {
+                int getVersion = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Method == HttpMethod.GET)
+                    {
+                        getVersion++;
+                        var getHeaders = new HttpHeaders();
+                        getHeaders.Set("Cache-Control", "max-age=60");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            getHeaders,
+                            Encoding.UTF8.GetBytes("v" + getVersion),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var uri = new Uri("https://example.test/profile");
+                var getRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var postRequest = new UHttpRequest(HttpMethod.POST, uri, body: Encoding.UTF8.GetBytes("update"));
+
+                var first = await pipeline.ExecuteAsync(getRequest, new RequestContext(getRequest));
+                var second = await pipeline.ExecuteAsync(getRequest, new RequestContext(getRequest));
+                await pipeline.ExecuteAsync(postRequest, new RequestContext(postRequest));
+                var third = await pipeline.ExecuteAsync(getRequest, new RequestContext(getRequest));
+
+                Assert.AreEqual("v1", first.GetBodyAsString());
+                Assert.AreEqual("v1", second.GetBodyAsString());
+                Assert.AreEqual("v2", third.GetBodyAsString());
+                Assert.AreEqual(3, transport.RequestCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_UnsafeInvalidation_AlsoInvalidatesLocationAndContentLocation()
+        {
+            Task.Run(async () =>
+            {
+                int profileVersion = 0;
+                int summaryVersion = 0;
+
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Method == HttpMethod.GET && req.Uri.AbsolutePath == "/profile")
+                    {
+                        profileVersion++;
+                        var headers = new HttpHeaders();
+                        headers.Set("Cache-Control", "max-age=60");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("profile-v" + profileVersion),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    if (req.Method == HttpMethod.GET && req.Uri.AbsolutePath == "/summary")
+                    {
+                        summaryVersion++;
+                        var headers = new HttpHeaders();
+                        headers.Set("Cache-Control", "max-age=60");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("summary-v" + summaryVersion),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    var postHeaders = new HttpHeaders();
+                    postHeaders.Set("Location", "/profile");
+                    postHeaders.Set("Content-Location", "/summary");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        postHeaders,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var profileUri = new Uri("https://example.test/profile");
+                var summaryUri = new Uri("https://example.test/summary");
+                var updateUri = new Uri("https://example.test/update");
+
+                var profileSeed = new UHttpRequest(HttpMethod.GET, profileUri);
+                await pipeline.ExecuteAsync(profileSeed, new RequestContext(profileSeed));
+                var summarySeed = new UHttpRequest(HttpMethod.GET, summaryUri);
+                await pipeline.ExecuteAsync(summarySeed, new RequestContext(summarySeed));
+
+                var profileCached = new UHttpRequest(HttpMethod.GET, profileUri);
+                await pipeline.ExecuteAsync(profileCached, new RequestContext(profileCached));
+                var summaryCached = new UHttpRequest(HttpMethod.GET, summaryUri);
+                await pipeline.ExecuteAsync(summaryCached, new RequestContext(summaryCached));
+
+                var updateRequest = new UHttpRequest(HttpMethod.POST, updateUri, body: Encoding.UTF8.GetBytes("update"));
+                await pipeline.ExecuteAsync(updateRequest, new RequestContext(updateRequest));
+
+                var profileAfterRequest = new UHttpRequest(HttpMethod.GET, profileUri);
+                var profileAfter = await pipeline.ExecuteAsync(profileAfterRequest, new RequestContext(profileAfterRequest));
+                var summaryAfterRequest = new UHttpRequest(HttpMethod.GET, summaryUri);
+                var summaryAfter = await pipeline.ExecuteAsync(summaryAfterRequest, new RequestContext(summaryAfterRequest));
+
+                Assert.AreEqual("profile-v2", profileAfter.GetBodyAsString());
+                Assert.AreEqual("summary-v2", summaryAfter.GetBodyAsString());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_RevalidatesExpiredEntries_ThatHaveValidators()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=0");
+                    headers.Set("ETag", "\"v1\"");
+
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual("\"v1\"", req.Headers.Get("If-None-Match"));
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotModified,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/expired-revalidate"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
+                Assert.AreEqual("payload", second.GetBodyAsString());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_StaleWhileRevalidate_ServesStaleAndUsesBackgroundContext()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+                var backgroundContextTcs = new TaskCompletionSource<RequestContext>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var currentCall = Interlocked.Increment(ref callCount);
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=0, stale-while-revalidate=60");
+                    headers.Set("ETag", "\"swr-v1\"");
+
+                    if (currentCall == 1)
+                    {
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    backgroundContextTcs.TrySetResult(ctx);
+                    Assert.AreEqual("\"swr-v1\"", req.Headers.Get("If-None-Match"));
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotModified,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/stale-while-revalidate");
+
+                var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
+                await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
+                await WaitUntilAsync(
+                    async () => await storage.GetCountAsync().ConfigureAwait(false) == 1,
+                    TimeSpan.FromSeconds(1),
+                    "Initial cache store did not complete.");
+
+                var secondRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var secondContext = new RequestContext(secondRequest);
+                var second = await pipeline.ExecuteAsync(secondRequest, secondContext);
+
+                Assert.AreEqual("STALE", second.Headers.Get("X-Cache"));
+                Assert.AreEqual("payload", second.GetBodyAsString());
+                Assert.IsFalse(secondContext.Timeline.Any(evt => evt.Name == "CacheRevalidate"));
+
+                var backgroundContext = await TestHelpers.AssertCompletesWithinAsync(
+                    backgroundContextTcs.Task,
+                    TimeSpan.FromSeconds(1),
+                    "Background revalidation did not start.");
+
+                Assert.AreNotSame(secondContext, backgroundContext);
+                Assert.AreNotSame(secondContext.Request, backgroundContext.Request);
+                Assert.AreEqual(2, callCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_QueuesStoreAfterInnerResponseEndReturns()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new BlockingCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    Encoding.UTF8.GetBytes("payload"));
+
+                var pipeline = new InterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/store-order"));
+                var context = new RequestContext(request);
+                using var handler = new BlockingEndHandler();
+
+                var dispatchTask = Task.Run(async () =>
+                {
+                    await pipeline.Pipeline(request, handler, context, CancellationToken.None).ConfigureAwait(false);
+                });
+
+                Assert.IsTrue(handler.EndEntered.Wait(TimeSpan.FromSeconds(1)));
+                Assert.IsFalse(storage.SetStarted.IsSet);
+
+                handler.ReleaseEnd();
+
+                Assert.IsTrue(storage.SetStarted.Wait(TimeSpan.FromSeconds(1)));
+                await TestHelpers.AssertCompletesWithinAsync(
+                    dispatchTask,
+                    TimeSpan.FromSeconds(1),
+                    "Dispatch should not wait for cache storage completion.");
+
+                storage.ReleaseSet();
+                await TestHelpers.AssertCompletesWithinAsync(
+                    storage.SetCompleted.Task,
+                    TimeSpan.FromSeconds(1),
+                    "Background cache store did not finish after release.");
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_CachesRfc9111DefaultCacheable404Responses()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+                var transport = new MockTransport(
+                    HttpStatusCode.NotFound,
+                    headers,
+                    Encoding.UTF8.GetBytes("missing"));
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/not-found"));
+
+                var first = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(HttpStatusCode.NotFound, first.StatusCode);
+                Assert.AreEqual(HttpStatusCode.NotFound, second.StatusCode);
+                Assert.AreEqual("HIT", second.Headers.Get("X-Cache"));
+                Assert.AreEqual(1, transport.RequestCount);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_IgnoresSMaxAgeForPrivateCache()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=120, s-maxage=0");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    Encoding.UTF8.GetBytes("payload"));
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/s-maxage"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(1, transport.RequestCount);
+                Assert.AreEqual("HIT", second.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_SubtractsUpstreamAgeFromFreshnessLifetime()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=120");
+                    headers.Set("Age", "120");
+                    headers.Set("ETag", "\"aged\"");
+
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual("\"aged\"", req.Headers.Get("If-None-Match"));
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotModified,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/upstream-age"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_TreatsExpiresZeroAsExpiredImmediately()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    var headers = new HttpHeaders();
+                    headers.Set("Expires", "0");
+                    headers.Set("ETag", "\"expires-zero\"");
+
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual("\"expires-zero\"", req.Headers.Get("If-None-Match"));
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.NotModified,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/expires-zero"));
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual("REVALIDATED", second.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_AuthorizedRequest_CachesWhenResponseIsPublic()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy
+                {
+                    Storage = storage,
+                    AllowCacheForAuthorizedRequests = false
+                });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "public, max-age=60");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        headers,
+                        Encoding.UTF8.GetBytes("auth-cacheable"),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var requestHeaders = new HttpHeaders();
+                requestHeaders.Set("Authorization", "Bearer token");
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/auth-public"), requestHeaders);
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+                var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(1, transport.RequestCount);
+                Assert.AreEqual("HIT", second.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_DoesNotReorderDuplicateQueryParameters()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=60");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        headers,
+                        Encoding.UTF8.GetBytes(req.Uri.Query),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var requestA = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/dup?a=2&a=1"));
+                var requestB = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/dup?a=1&a=2"));
+
+                await pipeline.ExecuteAsync(requestA, new RequestContext(requestA));
+                var second = await pipeline.ExecuteAsync(requestB, new RequestContext(requestB));
+
+                Assert.AreEqual(2, callCount);
+                Assert.IsNull(second.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_HandlesConcurrentRequests_WithoutCorruptingCache()
+        {
+            Task.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "max-age=60");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        headers,
+                        Encoding.UTF8.GetBytes("payload"),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/contention");
+                var tasks = new List<Task<UHttpResponse>>();
+                for (int i = 0; i < 20; i++)
+                {
+                    var request = new UHttpRequest(HttpMethod.GET, uri);
+                    tasks.Add(pipeline.ExecuteAsync(request, new RequestContext(request)));
+                }
+
+                var responses = await Task.WhenAll(tasks);
+                for (int i = 0; i < responses.Length; i++)
+                {
+                    Assert.AreEqual(HttpStatusCode.OK, responses[i].StatusCode);
+                    Assert.AreEqual("payload", responses[i].GetBodyAsString());
+                }
+
+                var finalRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var cached = await pipeline.ExecuteAsync(finalRequest, new RequestContext(finalRequest));
+                Assert.AreEqual("HIT", cached.Headers.Get("X-Cache"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_ImplementsIDisposable()
+        {
+            Assert.IsTrue(new CacheInterceptor() is IDisposable);
+        }
+
+        private static async Task WaitUntilAsync(
+            Func<Task<bool>> predicate,
+            TimeSpan timeout,
+            string failureMessage)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                if (await predicate().ConfigureAwait(false))
+                    return;
+
+                await Task.Delay(10).ConfigureAwait(false);
+            }
+
+            Assert.Fail(failureMessage);
+        }
+
+        private sealed class BlockingCacheStorage : ICacheStorage
+        {
+            private readonly TaskCompletionSource<object> _allowSet =
+                new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal ManualResetEventSlim SetStarted { get; } = new ManualResetEventSlim(false);
+            internal TaskCompletionSource<object> SetCompleted { get; } =
+                new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult<CacheEntry>(null);
+            }
+
+            public async Task SetAsync(string key, CacheEntry entry, CancellationToken cancellationToken = default)
+            {
+                SetStarted.Set();
+                using (cancellationToken.Register(() => _allowSet.TrySetCanceled(cancellationToken)))
+                {
+                    await _allowSet.Task.ConfigureAwait(false);
+                }
+
+                SetCompleted.TrySetResult(null);
+            }
+
+            public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
+            {
+                return Task.CompletedTask;
+            }
+
+            public Task ClearAsync(CancellationToken cancellationToken = default)
+            {
+                return Task.CompletedTask;
+            }
+
+            public Task<int> GetCountAsync(CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult(0);
+            }
+
+            public Task<long> GetSizeAsync(CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult(0L);
+            }
+
+            internal void ReleaseSet()
+            {
+                _allowSet.TrySetResult(null);
+            }
+        }
+
+        private sealed class BlockingEndHandler : IHttpHandler, IDisposable
+        {
+            private readonly ManualResetEventSlim _allowEnd = new ManualResetEventSlim(false);
+
+            internal ManualResetEventSlim EndEntered { get; } = new ManualResetEventSlim(false);
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+            }
+
+            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            {
+            }
+
+            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
+            {
+            }
+
+            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            {
+                EndEntered.Set();
+                _allowEnd.Wait(TimeSpan.FromSeconds(5));
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+            }
+
+            internal void ReleaseEnd()
+            {
+                _allowEnd.Set();
+            }
+
+            public void Dispose()
+            {
+                _allowEnd.Set();
+                _allowEnd.Dispose();
+                EndEntered.Dispose();
+            }
+        }
+    }
+}

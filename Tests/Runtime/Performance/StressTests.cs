@@ -245,9 +245,9 @@ namespace TurboHTTP.Tests.Performance
                 {
                     Transport = transport,
                     DisposeTransport = false,
-                    Middlewares = new List<IHttpMiddleware>
+                    Interceptors = new List<IHttpInterceptor>
                     {
-                        new ConcurrencyMiddleware(limiter)
+                        new ConcurrencyInterceptor(limiter)
                     }
                 });
 
@@ -310,9 +310,9 @@ namespace TurboHTTP.Tests.Performance
                 {
                     Transport = transport,
                     DisposeTransport = false,
-                    Middlewares = new List<IHttpMiddleware>
+                    Interceptors = new List<IHttpInterceptor>
                     {
-                        new ConcurrencyMiddleware(limiter)
+                        new ConcurrencyInterceptor(limiter)
                     }
                 });
 
@@ -540,7 +540,7 @@ namespace TurboHTTP.Tests.Performance
         {
             Task.Run(async () =>
             {
-                var middleware = new ConcurrencyMiddleware(maxConnectionsPerHost: 1, maxTotalConnections: 1);
+                var middleware = new ConcurrencyInterceptor(maxConnectionsPerHost: 1, maxTotalConnections: 1);
                 Assert.IsTrue(middleware is IDisposable);
 
                 var transport = new MockTransport(HttpStatusCode.OK);
@@ -548,7 +548,7 @@ namespace TurboHTTP.Tests.Performance
                 {
                     Transport = transport,
                     DisposeTransport = false,
-                    Middlewares = new List<IHttpMiddleware> { middleware }
+                    Interceptors = new List<IHttpInterceptor> { middleware }
                 });
 
                 client.Dispose();
@@ -558,15 +558,18 @@ namespace TurboHTTP.Tests.Performance
 
                 try
                 {
-                    await middleware.InvokeAsync(
+                    var dispatch = middleware.Wrap((req, handler, ctx, ct) =>
+                    {
+                        handler.OnRequestStart(req, ctx);
+                        handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
+                        handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                        return Task.CompletedTask;
+                    });
+
+                    await DispatchBridge.CollectResponseAsync(
+                        dispatch,
                         request,
                         context,
-                        (req, ctx, ct) => new ValueTask<UHttpResponse>(new UHttpResponse(
-                            HttpStatusCode.OK,
-                            new HttpHeaders(),
-                            Array.Empty<byte>(),
-                            ctx.Elapsed,
-                            req)),
                         CancellationToken.None);
                     Assert.Fail("Expected ObjectDisposedException");
                 }

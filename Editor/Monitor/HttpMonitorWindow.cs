@@ -59,7 +59,7 @@ namespace TurboHTTP.Editor
         private void OnEnable()
         {
             _maskConfidentialHeaders = DefaultMaskConfidentialHeaders;
-            MonitorMiddleware.OnRequestCaptured += OnRequestCaptured;
+            MonitorInterceptor.OnRequestCaptured += OnRequestCaptured;
             _historyDirty = true;
             _filterDirty = true;
             RefreshHistoryCacheIfDirty();
@@ -67,7 +67,7 @@ namespace TurboHTTP.Editor
 
         private void OnDisable()
         {
-            MonitorMiddleware.OnRequestCaptured -= OnRequestCaptured;
+            MonitorInterceptor.OnRequestCaptured -= OnRequestCaptured;
             EditorApplication.update -= DeferredRepaint;
             _deferredRepaintScheduled = false;
             Interlocked.Exchange(ref _pendingUiRefresh, 0);
@@ -156,7 +156,7 @@ namespace TurboHTTP.Editor
                 return;
             }
 
-            MonitorMiddleware.GetHistorySnapshot(_historyCache);
+            MonitorInterceptor.GetHistorySnapshot(_historyCache);
             _historyDirty = false;
             _filterDirty = true;
 

@@ -213,6 +213,7 @@ namespace TurboHTTP.Cache
                 responseUrl: entry.ResponseUrl,
                 varyHeaders: entry.VaryHeaders,
                 varyKey: entry.VaryKey,
+                staleWhileRevalidate: entry.StaleWhileRevalidate,
                 mustRevalidate: entry.MustRevalidate);
         }
 
@@ -266,7 +267,7 @@ namespace TurboHTTP.Cache
             {
                 var previous = node.Previous;
                 var key = node.Value;
-                if (_entries.TryGetValue(key, out var slot) && slot.Entry.IsExpired(utcNow))
+                if (_entries.TryGetValue(key, out var slot) && slot.Entry.ShouldEvict(utcNow))
                     RemoveSlotUnsafe(key, slot);
                 node = previous;
             }

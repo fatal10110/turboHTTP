@@ -16,11 +16,11 @@ namespace TurboHTTP.Tests.Integration
     public class PipelineIntegrationTests
     {
         [Test]
-        public void FullPipeline_AllMiddlewaresExecute()        {
+        public void FullPipeline_AllInterceptorsExecute()        {
             Task.Run(async () =>
             {
                 var logs = new List<string>();
-                var metricsMiddleware = new MetricsMiddleware();
+                var metricsMiddleware = new MetricsInterceptor();
 
                 var defaultHeaders = new HttpHeaders();
                 defaultHeaders.Set("X-Client", "TurboHTTP");
@@ -28,12 +28,12 @@ namespace TurboHTTP.Tests.Integration
                 var options = new UHttpClientOptions
                 {
                     Transport = new MockTransport(),
-                    Middlewares = new List<IHttpMiddleware>
+                    Interceptors = new List<IHttpInterceptor>
                     {
-                        new LoggingMiddleware(msg => logs.Add(msg)),
+                        new LoggingInterceptor(msg => logs.Add(msg)),
                         metricsMiddleware,
-                        new DefaultHeadersMiddleware(defaultHeaders),
-                        new AuthMiddleware(new StaticTokenProvider("test-token"))
+                        new DefaultHeadersInterceptor(defaultHeaders),
+                        new AuthInterceptor(new StaticTokenProvider("test-token"))
                     }
                 };
 
@@ -44,7 +44,7 @@ namespace TurboHTTP.Tests.Integration
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
                 // Verify logging captured request + response
-                Assert.AreEqual(2, logs.Count);
+                Assert.AreEqual(3, logs.Count);
 
                 // Verify metrics
                 Assert.AreEqual(1, metricsMiddleware.Metrics.TotalRequests);
@@ -101,10 +101,10 @@ namespace TurboHTTP.Tests.Integration
                     InitialDelay = TimeSpan.FromMilliseconds(1)
                 };
 
-                var pipeline = new HttpPipeline(
-                    new IHttpMiddleware[]
+                var pipeline = new TestInterceptorPipeline(
+                    new IHttpInterceptor[]
                     {
-                        new RetryMiddleware(retryPolicy)
+                        new RetryInterceptor(retryPolicy)
                     },
                     transport);
 

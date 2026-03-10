@@ -544,11 +544,11 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true,
                     FollowRedirects = true,
                     MaxRedirects = 10,
-                    Middlewares = new List<IHttpMiddleware>
+                    Interceptors = new List<IHttpInterceptor>
                     {
-                        new RedirectMiddleware(),
-                        new CookieMiddleware(),
-                        new CacheMiddleware(new CachePolicy
+                        new RedirectInterceptor(),
+                        new CookieInterceptor(),
+                        new CacheInterceptor(new CachePolicy
                         {
                             Storage = new MemoryCacheStorage(),
                             AllowSetCookieResponses = true

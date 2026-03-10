@@ -138,23 +138,23 @@ namespace TurboHTTP.Tests.Performance
         {
             const int sampleCount = 320;
             var transport = new MockTransport(HttpStatusCode.OK, body: Array.Empty<byte>());
-            var middleware = new List<IHttpMiddleware>(8)
+            var middleware = new List<IHttpInterceptor>(8)
             {
-                new HeaderTagMiddleware("X-P19-A"),
-                new HeaderTagMiddleware("X-P19-B"),
-                new HeaderTagMiddleware("X-P19-C"),
-                new HeaderTagMiddleware("X-P19-D"),
-                new HeaderTagMiddleware("X-P19-E"),
-                new HeaderTagMiddleware("X-P19-F"),
-                new HeaderTagMiddleware("X-P19-G"),
-                new HeaderTagMiddleware("X-P19-H")
+                new HeaderTagInterceptor("X-P19-A"),
+                new HeaderTagInterceptor("X-P19-B"),
+                new HeaderTagInterceptor("X-P19-C"),
+                new HeaderTagInterceptor("X-P19-D"),
+                new HeaderTagInterceptor("X-P19-E"),
+                new HeaderTagInterceptor("X-P19-F"),
+                new HeaderTagInterceptor("X-P19-G"),
+                new HeaderTagInterceptor("X-P19-H")
             };
 
             using var client = new UHttpClient(new UHttpClientOptions
             {
                 Transport = transport,
                 DisposeTransport = false,
-                Middlewares = middleware
+                Interceptors = middleware
             });
 
             return await MeasureScenarioAsync(
@@ -673,23 +673,24 @@ namespace TurboHTTP.Tests.Performance
             GC.Collect();
         }
 
-        private sealed class HeaderTagMiddleware : IHttpMiddleware
+        private sealed class HeaderTagInterceptor : IHttpInterceptor
         {
             private readonly string _headerName;
 
-            public HeaderTagMiddleware(string headerName)
+            public HeaderTagInterceptor(string headerName)
             {
                 _headerName = headerName;
             }
 
-            public ValueTask<UHttpResponse> InvokeAsync(
-                UHttpRequest request,
-                RequestContext context,
-                HttpPipelineDelegate next,
-                CancellationToken ct)
+            public DispatchFunc Wrap(DispatchFunc next)
             {
-                request.Headers.Set(_headerName, "1");
-                return next(request, context, ct);
+                return (request, handler, context, ct) =>
+                {
+                    var requestForNext = request.Clone();
+                    requestForNext.WithHeader(_headerName, "1");
+                    context.UpdateRequest(requestForNext);
+                    return next(requestForNext, handler, context, ct);
+                };
             }
         }
 

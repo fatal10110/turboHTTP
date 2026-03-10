@@ -38,13 +38,13 @@ namespace TurboHTTP.Tests.Editor
             _savedBinaryPreviewKb = TurboHttpSettings.BinaryPreviewKb;
             _savedMaskConfidentialHeaders = TurboHttpSettings.MaskConfidentialHeaders;
 
-            _savedCaptureEnabled = MonitorMiddleware.CaptureEnabled;
-            _savedMonitorHistoryCapacity = MonitorMiddleware.HistoryCapacity;
-            _savedMonitorMaxCaptureSizeBytes = MonitorMiddleware.MaxCaptureSizeBytes;
-            _savedMonitorBinaryPreviewBytes = MonitorMiddleware.BinaryPreviewBytes;
+            _savedCaptureEnabled = MonitorInterceptor.CaptureEnabled;
+            _savedMonitorHistoryCapacity = MonitorInterceptor.HistoryCapacity;
+            _savedMonitorMaxCaptureSizeBytes = MonitorInterceptor.MaxCaptureSizeBytes;
+            _savedMonitorBinaryPreviewBytes = MonitorInterceptor.BinaryPreviewBytes;
             _savedWindowDefaultMaskHeaders = HttpMonitorWindow.DefaultMaskConfidentialHeaders;
 
-            MonitorMiddleware.ClearHistory();
+            MonitorInterceptor.ClearHistory();
             CloseAllMonitorWindows();
         }
 
@@ -58,12 +58,12 @@ namespace TurboHTTP.Tests.Editor
             TurboHttpSettings.MaskConfidentialHeaders = _savedMaskConfidentialHeaders;
             InvokeApplyMonitorPreferences();
 
-            MonitorMiddleware.CaptureEnabled = _savedCaptureEnabled;
-            MonitorMiddleware.HistoryCapacity = _savedMonitorHistoryCapacity;
-            MonitorMiddleware.MaxCaptureSizeBytes = _savedMonitorMaxCaptureSizeBytes;
-            MonitorMiddleware.BinaryPreviewBytes = _savedMonitorBinaryPreviewBytes;
+            MonitorInterceptor.CaptureEnabled = _savedCaptureEnabled;
+            MonitorInterceptor.HistoryCapacity = _savedMonitorHistoryCapacity;
+            MonitorInterceptor.MaxCaptureSizeBytes = _savedMonitorMaxCaptureSizeBytes;
+            MonitorInterceptor.BinaryPreviewBytes = _savedMonitorBinaryPreviewBytes;
             HttpMonitorWindow.DefaultMaskConfidentialHeaders = _savedWindowDefaultMaskHeaders;
-            MonitorMiddleware.ClearHistory();
+            MonitorInterceptor.ClearHistory();
             CloseAllMonitorWindows();
         }
 
@@ -94,10 +94,10 @@ namespace TurboHTTP.Tests.Editor
 
             InvokeApplyMonitorPreferences();
 
-            Assert.IsFalse(MonitorMiddleware.CaptureEnabled);
-            Assert.AreEqual(222, MonitorMiddleware.HistoryCapacity);
-            Assert.AreEqual(7 * 1024 * 1024, MonitorMiddleware.MaxCaptureSizeBytes);
-            Assert.AreEqual(13 * 1024, MonitorMiddleware.BinaryPreviewBytes);
+            Assert.IsFalse(MonitorInterceptor.CaptureEnabled);
+            Assert.AreEqual(222, MonitorInterceptor.HistoryCapacity);
+            Assert.AreEqual(7 * 1024 * 1024, MonitorInterceptor.MaxCaptureSizeBytes);
+            Assert.AreEqual(13 * 1024, MonitorInterceptor.BinaryPreviewBytes);
             Assert.IsTrue(HttpMonitorWindow.DefaultMaskConfidentialHeaders);
         }
 
@@ -114,11 +114,11 @@ namespace TurboHTTP.Tests.Editor
         [Test]
         public void ReplayBuilder_BuildsReplayRequestFromCapturedEvent()
         {
-            Assert.Ignore("Pending Phase 22.3 MonitorMiddleware -> MonitorInterceptor migration.");
+            Assert.Ignore("Replay builder coverage still needs a follow-up editor test harness after the MonitorInterceptor rewrite.");
 
-            MonitorMiddleware.ClearHistory();
-            MonitorMiddleware.MaxCaptureSizeBytes = 4;
-            MonitorMiddleware.BinaryPreviewBytes = 4;
+            MonitorInterceptor.ClearHistory();
+            MonitorInterceptor.MaxCaptureSizeBytes = 4;
+            MonitorInterceptor.BinaryPreviewBytes = 4;
 
             var requestHeaders = new HttpHeaders();
             requestHeaders.Set("Host", "api.example.com");
@@ -131,7 +131,7 @@ namespace TurboHTTP.Tests.Editor
                 requestHeaders,
                 Encoding.UTF8.GetBytes("abcdefghi"));
             var snapshot = new List<HttpMonitorEvent>();
-            MonitorMiddleware.GetHistorySnapshot(snapshot);
+            MonitorInterceptor.GetHistorySnapshot(snapshot);
             Assert.AreEqual(1, snapshot.Count);
 
             var success = InvokeTryBuildReplayRequest(

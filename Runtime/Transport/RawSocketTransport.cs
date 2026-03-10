@@ -110,7 +110,7 @@ namespace TurboHTTP.Transport
 
         private static UHttpException MapException(Exception ex) =>
             ex as UHttpException ??
-            new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message), ex);
+            new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
 
         private async Task DispatchCoreAsync(
             UHttpRequest request,

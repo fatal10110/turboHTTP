@@ -4,7 +4,7 @@ using System.Collections.Concurrent;
 namespace TurboHTTP.Observability
 {
     /// <summary>
-    /// HTTP metrics collected by MetricsMiddleware.
+    /// HTTP metrics collected by MetricsInterceptor.
     /// Long fields are updated atomically via Interlocked operations.
     /// AverageResponseTimeMs is stored as long bits (via BitConverter) for
     /// atomicity on 32-bit IL2CPP where double writes can tear.

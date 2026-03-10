@@ -61,6 +61,9 @@ namespace TurboHTTP.Transport.Http1
 
         internal void ReleaseBodyBuffers()
         {
+            // Fixed-body responses currently wrap a direct ArrayPool<byte> rent in
+            // ReadOnlyMemory<byte>, so TryGetArray succeeds here. If the storage model
+            // changes in a future phase, this release path must be updated too.
             if (BodyFromPool &&
                 MemoryMarshal.TryGetArray(Body, out ArraySegment<byte> bodySegment) &&
                 bodySegment.Array != null)
