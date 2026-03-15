@@ -27,7 +27,7 @@ public static class AssertAsync
 
         try
         {
-            asyncDelegate().GetAwaiter().GetResult();
+            Task.Run(asyncDelegate).GetAwaiter().GetResult();
         }
         catch (T expected)
         {
@@ -49,7 +49,7 @@ public static class AssertAsync
         _ = preferValueTask;
         try
         {
-            asyncDelegate().GetAwaiter().GetResult();
+            Task.Run(async () => await asyncDelegate().ConfigureAwait(false)).GetAwaiter().GetResult();
         }
         catch (T expected)
         {
@@ -70,7 +70,7 @@ public static class AssertAsync
 
         try
         {
-            asyncDelegate().GetAwaiter().GetResult();
+            Task.Run(async () => await asyncDelegate().ConfigureAwait(false)).GetAwaiter().GetResult();
         }
         catch (T expected)
         {
@@ -91,7 +91,7 @@ public static class AssertAsync
 
         try
         {
-            asyncDelegate().GetAwaiter().GetResult();
+            Task.Run(asyncDelegate).GetAwaiter().GetResult();
         }
         catch (T expected)
         {

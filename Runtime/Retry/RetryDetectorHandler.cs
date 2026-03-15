@@ -1,5 +1,6 @@
 using System;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Retry
 {
@@ -26,6 +27,15 @@ namespace TurboHTTP.Retry
         {
             if (statusCode >= 500 && statusCode < 600)
             {
+                if (!context.GetState(TransportBehaviorFlags.SelfDrainsResponseBody, false))
+                {
+                    throw new InvalidOperationException(
+                        "RetryDetectorHandler requires a transport that drains response bodies independently of handler callback forwarding.");
+                }
+
+                // Retryable 5xx responses are suppressed so the outer interceptor can re-dispatch.
+                // This is only safe when the transport continues draining or aborting the response
+                // body without relying on downstream handler consumption.
                 WasRetryable = true;
                 return;
             }

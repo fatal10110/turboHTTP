@@ -64,6 +64,22 @@ namespace TurboHTTP.Tests.UnityModule
         }
 
         [Test]
+        public void DownloadToTempCacheAsync_RejectsPathTraversal()
+        {
+            var transport = new MockTransport(HttpStatusCode.OK, body: new byte[] { 1, 2, 3 });
+            using var client = new UHttpClient(new UHttpClientOptions
+            {
+                Transport = transport,
+                DisposeTransport = true
+            });
+
+            AssertAsync.ThrowsAsync<ArgumentException>(() =>
+                client.DownloadToTempCacheAsync(
+                    "https://example.test/resource",
+                    Path.Combine("..", "escape.bin")));
+        }
+
+        [Test]
         public void CreateUnityClient_AppliesDefaultUserAgent_AndAllowsOverride()
         {
             Task.Run(async () =>

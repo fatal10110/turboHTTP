@@ -17,7 +17,7 @@ namespace TurboHTTP.Tests.Middleware
         [Test]
         public void RedirectInterceptor_FollowsRedirectChain()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -50,13 +50,13 @@ namespace TurboHTTP.Tests.Middleware
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual("done", response.GetBodyAsString());
                 Assert.AreEqual(2, transport.RequestCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_EnforcesMaxRedirects()
         {
-            Task.Run(() =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -79,13 +79,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
                 StringAssert.Contains("Redirect limit exceeded", ex.Message);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_RewritesPostToGet_On302()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -121,13 +121,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_RewritesPutToGet_On303()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -163,13 +163,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_RewritesDeleteToGet_On303()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -204,13 +204,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_PreservesMethodAndBody_On307()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -246,13 +246,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_PreservesMethodAndBody_On308()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -288,13 +288,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_StripsAuthorizationOnCrossOriginRedirect()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -328,13 +328,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_ResolvesRelativeLocation()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 Uri finalRequestUri = null;
 
@@ -369,13 +369,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.IsNotNull(finalRequestUri);
                 Assert.AreEqual("https://example.test/final?x=1", finalRequestUri.AbsoluteUri);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_InheritsFragment_WhenLocationHasNoFragment()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 Uri finalRequestUri = null;
 
@@ -410,13 +410,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.IsNotNull(finalRequestUri);
                 Assert.AreEqual("https://example.test/final#frag", finalRequestUri.AbsoluteUri);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_DetectsRedirectLoops()
         {
-            Task.Run(() =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -440,13 +440,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
                 StringAssert.Contains("Redirect loop detected", ex.Message);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_CanBeDisabledPerRequestMetadata()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -476,13 +476,13 @@ namespace TurboHTTP.Tests.Middleware
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.Found, response.StatusCode);
                 Assert.AreEqual(1, transport.RequestCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_BlocksHttpsToHttpDowngrade_ByDefault()
         {
-            Task.Run(() =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -516,13 +516,13 @@ namespace TurboHTTP.Tests.Middleware
                 Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
                 StringAssert.Contains("Blocked insecure redirect downgrade", ex.Message);
                 Assert.AreEqual(1, transport.RequestCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_AllowsHttpsToHttpDowngrade_WhenEnabled()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -555,13 +555,55 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(2, transport.RequestCount);
-            }).GetAwaiter().GetResult();
+            });
+        }
+
+        [Test]
+        public void RedirectInterceptor_ClonesPreservedBodyAcrossRedirectHop()
+        {
+            AssertAsync.Run(async () =>
+            {
+                UHttpRequest redirectedRequest = null;
+                var originalBody = Encoding.UTF8.GetBytes("payload");
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    handler.OnRequestStart(req, ctx);
+
+                    if (req.Uri.AbsolutePath == "/start")
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/next");
+                        handler.OnResponseStart((int)HttpStatusCode.TemporaryRedirect, headers, ctx);
+                        handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                        return Task.CompletedTask;
+                    }
+
+                    redirectedRequest = req;
+                    handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
+                    handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                    return Task.CompletedTask;
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { new RedirectInterceptor() }, transport);
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("https://example.test/start"),
+                    body: originalBody);
+
+                using var _ = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                originalBody[0] = (byte)'X';
+
+                Assert.NotNull(redirectedRequest);
+                Assert.AreEqual(HttpMethod.POST, redirectedRequest.Method);
+                Assert.AreEqual("payload", Encoding.UTF8.GetString(redirectedRequest.Body.ToArray()));
+            });
         }
 
         [Test]
         public void RedirectInterceptor_DetectsLoop_WhenStatusCodesDifferAcrossHops()
         {
-            Task.Run(() =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
@@ -595,13 +637,13 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
                 StringAssert.Contains("Redirect loop detected", ex.Message);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_EnforcesTotalTimeoutAcrossRedirectHops()
         {
-            Task.Run(() =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport(
                     (Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>>)(async (req, ctx, ct) =>
@@ -642,13 +684,13 @@ namespace TurboHTTP.Tests.Middleware
                 Assert.AreEqual(UHttpErrorType.Timeout, ex.HttpError.Type);
                 StringAssert.Contains("Redirect chain exceeded total timeout budget", ex.Message);
                 Assert.AreEqual(2, transport.RequestCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RedirectInterceptor_FailsWhenRedirectDispatchCompletesWithoutTerminalCallback()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 int callCount = 0;
                 var transport = new CallbackTransport((req, handler, ctx, ct) =>
@@ -679,7 +721,89 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.That(ex.HttpError.Message, Does.Contain("terminal callback"));
                 Assert.AreEqual(2, callCount);
-            }).GetAwaiter().GetResult();
+            });
+        }
+
+        [Test]
+        public void RedirectInterceptor_SynchronousRedirectDispatchFault_CompletesWithOnResponseError()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    callCount++;
+                    handler.OnRequestStart(req, ctx);
+
+                    if (callCount == 1)
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/final");
+                        handler.OnResponseStart((int)HttpStatusCode.Found, headers, ctx);
+                        handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                        return Task.CompletedTask;
+                    }
+
+                    throw new InvalidOperationException("redirect dispatch failed");
+                });
+
+                var pipeline = new InterceptorPipeline(new[] { new RedirectInterceptor() }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start"));
+                var context = new RequestContext(request);
+                var handler = new RecordingErrorHandler();
+
+                await pipeline.Pipeline(request, handler, context, CancellationToken.None);
+
+                Assert.AreEqual(2, handler.RequestStartCount);
+                Assert.IsFalse(handler.EndCalled);
+                Assert.IsNotNull(handler.LastError);
+                Assert.That(handler.LastError.Message, Does.Contain("redirect dispatch failed"));
+            });
+        }
+
+        [Test]
+        public void RedirectInterceptor_PreservesDownstreamOnResponseEndFailure()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    callCount++;
+                    handler.OnRequestStart(req, ctx);
+
+                    try
+                    {
+                        if (callCount == 1)
+                        {
+                            var redirectHeaders = new HttpHeaders();
+                            redirectHeaders.Set("Location", "/final");
+                            handler.OnResponseStart((int)HttpStatusCode.Found, redirectHeaders, ctx);
+                            handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                            return Task.CompletedTask;
+                        }
+
+                        handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
+                        handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                    }
+                    catch
+                    {
+                        // Simulate a transport that swallows downstream callback failures.
+                    }
+
+                    return Task.CompletedTask;
+                });
+
+                var pipeline = new InterceptorPipeline(new[] { new RedirectInterceptor() }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start"));
+                var context = new RequestContext(request);
+
+                var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(async () =>
+                    await pipeline.Pipeline(request, new ThrowOnEndHandler(), context, CancellationToken.None));
+
+                Assert.That(ex.Message, Does.Contain("downstream end failed"));
+                Assert.AreEqual(2, callCount);
+            });
         }
 
         private sealed class CallbackTransport : IHttpTransport
@@ -710,6 +834,60 @@ namespace TurboHTTP.Tests.Middleware
 
             public void Dispose()
             {
+            }
+        }
+
+        private sealed class ThrowOnEndHandler : IHttpHandler
+        {
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+            }
+
+            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            {
+            }
+
+            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
+            {
+            }
+
+            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            {
+                throw new InvalidOperationException("downstream end failed");
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+            }
+        }
+
+        private sealed class RecordingErrorHandler : IHttpHandler
+        {
+            public int RequestStartCount { get; private set; }
+            public bool EndCalled { get; private set; }
+            public UHttpException LastError { get; private set; }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+                RequestStartCount++;
+            }
+
+            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            {
+            }
+
+            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
+            {
+            }
+
+            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            {
+                EndCalled = true;
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                LastError = error;
             }
         }
     }

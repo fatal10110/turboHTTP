@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Tests;
 using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http2;
 using UnityEngine.TestTools;
@@ -94,7 +95,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
         [Test]
         public void WindowUpdate_IncreasesConnectionWindow()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -115,12 +116,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.IsTrue(conn.IsAlive);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void WindowUpdate_IncreasesStreamWindow()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -150,12 +151,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void WindowUpdate_Zero_ConnectionDies()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Zero WINDOW_UPDATE → PROTOCOL_ERROR
                 using var cts = new CancellationTokenSource(10000);
@@ -175,7 +176,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.IsFalse(conn.IsAlive);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [UnityTest]
@@ -215,7 +216,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                 uint rstError = ((uint)rst.Payload[0] << 24) | ((uint)rst.Payload[1] << 16) |
                                 ((uint)rst.Payload[2] << 8) | rst.Payload[3];
                 Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, rstError);
-                AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await task1);
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await task1);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<Http2ProtocolException>(ex.HttpError.InnerException);
 
                 // Connection should still be usable for new streams.
                 var request2 = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/two"));
@@ -236,7 +239,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
         [Test]
         public void WindowUpdate_Overflow_ConnectionDies()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // WINDOW_UPDATE that causes overflow → FLOW_CONTROL_ERROR [R2-3]
                 using var cts = new CancellationTokenSource(10000);
@@ -259,14 +262,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.IsFalse(conn.IsAlive);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- Data Sending and Flow Control ---
 
         [Test]
         public void DataSending_RespectsConnectionWindow()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Send a body larger than default window to verify chunking
                 using var cts = new CancellationTokenSource(15000);
@@ -305,12 +308,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 await responseTask;
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void DataReceiving_SendsWindowUpdate()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Server sends data that consumes more than half the window → client sends WINDOW_UPDATE
                 using var cts = new CancellationTokenSource(10000);
@@ -386,12 +389,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void WindowSize_AtomicAccess()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Verify Http2Stream.WindowSize uses Interlocked [GPT-6]
                 var testRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
@@ -420,12 +423,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(65435, stream.RecvWindowSize);
 
                 stream.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void DataSending_BlocksWhenWindowExhausted_ThenUnblocks()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Send body larger than window → blocks until WINDOW_UPDATE
                 using var cts = new CancellationTokenSource(15000);
@@ -528,13 +531,13 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
         // --- New tests for review fixes ---
 
         [Test]
         public void StreamLevelRecvWindow_SendsStreamWindowUpdate()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Fix 1: Verify stream-level WINDOW_UPDATE is sent when stream recv window is consumed
                 using var cts = new CancellationTokenSource(15000);
@@ -612,12 +615,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void LargeResponse_CompletesWithStreamWindowUpdates()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Fix 1: Verify responses > 65535 bytes complete (stream-level WINDOW_UPDATE prevents stall)
                 using var cts = new CancellationTokenSource(20000);
@@ -666,12 +669,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(totalToSend, response.Body.Length);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void DataReceiving_ExceedsConnectionWindow_FlowControlError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -718,12 +721,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void DataReceiving_ExceedsStreamWindow_FlowControlError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -773,12 +776,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void InitialWindowSizeDelta_OverflowCheckedPerStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -833,7 +836,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         private static void RethrowIfFaulted(Task task)

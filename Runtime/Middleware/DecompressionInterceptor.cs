@@ -38,6 +38,15 @@ namespace TurboHTTP.Middleware
                 if (!_automaticDecompression)
                     return next(request, handler, context, cancellationToken);
 
+                return InvokeAsync(request, handler, context, cancellationToken);
+            };
+
+            async Task InvokeAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken)
+            {
                 var requestForNext = request;
                 if (!request.Headers.Contains("Accept-Encoding"))
                 {
@@ -48,23 +57,25 @@ namespace TurboHTTP.Middleware
 
                 try
                 {
-                    return next(
+                    await next(
                         requestForNext,
                         new DecompressionHandler(handler, _maxDecompressedBodySizeBytes),
                         context,
-                        cancellationToken);
+                        cancellationToken).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception)
                 {
                     if (!ReferenceEquals(requestForNext, request))
-                    {
-                        context.UpdateRequest(request);
                         requestForNext.Dispose();
-                    }
 
                     throw;
                 }
-            };
+                finally
+                {
+                    if (!ReferenceEquals(requestForNext, request))
+                        context.UpdateRequest(request);
+                }
+            }
         }
     }
 }

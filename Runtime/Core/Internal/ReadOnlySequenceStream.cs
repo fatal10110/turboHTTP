@@ -20,14 +20,14 @@ namespace TurboHTTP.Core.Internal
         }
 
         public override bool CanRead => true;
-        public override bool CanSeek => false;
+        public override bool CanSeek => true;
         public override bool CanWrite => false;
         public override long Length => _sequence.Length;
 
         public override long Position
         {
             get => _consumed;
-            set => throw new NotSupportedException();
+            set => Seek(value, SeekOrigin.Begin);
         }
 
         public override int Read(byte[] buffer, int offset, int count)
@@ -75,7 +75,28 @@ namespace TurboHTTP.Core.Internal
 
         public override long Seek(long offset, SeekOrigin origin)
         {
-            throw new NotSupportedException();
+            long absoluteOffset;
+            switch (origin)
+            {
+                case SeekOrigin.Begin:
+                    absoluteOffset = offset;
+                    break;
+                case SeekOrigin.Current:
+                    absoluteOffset = _consumed + offset;
+                    break;
+                case SeekOrigin.End:
+                    absoluteOffset = _sequence.Length + offset;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(origin), origin, "Unknown seek origin.");
+            }
+
+            if (absoluteOffset < 0 || absoluteOffset > _sequence.Length)
+                throw new IOException("Attempted to seek outside the bounds of the sequence.");
+
+            _position = _sequence.GetPosition(absoluteOffset);
+            _consumed = absoluteOffset;
+            return _consumed;
         }
 
         public override void SetLength(long value)

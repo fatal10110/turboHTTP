@@ -15,9 +15,11 @@ namespace TurboHTTP.Observability
         private const int DefaultHistoryCapacity = 1000;
         private const int DefaultMaxCaptureSizeBytes = 5 * 1024 * 1024; // 5 MB
         private const int DefaultBinaryPreviewBytes = 64 * 1024; // 64 KB
+        private const int BinaryDetectionSampleBytes = 512;
         private static readonly TimeSpan CaptureErrorLogCooldown = TimeSpan.FromSeconds(30);
 
         private static readonly object HistoryLock = new object();
+        private static readonly object CaptureErrorLogLock = new object();
         private static HttpMonitorEvent[] _historyBuffer = new HttpMonitorEvent[DefaultHistoryCapacity];
         private static int _historyStart;
         private static int _historyCount;
@@ -166,6 +168,8 @@ namespace TurboHTTP.Observability
                 _historyCount = 0;
             }
 
+            ResetCaptureFailureThrottle();
+
             PublishEvent(null);
         }
 
@@ -195,6 +199,30 @@ namespace TurboHTTP.Observability
             RequestContext context,
             Exception exception)
         {
+            var originalResponseBodySize = responseBody.Length > int.MaxValue
+                ? int.MaxValue
+                : (int)responseBody.Length;
+            Capture(
+                request,
+                statusCode,
+                responseHeaders,
+                responseBody,
+                originalResponseBodySize,
+                responseBodyWasTruncated: false,
+                context,
+                exception);
+        }
+
+        internal static void Capture(
+            UHttpRequest request,
+            int statusCode,
+            HttpHeaders responseHeaders,
+            ReadOnlySequence<byte> responseBody,
+            int originalResponseBodySize,
+            bool responseBodyWasTruncated,
+            RequestContext context,
+            Exception exception)
+        {
             try
             {
                 var monitorEvent = BuildMonitorEvent(
@@ -202,6 +230,8 @@ namespace TurboHTTP.Observability
                     statusCode,
                     responseHeaders,
                     responseBody,
+                    originalResponseBodySize,
+                    responseBodyWasTruncated,
                     context,
                     exception);
                 StoreEvent(monitorEvent);
@@ -218,6 +248,8 @@ namespace TurboHTTP.Observability
             int statusCode,
             HttpHeaders responseHeaders,
             ReadOnlySequence<byte> responseBody,
+            int originalResponseBodySize,
+            bool responseBodyWasTruncated,
             RequestContext context,
             Exception exception)
         {
@@ -227,7 +259,11 @@ namespace TurboHTTP.Observability
                 requestHeaders);
 
             var copiedResponseHeaders = CopyHeaders(responseHeaders);
-            var responseSnapshot = CreateBodySnapshot(responseBody, copiedResponseHeaders);
+            var responseSnapshot = CreateBodySnapshot(
+                responseBody,
+                copiedResponseHeaders,
+                originalResponseBodySize,
+                responseBodyWasTruncated);
 
             var (error, errorType, failureKind) = ResolveError(statusCode, exception);
             var statusText = statusCode != 0 ? ((HttpStatusCode)statusCode).ToString() : string.Empty;
@@ -325,16 +361,29 @@ namespace TurboHTTP.Observability
             ReadOnlyMemory<byte> body,
             IReadOnlyDictionary<string, string> headers)
         {
+            return CreateBodySnapshot(
+                body,
+                headers,
+                body.Length,
+                wasTruncatedBeforeSnapshot: false);
+        }
+
+        private static BodySnapshot CreateBodySnapshot(
+            ReadOnlyMemory<byte> body,
+            IReadOnlyDictionary<string, string> headers,
+            int originalSizeHint,
+            bool wasTruncatedBeforeSnapshot)
+        {
             if (body.IsEmpty)
             {
                 return BodySnapshot.Empty;
             }
 
-            var originalSize = body.Length;
+            var originalSize = Math.Max(originalSizeHint, body.Length);
             var isBinary = HttpMonitorEvent.IsLikelyBinaryPayload(body, headers);
             var limit = isBinary ? BinaryPreviewBytes : MaxCaptureSizeBytes;
-            var captureSize = Math.Min(originalSize, Math.Max(0, limit));
-            var isTruncated = captureSize < originalSize;
+            var captureSize = Math.Min(body.Length, Math.Max(0, limit));
+            var isTruncated = wasTruncatedBeforeSnapshot || captureSize < originalSize;
 
             if (captureSize == 0)
             {
@@ -350,6 +399,18 @@ namespace TurboHTTP.Observability
             ReadOnlySequence<byte> body,
             IReadOnlyDictionary<string, string> headers)
         {
+            var originalSize = body.Length > int.MaxValue
+                ? int.MaxValue
+                : (int)body.Length;
+            return CreateBodySnapshot(body, headers, originalSize, wasTruncatedBeforeSnapshot: false);
+        }
+
+        private static BodySnapshot CreateBodySnapshot(
+            ReadOnlySequence<byte> body,
+            IReadOnlyDictionary<string, string> headers,
+            int originalSizeHint,
+            bool wasTruncatedBeforeSnapshot)
+        {
             if (body.IsEmpty)
             {
                 return BodySnapshot.Empty;
@@ -357,21 +418,25 @@ namespace TurboHTTP.Observability
 
             if (body.IsSingleSegment)
             {
-                return CreateBodySnapshot(body.First, headers);
+                return CreateBodySnapshot(
+                    body.First,
+                    headers,
+                    originalSizeHint,
+                    wasTruncatedBeforeSnapshot);
             }
 
-            var originalSize = body.Length > int.MaxValue
-                ? int.MaxValue
-                : (int)body.Length;
+            var originalSize = Math.Max(
+                originalSizeHint,
+                body.Length > int.MaxValue ? int.MaxValue : (int)body.Length);
 
-            var sampleLength = (int)Math.Min(body.Length, 512L);
+            var sampleLength = (int)Math.Min(body.Length, BinaryDetectionSampleBytes);
             var sample = sampleLength > 0
                 ? CopyPrefix(body, sampleLength)
                 : Array.Empty<byte>();
             var isBinary = HttpMonitorEvent.IsLikelyBinaryPayload(sample, headers);
             var limit = isBinary ? BinaryPreviewBytes : MaxCaptureSizeBytes;
             var captureSize = (int)Math.Min(body.Length, Math.Max(0L, limit));
-            var isTruncated = captureSize < body.Length;
+            var isTruncated = wasTruncatedBeforeSnapshot || captureSize < originalSize;
 
             if (captureSize == 0)
             {
@@ -395,6 +460,44 @@ namespace TurboHTTP.Observability
             }
 
             return new BodySnapshot(snapshot, originalSize, isTruncated, isBinary);
+        }
+
+        internal static int GetBufferedResponseCaptureLimit(HttpHeaders headers = null)
+        {
+            var liveCaptureLimit = HasClearlyBinaryContentType(headers)
+                ? BinaryPreviewBytes
+                : Math.Max(MaxCaptureSizeBytes, BinaryPreviewBytes);
+            return Math.Max(liveCaptureLimit, BinaryDetectionSampleBytes);
+        }
+
+        private static bool HasClearlyBinaryContentType(HttpHeaders headers)
+        {
+            var contentType = headers?.Get("Content-Type");
+            if (string.IsNullOrEmpty(contentType))
+                return false;
+
+            if (contentType.StartsWith("text/", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (contentType.IndexOf("json", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("xml", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("javascript", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("graphql", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
+
+            return contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+                || contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+                || contentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
+                || contentType.StartsWith("font/", StringComparison.OrdinalIgnoreCase)
+                || contentType.IndexOf("application/octet-stream", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("application/x-protobuf", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("application/vnd.unity", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("application/pdf", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("application/zip", StringComparison.OrdinalIgnoreCase) >= 0
+                || contentType.IndexOf("application/gzip", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static IReadOnlyList<HttpMonitorTimelineEvent> CopyTimeline(
@@ -581,7 +684,7 @@ namespace TurboHTTP.Observability
             bool shouldLog = false;
             int suppressedCount = 0;
 
-            lock (HistoryLock)
+            lock (CaptureErrorLogLock)
             {
                 var now = DateTime.UtcNow;
                 var nextCaptureErrorLogUtc = new DateTime(_nextCaptureErrorLogUtcTicks, DateTimeKind.Utc);
@@ -622,6 +725,15 @@ namespace TurboHTTP.Observability
             catch
             {
                 // Diagnostics path must never throw back into request processing.
+            }
+        }
+
+        private static void ResetCaptureFailureThrottle()
+        {
+            lock (CaptureErrorLogLock)
+            {
+                _nextCaptureErrorLogUtcTicks = DateTime.MinValue.Ticks;
+                _suppressedCaptureErrorCount = 0;
             }
         }
     }

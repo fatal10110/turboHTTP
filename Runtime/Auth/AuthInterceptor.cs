@@ -49,7 +49,7 @@ namespace TurboHTTP.Auth
                 {
                     dispatchTask = next(requestForNext, handler, context, cancellationToken);
                 }
-                catch
+                catch (Exception)
                 {
                     if (!ReferenceEquals(requestForNext, request))
                     {

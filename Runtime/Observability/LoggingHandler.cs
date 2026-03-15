@@ -88,7 +88,7 @@ namespace TurboHTTP.Observability
             if (_logLevel >= LoggingInterceptor.LogLevel.Detailed && _logBody && !chunk.IsEmpty)
             {
                 if (_bodyPreview == null)
-                    _bodyPreview = new byte[MaxPreviewBytes];
+                    _bodyPreview = ArrayPool<byte>.Shared.Rent(MaxPreviewBytes);
 
                 var remaining = MaxPreviewBytes - _bodyPreviewLength;
                 if (remaining > 0)
@@ -134,8 +134,15 @@ namespace TurboHTTP.Observability
                         _bodyPreviewTruncated));
             }
 
-            _log(GetLogPrefix() + builder);
-            _inner.OnResponseEnd(trailers, context);
+            try
+            {
+                _log(GetLogPrefix() + builder);
+                _inner.OnResponseEnd(trailers, context);
+            }
+            finally
+            {
+                ReturnBodyPreviewBuffer();
+            }
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
@@ -154,8 +161,15 @@ namespace TurboHTTP.Observability
                 .Append("ms)\n  ")
                 .Append(error?.Message ?? "Unknown error");
 
-            _log("[TurboHTTP][ERROR] " + builder);
-            _inner.OnResponseError(error, context);
+            try
+            {
+                _log("[TurboHTTP][ERROR] " + builder);
+                _inner.OnResponseError(error, context);
+            }
+            finally
+            {
+                ReturnBodyPreviewBuffer();
+            }
         }
 
         private string GetLogPrefix()
@@ -164,6 +178,17 @@ namespace TurboHTTP.Observability
                 return "[TurboHTTP] ";
 
             return "[TurboHTTP][WARN] ";
+        }
+
+        private void ReturnBodyPreviewBuffer()
+        {
+            if (_bodyPreview == null)
+                return;
+
+            ArrayPool<byte>.Shared.Return(_bodyPreview, clearArray: true);
+            _bodyPreview = null;
+            _bodyPreviewLength = 0;
+            _bodyPreviewTruncated = false;
         }
     }
 }

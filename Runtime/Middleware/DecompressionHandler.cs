@@ -10,10 +10,14 @@ namespace TurboHTTP.Middleware
 {
     internal sealed class DecompressionHandler : IHttpHandler
     {
+        private static readonly uint[] Crc32Table = BuildCrc32Table();
+
         private readonly IHttpHandler _inner;
         private readonly long _maxDecompressedBodySizeBytes;
+        private readonly long _maxCompressedBodySizeBytes;
 
         private SegmentedBuffer _compressedBuffer;
+        private long _compressedBytes;
         private CompressionKind[] _compressionChain;
         private HttpHeaders _forwardHeaders;
 
@@ -33,6 +37,7 @@ namespace TurboHTTP.Middleware
                     "Must be > 0.");
 
             _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
+            _maxCompressedBodySizeBytes = maxDecompressedBodySizeBytes;
             _compressionChain = Array.Empty<CompressionKind>();
         }
 
@@ -46,6 +51,7 @@ namespace TurboHTTP.Middleware
             if (!TryResolveCompression(headers, out _compressionChain))
             {
                 _forwardHeaders = headers;
+                _compressedBytes = 0;
                 _inner.OnResponseStart(statusCode, headers, context);
                 return;
             }
@@ -53,6 +59,7 @@ namespace TurboHTTP.Middleware
             _forwardHeaders = headers.Clone();
             _forwardHeaders.Remove("Content-Encoding");
             _forwardHeaders.Remove("Content-Length");
+            _compressedBytes = 0;
             _inner.OnResponseStart(statusCode, _forwardHeaders, context);
         }
 
@@ -69,6 +76,13 @@ namespace TurboHTTP.Middleware
 
             if (_compressedBuffer == null)
                 _compressedBuffer = new SegmentedBuffer();
+
+            _compressedBytes += chunk.Length;
+            if (_compressedBytes > _maxCompressedBodySizeBytes)
+            {
+                throw new IOException(
+                    $"Compressed response body exceeded the maximum size ({_maxCompressedBodySizeBytes} bytes).");
+            }
 
             _compressedBuffer.Write(chunk);
         }
@@ -87,8 +101,12 @@ namespace TurboHTTP.Middleware
             }
             catch (Exception ex) when (ex is InvalidDataException || ex is IOException)
             {
-                _inner.OnResponseError(new UHttpException(
-                    new UHttpError(UHttpErrorType.Unknown, "Response decompression failed.", ex)), context);
+                _inner.OnResponseError(CreateDecompressionError(ex), context);
+                return;
+            }
+            catch (Exception ex)
+            {
+                _inner.OnResponseError(WrapUnexpectedError(ex), context);
                 return;
             }
             finally
@@ -110,11 +128,17 @@ namespace TurboHTTP.Middleware
             if (_compressedBuffer == null)
                 return;
 
-            using var compressedStream = new ReadOnlySequenceStream(_compressedBuffer.AsSequence());
+            var compressedSequence = _compressedBuffer.AsSequence();
+            var validateSingleGzipTrailer =
+                _compressionChain.Length == 1 &&
+                _compressionChain[0] == CompressionKind.Gzip;
+
+            using var compressedStream = new ReadOnlySequenceStream(compressedSequence);
             using var decompressionStream = CreateDecompressionStream(compressedStream);
 
             var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
             long totalDecompressed = 0;
+            uint crc32 = uint.MaxValue;
             try
             {
                 while (true)
@@ -130,12 +154,37 @@ namespace TurboHTTP.Middleware
                             $"Response decompression exceeded the maximum size ({_maxDecompressedBodySizeBytes} bytes).");
                     }
 
+                    if (validateSingleGzipTrailer)
+                        crc32 = UpdateCrc32(crc32, new ReadOnlySpan<byte>(buffer, 0, read));
+
                     _inner.OnResponseData(new ReadOnlySpan<byte>(buffer, 0, read), context);
                 }
+
+                if (validateSingleGzipTrailer)
+                    ValidateSingleGzipTrailer(compressedSequence, totalDecompressed, crc32 ^ uint.MaxValue);
             }
             finally
             {
                 ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private static void ValidateSingleGzipTrailer(
+            ReadOnlySequence<byte> compressedSequence,
+            long totalDecompressed,
+            uint actualCrc32)
+        {
+            if (compressedSequence.Length < 18)
+                throw new InvalidDataException("GZIP payload is truncated.");
+
+            Span<byte> trailer = stackalloc byte[8];
+            compressedSequence.Slice(compressedSequence.Length - trailer.Length).CopyTo(trailer);
+
+            var expectedCrc32 = ReadUInt32LittleEndian(trailer);
+            var expectedSize = ReadUInt32LittleEndian(trailer.Slice(4));
+            if (expectedCrc32 != actualCrc32 || expectedSize != unchecked((uint)totalDecompressed))
+            {
+                throw new InvalidDataException("GZIP trailer validation failed.");
             }
         }
 
@@ -161,12 +210,27 @@ namespace TurboHTTP.Middleware
             switch (compression)
             {
                 case CompressionKind.Gzip:
-                    return new GZipStream(compressedStream, CompressionMode.Decompress, leaveOpen: false);
+                    return new GZipStream(compressedStream, CompressionMode.Decompress, leaveOpen: true);
                 case CompressionKind.Deflate:
-                    return new DeflateStream(compressedStream, CompressionMode.Decompress, leaveOpen: false);
+                    return new DeflateStream(compressedStream, CompressionMode.Decompress, leaveOpen: true);
                 default:
                     throw new InvalidOperationException("Compression mode is not active.");
             }
+        }
+
+        private static UHttpException CreateDecompressionError(Exception ex)
+        {
+            return new UHttpException(
+                new UHttpError(UHttpErrorType.Unknown, "Response decompression failed.", ex));
+        }
+
+        private static UHttpException WrapUnexpectedError(Exception ex)
+        {
+            if (ex is UHttpException uHttpException)
+                return uHttpException;
+
+            return new UHttpException(
+                new UHttpError(UHttpErrorType.Unknown, ex?.Message ?? "Response decompression failed.", ex));
         }
 
         private static bool TryResolveCompression(HttpHeaders headers, out CompressionKind[] compressionChain)
@@ -249,6 +313,42 @@ namespace TurboHTTP.Middleware
 
             compression = null;
             return false;
+        }
+
+        private static uint UpdateCrc32(uint crc32, ReadOnlySpan<byte> data)
+        {
+            var crc = crc32;
+            for (int i = 0; i < data.Length; i++)
+                crc = Crc32Table[(int)((crc ^ data[i]) & 0xFF)] ^ (crc >> 8);
+
+            return crc;
+        }
+
+        private static uint ReadUInt32LittleEndian(ReadOnlySpan<byte> bytes)
+        {
+            return (uint)(bytes[0]
+                | (bytes[1] << 8)
+                | (bytes[2] << 16)
+                | (bytes[3] << 24));
+        }
+
+        private static uint[] BuildCrc32Table()
+        {
+            var table = new uint[256];
+            for (uint i = 0; i < table.Length; i++)
+            {
+                var value = i;
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    value = (value & 1) != 0
+                        ? 0xEDB88320u ^ (value >> 1)
+                        : value >> 1;
+                }
+
+                table[(int)i] = value;
+            }
+
+            return table;
         }
     }
 }

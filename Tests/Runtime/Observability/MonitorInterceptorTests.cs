@@ -29,7 +29,7 @@ namespace TurboHTTP.Tests.Observability
         [Test]
         public void CapturesSuccessfulRequestAndPreservesTimeline()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var requestHeaders = new HttpHeaders();
                 requestHeaders.Set("Content-Type", "application/json");
@@ -79,7 +79,7 @@ namespace TurboHTTP.Tests.Observability
                 Assert.That(evt.Timeline.Count, Is.EqualTo(1));
                 Assert.That(evt.Timeline[0].Name, Is.EqualTo("CustomStage"));
                 Assert.That(evt.Timeline[0].Data["attempt"], Is.EqualTo("1"));
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
@@ -112,7 +112,7 @@ namespace TurboHTTP.Tests.Observability
         [Test]
         public void ClassifiesHttpStatusErrorsSeparatelyFromTransportFailures()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport(HttpStatusCode.InternalServerError);
                 var pipeline = new TestInterceptorPipeline(
@@ -131,13 +131,13 @@ namespace TurboHTTP.Tests.Observability
                 Assert.AreEqual(HttpMonitorFailureKind.HttpStatusError, snapshot[0].FailureKind);
                 Assert.IsFalse(snapshot[0].IsTransportFailure);
                 Assert.That(snapshot[0].Error, Does.Contain("HTTP 500"));
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void HistoryIsBoundedAndEvictsOldest()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 MonitorInterceptor.HistoryCapacity = 3;
                 var pipeline = new TestInterceptorPipeline(
@@ -159,13 +159,13 @@ namespace TurboHTTP.Tests.Observability
                 Assert.AreEqual("https://api.example.com/2", snapshot[0].Url);
                 Assert.AreEqual("https://api.example.com/3", snapshot[1].Url);
                 Assert.AreEqual("https://api.example.com/4", snapshot[2].Url);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void AppliesTextAndBinaryCapturePolicies()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 MonitorInterceptor.MaxCaptureSizeBytes = 8;
                 MonitorInterceptor.BinaryPreviewBytes = 4;
@@ -210,13 +210,13 @@ namespace TurboHTTP.Tests.Observability
                 Assert.IsTrue(evt.IsResponseBodyTruncated);
                 Assert.IsTrue(evt.IsResponseBodyBinary);
                 Assert.That(evt.GetResponseBodyAsString(), Does.Contain("<Binary Data: 10 bytes, preview only>"));
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void ClearHistoryNotifiesListenersAndEmptiesBuffer()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 int clearNotificationCount = 0;
                 Action<HttpMonitorEvent> handler = evt =>
@@ -246,13 +246,13 @@ namespace TurboHTTP.Tests.Observability
                 {
                     MonitorInterceptor.OnRequestCaptured -= handler;
                 }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void ListenerFailuresDoNotBlockOtherSubscribers()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var diagnostics = new List<string>();
                 MonitorInterceptor.DiagnosticLogger = diagnostics.Add;
@@ -280,13 +280,13 @@ namespace TurboHTTP.Tests.Observability
                 Assert.AreEqual(1, goodHandlerCount);
                 Assert.That(diagnostics.Count, Is.GreaterThanOrEqualTo(1));
                 Assert.That(diagnostics[0], Does.Contain("Capture failure"));
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void HeaderValueTransformRedactsCaputuredHeaderValues()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 MonitorInterceptor.HeaderValueTransform = (name, value) =>
                     string.Equals(name, "Authorization", StringComparison.OrdinalIgnoreCase)
@@ -315,13 +315,13 @@ namespace TurboHTTP.Tests.Observability
                 var evt = snapshot[0];
                 Assert.AreEqual("REDACTED", evt.RequestHeaders["Authorization"]);
                 Assert.AreEqual("application/json", evt.RequestHeaders["Accept"]);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void CapturesMultiValueHeaders()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var responseHeaders = new HttpHeaders();
                 responseHeaders.Add("Set-Cookie", "session=abc123; Path=/");
@@ -355,7 +355,7 @@ namespace TurboHTTP.Tests.Observability
 
                 // Other multi-value headers use ", " separator
                 Assert.AreEqual("value1, value2", evt.ResponseHeaders["X-Custom"]);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         private static void ResetMonitor()

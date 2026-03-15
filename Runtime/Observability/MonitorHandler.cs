@@ -13,6 +13,10 @@ namespace TurboHTTP.Observability
         private int _statusCode;
         private HttpHeaders _headers;
         private SegmentedBuffer _responseBody;
+        private int _bufferedCaptureLimit;
+        private int _bufferedResponseBytes;
+        private long _totalResponseBytes;
+        private bool _responseBodyWasTruncated;
 
         internal MonitorHandler(IHttpHandler inner, UHttpRequest request)
         {
@@ -29,6 +33,10 @@ namespace TurboHTTP.Observability
         {
             _statusCode = statusCode;
             _headers = headers?.Clone() ?? new HttpHeaders();
+            _bufferedCaptureLimit = MonitorInterceptor.GetBufferedResponseCaptureLimit(headers);
+            _bufferedResponseBytes = 0;
+            _totalResponseBytes = 0;
+            _responseBodyWasTruncated = false;
             _inner.OnResponseStart(statusCode, headers, context);
         }
 
@@ -36,10 +44,24 @@ namespace TurboHTTP.Observability
         {
             if (!chunk.IsEmpty)
             {
-                if (_responseBody == null)
-                    _responseBody = new SegmentedBuffer();
+                _totalResponseBytes += chunk.Length;
 
-                _responseBody.Write(chunk);
+                if (_bufferedResponseBytes < _bufferedCaptureLimit)
+                {
+                    if (_responseBody == null)
+                        _responseBody = new SegmentedBuffer();
+
+                    var remaining = _bufferedCaptureLimit - _bufferedResponseBytes;
+                    var bytesToBuffer = Math.Min(chunk.Length, remaining);
+                    if (bytesToBuffer > 0)
+                    {
+                        _responseBody.Write(chunk.Slice(0, bytesToBuffer));
+                        _bufferedResponseBytes += bytesToBuffer;
+                    }
+                }
+
+                if (_totalResponseBytes > _bufferedCaptureLimit)
+                    _responseBodyWasTruncated = true;
             }
 
             _inner.OnResponseData(chunk, context);
@@ -81,6 +103,8 @@ namespace TurboHTTP.Observability
                     _statusCode,
                     _headers,
                     body,
+                    _totalResponseBytes > int.MaxValue ? int.MaxValue : (int)_totalResponseBytes,
+                    _responseBodyWasTruncated,
                     context,
                     exception);
             }
@@ -88,6 +112,10 @@ namespace TurboHTTP.Observability
             {
                 _responseBody?.Dispose();
                 _responseBody = null;
+                _bufferedCaptureLimit = 0;
+                _bufferedResponseBytes = 0;
+                _totalResponseBytes = 0;
+                _responseBodyWasTruncated = false;
             }
         }
     }

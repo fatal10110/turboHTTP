@@ -10,6 +10,20 @@ namespace TurboHTTP.Tests.UnityModule
     public class UnityPathSafetyTests
     {
         [Test]
+        public void ValidateRelativePath_BlocksTraversal()
+        {
+            Assert.Throws<ArgumentException>(() =>
+                PathSafety.ValidateRelativePath(Path.Combine("..", "escape.bin"), "relativePath"));
+        }
+
+        [Test]
+        public void ValidateRelativePath_BlocksEncodedTraversal()
+        {
+            Assert.Throws<ArgumentException>(() =>
+                PathSafety.ValidateRelativePath("%2e%2e/escape.bin", "relativePath"));
+        }
+
+        [Test]
         public void ResolvePathWithinRoot_BlocksTraversal()
         {
             var root = Path.Combine(Application.temporaryCachePath, "turbohttp-path-test");

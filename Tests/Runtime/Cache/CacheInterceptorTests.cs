@@ -177,6 +177,56 @@ namespace TurboHTTP.Tests.Cache
         }
 
         [Test]
+        public void CacheInterceptor_RevalidationFailure_RestoresOriginalRequestContext()
+        {
+            Task.Run(async () =>
+            {
+                int callCount = 0;
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+
+                    var headers = new HttpHeaders();
+                    headers.Set("Cache-Control", "no-cache");
+                    headers.Set("ETag", "\"restore-v1\"");
+
+                    if (callCount == 1)
+                    {
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.OK,
+                            headers,
+                            Encoding.UTF8.GetBytes("payload"),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual("\"restore-v1\"", req.Headers.Get("If-None-Match"));
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        "revalidation failed"));
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/revalidate-restore-context");
+
+                var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
+                await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
+
+                var secondRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var secondContext = new RequestContext(secondRequest);
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await pipeline.ExecuteAsync(secondRequest, secondContext));
+
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.AreSame(secondRequest, secondContext.Request);
+                Assert.IsFalse(secondContext.Request.Headers.Contains("If-None-Match"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void CacheInterceptor_RequestNoCache_ForcesRevalidationOfFreshEntry()
         {
             Task.Run(async () =>
@@ -839,6 +889,90 @@ namespace TurboHTTP.Tests.Cache
         }
 
         [Test]
+        public void CacheInterceptor_WaitsForPendingStoreBeforeServingNextLookup()
+        {
+            Task.Run(async () =>
+            {
+                using var storage = new DelayedSetCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    Encoding.UTF8.GetBytes("payload"));
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/pending-store");
+
+                var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
+                using var first = await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
+
+                Assert.IsTrue(storage.SetStarted.Wait(TimeSpan.FromSeconds(1)));
+
+                var secondRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var secondTask = pipeline.ExecuteAsync(secondRequest, new RequestContext(secondRequest));
+
+                var earlyCompletion = await Task.WhenAny(secondTask, Task.Delay(50)).ConfigureAwait(false);
+                Assert.AreNotSame(secondTask, earlyCompletion, "Second lookup should wait for the pending store.");
+
+                storage.ReleaseSet();
+
+                using var second = await TestHelpers.AssertCompletesWithinAsync(
+                    secondTask,
+                    TimeSpan.FromSeconds(1),
+                    "Pending store did not unblock the next cache lookup.");
+
+                Assert.AreEqual(1, transport.RequestCount);
+                Assert.AreEqual("HIT", second.Headers.Get("X-Cache"));
+                Assert.AreEqual("payload", second.GetBodyAsString());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_FaultedPendingStore_DoesNotAbortNextLookup()
+        {
+            Task.Run(async () =>
+            {
+                using var storage = new FailingDelayedSetCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+                var transport = new MockTransport(
+                    HttpStatusCode.OK,
+                    headers,
+                    Encoding.UTF8.GetBytes("payload"));
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var uri = new Uri("https://example.test/faulted-pending-store");
+
+                var firstRequest = new UHttpRequest(HttpMethod.GET, uri);
+                using var first = await pipeline.ExecuteAsync(firstRequest, new RequestContext(firstRequest));
+
+                Assert.IsTrue(storage.SetStarted.Wait(TimeSpan.FromSeconds(1)));
+
+                var secondRequest = new UHttpRequest(HttpMethod.GET, uri);
+                var secondTask = pipeline.ExecuteAsync(secondRequest, new RequestContext(secondRequest));
+
+                var earlyCompletion = await Task.WhenAny(secondTask, Task.Delay(50)).ConfigureAwait(false);
+                Assert.AreNotSame(secondTask, earlyCompletion, "Second lookup should wait for the pending store.");
+
+                storage.FailSet();
+
+                using var second = await TestHelpers.AssertCompletesWithinAsync(
+                    secondTask,
+                    TimeSpan.FromSeconds(1),
+                    "Faulted pending store should not abort the next cache lookup.");
+
+                Assert.AreEqual(2, transport.RequestCount);
+                Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
+                Assert.AreEqual("payload", second.GetBodyAsString());
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void CacheInterceptor_Dispose_CancelsBackgroundRevalidation()
         {
             Task.Run(async () =>
@@ -1193,6 +1327,63 @@ namespace TurboHTTP.Tests.Cache
             Assert.Fail(failureMessage);
         }
 
+        private sealed class DelayedSetCacheStorage : ICacheStorage, IDisposable
+        {
+            private readonly MemoryCacheStorage _inner = new MemoryCacheStorage();
+            private readonly TaskCompletionSource<object> _allowSet =
+                new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal ManualResetEventSlim SetStarted { get; } = new ManualResetEventSlim(false);
+
+            public Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default)
+            {
+                return _inner.GetAsync(key, cancellationToken);
+            }
+
+            public async Task SetAsync(string key, CacheEntry entry, CancellationToken cancellationToken = default)
+            {
+                SetStarted.Set();
+                using (cancellationToken.Register(() => _allowSet.TrySetCanceled(cancellationToken)))
+                {
+                    await _allowSet.Task.ConfigureAwait(false);
+                }
+
+                await _inner.SetAsync(key, entry, cancellationToken).ConfigureAwait(false);
+            }
+
+            public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
+            {
+                return _inner.RemoveAsync(key, cancellationToken);
+            }
+
+            public Task ClearAsync(CancellationToken cancellationToken = default)
+            {
+                return _inner.ClearAsync(cancellationToken);
+            }
+
+            public Task<int> GetCountAsync(CancellationToken cancellationToken = default)
+            {
+                return _inner.GetCountAsync(cancellationToken);
+            }
+
+            public Task<long> GetSizeAsync(CancellationToken cancellationToken = default)
+            {
+                return _inner.GetSizeAsync(cancellationToken);
+            }
+
+            internal void ReleaseSet()
+            {
+                _allowSet.TrySetResult(null);
+            }
+
+            public void Dispose()
+            {
+                _allowSet.TrySetCanceled();
+                SetStarted.Dispose();
+                _inner.Dispose();
+            }
+        }
+
         private sealed class BlockingCacheStorage : ICacheStorage
         {
             private readonly TaskCompletionSource<object> _allowSet =
@@ -1241,6 +1432,63 @@ namespace TurboHTTP.Tests.Cache
             internal void ReleaseSet()
             {
                 _allowSet.TrySetResult(null);
+            }
+        }
+
+        private sealed class FailingDelayedSetCacheStorage : ICacheStorage, IDisposable
+        {
+            private readonly MemoryCacheStorage _inner = new MemoryCacheStorage();
+            private readonly TaskCompletionSource<object> _allowSet =
+                new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal ManualResetEventSlim SetStarted { get; } = new ManualResetEventSlim(false);
+
+            public Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default)
+            {
+                return _inner.GetAsync(key, cancellationToken);
+            }
+
+            public async Task SetAsync(string key, CacheEntry entry, CancellationToken cancellationToken = default)
+            {
+                SetStarted.Set();
+                using (cancellationToken.Register(() => _allowSet.TrySetCanceled(cancellationToken)))
+                {
+                    await _allowSet.Task.ConfigureAwait(false);
+                }
+
+                throw new InvalidOperationException("Simulated cache store failure.");
+            }
+
+            public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
+            {
+                return _inner.RemoveAsync(key, cancellationToken);
+            }
+
+            public Task ClearAsync(CancellationToken cancellationToken = default)
+            {
+                return _inner.ClearAsync(cancellationToken);
+            }
+
+            public Task<int> GetCountAsync(CancellationToken cancellationToken = default)
+            {
+                return _inner.GetCountAsync(cancellationToken);
+            }
+
+            public Task<long> GetSizeAsync(CancellationToken cancellationToken = default)
+            {
+                return _inner.GetSizeAsync(cancellationToken);
+            }
+
+            internal void FailSet()
+            {
+                _allowSet.TrySetResult(null);
+            }
+
+            public void Dispose()
+            {
+                _allowSet.TrySetCanceled();
+                SetStarted.Dispose();
+                _inner.Dispose();
             }
         }
 

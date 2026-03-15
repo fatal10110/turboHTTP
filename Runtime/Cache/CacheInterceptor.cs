@@ -79,6 +79,8 @@ namespace TurboHTTP.Cache
         // signature and cleaned up as storage keys are removed or invalidated.
         // This index is intentionally not persisted across process restarts in v1.
         private readonly Dictionary<string, VariantBucket> _variantIndex = new Dictionary<string, VariantBucket>(StringComparer.Ordinal);
+        private readonly object _pendingMutationLock = new object();
+        private readonly Dictionary<string, Task> _pendingMutations = new Dictionary<string, Task>(StringComparer.Ordinal);
         private readonly CancellationTokenSource _backgroundWorkCancellation = new CancellationTokenSource();
         private int _disposed;
 
@@ -88,6 +90,66 @@ namespace TurboHTTP.Cache
             public readonly HashSet<string> StorageKeys = new HashSet<string>(StringComparer.Ordinal);
             public readonly Dictionary<string, string> SignatureByStorageKey = new Dictionary<string, string>(StringComparer.Ordinal);
             public readonly Dictionary<string, int> SignatureRefCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        }
+
+        private sealed class PendingMutationState
+        {
+            public readonly CacheInterceptor Owner;
+            public readonly string BaseKey;
+
+            public PendingMutationState(CacheInterceptor owner, string baseKey)
+            {
+                Owner = owner;
+                BaseKey = baseKey;
+            }
+        }
+
+        private sealed class StoreResponseState
+        {
+            public readonly HttpMethod RequestMethod;
+            public readonly Uri RequestUri;
+            public readonly HttpHeaders RequestHeaders;
+            public readonly int StatusCode;
+            public readonly HttpHeaders ResponseHeaders;
+            public readonly SegmentedBuffer Body;
+
+            public StoreResponseState(
+                HttpMethod requestMethod,
+                Uri requestUri,
+                HttpHeaders requestHeaders,
+                int statusCode,
+                HttpHeaders responseHeaders,
+                SegmentedBuffer body)
+            {
+                RequestMethod = requestMethod;
+                RequestUri = requestUri;
+                RequestHeaders = requestHeaders;
+                StatusCode = statusCode;
+                ResponseHeaders = responseHeaders;
+                Body = body;
+            }
+        }
+
+        private sealed class PreparedEntryState
+        {
+            public readonly PreparedCacheEntry Prepared;
+
+            public PreparedEntryState(PreparedCacheEntry prepared)
+            {
+                Prepared = prepared;
+            }
+        }
+
+        private sealed class ReplacementState
+        {
+            public readonly PreparedCacheEntry Prepared;
+            public readonly string ExistingStorageKey;
+
+            public ReplacementState(PreparedCacheEntry prepared, string existingStorageKey)
+            {
+                Prepared = prepared;
+                ExistingStorageKey = existingStorageKey;
+            }
         }
 
         private readonly struct CacheLookupResult
@@ -324,70 +386,66 @@ namespace TurboHTTP.Cache
                 body: request.Body);
 
             context.UpdateRequest(conditionalRequest);
-
-            using var response = await CollectBufferedResponseAsync(
-                next,
-                conditionalRequest,
-                context,
-                cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.NotModified)
+            try
             {
-                context.RecordEvent("CacheRevalidateModified");
+                using var response = await CollectBufferedResponseAsync(
+                    next,
+                    conditionalRequest,
+                    context,
+                    cancellationToken).ConfigureAwait(false);
 
-                bool replacedCachedEntry = false;
-                if (ShouldConsiderForStorage(request, response))
+                context.UpdateRequest(request);
+                if (response.StatusCode != HttpStatusCode.NotModified)
                 {
-                    var prepared = PrepareEntryForStorage(request, response, baseKey);
-                    if (prepared.Entry != null)
-                    {
-                        await _policy.Storage
-                            .SetAsync(prepared.Entry.Key, prepared.Entry, cancellationToken)
-                            .ConfigureAwait(false);
-                        RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
-                        replacedCachedEntry = true;
+                    context.RecordEvent("CacheRevalidateModified");
 
-                        if (!string.Equals(lookup.StorageKey, prepared.Entry.Key, StringComparison.Ordinal))
+                    bool replacedCachedEntry = false;
+                    if (ShouldConsiderForStorage(request, response))
+                    {
+                        var prepared = PrepareEntryForStorage(request, response, baseKey);
+                        if (prepared.Entry != null)
                         {
-                            await _policy.Storage.RemoveAsync(lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                            UnregisterStoredVariant(baseKey, lookup.StorageKey);
+                            await ReplaceStoredEntryAsync(
+                                baseKey,
+                                prepared,
+                                lookup.StorageKey,
+                                cancellationToken).ConfigureAwait(false);
+                            replacedCachedEntry = true;
                         }
                     }
+
+                    if (!replacedCachedEntry)
+                    {
+                        // The upstream response is authoritative and this cache entry is no longer valid.
+                        await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    ReplayCollectedResponse(handler, request, response, context);
+                    return;
                 }
 
-                if (!replacedCachedEntry)
+                context.RecordEvent("CacheRevalidateNotModified");
+
+                var merged = MergeNotModifiedEntry(request, lookup.Entry, response, baseKey);
+                if (merged.Entry != null)
                 {
-                    // The upstream response is authoritative and this cache entry is no longer valid.
-                    await _policy.Storage.RemoveAsync(lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                    UnregisterStoredVariant(baseKey, lookup.StorageKey);
+                    if (!string.Equals(lookup.StorageKey, merged.Entry.Key, StringComparison.Ordinal))
+                        await ReplaceStoredEntryAsync(baseKey, merged, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
+                    else
+                        await StorePreparedEntryQueuedAsync(baseKey, merged, cancellationToken).ConfigureAwait(false);
+
+                    ServeCachedEntry(handler, merged.Entry, request, context, "REVALIDATED");
+                    return;
                 }
 
-                ReplayCollectedResponse(handler, conditionalRequest, response, context);
-                return;
+                await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
+                ServeCachedEntry(handler, lookup.Entry, request, context, "REVALIDATED");
             }
-
-            context.RecordEvent("CacheRevalidateNotModified");
-
-            var merged = MergeNotModifiedEntry(request, lookup.Entry, response, baseKey);
-            if (merged.Entry != null)
+            finally
             {
-                if (!string.Equals(lookup.StorageKey, merged.Entry.Key, StringComparison.Ordinal))
-                {
-                    await _policy.Storage.RemoveAsync(lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                    UnregisterStoredVariant(baseKey, lookup.StorageKey);
-                }
-
-                await _policy.Storage
-                    .SetAsync(merged.Entry.Key, merged.Entry, cancellationToken)
-                    .ConfigureAwait(false);
-                RegisterStoredVariant(baseKey, merged.Signature, merged.Entry.Key);
-
-                ServeCachedEntry(handler, merged.Entry, request, context, "REVALIDATED");
-                return;
+                context.UpdateRequest(request);
+                conditionalRequest.Dispose();
             }
-
-            await _policy.Storage.RemoveAsync(lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-            UnregisterStoredVariant(baseKey, lookup.StorageKey);
-            ServeCachedEntry(handler, lookup.Entry, request, context, "REVALIDATED");
         }
 
         private void StartBackgroundRevalidation(
@@ -449,20 +507,14 @@ namespace TurboHTTP.Cache
         {
             var getBase = BuildBaseKey(HttpMethod.GET, uri);
             var headBase = BuildBaseKey(HttpMethod.HEAD, uri);
-
-            var keys = new HashSet<string>(StringComparer.Ordinal)
-            {
-                BuildStorageKey(getBase, string.Empty),
-                BuildStorageKey(headBase, string.Empty)
-            };
-
-            foreach (var key in TakeStorageKeys(getBase))
-                keys.Add(key);
-            foreach (var key in TakeStorageKeys(headBase))
-                keys.Add(key);
-
-            foreach (var key in keys)
-                await _policy.Storage.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+            await QueueMutationAndWaitAsync(
+                getBase,
+                static (owner, baseKey, token, state) => owner.InvalidateBaseKeyCoreAsync(baseKey, token),
+                cancellationToken).ConfigureAwait(false);
+            await QueueMutationAndWaitAsync(
+                headBase,
+                static (owner, baseKey, token, state) => owner.InvalidateBaseKeyCoreAsync(baseKey, token),
+                cancellationToken).ConfigureAwait(false);
         }
 
         private async Task<CacheLookupResult> TryLookupAsync(
@@ -470,6 +522,8 @@ namespace TurboHTTP.Cache
             string baseKey,
             CancellationToken cancellationToken)
         {
+            await AwaitPendingMutationAsync(baseKey, cancellationToken).ConfigureAwait(false);
+
             var signatures = GetSignatureSnapshot(baseKey);
             if (signatures.Length == 0)
                 signatures = new[] { string.Empty };
@@ -682,6 +736,8 @@ namespace TurboHTTP.Cache
             headers.Set("Age", ageSeconds.ToString(CultureInfo.InvariantCulture));
             headers.Set("X-Cache", provenance);
 
+            // Cache hits synthesize the same handler lifecycle as a network response.
+            // OnRequestStart here means "response delivery begins", not "socket dispatch started".
             handler.OnRequestStart(request, context);
             handler.OnResponseStart((int)entry.StatusCode, headers, context);
 
@@ -771,15 +827,29 @@ namespace TurboHTTP.Cache
             SegmentedBuffer body)
         {
             QueueBackgroundWork(
-                StoreResponseAsync(
-                    requestMethod,
-                    requestUri,
-                    requestHeaders,
+                QueueMutationAsync(
                     baseKey,
-                    statusCode,
-                    responseHeaders,
-                    body,
-                    _backgroundWorkCancellation.Token),
+                    static (owner, key, token, state) =>
+                    {
+                        var storeState = (StoreResponseState)state;
+                        return owner.StoreResponseAsync(
+                            storeState.RequestMethod,
+                            storeState.RequestUri,
+                            storeState.RequestHeaders,
+                            key,
+                            storeState.StatusCode,
+                            storeState.ResponseHeaders,
+                            storeState.Body,
+                            token);
+                    },
+                    _backgroundWorkCancellation.Token,
+                    new StoreResponseState(
+                        requestMethod,
+                        requestUri,
+                        requestHeaders,
+                        statusCode,
+                        responseHeaders,
+                        body)),
                 "store");
         }
 
@@ -850,6 +920,223 @@ namespace TurboHTTP.Cache
             }
         }
 
+        private Task StorePreparedEntryQueuedAsync(
+            string baseKey,
+            PreparedCacheEntry prepared,
+            CancellationToken cancellationToken)
+        {
+            return QueueMutationAndWaitAsync(
+                baseKey,
+                static (owner, key, token, state) =>
+                {
+                    var queuedState = (PreparedEntryState)state;
+                    return owner.StorePreparedEntryCoreAsync(key, queuedState.Prepared, token);
+                },
+                cancellationToken,
+                new PreparedEntryState(prepared));
+        }
+
+        private Task ReplaceStoredEntryAsync(
+            string baseKey,
+            PreparedCacheEntry prepared,
+            string existingStorageKey,
+            CancellationToken cancellationToken)
+        {
+            return QueueMutationAndWaitAsync(
+                baseKey,
+                static (owner, key, token, state) =>
+                {
+                    var replacementState = (ReplacementState)state;
+                    return owner.ReplaceStoredEntryCoreAsync(
+                        key,
+                        replacementState.Prepared,
+                        replacementState.ExistingStorageKey,
+                        token);
+                },
+                cancellationToken,
+                new ReplacementState(prepared, existingStorageKey));
+        }
+
+        private Task RemoveStoredEntryAsync(
+            string baseKey,
+            string storageKey,
+            CancellationToken cancellationToken)
+        {
+            return QueueMutationAndWaitAsync(
+                baseKey,
+                static (owner, key, token, state) =>
+                    owner.RemoveStoredEntryCoreAsync(key, (string)state, token),
+                cancellationToken,
+                storageKey);
+        }
+
+        private async Task StorePreparedEntryCoreAsync(
+            string baseKey,
+            PreparedCacheEntry prepared,
+            CancellationToken cancellationToken)
+        {
+            await _policy.Storage
+                .SetAsync(prepared.Entry.Key, prepared.Entry, cancellationToken)
+                .ConfigureAwait(false);
+            RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+        }
+
+        private async Task ReplaceStoredEntryCoreAsync(
+            string baseKey,
+            PreparedCacheEntry prepared,
+            string existingStorageKey,
+            CancellationToken cancellationToken)
+        {
+            await StorePreparedEntryCoreAsync(baseKey, prepared, cancellationToken).ConfigureAwait(false);
+
+            if (!string.Equals(existingStorageKey, prepared.Entry.Key, StringComparison.Ordinal))
+                await RemoveStoredEntryCoreAsync(baseKey, existingStorageKey, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task RemoveStoredEntryCoreAsync(
+            string baseKey,
+            string storageKey,
+            CancellationToken cancellationToken)
+        {
+            await _policy.Storage.RemoveAsync(storageKey, cancellationToken).ConfigureAwait(false);
+            UnregisterStoredVariant(baseKey, storageKey);
+        }
+
+        private async Task InvalidateBaseKeyCoreAsync(string baseKey, CancellationToken cancellationToken)
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal)
+            {
+                BuildStorageKey(baseKey, string.Empty)
+            };
+
+            foreach (var key in TakeStorageKeys(baseKey))
+                keys.Add(key);
+
+            foreach (var key in keys)
+                await _policy.Storage.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+
+        private Task QueueMutationAndWaitAsync(
+            string baseKey,
+            Func<CacheInterceptor, string, CancellationToken, object, Task> mutation,
+            CancellationToken cancellationToken,
+            object state = null)
+        {
+            return QueueMutationAsync(baseKey, mutation, cancellationToken, state);
+        }
+
+        private Task QueueMutationAsync(
+            string baseKey,
+            Func<CacheInterceptor, string, CancellationToken, object, Task> mutation,
+            CancellationToken cancellationToken,
+            object state = null)
+        {
+            if (string.IsNullOrEmpty(baseKey))
+                throw new ArgumentException("Base key cannot be null or empty.", nameof(baseKey));
+            if (mutation == null)
+                throw new ArgumentNullException(nameof(mutation));
+
+            Task queuedTask;
+            lock (_pendingMutationLock)
+            {
+                _pendingMutations.TryGetValue(baseKey, out var previousTask);
+                queuedTask = RunQueuedMutationAsync(baseKey, previousTask, mutation, state, cancellationToken);
+                _pendingMutations[baseKey] = queuedTask;
+            }
+
+            _ = queuedTask.ContinueWith(
+                static (task, mutationState) =>
+                {
+                    var pendingState = (PendingMutationState)mutationState;
+                    pendingState.Owner.ClearPendingMutation(pendingState.BaseKey, task);
+                },
+                new PendingMutationState(this, baseKey),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
+            return queuedTask;
+        }
+
+        private async Task AwaitPendingMutationAsync(string baseKey, CancellationToken cancellationToken)
+        {
+            Task pendingTask;
+            lock (_pendingMutationLock)
+            {
+                _pendingMutations.TryGetValue(baseKey, out pendingTask);
+            }
+
+            if (pendingTask == null)
+                return;
+
+            if (pendingTask.IsCompleted || !cancellationToken.CanBeCanceled)
+            {
+                await AwaitIgnoringFaultAsync(pendingTask).ConfigureAwait(false);
+                return;
+            }
+
+            var cancellationTask = new TaskCompletionSource<object>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            using (cancellationToken.Register(
+                       static state => ((TaskCompletionSource<object>)state).TrySetCanceled(),
+                       cancellationTask))
+            {
+                var completedTask = await Task.WhenAny(pendingTask, cancellationTask.Task).ConfigureAwait(false);
+                if (!ReferenceEquals(completedTask, pendingTask))
+                    await cancellationTask.Task.ConfigureAwait(false);
+            }
+
+            await AwaitIgnoringFaultAsync(pendingTask).ConfigureAwait(false);
+        }
+
+        private static async Task AwaitIgnoringFaultAsync(Task task)
+        {
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Background cache mutations are best-effort. Reads should wait for
+                // sequencing but must not fail just because a prior store/remove faulted.
+            }
+        }
+
+        private async Task RunQueuedMutationAsync(
+            string baseKey,
+            Task previousTask,
+            Func<CacheInterceptor, string, CancellationToken, object, Task> mutation,
+            object state,
+            CancellationToken cancellationToken)
+        {
+            if (previousTask != null)
+            {
+                try
+                {
+                    await previousTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Later mutations must still run so the queue cannot stall on a prior failure.
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await mutation(this, baseKey, cancellationToken, state).ConfigureAwait(false);
+        }
+
+        private void ClearPendingMutation(string baseKey, Task completedTask)
+        {
+            lock (_pendingMutationLock)
+            {
+                if (_pendingMutations.TryGetValue(baseKey, out var currentTask)
+                    && ReferenceEquals(currentTask, completedTask))
+                {
+                    _pendingMutations.Remove(baseKey);
+                }
+            }
+        }
+
         private static void QueueBackgroundWork(Task task, string operation)
         {
             _ = task.ContinueWith(
@@ -898,127 +1185,7 @@ namespace TurboHTTP.Cache
             RequestContext context,
             CancellationToken cancellationToken)
         {
-            var collector = new BufferedResponseHandler(request, context);
-            Task dispatchTask;
-            try
-            {
-                dispatchTask = dispatch(request, collector, context, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                collector.Fail(ex);
-                return collector.ResponseTask;
-            }
-
-            _ = dispatchTask.ContinueWith(
-                static (task, state) =>
-                {
-                    var responseCollector = (BufferedResponseHandler)state;
-                    if (task.IsFaulted)
-                    {
-                        responseCollector.Fail(task.Exception.GetBaseException());
-                        return;
-                    }
-
-                    if (task.IsCanceled)
-                    {
-                        try
-                        {
-                            task.GetAwaiter().GetResult();
-                        }
-                        catch (OperationCanceledException ex)
-                        {
-                            responseCollector.Fail(ex);
-                            return;
-                        }
-                    }
-
-                    responseCollector.EnsureCompleted();
-                },
-                collector,
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-
-            return collector.ResponseTask;
-        }
-
-        private sealed class BufferedResponseHandler : IHttpHandler
-        {
-            private readonly TaskCompletionSource<UHttpResponse> _tcs =
-                new TaskCompletionSource<UHttpResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-            private readonly UHttpRequest _request;
-            private readonly RequestContext _context;
-            private SegmentedBuffer _body;
-            private int _statusCode;
-            private HttpHeaders _headers;
-
-            internal BufferedResponseHandler(UHttpRequest request, RequestContext context)
-            {
-                _request = request;
-                _context = context;
-            }
-
-            internal Task<UHttpResponse> ResponseTask => _tcs.Task;
-
-            public void OnRequestStart(UHttpRequest request, RequestContext context)
-            {
-            }
-
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
-            {
-                _statusCode = statusCode;
-                _headers = headers;
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-                if (chunk.IsEmpty)
-                    return;
-
-                if (_body == null)
-                    _body = new SegmentedBuffer();
-
-                _body.Write(chunk);
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
-                using (_body)
-                {
-                    var bytes = _body?.AsSequence().ToArray();
-                    _tcs.TrySetResult(new UHttpResponse(
-                        (HttpStatusCode)_statusCode,
-                        _headers ?? new HttpHeaders(),
-                        bytes,
-                        _context.Elapsed,
-                        _request));
-                }
-
-                _body = null;
-            }
-
-            public void OnResponseError(UHttpException error, RequestContext context)
-            {
-                _body?.Dispose();
-                _body = null;
-                _tcs.TrySetException(error);
-            }
-
-            internal void Fail(Exception ex)
-            {
-                _body?.Dispose();
-                _body = null;
-                _tcs.TrySetException(ex);
-            }
-
-            internal void EnsureCompleted()
-            {
-                if (!_tcs.Task.IsCompleted)
-                {
-                    Fail(new InvalidOperationException("Dispatch completed without a response."));
-                }
-            }
+            return TransportDispatchHelper.CollectResponseAsync(dispatch, request, context, cancellationToken);
         }
 
         private sealed class NullHttpHandler : IHttpHandler

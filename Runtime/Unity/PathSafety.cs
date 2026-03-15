@@ -36,20 +36,10 @@ namespace TurboHTTP.Unity
     public static class PathSafety
     {
         /// <summary>
-        /// Resolves <paramref name="relativePath"/> under <paramref name="rootPath"/> and blocks traversal.
+        /// Validates a Unity-relative output path before any root-path lookup occurs.
         /// </summary>
-        public static string ResolvePathWithinRoot(
-            string rootPath,
-            string relativePath,
-            string parameterName)
+        public static void ValidateRelativePath(string relativePath, string parameterName)
         {
-            if (string.IsNullOrWhiteSpace(rootPath))
-            {
-                throw new ArgumentException(
-                    "Root path cannot be null or empty.",
-                    nameof(rootPath));
-            }
-
             if (string.IsNullOrWhiteSpace(relativePath))
             {
                 throw new ArgumentException(
@@ -71,6 +61,24 @@ namespace TurboHTTP.Unity
                     "Path traversal is not allowed.",
                     parameterName);
             }
+        }
+
+        /// <summary>
+        /// Resolves <paramref name="relativePath"/> under <paramref name="rootPath"/> and blocks traversal.
+        /// </summary>
+        public static string ResolvePathWithinRoot(
+            string rootPath,
+            string relativePath,
+            string parameterName)
+        {
+            if (string.IsNullOrWhiteSpace(rootPath))
+            {
+                throw new ArgumentException(
+                    "Root path cannot be null or empty.",
+                    nameof(rootPath));
+            }
+
+            ValidateRelativePath(relativePath, parameterName);
 
             var canonicalRoot = Path.GetFullPath(rootPath);
             var combined = Path.Combine(canonicalRoot, relativePath);

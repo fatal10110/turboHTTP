@@ -242,7 +242,7 @@ namespace TurboHTTP.Transport.Http2
             catch (Exception ex)
             {
                 Interlocked.Exchange(ref _handlerFaulted, 1);
-                TrySetException(new HandlerCallbackException(ex));
+                CompleteWithHandlerFailure(ex);
                 return false;
             }
         }
@@ -309,8 +309,33 @@ namespace TurboHTTP.Transport.Http2
 
             State = Http2StreamState.Closed;
             Interlocked.Exchange(ref _handlerFaulted, 1);
-            TrySetException(new HandlerCallbackException(exception));
+            CompleteWithHandlerFailure(exception);
             return false;
+        }
+
+        private void CompleteWithHandlerFailure(Exception exception)
+        {
+            try
+            {
+                _handler.OnResponseError(MapHandlerException(exception), _context);
+                TrySetResult();
+            }
+            catch (Exception errorCallbackException)
+            {
+                TrySetException(new HandlerCallbackException(errorCallbackException));
+            }
+        }
+
+        private static UHttpException MapHandlerException(Exception exception)
+        {
+            if (exception is UHttpException httpException)
+                return httpException;
+
+            return new UHttpException(
+                new UHttpError(
+                    UHttpErrorType.Unknown,
+                    exception?.Message ?? "Handler callback failed.",
+                    exception));
         }
 
         private void TrySetResult()

@@ -134,7 +134,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
         [Test]
         public void SendAsync_UnsupportedTransferEncoding_MapsToNetworkError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer(async (client, _) =>
                 {
@@ -159,12 +159,43 @@ namespace TurboHTTP.Tests.Transport.Http1
                     await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync());
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
-            }).GetAwaiter().GetResult();
+            });
+        }
+
+        [Test]
+        public void DispatchAsync_HandlerCallbackFailure_IsReportedViaOnResponseError()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    await ReadRequestHeadersAsync(stream);
+                    var response = "HTTP/1.1 200 OK\r\n" +
+                                   "Content-Length: 5\r\n" +
+                                   "Content-Type: text/plain\r\n" +
+                                   "\r\n" +
+                                   "Hello";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
+
+                using var transport = new RawSocketTransport();
+                var request = new UHttpRequest(HttpMethod.GET, new Uri($"http://127.0.0.1:{server.Port}/"));
+                var context = new RequestContext(request);
+                var handler = new FailingResponseStartHandler();
+
+                await transport.DispatchAsync(request, handler, context, CancellationToken.None);
+
+                Assert.IsTrue(handler.ResponseErrorCalled);
+                Assert.IsNotNull(handler.LastError);
+                Assert.That(handler.LastError.Message, Does.Contain("handler-start-failure"));
+            });
         }
 
         [Test]
         public void RawSocketTransport_StaleConnection_RetriesOnce()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer(async (client, index) =>
                 {
@@ -204,12 +235,12 @@ namespace TurboHTTP.Tests.Transport.Http1
                 var responseResult = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
                 Assert.AreEqual(HttpStatusCode.OK, responseResult.StatusCode);
                 Assert.GreaterOrEqual(server.AcceptCount, 2);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RawSocketTransport_StaleConnection_NonIdempotent_NoRetry()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer(async (client, index) =>
                 {
@@ -249,12 +280,12 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
                 Assert.AreEqual(1, server.AcceptCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void NonKeepAlive_Response_SemaphoreReleased()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer(async (client, _) =>
                 {
@@ -278,13 +309,13 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 Assert.AreEqual(HttpStatusCode.OK, first.StatusCode);
                 Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void HttpViaProxy_UsesAbsoluteForm()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 string requestLine = null;
                 string proxyAuth = null;
@@ -318,13 +349,13 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual("GET http://origin.example.com/resource?id=42 HTTP/1.1", requestLine);
                 Assert.IsNull(proxyAuth);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Connect407_RetryWithAuthOnce()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 int connectCount = 0;
                 string firstAuth = null;
@@ -373,13 +404,13 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Assert.IsNull(firstAuth);
                 Assert.IsNotNull(secondAuth);
                 StringAssert.StartsWith("Basic ", secondAuth);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Connect407_NoCredentialsFails()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var proxyServer = new HttpServer(async (client, _) =>
                 {
@@ -408,13 +439,13 @@ namespace TurboHTTP.Tests.Transport.Http1
                     await client.Get("https://origin.example.com/secure").SendAsync());
                 Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
                 StringAssert.Contains("Proxy authentication required", ex.HttpError.Message);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void CancellationDuringConnect_NoLeaks()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var proxyServer = new HttpServer(async (client, _) =>
                 {
@@ -438,17 +469,16 @@ namespace TurboHTTP.Tests.Transport.Http1
                 });
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
-                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                AssertAsync.ThrowsAsync<OperationCanceledException>(async () =>
                     await client.Get("https://origin.example.com/secure").SendAsync(cts.Token));
-                Assert.AreEqual(UHttpErrorType.Cancelled, ex.HttpError.Type);
-            }).GetAwaiter().GetResult();
+            });
         }
 
 #if TURBOHTTP_INTEGRATION_TESTS
         [Test]
         [Category("Integration")]
         public void RawSocketTransport_FreshConnection_IOException_NoRetry()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer((client, _) =>
                 {
@@ -468,7 +498,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
                 Assert.AreEqual(1, server.AcceptCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 #endif
 
@@ -536,6 +566,35 @@ namespace TurboHTTP.Tests.Transport.Http1
             }
 
             return Encoding.ASCII.GetString(bytes.ToArray());
+        }
+
+        private sealed class FailingResponseStartHandler : IHttpHandler
+        {
+            public bool ResponseErrorCalled { get; private set; }
+            public UHttpException LastError { get; private set; }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+            }
+
+            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            {
+                throw new InvalidOperationException("handler-start-failure");
+            }
+
+            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
+            {
+            }
+
+            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            {
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                ResponseErrorCalled = true;
+                LastError = error;
+            }
         }
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
@@ -92,7 +93,16 @@ namespace TurboHTTP.Cache
                 throw;
             }
 
-            _owner.QueueStoreResponse(_requestMethod, _requestUri, _requestHeaders, _baseKey, statusCode, headers, bodyToStore);
+            try
+            {
+                _owner.QueueStoreResponse(_requestMethod, _requestUri, _requestHeaders, _baseKey, statusCode, headers, bodyToStore);
+                bodyToStore = null;
+            }
+            catch (Exception ex)
+            {
+                bodyToStore?.Dispose();
+                Debug.WriteLine("[TurboHTTP][Cache] Failed to queue cache store: " + ex);
+            }
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)

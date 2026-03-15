@@ -90,7 +90,25 @@ namespace TurboHTTP.Transport
             if (context == null)
                 throw new ArgumentNullException(nameof(context));
 
-            handler.OnRequestStart(request, context);
+            context.SetState(TransportBehaviorFlags.SelfDrainsResponseBody, true);
+
+            try
+            {
+                handler.OnRequestStart(request, context);
+            }
+            catch (Exception ex)
+            {
+                context.RecordEvent("RequestFailed");
+                handler.OnResponseError(
+                    ex as UHttpException
+                    ?? new UHttpException(new UHttpError(
+                        UHttpErrorType.Unknown,
+                        ex.Message,
+                        ex)),
+                    context);
+                return;
+            }
+
             try
             {
                 await DispatchCoreAsync(request, handler, context, cancellationToken)
@@ -759,22 +777,16 @@ namespace TurboHTTP.Transport
             var keepAlive = parsed.KeepAlive;
             try
             {
-                try
+                var safeHandler = HandlerCallbackSafetyWrapper.Wrap(handler, context);
+                safeHandler.OnResponseStart((int)parsed.StatusCode, parsed.Headers, context);
+                foreach (var segment in parsed.EnumerateBodySegments())
                 {
-                    handler.OnResponseStart((int)parsed.StatusCode, parsed.Headers, context);
-                    foreach (var segment in parsed.EnumerateBodySegments())
-                    {
-                        if (!segment.IsEmpty)
-                            handler.OnResponseData(segment.Span, context);
-                    }
+                    if (!segment.IsEmpty)
+                        safeHandler.OnResponseData(segment.Span, context);
+                }
 
-                    handler.OnResponseEnd(HttpHeaders.Empty, context);
-                    return keepAlive;
-                }
-                catch (Exception ex)
-                {
-                    throw new HandlerCallbackException(ex);
-                }
+                safeHandler.OnResponseEnd(HttpHeaders.Empty, context);
+                return keepAlive;
             }
             finally
             {

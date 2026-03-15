@@ -22,6 +22,7 @@ namespace TurboHTTP.Unity
             string relativePath,
             CancellationToken cancellationToken = default)
         {
+            PathSafety.ValidateRelativePath(relativePath, nameof(relativePath));
             return DownloadToUnityPathAsync(
                 client,
                 url,
@@ -41,6 +42,7 @@ namespace TurboHTTP.Unity
             UnityAtomicWriteOptions writeOptions,
             CancellationToken cancellationToken = default)
         {
+            PathSafety.ValidateRelativePath(relativePath, nameof(relativePath));
             return DownloadToUnityPathAsync(
                 client,
                 url,
@@ -59,6 +61,7 @@ namespace TurboHTTP.Unity
             string relativePath,
             CancellationToken cancellationToken = default)
         {
+            PathSafety.ValidateRelativePath(relativePath, nameof(relativePath));
             return DownloadToUnityPathAsync(
                 client,
                 url,
@@ -78,6 +81,7 @@ namespace TurboHTTP.Unity
             UnityAtomicWriteOptions writeOptions,
             CancellationToken cancellationToken = default)
         {
+            PathSafety.ValidateRelativePath(relativePath, nameof(relativePath));
             return DownloadToUnityPathAsync(
                 client,
                 url,

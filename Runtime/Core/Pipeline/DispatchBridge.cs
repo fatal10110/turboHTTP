@@ -21,12 +21,17 @@ namespace TurboHTTP.Core
         {
             if (dispatch == null)
                 throw new ArgumentNullException(nameof(dispatch));
+            if (request == null)
+                throw new ArgumentNullException(nameof(request));
+            if (context == null)
+                throw new ArgumentNullException(nameof(context));
 
             var collector = new ResponseCollectorHandler(request, context);
+            var safeCollector = HandlerCallbackSafetyWrapper.Wrap(collector, context);
             Task dispatchTask;
             try
             {
-                dispatchTask = dispatch(request, collector, context, cancellationToken);
+                dispatchTask = dispatch(request, safeCollector, context, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -99,7 +104,7 @@ namespace TurboHTTP.Core
                         return;
                     }
 
-                    responseCollector.EnsureCompleted();
+                    responseCollector.CompleteBufferedResponse();
                 },
                 collector,
                 CancellationToken.None,

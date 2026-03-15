@@ -2,14 +2,14 @@
 
 **Reviewers:** unity-infrastructure-architect, unity-network-architect
 **Scope:** All new, modified, and deleted files in Phase 22.3 (module interceptor rewrites)
-**Review passes:** 3
+**Review passes:** 5
 **Final verdict:** CONDITIONALLY APPROVED
 
 ---
 
 ## Executive Summary
 
-Pass 2 expanded the review beyond the original compile/cache findings and surfaced additional defects in decompression, retry/redirect safety, observability allocations, background cancellation, and fire-and-forget cache work. Pass 3 verifies that all actionable findings from Pass 1 and Pass 2 are now addressed in code and backed by targeted regression coverage where practical.
+Pass 2 expanded the review beyond the original compile/cache findings and surfaced additional defects in decompression, retry/redirect safety, observability allocations, background cancellation, and fire-and-forget cache work. Pass 3 closed the actionable Pass 1/Pass 2 findings. Pass 4 identified six additional actionable issues in cache revalidation, redirect completion, decompression terminal delivery, cache-store ownership, and monitor buffering/locking; Pass 5 verifies those are now addressed in code and backed by targeted regressions where practical.
 
 One known design limitation remains intentionally deferred: `DecompressionHandler` still buffers the compressed body before replaying decompressed chunks. That behavior is already called out in the phase source-of-truth as an accepted Phase 22 limitation and is not treated as a release-blocking defect for this pass. Unity Editor/IL2CPP validation still remains pending from this workspace.
 
@@ -20,6 +20,8 @@ One known design limitation remains intentionally deferred: `DecompressionHandle
 - **Pass 1 (2026-03-09):** Initial review identified 2 compile blockers, 1 retry telemetry regression, and 2 cache-alignment issues.
 - **Pass 2 (2026-03-10):** Full specialist review across the interceptor/handler split surfaced 8 additional high, 8 medium, and 4 low findings.
 - **Pass 3 (2026-03-10):** Verified the fix diff, re-ran both specialist rubrics, and confirmed closure of all actionable Pass 1/Pass 2 findings.
+- **Pass 4 (2026-03-11):** Fresh dual-rubric review identified 1 blocker and 5 additional actionable warnings in cache revalidation, decompression, redirect completion, cache-store ownership, and monitor buffering/locking.
+- **Pass 5 (2026-03-11):** Implemented and re-reviewed the actionable Pass 4 findings; the remaining Pass 4 warnings stay documented as accepted/deferred design notes.
 
 ---
 
@@ -60,6 +62,15 @@ One known design limitation remains intentionally deferred: `DecompressionHandle
 - **L-2:** unsupported encodings now pass through intact; supported multi-value chains are only stripped when the handler can fully decode them.
 - **L-3:** `GracePeriodBeforeQueue` is now consumed by `BackgroundNetworkingInterceptor`.
 - **L-4:** `CookieInterceptor` no longer uses `Split(';')` when merging cookie headers.
+
+### Pass 4 Actionable Follow-Up
+
+- **P4-B1:** `CacheInterceptor.RevalidateAsync` now restores `RequestContext.Request` before replaying user-visible callbacks and in `finally` on exception.
+- **P4-W1:** `DecompressionHandler` now maps unexpected buffered-decompression failures to `_inner.OnResponseError(...)`.
+- **P4-W2:** `RedirectHandler` completion now resolves or faults even when downstream terminal callbacks throw synchronously.
+- **P4-W3:** `CacheStoringHandler` now disposes detached response buffers if synchronous queueing fails before ownership transfers.
+- **P4-W5:** `MonitorInterceptor.LogCaptureFailure` now uses a dedicated throttle lock instead of `HistoryLock`.
+- **P4-W8:** `MonitorHandler` now caps pre-snapshot response buffering while preserving correct original-size/truncation metadata in captured monitor events.
 
 ---
 
@@ -115,6 +126,7 @@ One known design limitation remains intentionally deferred: `DecompressionHandle
   - `.claude/agents/unity-infrastructure-architect.md`
   - `.claude/agents/unity-network-architect.md`
 - Performed static inspection of the updated runtime files and added regression tests.
+- Re-ran the checklist review on the Pass 5 diff for cache, redirect, decompression, and monitor paths.
 - `git diff --check` passes.
 - Not completed: Unity compile/test execution or device validation from this workspace.
 

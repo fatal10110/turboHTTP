@@ -237,7 +237,7 @@ namespace TurboHTTP.Core
                 private readonly UHttpRequest _request;
                 private readonly RequestContext _context;
                 private readonly IHttpHandler _innerHandler;
-                private readonly RequestMutationSignature _originalSignature;
+                private RequestMutationSignature _requestMutationBaseline;
                 private readonly object _responseGate = new object();
                 private readonly object _faultGate = new object();
 
@@ -261,7 +261,7 @@ namespace TurboHTTP.Core
                     _request = request;
                     _context = context;
                     _innerHandler = handler ?? throw new ArgumentNullException(nameof(handler));
-                    _originalSignature = RequestMutationSignature.Capture(request);
+                    _requestMutationBaseline = RequestMutationSignature.Capture(request);
                 }
 
                 public async Task InvokeAsync(CancellationToken cancellationToken)
@@ -335,6 +335,13 @@ namespace TurboHTTP.Core
                     }
                     finally
                     {
+                        lock (_responseGate)
+                        {
+                            // Preserve downstream mutations as the new baseline so outer read-only plugins
+                            // are not blamed for request changes performed by inner plugins.
+                            _requestMutationBaseline = RequestMutationSignature.Capture(_request);
+                        }
+
                         Interlocked.Decrement(ref _activeDispatchCount);
                     }
                 }
@@ -390,7 +397,7 @@ namespace TurboHTTP.Core
                     if (_owner._canMutateRequest || _request == null)
                         return;
 
-                    if (RequestMutationSignature.Capture(_request).Equals(_originalSignature))
+                    if (RequestMutationSignature.Capture(_request).Equals(_requestMutationBaseline))
                         return;
 
                     throw new PluginException(
@@ -653,6 +660,8 @@ namespace TurboHTTP.Core
 
                 private readonly struct ResponseEventSignature
                 {
+                    private static readonly uint[] Crc32Table = BuildCrc32Table();
+
                     private readonly int _kind;
                     private readonly int _arg0;
                     private readonly int _arg1;
@@ -746,21 +755,32 @@ namespace TurboHTTP.Core
 
                     private static int ComputeDataHash(ReadOnlySpan<byte> chunk)
                     {
-                        unchecked
+                        var crc = uint.MaxValue;
+                        for (int i = 0; i < chunk.Length; i++)
                         {
-                            var hash = 17;
-                            hash = (hash * 31) ^ chunk.Length;
-
-                            var sampleCount = Math.Min(8, chunk.Length);
-                            for (int i = 0; i < sampleCount; i++)
-                                hash = (hash * 31) ^ chunk[i];
-
-                            var tailStart = Math.Max(sampleCount, chunk.Length - 8);
-                            for (int i = tailStart; i < chunk.Length; i++)
-                                hash = (hash * 31) ^ chunk[i];
-
-                            return hash;
+                            crc = (crc >> 8) ^ Crc32Table[(crc ^ chunk[i]) & 0xFF];
                         }
+
+                        return unchecked((int)(crc ^ uint.MaxValue));
+                    }
+
+                    private static uint[] BuildCrc32Table()
+                    {
+                        var table = new uint[256];
+                        for (uint i = 0; i < table.Length; i++)
+                        {
+                            var crc = i;
+                            for (int bit = 0; bit < 8; bit++)
+                            {
+                                crc = (crc & 1) != 0
+                                    ? 0xEDB88320u ^ (crc >> 1)
+                                    : crc >> 1;
+                            }
+
+                            table[i] = crc;
+                        }
+
+                        return table;
                     }
                 }
 

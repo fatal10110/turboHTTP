@@ -15,7 +15,7 @@ namespace TurboHTTP.Tests.Pipeline
         [Test]
         public void Pipeline_ExecutesInterceptorsInOrder()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var executionOrder = new List<string>();
                 var transport = new RecordingTransport();
@@ -40,13 +40,13 @@ namespace TurboHTTP.Tests.Pipeline
                 CollectionAssert.AreEqual(
                     new[] { "I1-Before", "I2-Before", "I3-Before", "I3-After", "I2-After", "I1-After" },
                     executionOrder);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Pipeline_EmptyInterceptor_CallsTransportDirectly()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new RecordingTransport();
                 var pipeline = new InterceptorPipeline(Array.Empty<IHttpInterceptor>(), transport);
@@ -61,13 +61,13 @@ namespace TurboHTTP.Tests.Pipeline
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(1, transport.DispatchCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Pipeline_InterceptorsCanShortCircuit()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new RecordingTransport();
                 var pipeline = new TestInterceptorPipeline(
@@ -84,7 +84,7 @@ namespace TurboHTTP.Tests.Pipeline
 
                 Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
                 Assert.AreEqual(0, transport.DispatchCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
@@ -113,7 +113,7 @@ namespace TurboHTTP.Tests.Pipeline
         [Test]
         public void Pipeline_SynchronousCancellation_PropagatesOperationCanceledException()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var pipeline = new InterceptorPipeline(
                     new IHttpInterceptor[] { new SynchronousCancellationInterceptor() },
@@ -130,13 +130,13 @@ namespace TurboHTTP.Tests.Pipeline
                         request,
                         context,
                         cts.Token));
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void CollectResponseAsync_SynchronousDerivedCancellation_PropagatesOriginalException()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/queued"));
                 var context = new RequestContext(request);
@@ -154,7 +154,36 @@ namespace TurboHTTP.Tests.Pipeline
 
                 Assert.AreEqual("dedupe-key", ex.ReplayDedupeKey);
                 Assert.AreEqual("scope-1", ex.ScopeId);
-            }).GetAwaiter().GetResult();
+            });
+        }
+
+        [Test]
+        public void CollectResponseAsync_LateFaultAfterResponseEnd_PropagatesFailure()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/late-fault"));
+                var context = new RequestContext(request);
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
+                {
+                    await TransportDispatchHelper.CollectResponseAsync(
+                        async (req, handler, ctx, cancellationToken) =>
+                        {
+                            handler.OnRequestStart(req, ctx);
+                            handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
+                            handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                            await Task.Yield();
+                            throw new InvalidOperationException("late fault");
+                        },
+                        request,
+                        context,
+                        CancellationToken.None);
+                });
+
+                Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+                Assert.IsInstanceOf<InvalidOperationException>(ex.HttpError.InnerException);
+            });
         }
 
         [Test]
@@ -166,7 +195,7 @@ namespace TurboHTTP.Tests.Pipeline
         [Test]
         public void Pipeline_ResponseEnd_UsesFrozenEmptyTrailers()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var pipeline = new InterceptorPipeline(
                     new IHttpInterceptor[] { new TrailerMutationInterceptor() },
@@ -183,7 +212,7 @@ namespace TurboHTTP.Tests.Pipeline
 
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
                 Assert.IsInstanceOf<InvalidOperationException>(ex.HttpError.InnerException);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
@@ -197,8 +226,11 @@ namespace TurboHTTP.Tests.Pipeline
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/failure"));
             var context = new RequestContext(request);
 
-            AssertAsync.ThrowsAsync<InvalidOperationException, UHttpResponse>(
+            var ex = AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(
                 () => pipeline.ExecuteAsync(request, context));
+
+            Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+            Assert.IsInstanceOf<InvalidOperationException>(ex.HttpError.InnerException);
         }
 
         [Test]

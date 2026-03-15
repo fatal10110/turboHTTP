@@ -17,7 +17,7 @@ namespace TurboHTTP.Tests.Testing
         [Test]
         public void DispatchAsync_QueuedResponse_CallsRequestStartBeforeResponseCallbacks()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport();
                 transport.EnqueueResponse(HttpStatusCode.OK, body: Encoding.UTF8.GetBytes("ok"));
@@ -34,13 +34,13 @@ namespace TurboHTTP.Tests.Testing
                 Assert.AreEqual("ok", handler.GetBodyAsString());
                 Assert.AreEqual(1, transport.RequestCount);
                 Assert.AreEqual("https://example.test/mock", transport.CapturedRequests[0].Uri.ToString());
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void DispatchAsync_QueuedError_CallsRequestStartThenResponseError()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport();
                 transport.EnqueueError(
@@ -57,13 +57,13 @@ namespace TurboHTTP.Tests.Testing
                 Assert.IsNotNull(handler.Error);
                 Assert.AreEqual(UHttpErrorType.NetworkError, handler.Error.HttpError.Type);
                 Assert.AreEqual(HttpStatusCode.ServiceUnavailable, handler.Error.HttpError.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void DispatchAsync_DelayedResponse_HonorsCancellationAfterRequestStart()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport();
                 transport.EnqueueResponse(
@@ -82,15 +82,15 @@ namespace TurboHTTP.Tests.Testing
 
                 CollectionAssert.AreEqual(new[] { "request" }, handler.Events);
                 Assert.IsNull(handler.Error);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void DispatchAsync_WithoutQueuedResponse_ReportsNetworkErrorAfterRequestStart()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
-                var transport = new MockTransport();
+                var transport = new MockTransport(useDefaultFallback: false);
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/empty"));
                 var context = new RequestContext(request);
                 var handler = new CallbackRecorder();
@@ -101,7 +101,28 @@ namespace TurboHTTP.Tests.Testing
                 Assert.IsNotNull(handler.Error);
                 Assert.AreEqual(UHttpErrorType.NetworkError, handler.Error.HttpError.Type);
                 Assert.AreEqual("MockTransport: no queued response", handler.Error.HttpError.Message);
-            }).GetAwaiter().GetResult();
+            });
+        }
+
+        [Test]
+        public void DispatchAsync_NullFallbackResponse_IsConvertedIntoOnResponseError()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var transport = new MockTransport(
+                    (Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>>)((req, ctx, ct) =>
+                        Task.FromResult<UHttpResponse>(null)));
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/null"));
+                var context = new RequestContext(request);
+                var handler = new CallbackRecorder();
+
+                await transport.DispatchAsync(request, handler, context, CancellationToken.None);
+
+                CollectionAssert.AreEqual(new[] { "request", "error" }, handler.Events);
+                Assert.IsNotNull(handler.Error);
+                Assert.AreEqual(UHttpErrorType.Unknown, handler.Error.HttpError.Type);
+                Assert.That(handler.Error.HttpError.Message, Does.Contain("null response"));
+            });
         }
 
         private sealed class CallbackRecorder : IHttpHandler

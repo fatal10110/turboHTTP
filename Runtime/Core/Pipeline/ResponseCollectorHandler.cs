@@ -20,6 +20,7 @@ namespace TurboHTTP.Core
         private int _statusCode;
         private HttpHeaders _responseHeaders;
         private SegmentedBuffer _body;
+        private UHttpResponse _bufferedResponse;
         private bool _bodyClosed;
 
         internal ResponseCollectorHandler(UHttpRequest request, RequestContext context)
@@ -65,22 +66,24 @@ namespace TurboHTTP.Core
         public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
         {
             var body = DetachBody();
-            var response = new UHttpResponse(
+            BufferResponse(new UHttpResponse(
                 (HttpStatusCode)_statusCode,
                 _responseHeaders ?? new HttpHeaders(),
                 body?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
                 body,
                 context.Elapsed,
-                _request);
-
-            _tcs.TrySetResult(response);
+                _request));
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
         {
-            DisposeBody();
-            _tcs.TrySetException(error ?? new UHttpException(
-                new UHttpError(UHttpErrorType.Unknown, "Unknown response error.")));
+            var responseError = error ?? new UHttpException(
+                new UHttpError(
+                    UHttpErrorType.Unknown,
+                    "IHttpHandler.OnResponseError received a null error."));
+
+            if (_tcs.TrySetException(responseError))
+                DisposeBufferedState();
         }
 
         /// <summary>
@@ -88,20 +91,22 @@ namespace TurboHTTP.Core
         /// </summary>
         internal void Fail(Exception ex)
         {
-            DisposeBody();
-
             if (ex is HandlerCallbackException handlerCallback && handlerCallback.InnerException != null)
                 ex = handlerCallback.InnerException;
 
             if (ex is OperationCanceledException operationCanceledException)
             {
-                _tcs.TrySetException(operationCanceledException);
+                if (_tcs.TrySetException(operationCanceledException))
+                    DisposeBufferedState();
                 return;
             }
 
-            _tcs.TrySetException(ex is UHttpException uHttpException
+            var dispatchError = ex is UHttpException uHttpException
                 ? uHttpException
-                : new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex?.Message ?? "Dispatch failed.", ex)));
+                : new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex?.Message ?? "Dispatch failed.", ex));
+
+            if (_tcs.TrySetException(dispatchError))
+                DisposeBufferedState();
         }
 
         /// <summary>
@@ -109,35 +114,63 @@ namespace TurboHTTP.Core
         /// </summary>
         internal void Cancel()
         {
-            DisposeBody();
-            _tcs.TrySetCanceled();
+            if (_tcs.TrySetCanceled())
+                DisposeBufferedState();
         }
 
         /// <summary>
         /// Ensures that the response task is completed, faulting it if it is not.
         /// This is a safety net to prevent hanging when the pipeline completes without delivering a response.
         /// </summary>
-        internal void EnsureCompleted()
+        internal void CompleteBufferedResponse()
         {
-            if (!_tcs.Task.IsCompleted)
+            if (_tcs.Task.IsCompleted)
+                return;
+
+            var response = DetachBufferedResponse();
+            if (response != null)
             {
-                DisposeBody();
-                _tcs.TrySetException(new InvalidOperationException(
-                    "Pipeline completed without delivering a response."));
+                if (!_tcs.TrySetResult(response))
+                    response.Dispose();
+                return;
             }
+
+            DisposeBody();
+            _tcs.TrySetException(new InvalidOperationException(
+                "Pipeline completed without delivering a response."));
         }
 
-        private void DisposeBody()
+        internal void EnsureCompleted()
         {
-            SegmentedBuffer body;
+            if (_tcs.Task.IsCompleted)
+                return;
+
+            DisposeBufferedState();
+            _tcs.TrySetException(new InvalidOperationException(
+                "Pipeline completed without delivering a response."));
+        }
+
+        private void DisposeBufferedState()
+        {
+            DisposeBody();
+            DetachBufferedResponse()?.Dispose();
+        }
+
+        private void BufferResponse(UHttpResponse response)
+        {
+            if (response == null)
+                throw new ArgumentNullException(nameof(response));
+
             lock (_bodyGate)
             {
-                body = _body;
-                _body = null;
-                _bodyClosed = true;
-            }
+                if (_tcs.Task.IsCompleted)
+                {
+                    response.Dispose();
+                    return;
+                }
 
-            body?.Dispose();
+                _bufferedResponse = response;
+            }
         }
 
         private SegmentedBuffer DetachBody()
@@ -148,6 +181,21 @@ namespace TurboHTTP.Core
                 _body = null;
                 _bodyClosed = true;
                 return body;
+            }
+        }
+
+        private void DisposeBody()
+        {
+            DetachBody()?.Dispose();
+        }
+
+        private UHttpResponse DetachBufferedResponse()
+        {
+            lock (_bodyGate)
+            {
+                var response = _bufferedResponse;
+                _bufferedResponse = null;
+                return response;
             }
         }
     }

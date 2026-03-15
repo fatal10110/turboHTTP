@@ -6,6 +6,7 @@ using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -182,6 +183,8 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// Dispatch an HTTP/2 request and wait for the handler-driven response lifecycle to complete.
+        /// Callers are responsible for invoking <see cref="IHttpHandler.OnRequestStart"/> before
+        /// dispatching when they bypass <see cref="RawSocketTransport"/>.
         /// </summary>
         public async Task DispatchAsync(
             UHttpRequest request,
@@ -189,6 +192,8 @@ namespace TurboHTTP.Transport.Http2
             RequestContext context,
             CancellationToken ct)
         {
+            context.SetState(TransportBehaviorFlags.SelfDrainsResponseBody, true);
+
             Http2Stream stream = null;
             int streamId = -1;
 

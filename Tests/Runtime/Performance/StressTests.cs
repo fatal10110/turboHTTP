@@ -8,6 +8,7 @@ using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 using TurboHTTP.RateLimit;
 using TurboHTTP.Testing;
+using TurboHTTP.Tests;
 
 namespace TurboHTTP.Tests.Performance
 {
@@ -21,7 +22,7 @@ namespace TurboHTTP.Tests.Performance
         [Test]
         public void HighConcurrency_MockTransport_1000Requests()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport(HttpStatusCode.OK);
                 using var client = new UHttpClient(new UHttpClientOptions
@@ -46,14 +47,14 @@ namespace TurboHTTP.Tests.Performance
                 {
                     Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         [Category("Stress")]
         public void CancellationStorm_HalfCanceled_ClientRecovers()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport(
                     (Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>>)(async (req, ctx, ct) =>
@@ -118,14 +119,14 @@ namespace TurboHTTP.Tests.Performance
 
                 var followUp = await client.Get("https://test.com/follow-up").SendAsync().ConfigureAwait(false);
                 Assert.AreEqual(HttpStatusCode.OK, followUp.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         [Category("Stress")]
         public void TimeoutStorm_AggressiveTimeouts_ClientRecovers()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport(
                     (Func<UHttpRequest, RequestContext, CancellationToken, ValueTask<UHttpResponse>>)(async (req, ctx, ct) =>
@@ -210,13 +211,13 @@ namespace TurboHTTP.Tests.Performance
                     .ConfigureAwait(false);
 
                 Assert.AreEqual(HttpStatusCode.OK, followUp.StatusCode);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void HighConcurrency_WithConcurrencyMiddleware()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 int maxConcurrent = 0;
                 int currentConcurrent = 0;
@@ -264,13 +265,13 @@ namespace TurboHTTP.Tests.Performance
                 Assert.LessOrEqual(maxConcurrent, 4,
                     $"Max concurrent requests ({maxConcurrent}) exceeded per-host limit (4)");
                 Assert.AreEqual(100, transport.RequestCount);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void HighConcurrency_MultipleHosts_ConcurrencyLimiter()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var perHostMax = new Dictionary<string, int>();
                 var perHostCurrent = new Dictionary<string, int>();
@@ -332,13 +333,13 @@ namespace TurboHTTP.Tests.Performance
                     Assert.LessOrEqual(kvp.Value, 3,
                         $"Host {kvp.Key} had {kvp.Value} concurrent requests, limit is 3");
                 }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void ObjectPool_NoLeaksUnderConcurrency()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 int factoryCalls = 0;
                 var pool = new ObjectPool<List<int>>(
@@ -373,13 +374,13 @@ namespace TurboHTTP.Tests.Performance
                     Assert.AreEqual(0, item.Count,
                         "Pooled item should have been reset (cleared)");
                 }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RequestQueue_PriorityOrdering()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var queue = new RequestQueue<string>();
 
@@ -407,7 +408,7 @@ namespace TurboHTTP.Tests.Performance
                 Assert.AreEqual(0, queue.Count);
 
                 queue.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
@@ -426,7 +427,7 @@ namespace TurboHTTP.Tests.Performance
         [Test]
         public void RequestQueue_Shutdown_UnblocksPendingDequeue()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var queue = new RequestQueue<string>();
                 try
@@ -455,13 +456,13 @@ namespace TurboHTTP.Tests.Performance
                 {
                     queue.Dispose();
                 }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RequestQueue_ForceShutdown_CancelsDequeueImmediately()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var queue = new RequestQueue<string>();
                 try
@@ -488,13 +489,13 @@ namespace TurboHTTP.Tests.Performance
                 {
                     queue.Dispose();
                 }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void UHttpClient_ThrowsAfterDispose()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport();
                 var client = new UHttpClient(new UHttpClientOptions
@@ -518,7 +519,7 @@ namespace TurboHTTP.Tests.Performance
                 {
                     // Expected
                 }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
@@ -538,7 +539,7 @@ namespace TurboHTTP.Tests.Performance
         [Test]
         public void ConcurrencyMiddleware_OwnedLimiter_DisposedWithClient()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var middleware = new ConcurrencyInterceptor(maxConnectionsPerHost: 1, maxTotalConnections: 1);
                 Assert.IsTrue(middleware is IDisposable);
@@ -556,28 +557,24 @@ namespace TurboHTTP.Tests.Performance
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
                 var context = new RequestContext(request);
 
-                try
+                var dispatch = middleware.Wrap((req, handler, ctx, ct) =>
                 {
-                    var dispatch = middleware.Wrap((req, handler, ctx, ct) =>
-                    {
-                        handler.OnRequestStart(req, ctx);
-                        handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
-                        handler.OnResponseEnd(HttpHeaders.Empty, ctx);
-                        return Task.CompletedTask;
-                    });
+                    handler.OnRequestStart(req, ctx);
+                    handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
+                    handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                    return Task.CompletedTask;
+                });
 
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                     await DispatchBridge.CollectResponseAsync(
                         dispatch,
                         request,
                         context,
-                        CancellationToken.None);
-                    Assert.Fail("Expected ObjectDisposedException");
-                }
-                catch (ObjectDisposedException)
-                {
-                    // Expected
-                }
-            }).GetAwaiter().GetResult();
+                        CancellationToken.None));
+
+                Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+                Assert.IsInstanceOf<ObjectDisposedException>(ex.HttpError.InnerException);
+            });
         }
 
         [Test]

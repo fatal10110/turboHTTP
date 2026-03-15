@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
-using System.Runtime.InteropServices;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Middleware
@@ -224,14 +223,8 @@ namespace TurboHTTP.Middleware
             if (body.IsEmpty)
                 return null;
 
-            if (MemoryMarshal.TryGetArray(body, out var segment)
-                && segment.Array != null
-                && segment.Offset == 0
-                && segment.Count == segment.Array.Length)
-            {
-                return segment.Array;
-            }
-
+            // Redirect hops must own their body bytes independently so later request
+            // disposal or buffer reuse cannot corrupt the follow-up dispatch.
             return body.ToArray();
         }
 

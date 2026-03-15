@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Testing
 {
@@ -74,6 +75,19 @@ namespace TurboHTTP.Testing
         {
             _fallbackHandler = (req, ctx, ct) => new ValueTask<UHttpResponse>(
                 CreateResponse(statusCode, headers, body, error, req, ctx));
+        }
+
+        /// <summary>
+        /// Create a MockTransport with the default 200 OK fallback either enabled or disabled.
+        /// When disabled, dispatches with no queued response report a synthetic network error.
+        /// </summary>
+        public MockTransport(bool useDefaultFallback)
+        {
+            if (!useDefaultFallback)
+                return;
+
+            _fallbackHandler = (req, ctx, ct) => new ValueTask<UHttpResponse>(
+                CreateResponse(HttpStatusCode.OK, null, null, null, req, ctx));
         }
 
         /// <summary>
@@ -204,8 +218,10 @@ namespace TurboHTTP.Testing
             if (context == null) throw new ArgumentNullException(nameof(context));
             ThrowIfDisposed();
 
+            context.SetState(TransportBehaviorFlags.SelfDrainsResponseBody, true);
+            var safeHandler = HandlerCallbackSafetyWrapper.Wrap(handler, context);
             CaptureRequest(request);
-            handler.OnRequestStart(request, context);
+            safeHandler.OnRequestStart(request, context);
 
             if (_queuedResponses.TryDequeue(out var queued))
             {
@@ -214,13 +230,13 @@ namespace TurboHTTP.Testing
                     await Task.Delay(queued.Delay, cancellationToken).ConfigureAwait(false);
                 }
 
-                DriveHandler(handler, queued, context);
+                DriveHandler(safeHandler, queued, context);
                 return;
             }
 
             if (_fallbackHandler == null)
             {
-                handler.OnResponseError(
+                safeHandler.OnResponseError(
                     new UHttpException(new UHttpError(
                         UHttpErrorType.NetworkError,
                         "MockTransport: no queued response")),
@@ -232,7 +248,17 @@ namespace TurboHTTP.Testing
             try
             {
                 response = await _fallbackHandler(request, context, cancellationToken).ConfigureAwait(false);
-                DriveHandler(response, handler, context);
+                if (response == null)
+                {
+                    safeHandler.OnResponseError(new UHttpException(
+                        new UHttpError(
+                            UHttpErrorType.Unknown,
+                            "MockTransport produced a null response.")),
+                        context);
+                    return;
+                }
+
+                DriveHandler(response, safeHandler, context);
             }
             catch (OperationCanceledException)
             {
@@ -244,11 +270,11 @@ namespace TurboHTTP.Testing
             }
             catch (UHttpException ex)
             {
-                handler.OnResponseError(ex, context);
+                safeHandler.OnResponseError(ex, context);
             }
             catch (Exception ex)
             {
-                handler.OnResponseError(new UHttpException(
+                safeHandler.OnResponseError(new UHttpException(
                     new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
             }
             finally
@@ -325,24 +351,48 @@ namespace TurboHTTP.Testing
                 return;
             }
 
-            handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
+            var headers = response.Headers?.Clone() ?? new HttpHeaders();
+            // Stage body segments into owned arrays before response disposal so the
+            // fallback path does not depend on UHttpResponse pooled-body lifetime.
+            var body = SnapshotResponseBody(response.Body);
 
-            var body = response.Body;
-            if (body.IsSingleSegment)
+            handler.OnResponseStart((int)response.StatusCode, headers, context);
+
+            if (body.Count == 1)
             {
-                if (!body.FirstSpan.IsEmpty)
-                    handler.OnResponseData(body.FirstSpan, context);
+                var segment = body[0];
+                if (segment.Length > 0)
+                    handler.OnResponseData(segment, context);
             }
             else
             {
-                foreach (ReadOnlyMemory<byte> segment in body)
+                for (int i = 0; i < body.Count; i++)
                 {
-                    if (!segment.Span.IsEmpty)
-                        handler.OnResponseData(segment.Span, context);
+                    var segment = body[i];
+                    if (segment.Length > 0)
+                        handler.OnResponseData(segment, context);
                 }
             }
 
             handler.OnResponseEnd(HttpHeaders.Empty, context);
+        }
+
+        private static IReadOnlyList<byte[]> SnapshotResponseBody(ReadOnlySequence<byte> body)
+        {
+            if (body.IsEmpty)
+                return Array.Empty<byte[]>();
+
+            if (body.IsSingleSegment)
+                return new List<byte[]> { body.FirstSpan.ToArray() };
+
+            var segments = new List<byte[]>();
+            foreach (ReadOnlyMemory<byte> segment in body)
+            {
+                if (!segment.IsEmpty)
+                    segments.Add(segment.ToArray());
+            }
+
+            return segments;
         }
 
         private static UHttpError WithStatusCode(UHttpError error, HttpStatusCode statusCode)

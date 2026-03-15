@@ -176,7 +176,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
         [Test]
         public void InitializeAsync_SendsPreface()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var duplex = new TestDuplexStream();
 
@@ -219,12 +219,12 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 await initTask;
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void InitializeAsync_SendsSettings()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var duplex = new TestDuplexStream();
                 var conn = new Http2Connection(duplex.ClientStream, "test.example.com", 443);
@@ -270,12 +270,12 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 await initTask;
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void InitializeAsync_AcksServerSettings()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var duplex = new TestDuplexStream();
                 var conn = new Http2Connection(duplex.ClientStream, "test.example.com", 443);
@@ -322,14 +322,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(0, clientAck.Length);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- Request/Response Lifecycle ---
 
         [Test]
         public void SendGetRequest_ReceiveResponse()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -367,12 +367,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual("Hello, HTTP/2!", response.GetBodyAsString());
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void SendPostRequest_WithBody()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -403,12 +403,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual((HttpStatusCode)201, response.StatusCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void SendRequest_AfterGoaway_Throws()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -435,14 +435,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                     () => conn.SendRequestAsync(request, context, cts.Token));
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- Frame Handling ---
 
         [Test]
         public void PingFrame_EchoedWithAck()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -466,12 +466,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(pingData, pongFrame.Payload);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void GoAwayFrame_FailsHigherStreams()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -519,14 +519,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         [Category("Stress")]
         public void GoAwayFrame_WithConcurrentInFlightRequests_CompletesOrFailsByLastStreamId()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(20000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -596,12 +596,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(totalRequests / 2, failureCount);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RstStreamFrame_FailsSpecificStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -629,13 +629,13 @@ namespace TurboHTTP.Tests.Transport.Http2
                 AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void RstStreamCancel_FrameFailsSpecificStreamAsNetworkError()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -667,12 +667,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 StringAssert.Contains("RST_STREAM: Cancel", ex.HttpError.Message);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void PushPromise_EnablePushDisabled_SendsGoAwayProtocolError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(
@@ -710,14 +710,16 @@ namespace TurboHTTP.Tests.Transport.Http2
                                  ((uint)goawayFrame.Payload[6] << 8) | goawayFrame.Payload[7];
                 Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, errorCode);
 
-                AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<Http2ProtocolException>(ex.HttpError.InnerException);
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void GoAway_InvalidPayloadLength_SendsFrameSizeErrorGoAway()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -752,14 +754,16 @@ namespace TurboHTTP.Tests.Transport.Http2
                                  ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
                 Assert.AreEqual((uint)Http2ErrorCode.FrameSizeError, errorCode);
 
-                AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<Http2ProtocolException>(ex.HttpError.InnerException);
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Priority_InvalidLength_SendsFrameSizeErrorGoAway()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -787,16 +791,18 @@ namespace TurboHTTP.Tests.Transport.Http2
                                  ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
                 Assert.AreEqual((uint)Http2ErrorCode.FrameSizeError, errorCode);
 
-                AssertAsync.ThrowsAsync<Http2ProtocolException>(async () => await responseTask);
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<Http2ProtocolException>(ex.HttpError.InnerException);
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- Settings ---
 
         [Test]
         public void Settings_UnknownId_Ignored()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -824,14 +830,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.IsTrue(conn.IsAlive);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- REVIEW FIX tests ---
 
         [Test]
         public void SettingsAck_NonZeroPayload_FrameSizeError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // SETTINGS ACK with payload should cause FRAME_SIZE_ERROR [GPT-7]
                 var duplex = new TestDuplexStream();
@@ -890,12 +896,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 }
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void ContinuationFrame_WrongStream_ConnectionDies()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // CONTINUATION for wrong stream should cause PROTOCOL_ERROR [A3]
                 using var cts = new CancellationTokenSource(10000);
@@ -933,28 +939,20 @@ namespace TurboHTTP.Tests.Transport.Http2
                 }, cts.Token);
 
                 // The request should fail because the connection dies
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException) { /* expected */ }
-                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
-                {
-                    /* also acceptable */
-                }
-                catch (ObjectDisposedException) { /* also acceptable */ }
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<Http2ProtocolException>(ex.HttpError.InnerException);
 
                 await Task.Delay(200);
                 Assert.IsFalse(conn.IsAlive);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void NonContinuation_WhileExpectingContinuation_ConnectionDies()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Non-CONTINUATION frame while expecting CONTINUATION → PROTOCOL_ERROR [A3]
                 using var cts = new CancellationTokenSource(10000);
@@ -990,28 +988,20 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = 1
                 }, cts.Token);
 
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException) { /* expected */ }
-                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
-                {
-                    /* also acceptable */
-                }
-                catch (ObjectDisposedException) { /* also acceptable */ }
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<Http2ProtocolException>(ex.HttpError.InnerException);
 
                 await Task.Delay(200);
                 Assert.IsFalse(conn.IsAlive);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void DataFrame_PaddingLengthExceedsPayload_ConnectionDies()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // DATA frame with padding length > payload → PROTOCOL_ERROR [GPT-5]
                 using var cts = new CancellationTokenSource(10000);
@@ -1040,28 +1030,20 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = 3
                 }, cts.Token);
 
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException) { /* expected */ }
-                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
-                {
-                    /* also acceptable */
-                }
-                catch (ObjectDisposedException) { /* also acceptable */ }
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<Http2ProtocolException>(ex.HttpError.InnerException);
 
                 await Task.Delay(200);
                 Assert.IsFalse(conn.IsAlive);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void ContinuationFrame_WithEndStreamOnHeaders_CompletesStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // HEADERS(END_STREAM, no EndHeaders) + CONTINUATION(EndHeaders) should complete stream [R2-7]
                 using var cts = new CancellationTokenSource(10000);
@@ -1115,14 +1097,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- Cleanup ---
 
         [Test]
         public void Dispose_FailsAllActiveStreams()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -1153,12 +1135,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 }
                 catch (ObjectDisposedException) { /* expected */ }
                 catch (OperationCanceledException) { /* also acceptable - CTS cancelled first */ }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Dispose_SendsBestEffortGoaway()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -1180,24 +1162,24 @@ namespace TurboHTTP.Tests.Transport.Http2
                 {
                     // Connection may close before we can read — that's OK for best-effort
                 }
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Dispose_IsIdempotent()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
 
                 Assert.DoesNotThrow(() => conn.Dispose());
                 Assert.DoesNotThrow(() => conn.Dispose());
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void StreamIdExhaustion_ThrowsOnOverflow()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // The stream ID check should prevent overflow [R2-6]
                 // We can't easily exhaust 2^30 IDs in a test, but we verify the
@@ -1231,12 +1213,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 await task2;
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void StreamIdExhaustion_DoesNotCorruptCounterOnFailure()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -1255,12 +1237,12 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 Assert.AreEqual(int.MaxValue - 1, (int)nextStreamIdField.GetValue(conn));
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void PostRequest_StreamStateIsOpen_ThenHalfClosedLocal()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Verify stream state transitions [GPT-8]
                 // POST: HEADERS → Open, DATA END_STREAM → HalfClosedLocal
@@ -1287,13 +1269,13 @@ namespace TurboHTTP.Tests.Transport.Http2
                 await responseTask;
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
         // --- Fix 2: Header table size back-to-default ---
 
         [Test]
         public void Settings_HeaderTableSizeBackToDefault_UpdatesEncoder()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Fix 2: If server changes table size away from default then back to default,
                 // the encoder must be updated both times.
@@ -1355,14 +1337,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 await responseTask;
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- Fix 7: SETTINGS ACK stream ID validation ---
 
         [Test]
         public void SettingsAck_OnNonZeroStream_ProtocolError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Fix 7: SETTINGS ACK on a non-zero stream should cause protocol error
                 var duplex = new TestDuplexStream();
@@ -1414,14 +1396,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 }
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- R4: te header filtering ---
 
         [Test]
         public void TeHeader_OnlyTrailersAllowed()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // RFC 7540 Section 8.1.2.2: te header is forbidden except "trailers"
                 using var cts = new CancellationTokenSource(10000);
@@ -1448,12 +1430,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                     BuildResponseHeadersFrame(headersFrame.StreamId, 200, endStream: true), cts.Token);
                 await responseTask;
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void TeHeader_TrailersValueAllowed()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // RFC 7540 Section 8.1.2.2: te: trailers IS allowed
                 using var cts = new CancellationTokenSource(10000);
@@ -1479,14 +1461,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                     BuildResponseHeadersFrame(headersFrame.StreamId, 200, endStream: true), cts.Token);
                 await responseTask;
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- R4: Missing :status validation ---
 
         [Test]
         public void MissingStatus_FailsStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // If the response HEADERS omit :status, the stream should fail
                 using var cts = new CancellationTokenSource(10000);
@@ -1518,12 +1500,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void InvalidStatus_FailsStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // If :status is non-numeric, the stream should fail
                 using var cts = new CancellationTokenSource(10000);
@@ -1554,12 +1536,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void TrailingHeaders_WithoutStatus_AreAccepted()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -1609,13 +1591,13 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.IsNull(response.Headers.Get("grpc-status"));
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void HandlerFault_FailsOnlyAffectedStream_AndKeepsConnectionAlive()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -1637,13 +1619,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(Http2FrameType.RstStream, rst.Type);
                 Assert.AreEqual(streamId1, rst.StreamId);
 
-                var handlerEx = await TestHelpers.AssertThrowsAsync<InvalidOperationException>(async () =>
-                {
-                    await task1;
-                });
-
-                StringAssert.Contains("handler-start-failure", handlerEx.Message);
-                Assert.IsFalse(throwingHandler.ResponseErrorCalled);
+                await task1;
+                Assert.IsTrue(throwingHandler.ResponseErrorCalled);
+                Assert.IsNotNull(throwingHandler.LastError);
+                StringAssert.Contains("handler-start-failure", throwingHandler.LastError.Message);
 
                 var request2 = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/success"));
                 var context2 = new RequestContext(request2);
@@ -1660,13 +1639,13 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.IsTrue(conn.IsAlive);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void PostHeaderFailure_RecordsRequestFailedBeforeOnResponseError()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(
@@ -1706,12 +1685,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.IsTrue(context.Timeline.Any(evt => evt.Name == "RequestFailed"));
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void ContentLengthPreallocation_CappedByMaxResponseBodySize()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // Preallocation must be capped to MaxResponseBodySize to avoid large
                 // speculative allocations from malicious Content-Length values.
@@ -1765,14 +1744,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var response = await responseTask;
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- R5: HPACK decoding error sends GOAWAY with COMPRESSION_ERROR ---
 
         [Test]
         public void HpackDecodingError_SendsGoAwayCompressionError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // M3: HpackDecodingException must trigger GOAWAY with COMPRESSION_ERROR
                 // per RFC 7540 Section 4.3.
@@ -1798,17 +1777,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                 }, cts.Token);
 
                 // The request should fail with Http2ProtocolException (CompressionError)
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException) { /* expected */ }
-                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
-                {
-                    /* also acceptable */
-                }
-                catch (ObjectDisposedException) { /* also acceptable */ }
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<Http2ProtocolException>(ex.HttpError.InnerException);
 
                 // Read GOAWAY from client — should have COMPRESSION_ERROR (0x9)
                 var goaway = await serverCodec.ReadFrameAsync(16384, cts.Token);
@@ -1820,14 +1791,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual((uint)Http2ErrorCode.CompressionError, errorCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- R7: DATA before HEADERS is protocol error ---
 
         [Test]
         public void DataFrame_BeforeHeaders_SendsRstStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 // RFC 7540 Section 8.1: Response MUST start with HEADERS.
                 // DATA before HEADERS should result in RST_STREAM with PROTOCOL_ERROR.
@@ -1871,14 +1842,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, errorCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         // --- Additional Phase 3B.15 Coverage ---
 
         [Test]
         public void InitializeAsync_WaitsForSettingsAck()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var duplex = new TestDuplexStream();
@@ -1926,12 +1897,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 await initTask;
                 Assert.IsTrue(conn.IsAlive);
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void SendRequest_HeadersSpanContinuation()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(15000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -1974,12 +1945,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var response = await responseTask;
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void SendRequest_Cancelled_SendsRstStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 using var requestCts = new CancellationTokenSource();
@@ -2005,12 +1976,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual((uint)Http2ErrorCode.Cancel, errorCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Settings_InitialWindowSizeChange_AdjustsStreams()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -2055,12 +2026,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                     BuildResponseHeadersFrame(streamId, 200, endStream: true), cts.Token);
                 await responseTask;
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Settings_MaxFrameSizeChange_Applied()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(15000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -2113,12 +2084,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                     BuildResponseHeadersFrame(streamId, 200, endStream: true), cts.Token);
                 await responseTask;
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void ContinuationFrame_Unexpected_ProtocolError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -2155,12 +2126,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void HeadersFrame_PaddingLengthExceedsPayload_ProtocolError()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -2197,12 +2168,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 catch (ObjectDisposedException) { /* also acceptable */ }
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void SendRequest_AlreadyCancelled_DoesNotLeakStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 using var alreadyCancelled = new CancellationTokenSource();
@@ -2223,12 +2194,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(0, activeStreams.Count);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void ControlFrameWrites_AcquireWriteLock()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -2267,12 +2238,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.IsTrue(ack.HasFlag(Http2FrameFlags.Ack));
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void SendDataAsync_ReleasesWriteLockBetweenFrames()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(15000);
                 var (conn, serverStream, duplex) =
@@ -2335,12 +2306,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void FailAllStreams_PreventsNewStreamCreation()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
@@ -2379,12 +2350,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                     await conn.SendRequestAsync(request2, ctx2, cts.Token));
 
                 conn.Dispose();
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void Dispose_DisposesUnderlyingStream()        {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
                 var duplex = new TestDuplexStream();
@@ -2431,7 +2402,7 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 conn.Dispose();
                 Assert.IsTrue(trackedStream.DisposeCalled);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         private sealed class DisposeTrackingStream : Stream
@@ -2515,6 +2486,7 @@ namespace TurboHTTP.Tests.Transport.Http2
         private sealed class ThrowingResponseStartHandler : IHttpHandler
         {
             public bool ResponseErrorCalled { get; private set; }
+            public UHttpException LastError { get; private set; }
 
             public void OnRequestStart(UHttpRequest request, RequestContext context)
             {
@@ -2536,6 +2508,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             public void OnResponseError(UHttpException error, RequestContext context)
             {
                 ResponseErrorCalled = true;
+                LastError = error;
             }
         }
 

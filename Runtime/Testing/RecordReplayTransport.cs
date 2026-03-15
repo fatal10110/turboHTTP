@@ -283,40 +283,42 @@ namespace TurboHTTP.Testing
             if (context == null) throw new ArgumentNullException(nameof(context));
             ThrowIfDisposed();
 
+            context.SetState(TransportBehaviorFlags.SelfDrainsResponseBody, true);
+            var safeHandler = HandlerCallbackSafetyWrapper.Wrap(handler, context);
             if (_mode == RecordReplayMode.Passthrough)
             {
                 if (_innerTransport == null)
                     throw new InvalidOperationException("No inner transport configured for passthrough mode.");
 
-                await _innerTransport.DispatchAsync(request, handler, context, cancellationToken)
+                await _innerTransport.DispatchAsync(request, safeHandler, context, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             }
 
             if (_mode == RecordReplayMode.Record)
             {
-                await DispatchRecordAsync(request, handler, context, cancellationToken).ConfigureAwait(false);
+                await DispatchRecordAsync(request, safeHandler, context, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
             if (TryResolveReplay(request, out var entry, out var fallbackToInner, out var mismatchMessage))
             {
-                handler.OnRequestStart(request, context);
+                safeHandler.OnRequestStart(request, context);
                 cancellationToken.ThrowIfCancellationRequested();
-                DriveReplayHandler(handler, entry, context);
+                DriveReplayHandler(safeHandler, entry, context);
                 return;
             }
 
             if (fallbackToInner)
             {
-                await _innerTransport.DispatchAsync(request, handler, context, cancellationToken)
+                await _innerTransport.DispatchAsync(request, safeHandler, context, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             }
 
-            handler.OnRequestStart(request, context);
+            safeHandler.OnRequestStart(request, context);
             cancellationToken.ThrowIfCancellationRequested();
-            handler.OnResponseError(new UHttpException(
+            safeHandler.OnResponseError(new UHttpException(
                 new UHttpError(UHttpErrorType.Unknown, mismatchMessage)), context);
         }
 

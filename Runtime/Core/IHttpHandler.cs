@@ -7,7 +7,11 @@ namespace TurboHTTP.Core
     /// </summary>
     public interface IHttpHandler
     {
-        /// <summary>Fires before any network I/O. Always the first callback.</summary>
+        /// <summary>
+        /// Fires before any network I/O. Always the first callback for a dispatch attempt.
+        /// Interceptors that transparently re-dispatch (for example redirect/retry) may invoke this
+        /// multiple times before a single terminal response path completes.
+        /// </summary>
         void OnRequestStart(UHttpRequest request, RequestContext context);
 
         /// <summary>Fires when the response status line and headers are available.</summary>
@@ -25,7 +29,8 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// May be called at any point after <c>OnRequestStart</c>, including after
-        /// <c>OnResponseStart</c> and <c>OnResponseData</c> (partial response error mid-transfer).
+        /// <c>OnResponseStart</c> and after partial <c>OnResponseData</c> delivery
+        /// (partial response error mid-transfer).
         /// Implementations must handle all callback orderings.
         /// After this fires, no further callbacks will be delivered.
         /// </summary>
