@@ -8,7 +8,7 @@ using TurboHTTP.Testing;
 namespace TurboHTTP.Tests.Mobile
 {
     [TestFixture]
-    public class BackgroundNetworkingTests
+    public class MobileBackgroundNetworkingSmokeTests
     {
         [Test]
         public void PolicyDisabled_NoBehaviorChange()

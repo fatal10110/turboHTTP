@@ -9,7 +9,7 @@ using TurboHTTP.Testing;
 namespace TurboHTTP.Tests.Extensibility
 {
     [TestFixture]
-    public class PluginRegistryTests
+    public class PluginExtensibilityTests
     {
         [Test]
         public void ReadOnlyCapability_AllowsObserverInterceptor()

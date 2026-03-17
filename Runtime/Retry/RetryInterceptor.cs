@@ -19,7 +19,7 @@ namespace TurboHTTP.Retry
         /// </summary>
         public RetryInterceptor(RetryPolicy policy = null, Action<string> log = null)
         {
-            _policy = policy ?? RetryPolicy.Default;
+            _policy = policy != null ? new RetryPolicy(policy) : RetryPolicy.Default;
             _log = log ?? (_ => { });
         }
 
@@ -37,44 +37,36 @@ namespace TurboHTTP.Retry
                 }
 
                 var attempt = 0;
-                var delay = _policy.InitialDelay;
+                var detector = new RetryDetectorHandler(handler);
+                var terminalObserver = new RetryTerminalObserverHandler(handler);
 
                 while (true)
                 {
                     attempt++;
                     context.SetState("RetryAttempt", attempt);
-                    context.RecordEvent("RetryAttempt", new Dictionary<string, object>
-                    {
-                        { "attempt", attempt }
-                    });
+                    RecordAttemptEvent(context, attempt);
 
                     var isLastAttempt = attempt > _policy.MaxRetries;
                     if (isLastAttempt)
                     {
-                        var terminalObserver = new RetryTerminalObserverHandler(handler);
+                        terminalObserver.Reset(forwardRequestStart: false);
                         await next(request, terminalObserver, context, cancellationToken).ConfigureAwait(false);
                         if (attempt > 1)
                         {
                             if (terminalObserver.WasRetryableFailure)
                             {
-                                context.RecordEvent("RetryExhausted", new Dictionary<string, object>
-                                {
-                                    { "attempts", attempt }
-                                });
+                                RecordAttemptCountEvent(context, "RetryExhausted", attempt);
                             }
                             else if (terminalObserver.WasCommitted && !terminalObserver.DeliveredError)
                             {
-                                context.RecordEvent("RetrySucceeded", new Dictionary<string, object>
-                                {
-                                    { "attempts", attempt }
-                                });
+                                RecordAttemptCountEvent(context, "RetrySucceeded", attempt);
                             }
                         }
 
                         return;
                     }
 
-                    var detector = new RetryDetectorHandler(handler);
+                    detector.Reset(forwardRequestStart: attempt == 1);
                     await next(request, detector, context, cancellationToken).ConfigureAwait(false);
 
                     if (detector.DeliveredError)
@@ -82,17 +74,13 @@ namespace TurboHTTP.Retry
 
                     if (!detector.WasRetryable)
                     {
-                        if (attempt > 1 && detector.WasCommitted && !detector.DeliveredError)
-                        {
-                            context.RecordEvent("RetrySucceeded", new Dictionary<string, object>
-                            {
-                                { "attempts", attempt }
-                            });
-                        }
+                        if (attempt > 1 && detector.WasCommitted)
+                            RecordAttemptCountEvent(context, "RetrySucceeded", attempt);
 
                         return;
                     }
 
+                    var delay = _policy.ComputeDelay(attempt, detector.RetryAfterDelay);
                     context.RecordEvent("RetryScheduled", new Dictionary<string, object>
                     {
                         { "attempt", attempt },
@@ -101,7 +89,6 @@ namespace TurboHTTP.Retry
                     _log($"[RetryInterceptor] Attempt {attempt} failed, retrying in {delay.TotalSeconds:F1}s...");
 
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                    delay = NextDelay(delay);
                 }
             };
         }
@@ -117,16 +104,26 @@ namespace TurboHTTP.Retry
             return true;
         }
 
-        private TimeSpan NextDelay(TimeSpan current)
+        private static void RecordAttemptEvent(RequestContext context, int attempt)
         {
-            var next = current.TotalMilliseconds * _policy.BackoffMultiplier;
-            return TimeSpan.FromMilliseconds(
-                Math.Min(next, _policy.MaxDelay.TotalMilliseconds));
+            context.RecordEvent("RetryAttempt", new Dictionary<string, object>
+            {
+                { "attempt", attempt }
+            });
+        }
+
+        private static void RecordAttemptCountEvent(RequestContext context, string eventName, int attemptCount)
+        {
+            context.RecordEvent(eventName, new Dictionary<string, object>
+            {
+                { "attempts", attemptCount }
+            });
         }
 
         private sealed class RetryTerminalObserverHandler : IHttpHandler
         {
             private readonly IHttpHandler _inner;
+            private bool _forwardRequestStart;
 
             internal RetryTerminalObserverHandler(IHttpHandler inner)
             {
@@ -137,15 +134,27 @@ namespace TurboHTTP.Retry
             internal bool WasCommitted { get; private set; }
             internal bool DeliveredError { get; private set; }
 
+            internal void Reset(bool forwardRequestStart)
+            {
+                WasRetryableFailure = false;
+                WasCommitted = false;
+                DeliveredError = false;
+                _forwardRequestStart = forwardRequestStart;
+            }
+
             public void OnRequestStart(UHttpRequest request, RequestContext context)
             {
-                _inner.OnRequestStart(request, context);
+                if (_forwardRequestStart)
+                {
+                    _forwardRequestStart = false;
+                    _inner.OnRequestStart(request, context);
+                }
             }
 
             public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
             {
                 WasCommitted = true;
-                WasRetryableFailure = statusCode >= 500 && statusCode < 600;
+                WasRetryableFailure |= statusCode >= 500 && statusCode < 600;
                 _inner.OnResponseStart(statusCode, headers, context);
             }
 
@@ -162,7 +171,7 @@ namespace TurboHTTP.Retry
             public void OnResponseError(UHttpException error, RequestContext context)
             {
                 DeliveredError = true;
-                WasRetryableFailure = error?.HttpError != null && error.HttpError.IsRetryable();
+                WasRetryableFailure |= error?.HttpError != null && error.HttpError.IsRetryable();
                 _inner.OnResponseError(error, context);
             }
         }

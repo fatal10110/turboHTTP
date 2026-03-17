@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
@@ -8,6 +9,7 @@ namespace TurboHTTP.Retry
     {
         private readonly IHttpHandler _inner;
         private bool _committed;
+        private bool _forwardRequestStart;
 
         internal RetryDetectorHandler(IHttpHandler inner)
         {
@@ -17,10 +19,24 @@ namespace TurboHTTP.Retry
         internal bool WasRetryable { get; private set; }
         internal bool WasCommitted => _committed;
         internal bool DeliveredError { get; private set; }
+        internal TimeSpan? RetryAfterDelay { get; private set; }
+
+        internal void Reset(bool forwardRequestStart)
+        {
+            WasRetryable = false;
+            _committed = false;
+            DeliveredError = false;
+            RetryAfterDelay = null;
+            _forwardRequestStart = forwardRequestStart;
+        }
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
         {
-            _inner.OnRequestStart(request, context);
+            if (_forwardRequestStart)
+            {
+                _forwardRequestStart = false;
+                _inner.OnRequestStart(request, context);
+            }
         }
 
         public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
@@ -37,6 +53,7 @@ namespace TurboHTTP.Retry
                 // This is only safe when the transport continues draining or aborting the response
                 // body without relying on downstream handler consumption.
                 WasRetryable = true;
+                RetryAfterDelay = ParseRetryAfter(headers);
                 return;
             }
 
@@ -72,6 +89,38 @@ namespace TurboHTTP.Retry
 
             DeliveredError = true;
             _inner.OnResponseError(error, context);
+        }
+
+        private static TimeSpan? ParseRetryAfter(HttpHeaders headers)
+        {
+            if (headers == null)
+                return null;
+
+            var values = headers.GetValues("Retry-After");
+            for (int i = 0; i < values.Count; i++)
+            {
+                string value = values[i];
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+
+                if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds) &&
+                    seconds >= 0)
+                {
+                    return TimeSpan.FromSeconds(seconds);
+                }
+
+                if (DateTimeOffset.TryParse(
+                    value,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out var retryAt))
+                {
+                    var delay = retryAt - DateTimeOffset.UtcNow;
+                    return delay > TimeSpan.Zero ? delay : TimeSpan.Zero;
+                }
+            }
+
+            return null;
         }
     }
 }
