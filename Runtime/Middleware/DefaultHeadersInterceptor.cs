@@ -43,7 +43,7 @@ namespace TurboHTTP.Middleware
 
                         if (ReferenceEquals(requestForNext, request))
                         {
-                            requestForNext = request.Clone();
+                            requestForNext = request.CopyWithSharedContent();
                             context.UpdateRequest(requestForNext);
                         }
 

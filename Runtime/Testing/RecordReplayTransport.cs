@@ -262,6 +262,7 @@ namespace TurboHTTP.Testing
         {
         }
 
+        [Obsolete("Use DispatchAsync or TransportDispatchHelper.CollectResponseAsync for the 22a handler pipeline.", false)]
         public async ValueTask<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
@@ -305,7 +306,7 @@ namespace TurboHTTP.Testing
             {
                 safeHandler.OnRequestStart(request, context);
                 cancellationToken.ThrowIfCancellationRequested();
-                DriveReplayHandler(safeHandler, entry, context);
+                await DriveReplayHandlerAsync(safeHandler, entry, context).ConfigureAwait(false);
                 return;
             }
 
@@ -540,7 +541,10 @@ namespace TurboHTTP.Testing
             bool threwException)
         {
             var normalizedUrl = NormalizeUriForStorage(request.Uri);
-            var requestHash = ComputeBodyHash(request.Body);
+            var requestBody = request.Content.TryGetBufferedData(out var bufferedRequestBody)
+                ? bufferedRequestBody
+                : ReadOnlyMemory<byte>.Empty;
+            var requestHash = ComputeBodyHash(requestBody);
             var requestKey = BuildRequestKey(
                 request.Method.ToUpperString(),
                 NormalizeUriForKey(request.Uri),
@@ -548,7 +552,7 @@ namespace TurboHTTP.Testing
                 requestHash);
 
             var requestHeaders = ToDictionary(request.Headers, redact: true);
-            var requestBody = RedactJsonBodyIfNeeded(request.Body, request.Headers);
+            var redactedRequestBody = RedactJsonBodyIfNeeded(requestBody, request.Headers);
 
             var recordedResponseHeaders = responseHeaders != null
                 ? ToDictionary(responseHeaders, redact: true)
@@ -565,8 +569,8 @@ namespace TurboHTTP.Testing
                 Url = normalizedUrl,
                 RequestHeaders = requestHeaders,
                 RequestBodyHash = requestHash,
-                RequestBodyBase64 = requestBody != null && requestBody.Length > 0
-                    ? Convert.ToBase64String(requestBody)
+                RequestBodyBase64 = redactedRequestBody != null && redactedRequestBody.Length > 0
+                    ? Convert.ToBase64String(redactedRequestBody)
                     : null,
                 StatusCode = statusCode.HasValue ? (int)statusCode.Value : 0,
                 ResponseHeaders = recordedResponseHeaders,
@@ -581,7 +585,7 @@ namespace TurboHTTP.Testing
             _recordedEntries.Enqueue(entry);
         }
 
-        private static void DriveReplayHandler(
+        private static ValueTask DriveReplayHandlerAsync(
             IHttpHandler handler,
             RecordingEntryDto entry,
             RequestContext context)
@@ -597,7 +601,7 @@ namespace TurboHTTP.Testing
                         UHttpErrorType.Unknown,
                         "Replay entry was marked as failed but did not include an error.")),
                     context);
-                return;
+                return default;
             }
 
             var responseHeaders = FromDictionary(entry.ResponseHeaders);
@@ -605,16 +609,14 @@ namespace TurboHTTP.Testing
                 ? (int)HttpStatusCode.OK
                 : entry.StatusCode;
 
-            handler.OnResponseStart(statusCode, responseHeaders, context);
-
-            if (!string.IsNullOrEmpty(entry.ResponseBodyBase64))
-            {
-                var body = Convert.FromBase64String(entry.ResponseBodyBase64);
-                if (body.Length > 0)
-                    handler.OnResponseData(body, context);
-            }
-
-            handler.OnResponseEnd(HttpHeaders.Empty, context);
+            var body = string.IsNullOrEmpty(entry.ResponseBodyBase64)
+                ? ReadOnlyMemory<byte>.Empty
+                : new ReadOnlyMemory<byte>(Convert.FromBase64String(entry.ResponseBodyBase64));
+            return handler.OnResponseStartAsync(
+                statusCode,
+                responseHeaders,
+                new BufferedResponseBodySource(body, HttpHeaders.Empty),
+                context);
         }
         private void Log(string message)
         {
@@ -656,31 +658,28 @@ namespace TurboHTTP.Testing
                 _inner.OnRequestStart(_request, context);
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public async ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 EnsureRequestStarted(context);
                 _statusCode = statusCode;
                 _responseHeaders = headers?.Clone() ?? new HttpHeaders();
-                _inner.OnResponseStart(statusCode, headers, context);
-            }
 
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-                if (!chunk.IsEmpty)
+                if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
                 {
                     if (_responseBody == null)
                         _responseBody = new SegmentedBuffer();
 
-                    _responseBody.Write(chunk);
+                    _responseBody.Write(buffered.Span);
                 }
 
-                _inner.OnResponseData(chunk, context);
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
                 EnsureRequestStarted(context);
                 TerminalCallbackSeen = true;
+
+                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
 
                 try
                 {
@@ -696,8 +695,6 @@ namespace TurboHTTP.Testing
                 {
                     DisposeBufferedBody();
                 }
-
-                _inner.OnResponseEnd(trailers, context);
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

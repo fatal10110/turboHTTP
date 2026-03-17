@@ -23,7 +23,14 @@ namespace TurboHTTP.Transport.Http1
             if (request == null) throw new ArgumentNullException(nameof(request));
             if (stream == null) throw new ArgumentNullException(nameof(stream));
 
-            int actualBodyLength = request.Body.Length;
+            if (!request.TryGetBufferedContent(out var body))
+            {
+                throw new InvalidOperationException(
+                    "Buffered HTTP/1.1 request serialization does not support streaming request bodies. " +
+                    "Use a buffered request body until Phase 22a.2 is implemented.");
+            }
+
+            int actualBodyLength = body.Length;
 
             using var headerWriter = new PooledHeaderWriter();
 
@@ -69,7 +76,7 @@ namespace TurboHTTP.Transport.Http1
             if (hasTransferEncoding)
             {
                 var teValues = request.Headers.GetValues("Transfer-Encoding");
-                bool hasBody = !request.Body.IsEmpty;
+                bool hasBody = !body.IsEmpty;
                 bool hasChunked = false;
                 for (int i = 0; i < teValues.Count; i++)
                 {
@@ -194,8 +201,8 @@ namespace TurboHTTP.Transport.Http1
             await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
 
             // 11. Write body
-            if (!request.Body.IsEmpty)
-                await stream.WriteAsync(request.Body, ct).ConfigureAwait(false);
+            if (!body.IsEmpty)
+                await stream.WriteAsync(body, ct).ConfigureAwait(false);
 
             await stream.FlushAsync(ct).ConfigureAwait(false);
         }

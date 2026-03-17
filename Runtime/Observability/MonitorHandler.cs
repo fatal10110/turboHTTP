@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
@@ -29,7 +30,11 @@ namespace TurboHTTP.Observability
             _inner.OnRequestStart(request, context);
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public async ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
             _statusCode = statusCode;
             _headers = headers?.Clone() ?? new HttpHeaders();
@@ -37,46 +42,12 @@ namespace TurboHTTP.Observability
             _bufferedResponseBytes = 0;
             _totalResponseBytes = 0;
             _responseBodyWasTruncated = false;
-            _inner.OnResponseStart(statusCode, headers, context);
-        }
 
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            if (!chunk.IsEmpty)
-            {
-                _totalResponseBytes += chunk.Length;
+            if (body != null && body.TryGetBufferedData(out var buffered))
+                CaptureBody(buffered.Span);
 
-                if (_bufferedResponseBytes < _bufferedCaptureLimit)
-                {
-                    if (_responseBody == null)
-                        _responseBody = new SegmentedBuffer();
-
-                    var remaining = _bufferedCaptureLimit - _bufferedResponseBytes;
-                    var bytesToBuffer = Math.Min(chunk.Length, remaining);
-                    if (bytesToBuffer > 0)
-                    {
-                        _responseBody.Write(chunk.Slice(0, bytesToBuffer));
-                        _bufferedResponseBytes += bytesToBuffer;
-                    }
-                }
-
-                if (_totalResponseBytes > _bufferedCaptureLimit)
-                    _responseBodyWasTruncated = true;
-            }
-
-            _inner.OnResponseData(chunk, context);
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            try
-            {
-                _inner.OnResponseEnd(trailers, context);
-            }
-            finally
-            {
-                Capture(context, exception: null);
-            }
+            await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+            Capture(context, exception: null);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
@@ -89,6 +60,31 @@ namespace TurboHTTP.Observability
             {
                 Capture(context, error);
             }
+        }
+
+        private void CaptureBody(ReadOnlySpan<byte> chunk)
+        {
+            if (chunk.IsEmpty)
+                return;
+
+            _totalResponseBytes += chunk.Length;
+
+            if (_bufferedResponseBytes < _bufferedCaptureLimit)
+            {
+                if (_responseBody == null)
+                    _responseBody = new SegmentedBuffer();
+
+                var remaining = _bufferedCaptureLimit - _bufferedResponseBytes;
+                var bytesToBuffer = Math.Min(chunk.Length, remaining);
+                if (bytesToBuffer > 0)
+                {
+                    _responseBody.Write(chunk.Slice(0, bytesToBuffer));
+                    _bufferedResponseBytes += bytesToBuffer;
+                }
+            }
+
+            if (_totalResponseBytes > _bufferedCaptureLimit)
+                _responseBodyWasTruncated = true;
         }
 
         private void Capture(RequestContext context, Exception exception)

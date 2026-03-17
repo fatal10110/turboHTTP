@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace TurboHTTP.Core
 {
@@ -36,29 +37,38 @@ namespace TurboHTTP.Core
             InvokeNonTerminal(() => _inner.OnRequestStart(request, context ?? _context));
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
-            InvokeNonTerminal(() => _inner.OnResponseStart(statusCode, headers, context ?? _context));
-        }
-
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
+            if (body == null)
+                throw new ArgumentNullException(nameof(body));
             if (Volatile.Read(ref _terminated) != 0)
-                return;
+            {
+                TryAbort(body);
+                return default;
+            }
 
             try
             {
-                _inner.OnResponseData(chunk, context ?? _context);
+                var pending = _inner.OnResponseStartAsync(statusCode, headers, body, context ?? _context);
+                if (pending.IsCompletedSuccessfully)
+                {
+                    pending.GetAwaiter().GetResult();
+                    Interlocked.Exchange(ref _terminated, 1);
+                    return default;
+                }
+
+                return AwaitResponseStartAsync(pending, body);
             }
             catch (Exception ex)
             {
+                TryAbort(body);
                 ReportFailure(ex);
+                return default;
             }
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            InvokeTerminal(() => _inner.OnResponseEnd(trailers, context ?? _context));
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
@@ -74,6 +84,20 @@ namespace TurboHTTP.Core
                 context ?? _context);
         }
 
+        private async ValueTask AwaitResponseStartAsync(ValueTask pending, IResponseBodySource body)
+        {
+            try
+            {
+                await pending.ConfigureAwait(false);
+                Interlocked.Exchange(ref _terminated, 1);
+            }
+            catch (Exception ex)
+            {
+                TryAbort(body);
+                ReportFailure(ex);
+            }
+        }
+
         private void InvokeNonTerminal(Action callback)
         {
             if (callback == null)
@@ -84,24 +108,6 @@ namespace TurboHTTP.Core
             try
             {
                 callback();
-            }
-            catch (Exception ex)
-            {
-                ReportFailure(ex);
-            }
-        }
-
-        private void InvokeTerminal(Action callback)
-        {
-            if (callback == null)
-                throw new ArgumentNullException(nameof(callback));
-            if (Volatile.Read(ref _terminated) != 0)
-                return;
-
-            try
-            {
-                callback();
-                Interlocked.Exchange(ref _terminated, 1);
             }
             catch (Exception ex)
             {
@@ -134,6 +140,17 @@ namespace TurboHTTP.Core
                     UHttpErrorType.Unknown,
                     exception?.Message ?? "Handler callback failed.",
                     exception));
+        }
+
+        private static void TryAbort(IResponseBodySource body)
+        {
+            try
+            {
+                body?.Abort();
+            }
+            catch
+            {
+            }
         }
     }
 }

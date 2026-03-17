@@ -462,9 +462,9 @@ namespace TurboHTTP.Tests.Auth
     {
         public static string GetBodyAsString(this UHttpRequest request)
         {
-            if (request == null || request.Body.IsEmpty)
+            if (request == null || !request.TryGetBufferedContent(out var body) || body.IsEmpty)
                 return string.Empty;
-            return Encoding.UTF8.GetString(request.Body.Span);
+            return Encoding.UTF8.GetString(body.Span);
         }
     }
 }

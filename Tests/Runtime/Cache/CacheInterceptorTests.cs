@@ -202,18 +202,15 @@ namespace TurboHTTP.Tests.Cache
             {
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
-            {
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 EndEntered.Set();
                 _allowEnd.Wait(TimeSpan.FromSeconds(5));
+                return default;
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

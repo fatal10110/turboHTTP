@@ -33,7 +33,7 @@ namespace TurboHTTP.JSON
                 bytes.CopyTo(span);
                 writer.Advance(byteCount);
                 var owner = writer.DetachAsOwner();
-                return request.WithLeasedBody(owner).WithHeader("Content-Type", ContentTypes.Json);
+                return request.WithLeasedBody(owner, owner.Memory.Length).WithHeader("Content-Type", ContentTypes.Json);
             }
             catch
             {
@@ -64,7 +64,7 @@ namespace TurboHTTP.JSON
             {
                 JsonSerializer.Default.Serialize(value, writer);
                 var owner = writer.DetachAsOwner();
-                return request.WithLeasedBody(owner).WithHeader("Content-Type", ContentTypes.Json);
+                return request.WithLeasedBody(owner, owner.Memory.Length).WithHeader("Content-Type", ContentTypes.Json);
             }
             catch
             {
@@ -89,7 +89,7 @@ namespace TurboHTTP.JSON
             {
                 serializer.Serialize(value, writer);
                 var owner = writer.DetachAsOwner();
-                return request.WithLeasedBody(owner).WithHeader("Content-Type", ContentTypes.Json);
+                return request.WithLeasedBody(owner, owner.Memory.Length).WithHeader("Content-Type", ContentTypes.Json);
             }
             catch
             {
@@ -113,7 +113,7 @@ namespace TurboHTTP.JSON
                 System.Text.Json.JsonSerializer.Serialize(jsonWriter, value, options);
                 jsonWriter.Flush();
                 var owner = writer.DetachAsOwner();
-                return request.WithLeasedBody(owner).WithHeader("Content-Type", ContentTypes.Json);
+                return request.WithLeasedBody(owner, owner.Memory.Length).WithHeader("Content-Type", ContentTypes.Json);
             }
             catch
             {

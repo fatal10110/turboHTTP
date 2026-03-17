@@ -51,7 +51,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 var response = await client.Get("https://www.google.com")
                     .WithTimeout(System.TimeSpan.FromSeconds(20))
-                    .SendAsync();
+                    .SendBufferedAsync();
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
             }
 

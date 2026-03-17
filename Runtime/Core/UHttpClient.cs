@@ -328,9 +328,9 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Send an HTTP request and return the response.
+        /// Send an HTTP request and collect the full buffered response.
         /// </summary>
-        public async Task<UHttpResponse> SendAsync(
+        public async Task<UHttpResponse> SendBufferedAsync(
             UHttpRequest request,
             CancellationToken cancellationToken = default)
         {
@@ -355,15 +355,73 @@ namespace TurboHTTP.Core
             try
             {
                 var pipelineSnapshot = _pipeline ?? _transport.DispatchAsync;
-                response = await DispatchBridge
+                response = await BufferedDispatchBridge
                     .CollectResponseAsync(pipelineSnapshot, request, context, cancellationToken)
                     .ConfigureAwait(false);
 
-                if (request.IsPooled)
-                {
-                    request.RetainForResponse();
-                    response.AttachRequestRelease(request.ReleaseResponseHold);
-                }
+                context.RecordEvent("RequestComplete");
+                context.Stop();
+                return response;
+            }
+            catch (UHttpException)
+            {
+                response?.Dispose();
+                context.RecordEvent("RequestFailed");
+                context.Stop();
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                response?.Dispose();
+                context.RecordEvent("RequestCancelled");
+                context.Stop();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                response?.Dispose();
+                context.RecordEvent("RequestFailed");
+                context.Stop();
+                throw new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex.Message, ex));
+            }
+            finally
+            {
+                request.EndSend();
+                context.Clear();
+            }
+        }
+
+        /// <summary>
+        /// Send an HTTP request and return a streaming response wrapper.
+        /// </summary>
+        public async Task<UHttpStreamingResponse> SendStreamingAsync(
+            UHttpRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+                throw new ArgumentNullException(nameof(request));
+
+            ThrowIfDisposed();
+
+            if (request.IsPooled && !request.IsOwnedBy(this))
+            {
+                throw new InvalidOperationException(
+                    "Cannot send a pooled request through a different client than the one that created it. " +
+                    "Use the client that created this request, or create a new request from this client.");
+            }
+
+            request.BeginSend();
+
+            var context = new RequestContext(request);
+            context.RecordEvent("RequestStart");
+            UHttpStreamingResponse response = null;
+
+            try
+            {
+                var pipelineSnapshot = _pipeline ?? _transport.DispatchAsync;
+                response = await StreamingDispatchBridge
+                    .CollectResponseAsync(pipelineSnapshot, request, context, cancellationToken)
+                    .ConfigureAwait(false);
 
                 context.RecordEvent("RequestComplete");
                 context.Stop();

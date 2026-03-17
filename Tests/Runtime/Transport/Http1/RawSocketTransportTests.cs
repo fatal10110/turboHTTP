@@ -156,7 +156,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 });
 
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
-                    await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync());
+                    await client.Get($"http://127.0.0.1:{server.Port}/").SendBufferedAsync());
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
             });
@@ -232,7 +232,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
                 queue.Enqueue(failingConn);
 
-                var responseResult = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
+                var responseResult = await client.Get($"http://127.0.0.1:{server.Port}/").SendBufferedAsync();
                 Assert.AreEqual(HttpStatusCode.OK, responseResult.StatusCode);
                 Assert.GreaterOrEqual(server.AcceptCount, 2);
             });
@@ -276,7 +276,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 queue.Enqueue(failingConn);
 
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
-                    await client.Post($"http://127.0.0.1:{server.Port}/").WithBody("test").SendAsync());
+                    await client.Post($"http://127.0.0.1:{server.Port}/").WithBody("test").SendBufferedAsync());
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
                 Assert.AreEqual(1, server.AcceptCount);
@@ -304,8 +304,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                     DisposeTransport = true
                 });
 
-                var first = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
-                var second = await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync();
+                var first = await client.Get($"http://127.0.0.1:{server.Port}/").SendBufferedAsync();
+                var second = await client.Get($"http://127.0.0.1:{server.Port}/").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, first.StatusCode);
                 Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
@@ -345,7 +345,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     Proxy = proxySettings
                 });
 
-                var response = await client.Get("http://origin.example.com/resource?id=42").SendAsync();
+                var response = await client.Get("http://origin.example.com/resource?id=42").SendBufferedAsync();
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual("GET http://origin.example.com/resource?id=42 HTTP/1.1", requestLine);
                 Assert.IsNull(proxyAuth);
@@ -398,7 +398,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 // CONNECT succeeds but TLS handshake cannot complete with this plain test server.
                 AssertAsync.ThrowsAsync<UHttpException>(async () =>
-                    await client.Get("https://origin.example.com/secure").SendAsync());
+                    await client.Get("https://origin.example.com/secure").SendBufferedAsync());
 
                 Assert.AreEqual(2, connectCount);
                 Assert.IsNull(firstAuth);
@@ -436,7 +436,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 });
 
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
-                    await client.Get("https://origin.example.com/secure").SendAsync());
+                    await client.Get("https://origin.example.com/secure").SendBufferedAsync());
                 Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
                 StringAssert.Contains("Proxy authentication required", ex.HttpError.Message);
             });
@@ -470,7 +470,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
                 AssertAsync.ThrowsAsync<OperationCanceledException>(async () =>
-                    await client.Get("https://origin.example.com/secure").SendAsync(cts.Token));
+                    await client.Get("https://origin.example.com/secure").SendBufferedAsync(cts.Token));
             });
         }
 
@@ -494,7 +494,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 });
 
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
-                    await client.Get($"http://127.0.0.1:{server.Port}/").SendAsync());
+                    await client.Get($"http://127.0.0.1:{server.Port}/").SendBufferedAsync());
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
                 Assert.AreEqual(1, server.AcceptCount);
@@ -577,17 +577,13 @@ namespace TurboHTTP.Tests.Transport.Http1
             {
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 throw new InvalidOperationException("handler-start-failure");
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

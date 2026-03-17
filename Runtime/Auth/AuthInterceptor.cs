@@ -39,7 +39,7 @@ namespace TurboHTTP.Auth
                     if (token.Contains('\r') || token.Contains('\n'))
                         throw new ArgumentException("Auth token must not contain CR or LF characters");
 
-                    requestForNext = request.Clone();
+                    requestForNext = request.CopyWithSharedContent();
                     requestForNext.WithHeader("Authorization", BuildAuthorizationValue(token));
                     context.UpdateRequest(requestForNext);
                 }

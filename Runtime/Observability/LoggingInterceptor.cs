@@ -95,11 +95,14 @@ namespace TurboHTTP.Observability
                 }
             }
 
-            if (_logLevel >= LogLevel.Detailed && _logBody && !request.Body.IsEmpty)
+            if (_logLevel >= LogLevel.Detailed
+                && _logBody
+                && request.TryGetBufferedContent(out var body)
+                && !body.IsEmpty)
             {
-                int previewBytes = Math.Min(request.Body.Length, 500);
-                var bodyPreview = System.Text.Encoding.UTF8.GetString(request.Body.Span.Slice(0, previewBytes));
-                if (request.Body.Length > 500)
+                int previewBytes = Math.Min(body.Length, 500);
+                var bodyPreview = System.Text.Encoding.UTF8.GetString(body.Span.Slice(0, previewBytes));
+                if (body.Length > 500)
                     bodyPreview += "...";
                 messageBuilder.Append("\n  Body: ").Append(bodyPreview);
             }

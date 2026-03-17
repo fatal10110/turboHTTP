@@ -53,7 +53,7 @@ namespace TurboHTTP.Middleware
                     var jarCookieHeader = _jar.GetCookieHeader(request.Uri, request.Method, isCrossSite);
                     if (!string.IsNullOrEmpty(jarCookieHeader))
                     {
-                        requestForNext = request.Clone();
+                        requestForNext = request.CopyWithSharedContent();
                         var existingCookieHeader = request.Headers.Get("Cookie");
                         requestForNext.WithHeader("Cookie", MergeCookieHeaders(existingCookieHeader, jarCookieHeader));
                         context.UpdateRequest(requestForNext);

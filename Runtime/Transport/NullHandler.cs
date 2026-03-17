@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Transport
@@ -15,20 +16,26 @@ namespace TurboHTTP.Transport
         {
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
-        }
+            if (body == null)
+                return default;
 
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
+            return DisposeBodyAsync(body);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
         {
+        }
+
+        private static async ValueTask DisposeBodyAsync(IResponseBodySource body)
+        {
+            body.Abort();
+            await body.DisposeAsync().ConfigureAwait(false);
         }
     }
 }

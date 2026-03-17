@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Observability
@@ -54,7 +55,11 @@ namespace TurboHTTP.Observability
             _inner.OnRequestStart(request, context);
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public async ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
             _statusCode = statusCode;
             _statusText = statusCode.ToString();
@@ -79,69 +84,16 @@ namespace TurboHTTP.Observability
             }
 
             _log(GetLogPrefix() + builder);
-            _inner.OnResponseStart(statusCode, headers, context);
-        }
-
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            _bytesReceived += chunk.Length;
-
-            if (_logLevel >= LoggingInterceptor.LogLevel.Detailed && _logBody && !chunk.IsEmpty)
-            {
-                if (_bodyPreview == null)
-                    _bodyPreview = ArrayPool<byte>.Shared.Rent(MaxPreviewBytes);
-
-                var remaining = MaxPreviewBytes - _bodyPreviewLength;
-                if (remaining > 0)
-                {
-                    var copyLength = Math.Min(remaining, chunk.Length);
-                    chunk.Slice(0, copyLength).CopyTo(_bodyPreview.AsSpan(_bodyPreviewLength, copyLength));
-                    _bodyPreviewLength += copyLength;
-                    _bodyPreviewTruncated |= copyLength < chunk.Length;
-                }
-                else
-                {
-                    _bodyPreviewTruncated = true;
-                }
-            }
-
-            _inner.OnResponseData(chunk, context);
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            var elapsed = context.Elapsed - _started;
-            if (elapsed < TimeSpan.Zero)
-                elapsed = TimeSpan.Zero;
-
-            var builder = new StringBuilder();
-            builder.Append("<= ")
-                .Append(_request.Method)
-                .Append(' ')
-                .Append(_request.Uri)
-                .Append(" completed in ")
-                .Append(elapsed.TotalMilliseconds.ToString("F0"))
-                .Append("ms")
-                .Append(" (")
-                .Append(_bytesReceived)
-                .Append(" bytes)");
-
-            if (_logLevel >= LoggingInterceptor.LogLevel.Detailed && _logBody && _bodyPreviewLength > 0)
-            {
-                builder.Append("\n  Body: ")
-                    .Append(LoggingInterceptor.FormatResponseBodyPreview(
-                        _bodyPreview ?? Array.Empty<byte>(),
-                        _bodyPreviewLength,
-                        _bodyPreviewTruncated));
-            }
+            if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
+                CaptureBodyPreview(buffered.Span);
 
             try
             {
-                _log(GetLogPrefix() + builder);
-                _inner.OnResponseEnd(trailers, context);
+                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
             }
             finally
             {
+                LogCompletion(context);
                 ReturnBodyPreviewBuffer();
             }
         }
@@ -170,6 +122,60 @@ namespace TurboHTTP.Observability
             finally
             {
                 ReturnBodyPreviewBuffer();
+            }
+        }
+
+        private void LogCompletion(RequestContext context)
+        {
+            var elapsed = context.Elapsed - _started;
+            if (elapsed < TimeSpan.Zero)
+                elapsed = TimeSpan.Zero;
+
+            var builder = new StringBuilder();
+            builder.Append("<= ")
+                .Append(_request.Method)
+                .Append(' ')
+                .Append(_request.Uri)
+                .Append(" completed in ")
+                .Append(elapsed.TotalMilliseconds.ToString("F0"))
+                .Append("ms")
+                .Append(" (")
+                .Append(_bytesReceived)
+                .Append(" bytes)");
+
+            if (_logLevel >= LoggingInterceptor.LogLevel.Detailed && _logBody && _bodyPreviewLength > 0)
+            {
+                builder.Append("\n  Body: ")
+                    .Append(LoggingInterceptor.FormatResponseBodyPreview(
+                        _bodyPreview ?? Array.Empty<byte>(),
+                        _bodyPreviewLength,
+                        _bodyPreviewTruncated));
+            }
+
+            _log(GetLogPrefix() + builder);
+        }
+
+        private void CaptureBodyPreview(ReadOnlySpan<byte> chunk)
+        {
+            _bytesReceived += chunk.Length;
+
+            if (_logLevel < LoggingInterceptor.LogLevel.Detailed || !_logBody || chunk.IsEmpty)
+                return;
+
+            if (_bodyPreview == null)
+                _bodyPreview = ArrayPool<byte>.Shared.Rent(MaxPreviewBytes);
+
+            var remaining = MaxPreviewBytes - _bodyPreviewLength;
+            if (remaining > 0)
+            {
+                var copyLength = Math.Min(remaining, chunk.Length);
+                chunk.Slice(0, copyLength).CopyTo(_bodyPreview.AsSpan(_bodyPreviewLength, copyLength));
+                _bodyPreviewLength += copyLength;
+                _bodyPreviewTruncated |= copyLength < chunk.Length;
+            }
+            else
+            {
+                _bodyPreviewTruncated = true;
             }
         }
 

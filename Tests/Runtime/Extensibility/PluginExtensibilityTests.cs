@@ -33,7 +33,7 @@ namespace TurboHTTP.Tests.Extensibility
                 });
 
                 await client.RegisterPluginAsync(new ObserverPlugin());
-                var response = await client.Get("https://example.test/ext").SendAsync();
+                var response = await client.Get("https://example.test/ext").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(1, client.GetRegisteredPlugins().Count);

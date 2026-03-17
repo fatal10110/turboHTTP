@@ -43,7 +43,14 @@ namespace TurboHTTP.Testing
         public string Path => Request.Uri.AbsolutePath;
         public string Query => Request.Uri.Query;
         public HttpHeaders Headers => Request.Headers;
-        public ReadOnlyMemory<byte> Body => Request.Body;
+        public ReadOnlyMemory<byte> Body => Request.TryGetBufferedContent(out var body)
+            ? body
+            : ReadOnlyMemory<byte>.Empty;
+
+        public bool TryGetBufferedBody(out ReadOnlyMemory<byte> body)
+        {
+            return Request.TryGetBufferedContent(out body);
+        }
     }
 
     public sealed class MockHistoryEntry

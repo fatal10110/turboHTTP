@@ -16,7 +16,7 @@ namespace TurboHTTP.Core
             RequestContext context,
             CancellationToken cancellationToken = default)
         {
-            return DispatchBridge.CollectResponseAsync(dispatch, request, context, cancellationToken);
+            return BufferedDispatchBridge.CollectResponseAsync(dispatch, request, context, cancellationToken);
         }
 
         public static Task<UHttpResponse> CollectResponseAsync(
@@ -25,7 +25,7 @@ namespace TurboHTTP.Core
             RequestContext context,
             CancellationToken cancellationToken = default)
         {
-            return DispatchBridge.CollectResponseAsync(transport, request, context, cancellationToken);
+            return BufferedDispatchBridge.CollectResponseAsync(transport, request, context, cancellationToken);
         }
     }
 }

@@ -127,7 +127,7 @@ namespace TurboHTTP.Tests.Performance
                 async _ =>
                 {
                     using var response = await client.Get("https://phase19.local/http11")
-                        .SendAsync()
+                        .SendBufferedAsync()
                         .ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode)
                         throw new InvalidOperationException("Unexpected non-success in HTTP/1.1 warm request scenario.");
@@ -163,7 +163,7 @@ namespace TurboHTTP.Tests.Performance
                 async _ =>
                 {
                     using var response = await client.Get("https://phase19.local/middleware")
-                        .SendAsync()
+                        .SendBufferedAsync()
                         .ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode)
                         throw new InvalidOperationException("Unexpected non-success in middleware fast-path scenario.");
@@ -241,7 +241,7 @@ namespace TurboHTTP.Tests.Performance
                 try
                 {
                     using var response = await client.Get("https://phase19.local/throughput-sequential")
-                        .SendAsync()
+                        .SendBufferedAsync()
                         .ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode)
                         errors++;
@@ -297,7 +297,7 @@ namespace TurboHTTP.Tests.Performance
                         try
                         {
                             using var response = await client.Get("https://phase19.local/throughput-concurrent")
-                                .SendAsync()
+                                .SendBufferedAsync()
                                 .ConfigureAwait(false);
                             if (!response.IsSuccessStatusCode)
                                 Interlocked.Increment(ref errors);

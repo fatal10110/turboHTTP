@@ -170,7 +170,7 @@ namespace TurboHTTP.Core
             if (!_policy.RequireReplayableBodyForQueue)
                 return true;
 
-            return !request.Body.IsEmpty;
+            return request.Content.Replayability != RequestBodyReplayability.NonReplayable;
         }
 
         private static bool ShouldQueueOnCancellation(

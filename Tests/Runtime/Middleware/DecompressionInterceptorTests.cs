@@ -360,17 +360,16 @@ namespace TurboHTTP.Tests.Middleware
             {
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
-            }
+                if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
+                    throw new InvalidOperationException("inner handler failed");
 
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-                throw new InvalidOperationException("inner handler failed");
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
+                return default;
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

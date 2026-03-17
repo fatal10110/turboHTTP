@@ -199,7 +199,7 @@ namespace TurboHTTP.Tests.Core
                 ReadOnlyMemory<byte> capturedBody = ReadOnlyMemory<byte>.Empty;
                 var transport = new MockTransport((req, ctx, ct) =>
                 {
-                    capturedBody = req.Body;
+                    Assert.IsTrue(req.TryGetBufferedContent(out capturedBody));
                     var respHeaders = new HttpHeaders();
                     respHeaders.Set("Content-Type", "application/json");
                     return Task.FromResult(new UHttpResponse(
@@ -209,7 +209,7 @@ namespace TurboHTTP.Tests.Core
                 var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
                 var response = await client.Post("https://test.com/echo")
                     .WithJsonBody(original)
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 var deserialized = response.AsJson<Dictionary<string, object>>();
 

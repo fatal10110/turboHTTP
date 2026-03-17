@@ -57,7 +57,7 @@ namespace TurboHTTP.Tests.Runtime
 
         private async Task TestBasicGet()
         {
-            var response = await _client.Get("https://httpbin.org/get").SendAsync();
+            var response = await _client.Get("https://httpbin.org/get").SendBufferedAsync();
             Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "Basic GET failed");
             var body = response.GetBodyAsString();
             Ensure(body != null && body.Contains("httpbin.org"), "Basic GET body missing expected content");
@@ -68,7 +68,7 @@ namespace TurboHTTP.Tests.Runtime
         {
             var response = await _client.Post("https://httpbin.org/post")
                 .WithJsonBody(new { key = "value" })
-                .SendAsync();
+                .SendBufferedAsync();
 
             Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "Post JSON failed");
             var body = response.GetBodyAsString();
@@ -80,7 +80,7 @@ namespace TurboHTTP.Tests.Runtime
         {
             var response = await _client.Post("https://httpbin.org/post")
                 .WithJsonBody("{\"key\":\"value\"}")
-                .SendAsync();
+                .SendBufferedAsync();
 
             Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "Post JSON string failed");
             var body = response.GetBodyAsString();
@@ -93,7 +93,7 @@ namespace TurboHTTP.Tests.Runtime
             var response = await _client.Get("https://httpbin.org/headers")
                 .WithHeader("X-Custom", "abc")
                 .WithBearerToken("token123")
-                .SendAsync();
+                .SendBufferedAsync();
 
             Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "Custom headers failed");
             var body = response.GetBodyAsString();
@@ -108,7 +108,7 @@ namespace TurboHTTP.Tests.Runtime
             {
                 await _client.Get("https://httpbin.org/delay/10")
                     .WithTimeout(TimeSpan.FromSeconds(2))
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 throw new Exception("Timeout test failed: request did not time out");
             }
@@ -125,7 +125,7 @@ namespace TurboHTTP.Tests.Runtime
             for (int i = 0; i < 3; i++)
             {
                 sw.Restart();
-                var response = await _client.Get("https://httpbin.org/get").SendAsync();
+                var response = await _client.Get("https://httpbin.org/get").SendBufferedAsync();
                 sw.Stop();
                 Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "Connection reuse GET failed");
                 Debug.Log($"TestConnectionReuse request {i + 1}: {sw.ElapsedMilliseconds}ms");
@@ -134,7 +134,7 @@ namespace TurboHTTP.Tests.Runtime
 
         private async Task TestHeadRequest()
         {
-            var response = await _client.Head("https://httpbin.org/get").SendAsync();
+            var response = await _client.Head("https://httpbin.org/get").SendBufferedAsync();
             Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "HEAD failed");
             Ensure(response.Body.IsEmpty, "HEAD should have empty body");
             Debug.Log("TestHeadRequest passed");
@@ -142,7 +142,7 @@ namespace TurboHTTP.Tests.Runtime
 
         private async Task TestTlsVersion()
         {
-            var response = await _client.Get("https://httpbin.org/get").SendAsync();
+            var response = await _client.Get("https://httpbin.org/get").SendBufferedAsync();
             Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "TLS test request failed");
 
             var idleField = typeof(TcpConnectionPool).GetField("_idleConnections", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -171,7 +171,7 @@ namespace TurboHTTP.Tests.Runtime
             try
             {
                 var req = new UHttpRequest(HttpMethod.GET, new Uri("ftp://example.com/"));
-                await _client.SendAsync(req);
+                await _client.SendBufferedAsync(req);
                 throw new Exception("Unsupported scheme test failed: request unexpectedly succeeded");
             }
             catch (UHttpException ex)
@@ -218,7 +218,7 @@ namespace TurboHTTP.Tests.Runtime
             for (int i = 0; i < count; i++)
             {
                 var sw = Stopwatch.StartNew();
-                var response = await _client.Get("https://httpbin.org/get").SendAsync();
+                var response = await _client.Get("https://httpbin.org/get").SendBufferedAsync();
                 sw.Stop();
 
                 Ensure(response.StatusCode == System.Net.HttpStatusCode.OK, "Latency baseline GET failed");

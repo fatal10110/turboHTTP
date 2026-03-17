@@ -461,13 +461,10 @@ namespace TurboHTTP.Transport
                 headers.Remove("Proxy-Authorization");
             }
 
-            return new UHttpRequest(
-                request.Method,
-                request.Uri,
-                headers,
-                request.Body.IsEmpty ? null : request.Body.ToArray(),
-                request.Timeout,
-                metadata);
+            return request
+                .CopyWithSharedContent()
+                .WithHeaders(headers)
+                .WithMetadata(metadata);
         }
 
         private static UHttpRequest PrepareHttpsProxyTunnelRequest(UHttpRequest request)
@@ -476,13 +473,10 @@ namespace TurboHTTP.Transport
             var headers = request.Headers.Clone();
             headers.Remove("Proxy-Authorization");
 
-            return new UHttpRequest(
-                request.Method,
-                request.Uri,
-                headers,
-                request.Body.IsEmpty ? null : request.Body.ToArray(),
-                request.Timeout,
-                metadata);
+            return request
+                .CopyWithSharedContent()
+                .WithHeaders(headers)
+                .WithMetadata(metadata);
         }
 
         private async Task<Stream> EstablishConnectTunnelAsync(
@@ -762,7 +756,7 @@ namespace TurboHTTP.Transport
         /// Execute a single send attempt on the given lease. Returns the parsed response.
         /// Caller is responsible for lease disposal.
         /// </summary>
-        private static bool EmitParsedResponse(
+        private static async Task<bool> EmitParsedResponseAsync(
             ParsedResponse parsed,
             IHttpHandler handler,
             RequestContext context)
@@ -775,24 +769,35 @@ namespace TurboHTTP.Transport
                 throw new ArgumentNullException(nameof(context));
 
             var keepAlive = parsed.KeepAlive;
-            try
-            {
-                var safeHandler = HandlerCallbackSafetyWrapper.Wrap(handler, context);
-                safeHandler.OnResponseStart((int)parsed.StatusCode, parsed.Headers, context);
-                foreach (var segment in parsed.EnumerateBodySegments())
-                {
-                    if (!segment.IsEmpty)
-                        safeHandler.OnResponseData(segment.Span, context);
-                }
 
-                safeHandler.OnResponseEnd(HttpHeaders.Empty, context);
-                return keepAlive;
-            }
-            finally
+            var safeHandler = HandlerCallbackSafetyWrapper.Wrap(handler, context);
+            BufferedResponseBodySource bodySource;
+            if (parsed.SegmentedBody != null)
             {
+                var copied = parsed.SegmentedBody.AsSequence().ToArray();
                 parsed.ReleaseBodyBuffers();
                 ParsedResponsePool.Return(parsed);
+                bodySource = new BufferedResponseBodySource(copied, HttpHeaders.Empty);
             }
+            else
+            {
+                bodySource = new BufferedResponseBodySource(
+                    parsed.Body,
+                    HttpHeaders.Empty,
+                    () =>
+                    {
+                        parsed.ReleaseBodyBuffers();
+                        ParsedResponsePool.Return(parsed);
+                    });
+            }
+
+            await safeHandler.OnResponseStartAsync(
+                    (int)parsed.StatusCode,
+                    parsed.Headers,
+                    bodySource,
+                    context)
+                .ConfigureAwait(false);
+            return keepAlive;
         }
 
         private async Task<bool> DispatchOnLeaseAsync(
@@ -804,7 +809,7 @@ namespace TurboHTTP.Transport
         {
             var parsed = await SendOnLeaseAsync(lease, request, context, ct)
                 .ConfigureAwait(false);
-            return EmitParsedResponse(parsed, handler, context);
+            return await EmitParsedResponseAsync(parsed, handler, context).ConfigureAwait(false);
         }
 
         private static async Task<bool> DispatchOnStreamAsync(
@@ -816,7 +821,7 @@ namespace TurboHTTP.Transport
         {
             var parsed = await SendOnStreamAsync(stream, request, context, ct)
                 .ConfigureAwait(false);
-            return EmitParsedResponse(parsed, handler, context);
+            return await EmitParsedResponseAsync(parsed, handler, context).ConfigureAwait(false);
         }
 
         private async Task<ParsedResponse> SendOnLeaseAsync(

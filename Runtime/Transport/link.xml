@@ -19,6 +19,16 @@
   -->
   <assembly fullname="mscorlib">
     <type fullname="System.Collections.Generic.List`1" preserve="all"/>
+    <type fullname="System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1" preserve="all"/>
+  </assembly>
+
+  <!--
+    22a.1 HTTP/2 receive-queue primitive used by the streaming design.
+    Preserve the generic channel template so IL2CPP keeps its async-waiter methods.
+  -->
+  <assembly fullname="TurboHTTP.Transport">
+    <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1" preserve="all"/>
+    <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1[[System.ReadOnlyMemory`1[[System.Byte, mscorlib]], mscorlib]]" preserve="all"/>
   </assembly>
 
   <!--
@@ -31,5 +41,3 @@
   -->
   <assembly fullname="TurboHTTP.Transport.BouncyCastle" preserve="all"/>
 </linker>
-
-

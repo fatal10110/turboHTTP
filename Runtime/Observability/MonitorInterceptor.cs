@@ -255,7 +255,9 @@ namespace TurboHTTP.Observability
         {
             var requestHeaders = CopyHeaders(request?.Headers);
             var requestSnapshot = CreateBodySnapshot(
-                request != null ? request.Body : ReadOnlyMemory<byte>.Empty,
+                request != null && request.TryGetBufferedContent(out var requestBody)
+                    ? requestBody
+                    : ReadOnlyMemory<byte>.Empty,
                 requestHeaders);
 
             var copiedResponseHeaders = CopyHeaders(responseHeaders);

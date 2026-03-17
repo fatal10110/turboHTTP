@@ -32,7 +32,7 @@ namespace TurboHTTP.Tests.Transport
                 });
 
                 using var request = client.Get("https://example.test/cold");
-                await client.SendAsync(request);
+                await client.SendBufferedAsync(request);
                 Assert.AreEqual(TimeSpan.FromSeconds(10), transport.LastRequest.Timeout);
             }).GetAwaiter().GetResult();
         }
@@ -71,7 +71,7 @@ namespace TurboHTTP.Tests.Transport
 
                 using var request = client.Get("https://example.test/poor");
                 var baselineTimeout = request.Timeout;
-                await client.SendAsync(request);
+                await client.SendBufferedAsync(request);
 
                 Assert.Greater(transport.LastRequest.Timeout, baselineTimeout);
             }).GetAwaiter().GetResult();
@@ -110,7 +110,7 @@ namespace TurboHTTP.Tests.Transport
 
                 await client.Get("https://example.test/explicit")
                     .WithTimeout(TimeSpan.FromSeconds(3))
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 Assert.AreEqual(TimeSpan.FromSeconds(3), transport.LastRequest.Timeout);
             }).GetAwaiter().GetResult();
@@ -148,7 +148,7 @@ namespace TurboHTTP.Tests.Transport
                     NetworkQualityDetector = detector
                 });
 
-                await client.Get("https://example.test/max-timeout").SendAsync();
+                await client.Get("https://example.test/max-timeout").SendBufferedAsync();
 
                 Assert.AreEqual(TimeSpan.FromSeconds(20), transport.LastRequest.Timeout);
             }).GetAwaiter().GetResult();
@@ -238,7 +238,7 @@ namespace TurboHTTP.Tests.Transport
                     NetworkQualityDetector = detector
                 });
 
-                var response = await client.Get("https://example.test/null-body").SendAsync();
+                var response = await client.Get("https://example.test/null-body").SendBufferedAsync();
                 Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);
             }).GetAwaiter().GetResult();
         }

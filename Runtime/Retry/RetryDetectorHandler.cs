@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
@@ -39,7 +40,11 @@ namespace TurboHTTP.Retry
             }
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public async ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
             if (statusCode >= 500 && statusCode < 600)
             {
@@ -54,23 +59,13 @@ namespace TurboHTTP.Retry
                 // body without relying on downstream handler consumption.
                 WasRetryable = true;
                 RetryAfterDelay = ParseRetryAfter(headers);
+                if (body != null)
+                    await body.DisposeAsync().ConfigureAwait(false);
                 return;
             }
 
             _committed = true;
-            _inner.OnResponseStart(statusCode, headers, context);
-        }
-
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            if (_committed)
-                _inner.OnResponseData(chunk, context);
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            if (_committed)
-                _inner.OnResponseEnd(trailers, context);
+            await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)

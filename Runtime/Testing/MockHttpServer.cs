@@ -329,7 +329,9 @@ namespace TurboHTTP.Testing
                 Method = request.Method,
                 Path = request.Uri.AbsolutePath,
                 RequestHeaders = request.Headers.Clone(),
-                RequestBody = request.Body.IsEmpty ? Array.Empty<byte>() : request.Body.ToArray(),
+                RequestBody = request.TryGetBufferedContent(out var requestBody) && !requestBody.IsEmpty
+                    ? requestBody.ToArray()
+                    : Array.Empty<byte>(),
                 RouteId = routeId,
                 ResponseStatusCode = responseStatusCode,
                 Duration = duration
@@ -490,7 +492,9 @@ namespace TurboHTTP.Testing
             {
                 if (predicate == null) throw new ArgumentNullException(nameof(predicate));
                 _route.Matchers.Add(ctx =>
-                    predicate(ctx.Request.Body.IsEmpty ? Array.Empty<byte>() : ctx.Request.Body.ToArray()));
+                    predicate(ctx.TryGetBufferedBody(out var body) && !body.IsEmpty
+                        ? body.ToArray()
+                        : Array.Empty<byte>()));
                 return this;
             }
 
@@ -500,7 +504,9 @@ namespace TurboHTTP.Testing
 
                 _route.Matchers.Add(ctx =>
                 {
-                    var body = ctx.Request.Body;
+                    if (!ctx.TryGetBufferedBody(out var body))
+                        return false;
+
                     if (body.IsEmpty)
                         return false;
 

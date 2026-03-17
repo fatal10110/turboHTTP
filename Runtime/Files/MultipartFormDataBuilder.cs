@@ -170,7 +170,7 @@ namespace TurboHTTP.Files
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
             var owner = BuildAsOwner();
-            request.WithLeasedBody(owner).WithHeader("Content-Type", GetContentType());
+            request.WithLeasedBody(owner, owner.Memory.Length).WithHeader("Content-Type", GetContentType());
         }
 
         /// <summary>

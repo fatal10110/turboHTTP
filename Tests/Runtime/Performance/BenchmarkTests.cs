@@ -41,7 +41,7 @@ namespace TurboHTTP.Tests.Performance
                 var tasks = new Task<UHttpResponse>[ThroughputRequestCount];
                 for (int i = 0; i < ThroughputRequestCount; i++)
                 {
-                    tasks[i] = client.Get("https://benchmark.local/" + i).SendAsync().AsTask();
+                    tasks[i] = client.Get("https://benchmark.local/" + i).SendBufferedAsync().AsTask();
                 }
 
                 await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -73,7 +73,7 @@ namespace TurboHTTP.Tests.Performance
 
                 for (int i = 0; i < AllocationSampleCount; i++)
                 {
-                    var response = await client.Get("https://benchmark.local/allocation/" + i).SendAsync()
+                    var response = await client.Get("https://benchmark.local/allocation/" + i).SendBufferedAsync()
                         .ConfigureAwait(false);
                     if (response.StatusCode != HttpStatusCode.OK)
                         throw new InvalidOperationException("Unexpected non-OK response during allocation benchmark.");
@@ -111,7 +111,7 @@ namespace TurboHTTP.Tests.Performance
                 {
                     for (int i = 0; i < LeakCheckRequestsPerRound; i++)
                     {
-                        var response = await client.Get("https://benchmark.local/leak/" + round + "/" + i).SendAsync()
+                        var response = await client.Get("https://benchmark.local/leak/" + round + "/" + i).SendBufferedAsync()
                             .ConfigureAwait(false);
                         if (!response.IsSuccessStatusCode)
                             throw new InvalidOperationException("Unexpected non-success response during leak benchmark.");

@@ -39,7 +39,7 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true
                 });
 
-                var response = await client.Get("https://example.test/ping").SendAsync();
+                var response = await client.Get("https://example.test/ping").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual("ok", response.GetBodyAsString());
@@ -56,7 +56,7 @@ namespace TurboHTTP.Tests.Integration
                 ReadOnlyMemory<byte> echoedRequestBody = ReadOnlyMemory<byte>.Empty;
                 var transport = new MockTransport((request, context, ct) =>
                 {
-                    echoedRequestBody = request.Body;
+                    Assert.IsTrue(request.TryGetBufferedContent(out echoedRequestBody));
                     var headers = new HttpHeaders();
                     headers.Set("Content-Type", "application/json");
                     return Task.FromResult(new UHttpResponse(
@@ -81,7 +81,7 @@ namespace TurboHTTP.Tests.Integration
 
                 var response = await client.Post("https://example.test/echo")
                     .WithJsonBody(payload)
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 var echoed = response.AsJson<System.Collections.Generic.Dictionary<string, object>>();
                 Assert.IsNotNull(echoed);
@@ -102,7 +102,7 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true
                 });
 
-                var response = await client.Get("https://example.test/missing").SendAsync();
+                var response = await client.Get("https://example.test/missing").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.NotFound, response.StatusCode);
                 Assert.IsFalse(response.IsSuccessStatusCode);
@@ -126,8 +126,8 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true
                 });
 
-                await client.Get("https://example.test/first").SendAsync();
-                await client.Get("https://example.test/second").SendAsync();
+                await client.Get("https://example.test/first").SendBufferedAsync();
+                await client.Get("https://example.test/second").SendBufferedAsync();
 
                 var captured = transport.CapturedRequests;
                 Assert.AreEqual(2, captured.Count);
@@ -156,7 +156,7 @@ namespace TurboHTTP.Tests.Integration
                 using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMilliseconds(50));
                 await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                 {
-                    await client.Get("https://example.test/slow").SendAsync(cts.Token);
+                    await client.Get("https://example.test/slow").SendBufferedAsync(cts.Token);
                 });
             }).GetAwaiter().GetResult();
         }
@@ -182,13 +182,13 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true
                 });
 
-                var jsonResponse = await client.Get("https://example.test/json").SendAsync();
+                var jsonResponse = await client.Get("https://example.test/json").SendBufferedAsync();
                 var parsed = jsonResponse.AsJson<Dictionary<string, object>>();
                 Assert.AreEqual("json", parsed["kind"].ToString());
 
                 var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                 {
-                    await client.Get("https://example.test/error").SendAsync();
+                    await client.Get("https://example.test/error").SendBufferedAsync();
                 });
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
@@ -227,7 +227,7 @@ namespace TurboHTTP.Tests.Integration
                         DisposeTransport = true
                     }))
                     {
-                        var recordedResponse = await recordClient.Get("https://example.test/replay").SendAsync();
+                        var recordedResponse = await recordClient.Get("https://example.test/replay").SendBufferedAsync();
                         Assert.AreEqual(HttpStatusCode.OK, recordedResponse.StatusCode);
                         recordTransport.SaveRecordings();
                     }
@@ -245,7 +245,7 @@ namespace TurboHTTP.Tests.Integration
                         DisposeTransport = true
                     });
 
-                    var replayResponse = await replayClient.Get("https://example.test/replay").SendAsync();
+                    var replayResponse = await replayClient.Get("https://example.test/replay").SendBufferedAsync();
                     var body = replayResponse.AsJson<System.Collections.Generic.Dictionary<string, object>>();
 
                     Assert.AreEqual(HttpStatusCode.OK, replayResponse.StatusCode);
@@ -293,7 +293,7 @@ namespace TurboHTTP.Tests.Integration
                         DisposeTransport = true
                     }))
                     {
-                        await recordClient.Get("https://example.test/match").SendAsync();
+                        await recordClient.Get("https://example.test/match").SendBufferedAsync();
                         recordTransport.SaveRecordings();
                     }
 
@@ -313,7 +313,7 @@ namespace TurboHTTP.Tests.Integration
 
                     var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                     {
-                        await replayClient.Get("https://example.test/not-matching").SendAsync();
+                        await replayClient.Get("https://example.test/not-matching").SendBufferedAsync();
                     });
 
                     StringAssert.Contains("No replay recording matched", ex.Message);
@@ -370,7 +370,7 @@ namespace TurboHTTP.Tests.Integration
                     {
                         await recordClient.Get("https://example.test/data?api_key=very-secret")
                             .WithHeader("Authorization", "Bearer very-secret")
-                            .SendAsync();
+                            .SendBufferedAsync();
                         recordTransport.SaveRecordings();
                     }
 
@@ -430,7 +430,7 @@ namespace TurboHTTP.Tests.Integration
                     {
                         for (int i = 0; i < sampleCount; i++)
                         {
-                            await recordClient.Get("https://example.test/repeat").SendAsync();
+                            await recordClient.Get("https://example.test/repeat").SendBufferedAsync();
                         }
                         recordTransport.SaveRecordings();
                     }
@@ -451,7 +451,7 @@ namespace TurboHTTP.Tests.Integration
                     var replayTasks = new Task<UHttpResponse>[sampleCount];
                     for (int i = 0; i < sampleCount; i++)
                     {
-                        replayTasks[i] = replayClient.Get("https://example.test/repeat").SendAsync().AsTask();
+                        replayTasks[i] = replayClient.Get("https://example.test/repeat").SendBufferedAsync().AsTask();
                     }
 
                     var responses = await Task.WhenAll(replayTasks);
@@ -556,8 +556,8 @@ namespace TurboHTTP.Tests.Integration
                     }
                 });
 
-                var first = await client.Get("https://example.test/start").SendAsync();
-                var second = await client.Get("https://example.test/start").SendAsync();
+                var first = await client.Get("https://example.test/start").SendBufferedAsync();
+                var second = await client.Get("https://example.test/start").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, first.StatusCode);
                 Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
@@ -584,7 +584,7 @@ namespace TurboHTTP.Tests.Integration
 
                 var response = await client.Get("https://httpbin.org/get")
                     .WithTimeout(TimeSpan.FromSeconds(20))
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
             }).GetAwaiter().GetResult();
@@ -606,7 +606,7 @@ namespace TurboHTTP.Tests.Integration
 
                 var response = await client.Get("https://nghttp2.org/httpbin/get")
                     .WithTimeout(TimeSpan.FromSeconds(25))
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 

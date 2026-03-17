@@ -231,7 +231,7 @@ namespace TurboHTTP.Unity
             using var response = await client
                 .Get(url)
                 .WithHeader("Accept", BuildAcceptHeader(audioType))
-                .SendAsync(cancellationToken).ConfigureAwait(false);
+                .SendBufferedAsync(cancellationToken).ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();
             cancellationToken.ThrowIfCancellationRequested();

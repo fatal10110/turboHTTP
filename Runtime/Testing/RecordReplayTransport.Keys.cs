@@ -12,7 +12,9 @@ namespace TurboHTTP.Testing
         private string BuildRequestKey(UHttpRequest request)
         {
             var normalizedUrl = NormalizeUriForKey(request.Uri);
-            var bodyHash = ComputeBodyHash(request.Body);
+            var bodyHash = request.Content.TryGetBufferedData(out var bufferedBody)
+                ? ComputeBodyHash(bufferedBody)
+                : "sha256:empty";
             return BuildRequestKey(request.Method.ToUpperString(), normalizedUrl, request.Headers, bodyHash);
         }
 

@@ -249,16 +249,16 @@ namespace TurboHTTP.Core
             if (releaseAction == null)
                 return;
 
-            if (Volatile.Read(ref _disposed) != 0)
-            {
-                releaseAction();
-                return;
-            }
-
             Action prior;
             Action combined;
             do
             {
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    releaseAction();
+                    return;
+                }
+
                 prior = _onDispose;
                 combined = (Action)Delegate.Combine(prior, releaseAction);
             }

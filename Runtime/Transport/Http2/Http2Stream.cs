@@ -1,9 +1,11 @@
 using System;
+using System.Buffers;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -37,7 +39,10 @@ namespace TurboHTTP.Transport.Http2
         private UHttpRequest _request;
         private RequestContext _context;
         private IHttpHandler _handler;
+        private int _statusCode;
+        private HttpHeaders _headers;
         private HttpHeaders _trailers;
+        private SegmentedBuffer _responseBody;
         private int _responseBodyLength;
         private int _disposed;
         private int _handlerFaulted;
@@ -118,7 +123,11 @@ namespace TurboHTTP.Transport.Http2
             _request = request ?? throw new ArgumentNullException(nameof(request));
             _handler = handler ?? throw new ArgumentNullException(nameof(handler));
             _context = context ?? throw new ArgumentNullException(nameof(context));
+            _statusCode = 0;
+            _headers = null;
             _trailers = null;
+            _responseBody?.Dispose();
+            _responseBody = null;
             _responseBodyLength = 0;
             HeadersReceived = false;
             PendingEndStream = false;
@@ -142,7 +151,11 @@ namespace TurboHTTP.Transport.Http2
             _request = null;
             _context = null;
             _handler = TurboHTTP.Transport.NullHandler.Instance;
+            _statusCode = 0;
+            _headers = null;
             _trailers = null;
+            _responseBody?.Dispose();
+            _responseBody = null;
             _responseBodyLength = 0;
             HeadersReceived = false;
             PendingEndStream = false;
@@ -183,15 +196,9 @@ namespace TurboHTTP.Transport.Http2
                 return false;
 
             HeadersReceived = true;
-            try
-            {
-                _handler.OnResponseStart(statusCode, headers ?? new HttpHeaders(), _context);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                return FailFromHandler(ex);
-            }
+            _statusCode = statusCode;
+            _headers = headers ?? new HttpHeaders();
+            return true;
         }
 
         public bool AppendResponseData(byte[] source, int offset, int length)
@@ -202,7 +209,10 @@ namespace TurboHTTP.Transport.Http2
             ThrowIfDisposed();
             try
             {
-                _handler.OnResponseData(new ReadOnlySpan<byte>(source, offset, length), _context);
+                if (_responseBody == null)
+                    _responseBody = new SegmentedBuffer();
+
+                _responseBody.Write(new ReadOnlySpan<byte>(source, offset, length));
                 _responseBodyLength += length;
                 return true;
             }
@@ -233,18 +243,8 @@ namespace TurboHTTP.Transport.Http2
                 return false;
 
             State = Http2StreamState.Closed;
-            try
-            {
-                _handler.OnResponseEnd(_trailers ?? HttpHeaders.Empty, _context);
-                TrySetResult();
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Interlocked.Exchange(ref _handlerFaulted, 1);
-                CompleteWithHandlerFailure(ex);
-                return false;
-            }
+            _ = CompleteAsync();
+            return true;
         }
 
         public void Fail(Exception exception)
@@ -279,7 +279,10 @@ namespace TurboHTTP.Transport.Http2
             _handler = TurboHTTP.Transport.NullHandler.Instance;
             _request = null;
             _context = null;
+            _headers = null;
             _trailers = null;
+            _responseBody?.Dispose();
+            _responseBody = null;
             HeaderBlockBuffer.Dispose();
         }
 
@@ -317,12 +320,37 @@ namespace TurboHTTP.Transport.Http2
         {
             try
             {
+                DisposeBufferedBody();
                 _handler.OnResponseError(MapHandlerException(exception), _context);
                 TrySetResult();
             }
             catch (Exception errorCallbackException)
             {
                 TrySetException(new HandlerCallbackException(errorCallbackException));
+            }
+        }
+
+        private async Task CompleteAsync()
+        {
+            try
+            {
+                var buffered = _responseBody != null
+                    ? _responseBody.AsSequence().ToArray()
+                    : Array.Empty<byte>();
+                DisposeBufferedBody();
+
+                await _handler.OnResponseStartAsync(
+                        _statusCode,
+                        _headers ?? new HttpHeaders(),
+                        new BufferedResponseBodySource(buffered, _trailers ?? HttpHeaders.Empty),
+                        _context)
+                    .ConfigureAwait(false);
+                TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Exchange(ref _handlerFaulted, 1);
+                CompleteWithHandlerFailure(ex);
             }
         }
 
@@ -360,6 +388,12 @@ namespace TurboHTTP.Transport.Http2
             {
                 // Defensive only: _responseCompleted should already prevent double-set races.
             }
+        }
+
+        private void DisposeBufferedBody()
+        {
+            _responseBody?.Dispose();
+            _responseBody = null;
         }
     }
 }

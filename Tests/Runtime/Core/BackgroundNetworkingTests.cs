@@ -206,7 +206,7 @@ namespace TurboHTTP.Tests.Core
 
                 var ex = await TestHelpers.AssertThrowsAsync<BackgroundRequestQueuedException>(async () =>
                 {
-                    await client.Get("https://example.test/client-queue").SendAsync();
+                    await client.Get("https://example.test/client-queue").SendBufferedAsync();
                 });
 
                 Assert.AreEqual("GET:https://example.test/client-queue", ex.ReplayDedupeKey);

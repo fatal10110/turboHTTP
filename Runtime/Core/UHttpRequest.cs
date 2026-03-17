@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,7 +19,8 @@ namespace TurboHTTP.Core
         private readonly HttpHeaders _headers;
         private readonly Dictionary<string, object> _metadata;
 
-        private IMemoryOwner<byte> _bodyOwner;
+        private UHttpRequestBody _content;
+        private bool _ownsContent;
         private int _isLeased;
         private int _disposeRequested;
         private int _responseHoldCount;
@@ -31,8 +33,17 @@ namespace TurboHTTP.Core
         public Uri Uri { get; private set; }
         /// <summary> Gets the headers associated with this request. </summary>
         public HttpHeaders Headers => _headers;
-        /// <summary> Gets the request body as a read-only memory sequence. </summary>
-        public ReadOnlyMemory<byte> Body { get; private set; }
+        /// <summary> Gets the request body model. </summary>
+        public UHttpRequestBody Content
+        {
+            get
+            {
+                ThrowIfDisposed();
+                return _content;
+            }
+            private set => _content = value ?? new EmptyRequestBody();
+        }
+
         /// <summary> Gets the timeout duration for this request. </summary>
         public TimeSpan Timeout { get; private set; }
 
@@ -42,9 +53,19 @@ namespace TurboHTTP.Core
         public IReadOnlyDictionary<string, object> Metadata => _metadata;
 
         /// <summary>
-        /// Optional pool-owned body. Internal infrastructure only.
+        /// Optional buffered-body preview for callers that can use the 22a content model.
         /// </summary>
-        internal IMemoryOwner<byte> BodyOwner => _bodyOwner;
+        public bool TryGetBufferedContent(out ReadOnlyMemory<byte> data)
+        {
+            ThrowIfDisposed();
+            if (_content == null)
+            {
+                data = ReadOnlyMemory<byte>.Empty;
+                return true;
+            }
+
+            return _content.TryGetBufferedData(out data);
+        }
 
         internal bool IsPooled => _leaseOwner != null;
 
@@ -58,6 +79,8 @@ namespace TurboHTTP.Core
             _leaseOwner = leaseOwner ?? throw new ArgumentNullException(nameof(leaseOwner));
             _headers = new HttpHeaders();
             _metadata = new Dictionary<string, object>();
+            _content = new EmptyRequestBody();
+            _ownsContent = true;
             Timeout = TimeSpan.FromSeconds(30);
         }
 
@@ -77,13 +100,31 @@ namespace TurboHTTP.Core
             byte[] body = null,
             TimeSpan? timeout = null,
             IReadOnlyDictionary<string, object> metadata = null)
+            : this(
+                method,
+                uri,
+                headers,
+                body != null ? (UHttpRequestBody)new BufferedRequestBody(body) : new EmptyRequestBody(),
+                ownsContent: true,
+                timeout,
+                metadata)
+        {
+        }
+
+        private UHttpRequest(
+            HttpMethod method,
+            Uri uri,
+            HttpHeaders headers,
+            UHttpRequestBody content,
+            bool ownsContent,
+            TimeSpan? timeout,
+            IReadOnlyDictionary<string, object> metadata)
         {
             Method = method;
             Uri = uri ?? throw new ArgumentNullException(nameof(uri));
             _headers = headers?.Clone() ?? new HttpHeaders();
-            Body = body != null
-                ? new ReadOnlyMemory<byte>(body)
-                : ReadOnlyMemory<byte>.Empty;
+            _content = content ?? new EmptyRequestBody();
+            _ownsContent = ownsContent;
             Timeout = timeout ?? TimeSpan.FromSeconds(30);
             _metadata = metadata != null
                 ? new Dictionary<string, object>(metadata)
@@ -96,16 +137,12 @@ namespace TurboHTTP.Core
         public UHttpRequest Clone()
         {
             ThrowIfDisposed();
-
-            byte[] bodyCopy = null;
-            if (!Body.IsEmpty)
-                bodyCopy = Body.ToArray();
-
             return new UHttpRequest(
                 Method,
                 Uri,
                 _headers.Clone(),
-                bodyCopy,
+                Content.CloneDetached(),
+                ownsContent: true,
                 Timeout,
                 new Dictionary<string, object>(_metadata));
         }
@@ -141,11 +178,22 @@ namespace TurboHTTP.Core
         /// </summary>
         public UHttpRequest WithBody(byte[] body)
         {
-            ThrowIfDisposed();
-            DisposeBodyOwner();
-            Body = body != null
+            return WithBody(body != null
                 ? new ReadOnlyMemory<byte>(body)
-                : ReadOnlyMemory<byte>.Empty;
+                : ReadOnlyMemory<byte>.Empty);
+        }
+
+        /// <summary>
+        /// Sets or replaces the request body using raw bytes. Note: Mutates the request in-place.
+        /// </summary>
+        public UHttpRequest WithBody(ReadOnlyMemory<byte> body)
+        {
+            ThrowIfDisposed();
+            ReplaceContent(
+                body.IsEmpty
+                    ? (UHttpRequestBody)new EmptyRequestBody()
+                    : new BufferedRequestBody(body),
+                ownsContent: true);
             return this;
         }
 
@@ -155,10 +203,55 @@ namespace TurboHTTP.Core
         public UHttpRequest WithBody(string body)
         {
             ThrowIfDisposed();
-            DisposeBodyOwner();
-            Body = body != null
-                ? new ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(body))
-                : ReadOnlyMemory<byte>.Empty;
+            ReplaceContent(
+                body != null
+                    ? (UHttpRequestBody)new BufferedRequestBody(Encoding.UTF8.GetBytes(body))
+                    : new EmptyRequestBody(),
+                ownsContent: true);
+            return this;
+        }
+
+        /// <summary>
+        /// Sets or replaces the request body using a pooled memory owner. Note: Mutates the request in-place.
+        /// </summary>
+        public UHttpRequest WithLeasedBody(IMemoryOwner<byte> bodyOwner, int length)
+        {
+            ThrowIfDisposed();
+            ReplaceContent(
+                bodyOwner != null
+                    ? (UHttpRequestBody)new OwnedMemoryRequestBody(bodyOwner, length)
+                    : new EmptyRequestBody(),
+                ownsContent: true);
+            return this;
+        }
+
+        /// <summary>
+        /// Sets or replaces the request body using a stream. Note: Mutates the request in-place.
+        /// </summary>
+        public UHttpRequest WithStreamBody(Stream stream, long? contentLength = null, bool leaveOpen = false)
+        {
+            ThrowIfDisposed();
+            ReplaceContent(
+                stream != null
+                    ? (UHttpRequestBody)new StreamRequestBody(stream, contentLength, leaveOpen)
+                    : new EmptyRequestBody(),
+                ownsContent: true);
+            return this;
+        }
+
+        /// <summary>
+        /// Sets or replaces the request body using a replayable stream factory. Note: Mutates the request in-place.
+        /// </summary>
+        public UHttpRequest WithBodyFactory(
+            Func<CancellationToken, ValueTask<Stream>> factory,
+            long? contentLength = null)
+        {
+            ThrowIfDisposed();
+            ReplaceContent(
+                factory != null
+                    ? (UHttpRequestBody)new FactoryRequestBody(factory, contentLength)
+                    : new EmptyRequestBody(),
+                ownsContent: true);
             return this;
         }
 
@@ -208,16 +301,33 @@ namespace TurboHTTP.Core
         /// Sends this request through the owning client.
         /// Only available for requests created by <see cref="UHttpClient"/>.
         /// </summary>
-        public async ValueTask<UHttpResponse> SendAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<UHttpResponse> SendBufferedAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
             if (_leaseOwner == null)
                 throw new InvalidOperationException(
-                    "This request is not associated with a client. Use client.SendAsync(request) instead.");
+                    "This request is not associated with a client. Use client.SendBufferedAsync(request) instead.");
 
             try
             {
-                return await _leaseOwner.SendAsync(this, cancellationToken).ConfigureAwait(false);
+                return await _leaseOwner.SendBufferedAsync(this, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                Dispose();
+            }
+        }
+
+        public async ValueTask<UHttpStreamingResponse> SendStreamingAsync(CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            if (_leaseOwner == null)
+                throw new InvalidOperationException(
+                    "This request is not associated with a client. Use client.SendStreamingAsync(request) instead.");
+
+            try
+            {
+                return await _leaseOwner.SendStreamingAsync(this, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -237,7 +347,7 @@ namespace TurboHTTP.Core
                 if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                     return;
 
-                DisposeBodyOwner();
+                DisposeContent();
                 return;
             }
 
@@ -265,8 +375,7 @@ namespace TurboHTTP.Core
             Timeout = timeout;
             _headers.Clear();
             _metadata.Clear();
-            Body = ReadOnlyMemory<byte>.Empty;
-            DisposeBodyOwner();
+            ReplaceContent(new EmptyRequestBody(), ownsContent: true);
         }
 
         internal void ApplyDefaultHeaders(HttpHeaders defaultHeaders)
@@ -324,15 +433,6 @@ namespace TurboHTTP.Core
             TryReturnToPool();
         }
 
-        internal void DisposeBodyOwner()
-        {
-            // Interlocked.Exchange for atomicity: prevents a double-dispose race if this
-            // method is called concurrently (e.g., Http2Connection outer finally and
-            // ResetForPool both calling DisposeBodyOwner on the same pooled request).
-            var owner = Interlocked.Exchange(ref _bodyOwner, null);
-            owner?.Dispose();
-        }
-
         internal void SetTimeoutInternal(TimeSpan timeout)
         {
             ThrowIfDisposed();
@@ -341,11 +441,28 @@ namespace TurboHTTP.Core
 
         internal UHttpRequest WithLeasedBody(IMemoryOwner<byte> bodyOwner)
         {
+            return WithLeasedBody(bodyOwner, bodyOwner?.Memory.Length ?? 0);
+        }
+
+        internal UHttpRequest WithContentInternal(UHttpRequestBody content)
+        {
             ThrowIfDisposed();
-            DisposeBodyOwner();
-            _bodyOwner = bodyOwner;
-            Body = bodyOwner?.Memory ?? ReadOnlyMemory<byte>.Empty;
+            ReplaceContent(content, ownsContent: true);
             return this;
+        }
+
+        internal UHttpRequest CopyWithSharedContent()
+        {
+            ThrowIfDisposed();
+
+            return new UHttpRequest(
+                Method,
+                Uri,
+                _headers.Clone(),
+                Content,
+                ownsContent: false,
+                Timeout,
+                new Dictionary<string, object>(_metadata));
         }
 
         private void TryReturnToPool()
@@ -372,8 +489,7 @@ namespace TurboHTTP.Core
             Timeout = TimeSpan.FromSeconds(30);
             _headers.Clear();
             _metadata.Clear();
-            Body = ReadOnlyMemory<byte>.Empty;
-            DisposeBodyOwner();
+            ReplaceContent(new EmptyRequestBody(), ownsContent: true);
             Interlocked.Exchange(ref _disposeRequested, 0);
             Interlocked.Exchange(ref _responseHoldCount, 0);
             Interlocked.Exchange(ref _sendInProgress, 0);
@@ -416,6 +532,30 @@ namespace TurboHTTP.Core
                 for (int i = 1; i < values.Count; i++)
                     destination.Add(name, values[i]);
             }
+        }
+
+        private void ReplaceContent(UHttpRequestBody content, bool ownsContent)
+        {
+            var nextContent = content ?? new EmptyRequestBody();
+            var previousContent = _content;
+            var previousOwned = _ownsContent;
+
+            _content = nextContent;
+            _ownsContent = ownsContent;
+
+            if (previousOwned && previousContent != null && !ReferenceEquals(previousContent, nextContent))
+                previousContent.Dispose();
+        }
+
+        private void DisposeContent()
+        {
+            if (!_ownsContent || _content == null)
+                return;
+
+            var content = _content;
+            _content = null;
+            _ownsContent = false;
+            content.Dispose();
         }
     }
 }

@@ -145,7 +145,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
             try
             {
-                var requestTask = Task.Run(async () => await client.Get(url).SendAsync(cts.Token));
+                var requestTask = Task.Run(async () => await client.Get(url).SendBufferedAsync(cts.Token));
                 var completed = await Task.WhenAny(requestTask, Task.Delay(TimeSpan.FromSeconds(35), CancellationToken.None));
                 if (completed != requestTask)
                 {

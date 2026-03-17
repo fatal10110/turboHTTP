@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Tests;
 
 namespace TurboHTTP.Tests.Pipeline
@@ -335,20 +336,33 @@ namespace TurboHTTP.Tests.Pipeline
                     _inner.OnRequestStart(request, context);
                 }
 
-                public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+                public async ValueTask OnResponseStartAsync(
+                    int statusCode,
+                    HttpHeaders headers,
+                    IResponseBodySource body,
+                    RequestContext context)
                 {
-                    _inner.OnResponseStart(statusCode, headers, context);
-                }
+                    if (body != null && body.TryGetBufferedData(out var buffered))
+                    {
+                        var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
+                        var mutatedTrailers = trailers.Clone();
+                        mutatedTrailers.Set("X-Leak", "yes");
+                        await body.DisposeAsync().ConfigureAwait(false);
+                        await _inner.OnResponseStartAsync(
+                            statusCode,
+                            headers,
+                            new BufferedResponseBodySource(buffered.ToArray(), mutatedTrailers),
+                            context).ConfigureAwait(false);
+                        return;
+                    }
 
-                public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-                {
-                    _inner.OnResponseData(chunk, context);
-                }
-
-                public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-                {
-                    trailers.Set("X-Leak", "yes");
-                    _inner.OnResponseEnd(trailers, context);
+                    var fallbackTrailers = new HttpHeaders();
+                    fallbackTrailers.Set("X-Leak", "yes");
+                    await _inner.OnResponseStartAsync(
+                        statusCode,
+                        headers,
+                        new BufferedResponseBodySource(Array.Empty<byte>(), fallbackTrailers),
+                        context).ConfigureAwait(false);
                 }
 
                 public void OnResponseError(UHttpException error, RequestContext context)

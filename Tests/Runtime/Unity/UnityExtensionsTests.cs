@@ -91,7 +91,7 @@ namespace TurboHTTP.Tests.UnityModule
                            options.DisposeTransport = true;
                        }))
                 {
-                    await defaultClient.Get("https://example.test/default").SendAsync();
+                    await defaultClient.Get("https://example.test/default").SendBufferedAsync();
                     var userAgent = defaultTransport.LastRequest.Headers.Get("User-Agent");
                     StringAssert.Contains("TurboHTTP", userAgent);
                     StringAssert.Contains("Unity/", userAgent);
@@ -105,7 +105,7 @@ namespace TurboHTTP.Tests.UnityModule
                            options.DisposeTransport = true;
                        }))
                 {
-                    await overrideClient.Get("https://example.test/override").SendAsync();
+                    await overrideClient.Get("https://example.test/override").SendBufferedAsync();
                     Assert.AreEqual("Custom-UA", overrideTransport.LastRequest.Headers.Get("User-Agent"));
                 }
             }).GetAwaiter().GetResult();

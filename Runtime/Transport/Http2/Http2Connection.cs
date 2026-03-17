@@ -254,7 +254,14 @@ namespace TurboHTTP.Transport.Http2
 
             try
             {
-                bool hasBody = !request.Body.IsEmpty;
+                if (!request.TryGetBufferedContent(out var body))
+                {
+                    throw new InvalidOperationException(
+                        "Buffered HTTP/2 request dispatch does not support streaming request bodies. " +
+                        "Use a buffered request body until Phase 22a.3 is implemented.");
+                }
+
+                bool hasBody = !body.IsEmpty;
 
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
@@ -303,7 +310,7 @@ namespace TurboHTTP.Transport.Http2
 
                 if (hasBody)
                 {
-                    await SendDataAsync(streamId, request.Body, stream, ct).ConfigureAwait(false);
+                    await SendDataAsync(streamId, body, stream, ct).ConfigureAwait(false);
                     stream.State = Http2StreamState.HalfClosedLocal;
                 }
 

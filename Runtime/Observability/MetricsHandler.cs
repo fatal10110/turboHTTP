@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Observability
@@ -30,30 +31,25 @@ namespace TurboHTTP.Observability
             _inner.OnRequestStart(request, context);
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public async ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
             _statusCode = statusCode;
             _metrics.RequestsByStatusCode.AddOrUpdate(statusCode, 1, _incrementStatusCodeCount);
-            _inner.OnResponseStart(statusCode, headers, context);
-        }
+            if (body != null && body.TryGetBufferedData(out var data) && !data.IsEmpty)
+                Interlocked.Add(ref _metrics.TotalBytesReceived, data.Length);
 
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            if (!chunk.IsEmpty)
-                Interlocked.Add(ref _metrics.TotalBytesReceived, chunk.Length);
+            await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
 
-            _inner.OnResponseData(chunk, context);
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
             if (_statusCode >= 200 && _statusCode < 400)
                 Interlocked.Increment(ref _metrics.SuccessfulRequests);
             else
                 Interlocked.Increment(ref _metrics.FailedRequests);
 
             UpdateAverage(context);
-            _inner.OnResponseEnd(trailers, context);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)

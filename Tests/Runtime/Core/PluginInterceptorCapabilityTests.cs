@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Testing;
 
 namespace TurboHTTP.Tests.Core
@@ -25,7 +26,7 @@ namespace TurboHTTP.Tests.Core
 
                 var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                 {
-                    await client.Get("https://example.test/replace").SendAsync();
+                    await client.Get("https://example.test/replace").SendBufferedAsync();
                 });
 
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
@@ -47,7 +48,7 @@ namespace TurboHTTP.Tests.Core
 
                 var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                 {
-                    await client.Get("https://example.test/redispatch").SendAsync();
+                    await client.Get("https://example.test/redispatch").SendBufferedAsync();
                 });
 
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
@@ -75,7 +76,7 @@ namespace TurboHTTP.Tests.Core
                     PluginCapabilities.MutateResponses |
                     PluginCapabilities.AllowRedispatch));
 
-                using var response = await client.Get("https://example.test/redispatch-ok").SendAsync();
+                using var response = await client.Get("https://example.test/redispatch-ok").SendBufferedAsync();
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(2, transport.RequestCount);
             });
@@ -94,7 +95,7 @@ namespace TurboHTTP.Tests.Core
 
                 var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                 {
-                    await client.Get("https://example.test/response-mutate").SendAsync();
+                    await client.Get("https://example.test/response-mutate").SendBufferedAsync();
                 });
 
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
@@ -125,7 +126,7 @@ namespace TurboHTTP.Tests.Core
 
                 var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                 {
-                    await client.Get("https://example.test/response-data-mutate").SendAsync();
+                    await client.Get("https://example.test/response-data-mutate").SendBufferedAsync();
                 });
 
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
@@ -153,7 +154,7 @@ namespace TurboHTTP.Tests.Core
                     new ObservingResponseInterceptor(recorder),
                     PluginCapabilities.ReadOnlyMonitoring));
 
-                using var response = await client.Get("https://example.test/observe-custom-handler").SendAsync();
+                using var response = await client.Get("https://example.test/observe-custom-handler").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 CollectionAssert.AreEqual(
@@ -180,7 +181,7 @@ namespace TurboHTTP.Tests.Core
 
                 var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                 {
-                    await client.Get("https://example.test/failure").SendAsync();
+                    await client.Get("https://example.test/failure").SendBufferedAsync();
                 });
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
@@ -293,19 +294,13 @@ namespace TurboHTTP.Tests.Core
                 _inner.OnRequestStart(request, context);
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
-                _inner.OnResponseStart(statusCode + 1, headers, context);
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-                _inner.OnResponseData(chunk, context);
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
-                _inner.OnResponseEnd(trailers, context);
+                return _inner.OnResponseStartAsync(statusCode + 1, headers, body, context);
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)
@@ -346,22 +341,17 @@ namespace TurboHTTP.Tests.Core
                 _inner.OnRequestStart(request, context);
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 _recorder.Add("start:" + statusCode);
-                _inner.OnResponseStart(statusCode, headers, context);
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-                _recorder.Add("data:" + chunk.Length);
-                _inner.OnResponseData(chunk, context);
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
+                if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
+                    _recorder.Add("data:" + buffered.Length);
                 _recorder.Add("end");
-                _inner.OnResponseEnd(trailers, context);
+                return _inner.OnResponseStartAsync(statusCode, headers, body, context);
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)
@@ -393,23 +383,29 @@ namespace TurboHTTP.Tests.Core
                 _inner.OnRequestStart(request, context);
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public async ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
-                _inner.OnResponseStart(statusCode, headers, context);
-            }
+                if (body == null || !body.TryGetBufferedData(out var buffered))
+                {
+                    await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+                    return;
+                }
 
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-                var mutated = chunk.ToArray();
+                var mutated = buffered.ToArray();
                 if (mutated.Length > 16)
                     mutated[mutated.Length / 2] ^= 0x01;
 
-                _inner.OnResponseData(mutated, context);
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
-                _inner.OnResponseEnd(trailers, context);
+                var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
+                await body.DisposeAsync().ConfigureAwait(false);
+                await _inner.OnResponseStartAsync(
+                    statusCode,
+                    headers,
+                    new BufferedResponseBodySource(mutated, trailers),
+                    context).ConfigureAwait(false);
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

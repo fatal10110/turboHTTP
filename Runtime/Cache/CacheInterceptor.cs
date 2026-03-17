@@ -281,7 +281,7 @@ namespace TurboHTTP.Cache
                             {
                                 { "key", baseKey }
                             });
-                            ServeCachedEntry(handler, lookup.Entry, request, context, "HIT");
+                            await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "HIT").ConfigureAwait(false);
                             return;
                         }
 
@@ -291,7 +291,7 @@ namespace TurboHTTP.Cache
                             {
                                 { "key", baseKey }
                             });
-                            ServeCachedEntry(handler, lookup.Entry, request, context, "STALE");
+                            await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "STALE").ConfigureAwait(false);
 
                             var revalidationRequest = request.Clone();
                             StartBackgroundRevalidation(revalidationRequest, next, baseKey, lookup);
@@ -355,7 +355,7 @@ namespace TurboHTTP.Cache
                 });
             }
 
-            ReplayCollectedResponse(handler, request, response, context);
+            await ReplayCollectedResponseAsync(handler, request, response, context).ConfigureAwait(false);
         }
 
         private async Task RevalidateAsync(
@@ -378,12 +378,9 @@ namespace TurboHTTP.Cache
             if (!string.IsNullOrEmpty(lookup.Entry.LastModified))
                 conditionalHeaders.Set("If-Modified-Since", lookup.Entry.LastModified);
 
-            var conditionalRequest = CloneRequest(
-                request,
-                method: request.Method,
-                uri: request.Uri,
-                headers: conditionalHeaders,
-                body: request.Body);
+            var conditionalRequest = request
+                .CopyWithSharedContent()
+                .WithHeaders(conditionalHeaders);
 
             context.UpdateRequest(conditionalRequest);
             try
@@ -420,7 +417,7 @@ namespace TurboHTTP.Cache
                         await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
                     }
 
-                    ReplayCollectedResponse(handler, request, response, context);
+                    await ReplayCollectedResponseAsync(handler, request, response, context).ConfigureAwait(false);
                     return;
                 }
 
@@ -434,12 +431,12 @@ namespace TurboHTTP.Cache
                     else
                         await StorePreparedEntryQueuedAsync(baseKey, merged, cancellationToken).ConfigureAwait(false);
 
-                    ServeCachedEntry(handler, merged.Entry, request, context, "REVALIDATED");
+                    await ServeCachedEntryAsync(handler, merged.Entry, request, context, "REVALIDATED").ConfigureAwait(false);
                     return;
                 }
 
                 await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                ServeCachedEntry(handler, lookup.Entry, request, context, "REVALIDATED");
+                await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "REVALIDATED").ConfigureAwait(false);
             }
             finally
             {
@@ -724,7 +721,7 @@ namespace TurboHTTP.Cache
             return new PreparedCacheEntry(mergedEntry, signature);
         }
 
-        private void ServeCachedEntry(
+        private async Task ServeCachedEntryAsync(
             IHttpHandler handler,
             CacheEntry entry,
             UHttpRequest request,
@@ -739,12 +736,11 @@ namespace TurboHTTP.Cache
             // Cache hits synthesize the same handler lifecycle as a network response.
             // OnRequestStart here means "response delivery begins", not "socket dispatch started".
             handler.OnRequestStart(request, context);
-            handler.OnResponseStart((int)entry.StatusCode, headers, context);
-
-            if (!entry.Body.IsEmpty)
-                handler.OnResponseData(entry.Body.Span, context);
-
-            handler.OnResponseEnd(HttpHeaders.Empty, context);
+            await handler.OnResponseStartAsync(
+                (int)entry.StatusCode,
+                headers,
+                new BufferedResponseBodySource(entry.Body, HttpHeaders.Empty),
+                context).ConfigureAwait(false);
         }
 
         private static bool ShouldConsiderForStorage(UHttpRequest request, UHttpResponse response)
@@ -777,21 +773,6 @@ namespace TurboHTTP.Cache
                    || method == HttpMethod.DELETE;
         }
 
-        private static UHttpRequest CloneRequest(
-            UHttpRequest source,
-            HttpMethod method,
-            Uri uri,
-            HttpHeaders headers,
-            ReadOnlyMemory<byte> body)
-        {
-            return new UHttpRequest(
-                method,
-                uri,
-                headers,
-                body.IsEmpty ? null : body.ToArray(),
-                source.Timeout,
-                source.Metadata);
-        }
         private static ReadOnlyMemory<byte> SnapshotBodyForCache(ReadOnlySequence<byte> source)
         {
             if (source.IsEmpty)
@@ -1152,31 +1133,21 @@ namespace TurboHTTP.Cache
                 TaskScheduler.Default);
         }
 
-        private static void ReplayCollectedResponse(
+        private static ValueTask ReplayCollectedResponseAsync(
             IHttpHandler handler,
             UHttpRequest request,
             UHttpResponse response,
             RequestContext context)
         {
             handler.OnRequestStart(request, context);
-            handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
-
-            var body = response.Body;
-            if (body.IsSingleSegment)
-            {
-                if (!body.FirstSpan.IsEmpty)
-                    handler.OnResponseData(body.FirstSpan, context);
-            }
-            else
-            {
-                foreach (ReadOnlyMemory<byte> segment in body)
-                {
-                    if (!segment.Span.IsEmpty)
-                        handler.OnResponseData(segment.Span, context);
-                }
-            }
-
-            handler.OnResponseEnd(HttpHeaders.Empty, context);
+            var body = response.Body.IsEmpty
+                ? ReadOnlyMemory<byte>.Empty
+                : new ReadOnlyMemory<byte>(response.Body.ToArray());
+            return handler.OnResponseStartAsync(
+                (int)response.StatusCode,
+                response.Headers,
+                new BufferedResponseBodySource(body, HttpHeaders.Empty),
+                context);
         }
 
         private static Task<UHttpResponse> CollectBufferedResponseAsync(
@@ -1200,16 +1171,14 @@ namespace TurboHTTP.Cache
             {
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
+                body?.Abort();
+                return default;
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

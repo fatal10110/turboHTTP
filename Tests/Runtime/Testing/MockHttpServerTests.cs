@@ -29,7 +29,7 @@ namespace TurboHTTP.Tests.Testing
                     .Respond(r => r.Status(HttpStatusCode.OK).Text("high"));
 
                 using var client = CreateClient(server);
-                var response = await client.Get("https://example.test/users/42").SendAsync();
+                var response = await client.Get("https://example.test/users/42").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual("high", response.GetBodyAsString());
@@ -52,8 +52,8 @@ namespace TurboHTTP.Tests.Testing
 
                 using var client = CreateClient(server);
 
-                var first = await client.Get("https://example.test/one-shot").SendAsync();
-                var second = await client.Get("https://example.test/one-shot").SendAsync();
+                var first = await client.Get("https://example.test/one-shot").SendBufferedAsync();
+                var second = await client.Get("https://example.test/one-shot").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, first.StatusCode);
                 Assert.AreEqual(HttpStatusCode.Gone, second.StatusCode);
@@ -74,9 +74,9 @@ namespace TurboHTTP.Tests.Testing
 
                 using var client = CreateClient(server);
 
-                var r1 = await client.Get("https://example.test/sequence").SendAsync();
-                var r2 = await client.Get("https://example.test/sequence").SendAsync();
-                var r3 = await client.Get("https://example.test/sequence").SendAsync();
+                var r1 = await client.Get("https://example.test/sequence").SendBufferedAsync();
+                var r2 = await client.Get("https://example.test/sequence").SendBufferedAsync();
+                var r3 = await client.Get("https://example.test/sequence").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, r1.StatusCode);
                 Assert.AreEqual(HttpStatusCode.Created, r2.StatusCode);
@@ -100,12 +100,12 @@ namespace TurboHTTP.Tests.Testing
                 var matched = await client.Post("https://example.test/match")
                     .WithHeader("Authorization", "Bearer token")
                     .WithBody("{\"state\":\"ok\"}")
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 var notMatched = await client.Post("https://example.test/match")
                     .WithHeader("Authorization", "Basic abc")
                     .WithBody("{\"state\":\"ok\"}")
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, matched.StatusCode);
                 Assert.AreEqual(HttpStatusCode.NotFound, notMatched.StatusCode);
@@ -126,7 +126,7 @@ namespace TurboHTTP.Tests.Testing
 
                 await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                 {
-                    await client.Get("https://example.test/slow").SendAsync(cts.Token);
+                    await client.Get("https://example.test/slow").SendBufferedAsync(cts.Token);
                 });
             }).GetAwaiter().GetResult();
         }
@@ -142,9 +142,9 @@ namespace TurboHTTP.Tests.Testing
                 server.When(HttpMethod.GET, "/c").Respond(r => r.Status(200));
 
                 using var client = CreateClient(server);
-                await client.Get("https://example.test/a").SendAsync();
-                await client.Get("https://example.test/b").SendAsync();
-                await client.Get("https://example.test/c").SendAsync();
+                await client.Get("https://example.test/a").SendBufferedAsync();
+                await client.Get("https://example.test/b").SendBufferedAsync();
+                await client.Get("https://example.test/c").SendBufferedAsync();
 
                 var history = server.GetHistory();
                 Assert.AreEqual(2, history.Count);
@@ -184,7 +184,7 @@ namespace TurboHTTP.Tests.Testing
                 var tasks = new List<Task<UHttpResponse>>();
                 for (int i = 0; i < 40; i++)
                 {
-                    tasks.Add(client.Get("https://example.test/parallel/" + i).SendAsync().AsTask());
+                    tasks.Add(client.Get("https://example.test/parallel/" + i).SendBufferedAsync().AsTask());
                 }
 
                 await Task.WhenAll(tasks);

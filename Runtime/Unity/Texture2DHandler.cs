@@ -131,7 +131,7 @@ namespace TurboHTTP.Unity
             using var response = await client
                 .Get(url)
                 .WithHeader("Accept", "image/*")
-                .SendAsync(cancellationToken)
+                .SendBufferedAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();

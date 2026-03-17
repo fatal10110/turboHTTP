@@ -269,17 +269,13 @@ namespace TurboHTTP.Tests.Transport.Http2
             {
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 throw new InvalidOperationException("handler-start-failure");
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)
@@ -302,16 +298,14 @@ namespace TurboHTTP.Tests.Transport.Http2
             {
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
+                body?.Abort();
+                return default;
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

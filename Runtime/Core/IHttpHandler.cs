@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 
 namespace TurboHTTP.Core
 {
@@ -14,25 +15,23 @@ namespace TurboHTTP.Core
         /// </summary>
         void OnRequestStart(UHttpRequest request, RequestContext context);
 
-        /// <summary>Fires when the response status line and headers are available.</summary>
-        void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context);
-
         /// <summary>
-        /// Fires for each chunk of response body data.
-        /// The span is valid only for the duration of this call.
-        /// Callers must copy data they wish to retain beyond this invocation.
+        /// Fires when the response status line, headers, and body source are available.
+        /// Implementations may read, wrap, replace, or suppress the supplied body source.
+        /// Once this returns successfully, the handler owns the body source. Any subsequent
+        /// body or trailer failures must surface from <see cref="IResponseBodySource"/>
+        /// operations, not from <see cref="OnResponseError"/>.
         /// </summary>
-        void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context);
-
-        /// <summary>Fires when the response is fully received. Trailers may be empty.</summary>
-        void OnResponseEnd(HttpHeaders trailers, RequestContext context);
+        ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context);
 
         /// <summary>
-        /// May be called at any point after <c>OnRequestStart</c>, including after
-        /// <c>OnResponseStart</c> and after partial <c>OnResponseData</c> delivery
-        /// (partial response error mid-transfer).
-        /// Implementations must handle all callback orderings.
-        /// After this fires, no further callbacks will be delivered.
+        /// Called only if dispatch fails before <see cref="OnResponseStartAsync"/> completes
+        /// successfully. After a successful response-start callback, no further handler
+        /// callbacks are delivered.
         /// </summary>
         void OnResponseError(UHttpException error, RequestContext context);
     }

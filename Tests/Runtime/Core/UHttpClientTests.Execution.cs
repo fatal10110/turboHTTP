@@ -32,7 +32,7 @@ namespace TurboHTTP.Tests.Core
                 });
 
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await client.SendAsync(request));
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await client.SendBufferedAsync(request));
                 Assert.AreSame(expected, ex);
             }).GetAwaiter().GetResult();
         }
@@ -54,7 +54,7 @@ namespace TurboHTTP.Tests.Core
                 });
 
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await client.SendAsync(request));
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await client.SendBufferedAsync(request));
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
             }).GetAwaiter().GetResult();
         }
@@ -239,7 +239,7 @@ namespace TurboHTTP.Tests.Core
                 });
 
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
-                var response = await client.SendAsync(request);
+                var response = await client.SendBufferedAsync(request);
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.IsNotNull(capturedContext);
@@ -271,10 +271,62 @@ namespace TurboHTTP.Tests.Core
 
                 await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                 {
-                    await client.Get("https://example.test/cancelled").SendAsync(cts.Token);
+                    await client.Get("https://example.test/cancelled").SendBufferedAsync(cts.Token);
                 });
 
                 Assert.IsNull(observedError);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SendBufferedAsync_KeepsPooledRequestOutOfPoolUntilResponseDisposed()
+        {
+            Task.Run(async () =>
+            {
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new MockTransport(),
+                    DisposeTransport = true
+                });
+
+                var request = client.Get("https://example.test/buffered");
+                using var response = await request.SendBufferedAsync();
+
+                var other = client.Get("https://example.test/other");
+                Assert.AreNotSame(request, other);
+                other.Dispose();
+
+                response.Dispose();
+
+                var recycled = client.Get("https://example.test/recycled");
+                Assert.AreSame(request, recycled);
+                recycled.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SendStreamingAsync_KeepsPooledRequestOutOfPoolUntilResponseDisposed()
+        {
+            Task.Run(async () =>
+            {
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new MockTransport(),
+                    DisposeTransport = true
+                });
+
+                var request = client.Get("https://example.test/streaming");
+                var response = await request.SendStreamingAsync();
+
+                var other = client.Get("https://example.test/other");
+                Assert.AreNotSame(request, other);
+                other.Dispose();
+
+                await response.DisposeAsync();
+
+                var recycled = client.Get("https://example.test/recycled");
+                Assert.AreSame(request, recycled);
+                recycled.Dispose();
             }).GetAwaiter().GetResult();
         }
 
@@ -308,7 +360,7 @@ namespace TurboHTTP.Tests.Core
 
                 await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
                 {
-                    await client.Get("https://example.test/record-replay-cancelled").SendAsync(cts.Token);
+                    await client.Get("https://example.test/record-replay-cancelled").SendBufferedAsync(cts.Token);
                 });
 
                 Assert.IsNull(observedError);

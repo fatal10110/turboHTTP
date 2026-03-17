@@ -12,7 +12,7 @@ namespace TurboHTTP.UniTask
     public static class UHttpClientUniTaskExtensions
     {
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Get(...).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Get(...).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> GetAsync(
             this UHttpClient client,
@@ -25,7 +25,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Delete(...).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Delete(...).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> DeleteAsync(
             this UHttpClient client,
@@ -38,7 +38,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Head(...).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Head(...).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> HeadAsync(
             this UHttpClient client,
@@ -51,7 +51,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Options(...).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Options(...).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> OptionsAsync(
             this UHttpClient client,
@@ -64,7 +64,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Post(...).WithBody(byte[]).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Post(...).WithBody(byte[]).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PostAsync(
             this UHttpClient client,
@@ -78,7 +78,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Post(...).WithBody(string).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Post(...).WithBody(string).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PostAsync(
             this UHttpClient client,
@@ -92,7 +92,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Put(...).WithBody(byte[]).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Put(...).WithBody(byte[]).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PutAsync(
             this UHttpClient client,
@@ -106,7 +106,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Put(...).WithBody(string).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Put(...).WithBody(string).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PutAsync(
             this UHttpClient client,
@@ -120,7 +120,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Patch(...).WithBody(byte[]).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Patch(...).WithBody(byte[]).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PatchAsync(
             this UHttpClient client,
@@ -134,7 +134,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Patch(...).WithBody(string).SendAsync(...).
+        /// Zero-overhead UniTask wrapper for UHttpClient.Patch(...).WithBody(string).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PatchAsync(
             this UHttpClient client,
@@ -154,7 +154,7 @@ namespace TurboHTTP.UniTask
             PlayerLoopTiming? playerLoopTiming = null)
         {
             var timing = playerLoopTiming ?? TurboHttpUniTaskOptions.DefaultPlayerLoopTiming;
-            var operation = client.SendAsync(request, cancellationToken);
+            var operation = client.SendBufferedAsync(request, cancellationToken);
             return timing == PlayerLoopTiming.Update
                 ? operation.AsUniTask()
                 : ConvertWithTiming(operation, timing);
@@ -166,7 +166,7 @@ namespace TurboHTTP.UniTask
             PlayerLoopTiming? playerLoopTiming = null)
         {
             var timing = playerLoopTiming ?? TurboHttpUniTaskOptions.DefaultPlayerLoopTiming;
-            var operation = request.SendAsync(cancellationToken);
+            var operation = request.SendBufferedAsync(cancellationToken);
             return timing == PlayerLoopTiming.Update
                 ? operation.AsUniTask()
                 : ConvertWithTiming(operation, timing);

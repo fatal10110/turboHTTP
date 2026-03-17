@@ -217,7 +217,7 @@ namespace TurboHTTP.Auth
                 throw new ArgumentException("OIDC discovery endpoint must use HTTPS.", nameof(discoveryEndpoint));
             }
 
-            using var response = await _client.Get(discoveryEndpoint.ToString()).SendAsync(ct)
+            using var response = await _client.Get(discoveryEndpoint.ToString()).SendBufferedAsync(ct)
                 .ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
@@ -306,7 +306,7 @@ namespace TurboHTTP.Auth
                 .Post(endpoint.ToString())
                 .WithHeader("Content-Type", "application/x-www-form-urlencoded")
                 .WithBody(formBody)
-                .SendAsync(ct)
+                .SendBufferedAsync(ct)
                 .ConfigureAwait(false);
             return response;
         }

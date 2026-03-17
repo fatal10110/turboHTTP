@@ -198,6 +198,7 @@ namespace TurboHTTP.Testing
             }
         }
 
+        [Obsolete("Use DispatchAsync or TransportDispatchHelper.CollectResponseAsync for the 22a handler pipeline.", false)]
         public async ValueTask<UHttpResponse> SendAsync(
             UHttpRequest request,
             RequestContext context,
@@ -230,7 +231,7 @@ namespace TurboHTTP.Testing
                     await Task.Delay(queued.Delay, cancellationToken).ConfigureAwait(false);
                 }
 
-                DriveHandler(safeHandler, queued, context);
+                await DriveHandlerAsync(safeHandler, queued, context).ConfigureAwait(false);
                 return;
             }
 
@@ -258,7 +259,7 @@ namespace TurboHTTP.Testing
                     return;
                 }
 
-                DriveHandler(response, safeHandler, context);
+                await DriveHandlerAsync(response, safeHandler, context).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -317,7 +318,7 @@ namespace TurboHTTP.Testing
                 error != null ? WithStatusCode(error, statusCode) : null);
         }
 
-        private static void DriveHandler(
+        private static ValueTask DriveHandlerAsync(
             IHttpHandler handler,
             QueuedResponse response,
             RequestContext context)
@@ -328,16 +329,17 @@ namespace TurboHTTP.Testing
             if (response.Error != null)
             {
                 handler.OnResponseError(new UHttpException(WithStatusCode(response.Error, response.StatusCode)), context);
-                return;
+                return default;
             }
 
-            handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
-            if (response.Body != null && response.Body.Length > 0)
-                handler.OnResponseData(response.Body, context);
-            handler.OnResponseEnd(HttpHeaders.Empty, context);
+            return handler.OnResponseStartAsync(
+                (int)response.StatusCode,
+                response.Headers,
+                new BufferedResponseBodySource(response.Body ?? Array.Empty<byte>(), HttpHeaders.Empty),
+                context);
         }
 
-        private static void DriveHandler(
+        private static ValueTask DriveHandlerAsync(
             UHttpResponse response,
             IHttpHandler handler,
             RequestContext context)
@@ -348,51 +350,19 @@ namespace TurboHTTP.Testing
             if (response.Error != null)
             {
                 handler.OnResponseError(new UHttpException(response.Error), context);
-                return;
+                return default;
             }
 
             var headers = response.Headers?.Clone() ?? new HttpHeaders();
-            // Stage body segments into owned arrays before response disposal so the
-            // fallback path does not depend on UHttpResponse pooled-body lifetime.
-            var body = SnapshotResponseBody(response.Body);
+            var body = response.Body.IsEmpty
+                ? ReadOnlyMemory<byte>.Empty
+                : new ReadOnlyMemory<byte>(response.Body.ToArray());
 
-            handler.OnResponseStart((int)response.StatusCode, headers, context);
-
-            if (body.Count == 1)
-            {
-                var segment = body[0];
-                if (segment.Length > 0)
-                    handler.OnResponseData(segment, context);
-            }
-            else
-            {
-                for (int i = 0; i < body.Count; i++)
-                {
-                    var segment = body[i];
-                    if (segment.Length > 0)
-                        handler.OnResponseData(segment, context);
-                }
-            }
-
-            handler.OnResponseEnd(HttpHeaders.Empty, context);
-        }
-
-        private static IReadOnlyList<byte[]> SnapshotResponseBody(ReadOnlySequence<byte> body)
-        {
-            if (body.IsEmpty)
-                return Array.Empty<byte[]>();
-
-            if (body.IsSingleSegment)
-                return new List<byte[]> { body.FirstSpan.ToArray() };
-
-            var segments = new List<byte[]>();
-            foreach (ReadOnlyMemory<byte> segment in body)
-            {
-                if (!segment.IsEmpty)
-                    segments.Add(segment.ToArray());
-            }
-
-            return segments;
+            return handler.OnResponseStartAsync(
+                (int)response.StatusCode,
+                headers,
+                new BufferedResponseBodySource(body, HttpHeaders.Empty),
+                context);
         }
 
         private static UHttpError WithStatusCode(UHttpError error, HttpStatusCode statusCode)
@@ -408,9 +378,9 @@ namespace TurboHTTP.Testing
             if (request == null)
                 return null;
 
-            var bodyCopy = request.Body.IsEmpty
-                ? null
-                : request.Body.ToArray();
+            byte[] bodyCopy = null;
+            if (request.Content.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
+                bodyCopy = buffered.ToArray();
 
             return new UHttpRequest(
                 request.Method,

@@ -3,6 +3,8 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Threading;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
@@ -16,10 +18,7 @@ namespace TurboHTTP.Middleware
         private readonly long _maxDecompressedBodySizeBytes;
         private readonly long _maxCompressedBodySizeBytes;
 
-        private SegmentedBuffer _compressedBuffer;
-        private long _compressedBytes;
         private CompressionKind[] _compressionChain;
-        private HttpHeaders _forwardHeaders;
 
         private enum CompressionKind
         {
@@ -46,127 +45,106 @@ namespace TurboHTTP.Middleware
             _inner.OnRequestStart(request, context);
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public async ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
             if (!TryResolveCompression(headers, out _compressionChain))
             {
-                _forwardHeaders = headers;
-                _compressedBytes = 0;
-                _inner.OnResponseStart(statusCode, headers, context);
+                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
                 return;
             }
 
-            _forwardHeaders = headers.Clone();
-            _forwardHeaders.Remove("Content-Encoding");
-            _forwardHeaders.Remove("Content-Length");
-            _compressedBytes = 0;
-            _inner.OnResponseStart(statusCode, _forwardHeaders, context);
-        }
-
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            if (_compressionChain.Length == 0)
+            if (body == null || !body.TryGetBufferedData(out var compressed))
             {
-                _inner.OnResponseData(chunk, context);
+                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
                 return;
             }
 
-            if (chunk.IsEmpty)
-                return;
-
-            if (_compressedBuffer == null)
-                _compressedBuffer = new SegmentedBuffer();
-
-            _compressedBytes += chunk.Length;
-            if (_compressedBytes > _maxCompressedBodySizeBytes)
-            {
-                throw new IOException(
-                    $"Compressed response body exceeded the maximum size ({_maxCompressedBodySizeBytes} bytes).");
-            }
-
-            _compressedBuffer.Write(chunk);
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            if (_compressionChain.Length == 0)
-            {
-                _inner.OnResponseEnd(trailers, context);
-                return;
-            }
-
+            BufferedResponseBodySource decompressedBody = null;
+            HttpHeaders forwardHeaders = null;
             try
             {
-                DecompressBufferedBody(context);
+                if (compressed.Length > _maxCompressedBodySizeBytes)
+                {
+                    throw new IOException(
+                        $"Compressed response body exceeded the maximum size ({_maxCompressedBodySizeBytes} bytes).");
+                }
+
+                var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
+                var decompressed = DecompressBufferedBody(compressed);
+                forwardHeaders = headers.Clone();
+                forwardHeaders.Remove("Content-Encoding");
+                forwardHeaders.Remove("Content-Length");
+                decompressedBody = new BufferedResponseBodySource(decompressed, trailers);
             }
             catch (Exception ex) when (ex is InvalidDataException || ex is IOException)
             {
                 _inner.OnResponseError(CreateDecompressionError(ex), context);
                 return;
             }
-            catch (Exception ex)
-            {
-                _inner.OnResponseError(WrapUnexpectedError(ex), context);
-                return;
-            }
             finally
             {
-                DisposeCompressedBuffer();
+                await body.DisposeAsync().ConfigureAwait(false);
             }
 
-            _inner.OnResponseEnd(trailers, context);
+            try
+            {
+                await _inner.OnResponseStartAsync(statusCode, forwardHeaders, decompressedBody, context).ConfigureAwait(false);
+                decompressedBody = null;
+            }
+            catch
+            {
+                if (decompressedBody != null)
+                    await decompressedBody.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
         {
-            DisposeCompressedBuffer();
             _inner.OnResponseError(error, context);
         }
 
-        private void DecompressBufferedBody(RequestContext context)
+        private byte[] DecompressBufferedBody(ReadOnlyMemory<byte> compressed)
         {
-            if (_compressedBuffer == null)
-                return;
-
-            var compressedSequence = _compressedBuffer.AsSequence();
+            var compressedSequence = new ReadOnlySequence<byte>(compressed);
             var validateSingleGzipTrailer =
                 _compressionChain.Length == 1 &&
                 _compressionChain[0] == CompressionKind.Gzip;
 
             using var compressedStream = new ReadOnlySequenceStream(compressedSequence);
             using var decompressionStream = CreateDecompressionStream(compressedStream);
+            using var output = new MemoryStream();
 
-            var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+            var buffer = new byte[64 * 1024];
             long totalDecompressed = 0;
             uint crc32 = uint.MaxValue;
-            try
+            while (true)
             {
-                while (true)
+                var read = decompressionStream.Read(buffer, 0, buffer.Length);
+                if (read <= 0)
+                    break;
+
+                totalDecompressed += read;
+                if (totalDecompressed > _maxDecompressedBodySizeBytes)
                 {
-                    var read = decompressionStream.Read(buffer, 0, buffer.Length);
-                    if (read <= 0)
-                        break;
-
-                    totalDecompressed += read;
-                    if (totalDecompressed > _maxDecompressedBodySizeBytes)
-                    {
-                        throw new IOException(
-                            $"Response decompression exceeded the maximum size ({_maxDecompressedBodySizeBytes} bytes).");
-                    }
-
-                    if (validateSingleGzipTrailer)
-                        crc32 = UpdateCrc32(crc32, new ReadOnlySpan<byte>(buffer, 0, read));
-
-                    _inner.OnResponseData(new ReadOnlySpan<byte>(buffer, 0, read), context);
+                    throw new IOException(
+                        $"Response decompression exceeded the maximum size ({_maxDecompressedBodySizeBytes} bytes).");
                 }
 
                 if (validateSingleGzipTrailer)
-                    ValidateSingleGzipTrailer(compressedSequence, totalDecompressed, crc32 ^ uint.MaxValue);
+                    crc32 = UpdateCrc32(crc32, new ReadOnlySpan<byte>(buffer, 0, read));
+
+                output.Write(buffer, 0, read);
             }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
+
+            if (validateSingleGzipTrailer)
+                ValidateSingleGzipTrailer(compressedSequence, totalDecompressed, crc32 ^ uint.MaxValue);
+
+            return output.ToArray();
         }
 
         private static void ValidateSingleGzipTrailer(
@@ -197,12 +175,6 @@ namespace TurboHTTP.Middleware
             }
 
             return current;
-        }
-
-        private void DisposeCompressedBuffer()
-        {
-            _compressedBuffer?.Dispose();
-            _compressedBuffer = null;
         }
 
         private static Stream CreateSingleDecompressionStream(Stream compressedStream, CompressionKind compression)

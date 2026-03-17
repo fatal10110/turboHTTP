@@ -22,11 +22,7 @@ namespace TurboHTTP.Middleware
 
         private UHttpRequest _currentRequest;
         private int _redirectCount;
-        private bool _willRedirect;
-        private bool _committed;
         private bool _sawInnerRequestStart;
-        private int _statusCode;
-        private HttpHeaders _headers;
 
         internal RedirectHandler(
             IHttpHandler inner,
@@ -54,195 +50,106 @@ namespace TurboHTTP.Middleware
             _inner.OnRequestStart(request, context);
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public async ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
-            _statusCode = statusCode;
-            _headers = headers;
-
-            if (!RedirectInterceptor.TryResolveRedirectTarget(_currentRequest.Uri, statusCode, headers, out _))
-            {
-                _committed = true;
-                _inner.OnResponseStart(statusCode, headers, context);
-                return;
-            }
-
-            _willRedirect = true;
-        }
-
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            if (_committed)
-                _inner.OnResponseData(chunk, context);
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            if (_committed)
-            {
-                CompleteWithEnd(trailers, context);
-                return;
-            }
-
-            if (!_willRedirect)
-            {
-                _completion.TrySetResult(null);
-                return;
-            }
-
-            _willRedirect = false;
-
-            if (_redirectCount >= _options.MaxRedirects)
-            {
-                CompleteWithError(
-                    RedirectInterceptor.CreateRedirectError(
-                        UHttpErrorType.InvalidRequest,
-                        $"Redirect limit exceeded ({_options.MaxRedirects})."),
-                    context);
-                return;
-            }
-
-            UHttpException redirectError = null;
-            Uri targetUri = null;
-            bool shouldCompleteCurrentResponse = false;
             try
             {
-                if (!RedirectInterceptor.TryResolveRedirectTarget(_currentRequest.Uri, _statusCode, _headers, out targetUri))
+                if (!RedirectInterceptor.TryResolveRedirectTarget(_currentRequest.Uri, statusCode, headers, out var targetUri))
                 {
-                    shouldCompleteCurrentResponse = true;
+                    await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+                    _completion.TrySetResult(null);
+                    return;
                 }
-                else if (RedirectInterceptor.IsHttpsToHttpDowngrade(_currentRequest.Uri, targetUri) &&
-                         !_options.AllowHttpsToHttpDowngrade)
+
+                if (body != null)
+                    await body.DisposeAsync().ConfigureAwait(false);
+
+                if (_redirectCount >= _options.MaxRedirects)
                 {
-                    redirectError =
+                    CompleteWithError(
                         RedirectInterceptor.CreateRedirectError(
                             UHttpErrorType.InvalidRequest,
-                            $"Blocked insecure redirect downgrade from '{_currentRequest.Uri}' to '{targetUri}'.");
+                            $"Redirect limit exceeded ({_options.MaxRedirects})."),
+                        context);
+                    return;
                 }
-                else
+
+                if (RedirectInterceptor.IsHttpsToHttpDowngrade(_currentRequest.Uri, targetUri) &&
+                         !_options.AllowHttpsToHttpDowngrade)
                 {
-                    var loopKey = RedirectInterceptor.BuildLoopKey(targetUri);
-                    if (!_visitedTargets.Add(loopKey))
-                    {
-                        redirectError =
-                            RedirectInterceptor.CreateRedirectError(
-                                UHttpErrorType.InvalidRequest,
-                                $"Redirect loop detected for target '{targetUri}'.");
-                    }
-                    else
-                    {
-                        var crossOrigin = RedirectInterceptor.IsCrossOrigin(_currentRequest.Uri, targetUri);
-                        var newRequest = RedirectInterceptor.BuildRedirectRequest(
-                            _currentRequest,
-                            targetUri,
-                            (HttpStatusCode)_statusCode,
-                            crossOrigin);
-
-                        if (_options.EnforceRedirectTotalTimeout)
-                            newRequest = RedirectInterceptor.ApplyTotalRedirectTimeoutBudget(newRequest, context, _totalTimeoutBudget);
-
-                        _redirectCount++;
-                        _redirectChain.Add(targetUri.AbsoluteUri);
-                        _context.SetState("RedirectChain", _redirectChain.ToArray());
-                        _context.RecordEvent("Redirect", new Dictionary<string, object>
-                        {
-                            { "from", _currentRequest.Uri.AbsoluteUri },
-                            { "to", targetUri.AbsoluteUri },
-                            { "status", _statusCode },
-                            { "hop", _redirectCount }
-                        });
-                        _context.UpdateRequest(newRequest);
-                        _currentRequest = newRequest;
-                        _committed = false;
-                        _statusCode = 0;
-                        _headers = null;
-
-                        Task redirectTask;
-                        try
-                        {
-                            redirectTask = _dispatch(newRequest, this, _context, _cancellationToken);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            _completion.TrySetCanceled();
-                            return;
-                        }
-                        catch (Exception ex)
-                        {
-                            CompleteWithDispatchException(ex);
-                            return;
-                        }
-
-                        BridgeDispatchCompletion(redirectTask);
-                    }
+                    CompleteWithError(
+                        RedirectInterceptor.CreateRedirectError(
+                            UHttpErrorType.InvalidRequest,
+                            $"Blocked insecure redirect downgrade from '{_currentRequest.Uri}' to '{targetUri}'."),
+                        context);
+                    return;
                 }
-            }
-            catch (UHttpException ex)
-            {
-                redirectError = ex;
-            }
 
-            if (shouldCompleteCurrentResponse)
-            {
-                CompleteWithEnd(trailers, context);
-                return;
-            }
+                var loopKey = RedirectInterceptor.BuildLoopKey(targetUri);
+                if (!_visitedTargets.Add(loopKey))
+                {
+                    CompleteWithError(
+                        RedirectInterceptor.CreateRedirectError(
+                            UHttpErrorType.InvalidRequest,
+                            $"Redirect loop detected for target '{targetUri}'."),
+                        context);
+                    return;
+                }
 
-            if (redirectError != null)
-            {
-                CompleteWithError(redirectError, context);
-            }
-        }
+                var crossOrigin = RedirectInterceptor.IsCrossOrigin(_currentRequest.Uri, targetUri);
+                var newRequest = RedirectInterceptor.BuildRedirectRequest(
+                    _currentRequest,
+                    targetUri,
+                    (HttpStatusCode)statusCode,
+                    crossOrigin);
 
-        public void OnResponseError(UHttpException error, RequestContext context)
-        {
-            CompleteWithError(error, context);
-        }
+                if (_options.EnforceRedirectTotalTimeout)
+                    newRequest = RedirectInterceptor.ApplyTotalRedirectTimeoutBudget(newRequest, context, _totalTimeoutBudget);
 
-        private void BridgeDispatchCompletion(Task redirectTask)
-        {
-            _ = redirectTask.ContinueWith(t =>
-            {
+                _redirectCount++;
+                _redirectChain.Add(targetUri.AbsoluteUri);
+                _context.SetState("RedirectChain", _redirectChain.ToArray());
+                _context.RecordEvent("Redirect", new Dictionary<string, object>
+                {
+                    { "from", _currentRequest.Uri.AbsoluteUri },
+                    { "to", targetUri.AbsoluteUri },
+                    { "status", statusCode },
+                    { "hop", _redirectCount }
+                });
+                _context.UpdateRequest(newRequest);
+                _currentRequest = newRequest;
+
                 try
                 {
-                    if (t.IsFaulted)
-                    {
-                        CompleteWithDispatchException(t.Exception.GetBaseException());
-                        return;
-                    }
-
-                    if (t.IsCanceled)
-                    {
-                        _completion.TrySetCanceled();
-                        return;
-                    }
-
+                    await _dispatch(newRequest, this, _context, _cancellationToken).ConfigureAwait(false);
                     if (!_completion.Task.IsCompleted)
                     {
                         _completion.TrySetException(new InvalidOperationException(
                             "Redirect pipeline completed without delivering a terminal callback."));
                     }
                 }
-                catch (Exception bridgeError)
+                catch (OperationCanceledException)
                 {
-                    _completion.TrySetException(bridgeError);
+                    _completion.TrySetCanceled();
                 }
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+                catch (Exception ex)
+                {
+                    CompleteWithDispatchException(ex);
+                }
+            }
+            catch (UHttpException ex)
+            {
+                CompleteWithError(ex, context);
+            }
         }
 
-        private void CompleteWithEnd(HttpHeaders trailers, RequestContext context)
+        public void OnResponseError(UHttpException error, RequestContext context)
         {
-            try
-            {
-                _inner.OnResponseEnd(trailers, context);
-                _completion.TrySetResult(null);
-            }
-            catch (Exception ex)
-            {
-                _completion.TrySetException(ex);
-            }
+            CompleteWithError(error, context);
         }
 
         private void CompleteWithError(UHttpException error, RequestContext context)

@@ -34,16 +34,14 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
         {
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
-        }
-
-        public void OnResponseData(System.ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
+            body?.Abort();
+            return default;
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)

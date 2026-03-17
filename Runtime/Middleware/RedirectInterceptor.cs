@@ -107,7 +107,7 @@ namespace TurboHTTP.Middleware
             bool crossOrigin)
         {
             var method = source.Method;
-            var body = source.Body;
+            byte[] detachedBody = TryDetachRedirectBody(source.Content, source.Method);
             var headers = source.Headers.Clone();
 
             headers.Remove("Host");
@@ -117,7 +117,7 @@ namespace TurboHTTP.Middleware
                 if (source.Method == HttpMethod.POST)
                 {
                     method = HttpMethod.GET;
-                    body = ReadOnlyMemory<byte>.Empty;
+                    detachedBody = null;
                     RemoveBodyHeaders(headers);
                 }
             }
@@ -126,7 +126,7 @@ namespace TurboHTTP.Middleware
                 if (source.Method != HttpMethod.HEAD)
                 {
                     method = HttpMethod.GET;
-                    body = ReadOnlyMemory<byte>.Empty;
+                    detachedBody = null;
                     RemoveBodyHeaders(headers);
                 }
             }
@@ -145,7 +145,7 @@ namespace TurboHTTP.Middleware
                 method,
                 targetUri,
                 headers,
-                CopyBodyForRedirect(body),
+                detachedBody,
                 source.Timeout,
                 metadata);
         }
@@ -171,7 +171,7 @@ namespace TurboHTTP.Middleware
                 request.Method,
                 request.Uri,
                 request.Headers,
-                CopyBodyForRedirect(request.Body),
+                TryDetachRedirectBody(request.Content, request.Method),
                 timeout: remaining,
                 metadata: request.Metadata);
         }
@@ -218,10 +218,17 @@ namespace TurboHTTP.Middleware
             return new Dictionary<string, object>(metadata);
         }
 
-        private static byte[] CopyBodyForRedirect(ReadOnlyMemory<byte> body)
+        private static byte[] TryDetachRedirectBody(UHttpRequestBody content, HttpMethod method)
         {
-            if (body.IsEmpty)
+            if (content == null || content.IsEmpty)
                 return null;
+
+            if (!content.TryGetBufferedData(out var body))
+            {
+                throw CreateRedirectError(
+                    UHttpErrorType.InvalidRequest,
+                    $"Redirect handling for non-buffered {method.ToUpperString()} request bodies is not available before the Phase 22a transport streaming steps land.");
+            }
 
             // Redirect hops must own their body bytes independently so later request
             // disposal or buffer reuse cannot corrupt the follow-up dispatch.

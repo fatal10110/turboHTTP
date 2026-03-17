@@ -56,7 +56,7 @@ namespace TurboHTTP.Core
                 var adaptedTimeout = TimeSpan.FromMilliseconds(adapted);
                 if (adaptedTimeout != request.Timeout)
                 {
-                    requestForNext = request.Clone();
+                    requestForNext = request.CopyWithSharedContent();
                     requestForNext.SetTimeoutInternal(adaptedTimeout);
                     context.UpdateRequest(requestForNext);
                 }
@@ -72,7 +72,7 @@ namespace TurboHTTP.Core
             {
                 dispatchTask = next(
                     requestForNext,
-                    new AdaptiveHandler(handler, _detector, requestForNext.Body.Length, context.Elapsed),
+                    new AdaptiveHandler(handler, _detector, requestForNext.Content.Length ?? 0, context.Elapsed),
                     context,
                     cancellationToken);
             }

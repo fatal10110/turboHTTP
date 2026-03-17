@@ -153,8 +153,10 @@ namespace TurboHTTP.Tests.Core
                 .WithJsonBody(payload);
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
-            Assert.IsFalse(request.Body.IsEmpty);
-            Assert.IsTrue(request.Body.Length > 0);
+            Assert.IsNotNull(request.Content);
+            Assert.IsFalse(request.Content.IsEmpty);
+            Assert.IsTrue(request.TryGetBufferedContent(out var bufferedBody));
+            Assert.IsTrue(bufferedBody.Length > 0);
         }
 
 #if TURBOHTTP_USE_SYSTEM_TEXT_JSON
@@ -171,8 +173,10 @@ namespace TurboHTTP.Tests.Core
                 .WithJsonBody(new { Name = "Test" }, options);
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
-            Assert.IsFalse(request.Body.IsEmpty);
-            Assert.IsTrue(request.Body.Length > 0);
+            Assert.IsNotNull(request.Content);
+            Assert.IsFalse(request.Content.IsEmpty);
+            Assert.IsTrue(request.TryGetBufferedContent(out var bufferedBody));
+            Assert.IsTrue(bufferedBody.Length > 0);
         }
 #endif
 
@@ -251,8 +255,10 @@ namespace TurboHTTP.Tests.Core
                 .WithJsonBody("{\"key\":\"value\"}");
 
             Assert.AreEqual("application/json", request.Headers.Get("Content-Type"));
-            Assert.IsFalse(request.Body.IsEmpty);
-            Assert.IsTrue(request.Body.Length > 0);
+            Assert.IsNotNull(request.Content);
+            Assert.IsFalse(request.Content.IsEmpty);
+            Assert.IsTrue(request.TryGetBufferedContent(out var bufferedBody));
+            Assert.IsTrue(bufferedBody.Length > 0);
         }
 
         [Test]

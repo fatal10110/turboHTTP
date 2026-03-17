@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.Middleware
@@ -22,7 +23,11 @@ namespace TurboHTTP.Middleware
             _inner.OnRequestStart(request, context);
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
             var setCookieValues = headers.GetValues("Set-Cookie");
             if (setCookieValues.Count > 0)
@@ -34,17 +39,7 @@ namespace TurboHTTP.Middleware
                 });
             }
 
-            _inner.OnResponseStart(statusCode, headers, context);
-        }
-
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            _inner.OnResponseData(chunk, context);
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            _inner.OnResponseEnd(trailers, context);
+            return _inner.OnResponseStartAsync(statusCode, headers, body, context);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)

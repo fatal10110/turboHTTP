@@ -142,7 +142,7 @@ namespace TurboHTTP.Files
                 requestBuilder.WithHeader("Range", $"bytes={existingSize}-");
             }
 
-            UHttpResponse response = await requestBuilder.SendAsync(cancellationToken).ConfigureAwait(false);
+            UHttpResponse response = await requestBuilder.SendBufferedAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 // Handle 416 Range Not Satisfiable: delete partial file and retry from scratch
@@ -153,7 +153,7 @@ namespace TurboHTTP.Files
                         File.Delete(destinationPath);
 
                     response.Dispose();
-                    response = await _client.Get(url).SendAsync(cancellationToken).ConfigureAwait(false);
+                    response = await _client.Get(url).SendBufferedAsync(cancellationToken).ConfigureAwait(false);
                 }
 
                 // If server doesn't support resume (200 instead of 206), start from scratch

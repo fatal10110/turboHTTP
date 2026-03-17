@@ -102,7 +102,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.GET, req.Method);
-                    Assert.IsTrue(req.Body.IsEmpty);
+                    Assert.IsTrue(GetBufferedBody(req).IsEmpty);
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -144,7 +144,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.GET, req.Method);
-                    Assert.IsTrue(req.Body.IsEmpty);
+                    Assert.IsTrue(GetBufferedBody(req).IsEmpty);
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -186,7 +186,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.GET, req.Method);
-                    Assert.IsTrue(req.Body.IsEmpty);
+                    Assert.IsTrue(GetBufferedBody(req).IsEmpty);
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -227,7 +227,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.POST, req.Method);
-                    Assert.AreEqual("body", Encoding.UTF8.GetString(req.Body.Span));
+                    Assert.AreEqual("body", Encoding.UTF8.GetString(GetBufferedBody(req).Span));
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -269,7 +269,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
 
                     Assert.AreEqual(HttpMethod.PUT, req.Method);
-                    Assert.AreEqual("payload", Encoding.UTF8.GetString(req.Body.Span));
+                    Assert.AreEqual("payload", Encoding.UTF8.GetString(GetBufferedBody(req).Span));
                     return Task.FromResult(new UHttpResponse(
                         HttpStatusCode.OK,
                         new HttpHeaders(),
@@ -596,7 +596,7 @@ namespace TurboHTTP.Tests.Middleware
 
                 Assert.NotNull(redirectedRequest);
                 Assert.AreEqual(HttpMethod.POST, redirectedRequest.Method);
-                Assert.AreEqual("payload", Encoding.UTF8.GetString(redirectedRequest.Body.ToArray()));
+                Assert.AreEqual("payload", Encoding.UTF8.GetString(GetBufferedBody(redirectedRequest).ToArray()));
             });
         }
 
@@ -806,6 +806,12 @@ namespace TurboHTTP.Tests.Middleware
             });
         }
 
+        private static ReadOnlyMemory<byte> GetBufferedBody(UHttpRequest request)
+        {
+            Assert.IsTrue(request.TryGetBufferedContent(out var body));
+            return body;
+        }
+
         private sealed class CallbackTransport : IHttpTransport
         {
             private readonly Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> _dispatch;
@@ -843,16 +849,14 @@ namespace TurboHTTP.Tests.Middleware
             {
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public async ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
+                if (body != null)
+                    await body.DisposeAsync().ConfigureAwait(false);
                 throw new InvalidOperationException("downstream end failed");
             }
 
@@ -872,17 +876,14 @@ namespace TurboHTTP.Tests.Middleware
                 RequestStartCount++;
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
-            {
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 EndCalled = true;
+                return default;
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

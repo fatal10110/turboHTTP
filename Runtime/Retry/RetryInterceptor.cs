@@ -151,21 +151,15 @@ namespace TurboHTTP.Retry
                 }
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 WasCommitted = true;
                 WasRetryableFailure |= statusCode >= 500 && statusCode < 600;
-                _inner.OnResponseStart(statusCode, headers, context);
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-                _inner.OnResponseData(chunk, context);
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
-                _inner.OnResponseEnd(trailers, context);
+                return _inner.OnResponseStartAsync(statusCode, headers, body, context);
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

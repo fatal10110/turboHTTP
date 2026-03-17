@@ -131,7 +131,7 @@ namespace TurboHTTP.Core
             {
                 public readonly HttpMethod Method;
                 public readonly Uri Uri;
-                public readonly ReadOnlyMemory<byte> Body;
+                public readonly UHttpRequestBody Content;
                 public readonly TimeSpan Timeout;
                 public readonly int HeaderCount;
                 public readonly int HeaderHash;
@@ -142,7 +142,7 @@ namespace TurboHTTP.Core
                 {
                     Method = request.Method;
                     Uri = request.Uri;
-                    Body = request.Body;
+                    Content = request.Content;
                     Timeout = request.Timeout;
                     HeaderCount = request.Headers?.Count ?? 0;
                     HeaderHash = ComputeHeadersHash(request.Headers);
@@ -166,7 +166,7 @@ namespace TurboHTTP.Core
                 {
                     return Method == other.Method &&
                            Equals(Uri, other.Uri) &&
-                           Body.Equals(other.Body) &&
+                           ReferenceEquals(Content, other.Content) &&
                            Timeout == other.Timeout &&
                            HeaderCount == other.HeaderCount &&
                            HeaderHash == other.HeaderHash &&
@@ -181,7 +181,7 @@ namespace TurboHTTP.Core
                         var hash = 17;
                         hash = (hash * 31) ^ (int)Method;
                         hash = (hash * 31) ^ (Uri?.GetHashCode() ?? 0);
-                        hash = (hash * 31) ^ Body.GetHashCode();
+                        hash = (hash * 31) ^ (Content != null ? Content.GetHashCode() : 0);
                         hash = (hash * 31) ^ Timeout.GetHashCode();
                         hash = (hash * 31) ^ HeaderCount;
                         hash = (hash * 31) ^ HeaderHash;
@@ -353,25 +353,15 @@ namespace TurboHTTP.Core
                     _innerHandler.OnRequestStart(request, context);
                 }
 
-                public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+                public ValueTask OnResponseStartAsync(
+                    int statusCode,
+                    HttpHeaders headers,
+                    IResponseBodySource body,
+                    RequestContext context)
                 {
                     ThrowIfUnauthorizedResponseInjection();
                     RecordForwarded(ResponseEventSignature.ForResponseStart(statusCode, headers));
-                    _innerHandler.OnResponseStart(statusCode, headers, context);
-                }
-
-                public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-                {
-                    ThrowIfUnauthorizedResponseInjection();
-                    RecordForwarded(ResponseEventSignature.ForResponseData(chunk));
-                    _innerHandler.OnResponseData(chunk, context);
-                }
-
-                public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-                {
-                    ThrowIfUnauthorizedResponseInjection();
-                    RecordForwarded(ResponseEventSignature.ForResponseEnd(trailers));
-                    _innerHandler.OnResponseEnd(trailers, context);
+                    return _innerHandler.OnResponseStartAsync(statusCode, headers, body, context);
                 }
 
                 public void OnResponseError(UHttpException error, RequestContext context)
@@ -633,22 +623,18 @@ namespace TurboHTTP.Core
                         _inner.OnRequestStart(request, context);
                     }
 
-                    public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+                    public ValueTask OnResponseStartAsync(
+                        int statusCode,
+                        HttpHeaders headers,
+                        IResponseBodySource body,
+                        RequestContext context)
                     {
                         _owner.RecordObserved(ResponseEventSignature.ForResponseStart(statusCode, headers));
-                        _inner.OnResponseStart(statusCode, headers, context);
-                    }
-
-                    public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-                    {
-                        _owner.RecordObserved(ResponseEventSignature.ForResponseData(chunk));
-                        _inner.OnResponseData(chunk, context);
-                    }
-
-                    public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-                    {
-                        _owner.RecordObserved(ResponseEventSignature.ForResponseEnd(trailers));
-                        _inner.OnResponseEnd(trailers, context);
+                        return _inner.OnResponseStartAsync(
+                            statusCode,
+                            headers,
+                            new ObservedBodySource(body),
+                            context);
                     }
 
                     public void OnResponseError(UHttpException error, RequestContext context)
@@ -656,12 +642,52 @@ namespace TurboHTTP.Core
                         _owner.RecordObserved(ResponseEventSignature.ForResponseError(error));
                         _inner.OnResponseError(error, context);
                     }
+
+                    private sealed class ObservedBodySource : IResponseBodySource
+                    {
+                        private readonly IResponseBodySource _innerBody;
+
+                        public ObservedBodySource(IResponseBodySource innerBody)
+                        {
+                            _innerBody = innerBody ?? throw new ArgumentNullException(nameof(innerBody));
+                        }
+
+                        public long? Length => _innerBody.Length;
+
+                        public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+                        {
+                            return _innerBody.TryGetBufferedData(out data);
+                        }
+
+                        public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+                        {
+                            return _innerBody.ReadAsync(destination, ct);
+                        }
+
+                        public ValueTask DrainAsync(CancellationToken ct)
+                        {
+                            return _innerBody.DrainAsync(ct);
+                        }
+
+                        public void Abort()
+                        {
+                            _innerBody.Abort();
+                        }
+
+                        public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+                        {
+                            return _innerBody.GetTrailersAsync(ct);
+                        }
+
+                        public ValueTask DisposeAsync()
+                        {
+                            return _innerBody.DisposeAsync();
+                        }
+                    }
                 }
 
                 private readonly struct ResponseEventSignature
                 {
-                    private static readonly uint[] Crc32Table = BuildCrc32Table();
-
                     private readonly int _kind;
                     private readonly int _arg0;
                     private readonly int _arg1;
@@ -695,24 +721,6 @@ namespace TurboHTTP.Core
                             statusCode,
                             headers?.Count ?? 0,
                             ComputeHeadersHash(headers));
-                    }
-
-                    public static ResponseEventSignature ForResponseData(ReadOnlySpan<byte> chunk)
-                    {
-                        return new ResponseEventSignature(
-                            ResponseEventKind.ResponseData,
-                            chunk.Length,
-                            ComputeDataHash(chunk),
-                            0);
-                    }
-
-                    public static ResponseEventSignature ForResponseEnd(HttpHeaders trailers)
-                    {
-                        return new ResponseEventSignature(
-                            ResponseEventKind.ResponseEnd,
-                            trailers?.Count ?? 0,
-                            ComputeHeadersHash(trailers),
-                            0);
                     }
 
                     public static ResponseEventSignature ForResponseError(UHttpException error)
@@ -752,44 +760,12 @@ namespace TurboHTTP.Core
                             return hash;
                         }
                     }
-
-                    private static int ComputeDataHash(ReadOnlySpan<byte> chunk)
-                    {
-                        var crc = uint.MaxValue;
-                        for (int i = 0; i < chunk.Length; i++)
-                        {
-                            crc = (crc >> 8) ^ Crc32Table[(crc ^ chunk[i]) & 0xFF];
-                        }
-
-                        return unchecked((int)(crc ^ uint.MaxValue));
-                    }
-
-                    private static uint[] BuildCrc32Table()
-                    {
-                        var table = new uint[256];
-                        for (uint i = 0; i < table.Length; i++)
-                        {
-                            var crc = i;
-                            for (int bit = 0; bit < 8; bit++)
-                            {
-                                crc = (crc & 1) != 0
-                                    ? 0xEDB88320u ^ (crc >> 1)
-                                    : crc >> 1;
-                            }
-
-                            table[i] = crc;
-                        }
-
-                        return table;
-                    }
                 }
 
                 private enum ResponseEventKind
                 {
                     RequestStart,
                     ResponseStart,
-                    ResponseData,
-                    ResponseEnd,
                     ResponseError
                 }
             }

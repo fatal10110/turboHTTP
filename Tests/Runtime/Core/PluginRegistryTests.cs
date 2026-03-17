@@ -48,7 +48,7 @@ namespace TurboHTTP.Tests.Core
                     await client.RegisterPluginAsync(plugin);
                 });
 
-                await client.Get("https://example.test/after-fail").SendAsync();
+                await client.Get("https://example.test/after-fail").SendBufferedAsync();
 
                 Assert.IsEmpty(recorder);
                 Assert.AreEqual(0, client.GetRegisteredPlugins().Count);
@@ -86,7 +86,7 @@ namespace TurboHTTP.Tests.Core
                     capabilities: PluginCapabilities.ReadOnlyMonitoring);
 
                 await client.RegisterPluginAsync(plugin);
-                await client.Get("https://example.test/observe").SendAsync();
+                await client.Get("https://example.test/observe").SendBufferedAsync();
 
                 CollectionAssert.AreEqual(new[] { "Observer:req", "Observer:res" }, recorder);
             }).GetAwaiter().GetResult();
@@ -106,7 +106,7 @@ namespace TurboHTTP.Tests.Core
                 await client.RegisterPluginAsync(plugin);
                 var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
                 {
-                    await client.Get("https://example.test/mutate").SendAsync();
+                    await client.Get("https://example.test/mutate").SendBufferedAsync();
                 });
 
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
@@ -125,12 +125,12 @@ namespace TurboHTTP.Tests.Core
                 var plugin = new InterceptorPlugin("hook", new RecordingInterceptor("Hook", recorder));
 
                 await client.RegisterPluginAsync(plugin);
-                await client.Get("https://example.test/one").SendAsync();
+                await client.Get("https://example.test/one").SendBufferedAsync();
 
                 Assert.AreEqual(2, recorder.Count); // req + res
 
                 await client.UnregisterPluginAsync("hook");
-                await client.Get("https://example.test/two").SendAsync();
+                await client.Get("https://example.test/two").SendBufferedAsync();
 
                 Assert.AreEqual(2, recorder.Count);
                 Assert.AreEqual(0, client.GetRegisteredPlugins().Count);
@@ -149,7 +149,7 @@ namespace TurboHTTP.Tests.Core
                 await client.RegisterPluginAsync(new InterceptorPlugin("p2", new RecordingInterceptor("B", recorder)));
                 await client.RegisterPluginAsync(new InterceptorPlugin("p3", new RecordingInterceptor("C", recorder)));
 
-                await client.Get("https://example.test/order").SendAsync();
+                await client.Get("https://example.test/order").SendBufferedAsync();
 
                 CollectionAssert.AreEqual(
                     new[]
@@ -181,7 +181,7 @@ namespace TurboHTTP.Tests.Core
                     new MutatingRequestInterceptor(),
                     capabilities: PluginCapabilities.MutateRequests | PluginCapabilities.MutateResponses));
 
-                using var response = await client.Get("https://example.test/ordered-capabilities").SendAsync();
+                using var response = await client.Get("https://example.test/ordered-capabilities").SendBufferedAsync();
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
             }).GetAwaiter().GetResult();
         }
@@ -192,7 +192,7 @@ namespace TurboHTTP.Tests.Core
             Task.Run(async () =>
             {
                 using var client = CreateClient();
-                var response = await client.Get("https://example.test/no-plugins").SendAsync();
+                var response = await client.Get("https://example.test/no-plugins").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(0, client.GetRegisteredPlugins().Count);

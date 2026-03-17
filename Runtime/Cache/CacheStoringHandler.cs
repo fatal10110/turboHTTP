@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
@@ -42,50 +43,37 @@ namespace TurboHTTP.Cache
             _inner.OnRequestStart(request, context);
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public async ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
             _statusCode = statusCode;
             _headers = headers?.Clone() ?? new HttpHeaders();
-            _inner.OnResponseStart(statusCode, headers, context);
-        }
-
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            if (!chunk.IsEmpty)
+            if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
             {
                 if (_responseBody == null)
                     _responseBody = new SegmentedBuffer();
 
-                _responseBody.Write(chunk);
+                _responseBody.Write(buffered.Span);
             }
 
-            _inner.OnResponseData(chunk, context);
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            var statusCode = _statusCode;
-            var headers = _headers;
+            var capturedStatusCode = _statusCode;
+            var capturedHeaders = _headers;
             var bodyToStore = _responseBody;
             _responseBody = null;
 
-            if (statusCode == 0)
+            if (capturedStatusCode == 0)
             {
-                try
-                {
-                    _inner.OnResponseEnd(trailers, context);
-                }
-                finally
-                {
-                    bodyToStore?.Dispose();
-                }
-
+                await _inner.OnResponseStartAsync(capturedStatusCode, capturedHeaders, body, context).ConfigureAwait(false);
+                bodyToStore?.Dispose();
                 return;
             }
 
             try
             {
-                _inner.OnResponseEnd(trailers, context);
+                await _inner.OnResponseStartAsync(capturedStatusCode, capturedHeaders, body, context).ConfigureAwait(false);
             }
             catch
             {
@@ -95,7 +83,7 @@ namespace TurboHTTP.Cache
 
             try
             {
-                _owner.QueueStoreResponse(_requestMethod, _requestUri, _requestHeaders, _baseKey, statusCode, headers, bodyToStore);
+                _owner.QueueStoreResponse(_requestMethod, _requestUri, _requestHeaders, _baseKey, capturedStatusCode, capturedHeaders, bodyToStore);
                 bodyToStore = null;
             }
             catch (Exception ex)

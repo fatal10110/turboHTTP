@@ -76,7 +76,30 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual(request.Timeout, changed.Timeout);
             Assert.AreEqual("a", changed.Headers.Get("X-Test"));
             Assert.AreEqual(5, changed.Metadata["id"]);
-            Assert.AreEqual("second", Encoding.UTF8.GetString(changed.Body.Span));
+            Assert.IsTrue(changed.Content.TryGetBufferedData(out var body));
+            Assert.AreEqual("second", Encoding.UTF8.GetString(body.Span));
+        }
+
+        [Test]
+        public void UHttpRequest_WithStreamBody_StoresStreamingContent()
+        {
+            using var stream = new System.IO.MemoryStream(Encoding.UTF8.GetBytes("streaming"));
+            var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/upload"))
+                .WithStreamBody(stream, stream.Length, leaveOpen: true);
+
+            Assert.IsNotNull(request.Content);
+            Assert.AreEqual(RequestBodyReplayability.Replayable, request.Content.Replayability);
+            Assert.IsFalse(request.Content.TryGetBufferedData(out _));
+        }
+
+        [Test]
+        public void UHttpRequest_TryGetBufferedContent_ReturnsFalseForStreamingContent()
+        {
+            using var stream = new System.IO.MemoryStream(Encoding.UTF8.GetBytes("streaming"));
+            var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/upload"))
+                .WithStreamBody(stream, stream.Length, leaveOpen: true);
+
+            Assert.IsFalse(request.TryGetBufferedContent(out _));
         }
 
         [Test]

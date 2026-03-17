@@ -131,7 +131,7 @@ namespace TurboHTTP.Tests.Platform
                     try
                     {
                         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-                        var response = await client.Get(url).SendAsync(cts.Token);
+                        var response = await client.Get(url).SendBufferedAsync(cts.Token);
                         if (response.StatusCode == HttpStatusCode.NoContent || response.StatusCode == HttpStatusCode.OK)
                             return;
                     }

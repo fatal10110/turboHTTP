@@ -1,32 +1,32 @@
 using System;
 using System.Buffers;
+using System.IO;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
     /// <summary>
-    /// An internal handler that acts as a bridge between the push-based <see cref="IHttpHandler"/> model
-    /// and the pull-based returned <see cref="UHttpResponse"/>. It collects response data into a single object.
+    /// An internal handler that buffers an <see cref="IResponseBodySource"/> into a <see cref="UHttpResponse"/>.
     /// </summary>
-    internal sealed class ResponseCollectorHandler : IHttpHandler
+    internal sealed class BufferedResponseCollectorHandler : IHttpHandler
     {
         private readonly TaskCompletionSource<UHttpResponse> _tcs =
             new TaskCompletionSource<UHttpResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly object _bodyGate = new object();
+        private readonly CancellationToken _cancellationToken;
 
         private UHttpRequest _request;
-        private int _statusCode;
-        private HttpHeaders _responseHeaders;
-        private SegmentedBuffer _body;
-        private UHttpResponse _bufferedResponse;
-        private bool _bodyClosed;
 
-        internal ResponseCollectorHandler(UHttpRequest request, RequestContext context)
+        internal BufferedResponseCollectorHandler(
+            UHttpRequest request,
+            RequestContext context,
+            CancellationToken cancellationToken)
         {
             _request = request;
             _ = context ?? throw new ArgumentNullException(nameof(context));
+            _cancellationToken = cancellationToken;
         }
 
         /// <summary>
@@ -40,39 +40,16 @@ namespace TurboHTTP.Core
                 _request = request;
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
-            _statusCode = statusCode;
-            _responseHeaders = headers;
-        }
+            if (body == null)
+                throw new ArgumentNullException(nameof(body));
 
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            if (chunk.IsEmpty)
-                return;
-
-            lock (_bodyGate)
-            {
-                if (_bodyClosed)
-                    return;
-
-                if (_body == null)
-                    _body = new SegmentedBuffer();
-
-                _body.Write(chunk);
-            }
-        }
-
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
-            var body = DetachBody();
-            BufferResponse(new UHttpResponse(
-                (HttpStatusCode)_statusCode,
-                _responseHeaders ?? new HttpHeaders(),
-                body?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
-                body,
-                context.Elapsed,
-                _request));
+            return CollectAsync(statusCode, headers, body, context);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
@@ -83,11 +60,11 @@ namespace TurboHTTP.Core
                     "IHttpHandler.OnResponseError received a null error."));
 
             if (_tcs.TrySetException(responseError))
-                DisposeBufferedState();
+                return;
         }
 
         /// <summary>
-        /// Fails the response task with the specified exception, disposing of any collected body data.
+        /// Fails the response task with the specified exception.
         /// </summary>
         internal void Fail(Exception ex)
         {
@@ -96,8 +73,7 @@ namespace TurboHTTP.Core
 
             if (ex is OperationCanceledException operationCanceledException)
             {
-                if (_tcs.TrySetException(operationCanceledException))
-                    DisposeBufferedState();
+                _tcs.TrySetException(operationCanceledException);
                 return;
             }
 
@@ -105,39 +81,15 @@ namespace TurboHTTP.Core
                 ? uHttpException
                 : new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex?.Message ?? "Dispatch failed.", ex));
 
-            if (_tcs.TrySetException(dispatchError))
-                DisposeBufferedState();
+            _tcs.TrySetException(dispatchError);
         }
 
         /// <summary>
-        /// Cancels the response task, disposing of any collected body data.
+        /// Cancels the response task.
         /// </summary>
         internal void Cancel()
         {
-            if (_tcs.TrySetCanceled())
-                DisposeBufferedState();
-        }
-
-        /// <summary>
-        /// Ensures that the response task is completed, faulting it if it is not.
-        /// This is a safety net to prevent hanging when the pipeline completes without delivering a response.
-        /// </summary>
-        internal void CompleteBufferedResponse()
-        {
-            if (_tcs.Task.IsCompleted)
-                return;
-
-            var response = DetachBufferedResponse();
-            if (response != null)
-            {
-                if (!_tcs.TrySetResult(response))
-                    response.Dispose();
-                return;
-            }
-
-            DisposeBody();
-            _tcs.TrySetException(new InvalidOperationException(
-                "Pipeline completed without delivering a response."));
+            _tcs.TrySetCanceled();
         }
 
         internal void EnsureCompleted()
@@ -145,57 +97,98 @@ namespace TurboHTTP.Core
             if (_tcs.Task.IsCompleted)
                 return;
 
-            DisposeBufferedState();
             _tcs.TrySetException(new InvalidOperationException(
                 "Pipeline completed without delivering a response."));
         }
 
-        private void DisposeBufferedState()
+        private async ValueTask CollectAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
-            DisposeBody();
-            DetachBufferedResponse()?.Dispose();
-        }
+            SegmentedBuffer bufferedBody = null;
+            byte[] rented = null;
 
-        private void BufferResponse(UHttpResponse response)
-        {
-            if (response == null)
-                throw new ArgumentNullException(nameof(response));
-
-            lock (_bodyGate)
+            try
             {
-                if (_tcs.Task.IsCompleted)
+                if (body.TryGetBufferedData(out var data))
                 {
-                    response.Dispose();
-                    return;
+                    if (!data.IsEmpty)
+                    {
+                        bufferedBody = new SegmentedBuffer();
+                        bufferedBody.Write(data.Span);
+                    }
+                }
+                else
+                {
+                    rented = ArrayPool<byte>.Shared.Rent(16 * 1024);
+                    bufferedBody = new SegmentedBuffer();
+                    while (true)
+                    {
+                        var read = await body.ReadAsync(rented, _cancellationToken).ConfigureAwait(false);
+                        if (read == 0)
+                            break;
+
+                        bufferedBody.Write(new ReadOnlySpan<byte>(rented, 0, read));
+                    }
                 }
 
-                _bufferedResponse = response;
+                _ = await body.GetTrailersAsync(_cancellationToken).ConfigureAwait(false);
+
+                UHttpResponse response = null;
+                bool retainedRequest = false;
+                bool attachedRequestRelease = false;
+                try
+                {
+                    response = new UHttpResponse(
+                        (HttpStatusCode)statusCode,
+                        headers ?? new HttpHeaders(),
+                        bufferedBody?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
+                        bufferedBody,
+                        context.Elapsed,
+                        _request);
+                    bufferedBody = null;
+
+                    if (_request.IsPooled)
+                    {
+                        _request.RetainForResponse();
+                        retainedRequest = true;
+                        response.AttachRequestRelease(_request.ReleaseResponseHold);
+                        attachedRequestRelease = true;
+                    }
+
+                    if (!_tcs.TrySetResult(response))
+                        response.Dispose();
+
+                    response = null;
+                }
+                finally
+                {
+                    if (response != null)
+                        response.Dispose();
+                    if (retainedRequest && !attachedRequestRelease)
+                        _request.ReleaseResponseHold();
+                }
             }
-        }
-
-        private SegmentedBuffer DetachBody()
-        {
-            lock (_bodyGate)
+            catch (Exception ex)
             {
-                var body = _body;
-                _body = null;
-                _bodyClosed = true;
-                return body;
+                bufferedBody?.Dispose();
+                Fail(ex);
             }
-        }
-
-        private void DisposeBody()
-        {
-            DetachBody()?.Dispose();
-        }
-
-        private UHttpResponse DetachBufferedResponse()
-        {
-            lock (_bodyGate)
+            finally
             {
-                var response = _bufferedResponse;
-                _bufferedResponse = null;
-                return response;
+                if (rented != null)
+                    ArrayPool<byte>.Shared.Return(rented);
+
+                try
+                {
+                    await body.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Fail(ex);
+                }
             }
         }
     }

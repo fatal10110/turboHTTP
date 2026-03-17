@@ -137,21 +137,21 @@ namespace TurboHTTP.Tests.Testing
                 Events.Add("request");
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 Events.Add("start:" + statusCode);
-            }
+                if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
+                {
+                    Events.Add("data:" + buffered.Length);
+                    _body.AddRange(buffered.ToArray());
+                }
 
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-                Events.Add("data:" + chunk.Length);
-                if (!chunk.IsEmpty)
-                    _body.AddRange(chunk.ToArray());
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
                 Events.Add("end");
+                return default;
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

@@ -52,7 +52,7 @@ namespace TurboHTTP.Middleware
                 var requestForNext = request;
                 if (!request.Headers.Contains("Accept-Encoding"))
                 {
-                    requestForNext = request.Clone();
+                    requestForNext = request.CopyWithSharedContent();
                     requestForNext.WithHeader("Accept-Encoding", "gzip, deflate");
                     context.UpdateRequest(requestForNext);
                 }

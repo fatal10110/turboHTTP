@@ -80,7 +80,7 @@ namespace TurboHTTP.JSON
             using var response = await client
                 .Get(url)
                 .WithHeader("Accept", ContentTypes.Json)
-                .SendAsync(cancellationToken)
+                .SendBufferedAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();
@@ -103,7 +103,7 @@ namespace TurboHTTP.JSON
                 .Post(url)
                 .WithJsonBody(data)
                 .WithHeader("Accept", ContentTypes.Json)
-                .SendAsync(cancellationToken)
+                .SendBufferedAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();
@@ -126,7 +126,7 @@ namespace TurboHTTP.JSON
                 .Put(url)
                 .WithJsonBody(data)
                 .WithHeader("Accept", ContentTypes.Json)
-                .SendAsync(cancellationToken)
+                .SendBufferedAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();
@@ -149,7 +149,7 @@ namespace TurboHTTP.JSON
                 .Patch(url)
                 .WithJsonBody(data)
                 .WithHeader("Accept", ContentTypes.Json)
-                .SendAsync(cancellationToken)
+                .SendBufferedAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();
@@ -170,7 +170,7 @@ namespace TurboHTTP.JSON
             using var response = await client
                 .Delete(url)
                 .WithHeader("Accept", ContentTypes.Json)
-                .SendAsync(cancellationToken)
+                .SendBufferedAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             response.EnsureSuccessStatusCode();

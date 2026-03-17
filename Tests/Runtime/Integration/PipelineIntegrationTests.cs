@@ -38,7 +38,7 @@ namespace TurboHTTP.Tests.Integration
                 };
 
                 using var client = new UHttpClient(options);
-                var response = await client.Get("https://api.example.com/data").SendAsync();
+                var response = await client.Get("https://api.example.com/data").SendBufferedAsync();
 
                 // Verify response
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
@@ -68,7 +68,7 @@ namespace TurboHTTP.Tests.Integration
                 var options = new UHttpClientOptions { Transport = transport };
 
                 using var client = new UHttpClient(options);
-                var response = await client.Get("https://test.com/api").SendAsync();
+                var response = await client.Get("https://test.com/api").SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(1, transport.RequestCount);

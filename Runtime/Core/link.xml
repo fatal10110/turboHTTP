@@ -1,0 +1,17 @@
+<linker>
+  <!--
+    22a.1 request/response body abstractions used through async and interface
+    boundaries on IL2CPP. Preserve the concrete session type and interface
+    metadata so ValueTask-based body flows are not stripped.
+  -->
+  <assembly fullname="TurboHTTP.Core">
+    <type fullname="TurboHTTP.Core.Internal.RequestBodyReadSession" preserve="all" />
+    <type fullname="TurboHTTP.Core.Internal.BufferedResponseBodySource" preserve="all" />
+    <type fullname="TurboHTTP.Core.IResponseBodySource" preserve="all" />
+    <type fullname="TurboHTTP.Core.UHttpStreamingResponse" preserve="all" />
+  </assembly>
+  <assembly fullname="mscorlib">
+    <type fullname="System.IAsyncDisposable" preserve="all" />
+    <type fullname="System.Threading.Tasks.ValueTask`1[[TurboHTTP.Core.Internal.RequestBodyReadSession, TurboHTTP.Core]]" preserve="all" />
+  </assembly>
+</linker>

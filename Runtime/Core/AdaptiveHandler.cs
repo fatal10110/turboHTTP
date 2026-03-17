@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace TurboHTTP.Core
 {
@@ -30,20 +31,18 @@ namespace TurboHTTP.Core
             _inner.OnRequestStart(request, context);
         }
 
-        public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+        public async ValueTask OnResponseStartAsync(
+            int statusCode,
+            HttpHeaders headers,
+            IResponseBodySource body,
+            RequestContext context)
         {
             _statusCode = statusCode;
-            _inner.OnResponseStart(statusCode, headers, context);
-        }
+            if (body != null && body.TryGetBufferedData(out var buffered))
+                Interlocked.Add(ref _responseBytes, buffered.Length);
 
-        public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-        {
-            Interlocked.Add(ref _responseBytes, chunk.Length);
-            _inner.OnResponseData(chunk, context);
-        }
+            await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
 
-        public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-        {
             var elapsed = (context.Elapsed - _started).TotalMilliseconds;
             var responseBytes = Interlocked.Read(ref _responseBytes);
             _detector.AddSample(new NetworkQualitySample(
@@ -53,8 +52,6 @@ namespace TurboHTTP.Core
                 wasTransportFailure: false,
                 bytesTransferred: _requestBytes + responseBytes,
                 wasSuccess: _statusCode >= 200 && _statusCode < 300));
-
-            _inner.OnResponseEnd(trailers, context);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)

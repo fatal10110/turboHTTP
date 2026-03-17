@@ -35,7 +35,7 @@ namespace TurboHTTP.Tests.Performance
 
                 for (int i = 0; i < 1000; i++)
                 {
-                    tasks.Add(client.Get($"https://test.com/api/{i}").SendAsync().AsTask());
+                    tasks.Add(client.Get($"https://test.com/api/{i}").SendBufferedAsync().AsTask());
                 }
 
                 var responses = await Task.WhenAll(tasks);
@@ -89,7 +89,7 @@ namespace TurboHTTP.Tests.Performance
                         cts.CancelAfter((i % 20) + 1);
                     }
 
-                    tasks[i] = client.Get("https://test.com/cancel/" + i).SendAsync(cts.Token).AsTask();
+                    tasks[i] = client.Get("https://test.com/cancel/" + i).SendBufferedAsync(cts.Token).AsTask();
                 }
 
                 int canceled = 0;
@@ -117,7 +117,7 @@ namespace TurboHTTP.Tests.Performance
                     $"Expected at least {minExpectedCanceled} cancellations, observed {canceled}.");
                 Assert.Greater(succeeded, 0, "Expected some non-canceled requests to succeed.");
 
-                var followUp = await client.Get("https://test.com/follow-up").SendAsync().ConfigureAwait(false);
+                var followUp = await client.Get("https://test.com/follow-up").SendBufferedAsync().ConfigureAwait(false);
                 Assert.AreEqual(HttpStatusCode.OK, followUp.StatusCode);
             });
         }
@@ -175,7 +175,7 @@ namespace TurboHTTP.Tests.Performance
                     tasks[i] = client
                         .Get("https://test.com/timeout/" + delayMs)
                         .WithTimeout(TimeSpan.FromMilliseconds(50))
-                        .SendAsync()
+                        .SendBufferedAsync()
                         .AsTask();
                 }
 
@@ -207,7 +207,7 @@ namespace TurboHTTP.Tests.Performance
                 using var followUp = await client
                     .Get("https://test.com/timeout/0")
                     .WithTimeout(TimeSpan.FromMilliseconds(250))
-                    .SendAsync()
+                    .SendBufferedAsync()
                     .ConfigureAwait(false);
 
                 Assert.AreEqual(HttpStatusCode.OK, followUp.StatusCode);
@@ -256,7 +256,7 @@ namespace TurboHTTP.Tests.Performance
 
                 for (int i = 0; i < 100; i++)
                 {
-                    tasks.Add(client.Get("https://test.com/api/data").SendAsync().AsTask());
+                    tasks.Add(client.Get("https://test.com/api/data").SendBufferedAsync().AsTask());
                 }
 
                 await Task.WhenAll(tasks);
@@ -323,7 +323,7 @@ namespace TurboHTTP.Tests.Performance
                 for (int i = 0; i < 90; i++)
                 {
                     var host = hosts[i % hosts.Length];
-                    tasks.Add(client.Get($"https://{host}/api/{i}").SendAsync().AsTask());
+                    tasks.Add(client.Get($"https://{host}/api/{i}").SendBufferedAsync().AsTask());
                 }
 
                 await Task.WhenAll(tasks);
@@ -512,7 +512,7 @@ namespace TurboHTTP.Tests.Performance
                 try
                 {
                     var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
-                    await client.SendAsync(request);
+                    await client.SendBufferedAsync(request);
                     Assert.Fail("Expected ObjectDisposedException");
                 }
                 catch (ObjectDisposedException)

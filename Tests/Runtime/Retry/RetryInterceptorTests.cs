@@ -600,18 +600,15 @@ namespace TurboHTTP.Tests.Retry
                 RequestStartCount++;
             }
 
-            public void OnResponseStart(int statusCode, HttpHeaders headers, RequestContext context)
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
             {
                 ResponseStartCount++;
-            }
-
-            public void OnResponseData(ReadOnlySpan<byte> chunk, RequestContext context)
-            {
-            }
-
-            public void OnResponseEnd(HttpHeaders trailers, RequestContext context)
-            {
                 ResponseEndCount++;
+                return default;
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)
