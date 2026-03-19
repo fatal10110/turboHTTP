@@ -153,8 +153,8 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>
         /// Return the connection to the pool for keep-alive reuse.
-        /// Must be called BEFORE Dispose() for the connection to be reused.
-        /// If not called, Dispose() will destroy the connection (but still release the semaphore).
+        /// Calling this method both enqueues the connection for reuse and releases the semaphore permit.
+        /// If not called, Dispose() will destroy the connection (and release the semaphore instead).
         /// Thread-safe: synchronized with Dispose() to prevent races on async continuations.
         /// IsAlive check is performed OUTSIDE the lock to avoid holding the lock during Socket.Poll() syscall.
         /// </summary>
@@ -182,6 +182,8 @@ namespace TurboHTTP.Transport.Tcp
                 {
                     // Pool/connection was disposed by a racing shutdown path.
                 }
+
+                ReleaseSemaphoreOnce();
             }
         }
 

@@ -61,7 +61,7 @@ namespace TurboHTTP.Tests.Testing
             var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
             source.InjectFault(new InvalidOperationException("boom"));
 
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(async () =>
                 await source.ReadAsync(new byte[4], CancellationToken.None));
             Assert.That(ex.Message, Is.EqualTo("boom"));
         }

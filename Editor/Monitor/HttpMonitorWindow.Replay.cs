@@ -54,7 +54,7 @@ namespace TurboHTTP.Editor
             try
             {
                 using var client = new UHttpClient();
-                var response = await client.SendAsync(request);
+                using var response = await client.SendBufferedAsync(request);
                 Debug.Log(
                     $"[TurboHTTP] Replay completed: {(int)response.StatusCode} {response.StatusCode} " +
                     $"for {request.Method} {request.Uri}");

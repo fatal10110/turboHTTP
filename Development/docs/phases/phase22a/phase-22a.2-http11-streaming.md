@@ -129,7 +129,7 @@ Implements `IResponseBodySource` with four framing variants:
 - Parses chunk headers inline during `ReadAsync`
 - Delivers chunk data directly to consumer buffer (no intermediate copy)
 - Recognizes terminal `0\r\n\r\n` and returns 0
-- For early-dispose drain: remaining bytes are unknown for chunked — always close (do not drain)
+- For early-dispose drain: remaining bytes are not known up front, so the source drains only within the Step 6 decoded-byte budget and reuses the connection only if the terminal chunk is reached inside that budget. The budget is intentionally based on decoded body bytes rather than raw wire bytes.
 
 ### 5c. Read-to-End Body Reader
 
@@ -148,6 +148,8 @@ Implements `IResponseBodySource` with four framing variants:
 
 `GetTrailersAsync` returns `HttpHeaders.Empty` for all HTTP/1.1 responses. Current parser discards trailers (known limitation). Full parsing deferred.
 
+`RecordReplayTransport` and other buffered-only observability/testing paths still capture response bodies only when `IResponseBodySource.TryGetBufferedData(...)` succeeds. Streaming HTTP/1.1 responses therefore replay with empty bodies in 22a.2; this is a documented limitation until those paths gain streaming-body capture.
+
 ---
 
 ## Step 6: Early-Dispose Drain-or-Close Policy
@@ -164,7 +166,7 @@ If a consumer disposes early, the drain-or-close decision uses a **three-conditi
 
 Only if all three conditions are met, `DrainAsync` is attempted with a **2-second timeout** using `CancellationTokenSource.CancelAfter(TimeSpan.FromSeconds(2))` (not socket-level timeouts, which behave differently across platforms).
 
-**Cancellation propagation:** The drain operation uses `CancellationTokenSource.CreateLinkedTokenSource(callerCt, 2secondTimeout)`. If either the caller's token or the 2-second timeout fires, drain stops and the connection is closed. On mobile, where background-to-foreground app transitions can cancel all pending operations, ignoring the caller's cancellation token during drain would create ghost-connection states.
+**Cancellation propagation:** `IAsyncDisposable.DisposeAsync()` does not accept a caller `CancellationToken`, so the drain operation links only transport-owned cancellation (when present) with the 2-second timeout. For buffered callers this still includes the request timeout token; for streaming callers the drain budget is governed by the 2-second timeout alone because request timeout scope ends at headers.
 
 No unread-bytes ambiguity when returning a connection to the pool.
 
@@ -180,7 +182,7 @@ The HTTP/1.1 connection lease remains attached to the body source until:
 2. `DrainAsync(...)` finishes successfully → connection returned to pool
 3. Body aborted and connection closed → connection discarded
 
-`ConnectionLease.TransferOwnership()` transfers the lease out of the `using` scope in `DispatchCoreAsync` to the streaming response. This mechanism is already used for `Http2ConnectionManager`.
+HTTP/1.1 uses lease handoff by successful completion of the direct dispatch path: once the response body source is created and delivered successfully, the outer transport send path stops owning the lease and the body source becomes responsible for either returning the connection to the pool or closing it. This differs from the HTTP/2 `ConnectionLease.TransferOwnership()` pattern because HTTP/1.1 still needs the lease wrapper to perform `ReturnToPool()` on successful end-of-body.
 
 **Leak detection:** if the `UHttpStreamingResponse` is abandoned without disposing, the connection lease, semaphore permit, and connection all leak. `Debug.LogWarning` in finalizer detects this in development builds.
 
@@ -207,7 +209,7 @@ The existing request-level timeout (`CancellationTokenSource.CancelAfter(request
 | `Runtime/Transport/Http1/Http11RequestSerializer.cs` | Known-length streaming, chunked request encoding |
 | `Runtime/Transport/Http1/Http11ResponseParser.cs` | Split header/body parsing, `BufferedStreamReader` transfer |
 | `Runtime/Transport/Http1/Http11ResponseBodySource.cs` | **New:** Content-Length, chunked, read-to-end, empty variants |
-| `Runtime/Transport/RawSocketTransport.cs` | `ConnectionLease.TransferOwnership()`, streaming timeout scope, retry semantics |
+| `Runtime/Transport/RawSocketTransport.cs` | Direct HTTP/1.1 lease handoff, streaming timeout scope, retry semantics |
 
 ---
 

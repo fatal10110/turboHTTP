@@ -72,10 +72,10 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual(0, source.DisposeAsyncCount);
             Assert.AreEqual(0, releaseCount);
             Assert.IsFalse(response.Body.CanRead);
-            Assert.ThrowsAsync<ObjectDisposedException>(
+            AssertAsync.ThrowsAsync<ObjectDisposedException>(
                 async () => await response.Body.ReadAsync(new byte[1], 0, 1, CancellationToken.None));
 
-            Assert.ThrowsAsync<ObjectDisposedException>(async () => await response.GetTrailersAsync());
+            AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await response.GetTrailersAsync());
 
             await response.DisposeAsync();
 
@@ -96,7 +96,7 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual(1, source.AbortCount);
             Assert.AreEqual(0, source.DisposeAsyncCount);
             Assert.AreEqual(0, releaseCount);
-            Assert.ThrowsAsync<ObjectDisposedException>(async () => await response.GetTrailersAsync());
+            AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await response.GetTrailersAsync());
 
             await response.DisposeAsync();
 

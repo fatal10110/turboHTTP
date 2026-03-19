@@ -85,7 +85,7 @@ namespace TurboHTTP.Core
             try
             {
                 var body = pending.Body != null
-                    ? pending.Body.AsSequence().ToArray()
+                    ? pending.Body.ToArray()
                     : Array.Empty<byte>();
                 // Test-only sync shim: the compat path always hands off a buffered in-memory source.
                 // Do not use this helper with handlers that require an actual asynchronous response start.

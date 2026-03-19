@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("TurboHTTP.Testing")]
 [assembly: InternalsVisibleTo("TurboHTTP.JSON")]
 [assembly: InternalsVisibleTo("TurboHTTP.Files")]
+[assembly: InternalsVisibleTo("TurboHTTP.Auth")]
 [assembly: InternalsVisibleTo("TurboHTTP.Cache")]
 [assembly: InternalsVisibleTo("TurboHTTP.Middleware")]
 [assembly: InternalsVisibleTo("TurboHTTP.Retry")]

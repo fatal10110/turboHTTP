@@ -20,6 +20,8 @@ namespace TurboHTTP.Core
             if (context == null)
                 throw new ArgumentNullException(nameof(context));
 
+            context.SetState(Internal.TransportBehaviorFlags.StreamingResponseRequested, true);
+
             var collector = new StreamingResponseCaptureHandler(request, context);
             var safeCollector = HandlerCallbackSafetyWrapper.Wrap(collector, context);
             Task dispatchTask;

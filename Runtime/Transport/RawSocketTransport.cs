@@ -130,6 +130,44 @@ namespace TurboHTTP.Transport
             ex as UHttpException ??
             new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
 
+        private static bool CanRetryH2RequestAfterTransportFailure(UHttpRequest request)
+        {
+            return request.Method.IsIdempotent() &&
+                request.Content.Replayability != RequestBodyReplayability.NonReplayable;
+        }
+
+        private static bool CanRetryHttp11RequestAfterTransportFailure(
+            UHttpRequest request,
+            Http11RequestWriteState writeState)
+        {
+            if (request.Content.Replayability == RequestBodyReplayability.NonReplayable)
+                return false;
+
+            return request.Method.IsIdempotent() ||
+                (writeState != null && !writeState.HasCommittedBodyBytes);
+        }
+
+        private static bool ShouldSurfaceCommittedNonReplayableBodyFailure(
+            UHttpRequest request,
+            Http11RequestWriteState writeState,
+            CancellationToken transportToken,
+            Exception ex)
+        {
+            return !transportToken.IsCancellationRequested &&
+                request.Content.Replayability == RequestBodyReplayability.NonReplayable &&
+                writeState != null &&
+                writeState.HasCommittedBodyBytes &&
+                (ex is IOException || ex is SocketException);
+        }
+
+        private static UHttpException CreateCommittedNonReplayableBodyFailure(Exception ex)
+        {
+            return new UHttpException(new UHttpError(
+                UHttpErrorType.NetworkError,
+                "Connection failed after a non-replayable request body started sending. The request cannot be retried.",
+                ex));
+        }
+
         private async Task DispatchCoreAsync(
             UHttpRequest request,
             IHttpHandler handler,
@@ -204,9 +242,7 @@ namespace TurboHTTP.Transport
                             // subsequent requests hitting the same dead connection.
                             _h2Manager.Remove(host, port);
 
-                            // Only retry idempotent methods to avoid duplicating side effects.
-                            // Non-idempotent requests re-throw to fail the request.
-                            if (!request.Method.IsIdempotent())
+                            if (!CanRetryH2RequestAfterTransportFailure(request))
                                 throw;
 
                             context.RecordEvent("TransportH2StaleRetry");
@@ -216,57 +252,114 @@ namespace TurboHTTP.Transport
 
                 // 4b. Get connection lease (semaphore permit owned by lease)
                 context.RecordEvent("TransportConnecting");
-                using var lease = await _pool.GetConnectionAsync(host, port, secure, ct)
-                    .ConfigureAwait(false);
-
-                // 4c. Protocol routing based on ALPN
-                if (lease.Connection.NegotiatedAlpnProtocol == "h2")
-                {
-                    context.RecordEvent("TransportH2Init");
-                    lease.TransferOwnership();
-                    var h2Conn = await _h2Manager.GetOrCreateAsync(
-                        host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
-                    await h2Conn.DispatchAsync(request, handler, context, ct)
-                        .ConfigureAwait(false);
-                    return;
-                }
-
-                // 4d. HTTP/1.1 path
+                ConnectionLease lease = null;
                 try
                 {
-                    var keepAlive = await DispatchOnLeaseAsync(lease, request, handler, context, ct)
-                        .ConfigureAwait(false);
-                    if (keepAlive)
-                        lease.ReturnToPool();
-                    return;
-                }
-                catch (IOException) when (lease.Connection.IsReused && request.Method.IsIdempotent())
-                {
-                    lease.Dispose();
-
-                    context.RecordEvent("TransportRetryStale");
-                    context.RecordEvent("TransportConnecting");
-
-                    using var freshLease = await _pool.GetConnectionAsync(host, port, secure, ct)
+                    lease = await _pool.GetConnectionAsync(host, port, secure, ct)
                         .ConfigureAwait(false);
 
-                    // Check ALPN on fresh connection too
-                    if (freshLease.Connection.NegotiatedAlpnProtocol == "h2")
+                    // 4c. Protocol routing based on ALPN
+                    if (lease.Connection.NegotiatedAlpnProtocol == "h2")
                     {
                         context.RecordEvent("TransportH2Init");
-                        freshLease.TransferOwnership();
+                        lease.TransferOwnership();
                         var h2Conn = await _h2Manager.GetOrCreateAsync(
-                            host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
+                            host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                        lease = null;
                         await h2Conn.DispatchAsync(request, handler, context, ct)
                             .ConfigureAwait(false);
                         return;
                     }
 
-                    var keepAlive = await DispatchOnLeaseAsync(freshLease, request, handler, context, ct)
-                        .ConfigureAwait(false);
-                    if (keepAlive)
-                        freshLease.ReturnToPool();
-                    return;
+                    // 4d. HTTP/1.1 path
+                    var requestWriteState = new Http11RequestWriteState();
+                    try
+                    {
+                        await DispatchOnLeaseAsync(
+                                lease,
+                                request,
+                                handler,
+                                context,
+                                requestWriteState,
+                                ct)
+                            .ConfigureAwait(false);
+                        lease = null;
+
+                        return;
+                    }
+                    catch (Exception ex) when (
+                        lease != null &&
+                        lease.Connection.IsReused &&
+                        (ex is IOException || ex is SocketException) &&
+                        CanRetryHttp11RequestAfterTransportFailure(request, requestWriteState))
+                    {
+                        lease.Dispose();
+                        lease = null;
+
+                        context.RecordEvent("TransportRetryStale");
+                        context.RecordEvent("TransportConnecting");
+
+                        ConnectionLease freshLease = null;
+                        try
+                        {
+                            freshLease = await _pool.GetConnectionAsync(host, port, secure, ct)
+                                .ConfigureAwait(false);
+
+                            if (freshLease.Connection.NegotiatedAlpnProtocol == "h2")
+                            {
+                                context.RecordEvent("TransportH2Init");
+                                freshLease.TransferOwnership();
+                                var h2Conn = await _h2Manager.GetOrCreateAsync(
+                                    host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
+                                freshLease = null;
+                                await h2Conn.DispatchAsync(request, handler, context, ct)
+                                    .ConfigureAwait(false);
+                                return;
+                            }
+
+                            var retryWriteState = new Http11RequestWriteState();
+                            try
+                            {
+                                await DispatchOnLeaseAsync(
+                                        freshLease,
+                                        request,
+                                        handler,
+                                        context,
+                                        retryWriteState,
+                                        ct)
+                                    .ConfigureAwait(false);
+                                freshLease = null;
+
+                                return;
+                            }
+                            catch (Exception retryEx) when (
+                                ShouldSurfaceCommittedNonReplayableBodyFailure(
+                                    request,
+                                    retryWriteState,
+                                    ct,
+                                    retryEx))
+                            {
+                                throw CreateCommittedNonReplayableBodyFailure(retryEx);
+                            }
+                        }
+                        finally
+                        {
+                            freshLease?.Dispose();
+                        }
+                    }
+                    catch (Exception ex) when (
+                        ShouldSurfaceCommittedNonReplayableBodyFailure(
+                            request,
+                            requestWriteState,
+                            ct,
+                            ex))
+                    {
+                        throw CreateCommittedNonReplayableBodyFailure(ex);
+                    }
+                }
+                finally
+                {
+                    lease?.Dispose();
                 }
             }
             // IMPORTANT: UHttpException MUST be the first catch handler. Moving it will
@@ -399,12 +492,26 @@ namespace TurboHTTP.Transport
             if (!secure)
             {
                 var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
-                await DispatchOnStreamAsync(
-                    stream,
-                    forwardedRequest,
-                    handler,
-                    context,
-                    ct).ConfigureAwait(false);
+                var writeState = new Http11RequestWriteState();
+                try
+                {
+                    await DispatchOnStreamAsync(
+                        stream,
+                        forwardedRequest,
+                        handler,
+                        context,
+                        writeState,
+                        ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (
+                    ShouldSurfaceCommittedNonReplayableBodyFailure(
+                        request,
+                        writeState,
+                        ct,
+                        ex))
+                {
+                    throw CreateCommittedNonReplayableBodyFailure(ex);
+                }
                 return;
             }
 
@@ -418,12 +525,26 @@ namespace TurboHTTP.Transport
                 ct).ConfigureAwait(false);
 
             var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-            await DispatchOnStreamAsync(
-                stream,
-                tunneledRequest,
-                handler,
-                context,
-                ct).ConfigureAwait(false);
+            var tunneledWriteState = new Http11RequestWriteState();
+            try
+            {
+                await DispatchOnStreamAsync(
+                    stream,
+                    tunneledRequest,
+                    handler,
+                    context,
+                    tunneledWriteState,
+                    ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (
+                ShouldSurfaceCommittedNonReplayableBodyFailure(
+                    request,
+                    tunneledWriteState,
+                    ct,
+                    ex))
+            {
+                throw CreateCommittedNonReplayableBodyFailure(ex);
+            }
         }
 
         private static ProxySettings ResolveProxySettings(UHttpRequest request)
@@ -800,16 +921,33 @@ namespace TurboHTTP.Transport
             return keepAlive;
         }
 
-        private async Task<bool> DispatchOnLeaseAsync(
+        private async Task DispatchOnLeaseAsync(
             ConnectionLease lease,
             UHttpRequest request,
             IHttpHandler handler,
             RequestContext context,
+            Http11RequestWriteState requestWriteState,
             CancellationToken ct)
         {
-            var parsed = await SendOnLeaseAsync(lease, request, context, ct)
+            using var head = await SendOnLeaseAsync(lease, request, context, requestWriteState, ct)
                 .ConfigureAwait(false);
-            return await EmitParsedResponseAsync(parsed, handler, context).ConfigureAwait(false);
+
+            var transportBodyReadToken = context.GetState(
+                TransportBehaviorFlags.StreamingResponseRequested,
+                false)
+                ? CancellationToken.None
+                : ct;
+
+            await EmitParsedResponseHeadAsync(
+                    head,
+                    lease,
+                    handler,
+                    context,
+                    transportBodyReadToken,
+                    request.Timeout)
+                .ConfigureAwait(false);
+
+            context.RecordEvent("TransportComplete");
         }
 
         private static async Task<bool> DispatchOnStreamAsync(
@@ -817,28 +955,78 @@ namespace TurboHTTP.Transport
             UHttpRequest request,
             IHttpHandler handler,
             RequestContext context,
+            Http11RequestWriteState requestWriteState,
             CancellationToken ct)
         {
-            var parsed = await SendOnStreamAsync(stream, request, context, ct)
+            var parsed = await SendOnStreamAsync(stream, request, context, requestWriteState, ct)
                 .ConfigureAwait(false);
             return await EmitParsedResponseAsync(parsed, handler, context).ConfigureAwait(false);
         }
 
-        private async Task<ParsedResponse> SendOnLeaseAsync(
+        private static async Task EmitParsedResponseHeadAsync(
+            ParsedResponseHead head,
+            ConnectionLease lease,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken transportBodyReadToken,
+            TimeSpan requestTimeout)
+        {
+            if (head == null)
+                throw new ArgumentNullException(nameof(head));
+            if (lease == null)
+                throw new ArgumentNullException(nameof(lease));
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
+            if (context == null)
+                throw new ArgumentNullException(nameof(context));
+
+            var safeHandler = HandlerCallbackSafetyWrapper.Wrap(handler, context);
+            Http11ResponseBodySource bodySource = null;
+            try
+            {
+                bodySource = new Http11ResponseBodySource(
+                    head,
+                    lease,
+                    transportBodyReadToken,
+                    requestTimeout);
+
+                await safeHandler.OnResponseStartAsync(
+                        (int)head.StatusCode,
+                        head.Headers,
+                        bodySource,
+                        context)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                bodySource?.Abort();
+                throw;
+            }
+        }
+
+        private async Task<ParsedResponseHead> SendOnLeaseAsync(
             ConnectionLease lease,
             UHttpRequest request,
             RequestContext context,
+            Http11RequestWriteState requestWriteState,
             CancellationToken ct)
         {
             context.RecordEvent("TransportSending");
-            await Http11RequestSerializer.SerializeAsync(request, lease.Connection.Stream, ct)
+            await Http11RequestSerializer.SerializeAsync(
+                    request,
+                    lease.Connection.Stream,
+                    ct,
+                    requestWriteState)
                 .ConfigureAwait(false);
 
             context.RecordEvent("TransportReceiving");
-            var parsed = await Http11ResponseParser.ParseAsync(lease.Connection.Stream, request.Method, ct)
+            var parsed = await Http11ResponseParser.ParseHeadAsync(
+                    lease.Connection.Stream,
+                    request.Method,
+                    ct,
+                    context)
                 .ConfigureAwait(false);
 
-            context.RecordEvent("TransportComplete");
             return parsed;
         }
 
@@ -846,10 +1034,15 @@ namespace TurboHTTP.Transport
             Stream stream,
             UHttpRequest request,
             RequestContext context,
+            Http11RequestWriteState requestWriteState,
             CancellationToken ct)
         {
             context.RecordEvent("TransportSending");
-            await Http11RequestSerializer.SerializeAsync(request, stream, ct)
+            await Http11RequestSerializer.SerializeAsync(
+                    request,
+                    stream,
+                    ct,
+                    requestWriteState)
                 .ConfigureAwait(false);
 
             context.RecordEvent("TransportReceiving");

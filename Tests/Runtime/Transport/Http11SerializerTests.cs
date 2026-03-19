@@ -140,6 +140,40 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void SerializePost_KnownLengthFactoryBody_WritesContentLengthAndBody()
+        {
+            Task.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("stream-body");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(new MemoryStream(body, writable: false)),
+                        body.Length);
+
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 11"));
+                Assert.IsFalse(result.Headers.Contains("Transfer-Encoding:"));
+                Assert.IsTrue(result.Body.SequenceEqual(body));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SerializePost_UnknownLengthFactoryBody_UsesChunkedTransferEncoding()
+        {
+            Task.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("hello");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(_ => new ValueTask<Stream>(new MemoryStream(body, writable: false)));
+
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: chunked"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+                Assert.AreEqual("5\r\nhello\r\n0\r\n\r\n", Encoding.ASCII.GetString(result.Body));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void Serialize_MultiValueHeaders_EmitsSeparateLines()        {
             Task.Run(async () =>
             {
@@ -230,17 +264,21 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_UserSetContentLength_Mismatch_ThrowsArgumentException()
-        {
-            var headers = new HttpHeaders();
-            headers.Set("Content-Length", "4");
-            var request = new UHttpRequest(
-                HttpMethod.POST,
-                new Uri("http://example.com/"),
-                headers,
-                body: Encoding.UTF8.GetBytes("hello"));
+        public void Serialize_UserSetContentLength_Mismatch_IsNormalizedToActualBodyLength()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Content-Length", "4");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    headers,
+                    body: Encoding.UTF8.GetBytes("hello"));
 
-            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length: 4"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -261,18 +299,22 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_DuplicateContentLength_Conflicting_ThrowsArgumentException()
-        {
-            var headers = new HttpHeaders();
-            headers.Add("Content-Length", "5");
-            headers.Add("Content-Length", "6");
-            var request = new UHttpRequest(
-                HttpMethod.POST,
-                new Uri("http://example.com/"),
-                headers,
-                body: Encoding.UTF8.GetBytes("hello"));
+        public void Serialize_DuplicateContentLength_ConflictingValues_AreReplacedByTransportValue()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Add("Content-Length", "5");
+                headers.Add("Content-Length", "6");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    headers,
+                    body: Encoding.UTF8.GetBytes("hello"));
 
-            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length: 6"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -308,33 +350,42 @@ namespace TurboHTTP.Tests.Transport
                     body: Encoding.UTF8.GetBytes("hello"));
 
                 var result = await SerializeAsync(request);
-                Assert.IsTrue(result.Headers.Contains("Content-Length: 5, 5"));
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length: 5, 5"));
             }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public void Serialize_CommaSeparatedContentLength_ConflictingValues_ThrowsArgumentException()
-        {
-            var headers = new HttpHeaders();
-            headers.Set("Content-Length", "5, 6");
-            var request = new UHttpRequest(
-                HttpMethod.POST,
-                new Uri("http://example.com/"),
-                headers,
-                body: Encoding.UTF8.GetBytes("hello"));
+        public void Serialize_CommaSeparatedContentLength_ConflictingValues_AreReplacedByTransportValue()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Content-Length", "5, 6");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    headers,
+                    body: Encoding.UTF8.GetBytes("hello"));
 
-            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length: 5, 6"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public void Serialize_TransferEncodingAndContentLength_ThrowsArgumentException()
-        {
-            var headers = new HttpHeaders();
-            headers.Set("Transfer-Encoding", "gzip");
-            headers.Set("Content-Length", "0");
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
+        public void Serialize_TransferEncodingAndContentLength_OnEmptyRequest_AreStripped()        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Transfer-Encoding", "gzip");
+                headers.Set("Content-Length", "0");
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
 
-            AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+                var result = await SerializeAsync(request);
+                Assert.IsFalse(result.Headers.Contains("Transfer-Encoding:"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+            }).GetAwaiter().GetResult();
         }
 
         [Test]
@@ -361,7 +412,7 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_TransferEncodingSet_NoAutoContentLength()        {
+        public void Serialize_TransferEncodingSet_OnEmptyRequest_IsStripped()        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -369,13 +420,13 @@ namespace TurboHTTP.Tests.Transport
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"), headers);
 
                 var result = await SerializeAsync(request);
-                Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: gzip"));
+                Assert.IsFalse(result.Headers.Contains("Transfer-Encoding:"));
                 Assert.IsFalse(result.Headers.Contains("Content-Length:"));
             }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public void Serialize_TransferEncodingAny_WithBody_PreservesTransferEncoding()
+        public void Serialize_TransferEncodingAny_WithKnownLengthBody_IsStrippedAndContentLengthIsSet()
         {
             Task.Run(async () =>
             {
@@ -388,8 +439,25 @@ namespace TurboHTTP.Tests.Transport
                     body: Encoding.UTF8.GetBytes("hello"));
 
                 var result = await SerializeAsync(request);
-                Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: gzip"));
+                Assert.IsFalse(result.Headers.Contains("Transfer-Encoding:"));
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Serialize_ContentLengthOnUnknownLengthBody_IsStrippedAndChunkedIsApplied()
+        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Content-Length", "999");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"), headers)
+                    .WithBodyFactory(_ => new ValueTask<Stream>(new MemoryStream(Encoding.UTF8.GetBytes("abc"), writable: false)));
+
+                var result = await SerializeAsync(request);
+                Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: chunked"));
                 Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+                Assert.AreEqual("3\r\nabc\r\n0\r\n\r\n", Encoding.ASCII.GetString(result.Body));
             }).GetAwaiter().GetResult();
         }
 

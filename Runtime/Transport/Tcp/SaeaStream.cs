@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -63,21 +64,26 @@ namespace TurboHTTP.Transport.Tcp
             if (!System.Runtime.InteropServices.MemoryMarshal.TryGetArray(
                     (ReadOnlyMemory<byte>)buffer, out var segment))
             {
-                // Fallback: allocate a temporary array for non-array-backed Memory.
-                // This path is uncommon in practice — callers in this codebase use array-backed Memory.
-                var tmp = new byte[buffer.Length];
-                var vt = _channel.ReceiveAsync(tmp, 0, tmp.Length, cancellationToken);
-                return CopyAndReturnAsync(vt, tmp, buffer);
+                var tmp = ArrayPool<byte>.Shared.Rent(buffer.Length);
+                var vt = _channel.ReceiveAsync(tmp, 0, buffer.Length, cancellationToken);
+                return CopyAndReturnPooledAsync(vt, tmp, buffer);
             }
             return _channel.ReceiveAsync(segment.Array!, segment.Offset, segment.Count, cancellationToken);
         }
 
-        private static async ValueTask<int> CopyAndReturnAsync(
+        private static async ValueTask<int> CopyAndReturnPooledAsync(
             ValueTask<int> readTask, byte[] tmp, Memory<byte> destination)
         {
-            int n = await readTask.ConfigureAwait(false);
-            tmp.AsMemory(0, n).CopyTo(destination);
-            return n;
+            try
+            {
+                int n = await readTask.ConfigureAwait(false);
+                tmp.AsMemory(0, n).CopyTo(destination);
+                return n;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(tmp);
+            }
         }
 
         // ── Write ──────────────────────────────────────────────────────────────

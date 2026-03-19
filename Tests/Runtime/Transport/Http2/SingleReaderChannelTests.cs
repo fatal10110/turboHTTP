@@ -18,7 +18,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             var pendingRead = channel.ReadAsync(cts.Token).AsTask();
             cts.Cancel();
 
-            var ex = Assert.ThrowsAsync<OperationCanceledException>(async () => await pendingRead);
+            var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await pendingRead);
             Assert.AreEqual(cts.Token, ex.CancellationToken);
         }
 
@@ -33,7 +33,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             channel.Complete(first);
             channel.Complete(second);
 
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(async () => await pendingRead);
+            var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(async () => await pendingRead);
             Assert.AreSame(first, ex);
         }
     }

@@ -94,6 +94,54 @@ namespace TurboHTTP.Transport.Http1
         }
     }
 
+    internal enum Http11ResponseBodyKind
+    {
+        Empty,
+        Chunked,
+        ContentLength,
+        ReadToEnd
+    }
+
+    internal sealed class ParsedResponseHead : IDisposable
+    {
+        private Http11ResponseParser.BufferedStreamReader _reader;
+
+        internal ParsedResponseHead(Http11ResponseParser.BufferedStreamReader reader)
+        {
+            _reader = reader ?? throw new ArgumentNullException(nameof(reader));
+        }
+
+        public HttpStatusCode StatusCode { get; internal set; }
+
+        public HttpHeaders Headers { get; internal set; }
+
+        public bool KeepAlive { get; internal set; }
+
+        public Http11ResponseBodyKind BodyKind { get; internal set; }
+
+        public long? ContentLength { get; internal set; }
+
+        internal Http11ResponseParser.BufferedStreamReader Reader =>
+            _reader ?? throw new ObjectDisposedException(nameof(ParsedResponseHead));
+
+        internal Http11ResponseParser.BufferedStreamReader TransferReaderOwnership()
+        {
+            var reader = _reader;
+            if (reader == null)
+                throw new ObjectDisposedException(nameof(ParsedResponseHead));
+
+            _reader = null;
+            return reader;
+        }
+
+        public void Dispose()
+        {
+            var reader = _reader;
+            _reader = null;
+            reader?.Dispose();
+        }
+    }
+
     /// <summary>
     /// Parses HTTP/1.1 responses from a stream.
     /// </summary>
@@ -113,193 +161,264 @@ namespace TurboHTTP.Transport.Http1
         public static async Task<ParsedResponse> ParseAsync(
             Stream stream, HttpMethod requestMethod, CancellationToken ct)
         {
-            int statusCode;
-            string httpVersion;
-            HttpHeaders headers;
+            using var head = await ParseHeadAsync(stream, requestMethod, ct).ConfigureAwait(false);
+            return await CompleteBufferedResponseAsync(head, ct).ConfigureAwait(false);
+        }
+
+        internal static async Task<ParsedResponseHead> ParseHeadAsync(
+            Stream stream,
+            HttpMethod requestMethod,
+            CancellationToken ct,
+            RequestContext context = null)
+        {
+            if (stream == null)
+                throw new ArgumentNullException(nameof(stream));
+
+            string httpVersion = null;
+            int statusCode = 0;
+            HttpHeaders headers = null;
             int interim1xxCount = 0;
-            ParsedResponse parsedResult = null; // tracked for pool return on exception path
+            BufferedStreamReader reader = null;
+            ParsedResponseHead head = null;
 
-            using var reader = new BufferedStreamReader(stream);
-
-            // Rent a scratch accumulator for header pairs. Reused across 1xx interim
-            // responses; returned to pool after the final header block is transferred
-            // to the permanent HttpHeaders instance.
             var scratch = HeaderParseScratchPool.Rent();
             try
             {
+                reader = new BufferedStreamReader(stream);
 
-            // 1. Skip 1xx interim responses
-            do
-            {
-                // Status line
-                var statusLine = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(statusLine))
-                    throw new FormatException("Empty HTTP status line");
-
-                ParseStatusLine(statusLine, out httpVersion, out statusCode);
-
-                // Headers — accumulate raw pairs into the pooled scratch list, then
-                // transfer to a fresh HttpHeaders after the block is complete.
-                // This reuses the List<(string, string)> across requests while keeping
-                // the final HttpHeaders independent from the pooled scratch state.
-                scratch.RawHeaders.Clear();
-                int totalHeaderBytes = 0;
-                while (true)
+                do
                 {
-                    var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
-                    if (string.IsNullOrEmpty(line))
+                    var statusLine = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
+                    if (string.IsNullOrEmpty(statusLine))
+                        throw new FormatException("Empty HTTP status line");
+
+                    ParseStatusLine(statusLine, out httpVersion, out statusCode);
+
+                    scratch.RawHeaders.Clear();
+                    int totalHeaderBytes = 0;
+                    while (true)
+                    {
+                        var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
+                        if (string.IsNullOrEmpty(line))
+                            break;
+
+                        totalHeaderBytes += line.Length;
+                        if (totalHeaderBytes > MaxTotalHeaderBytes)
+                            throw new FormatException("Response headers exceed maximum size");
+
+                        if (TryParseHeaderLine(line, out var name, out var value))
+                            scratch.RawHeaders.Add((name, value));
+                    }
+
+                    headers = new HttpHeaders();
+                    foreach (var (n, v) in scratch.RawHeaders)
+                        headers.Add(n, v);
+
+                    if (statusCode == 101)
                         break;
 
-                    totalHeaderBytes += line.Length;
-                    if (totalHeaderBytes > MaxTotalHeaderBytes)
-                        throw new FormatException("Response headers exceed maximum size");
-
-                    if (TryParseHeaderLine(line, out var name, out var value))
-                        scratch.RawHeaders.Add((name, value));
-                }
-
-                headers = new HttpHeaders();
-                foreach (var (n, v) in scratch.RawHeaders)
-                    headers.Add(n, v);
-
-                // 101 Switching Protocols is NOT interim — it signals a protocol upgrade.
-                if (statusCode == 101)
-                    break;
-
-                if (statusCode >= 100 && statusCode < 200)
-                {
-                    interim1xxCount++;
-                    if (interim1xxCount > Max1xxResponses)
-                        throw new FormatException("Too many 1xx interim responses");
-                }
-            } while (statusCode >= 100 && statusCode < 200);
-
-            // 2. Determine body reading strategy
-            bool usedReadToEnd = false;
-            ReadOnlyMemory<byte> body = ReadOnlyMemory<byte>.Empty;
-            bool bodyFromPool = false;
-            SegmentedBuffer segmentedBody = null;
-
-            bool skipBody = requestMethod == HttpMethod.HEAD
-                         || statusCode == 101
-                         || statusCode == 204
-                         || statusCode == 304;
-
-            if (!skipBody)
-            {
-                var transferEncoding = headers.Get("Transfer-Encoding");
-                var contentLengthStr = headers.Get("Content-Length");
-
-                if (transferEncoding != null)
-                {
-                    var te = transferEncoding.Trim();
-
-                    if (string.Equals(te, "identity", StringComparison.OrdinalIgnoreCase))
+                    if (statusCode >= 100 && statusCode < 200)
                     {
-                        var result = await ReadBodyByContentLengthOrEnd(reader, headers, ct).ConfigureAwait(false);
-                        body = result.Body;
-                        bodyFromPool = result.BodyFromPool;
-                        segmentedBody = result.SegmentedBody;
-                        usedReadToEnd = result.UsedReadToEnd;
-                    }
-                    else if (te.EndsWith("chunked", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Chunked body goes into a SegmentedBuffer — no contiguous copy amplification.
-                        segmentedBody = await ReadChunkedBodyAsync(reader, ct).ConfigureAwait(false);
-
-                        // RFC 9112 Section 6.1: ignore Content-Length when Transfer-Encoding is present.
-                        if (contentLengthStr != null)
-                            headers.Remove("Content-Length");
-                    }
-                    else
-                    {
-                        throw new NotSupportedException(
-                            $"Unsupported Transfer-Encoding: {te}. Only 'chunked' and 'identity' are supported.");
+                        interim1xxCount++;
+                        if (interim1xxCount > Max1xxResponses)
+                            throw new FormatException("Too many 1xx interim responses");
                     }
                 }
-                else
+                while (statusCode >= 100 && statusCode < 200);
+
+                var bodyKind = DetermineBodyKind(
+                    requestMethod,
+                    statusCode,
+                    headers,
+                    context,
+                    out var contentLength);
+
+                bool keepAlive = IsKeepAlive(httpVersion, headers);
+                if (bodyKind == Http11ResponseBodyKind.ReadToEnd)
+                    keepAlive = false;
+
+                head = new ParsedResponseHead(reader)
                 {
-                    var result = await ReadBodyByContentLengthOrEnd(reader, headers, ct).ConfigureAwait(false);
-                    body = result.Body;
-                    bodyFromPool = result.BodyFromPool;
-                    segmentedBody = result.SegmentedBody;
-                    usedReadToEnd = result.UsedReadToEnd;
-                }
+                    StatusCode = (HttpStatusCode)statusCode,
+                    Headers = headers,
+                    KeepAlive = keepAlive,
+                    BodyKind = bodyKind,
+                    ContentLength = contentLength
+                };
+
+                reader = null;
+                var toReturn = head;
+                head = null;
+                return toReturn;
             }
-
-            // 3. Keep-alive detection
-            bool keepAlive = IsKeepAlive(httpVersion, headers);
-            if (usedReadToEnd)
-                keepAlive = false;
-
-            parsedResult = ParsedResponsePool.Rent();
-            parsedResult.StatusCode = (HttpStatusCode)statusCode;
-            parsedResult.Headers = headers;
-            parsedResult.Body = body;
-            parsedResult.BodyFromPool = bodyFromPool;
-            parsedResult.SegmentedBody = segmentedBody;
-            parsedResult.KeepAlive = keepAlive;
-            // Transfer ownership to caller. Null parsedResult so the finally block
-            // does not attempt to return it to the pool — BuildResponse owns the return.
-            var toReturn = parsedResult;
-            parsedResult = null;
-            return toReturn;
-
-            } // end try
             finally
             {
-                // Return the scratch accumulator to the pool. All raw header string
-                // references have been transferred to HttpHeaders by this point.
                 HeaderParseScratchPool.Return(scratch);
-                // Return ParsedResponse to pool only if an exception fired between
-                // Rent() and the ownership-transfer null assignment above.
+                head?.Dispose();
+                reader?.Dispose();
+            }
+        }
+
+        internal static async Task<ParsedResponse> CompleteBufferedResponseAsync(
+            ParsedResponseHead head,
+            CancellationToken ct)
+        {
+            if (head == null)
+                throw new ArgumentNullException(nameof(head));
+
+            ParsedResponse parsedResult = null;
+            try
+            {
+                parsedResult = ParsedResponsePool.Rent();
+                var bodyResult = await ReadBufferedBodyAsync(head, ct).ConfigureAwait(false);
+                parsedResult.StatusCode = head.StatusCode;
+                parsedResult.Headers = head.Headers;
+                parsedResult.Body = bodyResult.Body;
+                parsedResult.BodyFromPool = bodyResult.BodyFromPool;
+                parsedResult.SegmentedBody = bodyResult.SegmentedBody;
+                parsedResult.KeepAlive = head.KeepAlive;
+
+                var toReturn = parsedResult;
+                parsedResult = null;
+                return toReturn;
+            }
+            finally
+            {
                 if (parsedResult != null)
                     ParsedResponsePool.Return(parsedResult);
             }
         }
 
-        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool, SegmentedBuffer SegmentedBody, bool UsedReadToEnd)>
-            ReadBodyByContentLengthOrEnd(
-            BufferedStreamReader reader,
-            HttpHeaders headers,
+        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool, SegmentedBuffer SegmentedBody)>
+            ReadBufferedBodyAsync(
+            ParsedResponseHead head,
             CancellationToken ct)
         {
-            var contentLengthStr = headers.Get("Content-Length");
-
-            if (contentLengthStr != null)
+            switch (head.BodyKind)
             {
-                // Validate all Content-Length values are consistent (RFC 9110 Section 8.6)
-                var clValues = headers.GetValues("Content-Length");
-                if (clValues.Count > 1)
-                {
-                    for (int i = 1; i < clValues.Count; i++)
-                    {
-                        if (clValues[i].Trim() != clValues[0].Trim())
-                            throw new FormatException("Conflicting Content-Length values");
-                    }
-                }
+                case Http11ResponseBodyKind.Empty:
+                    return (ReadOnlyMemory<byte>.Empty, false, null);
 
-                if (!long.TryParse(contentLengthStr.Trim(), NumberStyles.None,
-                    CultureInfo.InvariantCulture, out var contentLength))
-                    throw new FormatException("Invalid Content-Length value");
+                case Http11ResponseBodyKind.Chunked:
+                    return (
+                        ReadOnlyMemory<byte>.Empty,
+                        false,
+                        await ReadChunkedBodyAsync(head.Reader, ct).ConfigureAwait(false));
 
-                if (contentLength < 0)
-                    throw new FormatException("Negative Content-Length");
+                case Http11ResponseBodyKind.ContentLength:
+                    if (head.ContentLength.GetValueOrDefault() == 0)
+                        return (ReadOnlyMemory<byte>.Empty, false, null);
 
-                if (contentLength > MaxResponseBodySize)
-                    throw new IOException("Response body exceeds maximum size");
+                    var fixedBody = await ReadFixedBodyAsync(
+                            head.Reader,
+                            checked((int)head.ContentLength.Value),
+                            ct)
+                        .ConfigureAwait(false);
+                    return (fixedBody.Body, fixedBody.BodyFromPool, null);
 
-                if (contentLength == 0)
-                    return (ReadOnlyMemory<byte>.Empty, false, null, false);
+                case Http11ResponseBodyKind.ReadToEnd:
+                    return (
+                        ReadOnlyMemory<byte>.Empty,
+                        false,
+                        await ReadToEndAsync(head.Reader, ct).ConfigureAwait(false));
 
-                int length = (int)contentLength;
-                var fixedBody = await ReadFixedBodyAsync(reader, length, ct).ConfigureAwait(false);
-                return (fixedBody.Body, fixedBody.BodyFromPool, null, false);
+                default:
+                    throw new InvalidOperationException($"Unsupported HTTP/1.1 body kind: {head.BodyKind}");
+            }
+        }
+
+        private static Http11ResponseBodyKind DetermineBodyKind(
+            HttpMethod requestMethod,
+            int statusCode,
+            HttpHeaders headers,
+            RequestContext context,
+            out long? contentLength)
+        {
+            contentLength = null;
+
+            if (requestMethod == HttpMethod.HEAD ||
+                statusCode == 101 ||
+                (statusCode >= 100 && statusCode < 200) ||
+                statusCode == 204 ||
+                statusCode == 304)
+            {
+                return Http11ResponseBodyKind.Empty;
             }
 
-            // Neither Transfer-Encoding nor Content-Length — read to end into a SegmentedBuffer.
-            var readToEnd = await ReadToEndAsync(reader, ct).ConfigureAwait(false);
-            return (ReadOnlyMemory<byte>.Empty, false, readToEnd, true);
+            var transferEncoding = headers.Get("Transfer-Encoding");
+            if (transferEncoding != null)
+            {
+                var te = transferEncoding.Trim();
+                if (string.Equals(te, "identity", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TryGetValidatedContentLength(headers, out var identityLength))
+                    {
+                        contentLength = identityLength;
+                        return Http11ResponseBodyKind.ContentLength;
+                    }
+
+                    return Http11ResponseBodyKind.ReadToEnd;
+                }
+
+                if (EndsWithTransferCodingToken(te, "chunked"))
+                {
+                    if (headers.Get("Content-Length") != null)
+                    {
+                        context?.RecordEvent(
+                            "Http11DualFramingHeaders",
+                            new Dictionary<string, object>
+                            {
+                                ["transfer_encoding"] = te,
+                                ["content_length"] = headers.Get("Content-Length")
+                            });
+                    }
+
+                    return Http11ResponseBodyKind.Chunked;
+                }
+
+                throw new NotSupportedException(
+                    $"Unsupported Transfer-Encoding: {te}. Only 'chunked' and 'identity' are supported.");
+            }
+
+            if (TryGetValidatedContentLength(headers, out var length))
+            {
+                contentLength = length;
+                return Http11ResponseBodyKind.ContentLength;
+            }
+
+            return Http11ResponseBodyKind.ReadToEnd;
+        }
+
+        private static bool TryGetValidatedContentLength(HttpHeaders headers, out long contentLength)
+        {
+            contentLength = 0;
+            var contentLengthStr = headers.Get("Content-Length");
+            if (contentLengthStr == null)
+                return false;
+
+            var clValues = headers.GetValues("Content-Length");
+            if (clValues.Count > 1)
+            {
+                for (int i = 1; i < clValues.Count; i++)
+                {
+                    if (clValues[i].Trim() != clValues[0].Trim())
+                        throw new FormatException("Conflicting Content-Length values");
+                }
+            }
+
+            if (!long.TryParse(contentLengthStr.Trim(), NumberStyles.None,
+                CultureInfo.InvariantCulture, out contentLength))
+            {
+                throw new FormatException("Invalid Content-Length value");
+            }
+
+            if (contentLength < 0)
+                throw new FormatException("Negative Content-Length");
+
+            if (contentLength > MaxResponseBodySize)
+                throw new IOException("Response body exceeds maximum size");
+
+            return true;
         }
 
         private static bool IsKeepAlive(string httpVersion, HttpHeaders headers)
@@ -408,7 +527,7 @@ namespace TurboHTTP.Transport.Http1
             return true;
         }
 
-        private static long ParseChunkSizeLine(string sizeLine)
+        internal static long ParseChunkSizeLine(string sizeLine)
         {
             // Strip chunk extensions (RFC 9112 Section 7.1.1): "1A; ext=value"
             var sizeSpan = sizeLine.AsSpan();
@@ -421,16 +540,7 @@ namespace TurboHTTP.Transport.Http1
                 sizeSpan = sizeSpan.Slice(0, spaceIndex);
 
             sizeSpan = TrimWhitespace(sizeSpan);
-            if (!long.TryParse(
-                sizeSpan,
-                NumberStyles.HexNumber,
-                CultureInfo.InvariantCulture,
-                out var chunkSize))
-            {
-                throw new FormatException($"Invalid chunk size: {sizeSpan.ToString()}");
-            }
-
-            return chunkSize;
+            return ParseChunkSizeToken(sizeSpan);
         }
 
         private static ReadOnlySpan<char> TrimWhitespace(ReadOnlySpan<char> value)
@@ -449,6 +559,80 @@ namespace TurboHTTP.Transport.Http1
                 return ReadOnlySpan<char>.Empty;
 
             return value.Slice(start, end - start + 1);
+        }
+
+        private static bool EndsWithTransferCodingToken(string transferEncoding, string token)
+        {
+            if (string.IsNullOrEmpty(transferEncoding))
+                return false;
+
+            var trimmed = TrimWhitespace(transferEncoding.AsSpan());
+            if (trimmed.Length < token.Length)
+                return false;
+
+            var suffix = trimmed.Slice(trimmed.Length - token.Length);
+            if (!suffix.Equals(token.AsSpan(), StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (trimmed.Length == token.Length)
+                return true;
+
+            var preceding = trimmed[trimmed.Length - token.Length - 1];
+            return preceding == ',' || char.IsWhiteSpace(preceding);
+        }
+
+        private static long ParseChunkSizeToken(ReadOnlySpan<char> sizeSpan)
+        {
+            if (sizeSpan.IsEmpty)
+                throw new FormatException("Invalid chunk size: empty");
+
+            long chunkSize = 0;
+            for (int i = 0; i < sizeSpan.Length; i++)
+            {
+                int value = HexValue(sizeSpan[i]);
+                if (value < 0)
+                    throw new FormatException($"Invalid chunk size: {sizeSpan.ToString()}");
+
+                if (chunkSize > ((long.MaxValue - value) / 16))
+                    throw new FormatException($"Invalid chunk size: {sizeSpan.ToString()}");
+
+                chunkSize = (chunkSize * 16) + value;
+            }
+
+            return chunkSize;
+        }
+
+        private static long ParseChunkSizeToken(ReadOnlySpan<byte> sizeSpan)
+        {
+            if (sizeSpan.IsEmpty)
+                throw new FormatException("Invalid chunk size: empty");
+
+            long chunkSize = 0;
+            for (int i = 0; i < sizeSpan.Length; i++)
+            {
+                int value = HexValue((char)sizeSpan[i]);
+                if (value < 0)
+                    throw new FormatException($"Invalid chunk size: {EncodingHelper.Latin1.GetString(sizeSpan)}");
+
+                if (chunkSize > ((long.MaxValue - value) / 16))
+                    throw new FormatException($"Invalid chunk size: {EncodingHelper.Latin1.GetString(sizeSpan)}");
+
+                chunkSize = (chunkSize * 16) + value;
+            }
+
+            return chunkSize;
+        }
+
+        private static int HexValue(char c)
+        {
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+
+            return -1;
         }
 
         /// <summary>
@@ -484,9 +668,7 @@ namespace TurboHTTP.Transport.Http1
             {
                 while (true)
                 {
-                    var sizeLine = await reader.ReadLineAsync(ct, maxLength: 256).ConfigureAwait(false);
-
-                    var chunkSize = ParseChunkSizeLine(sizeLine);
+                    var chunkSize = await reader.ReadChunkSizeAsync(ct, maxLength: 256).ConfigureAwait(false);
 
                     if (chunkSize == 0)
                         break;
@@ -512,9 +694,7 @@ namespace TurboHTTP.Transport.Http1
                     }
 
                     // Read and validate trailing CRLF after chunk data (RFC 9112 Section 7.1)
-                    var trailing = await reader.ReadLineAsync(ct, maxLength: 16).ConfigureAwait(false);
-                    if (!string.IsNullOrEmpty(trailing))
-                        throw new FormatException("Unexpected data after chunk body (expected CRLF)");
+                    await reader.ReadExpectedCrlfAsync(ct).ConfigureAwait(false);
                 }
 
                 // Read and discard trailers (RFC 9112 §7.1.2).
@@ -615,7 +795,7 @@ namespace TurboHTTP.Transport.Http1
             }
         }
 
-        private sealed class BufferedStreamReader : IDisposable
+        internal sealed class BufferedStreamReader : IDisposable
         {
             private const int DefaultBufferSize = 4096;
 
@@ -623,7 +803,7 @@ namespace TurboHTTP.Transport.Http1
             private readonly byte[] _buffer;
             private int _start;
             private int _end;
-            private bool _disposed;
+            private volatile bool _disposed;
 
             public BufferedStreamReader(Stream stream, int bufferSize = DefaultBufferSize)
             {
@@ -709,6 +889,76 @@ namespace TurboHTTP.Transport.Http1
                 }
             }
 
+            public async ValueTask<long> ReadChunkSizeAsync(CancellationToken ct, int maxLength)
+            {
+                if (maxLength <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(maxLength), maxLength, "Must be > 0.");
+
+                byte[] accumulator = null;
+                int accumulatorCount = 0;
+
+                try
+                {
+                    while (true)
+                    {
+                        int lfIndex = IndexOfLf();
+                        if (lfIndex >= 0)
+                        {
+                            int segmentLength = lfIndex - _start + 1;
+                            if (accumulator == null)
+                            {
+                                var chunkSize = ParseChunkSizeFromBuffer(_buffer, _start, segmentLength, maxLength);
+                                _start = lfIndex + 1;
+                                return chunkSize;
+                            }
+
+                            if (accumulatorCount + segmentLength > maxLength + 2)
+                                throw new FormatException("HTTP header line exceeds maximum length");
+
+                            EnsureCapacity(ref accumulator, accumulatorCount + segmentLength, accumulatorCount);
+                            Buffer.BlockCopy(_buffer, _start, accumulator, accumulatorCount, segmentLength);
+                            accumulatorCount += segmentLength;
+                            _start = lfIndex + 1;
+                            return ParseChunkSizeFromBuffer(accumulator, 0, accumulatorCount, maxLength);
+                        }
+
+                        int available = _end - _start;
+                        if (available > 0)
+                        {
+                            if (accumulatorCount + available > maxLength + 2)
+                                throw new FormatException("HTTP header line exceeds maximum length");
+
+                            EnsureCapacity(ref accumulator, accumulatorCount + available, accumulatorCount);
+                            Buffer.BlockCopy(_buffer, _start, accumulator, accumulatorCount, available);
+                            accumulatorCount += available;
+                            _start = _end;
+                        }
+
+                        int read = await FillBufferAsync(ct).ConfigureAwait(false);
+                        if (read == 0)
+                        {
+                            if (accumulatorCount == 0)
+                                throw new FormatException("Invalid chunk size: empty");
+
+                            return ParseChunkSizeFromBuffer(accumulator, 0, accumulatorCount, maxLength);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (accumulator != null)
+                        ArrayPool<byte>.Shared.Return(accumulator, clearArray: true);
+                }
+            }
+
+            public async ValueTask ReadExpectedCrlfAsync(CancellationToken ct)
+            {
+                var first = await ReadRequiredByteAsync(ct).ConfigureAwait(false);
+                var second = await ReadRequiredByteAsync(ct).ConfigureAwait(false);
+                if (first != (byte)'\r' || second != (byte)'\n')
+                    throw new FormatException("Unexpected data after chunk body (expected CRLF)");
+            }
+
             public async Task ReadExactAsync(byte[] target, int offset, int count, CancellationToken ct)
             {
                 int copied = 0;
@@ -721,35 +971,39 @@ namespace TurboHTTP.Transport.Http1
                 }
             }
 
-            public async Task<int> ReadAsync(byte[] target, int offset, int count, CancellationToken ct)
+            public Task<int> ReadAsync(byte[] target, int offset, int count, CancellationToken ct)
             {
                 if (target == null)
                     throw new ArgumentNullException(nameof(target));
                 if (offset < 0 || count < 0 || offset + count > target.Length)
                     throw new ArgumentOutOfRangeException();
 
-                if (count == 0)
+                return ReadAsync(new Memory<byte>(target, offset, count), ct).AsTask();
+            }
+
+            public async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                if (destination.IsEmpty)
                     return 0;
 
                 int available = _end - _start;
                 if (available > 0)
                 {
-                    int toCopy = Math.Min(available, count);
-                    Buffer.BlockCopy(_buffer, _start, target, offset, toCopy);
+                    int toCopy = Math.Min(available, destination.Length);
+                    new ReadOnlyMemory<byte>(_buffer, _start, toCopy).CopyTo(destination);
                     _start += toCopy;
                     return toCopy;
                 }
 
-                // Fast path for large direct reads when our internal buffer is empty.
-                if (count >= _buffer.Length)
-                    return await _stream.ReadAsync(target, offset, count, ct).ConfigureAwait(false);
+                if (destination.Length >= _buffer.Length)
+                    return await _stream.ReadAsync(destination, ct).ConfigureAwait(false);
 
                 int read = await FillBufferAsync(ct).ConfigureAwait(false);
                 if (read == 0)
                     return 0;
 
-                int copy = Math.Min(read, count);
-                Buffer.BlockCopy(_buffer, _start, target, offset, copy);
+                int copy = Math.Min(read, destination.Length);
+                new ReadOnlyMemory<byte>(_buffer, _start, copy).CopyTo(destination);
                 _start += copy;
                 return copy;
             }
@@ -763,6 +1017,18 @@ namespace TurboHTTP.Transport.Http1
                 }
 
                 return -1;
+            }
+
+            private async ValueTask<byte> ReadRequiredByteAsync(CancellationToken ct)
+            {
+                if (_start < _end)
+                    return _buffer[_start++];
+
+                int read = await FillBufferAsync(ct).ConfigureAwait(false);
+                if (read == 0)
+                    throw new IOException("Unexpected end of stream");
+
+                return _buffer[_start++];
             }
 
             private async Task<int> FillBufferAsync(CancellationToken ct)
@@ -795,6 +1061,53 @@ namespace TurboHTTP.Transport.Http1
                     return string.Empty;
 
                 return EncodingHelper.Latin1.GetString(source, offset, payloadLength);
+            }
+
+            private static long ParseChunkSizeFromBuffer(byte[] source, int offset, int length, int maxLength)
+            {
+                int end = offset + length;
+                if (source[end - 1] == (byte)'\n')
+                    end--;
+                if (end > offset && source[end - 1] == (byte)'\r')
+                    end--;
+
+                int payloadLength = end - offset;
+                if (payloadLength > maxLength)
+                    throw new FormatException("HTTP header line exceeds maximum length");
+
+                var payload = new ReadOnlySpan<byte>(source, offset, payloadLength);
+                int semiIndex = payload.IndexOf((byte)';');
+                if (semiIndex >= 0)
+                    payload = payload.Slice(0, semiIndex);
+
+                int start = 0;
+                while (start < payload.Length && IsAsciiWhitespace(payload[start]))
+                    start++;
+
+                int tokenEnd = start;
+                while (tokenEnd < payload.Length &&
+                    payload[tokenEnd] != (byte)' ' &&
+                    payload[tokenEnd] != (byte)'\t')
+                {
+                    tokenEnd++;
+                }
+
+                int endOfToken = tokenEnd - 1;
+                while (endOfToken >= start && IsAsciiWhitespace(payload[endOfToken]))
+                    endOfToken--;
+
+                if (endOfToken < start)
+                    return ParseChunkSizeToken(ReadOnlySpan<byte>.Empty);
+
+                return ParseChunkSizeToken(payload.Slice(start, endOfToken - start + 1));
+            }
+
+            private static bool IsAsciiWhitespace(byte value)
+            {
+                return value == (byte)' ' ||
+                    value == (byte)'\t' ||
+                    value == (byte)'\r' ||
+                    value == (byte)'\n';
             }
 
             private static void EnsureCapacity(ref byte[] buffer, int required, int bytesToCopy)

@@ -447,7 +447,10 @@ namespace TurboHTTP.Tests.Transport
         {
             var task = RunAsync();
             yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
-            RethrowIfFaulted(task);
+            if (task.IsFaulted)
+            {
+                throw task.Exception?.GetBaseException() ?? new Exception("Task failed without an exception.");
+            }
 
             async Task RunAsync()
             {

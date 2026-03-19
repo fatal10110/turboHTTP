@@ -57,6 +57,16 @@ namespace TurboHTTP.Tests.Transport
             return NormalizeBodyForAssertions(parsed);
         }
 
+        private static async Task<ParsedResponse> ParseViaHeadStagesAsync(
+            byte[] responseBytes,
+            HttpMethod method = HttpMethod.GET)
+        {
+            using var ms = new MemoryStream(responseBytes);
+            using var head = await Http11ResponseParser.ParseHeadAsync(ms, method, CancellationToken.None);
+            var parsed = await Http11ResponseParser.CompleteBufferedResponseAsync(head, CancellationToken.None);
+            return NormalizeBodyForAssertions(parsed);
+        }
+
         private sealed class FragmentedReadStream : Stream
         {
             private readonly byte[] _buffer;
@@ -210,6 +220,20 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void ParseHead_HeadResponse_WithContentLength_UsesEmptyBodyKind()
+        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello";
+                using var ms = new MemoryStream(Encoding.ASCII.GetBytes(response));
+                using var head = await Http11ResponseParser.ParseHeadAsync(ms, HttpMethod.HEAD, CancellationToken.None);
+
+                Assert.AreEqual(Http11ResponseBodyKind.Empty, head.BodyKind);
+                Assert.IsNull(head.ContentLength);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void Parse_204NoContent_SkipsBody()        {
             Task.Run(async () =>
             {
@@ -359,6 +383,25 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void Parse_TransferEncoding_NonTokenChunkedSuffix_ThrowsNotSupportedException()
+        {
+            var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: notchunked\r\n\r\n";
+            AssertAsync.ThrowsAsync<NotSupportedException>(async () => await ParseAsync(response));
+        }
+
+        [Test]
+        public void ParseHead_TransferEncoding_NonTokenChunkedSuffix_ThrowsNotSupportedException()
+        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: notchunked\r\n\r\n";
+                using var ms = new MemoryStream(Encoding.ASCII.GetBytes(response));
+                AssertAsync.ThrowsAsync<NotSupportedException>(async () =>
+                    await Http11ResponseParser.ParseHeadAsync(ms, HttpMethod.GET, CancellationToken.None));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void Parse_TransferEncoding_TakesPrecedenceOverContentLength()        {
             Task.Run(async () =>
             {
@@ -367,6 +410,42 @@ namespace TurboHTTP.Tests.Transport
                 var parsed = await ParseAsync(response);
                 Assert.AreEqual(1, parsed.Body.Length);
                 Assert.AreEqual("a", Encoding.ASCII.GetString(parsed.Body.Span));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void ParseHead_TransferEncoding_TakesPrecedenceOverContentLength()
+        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 100\r\n\r\n" +
+                               "1\r\na\r\n0\r\n\r\n";
+                using var ms = new MemoryStream(Encoding.ASCII.GetBytes(response));
+                using var head = await Http11ResponseParser.ParseHeadAsync(ms, HttpMethod.GET, CancellationToken.None);
+
+                Assert.AreEqual(Http11ResponseBodyKind.Chunked, head.BodyKind);
+                Assert.IsNull(head.ContentLength);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void ParseHead_TransferEncoding_TakesPrecedenceOverContentLength_RecordsContextEvent()
+        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 100\r\n\r\n" +
+                               "1\r\na\r\n0\r\n\r\n";
+                using var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/"));
+                var context = new RequestContext(request);
+                using var ms = new MemoryStream(Encoding.ASCII.GetBytes(response));
+                using var head = await Http11ResponseParser.ParseHeadAsync(
+                    ms,
+                    HttpMethod.GET,
+                    CancellationToken.None,
+                    context);
+
+                Assert.AreEqual(Http11ResponseBodyKind.Chunked, head.BodyKind);
+                Assert.That(context.Timeline.Select(evt => evt.Name), Does.Contain("Http11DualFramingHeaders"));
             }).GetAwaiter().GetResult();
         }
 
@@ -566,6 +645,20 @@ namespace TurboHTTP.Tests.Transport
                 Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
                 Assert.AreEqual("A", parsed.Headers.Get("X-One"));
                 Assert.AreEqual("B", parsed.Headers.Get("X-Two"));
+                Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body.Span));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void ParseHead_CompletesBufferedParse_WithPrefetchedBodyBytesIntact()
+        {
+            Task.Run(async () =>
+            {
+                var raw = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Test: value\r\n\r\nHello";
+                var parsed = await ParseViaHeadStagesAsync(Encoding.ASCII.GetBytes(raw));
+
+                Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
+                Assert.AreEqual("value", parsed.Headers.Get("X-Test"));
                 Assert.AreEqual("Hello", Encoding.ASCII.GetString(parsed.Body.Span));
             }).GetAwaiter().GetResult();
         }

@@ -1,5 +1,6 @@
 using System;
-using System.Collections.Generic;
+using System.Buffers;
+using System.Buffers.Text;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -10,27 +11,41 @@ using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Http1
 {
+    internal sealed class Http11RequestWriteState
+    {
+        private int _bodyWriteStarted;
+
+        internal bool HasCommittedBodyBytes => Volatile.Read(ref _bodyWriteStarted) != 0;
+
+        internal void MarkBodyWriteStarted()
+        {
+            Interlocked.Exchange(ref _bodyWriteStarted, 1);
+        }
+    }
+
     /// <summary>
     /// Serializes a <see cref="UHttpRequest"/> to HTTP/1.1 wire format.
     /// </summary>
     internal static class Http11RequestSerializer
     {
+        private const int DefaultStreamingSendBufferBytes = 32 * 1024;
+        private const int MaxChunkHeaderBytes = 18;
+        private static readonly byte[] ChunkDataTerminator = { (byte)'\r', (byte)'\n' };
+        private static readonly byte[] FinalChunkBytes = { (byte)'0', (byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n' };
+
         /// <summary>
         /// Serialize the request to the given stream in HTTP/1.1 wire format.
         /// </summary>
-        public static async Task SerializeAsync(UHttpRequest request, Stream stream, CancellationToken ct)
+        public static async Task SerializeAsync(
+            UHttpRequest request,
+            Stream stream,
+            CancellationToken ct,
+            Http11RequestWriteState writeState = null)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
             if (stream == null) throw new ArgumentNullException(nameof(stream));
 
-            if (!request.TryGetBufferedContent(out var body))
-            {
-                throw new InvalidOperationException(
-                    "Buffered HTTP/1.1 request serialization does not support streaming request bodies. " +
-                    "Use a buffered request body until Phase 22a.2 is implemented.");
-            }
-
-            int actualBodyLength = body.Length;
+            var bodyWriteMode = ResolveBodyWriteMode(request);
 
             using var headerWriter = new PooledHeaderWriter();
 
@@ -69,96 +84,12 @@ namespace TurboHTTP.Transport.Http1
                 headerWriter.Append("\r\n");
             }
 
-            // 3. Handle Transfer-Encoding (RFC 9110 §8.6 mutual exclusion with Content-Length)
-            // Phase 3 does not implement chunked body encoding, but allows the header to pass
-            // through for pre-encoded bodies or bodyless requests (e.g., 100-continue probing).
-            bool hasTransferEncoding = request.Headers.Contains("Transfer-Encoding");
-            if (hasTransferEncoding)
-            {
-                var teValues = request.Headers.GetValues("Transfer-Encoding");
-                bool hasBody = !body.IsEmpty;
-                bool hasChunked = false;
-                for (int i = 0; i < teValues.Count; i++)
-                {
-                    var teValue = teValues[i];
-                    if (teValue != null &&
-                        teValue.IndexOf("chunked", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        hasChunked = true;
-                        break;
-                    }
-                }
-
-                // Reject chunked with a body — we can't encode it (Phase 3 limitation)
-                if (hasBody && hasChunked)
-                {
-                    throw new ArgumentException(
-                        "Transfer-Encoding: chunked is set with a body, but chunked body encoding " +
-                        "is not implemented in Phase 3. Pre-encode the body or remove the header.");
-                }
-                // TE without body is allowed — passes through for protocol signaling
-            }
-
-            // 4. Validate Content-Length before serializing user headers
-            // (RFC 9110 §8.6 + smuggling hardening).
-            var contentLengthValues = request.Headers.GetValues("Content-Length");
-
-            if (hasTransferEncoding && contentLengthValues.Count > 0)
-            {
-                throw new ArgumentException(
-                    "Transfer-Encoding and Content-Length must not both be set.");
-            }
-
-            if (contentLengthValues.Count > 0)
-            {
-                var parsedContentLengths = new List<long>(contentLengthValues.Count);
-                long? normalizedContentLength = null;
-                for (int i = 0; i < contentLengthValues.Count; i++)
-                {
-                    var rawHeaderValue = contentLengthValues[i];
-                    if (string.IsNullOrWhiteSpace(rawHeaderValue))
-                    {
-                        throw new ArgumentException($"Invalid Content-Length header value: {rawHeaderValue}");
-                    }
-
-                    var rawParts = rawHeaderValue.Split(',');
-                    for (int j = 0; j < rawParts.Length; j++)
-                    {
-                        var rawValue = rawParts[j].Trim();
-                        if (rawValue.Length == 0 ||
-                            !long.TryParse(rawValue, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ||
-                            parsed < 0)
-                        {
-                            throw new ArgumentException($"Invalid Content-Length header value: {rawHeaderValue}");
-                        }
-
-                        parsedContentLengths.Add(parsed);
-
-                        if (!normalizedContentLength.HasValue)
-                        {
-                            normalizedContentLength = parsed;
-                        }
-                        else if (normalizedContentLength.Value != parsed)
-                        {
-                            throw new ArgumentException(
-                                "Conflicting Content-Length header values are not allowed.");
-                        }
-                    }
-                }
-
-                if (parsedContentLengths.Count == 0)
-                    throw new ArgumentException("Invalid Content-Length header value: (empty)");
-
-                if (normalizedContentLength.Value != actualBodyLength)
-                {
-                    throw new ArgumentException(
-                        $"Content-Length header ({normalizedContentLength.Value}) does not match body size ({actualBodyLength})");
-                }
-            }
-
-            // 5. User headers — one line per value (multi-value support)
+            // 3. User headers — framing headers are transport-owned in 22a.
             foreach (var name in request.Headers.Names)
             {
+                if (IsFramingHeader(name))
+                    continue;
+
                 var values = request.Headers.GetValues(name);
                 foreach (var value in values)
                 {
@@ -170,41 +101,185 @@ namespace TurboHTTP.Transport.Http1
                 }
             }
 
-            // 6. Auto-add Content-Length (unless Transfer-Encoding is set)
-            if (!hasTransferEncoding && contentLengthValues.Count == 0)
+            // 4. Transport-owned framing headers.
+            if (bodyWriteMode.Kind == RequestBodyWriteKind.KnownLength)
             {
-                if (actualBodyLength > 0)
-                {
-                    // Auto-add Content-Length only when body is present
-                    headerWriter.Append("Content-Length: ");
-                    headerWriter.AppendInt(actualBodyLength);
-                    headerWriter.Append("\r\n");
-                }
+                headerWriter.Append("Content-Length: ");
+                headerWriter.AppendLong(bodyWriteMode.KnownLength.Value);
+                headerWriter.Append("\r\n");
+            }
+            else if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
+            {
+                headerWriter.Append("Transfer-Encoding: chunked\r\n");
             }
 
-            // 7. Auto-add User-Agent
+            // 5. Auto-add User-Agent
             if (!request.Headers.Contains("User-Agent"))
             {
                 headerWriter.Append("User-Agent: TurboHTTP/1.0\r\n");
             }
 
-            // 8. Auto-add Connection: keep-alive
+            // 6. Auto-add Connection: keep-alive
             if (!request.Headers.Contains("Connection"))
             {
                 headerWriter.Append("Connection: keep-alive\r\n");
             }
 
-            // 9. End of headers
+            // 7. End of headers
             headerWriter.Append("\r\n");
 
-            // 10. Write header block
+            // 8. Write header block
             await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
 
-            // 11. Write body
-            if (!body.IsEmpty)
-                await stream.WriteAsync(body, ct).ConfigureAwait(false);
+            // 9. Write body
+            await WriteBodyAsync(request.Content, bodyWriteMode, stream, writeState, ct).ConfigureAwait(false);
 
             await stream.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        private static RequestBodyWriteMode ResolveBodyWriteMode(UHttpRequest request)
+        {
+            if (request.TryGetBufferedContent(out var bufferedBody))
+            {
+                if (bufferedBody.IsEmpty)
+                    return RequestBodyWriteMode.None;
+
+                return RequestBodyWriteMode.FromKnownLength(bufferedBody.Length, bufferedBody);
+            }
+
+            var contentLength = request.Content.Length;
+            if (!contentLength.HasValue)
+                return RequestBodyWriteMode.Chunked;
+
+            if (contentLength.Value <= 0)
+                return RequestBodyWriteMode.None;
+
+            return RequestBodyWriteMode.FromKnownLength(contentLength.Value, default);
+        }
+
+        private static async Task WriteBodyAsync(
+            UHttpRequestBody content,
+            RequestBodyWriteMode bodyWriteMode,
+            Stream stream,
+            Http11RequestWriteState writeState,
+            CancellationToken ct)
+        {
+            if (bodyWriteMode.Kind == RequestBodyWriteKind.None)
+                return;
+
+            if (!bodyWriteMode.BufferedBody.IsEmpty)
+            {
+                writeState?.MarkBodyWriteStarted();
+                await stream.WriteAsync(bodyWriteMode.BufferedBody, ct).ConfigureAwait(false);
+                return;
+            }
+
+            using var session = await content.OpenReadSessionAsync(ct).ConfigureAwait(false);
+            if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
+            {
+                await WriteChunkedBodyAsync(session, stream, writeState, ct).ConfigureAwait(false);
+                return;
+            }
+
+            await WriteKnownLengthBodyAsync(session, bodyWriteMode.KnownLength.Value, stream, writeState, ct)
+                .ConfigureAwait(false);
+        }
+
+        private static async Task WriteKnownLengthBodyAsync(
+            RequestBodyReadSession session,
+            long knownLength,
+            Stream stream,
+            Http11RequestWriteState writeState,
+            CancellationToken ct)
+        {
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(DefaultStreamingSendBufferBytes);
+            try
+            {
+                long remaining = knownLength;
+                while (remaining > 0)
+                {
+                    int bytesToRead = remaining > buffer.Length
+                        ? buffer.Length
+                        : (int)remaining;
+
+                    int bytesRead = await session.ReadAsync(
+                            new Memory<byte>(buffer, 0, bytesToRead),
+                            ct)
+                        .ConfigureAwait(false);
+
+                    if (bytesRead <= 0)
+                    {
+                        throw new IOException(
+                            "Request body ended before the declared Content-Length was fully produced.");
+                    }
+
+                    writeState?.MarkBodyWriteStarted();
+                    await stream.WriteAsync(new ReadOnlyMemory<byte>(buffer, 0, bytesRead), ct)
+                        .ConfigureAwait(false);
+                    remaining -= bytesRead;
+                }
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private static async Task WriteChunkedBodyAsync(
+            RequestBodyReadSession session,
+            Stream stream,
+            Http11RequestWriteState writeState,
+            CancellationToken ct)
+        {
+            var bodyBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(DefaultStreamingSendBufferBytes);
+            var headerBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(MaxChunkHeaderBytes);
+            try
+            {
+                while (true)
+                {
+                    int bytesRead = await session.ReadAsync(
+                            new Memory<byte>(bodyBuffer, 0, bodyBuffer.Length),
+                            ct)
+                        .ConfigureAwait(false);
+                    if (bytesRead == 0)
+                        break;
+
+                    writeState?.MarkBodyWriteStarted();
+                    int headerLength = FormatChunkHeader(bytesRead, headerBuffer);
+                    await stream.WriteAsync(new ReadOnlyMemory<byte>(headerBuffer, 0, headerLength), ct)
+                        .ConfigureAwait(false);
+                    await stream.WriteAsync(new ReadOnlyMemory<byte>(bodyBuffer, 0, bytesRead), ct)
+                        .ConfigureAwait(false);
+                    await stream.WriteAsync(ChunkDataTerminator, ct).ConfigureAwait(false);
+                    await stream.FlushAsync(ct).ConfigureAwait(false);
+                }
+
+                await stream.WriteAsync(FinalChunkBytes, ct).ConfigureAwait(false);
+                await stream.FlushAsync(ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(bodyBuffer);
+                System.Buffers.ArrayPool<byte>.Shared.Return(headerBuffer);
+            }
+        }
+
+        private static int FormatChunkHeader(int chunkSize, byte[] destination)
+        {
+            if (!Utf8Formatter.TryFormat(chunkSize, destination, out int written, new StandardFormat('X')))
+            {
+                throw new InvalidOperationException("Failed to format HTTP chunk size.");
+            }
+
+            destination[written++] = (byte)'\r';
+            destination[written++] = (byte)'\n';
+            return written;
+        }
+
+        private static bool IsFramingHeader(string name)
+        {
+            return string.Equals(name, "Content-Length", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void ValidateHeader(string name, string value)
@@ -327,6 +402,30 @@ namespace TurboHTTP.Transport.Http1
                 _writer.Advance(length);
             }
 
+            public void AppendLong(long value)
+            {
+                Span<byte> digits = stackalloc byte[20];
+                int pos = digits.Length;
+
+                bool negative = value < 0;
+                ulong uval = negative
+                    ? (ulong)(-(value + 1)) + 1UL
+                    : (ulong)value;
+
+                do
+                {
+                    digits[--pos] = (byte)('0' + (uval % 10));
+                    uval /= 10;
+                } while (uval > 0);
+
+                if (negative)
+                    digits[--pos] = (byte)'-';
+
+                int length = digits.Length - pos;
+                digits.Slice(pos, length).CopyTo(_writer.GetSpan(length));
+                _writer.Advance(length);
+            }
+
             public async Task WriteToAsync(Stream stream, CancellationToken ct)
             {
                 if (_writer.WrittenCount == 0)
@@ -336,6 +435,45 @@ namespace TurboHTTP.Transport.Http1
             }
 
             public void Dispose() => _writer.Dispose();
+        }
+
+        private readonly struct RequestBodyWriteMode
+        {
+            private RequestBodyWriteMode(
+                RequestBodyWriteKind kind,
+                long? knownLength,
+                ReadOnlyMemory<byte> bufferedBody)
+            {
+                Kind = kind;
+                KnownLength = knownLength;
+                BufferedBody = bufferedBody;
+            }
+
+            public RequestBodyWriteKind Kind { get; }
+
+            public long? KnownLength { get; }
+
+            public ReadOnlyMemory<byte> BufferedBody { get; }
+
+            public static RequestBodyWriteMode None => new RequestBodyWriteMode(
+                RequestBodyWriteKind.None,
+                null,
+                ReadOnlyMemory<byte>.Empty);
+
+            public static RequestBodyWriteMode Chunked => new RequestBodyWriteMode(
+                RequestBodyWriteKind.Chunked,
+                null,
+                ReadOnlyMemory<byte>.Empty);
+
+            public static RequestBodyWriteMode FromKnownLength(long length, ReadOnlyMemory<byte> bufferedBody) =>
+                new RequestBodyWriteMode(RequestBodyWriteKind.KnownLength, length, bufferedBody);
+        }
+
+        private enum RequestBodyWriteKind
+        {
+            None,
+            Chunked,
+            KnownLength
         }
     }
 }

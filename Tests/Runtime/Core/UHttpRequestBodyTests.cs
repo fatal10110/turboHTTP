@@ -95,7 +95,7 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual(RequestBodyReplayability.NonReplayable, body.Replayability);
             Assert.AreEqual("once", await ReadAllAsync(body.OpenReadSessionAsync(CancellationToken.None)));
 
-            var ex = Assert.ThrowsAsync<InvalidOperationException>(
+            var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(
                 async () => await ReadAllAsync(body.OpenReadSessionAsync(CancellationToken.None)));
             StringAssert.Contains("cannot be reopened", ex.Message);
         }
@@ -115,7 +115,7 @@ namespace TurboHTTP.Tests.Core
             var session = await body.OpenReadSessionAsync(CancellationToken.None);
             try
             {
-                var ex = Assert.ThrowsAsync<InvalidOperationException>(
+                var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(
                     async () => await ReadAllAsync(body.OpenReadSessionAsync(CancellationToken.None)));
                 StringAssert.Contains("active read session", ex.Message);
             }
@@ -135,7 +135,7 @@ namespace TurboHTTP.Tests.Core
             var session = body.OpenReadSessionAsync(CancellationToken.None).Result;
             session.Dispose();
 
-            var ex = Assert.ThrowsAsync<ObjectDisposedException>(
+            var ex = AssertAsync.ThrowsAsync<ObjectDisposedException>(
                 async () => await session.ReadAsync(new byte[4], CancellationToken.None));
             StringAssert.Contains("RequestBodyReadSession", ex.ObjectName);
         }
@@ -157,7 +157,7 @@ namespace TurboHTTP.Tests.Core
             var disposeEx = Assert.Throws<IOException>(() => session.Dispose());
             StringAssert.Contains("dispose failed", disposeEx.Message);
 
-            var reopenEx = Assert.ThrowsAsync<InvalidOperationException>(
+            var reopenEx = AssertAsync.ThrowsAsync<InvalidOperationException>(
                 async () => await body.OpenReadSessionAsync(CancellationToken.None));
             StringAssert.Contains("failed during disposal", reopenEx.Message);
             Assert.AreEqual(1, openCount);

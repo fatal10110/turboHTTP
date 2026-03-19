@@ -30,7 +30,7 @@ namespace TurboHTTP.Tests.Pipeline
             await source.ReadStarted.Task;
             cts.Cancel();
 
-            var ex = Assert.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
+            var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
             Assert.AreEqual(cts.Token, source.LastReadToken);
             Assert.AreEqual(cts.Token, ex.CancellationToken);
         }
@@ -56,7 +56,7 @@ namespace TurboHTTP.Tests.Pipeline
             await source.TrailersStarted.Task;
             cts.Cancel();
 
-            var ex = Assert.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
+            var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
             Assert.AreEqual(cts.Token, source.LastTrailersToken);
             Assert.AreEqual(cts.Token, ex.CancellationToken);
         }
