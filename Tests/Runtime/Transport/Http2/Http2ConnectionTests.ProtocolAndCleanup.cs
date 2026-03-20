@@ -631,7 +631,13 @@ namespace TurboHTTP.Tests.Transport.Http2
                     (System.Collections.Concurrent.ConcurrentDictionary<int, Http2Stream>)
                     activeStreamsField.GetValue(conn);
                 Assert.IsTrue(activeStreams.TryGetValue(streamId, out var stream));
-                Assert.LessOrEqual(stream.ResponseBodyCapacity, 4096);
+                var perStreamCapacityProperty = typeof(Http2Connection).GetProperty(
+                    "PerStreamReceiveBufferBytes",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.IsNotNull(perStreamCapacityProperty);
+                Assert.AreEqual(
+                    (int)perStreamCapacityProperty.GetValue(conn),
+                    stream.ResponseBodyCapacity);
 
                 var bodyBytes = System.Text.Encoding.UTF8.GetBytes("ok");
                 await serverCodec.WriteFrameAsync(new Http2Frame

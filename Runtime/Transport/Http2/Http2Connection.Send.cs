@@ -1,12 +1,17 @@
 using System;
+using System.Buffers;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
     internal partial class Http2Connection
     {
+        private const int DefaultStreamingSendBufferBytes = 32 * 1024;
+
         private async Task SendHeadersAsync(
             int streamId,
             ReadOnlyMemory<byte> headerBlock,
@@ -61,8 +66,35 @@ namespace TurboHTTP.Transport.Http2
 
         private async Task SendDataAsync(
             int streamId,
+            UHttpRequestBody content,
+            Http2Stream stream,
+            CancellationToken ct)
+        {
+            if (content == null)
+                throw new ArgumentNullException(nameof(content));
+
+            if (content.TryGetBufferedData(out var buffered))
+            {
+                if (buffered.IsEmpty)
+                {
+                    await SendEmptyEndStreamDataFrameAsync(streamId, stream, ct).ConfigureAwait(false);
+                    return;
+                }
+
+                await SendBufferedDataAsync(streamId, buffered, stream, endStreamOnFinalFrame: true, ct)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            using var session = await content.OpenReadSessionAsync(ct).ConfigureAwait(false);
+            await SendStreamingDataAsync(streamId, session, stream, ct).ConfigureAwait(false);
+        }
+
+        private async Task SendBufferedDataAsync(
+            int streamId,
             ReadOnlyMemory<byte> body,
             Http2Stream stream,
+            bool endStreamOnFinalFrame,
             CancellationToken ct)
         {
             int offset = 0;
@@ -103,7 +135,7 @@ namespace TurboHTTP.Transport.Http2
                         continue;
                     }
 
-                    bool isLast = (offset + actualAvailable) >= body.Length;
+                    bool isLast = endStreamOnFinalFrame && (offset + actualAvailable) >= body.Length;
 
                     Interlocked.Add(ref _connectionSendWindow, -actualAvailable);
                     stream.AdjustSendWindowSize(-actualAvailable);
@@ -126,6 +158,116 @@ namespace TurboHTTP.Transport.Http2
                 }
 
                 offset += bytesSent;
+            }
+        }
+
+        private async Task SendStreamingDataAsync(
+            int streamId,
+            RequestBodyReadSession session,
+            Http2Stream stream,
+            CancellationToken ct)
+        {
+            byte[] buffer = null;
+            try
+            {
+                long? remaining = session.ContentLength;
+                if (remaining.HasValue)
+                {
+                    while (remaining.Value > 0)
+                    {
+                        if (stream.IsResponseCompleted)
+                            return;
+
+                        if (buffer == null)
+                            buffer = ArrayPool<byte>.Shared.Rent(DefaultStreamingSendBufferBytes);
+
+                        int bytesToRead = remaining.Value > buffer.Length
+                            ? buffer.Length
+                            : (int)remaining.Value;
+                        int bytesRead = await session.ReadAsync(
+                                new Memory<byte>(buffer, 0, bytesToRead),
+                                ct)
+                            .ConfigureAwait(false);
+                        if (bytesRead <= 0)
+                        {
+                            throw new IOException(
+                                "Request body ended before the declared Content-Length was fully produced.");
+                        }
+
+                        remaining -= bytesRead;
+                        await SendBufferedDataAsync(
+                                streamId,
+                                new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
+                                stream,
+                                endStreamOnFinalFrame: remaining.Value == 0,
+                                ct)
+                            .ConfigureAwait(false);
+                    }
+
+                    return;
+                }
+
+                while (true)
+                {
+                    if (stream.IsResponseCompleted)
+                        return;
+
+                    if (buffer == null)
+                        buffer = ArrayPool<byte>.Shared.Rent(DefaultStreamingSendBufferBytes);
+
+                    int bytesRead = await session.ReadAsync(
+                            new Memory<byte>(buffer, 0, buffer.Length),
+                            ct)
+                        .ConfigureAwait(false);
+                    if (bytesRead == 0)
+                    {
+                        // Unknown-length bodies signal stream completion with an explicit
+                        // zero-length END_STREAM frame once EOF is observed.
+                        await SendEmptyEndStreamDataFrameAsync(streamId, stream, ct).ConfigureAwait(false);
+                        return;
+                    }
+
+                    await SendBufferedDataAsync(
+                            streamId,
+                            new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
+                            stream,
+                            endStreamOnFinalFrame: false,
+                            ct)
+                        .ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                if (buffer != null)
+                    ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private async Task SendEmptyEndStreamDataFrameAsync(
+            int streamId,
+            Http2Stream stream,
+            CancellationToken ct)
+        {
+            if (stream.IsResponseCompleted)
+                return;
+
+            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (stream.IsResponseCompleted)
+                    return;
+
+                await _codec.WriteFrameAsync(
+                        Http2FrameType.Data,
+                        Http2FrameFlags.EndStream,
+                        streamId,
+                        ReadOnlyMemory<byte>.Empty,
+                        ct)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
             }
         }
 

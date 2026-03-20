@@ -72,6 +72,25 @@ namespace TurboHTTP.Tests.Transport.Http2
             return (conn, duplex.ServerStream, duplex);
         }
 
+        private static Http2Options CreateTestHttp2Options(
+            int? perStreamReceiveBufferBytes = null,
+            int? maxConnectionBufferedBytes = null,
+            int? stallTimeoutMilliseconds = null,
+            int? maintenanceIntervalMilliseconds = null)
+        {
+            var options = new Http2Options();
+            if (perStreamReceiveBufferBytes.HasValue)
+                options.TestPerStreamReceiveBufferBytesOverride = perStreamReceiveBufferBytes.Value;
+            if (maxConnectionBufferedBytes.HasValue)
+                options.TestMaxConnectionBufferedBytesOverride = maxConnectionBufferedBytes.Value;
+            if (stallTimeoutMilliseconds.HasValue)
+                options.TestStallTimeoutMillisecondsOverride = stallTimeoutMilliseconds.Value;
+            if (maintenanceIntervalMilliseconds.HasValue)
+                options.TestMaintenanceIntervalMillisecondsOverride = maintenanceIntervalMilliseconds.Value;
+
+            return options;
+        }
+
         /// <summary>
         /// Helper: encode response headers as HPACK and build a HEADERS frame.
         /// </summary>

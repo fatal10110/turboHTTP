@@ -1,5 +1,7 @@
 using System;
+using System.IO;
 using System.Net;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -239,6 +241,90 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 var response = await responseTask;
                 Assert.AreEqual((HttpStatusCode)201, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithKnownLengthStreamBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                using var bodyStream = new MemoryStream(Encoding.UTF8.GetBytes("stream body"), writable: false);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/api"))
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true);
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                Assert.IsFalse(headersFrame.HasFlag(Http2FrameFlags.EndStream));
+                int streamId = headersFrame.StreamId;
+
+                var dataFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Data, dataFrame.Type);
+                Assert.IsTrue(dataFrame.HasFlag(Http2FrameFlags.EndStream));
+                Assert.AreEqual("stream body", Encoding.UTF8.GetString(dataFrame.Payload));
+                Assert.AreEqual(bodyStream.Length, bodyStream.Position);
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 201, endStream: true),
+                    cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual((HttpStatusCode)201, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithUnknownLengthFactoryBody_SendsExplicitEndStreamFrame()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+                int factoryCalls = 0;
+
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/api"))
+                    .WithBodyFactory(_ =>
+                    {
+                        factoryCalls++;
+                        return new ValueTask<Stream>(
+                            new MemoryStream(Encoding.UTF8.GetBytes("factory body"), writable: false));
+                    });
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                Assert.IsFalse(headersFrame.HasFlag(Http2FrameFlags.EndStream));
+                int streamId = headersFrame.StreamId;
+
+                var dataFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Data, dataFrame.Type);
+                Assert.IsFalse(dataFrame.HasFlag(Http2FrameFlags.EndStream));
+                Assert.AreEqual("factory body", Encoding.UTF8.GetString(dataFrame.Payload));
+
+                var endFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Data, endFrame.Type);
+                Assert.IsTrue(endFrame.HasFlag(Http2FrameFlags.EndStream));
+                Assert.AreEqual(0, endFrame.Length);
+                Assert.AreEqual(1, factoryCalls);
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 202, endStream: true),
+                    cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual((HttpStatusCode)202, response.StatusCode);
 
                 conn.Dispose();
             });

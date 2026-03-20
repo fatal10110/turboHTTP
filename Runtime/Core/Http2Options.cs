@@ -14,6 +14,10 @@ namespace TurboHTTP.Core
         private int _maxFrameSize = 16384; // Http2Constants.DefaultMaxFrameSize
         private int _maxHeaderListSize = 64 * 1024; // 64 KB default
         private int _maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes;
+        internal int TestPerStreamReceiveBufferBytesOverride { get; set; }
+        internal int TestMaxConnectionBufferedBytesOverride { get; set; }
+        internal int TestStallTimeoutMillisecondsOverride { get; set; }
+        internal int TestMaintenanceIntervalMillisecondsOverride { get; set; }
 
         /// <summary>
         /// Advertised ENABLE_PUSH setting in the initial SETTINGS frame.
@@ -124,7 +128,11 @@ namespace TurboHTTP.Core
                 _initialWindowSize = _initialWindowSize,
                 _maxFrameSize = _maxFrameSize,
                 _maxHeaderListSize = _maxHeaderListSize,
-                _maxDecodedHeaderBytes = _maxDecodedHeaderBytes
+                _maxDecodedHeaderBytes = _maxDecodedHeaderBytes,
+                TestPerStreamReceiveBufferBytesOverride = TestPerStreamReceiveBufferBytesOverride,
+                TestMaxConnectionBufferedBytesOverride = TestMaxConnectionBufferedBytesOverride,
+                TestStallTimeoutMillisecondsOverride = TestStallTimeoutMillisecondsOverride,
+                TestMaintenanceIntervalMillisecondsOverride = TestMaintenanceIntervalMillisecondsOverride
             };
         }
 
@@ -136,7 +144,11 @@ namespace TurboHTTP.Core
                    _initialWindowSize == 65535 &&
                    _maxFrameSize == 16384 &&
                    _maxHeaderListSize == 64 * 1024 &&
-                   _maxDecodedHeaderBytes == UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes;
+                   _maxDecodedHeaderBytes == UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes &&
+                   TestPerStreamReceiveBufferBytesOverride == 0 &&
+                   TestMaxConnectionBufferedBytesOverride == 0 &&
+                   TestStallTimeoutMillisecondsOverride == 0 &&
+                   TestMaintenanceIntervalMillisecondsOverride == 0;
         }
     }
 }

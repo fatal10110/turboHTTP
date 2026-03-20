@@ -30,11 +30,12 @@ namespace TurboHTTP.Transport.Http2
             IHttpHandler handler,
             RequestContext context,
             int initialSendWindowSize,
-            int initialRecvWindowSize)
+            int initialRecvWindowSize,
+            Http2Connection connection)
         {
             var stream = s_pool.Rent();
             stream.Initialize(streamId, request, handler, context,
-                initialSendWindowSize, initialRecvWindowSize);
+                initialSendWindowSize, initialRecvWindowSize, connection);
             return stream;
         }
 

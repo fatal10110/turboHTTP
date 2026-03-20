@@ -108,15 +108,19 @@ namespace TurboHTTP.Transport.Http2
             }
 
             // Validate connection-level flow control (uses full frame length including padding)
-            if (flowControlledLength > _connectionRecvWindow)
+            int connectionRecvWindow = Interlocked.CompareExchange(ref _connectionRecvWindow, 0, 0);
+            if (flowControlledLength > connectionRecvWindow)
                 throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
                     "DATA exceeds connection receive window");
 
             if (!_activeStreams.TryGetValue(frame.StreamId, out var stream))
             {
-                // Still decrement connection recv window for unknown streams
-                _connectionRecvWindow -= flowControlledLength;
-                await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.StreamClosed);
+                // Post-reset DATA still counts against the connection window.
+                Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
+                await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
+
+                if (!IsRecentlyResetStream(frame.StreamId))
+                    await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.StreamClosed).ConfigureAwait(false);
                 return;
             }
 
@@ -124,7 +128,8 @@ namespace TurboHTTP.Transport.Http2
             // DATA before HEADERS is a protocol error — send RST_STREAM.
             if (!stream.HeadersReceived)
             {
-                _connectionRecvWindow -= flowControlledLength;
+                Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
+                await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
                 if (_activeStreams.TryRemove(frame.StreamId, out _))
                 {
                     stream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
@@ -143,78 +148,66 @@ namespace TurboHTTP.Transport.Http2
             long maxBodySize = _localSettings.MaxResponseBodySize;
             if (maxBodySize > 0 && stream.ResponseBodyLength + dataLength > maxBodySize)
             {
-                _connectionRecvWindow -= flowControlledLength;
+                Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
+                stream.AdjustRecvWindowSize(-flowControlledLength);
+                await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
                 if (_activeStreams.TryRemove(frame.StreamId, out _))
                 {
-                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                    stream.FaultResponseBody(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                         $"Response body exceeds maximum size limit ({maxBodySize} bytes)")));
+                    TrackRecentlyResetStream(frame.StreamId);
                     await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
                 }
                 return;
             }
 
-            // Write to response body (only the actual data, not padding).
-            // A canceled stream can be disposed concurrently after being removed from
-            // _activeStreams; ignore write-after-dispose and retire the stream.
-            bool responseBodyDisposed = false;
-            bool handlerAcceptedData = true;
+            // Decrement recv windows (both connection and stream, using full frame length)
+            Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
+            stream.AdjustRecvWindowSize(-flowControlledLength);
+
+            Http2ResponseBodyEnqueueResult enqueueResult = Http2ResponseBodyEnqueueResult.Accepted;
             if (dataLength > 0)
             {
-                try
-                {
-                    handlerAcceptedData = stream.AppendResponseData(frame.Payload, dataOffset, dataLength);
-                }
-                catch (ObjectDisposedException)
-                {
-                    responseBodyDisposed = true;
-                }
+                stream.AddResponseBodyBytes(dataLength);
+                enqueueResult = stream.TryAppendResponseData(
+                    frame.Payload,
+                    dataOffset,
+                    dataLength,
+                    flowControlledLength);
+            }
+            else if (flowControlledLength > 0 && !IsStreamClosedForReceive(frame.StreamId))
+            {
+                await SendWindowUpdateAsync(frame.StreamId, flowControlledLength, ct).ConfigureAwait(false);
+                stream.AdjustRecvWindowSize(flowControlledLength);
             }
 
-            // Decrement recv windows (both connection and stream, using full frame length)
-            _connectionRecvWindow -= flowControlledLength;
-            stream.RecvWindowSize -= flowControlledLength;
+            await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
 
-            // Send connection-level WINDOW_UPDATE if needed
-            if (_connectionRecvWindow < Http2Constants.DefaultInitialWindowSize / 2)
+            if (enqueueResult == Http2ResponseBodyEnqueueResult.BufferFull)
             {
-                int increment = Http2Constants.DefaultInitialWindowSize - _connectionRecvWindow;
-                await SendWindowUpdateAsync(0, increment, ct);
-                _connectionRecvWindow = Http2Constants.DefaultInitialWindowSize;
-            }
-
-            // Send stream-level WINDOW_UPDATE if needed (Fix 1).
-            // Guard on !responseBodyDisposed: do not send WINDOW_UPDATE for a stream whose
-            // body MemoryStream was already disposed mid-receive (RFC 7540 Section 6.9 —
-            // sending WINDOW_UPDATE on a closed stream is a protocol error).
-            if (!responseBodyDisposed && stream.RecvWindowSize < _localSettings.InitialWindowSize / 2)
-            {
-                int increment = _localSettings.InitialWindowSize - stream.RecvWindowSize;
-                await SendWindowUpdateAsync(frame.StreamId, increment, ct);
-                stream.RecvWindowSize = _localSettings.InitialWindowSize;
-            }
-
-            if (responseBodyDisposed)
-            {
-                _activeStreams.TryRemove(frame.StreamId, out _);
-                _ = SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
+                RemoveActiveStream(frame.StreamId);
+                stream.FaultResponseBody(new UHttpException(new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    $"HTTP/2 response body exceeded the per-stream receive buffer ({PerStreamReceiveBufferBytes} bytes).")));
+                TrackRecentlyResetStream(frame.StreamId);
+                await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
                 return;
             }
 
-            if (!handlerAcceptedData)
+            if (enqueueResult == Http2ResponseBodyEnqueueResult.Aborted)
             {
-                _activeStreams.TryRemove(frame.StreamId, out _);
-                await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
+                RemoveActiveStream(frame.StreamId);
                 return;
             }
 
             // END_STREAM handling
             if (frame.HasFlag(Http2FrameFlags.EndStream))
             {
-                if (stream.HeadersReceived)
-                {
-                    stream.Complete();
-                    _activeStreams.TryRemove(frame.StreamId, out _);
-                }
+                RemoveActiveStream(frame.StreamId);
+                stream.State = stream.State == Http2StreamState.HalfClosedLocal
+                    ? Http2StreamState.Closed
+                    : Http2StreamState.HalfClosedRemote;
+                stream.CompleteResponseBody();
             }
         }
 
@@ -263,21 +256,8 @@ namespace TurboHTTP.Transport.Http2
 
             if (frame.HasFlag(Http2FrameFlags.EndHeaders))
             {
-                DecodeAndSetHeaders(stream, isTrailingHeaders: stream.HeadersReceived);
-
-                if (stream.HasHandlerFault)
-                {
-                    _activeStreams.TryRemove(frame.StreamId, out _);
-                    if (!stream.PendingEndStream)
-                        _ = SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
-                    return;
-                }
-
-                if (stream.PendingEndStream && stream.HeadersReceived)
-                {
-                    stream.Complete();
-                    _activeStreams.TryRemove(frame.StreamId, out _);
-                }
+                DecodeAndSetHeaders(stream, isTrailingHeaders: stream.HeadersReceived, endStream: stream.PendingEndStream);
+                stream.PendingEndStream = false;
             }
             else
             {
@@ -303,25 +283,12 @@ namespace TurboHTTP.Transport.Http2
             if (frame.HasFlag(Http2FrameFlags.EndHeaders))
             {
                 _continuationStreamId = 0;
-                DecodeAndSetHeaders(stream, isTrailingHeaders: stream.HeadersReceived);
-
-                if (stream.HasHandlerFault)
-                {
-                    _activeStreams.TryRemove(frame.StreamId, out _);
-                    if (!stream.PendingEndStream)
-                        _ = SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
-                    return;
-                }
-
-                if (stream.PendingEndStream && stream.HeadersReceived)
-                {
-                    stream.Complete();
-                    _activeStreams.TryRemove(frame.StreamId, out _);
-                }
+                DecodeAndSetHeaders(stream, isTrailingHeaders: stream.HeadersReceived, endStream: stream.PendingEndStream);
+                stream.PendingEndStream = false;
             }
         }
 
-        private void DecodeAndSetHeaders(Http2Stream stream, bool isTrailingHeaders)
+        private void DecodeAndSetHeaders(Http2Stream stream, bool isTrailingHeaders, bool endStream)
         {
             var headerBlock = stream.GetHeaderBlockSegment();
             var headerBytes = headerBlock.Array ?? Array.Empty<byte>();
@@ -345,7 +312,7 @@ namespace TurboHTTP.Transport.Http2
             {
                 stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                     $"Response header list size {headerListSize} exceeds limit {_localSettings.MaxHeaderListSize}")));
-                _activeStreams.TryRemove(stream.StreamId, out _);
+                RemoveActiveStream(stream.StreamId);
                 return;
             }
 
@@ -360,7 +327,7 @@ namespace TurboHTTP.Transport.Http2
                     {
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                             "Unexpected :status pseudo-header in trailing headers")));
-                        _activeStreams.TryRemove(stream.StreamId, out _);
+                        RemoveActiveStream(stream.StreamId);
                         return;
                     }
 
@@ -373,7 +340,7 @@ namespace TurboHTTP.Transport.Http2
                     {
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                             $"Invalid :status value: {value}")));
-                        _activeStreams.TryRemove(stream.StreamId, out _);
+                        RemoveActiveStream(stream.StreamId);
                         return;
                     }
                 }
@@ -385,7 +352,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                         $"Unexpected pseudo-header in trailing headers: {name}")));
-                    _activeStreams.TryRemove(stream.StreamId, out _);
+                    RemoveActiveStream(stream.StreamId);
                     return;
                 }
             }
@@ -394,23 +361,37 @@ namespace TurboHTTP.Transport.Http2
             {
                 stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                     "Missing :status pseudo-header in HTTP/2 response")));
-                _activeStreams.TryRemove(stream.StreamId, out _);
+                RemoveActiveStream(stream.StreamId);
                 return;
             }
 
-            if (!isTrailingHeaders &&
-                TryGetContentLength(responseHeaders, _localSettings.MaxResponseBodySize, out int contentLength))
-            {
-                stream.EnsureResponseBodyCapacity(contentLength);
-                stream.HandleResponseHeaders(statusCode, responseHeaders);
-            }
-            else if (isTrailingHeaders)
+            if (isTrailingHeaders)
             {
                 stream.AppendTrailers(responseHeaders);
+                if (endStream)
+                {
+                    RemoveActiveStream(stream.StreamId);
+                    stream.State = stream.State == Http2StreamState.HalfClosedLocal
+                        ? Http2StreamState.Closed
+                        : Http2StreamState.HalfClosedRemote;
+                    stream.CompleteResponseBody();
+                }
             }
             else
             {
-                stream.HandleResponseHeaders(statusCode, responseHeaders);
+                stream.TryStartResponse(
+                    statusCode,
+                    responseHeaders,
+                    GetContentLength(responseHeaders),
+                    endStream);
+
+                if (endStream)
+                {
+                    RemoveActiveStream(stream.StreamId);
+                    stream.State = stream.State == Http2StreamState.HalfClosedLocal
+                        ? Http2StreamState.Closed
+                        : Http2StreamState.HalfClosedRemote;
+                }
             }
 
             stream.ClearHeaderBlock();
@@ -421,28 +402,18 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        private static bool TryGetContentLength(
-            HttpHeaders headers, long maxResponseBodySize, out int contentLength)
+        private static long? GetContentLength(HttpHeaders headers)
         {
-            contentLength = 0;
             var value = headers.Get("content-length");
             if (string.IsNullOrEmpty(value))
-                return false;
+                return null;
 
             if (!long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out long parsed))
-                return false;
+                return null;
             if (parsed <= 0)
-                return false;
+                return null;
 
-            if (maxResponseBodySize <= 0)
-                return false;
-
-            long cap = Math.Min(maxResponseBodySize, int.MaxValue);
-            if (cap <= 0)
-                return false;
-
-            contentLength = (int)Math.Min(parsed, cap);
-            return true;
+            return parsed;
         }
 
         private async Task HandleSettingsFrameAsync(Http2Frame frame, CancellationToken ct)
@@ -592,8 +563,8 @@ namespace TurboHTTP.Transport.Http2
             _goawayReceived = true;
             _lastGoawayStreamId = lastStreamId;
 
-            // Fail streams above lastStreamId. Do NOT call stream.Dispose() — the
-            // dispatch Task continuation will return the stream to the pool.
+            // Fail streams above lastStreamId and let stream/body-source lifetime release
+            // return them to the pool when both dispatch and response ownership are done.
             foreach (var kvp in _activeStreams)
             {
                 if (kvp.Key > lastStreamId)
@@ -632,6 +603,7 @@ namespace TurboHTTP.Transport.Http2
                         $"Invalid WINDOW_UPDATE increment=0 on stream {frame.StreamId}"));
                 }
 
+                TrackRecentlyResetStream(frame.StreamId);
                 await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError).ConfigureAwait(false);
                 return;
             }

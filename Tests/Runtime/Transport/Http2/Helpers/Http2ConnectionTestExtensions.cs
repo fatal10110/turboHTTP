@@ -20,6 +20,20 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
                     context,
                     cancellationToken));
         }
+
+        public static ValueTask<UHttpStreamingResponse> SendStreamingRequestAsync(
+            this Http2Connection connection,
+            UHttpRequest request,
+            RequestContext context,
+            CancellationToken cancellationToken = default)
+        {
+            return new ValueTask<UHttpStreamingResponse>(
+                StreamingDispatchBridge.CollectResponseAsync(
+                    connection.DispatchAsync,
+                    request,
+                    context,
+                    cancellationToken));
+        }
     }
 
     internal sealed class NoOpHttpHandler : IHttpHandler

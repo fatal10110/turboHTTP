@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
@@ -7,27 +8,43 @@ namespace TurboHTTP.Transport.Http2
 {
     internal sealed class SingleReaderChannel<T>
     {
+        private const int SegmentSize = 32;
+
+        private sealed class Segment
+        {
+            public readonly T[] Items;
+            public int Head;
+            public int Tail;
+            public Segment Next;
+
+            public Segment(T[] items)
+            {
+                Items = items ?? throw new ArgumentNullException(nameof(items));
+            }
+        }
+
         private readonly object _gate = new object();
-        private readonly T[] _buffer;
         private readonly PendingReadSource _pendingRead = new PendingReadSource();
+        private readonly int _capacity;
 
         private CancellationTokenRegistration _pendingCancellation;
         private CancellationToken _pendingCancellationToken;
         private Exception _error;
-        private int _head;
         private int _count;
         private bool _completed;
         private bool _readPending;
+        private Segment _headSegment;
+        private Segment _tailSegment;
 
         public SingleReaderChannel(int capacity)
         {
             if (capacity <= 0)
                 throw new ArgumentOutOfRangeException(nameof(capacity), "Must be greater than 0.");
 
-            _buffer = new T[capacity];
+            _capacity = capacity;
         }
 
-        public int Capacity => _buffer.Length;
+        public int Capacity => _capacity;
 
         public int Count
         {
@@ -57,7 +74,7 @@ namespace TurboHTTP.Transport.Http2
                 }
                 else
                 {
-                    if (_count == _buffer.Length)
+                    if (_count == _capacity)
                         return false;
 
                     Enqueue(item);
@@ -171,18 +188,66 @@ namespace TurboHTTP.Transport.Http2
 
         private void Enqueue(T item)
         {
-            var tail = (_head + _count) % _buffer.Length;
-            _buffer[tail] = item;
+            if (_tailSegment == null)
+            {
+                _headSegment = _tailSegment = RentSegment();
+            }
+            else if (_tailSegment.Tail >= SegmentSize)
+            {
+                var next = RentSegment();
+                _tailSegment.Next = next;
+                _tailSegment = next;
+            }
+
+            _tailSegment.Items[_tailSegment.Tail++] = item;
             _count++;
         }
 
         private T Dequeue()
         {
-            var item = _buffer[_head];
-            _buffer[_head] = default;
-            _head = (_head + 1) % _buffer.Length;
+            var segment = _headSegment;
+            var item = segment.Items[segment.Head];
+            segment.Items[segment.Head] = default;
+            segment.Head++;
             _count--;
+
+            if (segment.Head == segment.Tail)
+            {
+                if (segment.Next != null)
+                {
+                    var next = segment.Next;
+                    ReturnSegment(segment);
+                    _headSegment = next;
+                }
+                else
+                {
+                    segment.Head = 0;
+                    segment.Tail = 0;
+                    _tailSegment = segment;
+                }
+            }
+
             return item;
+        }
+
+        private static Segment RentSegment()
+        {
+            var items = ArrayPool<T>.Shared.Rent(SegmentSize);
+            Array.Clear(items, 0, Math.Min(items.Length, SegmentSize));
+            return new Segment(items);
+        }
+
+        private static void ReturnSegment(Segment segment)
+        {
+            if (segment == null)
+                return;
+
+            var items = segment.Items;
+            Array.Clear(items, 0, Math.Min(items.Length, SegmentSize));
+            segment.Head = 0;
+            segment.Tail = 0;
+            segment.Next = null;
+            ArrayPool<T>.Shared.Return(items);
         }
 
         private void ThrowIfCompletedOrFaulted()

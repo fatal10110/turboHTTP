@@ -19,10 +19,14 @@ namespace TurboHTTP.Tests.Transport.Http2
     public class Http2FlowControlTests
     {
         private async Task<(Http2Connection conn, Stream serverStream, TestDuplexStream duplex)>
-            CreateInitializedConnectionAsync(CancellationToken ct = default)
+            CreateInitializedConnectionAsync(CancellationToken ct = default, Http2Options options = null)
         {
             var duplex = new TestDuplexStream();
-            var conn = new Http2Connection(duplex.ClientStream, "test.example.com", 443);
+            var conn = new Http2Connection(
+                duplex.ClientStream,
+                "test.example.com",
+                443,
+                options ?? new Http2Options());
 
             var serverCodec = new Http2FrameCodec(duplex.ServerStream);
             var serverTask = Task.Run(async () =>
@@ -59,6 +63,25 @@ namespace TurboHTTP.Tests.Transport.Http2
             await serverTask;
 
             return (conn, duplex.ServerStream, duplex);
+        }
+
+        private static Http2Options CreateTestHttp2Options(
+            int? perStreamReceiveBufferBytes = null,
+            int? maxConnectionBufferedBytes = null,
+            int? stallTimeoutMilliseconds = null,
+            int? maintenanceIntervalMilliseconds = null)
+        {
+            var options = new Http2Options();
+            if (perStreamReceiveBufferBytes.HasValue)
+                options.TestPerStreamReceiveBufferBytesOverride = perStreamReceiveBufferBytes.Value;
+            if (maxConnectionBufferedBytes.HasValue)
+                options.TestMaxConnectionBufferedBytesOverride = maxConnectionBufferedBytes.Value;
+            if (stallTimeoutMilliseconds.HasValue)
+                options.TestStallTimeoutMillisecondsOverride = stallTimeoutMilliseconds.Value;
+            if (maintenanceIntervalMilliseconds.HasValue)
+                options.TestMaintenanceIntervalMillisecondsOverride = maintenanceIntervalMilliseconds.Value;
+
+            return options;
         }
 
         private Http2Frame BuildResponseHeadersFrame(int streamId, int statusCode, bool endStream = false)
@@ -533,32 +556,130 @@ namespace TurboHTTP.Tests.Transport.Http2
                 conn.Dispose();
             });
         }
-        // --- New tests for review fixes ---
 
         [Test]
-        public void StreamLevelRecvWindow_SendsStreamWindowUpdate()        {
+        public void DataSending_StreamBody_BlocksWhenWindowExhausted_ThenUnblocks()        {
             AssertAsync.Run(async () =>
             {
-                // Fix 1: Verify stream-level WINDOW_UPDATE is sent when stream recv window is consumed
                 using var cts = new CancellationTokenSource(15000);
-                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
-                var serverCodec = new Http2FrameCodec(serverStream);
 
-                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/large"));
+                var duplex = new TestDuplexStream();
+                var conn = new Http2Connection(duplex.ClientStream, "test.example.com", 443);
+                var serverCodec = new Http2FrameCodec(duplex.ServerStream);
+
+                var serverInitTask = Task.Run(async () =>
+                {
+                    var preface = new byte[24];
+                    int read = 0;
+                    while (read < 24)
+                    {
+                        int n = await duplex.ServerStream.ReadAsync(preface, read, 24 - read, cts.Token);
+                        if (n == 0) throw new IOException("Unexpected end of stream");
+                        read += n;
+                    }
+
+                    await serverCodec.ReadFrameAsync(16384, cts.Token);
+
+                    var settings = new byte[6];
+                    settings[0] = 0;
+                    settings[1] = (byte)Http2SettingId.InitialWindowSize;
+                    settings[2] = 0;
+                    settings[3] = 0;
+                    settings[4] = 0x04;
+                    settings[5] = 0x00;
+                    await serverCodec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Settings,
+                        Flags = Http2FrameFlags.None,
+                        StreamId = 0,
+                        Payload = settings,
+                        Length = 6
+                    }, cts.Token);
+
+                    await serverCodec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Settings,
+                        Flags = Http2FrameFlags.Ack,
+                        StreamId = 0,
+                        Payload = Array.Empty<byte>(),
+                        Length = 0
+                    }, cts.Token);
+
+                    await serverCodec.ReadFrameAsync(16384, cts.Token);
+                }, cts.Token);
+
+                await conn.InitializeAsync(cts.Token);
+                await serverInitTask;
+
+                var body = new byte[2048];
+                using var bodyStream = new MemoryStream(body, writable: false);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/upload"))
+                    .WithStreamBody(bodyStream, body.Length, leaveOpen: true);
                 var context = new RequestContext(request);
                 var responseTask = conn.SendRequestAsync(request, context, cts.Token);
 
                 var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
                 int streamId = headersFrame.StreamId;
 
-                // Send HEADERS
+                var dataFrame1 = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Data, dataFrame1.Type);
+                Assert.LessOrEqual(dataFrame1.Payload.Length, 1024);
+                Assert.IsFalse(dataFrame1.HasFlag(Http2FrameFlags.EndStream));
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.WindowUpdate,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = streamId,
+                    Payload = MakeWindowUpdatePayload(2048),
+                    Length = 4
+                }, cts.Token);
+
+                int totalRead = dataFrame1.Payload.Length;
+                bool endStreamSeen = false;
+                while (!endStreamSeen)
+                {
+                    var frame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                    if (frame.Type != Http2FrameType.Data)
+                        continue;
+
+                    totalRead += frame.Payload.Length;
+                    endStreamSeen = frame.HasFlag(Http2FrameFlags.EndStream);
+                }
+
+                Assert.AreEqual(2048, totalRead);
+                Assert.AreEqual(bodyStream.Length, bodyStream.Position);
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 200, endStream: true), cts.Token);
+                var response = await responseTask;
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        // --- New tests for review fixes ---
+
+        [Test]
+        public void StreamLevelRecvWindow_SendsStreamWindowUpdate()        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(15000);
+                var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/large"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendStreamingRequestAsync(request, context, cts.Token).AsTask();
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = headersFrame.StreamId;
+
                 await serverCodec.WriteFrameAsync(
                     BuildResponseHeadersFrame(streamId, 200), cts.Token);
+                await using var response = await responseTask;
 
-                // Send DATA that consumes > half the window to trigger WINDOW_UPDATEs
-                // The threshold is when recv window < 65535/2 = 32767
-                // So we need to consume 65535 - 32767 + 1 = 32769 bytes to go below threshold
-                // Send 3 chunks of 16384 for 49152 total to be safely over threshold
                 var chunk = new byte[16384];
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {
@@ -587,21 +708,25 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = chunk.Length
                 }, cts.Token);
 
-                // Now 49152 bytes consumed, window is 65535-49152=16383 which is < 32767
-                // Client should send WINDOW_UPDATEs for both connection and stream.
-                var updates = new List<Http2Frame>();
-                for (int i = 0; i < 2; i++)
-                {
-                    var frame = await serverCodec.ReadFrameAsync(16384, cts.Token);
-                    if (frame.Type == Http2FrameType.WindowUpdate)
-                        updates.Add(frame);
-                }
+                var connectionUpdate = await ReadMatchingFrameAsync(
+                    serverCodec,
+                    frame => frame.Type == Http2FrameType.WindowUpdate && frame.StreamId == 0,
+                    timeoutMs: 2000);
+                Assert.IsNotNull(connectionUpdate);
 
-                // Should have at least one connection-level (stream 0) and one stream-level
-                Assert.IsTrue(updates.Exists(f => f.StreamId == 0), "Expected connection-level WINDOW_UPDATE");
-                Assert.IsTrue(updates.Exists(f => f.StreamId == streamId), "Expected stream-level WINDOW_UPDATE");
+                var unexpected = await TryReadFrameAsync(serverCodec, timeoutMs: 250);
+                Assert.IsNull(unexpected, "Stream-level WINDOW_UPDATE should stay deferred until the consumer reads.");
 
-                // Complete the response
+                var readBuffer = new byte[16384];
+                var read = await response.Body.ReadAsync(readBuffer, cts.Token);
+                Assert.AreEqual(16384, read);
+
+                var streamUpdate = await ReadMatchingFrameAsync(
+                    serverCodec,
+                    frame => frame.Type == Http2FrameType.WindowUpdate && frame.StreamId == streamId,
+                    timeoutMs: 2000);
+                Assert.IsNotNull(streamUpdate);
+
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {
                     Type = Http2FrameType.Data,
@@ -611,8 +736,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = 1
                 }, cts.Token);
 
-                var response = await responseTask;
-                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                while (await response.Body.ReadAsync(readBuffer, cts.Token) != 0)
+                {
+                }
 
                 conn.Dispose();
             });
@@ -837,6 +963,33 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 conn.Dispose();
             });
+        }
+
+        private static async Task<Http2Frame> TryReadFrameAsync(Http2FrameCodec codec, int timeoutMs)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeoutMs);
+            try
+            {
+                return await codec.ReadFrameAsync(16384, timeoutCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+        }
+
+        private static async Task<Http2Frame> ReadMatchingFrameAsync(
+            Http2FrameCodec codec,
+            Func<Http2Frame, bool> predicate,
+            int timeoutMs)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeoutMs);
+            while (true)
+            {
+                var frame = await codec.ReadFrameAsync(16384, timeoutCts.Token);
+                if (predicate(frame))
+                    return frame;
+            }
         }
 
         private static void RethrowIfFaulted(Task task)

@@ -28,7 +28,8 @@
   -->
   <assembly fullname="TurboHTTP.Transport">
     <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1" preserve="all"/>
-    <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1[[System.ReadOnlyMemory`1[[System.Byte, mscorlib]], mscorlib]]" preserve="all"/>
+    <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1[[TurboHTTP.Transport.Http2.Http2ResponseBodyChunk, TurboHTTP.Transport]]" preserve="all"/>
+    <type fullname="TurboHTTP.Transport.Http2.Http2ResponseBodySource" preserve="all"/>
   </assembly>
 
   <!--

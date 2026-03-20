@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -158,6 +159,223 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
+        internal void RemoveActiveStream(int streamId)
+        {
+            _activeStreams.TryRemove(streamId, out _);
+        }
+
+        internal bool IsStreamClosedForReceive(int streamId)
+        {
+            return !_activeStreams.ContainsKey(streamId);
+        }
+
+        internal void TrackRecentlyResetStream(int streamId)
+        {
+            long nowTick = Environment.TickCount64;
+            _recentlyResetStreams[streamId] = nowTick;
+
+            if (_recentlyResetStreams.Count > RecentlyResetStreamHardLimit)
+                TrimRecentlyResetStreams(nowTick, enforceHardLimit: true);
+        }
+
+        internal bool IsRecentlyResetStream(int streamId)
+        {
+            return _recentlyResetStreams.ContainsKey(streamId);
+        }
+
+        internal void OnResponseBytesBuffered(int flowControlledBytes)
+        {
+            if (flowControlledBytes <= 0)
+                return;
+
+            // Connection-level buffering follows HTTP/2 flow-controlled bytes, not payload bytes.
+            Interlocked.Add(ref _connectionBufferedBytes, flowControlledBytes);
+        }
+
+        internal void OnResponseBytesConsumed(int flowControlledBytes)
+        {
+            if (flowControlledBytes <= 0)
+                return;
+
+            Interlocked.Add(ref _connectionBufferedBytes, -flowControlledBytes);
+            _ = MaybeSendConnectionWindowUpdateAsync(CancellationToken.None);
+        }
+
+        internal void OnResponseBytesReleased(int flowControlledBytes)
+        {
+            if (flowControlledBytes <= 0)
+                return;
+
+            Interlocked.Add(ref _connectionBufferedBytes, -flowControlledBytes);
+            _ = MaybeSendConnectionWindowUpdateAsync(CancellationToken.None);
+        }
+
+        internal async ValueTask OnStreamChunkConsumedAsync(
+            Http2Stream stream,
+            int flowControlledLength,
+            CancellationToken ct)
+        {
+            if (stream == null || flowControlledLength <= 0 || IsStreamClosedForReceive(stream.StreamId))
+                return;
+
+            try
+            {
+                await SendWindowUpdateAsync(stream.StreamId, flowControlledLength, ct).ConfigureAwait(false);
+                stream.AdjustRecvWindowSize(flowControlledLength);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
+            {
+                // Connection is shutting down.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Connection is shutting down.
+            }
+            catch (Exception ex)
+            {
+                FailAllStreams(ex);
+            }
+        }
+
+        internal async Task AbortStreamFromBodySourceAsync(Http2Stream stream)
+        {
+            if (stream == null)
+                return;
+
+            RemoveActiveStream(stream.StreamId);
+            TrackRecentlyResetStream(stream.StreamId);
+
+            try
+            {
+                await SendRstStreamAsync(stream.StreamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception ex)
+            {
+                FailAllStreams(ex);
+            }
+        }
+
+        private async Task MaybeSendConnectionWindowUpdateAsync(CancellationToken ct)
+        {
+            int currentWindow = Interlocked.CompareExchange(ref _connectionRecvWindow, 0, 0);
+            if (currentWindow >= _connectionRecvWindowTarget / 2)
+                return;
+
+            if (Interlocked.Read(ref _connectionBufferedBytes) > _maxConnectionBufferedBytes)
+                return;
+
+            try
+            {
+                await _connectionRecvWindowUpdateLock.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            try
+            {
+                currentWindow = Interlocked.CompareExchange(ref _connectionRecvWindow, 0, 0);
+                if (currentWindow >= _connectionRecvWindowTarget / 2)
+                    return;
+
+                if (Interlocked.Read(ref _connectionBufferedBytes) > _maxConnectionBufferedBytes)
+                    return;
+
+                int increment = _connectionRecvWindowTarget - currentWindow;
+                if (increment <= 0)
+                    return;
+
+                Interlocked.Add(ref _connectionRecvWindow, increment);
+                await SendWindowUpdateAsync(0, increment, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            finally
+            {
+                _connectionRecvWindowUpdateLock.Release();
+            }
+        }
+
+        private async Task MaintenanceLoopAsync(CancellationToken ct)
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(_maintenanceInterval, ct).ConfigureAwait(false);
+                    CleanupRecentlyResetStreams();
+                    ScanForStalledStreams();
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        private void ScanForStalledStreams()
+        {
+            long nowTick = Environment.TickCount64;
+            long stallTimeoutMs = Volatile.Read(ref _stallTimeoutMs);
+            foreach (var kvp in _activeStreams)
+            {
+                var stream = kvp.Value;
+                if (!stream.IsStalled(nowTick, stallTimeoutMs))
+                    continue;
+
+                stream.ResponseBodySource?.Abort();
+            }
+        }
+
+        private void CleanupRecentlyResetStreams()
+        {
+            TrimRecentlyResetStreams(Environment.TickCount64, enforceHardLimit: false);
+        }
+
+        private void TrimRecentlyResetStreams(long nowTick, bool enforceHardLimit)
+        {
+            long cutoff = nowTick - (long)DefaultHttp2StallTimeout.TotalMilliseconds;
+            foreach (var kvp in _recentlyResetStreams)
+            {
+                if (kvp.Value >= cutoff)
+                    continue;
+
+                _recentlyResetStreams.TryRemove(kvp.Key, out _);
+            }
+
+            if (!enforceHardLimit)
+                return;
+
+            int currentCount = _recentlyResetStreams.Count;
+            if (currentCount <= RecentlyResetStreamHardLimit)
+                return;
+
+            int excess = currentCount - RecentlyResetStreamSoftLimit;
+            if (excess <= 0)
+                return;
+
+            var oldestEntries = new List<KeyValuePair<int, long>>(currentCount);
+            foreach (var kvp in _recentlyResetStreams)
+                oldestEntries.Add(kvp);
+
+            oldestEntries.Sort(static (left, right) => left.Value.CompareTo(right.Value));
+            for (int i = 0; i < excess && i < oldestEntries.Count; i++)
+                _recentlyResetStreams.TryRemove(oldestEntries[i].Key, out _);
+        }
+
         private void FailAllStreams(Exception ex)
         {
             _goawayReceived = true;
@@ -167,8 +385,6 @@ namespace TurboHTTP.Transport.Http2
             {
                 if (_activeStreams.TryRemove(kvp.Key, out var stream))
                 {
-                    // Signal the pending awaiter only. DispatchAsync's finally block
-                    // owns returning the stream to the pool.
                     stream.Fail(ex);
                 }
             }
@@ -202,7 +418,19 @@ namespace TurboHTTP.Transport.Http2
                 // Best effort only.
             }
 
+            try
+            {
+                _maintenanceTask?.Wait(100);
+            }
+            catch
+            {
+                // Best effort only.
+            }
+
             _cts?.Dispose();
+            _windowWaiter?.Dispose();
+            _connectionRecvWindowUpdateLock?.Dispose();
+            _writeLock?.Dispose();
             _stream?.Dispose();
             // Return the HpackEncoder's reusable output buffer to ArrayPool.
             _hpackEncoder?.Dispose();

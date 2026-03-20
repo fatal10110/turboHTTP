@@ -17,6 +17,14 @@ namespace TurboHTTP.Transport.Http2
     /// </summary>
     internal partial class Http2Connection : IDisposable
     {
+        private const int DefaultHttp2PerStreamReceiveBufferBytes = 256 * 1024;
+        private const int DefaultMaxConnectionBufferedBytes = 8 * 1024 * 1024;
+        private const int DefaultConnectionReceiveWindowTargetBytes = 1024 * 1024;
+        private const int RecentlyResetStreamSoftLimit = 512;
+        private const int RecentlyResetStreamHardLimit = 1024;
+        private static readonly TimeSpan DefaultHttp2StallTimeout = TimeSpan.FromSeconds(60);
+        private static readonly TimeSpan DefaultMaintenanceInterval = TimeSpan.FromSeconds(5);
+
         // Connection identity
         public string Host { get; }
         public int Port { get; }
@@ -56,6 +64,8 @@ namespace TurboHTTP.Transport.Http2
         private int _connectionSendWindow = Http2Constants.DefaultInitialWindowSize;
         private int _connectionRecvWindow = Http2Constants.DefaultInitialWindowSize;
         private readonly SemaphoreSlim _windowWaiter = new SemaphoreSlim(0);
+        private readonly SemaphoreSlim _connectionRecvWindowUpdateLock = new SemaphoreSlim(1, 1);
+        private long _connectionBufferedBytes;
 
         // Write serialization
         private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
@@ -63,6 +73,7 @@ namespace TurboHTTP.Transport.Http2
         // Lifecycle
         private Task _readLoopTask;
         private Task _keepAliveTask;
+        private Task _maintenanceTask;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private volatile bool _goawayReceived;
         private int _lastGoawayStreamId;
@@ -78,6 +89,15 @@ namespace TurboHTTP.Transport.Http2
 
         // HPACK table size tracking (for detecting changes including back-to-default)
         private int _lastHeaderTableSize = Http2Constants.DefaultHeaderTableSize;
+        private readonly int _perStreamReceiveBufferBytes;
+        private readonly int _maxConnectionBufferedBytes;
+        private readonly int _connectionRecvWindowTarget;
+        private readonly TimeSpan _maintenanceInterval;
+        private long _stallTimeoutMs;
+        private readonly ConcurrentDictionary<int, long> _recentlyResetStreams =
+            new ConcurrentDictionary<int, long>();
+
+        internal int PerStreamReceiveBufferBytes => _perStreamReceiveBufferBytes;
 
         public bool IsAlive =>
             !_goawayReceived &&
@@ -105,6 +125,24 @@ namespace TurboHTTP.Transport.Http2
             _schemeHeader = "https";
             _localSettings = new Http2Settings(options);
             _localSettings.Apply(Http2SettingId.EnablePush, options.EnablePush ? 1u : 0u);
+            _perStreamReceiveBufferBytes = options.TestPerStreamReceiveBufferBytesOverride > 0
+                ? options.TestPerStreamReceiveBufferBytesOverride
+                : Math.Max(
+                    DefaultHttp2PerStreamReceiveBufferBytes,
+                    Math.Max(_localSettings.InitialWindowSize, _localSettings.MaxFrameSize));
+            _maxConnectionBufferedBytes = options.TestMaxConnectionBufferedBytesOverride > 0
+                ? options.TestMaxConnectionBufferedBytesOverride
+                : DefaultMaxConnectionBufferedBytes;
+            _connectionRecvWindowTarget = Math.Max(
+                Http2Constants.DefaultInitialWindowSize,
+                Math.Min(DefaultConnectionReceiveWindowTargetBytes, _maxConnectionBufferedBytes));
+            _stallTimeoutMs = options.TestStallTimeoutMillisecondsOverride > 0
+                ? options.TestStallTimeoutMillisecondsOverride
+                : (long)DefaultHttp2StallTimeout.TotalMilliseconds;
+            _maintenanceInterval = TimeSpan.FromMilliseconds(
+                options.TestMaintenanceIntervalMillisecondsOverride > 0
+                    ? options.TestMaintenanceIntervalMillisecondsOverride
+                    : (int)DefaultMaintenanceInterval.TotalMilliseconds);
             _settingsAckSource = new ResettableValueTaskSource<bool>();
             _settingsAckSource.PrepareForUse();
         }
@@ -179,6 +217,9 @@ namespace TurboHTTP.Transport.Http2
             // Keep idle HTTP/2 connections active on mobile NATs.
             if (_keepAliveTask == null)
                 _keepAliveTask = Task.Run(() => KeepAliveLoopAsync(_cts.Token));
+
+            if (_maintenanceTask == null)
+                _maintenanceTask = Task.Run(() => MaintenanceLoopAsync(_cts.Token));
         }
 
         /// <summary>
@@ -196,6 +237,8 @@ namespace TurboHTTP.Transport.Http2
 
             Http2Stream stream = null;
             int streamId = -1;
+            bool requestHeadersSent = false;
+            bool requestEndStreamSent = false;
 
             lock (_streamCreateLock)
             {
@@ -233,13 +276,14 @@ namespace TurboHTTP.Transport.Http2
                     handler,
                     context,
                     _remoteSettings.InitialWindowSize,
-                    _localSettings.InitialWindowSize);
+                    _localSettings.InitialWindowSize,
+                    this);
                 _activeStreams[streamId] = stream;
             }
 
             if (ct.IsCancellationRequested)
             {
-                _activeStreams.TryRemove(streamId, out _);
+                RemoveActiveStream(streamId);
                 throw new OperationCanceledException(ct);
             }
 
@@ -247,6 +291,7 @@ namespace TurboHTTP.Transport.Http2
             {
                 if (_activeStreams.TryRemove(streamId, out var canceledStream))
                 {
+                    TrackRecentlyResetStream(streamId);
                     _ = SendRstStreamAsync(streamId, Http2ErrorCode.Cancel);
                     canceledStream.Cancel(ct);
                 }
@@ -254,14 +299,7 @@ namespace TurboHTTP.Transport.Http2
 
             try
             {
-                if (!request.TryGetBufferedContent(out var body))
-                {
-                    throw new InvalidOperationException(
-                        "Buffered HTTP/2 request dispatch does not support streaming request bodies. " +
-                        "Use a buffered request body until Phase 22a.3 is implemented.");
-                }
-
-                bool hasBody = !body.IsEmpty;
+                bool hasBody = HasRequestBody(request.Content);
 
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
@@ -300,6 +338,8 @@ namespace TurboHTTP.Transport.Http2
 
                     await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct)
                         .ConfigureAwait(false);
+                    requestHeadersSent = true;
+                    requestEndStreamSent = !hasBody;
 
                     stream.State = hasBody ? Http2StreamState.Open : Http2StreamState.HalfClosedLocal;
                 }
@@ -310,7 +350,8 @@ namespace TurboHTTP.Transport.Http2
 
                 if (hasBody)
                 {
-                    await SendDataAsync(streamId, body, stream, ct).ConfigureAwait(false);
+                    await SendDataAsync(streamId, request.Content, stream, ct).ConfigureAwait(false);
+                    requestEndStreamSent = true;
                     stream.State = Http2StreamState.HalfClosedLocal;
                 }
 
@@ -323,18 +364,28 @@ namespace TurboHTTP.Transport.Http2
             }
             catch (Exception ex)
             {
+                if (stream != null &&
+                    requestHeadersSent &&
+                    !requestEndStreamSent &&
+                    !ct.IsCancellationRequested)
+                {
+                    RemoveActiveStream(streamId);
+                    try
+                    {
+                        TrackRecentlyResetStream(streamId);
+                        await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best effort only: the underlying connection may already be failing.
+                    }
+                }
+
                 if (ex is HandlerCallbackException handlerFault)
                 {
                     context.RecordEvent("RequestFailed");
                     ExceptionDispatchInfo.Capture(handlerFault.InnerException ?? handlerFault).Throw();
                     throw;
-                }
-
-                if (stream != null && stream.HeadersReceived)
-                {
-                    context.RecordEvent("RequestFailed");
-                    handler.OnResponseError(MapException(ex), context);
-                    return;
                 }
 
                 throw MapException(ex);
@@ -343,8 +394,12 @@ namespace TurboHTTP.Transport.Http2
             {
                 if (stream != null)
                 {
-                    _activeStreams.TryRemove(streamId, out _);
-                    Http2StreamPool.Return(stream);
+                    if (!stream.ResponseStarted)
+                        RemoveActiveStream(streamId);
+
+                    stream.CancellationRegistration.Dispose();
+                    stream.CancellationRegistration = default;
+                    stream.ReleaseDispatchLifetime();
                 }
             }
         }
@@ -352,6 +407,17 @@ namespace TurboHTTP.Transport.Http2
         private static UHttpException MapException(Exception ex) =>
             ex as UHttpException ??
             new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
+
+        private static bool HasRequestBody(UHttpRequestBody content)
+        {
+            if (content == null)
+                return false;
+
+            if (content.TryGetBufferedData(out var buffered))
+                return !buffered.IsEmpty;
+
+            return !content.Length.HasValue || content.Length.Value > 0;
+        }
 
         private static string ToLowerAsciiHeaderName(string value)
         {
