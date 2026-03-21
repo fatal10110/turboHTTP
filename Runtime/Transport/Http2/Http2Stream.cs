@@ -43,6 +43,7 @@ namespace TurboHTTP.Transport.Http2
         private long _responseBodyLength;
         private long? _responseContentLength;
         private Http2ResponseBodySource _responseBodySource;
+        private CancellationToken _requestCancellationToken;
         private ManualResetValueTaskSourceCore<VoidResult> _completionSource;
 
         internal Http2Stream()
@@ -151,6 +152,7 @@ namespace TurboHTTP.Transport.Http2
             HeadersReceived = false;
             PendingEndStream = false;
             State = Http2StreamState.Idle;
+            _requestCancellationToken = default;
             HeaderBlockBuffer.SetLength(0);
             _sendWindowSize = initialSendWindowSize;
             _recvWindowSize = initialRecvWindowSize;
@@ -181,6 +183,7 @@ namespace TurboHTTP.Transport.Http2
             HeadersReceived = false;
             PendingEndStream = false;
             State = Http2StreamState.Idle;
+            _requestCancellationToken = default;
             _sendWindowSize = 0;
             _recvWindowSize = 0;
             Interlocked.Exchange(ref _handlerFaulted, 0);
@@ -257,6 +260,19 @@ namespace TurboHTTP.Transport.Http2
             ResponseBodySource?.SetTrailers(trailers ?? HttpHeaders.Empty);
         }
 
+        internal void SetRequestCancellationToken(CancellationToken cancellationToken)
+        {
+            _requestCancellationToken = cancellationToken;
+        }
+
+        internal void HandleRequestCancellation()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
+            _connection?.HandleRequestCancellation(this, _requestCancellationToken);
+        }
+
         public Http2ResponseBodyEnqueueResult TryAppendResponseData(
             byte[] source,
             int offset,
@@ -316,9 +332,6 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
-            if (Interlocked.Exchange(ref _completionSignaled, 1) != 0)
-                return;
-
             State = Http2StreamState.Closed;
             TrySetException(new OperationCanceledException(cancellationToken));
         }
@@ -339,9 +352,6 @@ namespace TurboHTTP.Transport.Http2
                 responseBodySource.Fault(normalizedException);
                 return;
             }
-
-            if (Interlocked.Exchange(ref _completionSignaled, 1) != 0)
-                return;
 
             State = Http2StreamState.Closed;
             CompleteWithResponseStartFailure(normalizedException);

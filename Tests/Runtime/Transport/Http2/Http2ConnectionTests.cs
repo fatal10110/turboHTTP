@@ -201,6 +201,36 @@ namespace TurboHTTP.Tests.Transport.Http2
             });
         }
 
+        [Test]
+        public void ResponseBodySource_DrainAsync_AfterFault_ReturnsWithoutThrowing()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var conn = new Http2Connection(
+                    new TestDuplexStream().ClientStream,
+                    "test.example.com",
+                    443,
+                    new Http2Options(),
+                    new StreamingOptions());
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/faulted-drain"));
+                var context = new RequestContext(request);
+                var stream = new Http2Stream(
+                    1,
+                    request,
+                    NoOpHttpHandler.Instance,
+                    context,
+                    Http2Constants.DefaultInitialWindowSize,
+                    Http2Constants.DefaultInitialWindowSize);
+                var source = new Http2ResponseBodySource(conn, stream, null, completed: false);
+
+                source.Fault(new IOException("faulted response"));
+
+                await source.DrainAsync(CancellationToken.None);
+                await source.DisposeAsync();
+            });
+        }
+
         /// <summary>
         /// Helper: encode response headers as HPACK and build a HEADERS frame.
         /// </summary>

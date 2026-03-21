@@ -11,18 +11,15 @@ namespace TurboHTTP.WebSocket
     internal sealed class WebSocketAsyncEnumerable : IAsyncEnumerable<WebSocketMessage>
     {
         private readonly Func<CancellationToken, ValueTask<WebSocketMessage>> _receiveAsync;
-        private readonly Func<WebSocketState> _getState;
         private readonly Action _onDispose;
         private readonly CancellationToken _baseCancellationToken;
 
         public WebSocketAsyncEnumerable(
             Func<CancellationToken, ValueTask<WebSocketMessage>> receiveAsync,
-            Func<WebSocketState> getState,
             Action onDispose,
             CancellationToken baseCancellationToken)
         {
             _receiveAsync = receiveAsync ?? throw new ArgumentNullException(nameof(receiveAsync));
-            _getState = getState ?? throw new ArgumentNullException(nameof(getState));
             _onDispose = onDispose ?? throw new ArgumentNullException(nameof(onDispose));
             _baseCancellationToken = baseCancellationToken;
         }
@@ -46,13 +43,12 @@ namespace TurboHTTP.WebSocket
                 effectiveToken = cancellationToken;
             }
 
-            return new Enumerator(_receiveAsync, _getState, _onDispose, effectiveToken, linkedCts);
+            return new Enumerator(_receiveAsync, _onDispose, effectiveToken, linkedCts);
         }
 
         private sealed class Enumerator : IAsyncEnumerator<WebSocketMessage>
         {
             private readonly Func<CancellationToken, ValueTask<WebSocketMessage>> _receiveAsync;
-            private readonly Func<WebSocketState> _getState;
             private readonly Action _onDispose;
             private readonly CancellationToken _cancellationToken;
             private readonly CancellationTokenSource _linkedCts;
@@ -61,13 +57,11 @@ namespace TurboHTTP.WebSocket
 
             public Enumerator(
                 Func<CancellationToken, ValueTask<WebSocketMessage>> receiveAsync,
-                Func<WebSocketState> getState,
                 Action onDispose,
                 CancellationToken cancellationToken,
                 CancellationTokenSource linkedCts)
             {
                 _receiveAsync = receiveAsync;
-                _getState = getState;
                 _onDispose = onDispose;
                 _cancellationToken = cancellationToken;
                 _linkedCts = linkedCts;
@@ -78,9 +72,6 @@ namespace TurboHTTP.WebSocket
             public async ValueTask<bool> MoveNextAsync()
             {
                 ThrowIfDisposed();
-
-                if (_getState() == WebSocketState.Closed)
-                    return false;
 
                 WebSocketMessage message;
                 try

@@ -17,6 +17,7 @@ namespace TurboHTTP.Transport.Http1
         private const int MaxResponseBodySize = 100 * 1024 * 1024;
         private const int DefaultDrainBufferBytes = 64 * 1024;
         private const int BufferedDrainReuseThresholdBytes = 64 * 1024;
+        private const int ChunkedDrainWireBudgetMultiplier = 5;
         private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(2);
 
         private readonly Http11ResponseParser.BufferedStreamReader _reader;
@@ -414,12 +415,16 @@ namespace TurboHTTP.Transport.Http1
                     if (remainingBudget <= 0)
                         return false;
 
-                    var toRead = (int)Math.Min(buffer.Length, remainingBudget);
+                    var maxDecodedRead = GetMaxDrainReadBytes(remainingBudget);
+                    if (maxDecodedRead <= 0)
+                        return false;
+
+                    var toRead = (int)Math.Min(buffer.Length, maxDecodedRead);
                     var read = await ReadAsync(buffer.AsMemory(0, toRead), ct).ConfigureAwait(false);
                     if (read == 0)
                         return true;
 
-                    remainingBudget -= read;
+                    remainingBudget -= GetDrainBudgetCharge(read);
                 }
 
                 return Volatile.Read(ref _terminalState) == 1;
@@ -481,16 +486,26 @@ namespace TurboHTTP.Transport.Http1
             if (!effectiveToken.CanBeCanceled || pending.IsCompleted)
                 return await pending.ConfigureAwait(false);
 
-            var readTask = pending.AsTask();
-            var cancelTask = Task.Delay(Timeout.Infinite, effectiveToken);
-            var completed = await Task.WhenAny(readTask, cancelTask).ConfigureAwait(false);
-            if (!ReferenceEquals(completed, readTask))
+            using var registration = effectiveToken.Register(
+                static state => ((Http11ResponseBodySource)state).CloseBody(),
+                this);
+
+            try
             {
-                CloseBody();
+                return await pending.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (effectiveToken.IsCancellationRequested)
+            {
                 throw CreateCanceledReadException(effectiveToken, callerToken);
             }
-
-            return await readTask.ConfigureAwait(false);
+            catch (ObjectDisposedException) when (effectiveToken.IsCancellationRequested)
+            {
+                throw CreateCanceledReadException(effectiveToken, callerToken);
+            }
+            catch (IOException) when (effectiveToken.IsCancellationRequested)
+            {
+                throw CreateCanceledReadException(effectiveToken, callerToken);
+            }
         }
 
         private async ValueTask AwaitReaderOperationAsync(
@@ -504,16 +519,26 @@ namespace TurboHTTP.Transport.Http1
                 return;
             }
 
-            var readTask = pending.AsTask();
-            var cancelTask = Task.Delay(Timeout.Infinite, effectiveToken);
-            var completed = await Task.WhenAny(readTask, cancelTask).ConfigureAwait(false);
-            if (!ReferenceEquals(completed, readTask))
+            using var registration = effectiveToken.Register(
+                static state => ((Http11ResponseBodySource)state).CloseBody(),
+                this);
+
+            try
             {
-                CloseBody();
+                await pending.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (effectiveToken.IsCancellationRequested)
+            {
                 throw CreateCanceledReadException(effectiveToken, callerToken);
             }
-
-            await readTask.ConfigureAwait(false);
+            catch (ObjectDisposedException) when (effectiveToken.IsCancellationRequested)
+            {
+                throw CreateCanceledReadException(effectiveToken, callerToken);
+            }
+            catch (IOException) when (effectiveToken.IsCancellationRequested)
+            {
+                throw CreateCanceledReadException(effectiveToken, callerToken);
+            }
         }
 
         private static OperationCanceledException CreateCanceledReadException(
@@ -524,6 +549,31 @@ namespace TurboHTTP.Transport.Http1
                 return new OperationCanceledException(callerToken);
 
             return new OperationCanceledException(effectiveToken);
+        }
+
+        private long GetDrainBudgetCharge(int decodedBytesRead)
+        {
+            if (decodedBytesRead <= 0)
+                return 0;
+
+            if (_bodyKind != Http11ResponseBodyKind.Chunked)
+                return decodedBytesRead;
+
+            // Chunked drains need to budget for on-wire framing, not just decoded payload bytes.
+            // A 1-byte chunk consumes 5 bytes on the wire ("1\\r\\n" + data + "\\r\\n"), so use
+            // that worst-case multiplier to keep the keep-alive reuse probe conservative.
+            return (long)decodedBytesRead * ChunkedDrainWireBudgetMultiplier;
+        }
+
+        private long GetMaxDrainReadBytes(long remainingBudget)
+        {
+            if (_bodyKind != Http11ResponseBodyKind.Chunked)
+                return remainingBudget;
+
+            if (remainingBudget < ChunkedDrainWireBudgetMultiplier)
+                return 0;
+
+            return remainingBudget / ChunkedDrainWireBudgetMultiplier;
         }
 
         private CancellationToken GetEffectiveReadToken(CancellationToken ct)

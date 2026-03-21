@@ -313,7 +313,6 @@ namespace TurboHTTP.Transport.Http1
                         .ConfigureAwait(false);
                     writeState?.RecordBodyBytesWritten(bytesRead);
                     await stream.WriteAsync(ChunkDataTerminator, ct).ConfigureAwait(false);
-                    await stream.FlushAsync(ct).ConfigureAwait(false);
                 }
 
                 await stream.WriteAsync(FinalChunkBytes, ct).ConfigureAwait(false);

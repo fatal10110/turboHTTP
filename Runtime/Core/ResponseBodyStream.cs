@@ -131,7 +131,7 @@ namespace TurboHTTP.Core
         {
             DisposeStreamCore();
             GC.SuppressFinalize(this);
-            return default;
+            return base.DisposeAsync();
         }
 
         private void ThrowIfDisposed()
@@ -140,12 +140,27 @@ namespace TurboHTTP.Core
                 throw new ObjectDisposedException(nameof(ResponseBodyStream));
         }
 
-        private async ValueTask<int> ReadCoreAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+        internal bool HasReachedEndOfStream => Volatile.Read(ref _endOfStreamReached) != 0;
+
+        private ValueTask<int> ReadCoreAsync(Memory<byte> buffer, CancellationToken cancellationToken)
         {
             if (buffer.IsEmpty)
-                return 0;
+                return new ValueTask<int>(0);
 
-            var read = await _owner.ReadBodyAsync(buffer, cancellationToken).ConfigureAwait(false);
+            var pending = _owner.ReadBodyAsync(buffer, cancellationToken);
+            if (pending.IsCompletedSuccessfully)
+                return new ValueTask<int>(ObserveReadResult(pending.Result));
+
+            return AwaitReadCoreAsync(pending);
+        }
+
+        private async ValueTask<int> AwaitReadCoreAsync(ValueTask<int> pending)
+        {
+            return ObserveReadResult(await pending.ConfigureAwait(false));
+        }
+
+        private int ObserveReadResult(int read)
+        {
             if (read <= 0)
             {
                 Interlocked.Exchange(ref _endOfStreamReached, 1);

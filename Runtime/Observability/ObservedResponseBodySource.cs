@@ -52,14 +52,21 @@ namespace TurboHTTP.Observability
 
         public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
         {
-            data = default;
-            return false;
+            ThrowIfDisposed();
+            return _inner.TryGetBufferedData(out data);
         }
 
         public bool TryDetachBufferedBody(out DetachedBufferedBody body)
         {
-            body = default;
-            return false;
+            ThrowIfDisposed();
+
+            if (!_inner.TryDetachBufferedBody(out body))
+                return false;
+
+            ObserveDetachedBody(body.Sequence);
+            Volatile.Write(ref _completedNaturally, 1);
+            CompleteObservation();
+            return true;
         }
 
         public async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
@@ -140,7 +147,7 @@ namespace TurboHTTP.Observability
 
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
             try
@@ -154,12 +161,40 @@ namespace TurboHTTP.Observability
             }
             finally
             {
-                _onDispose?.Invoke(new ObservedResponseBodyCompletion(
-                    Interlocked.Read(ref _totalBytesObserved),
-                    Volatile.Read(ref _completedNaturally) != 0,
-                    Volatile.Read(ref _aborted) != 0,
-                    Volatile.Read(ref _error)));
+                InvokeDisposeCallback();
             }
+        }
+
+        private void ObserveDetachedBody(ReadOnlySequence<byte> body)
+        {
+            if (body.IsEmpty)
+                return;
+
+            foreach (var segment in body)
+            {
+                if (segment.IsEmpty)
+                    continue;
+
+                Interlocked.Add(ref _totalBytesObserved, segment.Length);
+                _onChunkRead?.Invoke(segment);
+            }
+        }
+
+        private void CompleteObservation()
+        {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
+            InvokeDisposeCallback();
+        }
+
+        private void InvokeDisposeCallback()
+        {
+            _onDispose?.Invoke(new ObservedResponseBodyCompletion(
+                Interlocked.Read(ref _totalBytesObserved),
+                Volatile.Read(ref _completedNaturally) != 0,
+                Volatile.Read(ref _aborted) != 0,
+                Volatile.Read(ref _error)));
         }
 
         private void ThrowIfDisposed()

@@ -21,6 +21,10 @@ namespace TurboHTTP.Transport.Http2
         private const int RecentlyResetStreamSoftLimit = 512;
         private const int RecentlyResetStreamHardLimit = 1024;
         private static readonly TimeSpan DefaultMaintenanceInterval = TimeSpan.FromSeconds(5);
+        private static readonly Action<object> s_requestCancellationCallback = static state =>
+        {
+            ((Http2Stream)state).HandleRequestCancellation();
+        };
 
         // Connection identity
         public string Host { get; }
@@ -63,6 +67,7 @@ namespace TurboHTTP.Transport.Http2
         private readonly SemaphoreSlim _windowWaiter = new SemaphoreSlim(0);
         private readonly SemaphoreSlim _connectionRecvWindowUpdateLock = new SemaphoreSlim(1, 1);
         private long _connectionBufferedBytes;
+        private int _connectionWindowUpdateScheduled;
 
         // Write serialization
         private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
@@ -75,6 +80,7 @@ namespace TurboHTTP.Transport.Http2
         private volatile bool _goawayReceived;
         private int _lastGoawayStreamId;
         private int _disposed;
+        private int _resourcesDisposed;
         private static readonly TimeSpan KeepAlivePingInterval = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan SettingsAckTimeout = TimeSpan.FromSeconds(5);
 
@@ -300,15 +306,11 @@ namespace TurboHTTP.Transport.Http2
                 throw new OperationCanceledException(ct);
             }
 
-            stream.CancellationRegistration = ct.Register(() =>
-            {
-                if (_activeStreams.TryRemove(streamId, out var canceledStream))
-                {
-                    TrackRecentlyResetStream(streamId);
-                    _ = SendRstStreamAsync(streamId, Http2ErrorCode.Cancel);
-                    canceledStream.Cancel(ct);
-                }
-            });
+            stream.SetRequestCancellationToken(ct);
+            stream.CancellationRegistration = ct.Register(
+                s_requestCancellationCallback,
+                stream,
+                useSynchronizationContext: false);
 
             try
             {
@@ -371,7 +373,7 @@ namespace TurboHTTP.Transport.Http2
                 }
 
                 context.RecordEvent("TransportH2RequestSent");
-                await AwaitResponseCompletionOrCancellationAsync(stream, streamId, ct)
+                await AwaitResponseCompletionOrCancellationAsync(stream)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -424,51 +426,14 @@ namespace TurboHTTP.Transport.Http2
             ex as UHttpException ??
             new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
 
-        private async Task AwaitResponseCompletionOrCancellationAsync(
-            Http2Stream stream,
-            int streamId,
-            CancellationToken ct)
+        private async Task AwaitResponseCompletionOrCancellationAsync(Http2Stream stream)
         {
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
-            if (!ct.CanBeCanceled)
-            {
-                await stream.CompletionTask.ConfigureAwait(false);
-                return;
-            }
-
-            var completionTask = stream.CompletionTask.AsTask();
-            var cancellationTask = Task.Delay(Timeout.Infinite, ct);
-            var completedTask = await Task.WhenAny(completionTask, cancellationTask).ConfigureAwait(false);
-            if (completedTask == completionTask)
-            {
-                await completionTask.ConfigureAwait(false);
-                return;
-            }
-
-            if (_activeStreams.TryRemove(streamId, out var canceledStream))
-            {
-                TrackRecentlyResetStream(streamId);
-                canceledStream.Cancel(ct);
-
-                try
-                {
-                    await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
-                {
-                }
-                catch (ObjectDisposedException)
-                {
-                }
-                catch (Exception ex)
-                {
-                    FailAllStreams(ex);
-                }
-            }
-
-            throw new OperationCanceledException(ct);
+            // Request-scoped cancellation is owned by stream.CancellationRegistration, which
+            // faults the stream and emits the best-effort RST_STREAM when the stream is still active.
+            await stream.CompletionTask.ConfigureAwait(false);
         }
 
         private static bool HasRequestBody(UHttpRequestBody content)

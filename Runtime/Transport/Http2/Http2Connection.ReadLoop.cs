@@ -410,7 +410,7 @@ namespace TurboHTTP.Transport.Http2
 
             if (!long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out long parsed))
                 return null;
-            if (parsed <= 0)
+            if (parsed < 0)
                 return null;
 
             return parsed;

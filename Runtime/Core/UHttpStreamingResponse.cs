@@ -10,6 +10,7 @@ namespace TurboHTTP.Core
     {
         private readonly IResponseBodySource _bodySource;
         private readonly ResponseBodyStream _body;
+        private readonly object _disposeCallbackGate = new object();
         private Action _onDispose;
         private int _disposed;
 
@@ -34,11 +35,19 @@ namespace TurboHTTP.Core
 
         internal long? BodyLength => _bodySource.Length;
 
+        internal IResponseBodySource BodySourceForTesting => _bodySource;
+
         internal ValueTask<int> ReadBodyAsync(Memory<byte> destination, CancellationToken ct)
         {
             return _bodySource.ReadAsync(destination, ct);
         }
 
+        /// <summary>
+        /// Returns HTTP trailers after the response body has reached completion.
+        /// Calling this before EOF may wait for the remaining body to be consumed or for transport
+        /// cleanup to complete; on HTTP/1.1 responses without trailer support this returns
+        /// <see cref="HttpHeaders.Empty"/>.
+        /// </summary>
         public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -65,7 +74,7 @@ namespace TurboHTTP.Core
 
             try
             {
-                _bodySource.Abort();
+                DisposeBodySynchronously();
             }
             finally
             {
@@ -87,20 +96,21 @@ namespace TurboHTTP.Core
             if (releaseAction == null)
                 return;
 
-            Action prior;
-            Action combined;
-            do
+            var releaseImmediately = false;
+            lock (_disposeCallbackGate)
             {
                 if (Volatile.Read(ref _disposed) != 0)
                 {
-                    releaseAction();
-                    return;
+                    releaseImmediately = true;
                 }
-
-                prior = _onDispose;
-                combined = (Action)Delegate.Combine(prior, releaseAction);
+                else
+                {
+                    _onDispose = (Action)Delegate.Combine(_onDispose, releaseAction);
+                }
             }
-            while (Interlocked.CompareExchange(ref _onDispose, combined, prior) != prior);
+
+            if (releaseImmediately)
+                releaseAction();
         }
 
         internal void AbortBody()
@@ -109,6 +119,32 @@ namespace TurboHTTP.Core
                 return;
 
             _bodySource.Abort();
+        }
+
+        private void DisposeBodySynchronously()
+        {
+            if (!_body.HasReachedEndOfStream)
+            {
+                _bodySource.Abort();
+                return;
+            }
+
+            try
+            {
+                var disposeTask = _bodySource.DisposeAsync();
+                if (disposeTask.IsCompletedSuccessfully)
+                {
+                    disposeTask.GetAwaiter().GetResult();
+                }
+                else
+                {
+                    disposeTask.AsTask().GetAwaiter().GetResult();
+                }
+            }
+            catch
+            {
+                _bodySource.Abort();
+            }
         }
 
         private async ValueTask DisposeAsyncCore()
@@ -125,7 +161,14 @@ namespace TurboHTTP.Core
 
         private void InvokeDisposeCallbacks()
         {
-            Interlocked.Exchange(ref _onDispose, null)?.Invoke();
+            Action callbacks;
+            lock (_disposeCallbackGate)
+            {
+                callbacks = _onDispose;
+                _onDispose = null;
+            }
+
+            callbacks?.Invoke();
         }
 
         private void ThrowIfDisposed()

@@ -171,6 +171,23 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void UHttpStreamingResponse_Dispose_AfterFullRead_DoesNotAbortSource()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
+                var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
+
+                Assert.AreEqual("payload", await ReadAllAsync(response.Body));
+
+                response.Dispose();
+
+                Assert.AreEqual(0, source.AbortCount);
+                Assert.AreEqual(1, source.DisposeAsyncCount);
+            });
+        }
+
+        [Test]
         public void UHttpStreamingResponse_DisposeAsync_DisposesSource_AndInvokesReleaseCallbackOnce()
         {
             AssertAsync.Run(async () =>

@@ -187,6 +187,33 @@ namespace TurboHTTP.Tests.Core
             });
         }
 
+        [Test]
+        public void OpenReadSession_ThrowingFactory_DoesNotLockBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var attempt = 0;
+                var body = new FactoryRequestBody(
+                    _ =>
+                    {
+                        attempt++;
+                        if (attempt == 1)
+                            throw new IOException("factory failed");
+
+                        return new ValueTask<Stream>(
+                            new MemoryStream(Encoding.UTF8.GetBytes("retryable")));
+                    },
+                    contentLength: 9);
+
+                var openEx = AssertAsync.ThrowsAsync<IOException>(
+                    async () => await ReadAllAsync(body.OpenReadSessionAsync(CancellationToken.None)));
+                StringAssert.Contains("factory failed", openEx.Message);
+
+                Assert.AreEqual("retryable", await ReadAllAsync(body.OpenReadSessionAsync(CancellationToken.None)));
+                Assert.AreEqual(2, attempt);
+            });
+        }
+
         private static async Task<string> ReadAllAsync(ValueTask<RequestBodyReadSession> pendingSession)
         {
             return await ReadAllAsync(await pendingSession.ConfigureAwait(false));

@@ -173,7 +173,18 @@ namespace TurboHTTP.Transport
                 request.Content.Replayability == RequestBodyReplayability.NonReplayable &&
                 writeState != null &&
                 writeState.HasCommittedBodyBytes &&
-                (ex is IOException || ex is SocketException);
+                (ex is IOException ||
+                 ex is SocketException ||
+                 IsConnectionClosedBeforeStatusLine(ex));
+        }
+
+        private static bool IsConnectionClosedBeforeStatusLine(Exception ex)
+        {
+            return ex is FormatException formatException &&
+                string.Equals(
+                    formatException.Message,
+                    "Empty HTTP status line",
+                    StringComparison.Ordinal);
         }
 
         private static UHttpException CreateCommittedNonReplayableBodyFailure(Exception ex)

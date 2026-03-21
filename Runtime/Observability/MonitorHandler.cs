@@ -11,6 +11,8 @@ namespace TurboHTTP.Observability
     {
         private readonly IHttpHandler _inner;
         private readonly UHttpRequest _request;
+        private readonly Action<ReadOnlyMemory<byte>> _onObservedChunkRead;
+        private readonly Action<ObservedResponseBodyCompletion> _onObservedBodyDispose;
 
         private int _statusCode;
         private HttpHeaders _headers;
@@ -20,11 +22,14 @@ namespace TurboHTTP.Observability
         private long _totalResponseBytes;
         private bool _responseBodyWasTruncated;
         private int _captureCompleted;
+        private RequestContext _responseContext;
 
         internal MonitorHandler(IHttpHandler inner, UHttpRequest request)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             _request = request ?? throw new ArgumentNullException(nameof(request));
+            _onObservedChunkRead = CaptureBody;
+            _onObservedBodyDispose = OnObservedBodyDispose;
         }
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
@@ -40,6 +45,7 @@ namespace TurboHTTP.Observability
         {
             _statusCode = statusCode;
             _headers = headers?.Clone() ?? new HttpHeaders();
+            _responseContext = context;
             _bufferedCaptureLimit = MonitorInterceptor.GetBufferedResponseCaptureLimit(headers);
             _bufferedResponseBytes = 0;
             _totalResponseBytes = 0;
@@ -58,14 +64,8 @@ namespace TurboHTTP.Observability
                     finalizeOnReturn = false;
                     bodyToForward = new ObservedResponseBodySource(
                         body,
-                        CaptureBody,
-                        completion =>
-                        {
-                            if (!completion.CompletedNaturally)
-                                _responseBodyWasTruncated = _bufferedResponseBytes > 0 || _totalResponseBytes > 0;
-
-                            CaptureOnce(context, completion.Error);
-                        });
+                        _onObservedChunkRead,
+                        _onObservedBodyDispose);
                 }
             }
 
@@ -119,6 +119,14 @@ namespace TurboHTTP.Observability
 
             if (_totalResponseBytes > _bufferedCaptureLimit)
                 _responseBodyWasTruncated = true;
+        }
+
+        private void OnObservedBodyDispose(ObservedResponseBodyCompletion completion)
+        {
+            if (!completion.CompletedNaturally)
+                _responseBodyWasTruncated = _bufferedResponseBytes > 0 || _totalResponseBytes > 0;
+
+            CaptureOnce(_responseContext, completion.Error);
         }
 
         private void CaptureOnce(RequestContext context, Exception exception)

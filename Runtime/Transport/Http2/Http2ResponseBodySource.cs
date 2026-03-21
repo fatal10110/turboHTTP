@@ -237,10 +237,7 @@ namespace TurboHTTP.Transport.Http2
                 return;
 
             if (terminalState == TerminalStateFaulted)
-            {
-                await _trailersSource.Task.ConfigureAwait(false);
                 return;
-            }
 
             await BeginCleanup(sendRst: !_connection.IsStreamClosedForReceive(_stream.StreamId))
                 .ConfigureAwait(false);
@@ -413,25 +410,38 @@ namespace TurboHTTP.Transport.Http2
                 if (_cleanupTask != null)
                     return _cleanupTask;
 
-                Volatile.Write(ref _terminalState, TerminalStateAborted);
+                var terminalState = Volatile.Read(ref _terminalState);
+                if (terminalState != TerminalStateCompleted)
+                {
+                    Volatile.Write(ref _terminalState, TerminalStateAborted);
+                }
+                else
+                {
+                    sendRst = false;
+                }
+
                 Interlocked.Exchange(ref _disposed, 1);
-                _cleanupTask = CleanupAsync(sendRst);
+                _cleanupTask = CleanupAsync(sendRst, terminalState);
                 return _cleanupTask;
             }
         }
 
-        private async Task CleanupAsync(bool sendRst)
+        private async Task CleanupAsync(bool sendRst, int terminalState)
         {
             try
             {
-                var disposedError = new ObjectDisposedException(nameof(Http2ResponseBodySource));
-                _queue.Complete(disposedError);
+                ObjectDisposedException disposedError = null;
+                if (terminalState != TerminalStateCompleted)
+                {
+                    disposedError = new ObjectDisposedException(nameof(Http2ResponseBodySource));
+                    _queue.Complete(disposedError);
+                }
 
                 var released = ReleaseUnreadBuffers();
                 if (released.FlowControlledBytes > 0)
                     _connection.OnResponseBytesReleased(released.FlowControlledBytes);
 
-                if (!_trailersSource.Task.IsCompleted)
+                if (disposedError != null && !_trailersSource.Task.IsCompleted)
                     _trailersSource.TrySetException(disposedError);
 
                 if (sendRst)
@@ -478,6 +488,9 @@ namespace TurboHTTP.Transport.Http2
 
         private bool TryReserveBufferedBytes(int length)
         {
+            if (length > _bufferCapacity)
+                return false;
+
             // Keep the CAS because cleanup/abort can release bytes concurrently with the read loop.
             while (true)
             {

@@ -71,7 +71,7 @@ namespace TurboHTTP.Core
                 contentLength,
                 disposeStream,
                 ReleaseSession,
-                FailSessionAndRelease);
+                FailSession);
         }
 
         public void Dispose()
@@ -154,10 +154,9 @@ namespace TurboHTTP.Core
                 DisposeCoreOnce();
         }
 
-        private void FailSessionAndRelease()
+        private void FailSession()
         {
             Interlocked.Exchange(ref _sessionFaulted, 1);
-            ReleaseSession();
         }
 
         private void DisposeCoreOnce()

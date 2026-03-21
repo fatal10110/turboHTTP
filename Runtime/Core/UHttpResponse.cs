@@ -71,6 +71,7 @@ namespace TurboHTTP.Core
         private readonly byte[] _pooledBodyBuffer;
         private readonly bool _bodyBufferRented;
         private IDisposable _segmentedBodyOwner;
+        private readonly object _disposeCallbackGate = new object();
         private Action _onDispose;
         private int _disposed;
 
@@ -249,20 +250,21 @@ namespace TurboHTTP.Core
             if (releaseAction == null)
                 return;
 
-            Action prior;
-            Action combined;
-            do
+            var releaseImmediately = false;
+            lock (_disposeCallbackGate)
             {
                 if (Volatile.Read(ref _disposed) != 0)
                 {
-                    releaseAction();
-                    return;
+                    releaseImmediately = true;
                 }
-
-                prior = _onDispose;
-                combined = (Action)Delegate.Combine(prior, releaseAction);
+                else
+                {
+                    _onDispose = (Action)Delegate.Combine(_onDispose, releaseAction);
+                }
             }
-            while (Interlocked.CompareExchange(ref _onDispose, combined, prior) != prior);
+
+            if (releaseImmediately)
+                releaseAction();
         }
 
         ~UHttpResponse()
@@ -303,7 +305,13 @@ namespace TurboHTTP.Core
             // PoolHealthReporter diagnostics.
             if (disposing)
             {
-                var callback = Interlocked.Exchange(ref _onDispose, null);
+                Action callback;
+                lock (_disposeCallbackGate)
+                {
+                    callback = _onDispose;
+                    _onDispose = null;
+                }
+
                 callback?.Invoke();
             }
         }

@@ -303,6 +303,39 @@ namespace TurboHTTP.Tests.Observability
         }
 
         [Test]
+        public void BufferedDispatch_PreservesDetachFastPath_WhenMetricsObservesStreamingBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var middleware = new MetricsInterceptor();
+                var bodySource = new DeferredDetachBodySource(Encoding.UTF8.GetBytes("payload"));
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        bodySource,
+                        ctx).AsTask();
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/detach"));
+                var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                using (response)
+                {
+                    Assert.AreEqual("payload", response.GetBodyAsString());
+                }
+
+                Assert.AreEqual(0, bodySource.ReadAsyncCount);
+                Assert.AreEqual(0, bodySource.DisposeAsyncCount);
+                Assert.AreEqual(7, middleware.Metrics.TotalBytesReceived);
+                Assert.AreEqual(1, middleware.Metrics.SuccessfulRequests);
+            });
+        }
+
+        [Test]
         public void StreamingRequestBody_UsesTransportReportedBytesSent()
         {
             Task.Run(async () =>
@@ -467,6 +500,68 @@ namespace TurboHTTP.Tests.Observability
 
             public ValueTask DisposeAsync()
             {
+                return default;
+            }
+        }
+
+        private sealed class DeferredDetachBodySource : IResponseBodySource
+        {
+            private readonly ReadOnlyMemory<byte> _payload;
+            private int _detached;
+            private int _readAsyncCount;
+            private int _disposeAsyncCount;
+
+            internal DeferredDetachBodySource(ReadOnlyMemory<byte> payload)
+            {
+                _payload = payload;
+            }
+
+            internal int ReadAsyncCount => Volatile.Read(ref _readAsyncCount);
+            internal int DisposeAsyncCount => Volatile.Read(ref _disposeAsyncCount);
+
+            public long? Length => _payload.Length;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                data = default;
+                return false;
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                if (Interlocked.Exchange(ref _detached, 1) != 0)
+                {
+                    body = default;
+                    return false;
+                }
+
+                body = new DetachedBufferedBody(_payload);
+                return true;
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                Interlocked.Increment(ref _readAsyncCount);
+                throw new InvalidOperationException("Detach fast path should avoid ReadAsync.");
+            }
+
+            public ValueTask DrainAsync(CancellationToken ct)
+            {
+                throw new InvalidOperationException("Detach fast path should avoid DrainAsync.");
+            }
+
+            public void Abort()
+            {
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                throw new InvalidOperationException("Detach fast path should avoid trailer loading.");
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Interlocked.Increment(ref _disposeAsyncCount);
                 return default;
             }
         }

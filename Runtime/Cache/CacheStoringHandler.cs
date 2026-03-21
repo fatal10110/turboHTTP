@@ -133,6 +133,8 @@ namespace TurboHTTP.Cache
 
     internal sealed class TeeBodySource : IResponseBodySource
     {
+        private static readonly TimeSpan TrailerLoadTimeout = TimeSpan.FromSeconds(2);
+
         private readonly IResponseBodySource _inner;
         private readonly CacheInterceptor _owner;
         private readonly HttpMethod _requestMethod;
@@ -343,9 +345,11 @@ namespace TurboHTTP.Cache
             if (Volatile.Read(ref _trailersLoaded) != 0)
                 return true;
 
+            CancellationTokenSource timeoutCts = null;
             try
             {
-                _trailers = await _inner.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
+                timeoutCts = new CancellationTokenSource(TrailerLoadTimeout);
+                _trailers = await _inner.GetTrailersAsync(timeoutCts.Token).ConfigureAwait(false);
                 Volatile.Write(ref _trailersLoaded, 1);
                 return true;
             }
@@ -353,6 +357,10 @@ namespace TurboHTTP.Cache
             {
                 Abort();
                 return false;
+            }
+            finally
+            {
+                timeoutCts?.Dispose();
             }
         }
 

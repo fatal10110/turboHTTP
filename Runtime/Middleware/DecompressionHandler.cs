@@ -13,7 +13,6 @@ namespace TurboHTTP.Middleware
     internal sealed class DecompressionHandler : IHttpHandler
     {
         private static readonly uint[] Crc32Table = BuildCrc32Table();
-        private static readonly byte[] OverflowProbe = new byte[1];
 
         private readonly IHttpHandler _inner;
         private readonly long _maxDecompressedBodySizeBytes;
@@ -211,6 +210,7 @@ namespace TurboHTTP.Middleware
         {
             private const int ReadAheadBufferBytes = 8 * 1024;
             private const int DrainBufferBytes = 16 * 1024;
+            private static readonly TimeSpan DisposeDrainTimeout = TimeSpan.FromSeconds(2);
 
             private readonly IResponseBodySource _inner;
             private readonly long _maxDecompressedBodySizeBytes;
@@ -289,7 +289,7 @@ namespace TurboHTTP.Middleware
                         0,
                         (int)Math.Min(destination.Length, remainingBudget));
 
-                    var read = await _decompressionStream.ReadAsync(boundedDestination, ct).ConfigureAwait(false);
+                    var read = await ReadFromDecompressionStreamAsync(boundedDestination, ct).ConfigureAwait(false);
                     if (read == 0)
                     {
                         Volatile.Write(ref _completed, 1);
@@ -371,11 +371,13 @@ namespace TurboHTTP.Middleware
                     return;
 
                 var drained = false;
+                CancellationTokenSource drainTimeoutCts = null;
                 try
                 {
                     if (Volatile.Read(ref _completed) == 0)
                     {
-                        await DrainAsync(CancellationToken.None).ConfigureAwait(false);
+                        drainTimeoutCts = new CancellationTokenSource(DisposeDrainTimeout);
+                        await DrainAsync(drainTimeoutCts.Token).ConfigureAwait(false);
                     }
 
                     drained = true;
@@ -389,6 +391,7 @@ namespace TurboHTTP.Middleware
                 }
                 finally
                 {
+                    drainTimeoutCts?.Dispose();
                     Interlocked.Exchange(ref _disposed, 1);
                     DisposeStreams();
                 }
@@ -408,7 +411,8 @@ namespace TurboHTTP.Middleware
 
             private async ValueTask<int> ProbePastLimitAsync(CancellationToken ct)
             {
-                var read = await _decompressionStream.ReadAsync(OverflowProbe.AsMemory(), ct).ConfigureAwait(false);
+                var overflowProbe = new byte[1];
+                var read = await ReadFromDecompressionStreamAsync(overflowProbe, ct).ConfigureAwait(false);
                 if (read == 0)
                 {
                     Volatile.Write(ref _completed, 1);
@@ -425,6 +429,21 @@ namespace TurboHTTP.Middleware
                 throw CreateDecompressionError(
                     new IOException(
                         $"Response decompression exceeded the maximum size ({_maxDecompressedBodySizeBytes} bytes)."));
+            }
+
+            private ValueTask<int> ReadFromDecompressionStreamAsync(
+                Memory<byte> destination,
+                CancellationToken ct)
+            {
+                if (SynchronizationContext.Current == null)
+                    return _decompressionStream.ReadAsync(destination, ct);
+
+                // Unity's compression streams may route ReadAsync through the synchronous
+                // Stream.Read path on some runtimes. Offload that path so async callers on a
+                // pumping thread do not block while the inner body source waits on network I/O.
+                return new ValueTask<int>(Task.Run(
+                    async () => await _decompressionStream.ReadAsync(destination, ct).ConfigureAwait(false),
+                    ct));
             }
 
             private void DisposeStreams()
@@ -498,9 +517,13 @@ namespace TurboHTTP.Middleware
                 {
                     ValidateReadArguments(buffer, offset, count);
                     ThrowIfDisposed();
-                    // GZipStream/DeflateStream call the synchronous Stream.Read path internally. This
-                    // adapter intentionally bridges to IResponseBodySource.ReadAsync via sync-over-async,
-                    // so DecompressionBodySource must only be consumed on non-pumping worker threads.
+                    System.Diagnostics.Debug.Assert(
+                        SynchronizationContext.Current == null,
+                        "BodySourceStream.Read should not block a pumping SynchronizationContext.");
+                    // GZipStream/DeflateStream still call the synchronous Stream.Read path internally
+                    // on some runtimes. DecompressionBodySource.ReadAsync offloads those calls when it
+                    // detects a SynchronizationContext, so this sync bridge only blocks worker-thread
+                    // consumers or explicit synchronous callers.
                     return _inner.ReadAsync(
                             new Memory<byte>(buffer, offset, count),
                             CancellationToken.None)
@@ -514,8 +537,11 @@ namespace TurboHTTP.Middleware
                     if (buffer.IsEmpty)
                         return 0;
 
-                    // Same invariant as Read(byte[],...): this synchronous adapter is only safe when
-                    // the caller is not running on a SynchronizationContext that requires message pumping.
+                    System.Diagnostics.Debug.Assert(
+                        SynchronizationContext.Current == null,
+                        "BodySourceStream.Read should not block a pumping SynchronizationContext.");
+                    // Same invariant as Read(byte[],...): async callers with a SynchronizationContext
+                    // are offloaded before they reach this synchronous bridge.
                     var rented = ArrayPool<byte>.Shared.Rent(buffer.Length);
                     try
                     {

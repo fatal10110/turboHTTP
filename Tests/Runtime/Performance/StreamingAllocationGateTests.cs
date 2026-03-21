@@ -33,8 +33,6 @@ namespace TurboHTTP.Tests.Performance
         private static readonly byte[] s_http2Chunk = CreatePatternBytes(Http2ChunkBytes);
         private static readonly byte[] s_decompressedPayload = CreatePatternBytes(512 * 1024);
         private static readonly byte[] s_compressedPayload = CompressGzip(s_decompressedPayload);
-        private static readonly FieldInfo s_streamingResponseBodySourceField = typeof(UHttpStreamingResponse)
-            .GetField("_bodySource", BindingFlags.Instance | BindingFlags.NonPublic);
 
         [Test]
         public void Http11StreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
@@ -307,13 +305,7 @@ namespace TurboHTTP.Tests.Performance
         {
             if (response == null)
                 throw new ArgumentNullException(nameof(response));
-            if (s_streamingResponseBodySourceField == null)
-            {
-                throw new InvalidOperationException(
-                    "UHttpStreamingResponse._bodySource field was not found.");
-            }
-
-            var bodySource = s_streamingResponseBodySourceField.GetValue(response) as IResponseBodySource;
+            var bodySource = response.BodySourceForTesting;
             if (bodySource == null)
                 throw new InvalidOperationException("Streaming response body source was null.");
 

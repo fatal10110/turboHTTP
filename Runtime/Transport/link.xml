@@ -20,6 +20,8 @@
   <assembly fullname="mscorlib">
     <type fullname="System.Collections.Generic.List`1" preserve="all"/>
     <type fullname="System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1" preserve="all"/>
+    <type fullname="System.Threading.Tasks.ValueTask`1[[System.Int32, mscorlib]]" preserve="all"/>
+    <type fullname="System.Threading.Tasks.ValueTask`1[[TurboHTTP.Transport.Http2.Http2ResponseBodyChunk, TurboHTTP.Transport]]" preserve="all"/>
   </assembly>
 
   <!--

@@ -164,6 +164,42 @@ namespace TurboHTTP.Transport.Http2
             _activeStreams.TryRemove(streamId, out _);
         }
 
+        internal void HandleRequestCancellation(Http2Stream stream, CancellationToken cancellationToken)
+        {
+            if (stream == null)
+                return;
+
+            int streamId = stream.StreamId;
+
+            // Always fault the captured stream so DispatchAsync can finish even if
+            // active-stream bookkeeping already raced with completion/cleanup.
+            stream.Cancel(cancellationToken);
+
+            if (_activeStreams.TryRemove(streamId, out _))
+            {
+                TrackRecentlyResetStream(streamId);
+                _ = SendCancelRstAfterRequestCancellationAsync(streamId);
+            }
+        }
+
+        private async Task SendCancelRstAfterRequestCancellationAsync(int streamId)
+        {
+            try
+            {
+                await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception ex)
+            {
+                FailAllStreams(ex);
+            }
+        }
+
         internal bool IsStreamClosedForReceive(int streamId)
         {
             return !_activeStreams.ContainsKey(streamId);
@@ -198,7 +234,7 @@ namespace TurboHTTP.Transport.Http2
                 return;
 
             Interlocked.Add(ref _connectionBufferedBytes, -flowControlledBytes);
-            _ = MaybeSendConnectionWindowUpdateAsync(CancellationToken.None);
+            ScheduleConnectionWindowUpdate();
         }
 
         internal void OnResponseBytesReleased(int flowControlledBytes)
@@ -207,7 +243,7 @@ namespace TurboHTTP.Transport.Http2
                 return;
 
             Interlocked.Add(ref _connectionBufferedBytes, -flowControlledBytes);
-            _ = MaybeSendConnectionWindowUpdateAsync(CancellationToken.None);
+            ScheduleConnectionWindowUpdate();
         }
 
         internal async ValueTask OnStreamChunkConsumedAsync(
@@ -285,6 +321,10 @@ namespace TurboHTTP.Transport.Http2
                 if (currentWindow >= _connectionRecvWindowTarget / 2)
                     return;
 
+                // The read loop can continue decrementing the receive window between the optimistic
+                // read above and this serialized update. That may slightly over-advertise capacity,
+                // but aggregate buffering remains bounded by MaxConnectionBufferedBytes and the lock
+                // prevents overlapping WINDOW_UPDATE writes from compounding the race.
                 if (Interlocked.Read(ref _connectionBufferedBytes) > _maxConnectionBufferedBytes)
                     return;
 
@@ -305,6 +345,51 @@ namespace TurboHTTP.Transport.Http2
             {
                 _connectionRecvWindowUpdateLock.Release();
             }
+        }
+
+        private void ScheduleConnectionWindowUpdate()
+        {
+            if (_cts.IsCancellationRequested)
+                return;
+
+            if (Interlocked.CompareExchange(ref _connectionWindowUpdateScheduled, 1, 0) != 0)
+                return;
+
+            _ = RunScheduledConnectionWindowUpdateAsync();
+        }
+
+        private async Task RunScheduledConnectionWindowUpdateAsync()
+        {
+            try
+            {
+                await MaybeSendConnectionWindowUpdateAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception ex)
+            {
+                FailAllStreams(ex);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _connectionWindowUpdateScheduled, 0);
+
+                if (!_cts.IsCancellationRequested && ShouldScheduleConnectionWindowUpdate())
+                    ScheduleConnectionWindowUpdate();
+            }
+        }
+
+        private bool ShouldScheduleConnectionWindowUpdate()
+        {
+            int currentWindow = Interlocked.CompareExchange(ref _connectionRecvWindow, 0, 0);
+            if (currentWindow >= _connectionRecvWindowTarget / 2)
+                return false;
+
+            return Interlocked.Read(ref _connectionBufferedBytes) <= _maxConnectionBufferedBytes;
         }
 
         private async Task MaintenanceLoopAsync(CancellationToken ct)
@@ -399,28 +484,57 @@ namespace TurboHTTP.Transport.Http2
             SendGoAwayOnDisposeBestEffort();
 
             FailAllStreams(new ObjectDisposedException(nameof(Http2Connection)));
+            _stream?.Dispose();
 
+            var shutdownTasks = CollectBackgroundTasks();
+            if (shutdownTasks.IsCompleted)
+            {
+                FinalizeResourceDispose(shutdownTasks);
+                return;
+            }
+
+            _ = DisposeResourcesAfterShutdownAsync(shutdownTasks);
+        }
+
+        private Task CollectBackgroundTasks()
+        {
+            var tasks = new List<Task>(3);
+            if (_readLoopTask != null)
+                tasks.Add(_readLoopTask);
+            if (_keepAliveTask != null)
+                tasks.Add(_keepAliveTask);
+            if (_maintenanceTask != null)
+                tasks.Add(_maintenanceTask);
+
+            return tasks.Count == 0
+                ? Task.CompletedTask
+                : Task.WhenAll(tasks);
+        }
+
+        private async Task DisposeResourcesAfterShutdownAsync(Task shutdownTasks)
+        {
             try
             {
-                _readLoopTask?.Wait(100);
+                await shutdownTasks.ConfigureAwait(false);
             }
             catch
             {
                 // Best effort only.
             }
+            finally
+            {
+                FinalizeResourceDispose(shutdownTasks);
+            }
+        }
+
+        private void FinalizeResourceDispose(Task shutdownTasks)
+        {
+            if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
+                return;
 
             try
             {
-                _keepAliveTask?.Wait(100);
-            }
-            catch
-            {
-                // Best effort only.
-            }
-
-            try
-            {
-                _maintenanceTask?.Wait(100);
+                shutdownTasks?.GetAwaiter().GetResult();
             }
             catch
             {

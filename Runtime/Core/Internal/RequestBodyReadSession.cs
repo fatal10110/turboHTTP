@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -50,20 +51,29 @@ namespace TurboHTTP.Core.Internal
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
 
+            Exception disposeException = null;
             if (_disposeStream)
             {
                 try
                 {
                     Stream.Dispose();
                 }
-                catch
+                catch (Exception ex)
                 {
                     _onDisposeFailure?.Invoke();
-                    throw;
+                    disposeException = ex;
                 }
             }
 
-            _onDispose?.Invoke();
+            try
+            {
+                _onDispose?.Invoke();
+            }
+            finally
+            {
+                if (disposeException != null)
+                    ExceptionDispatchInfo.Capture(disposeException).Throw();
+            }
         }
     }
 }

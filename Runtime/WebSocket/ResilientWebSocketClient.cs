@@ -175,7 +175,6 @@ namespace TurboHTTP.WebSocket
 
             return new WebSocketAsyncEnumerable(
                 token => ReceiveCoreAsync(token, fromAsyncEnumerable: true),
-                () => State,
                 () => Interlocked.Exchange(ref _receiveAllInProgress, 0),
                 ct);
         }

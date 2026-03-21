@@ -80,6 +80,44 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void SendStreamingRequest_ExplicitZeroContentLength_ReportsZeroLength_AndDisposeDoesNotSendRst()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/zero-length"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendStreamingRequestAsync(request, context, cts.Token).AsTask();
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(
+                        streamId,
+                        204,
+                        new Dictionary<string, string> { { "content-length", "0" } },
+                        endStream: true),
+                    cts.Token);
+
+                await using var response = await responseTask;
+
+                Assert.AreEqual(0, response.Body.Length);
+                Assert.AreEqual(0, await response.Body.ReadAsync(new byte[1], cts.Token));
+
+                await response.DisposeAsync();
+
+                var unexpected = await TryReadFrameAsync(serverCodec, timeoutMs: 250);
+                Assert.IsNull(unexpected, "Completed zero-length responses should not emit RST_STREAM during disposal.");
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
         public void SendStreamingRequest_StreamWindowUpdate_IsDeferredUntilBodyConsumed()
         {
             AssertAsync.Run(async () =>
