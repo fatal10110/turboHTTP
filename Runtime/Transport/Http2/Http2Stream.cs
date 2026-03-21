@@ -328,12 +328,15 @@ namespace TurboHTTP.Transport.Http2
             if (Volatile.Read(ref _disposed) != 0)
                 return;
 
+            var normalizedException = NormalizeTransportException(
+                exception ?? new InvalidOperationException("HTTP/2 stream failed."));
+
             // Transport/protocol failures stay fault-shaped even after response start so
             // middleware and callers continue to observe them as network errors.
             var responseBodySource = ResponseBodySource;
             if (responseBodySource != null)
             {
-                responseBodySource.Fault(exception ?? new InvalidOperationException("HTTP/2 stream failed."));
+                responseBodySource.Fault(normalizedException);
                 return;
             }
 
@@ -341,7 +344,7 @@ namespace TurboHTTP.Transport.Http2
                 return;
 
             State = Http2StreamState.Closed;
-            CompleteWithResponseStartFailure(exception ?? new InvalidOperationException("HTTP/2 stream failed."));
+            CompleteWithResponseStartFailure(normalizedException);
         }
 
         public void Dispose()
@@ -421,6 +424,26 @@ namespace TurboHTTP.Transport.Http2
                 new UHttpError(
                     UHttpErrorType.Unknown,
                     exception?.Message ?? "Handler callback failed.",
+                    exception));
+        }
+
+        private static Exception NormalizeTransportException(Exception exception)
+        {
+            if (exception == null)
+            {
+                return new UHttpException(
+                    new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        "HTTP/2 stream failed."));
+            }
+
+            if (exception is UHttpException || exception is OperationCanceledException)
+                return exception;
+
+            return new UHttpException(
+                new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    exception.Message,
                     exception));
         }
 

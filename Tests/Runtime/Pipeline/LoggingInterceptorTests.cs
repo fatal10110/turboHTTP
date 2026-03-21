@@ -221,10 +221,8 @@ namespace TurboHTTP.Tests.Pipeline
                 {
                     var buffer = new byte[3];
                     Assert.AreEqual(3, await response.Body.ReadAsync(buffer, CancellationToken.None));
-                    var ex = Assert.ThrowsAsync<IOException>(async () =>
-                    {
-                        await response.Body.ReadAsync(new byte[1], 0, 1, CancellationToken.None);
-                    });
+                    var ex = AssertAsync.ThrowsAsync<IOException, int>(() =>
+                        response.Body.ReadAsync(new byte[1], 0, 1, CancellationToken.None));
                     Assert.That(ex.Message, Does.Contain("stream broke"));
                     Assert.AreEqual(2, logs.Count);
                 }

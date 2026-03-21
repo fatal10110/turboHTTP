@@ -10,31 +10,37 @@ namespace TurboHTTP.Tests.Transport.Http2
     public class SingleReaderChannelTests
     {
         [Test]
-        public async Task CancelPendingRead_PreservesTheOriginalCancellationToken()
+        public void CancelPendingRead_PreservesTheOriginalCancellationToken()
         {
-            var channel = new SingleReaderChannel<int>(capacity: 1);
-            using var cts = new CancellationTokenSource();
+            AssertAsync.Run(async () =>
+            {
+                var channel = new SingleReaderChannel<int>(capacity: 1);
+                using var cts = new CancellationTokenSource();
 
-            var pendingRead = channel.ReadAsync(cts.Token).AsTask();
-            cts.Cancel();
+                var pendingRead = channel.ReadAsync(cts.Token).AsTask();
+                cts.Cancel();
 
-            var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await pendingRead);
-            Assert.AreEqual(cts.Token, ex.CancellationToken);
+                var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await pendingRead);
+                Assert.AreEqual(cts.Token, ex.CancellationToken);
+            });
         }
 
         [Test]
-        public async Task Complete_IgnoresSecondFaultAfterTerminalCompletion()
+        public void Complete_IgnoresSecondFaultAfterTerminalCompletion()
         {
-            var channel = new SingleReaderChannel<int>(capacity: 1);
-            var pendingRead = channel.ReadAsync().AsTask();
-            var first = new InvalidOperationException("first");
-            var second = new InvalidOperationException("second");
+            AssertAsync.Run(async () =>
+            {
+                var channel = new SingleReaderChannel<int>(capacity: 1);
+                var pendingRead = channel.ReadAsync().AsTask();
+                var first = new InvalidOperationException("first");
+                var second = new InvalidOperationException("second");
 
-            channel.Complete(first);
-            channel.Complete(second);
+                channel.Complete(first);
+                channel.Complete(second);
 
-            var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(async () => await pendingRead);
-            Assert.AreSame(first, ex);
+                var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(async () => await pendingRead);
+                Assert.AreSame(first, ex);
+            });
         }
     }
 }

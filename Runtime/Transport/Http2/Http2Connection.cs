@@ -371,7 +371,8 @@ namespace TurboHTTP.Transport.Http2
                 }
 
                 context.RecordEvent("TransportH2RequestSent");
-                await stream.CompletionTask.ConfigureAwait(false);
+                await AwaitResponseCompletionOrCancellationAsync(stream, streamId, ct)
+                    .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -422,6 +423,53 @@ namespace TurboHTTP.Transport.Http2
         private static UHttpException MapException(Exception ex) =>
             ex as UHttpException ??
             new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
+
+        private async Task AwaitResponseCompletionOrCancellationAsync(
+            Http2Stream stream,
+            int streamId,
+            CancellationToken ct)
+        {
+            if (stream == null)
+                throw new ArgumentNullException(nameof(stream));
+
+            if (!ct.CanBeCanceled)
+            {
+                await stream.CompletionTask.ConfigureAwait(false);
+                return;
+            }
+
+            var completionTask = stream.CompletionTask.AsTask();
+            var cancellationTask = Task.Delay(Timeout.Infinite, ct);
+            var completedTask = await Task.WhenAny(completionTask, cancellationTask).ConfigureAwait(false);
+            if (completedTask == completionTask)
+            {
+                await completionTask.ConfigureAwait(false);
+                return;
+            }
+
+            if (_activeStreams.TryRemove(streamId, out var canceledStream))
+            {
+                TrackRecentlyResetStream(streamId);
+                canceledStream.Cancel(ct);
+
+                try
+                {
+                    await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
+                {
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+                catch (Exception ex)
+                {
+                    FailAllStreams(ex);
+                }
+            }
+
+            throw new OperationCanceledException(ct);
+        }
 
         private static bool HasRequestBody(UHttpRequestBody content)
         {

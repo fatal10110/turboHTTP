@@ -249,7 +249,10 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 await response.DisposeAsync();
 
-                var rst = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                var rst = await ReadMatchingFrameAsync(
+                    serverCodec,
+                    frame => frame.Type == Http2FrameType.RstStream && frame.StreamId == streamId,
+                    timeoutMs: 1000);
                 Assert.AreEqual(Http2FrameType.RstStream, rst.Type);
                 Assert.AreEqual(streamId, rst.StreamId);
 
@@ -526,10 +529,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual((uint)Http2ErrorCode.Cancel, ReadErrorCode(rst));
 
                 var buffer = new byte[32];
-                Assert.ThrowsAsync<UHttpException>(async () =>
-                {
-                    await response.Body.ReadAsync(buffer, cts.Token);
-                });
+                AssertAsync.ThrowsAsync<UHttpException, int>(() =>
+                    response.Body.ReadAsync(buffer, cts.Token));
 
                 conn.Dispose();
             });

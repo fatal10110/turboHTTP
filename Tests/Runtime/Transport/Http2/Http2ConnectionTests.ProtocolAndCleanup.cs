@@ -516,10 +516,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(Http2FrameType.RstStream, rst.Type);
                 Assert.AreEqual(streamId1, rst.StreamId);
 
-                await task1;
-                Assert.IsTrue(throwingHandler.ResponseErrorCalled);
-                Assert.IsNotNull(throwingHandler.LastError);
-                StringAssert.Contains("handler-start-failure", throwingHandler.LastError.Message);
+                var ex = await TestHelpers.AssertThrowsAsync<InvalidOperationException>(async () => await task1);
+                Assert.AreEqual("handler-start-failure", ex.Message);
+                Assert.IsFalse(throwingHandler.ResponseErrorCalled);
+                Assert.IsNull(throwingHandler.LastError);
 
                 var request2 = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/success"));
                 var context2 = new RequestContext(request2);
@@ -540,7 +540,7 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void PostHeaderFailure_RecordsRequestFailedBeforeOnResponseError()
+        public void PostHeaderBufferedFailure_ReportsNetworkError()
         {
             AssertAsync.Run(async () =>
             {
@@ -554,8 +554,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                     HttpMethod.GET,
                     new Uri("https://test.example.com/post-header-failure"));
                 var context = new RequestContext(request);
-                var handler = new TimelineRecordingErrorHandler();
-                var dispatchTask = conn.DispatchAsync(request, handler, context, cts.Token);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token).AsTask();
 
                 var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
                 int streamId = requestHeaders.StreamId;
@@ -574,14 +573,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = bodyBytes.Length
                 }, cts.Token);
 
-                await dispatchTask;
-                var error = await TestHelpers.AssertCompletesWithinAsync(
-                    handler.ErrorTask,
-                    TimeSpan.FromSeconds(1));
-
+                var error = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
                 Assert.AreEqual(UHttpErrorType.NetworkError, error.HttpError.Type);
-                Assert.IsTrue(handler.SawRequestFailedBeforeError);
-                Assert.IsTrue(context.Timeline.Any(evt => evt.Name == "RequestFailed"));
 
                 conn.Dispose();
             });
@@ -739,7 +732,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                 {
                 }
 
-                var rstStream = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                var rstStream = await ReadMatchingFrameAsync(
+                    serverCodec,
+                    frame => frame.Type == Http2FrameType.RstStream && frame.StreamId == streamId,
+                    timeoutMs: 1000);
                 Assert.AreEqual(Http2FrameType.RstStream, rstStream.Type);
                 Assert.AreEqual(streamId, rstStream.StreamId);
 

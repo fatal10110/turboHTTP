@@ -62,7 +62,7 @@ namespace TurboHTTP.Transport.Http2
             _length = length;
             _bufferCapacity = connection.PerStreamReceiveBufferBytes;
             _queue = new SingleReaderChannel<Http2ResponseBodyChunk>(int.MaxValue);
-            Interlocked.Exchange(ref _lastConsumptionTick, Environment.TickCount64);
+            Interlocked.Exchange(ref _lastConsumptionTick, Http2MonotonicClock.GetTimestamp());
 
             if (completed)
             {
@@ -385,7 +385,10 @@ namespace TurboHTTP.Transport.Http2
             if (Volatile.Read(ref _bufferedBytes) <= 0)
                 return false;
 
-            return nowTick - LastConsumptionTick > stallTimeoutMs;
+            return Http2MonotonicClock.HasElapsedMilliseconds(
+                LastConsumptionTick,
+                nowTick,
+                stallTimeoutMs);
         }
 
         private async ValueTask CompleteDetachedChunkAsync(
@@ -520,7 +523,7 @@ namespace TurboHTTP.Transport.Http2
                     .CopyTo(destination.Span);
                 _currentChunkOffset += bytesRead;
                 Volatile.Write(ref _hasReadData, 1);
-                Interlocked.Exchange(ref _lastConsumptionTick, Environment.TickCount64);
+                Interlocked.Exchange(ref _lastConsumptionTick, Http2MonotonicClock.GetTimestamp());
 
                 completedChunk = _currentChunkOffset >= _currentChunk.Length
                     ? DetachCurrentChunk_NoLock()

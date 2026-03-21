@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("TurboHTTP.Auth")]
 [assembly: InternalsVisibleTo("TurboHTTP.Cache")]
 [assembly: InternalsVisibleTo("TurboHTTP.Middleware")]
+[assembly: InternalsVisibleTo("TurboHTTP.Observability")]
 [assembly: InternalsVisibleTo("TurboHTTP.Retry")]
 [assembly: InternalsVisibleTo("TurboHTTP.WebSocket")]
 [assembly: InternalsVisibleTo("TurboHTTP.Tests.Runtime")]

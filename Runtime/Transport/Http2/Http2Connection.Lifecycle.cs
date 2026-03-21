@@ -171,7 +171,7 @@ namespace TurboHTTP.Transport.Http2
 
         internal void TrackRecentlyResetStream(int streamId)
         {
-            long nowTick = Environment.TickCount64;
+            long nowTick = Http2MonotonicClock.GetTimestamp();
             _recentlyResetStreams[streamId] = nowTick;
 
             if (_recentlyResetStreams.Count > RecentlyResetStreamHardLimit)
@@ -328,7 +328,7 @@ namespace TurboHTTP.Transport.Http2
 
         private void ScanForStalledStreams()
         {
-            long nowTick = Environment.TickCount64;
+            long nowTick = Http2MonotonicClock.GetTimestamp();
             long stallTimeoutMs = Volatile.Read(ref _stallTimeoutMs);
             foreach (var kvp in _activeStreams)
             {
@@ -342,15 +342,15 @@ namespace TurboHTTP.Transport.Http2
 
         private void CleanupRecentlyResetStreams()
         {
-            TrimRecentlyResetStreams(Environment.TickCount64, enforceHardLimit: false);
+            TrimRecentlyResetStreams(Http2MonotonicClock.GetTimestamp(), enforceHardLimit: false);
         }
 
         private void TrimRecentlyResetStreams(long nowTick, bool enforceHardLimit)
         {
-            long cutoff = nowTick - Volatile.Read(ref _stallTimeoutMs);
+            long stallTimeoutMs = Volatile.Read(ref _stallTimeoutMs);
             foreach (var kvp in _recentlyResetStreams)
             {
-                if (kvp.Value >= cutoff)
+                if (!Http2MonotonicClock.HasElapsedMilliseconds(kvp.Value, nowTick, stallTimeoutMs))
                     continue;
 
                 _recentlyResetStreams.TryRemove(kvp.Key, out _);

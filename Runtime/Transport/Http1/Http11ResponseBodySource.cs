@@ -282,7 +282,7 @@ namespace TurboHTTP.Transport.Http1
 
             var effectiveToken = GetEffectiveReadToken(ct);
             var toRead = (int)Math.Min(destination.Length, remainingContentLength);
-            var read = await _reader.ReadAsync(destination.Slice(0, toRead), effectiveToken).ConfigureAwait(false);
+            var read = await ReadFromReaderAsync(destination.Slice(0, toRead), effectiveToken, ct).ConfigureAwait(false);
             if (read == 0)
                 throw new IOException("Unexpected end of stream");
 
@@ -298,9 +298,9 @@ namespace TurboHTTP.Transport.Http1
             {
                 if (_chunkBytesRemaining > 0)
                 {
-                    var effectiveToken = GetEffectiveReadToken(ct);
+                    var readToken = GetEffectiveReadToken(ct);
                     var toRead = (int)Math.Min(destination.Length, _chunkBytesRemaining);
-                    var read = await _reader.ReadAsync(destination.Slice(0, toRead), effectiveToken).ConfigureAwait(false);
+                    var read = await ReadFromReaderAsync(destination.Slice(0, toRead), readToken, ct).ConfigureAwait(false);
                     if (read == 0)
                         throw new IOException("Unexpected end of stream");
 
@@ -313,7 +313,8 @@ namespace TurboHTTP.Transport.Http1
 
                 if (_awaitingChunkTerminator)
                 {
-                    await _reader.ReadExpectedCrlfAsync(GetEffectiveReadToken(ct)).ConfigureAwait(false);
+                    var terminatorToken = GetEffectiveReadToken(ct);
+                    await ReadExpectedCrlfAsync(terminatorToken, ct).ConfigureAwait(false);
                     _awaitingChunkTerminator = false;
                     continue;
                 }
@@ -325,8 +326,10 @@ namespace TurboHTTP.Transport.Http1
                     return 0;
                 }
 
-                var chunkSize = await _reader.ReadChunkSizeAsync(
-                        GetEffectiveReadToken(ct),
+                var effectiveToken = GetEffectiveReadToken(ct);
+                var chunkSize = await ReadChunkSizeAsync(
+                        effectiveToken,
+                        ct,
                         MaxChunkLineLength)
                     .ConfigureAwait(false);
                 if (chunkSize == 0)
@@ -349,7 +352,7 @@ namespace TurboHTTP.Transport.Http1
         private async ValueTask<int> ReadToEndAsync(Memory<byte> destination, CancellationToken ct)
         {
             var effectiveToken = GetEffectiveReadToken(ct);
-            var read = await _reader.ReadAsync(destination, effectiveToken).ConfigureAwait(false);
+            var read = await ReadFromReaderAsync(destination, effectiveToken, ct).ConfigureAwait(false);
             if (read == 0)
             {
                 CompleteBody();
@@ -368,7 +371,7 @@ namespace TurboHTTP.Transport.Http1
             var effectiveToken = GetEffectiveReadToken(ct);
             while (true)
             {
-                var line = await _reader.ReadLineAsync(effectiveToken, 8192).ConfigureAwait(false);
+                var line = await ReadLineAsync(effectiveToken, ct, 8192).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(line))
                     return;
             }
@@ -425,6 +428,102 @@ namespace TurboHTTP.Transport.Http1
             {
                 ArrayPool<byte>.Shared.Return(buffer);
             }
+        }
+
+        private ValueTask<int> ReadFromReaderAsync(
+            Memory<byte> destination,
+            CancellationToken effectiveToken,
+            CancellationToken callerToken)
+        {
+            return AwaitReaderOperationAsync(
+                _reader.ReadAsync(destination, effectiveToken),
+                effectiveToken,
+                callerToken);
+        }
+
+        private ValueTask<long> ReadChunkSizeAsync(
+            CancellationToken effectiveToken,
+            CancellationToken callerToken,
+            int maxLength)
+        {
+            return AwaitReaderOperationAsync(
+                _reader.ReadChunkSizeAsync(effectiveToken, maxLength),
+                effectiveToken,
+                callerToken);
+        }
+
+        private ValueTask<string> ReadLineAsync(
+            CancellationToken effectiveToken,
+            CancellationToken callerToken,
+            int maxLength)
+        {
+            return AwaitReaderOperationAsync(
+                new ValueTask<string>(_reader.ReadLineAsync(effectiveToken, maxLength)),
+                effectiveToken,
+                callerToken);
+        }
+
+        private ValueTask ReadExpectedCrlfAsync(
+            CancellationToken effectiveToken,
+            CancellationToken callerToken)
+        {
+            return AwaitReaderOperationAsync(
+                _reader.ReadExpectedCrlfAsync(effectiveToken),
+                effectiveToken,
+                callerToken);
+        }
+
+        private async ValueTask<T> AwaitReaderOperationAsync<T>(
+            ValueTask<T> pending,
+            CancellationToken effectiveToken,
+            CancellationToken callerToken)
+        {
+            if (!effectiveToken.CanBeCanceled || pending.IsCompleted)
+                return await pending.ConfigureAwait(false);
+
+            var readTask = pending.AsTask();
+            var cancelTask = Task.Delay(Timeout.Infinite, effectiveToken);
+            var completed = await Task.WhenAny(readTask, cancelTask).ConfigureAwait(false);
+            if (!ReferenceEquals(completed, readTask))
+            {
+                CloseBody();
+                throw CreateCanceledReadException(effectiveToken, callerToken);
+            }
+
+            return await readTask.ConfigureAwait(false);
+        }
+
+        private async ValueTask AwaitReaderOperationAsync(
+            ValueTask pending,
+            CancellationToken effectiveToken,
+            CancellationToken callerToken)
+        {
+            if (!effectiveToken.CanBeCanceled || pending.IsCompleted)
+            {
+                await pending.ConfigureAwait(false);
+                return;
+            }
+
+            var readTask = pending.AsTask();
+            var cancelTask = Task.Delay(Timeout.Infinite, effectiveToken);
+            var completed = await Task.WhenAny(readTask, cancelTask).ConfigureAwait(false);
+            if (!ReferenceEquals(completed, readTask))
+            {
+                CloseBody();
+                throw CreateCanceledReadException(effectiveToken, callerToken);
+            }
+
+            await readTask.ConfigureAwait(false);
+        }
+
+        private static OperationCanceledException CreateCanceledReadException(
+            CancellationToken effectiveToken,
+            CancellationToken callerToken)
+        {
+            if (callerToken.CanBeCanceled && callerToken.IsCancellationRequested)
+                return new OperationCanceledException(callerToken);
+
+            return new OperationCanceledException(effectiveToken);
         }
 
         private CancellationToken GetEffectiveReadToken(CancellationToken ct)

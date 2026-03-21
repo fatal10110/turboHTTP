@@ -483,10 +483,8 @@ namespace TurboHTTP.Tests.Observability
                 {
                     var buffer = new byte[3];
                     Assert.AreEqual(3, await response.Body.ReadAsync(buffer, CancellationToken.None));
-                    Assert.ThrowsAsync<IOException>(async () =>
-                    {
-                        await response.Body.ReadAsync(new byte[1], 0, 1, CancellationToken.None);
-                    });
+                    AssertAsync.ThrowsAsync<IOException, int>(() =>
+                        response.Body.ReadAsync(new byte[1], 0, 1, CancellationToken.None));
                 }
                 finally
                 {

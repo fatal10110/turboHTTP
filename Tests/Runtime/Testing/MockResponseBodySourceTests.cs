@@ -12,31 +12,34 @@ namespace TurboHTTP.Tests.Testing
     public class MockResponseBodySourceTests
     {
         [Test]
-        public async Task ReadAsync_ReadsQueuedChunksSequentially()
+        public void ReadAsync_ReadsQueuedChunksSequentially()
         {
-            var source = new MockResponseBodySource(
-                new ReadOnlyMemory<byte>[]
-                {
-                    Encoding.UTF8.GetBytes("ab"),
-                    Encoding.UTF8.GetBytes("cd"),
-                    Encoding.UTF8.GetBytes("ef")
-                },
-                length: 6);
-
-            Assert.IsFalse(source.TryGetBufferedData(out _));
-
-            var buffer = new byte[2];
-            using var output = new MemoryStream();
-            while (true)
+            AssertAsync.Run(async () =>
             {
-                var read = await source.ReadAsync(buffer, CancellationToken.None);
-                if (read == 0)
-                    break;
+                var source = new MockResponseBodySource(
+                    new ReadOnlyMemory<byte>[]
+                    {
+                        Encoding.UTF8.GetBytes("ab"),
+                        Encoding.UTF8.GetBytes("cd"),
+                        Encoding.UTF8.GetBytes("ef")
+                    },
+                    length: 6);
 
-                await output.WriteAsync(buffer, 0, read);
-            }
+                Assert.IsFalse(source.TryGetBufferedData(out _));
 
-            Assert.AreEqual("abcdef", Encoding.UTF8.GetString(output.ToArray()));
+                var buffer = new byte[2];
+                using var output = new MemoryStream();
+                while (true)
+                {
+                    var read = await source.ReadAsync(buffer, CancellationToken.None);
+                    if (read == 0)
+                        break;
+
+                    await output.WriteAsync(buffer, 0, read);
+                }
+
+                Assert.AreEqual("abcdef", Encoding.UTF8.GetString(output.ToArray()));
+            });
         }
 
         [Test]
@@ -67,15 +70,18 @@ namespace TurboHTTP.Tests.Testing
         }
 
         [Test]
-        public async Task GetTrailersAsync_ReturnsConfiguredTrailers()
+        public void GetTrailersAsync_ReturnsConfiguredTrailers()
         {
-            var trailers = new TurboHTTP.Core.HttpHeaders();
-            trailers.Set("X-Trailer", "ok");
+            AssertAsync.Run(async () =>
+            {
+                var trailers = new TurboHTTP.Core.HttpHeaders();
+                trailers.Set("X-Trailer", "ok");
 
-            var source = new MockResponseBodySource(ReadOnlyMemory<byte>.Empty, length: 0, trailers: trailers);
-            var result = await source.GetTrailersAsync(CancellationToken.None);
+                var source = new MockResponseBodySource(ReadOnlyMemory<byte>.Empty, length: 0, trailers: trailers);
+                var result = await source.GetTrailersAsync(CancellationToken.None);
 
-            Assert.AreEqual("ok", result.Get("X-Trailer"));
+                Assert.AreEqual("ok", result.Get("X-Trailer"));
+            });
         }
     }
 }

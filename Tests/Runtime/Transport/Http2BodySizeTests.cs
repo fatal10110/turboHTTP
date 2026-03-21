@@ -23,7 +23,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             var options = new Http2Options { MaxResponseBodySize = 10 };
             var localSettings = new Http2Settings(options);
 
-            // Manually append data exceeding the limit (like ReadLoop does)
+            // Simulate the read-loop size guard before any body bytes are accepted.
             byte[] largeData = Encoding.UTF8.GetBytes("This is much longer than ten bytes.");
             
             // Note: Since Http2Stream itself doesn't enforce MaxResponseBodySize, 
@@ -40,7 +40,6 @@ namespace TurboHTTP.Tests.Transport.Http2
                         $"Response body size exceeded maximum allowed ({maxBodySize} bytes)"));
                 }
                 
-                stream.AppendResponseData(largeData, 0, largeData.Length);
             }
             catch (Exception ex)
             {

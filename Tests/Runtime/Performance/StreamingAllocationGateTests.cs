@@ -192,7 +192,15 @@ namespace TurboHTTP.Tests.Performance
         {
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://phase22a.local/http2"));
             var context = new RequestContext(request);
-            var connection = new Http2Connection(Stream.Null, "phase22a.local", 443);
+            var connection = new Http2Connection(
+                Stream.Null,
+                "phase22a.local",
+                443,
+                new Http2Options(),
+                new StreamingOptions
+                {
+                    DefaultHttp2PerStreamReceiveBufferBytes = Http2ChunkBytes * Http2ChunkCount
+                });
             var stream = new Http2Stream();
             stream.Initialize(
                 1,

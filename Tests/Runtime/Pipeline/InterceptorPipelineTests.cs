@@ -194,25 +194,26 @@ namespace TurboHTTP.Tests.Pipeline
         }
 
         [Test]
-        public void Pipeline_ResponseEnd_UsesFrozenEmptyTrailers()
+        public void Pipeline_ResponseEnd_WithFrozenEmptyTrailers_DoesNotFailBufferedCollection()
         {
             AssertAsync.Run(async () =>
             {
+                var transport = new RecordingTransport();
                 var pipeline = new InterceptorPipeline(
                     new IHttpInterceptor[] { new TrailerMutationInterceptor() },
-                    new RecordingTransport());
+                    transport);
 
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/trailers"));
                 var context = new RequestContext(request);
-                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
-                    await TransportDispatchHelper.CollectResponseAsync(
-                        pipeline.Pipeline,
-                        request,
-                        context,
-                        CancellationToken.None));
+                using var response = await TransportDispatchHelper.CollectResponseAsync(
+                    pipeline.Pipeline,
+                    request,
+                    context,
+                    CancellationToken.None);
 
-                Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
-                Assert.IsInstanceOf<InvalidOperationException>(ex.HttpError.InnerException);
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(1, transport.DispatchCount);
+                Assert.IsNull(response.GetBodyAsString());
             });
         }
 

@@ -141,9 +141,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 int streamId = requestHeaders.StreamId;
 
                 requestCts.Cancel();
-                AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
+                await TestHelpers.AssertThrowsAsync<OperationCanceledException>(
+                    async () => await TestHelpers.AssertCompletesWithinAsync(
+                        responseTask.AsTask(),
+                        TimeSpan.FromSeconds(1)));
 
-                var rst = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                var rst = await TestHelpers.AssertCompletesWithinAsync(
+                    serverCodec.ReadFrameAsync(16384, cts.Token),
+                    TimeSpan.FromSeconds(1));
                 Assert.AreEqual(Http2FrameType.RstStream, rst.Type);
                 Assert.AreEqual(streamId, rst.StreamId);
 

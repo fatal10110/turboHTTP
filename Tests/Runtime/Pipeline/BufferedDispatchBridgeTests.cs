@@ -12,92 +12,73 @@ namespace TurboHTTP.Tests.Pipeline
     public class BufferedDispatchBridgeTests
     {
         [Test]
-        public async Task CollectResponseAsync_UsesDispatchCancellationTokenForBodyRead()
+        public void CollectResponseAsync_UsesDispatchCancellationTokenForBodyRead()
         {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/read"));
-            var context = new RequestContext(request);
-            var source = new ReadCancellationProbeBodySource();
-            using var cts = new CancellationTokenSource();
-
-            var responseTask = TransportDispatchHelper.CollectResponseAsync(
-                async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
-                {
-                    handler.OnRequestStart(dispatchRequest, dispatchContext);
-                    await handler.OnResponseStartAsync(200, new HttpHeaders(), source, dispatchContext);
-                },
-                request,
-                context,
-                cts.Token);
-
-            await source.ReadStarted.Task;
-            cts.Cancel();
-
-            var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
-            Assert.AreEqual(cts.Token, source.LastReadToken);
-            Assert.AreEqual(cts.Token, ex.CancellationToken);
-        }
-
-        [Test]
-        public async Task CollectResponseAsync_UsesDispatchCancellationTokenForTrailers()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/trailers"));
-            var context = new RequestContext(request);
-            var source = new TrailersCancellationProbeBodySource();
-            using var cts = new CancellationTokenSource();
-
-            var responseTask = TransportDispatchHelper.CollectResponseAsync(
-                async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
-                {
-                    handler.OnRequestStart(dispatchRequest, dispatchContext);
-                    await handler.OnResponseStartAsync(200, new HttpHeaders(), source, dispatchContext);
-                },
-                request,
-                context,
-                cts.Token);
-
-            await source.TrailersStarted.Task;
-            cts.Cancel();
-
-            var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
-            Assert.AreEqual(cts.Token, source.LastTrailersToken);
-            Assert.AreEqual(cts.Token, ex.CancellationToken);
-        }
-
-        [Test]
-        public async Task CollectResponseAsync_DetachedBufferedBody_SkipsTrailersAndSourceDispose()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/detached"));
-            var context = new RequestContext(request);
-            var source = new DetachedBodyProbeSource();
-
-            using var response = await TransportDispatchHelper.CollectResponseAsync(
-                async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
-                {
-                    handler.OnRequestStart(dispatchRequest, dispatchContext);
-                    await handler.OnResponseStartAsync(200, new HttpHeaders(), source, dispatchContext);
-                },
-                request,
-                context,
-                CancellationToken.None);
-
-            Assert.AreEqual("payload", response.GetBodyAsString());
-            Assert.AreEqual(0, source.ReadCalls);
-            Assert.AreEqual(0, source.TrailersCalls);
-            Assert.AreEqual(0, source.DisposeCalls);
-            Assert.AreEqual(0, source.OwnerDisposeCalls);
-        }
-
-        [Test]
-        public async Task CollectResponseAsync_DetachedBufferedSequence_PreservesSequenceOwnership()
-        {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/detached-sequence"));
-            var context = new RequestContext(request);
-            var source = new DetachedBodyProbeSource();
-
-            UHttpResponse response = null;
-            try
+            AssertAsync.Run(async () =>
             {
-                response = await TransportDispatchHelper.CollectResponseAsync(
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/read"));
+                var context = new RequestContext(request);
+                var source = new ReadCancellationProbeBodySource();
+                using var cts = new CancellationTokenSource();
+
+                var responseTask = TransportDispatchHelper.CollectResponseAsync(
+                    async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
+                    {
+                        handler.OnRequestStart(dispatchRequest, dispatchContext);
+                        await handler.OnResponseStartAsync(200, new HttpHeaders(), source, dispatchContext);
+                    },
+                    request,
+                    context,
+                    cts.Token);
+
+                await source.ReadStarted.Task;
+                cts.Cancel();
+
+                var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
+                Assert.AreEqual(cts.Token, source.LastReadToken);
+                Assert.AreEqual(cts.Token, ex.CancellationToken);
+            });
+        }
+
+        [Test]
+        public void CollectResponseAsync_UsesDispatchCancellationTokenForTrailers()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/trailers"));
+                var context = new RequestContext(request);
+                var source = new TrailersCancellationProbeBodySource();
+                using var cts = new CancellationTokenSource();
+
+                var responseTask = TransportDispatchHelper.CollectResponseAsync(
+                    async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
+                    {
+                        handler.OnRequestStart(dispatchRequest, dispatchContext);
+                        await handler.OnResponseStartAsync(200, new HttpHeaders(), source, dispatchContext);
+                    },
+                    request,
+                    context,
+                    cts.Token);
+
+                await source.TrailersStarted.Task;
+                cts.Cancel();
+
+                var ex = AssertAsync.ThrowsAsync<OperationCanceledException>(async () => await responseTask);
+                Assert.AreEqual(cts.Token, source.LastTrailersToken);
+                Assert.AreEqual(cts.Token, ex.CancellationToken);
+            });
+        }
+
+        [Test]
+        public void CollectResponseAsync_DetachedBufferedBody_SkipsTrailersAndSourceDispose()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/detached"));
+                var context = new RequestContext(request);
+                var source = new DetachedBodyProbeSource();
+
+                using var response = await TransportDispatchHelper.CollectResponseAsync(
                     async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
                     {
                         handler.OnRequestStart(dispatchRequest, dispatchContext);
@@ -107,38 +88,72 @@ namespace TurboHTTP.Tests.Pipeline
                     context,
                     CancellationToken.None);
 
-                Assert.IsFalse(response.Body.IsSingleSegment);
                 Assert.AreEqual("payload", response.GetBodyAsString());
-            }
-            finally
-            {
-                response?.Dispose();
-            }
-
-            Assert.AreEqual(1, source.OwnerDisposeCalls);
+                Assert.AreEqual(0, source.ReadCalls);
+                Assert.AreEqual(0, source.TrailersCalls);
+                Assert.AreEqual(0, source.DisposeCalls);
+                Assert.AreEqual(0, source.OwnerDisposeCalls);
+            });
         }
 
         [Test]
-        public async Task CollectResponseAsync_DetachDeclined_FallsBackToDrainAndDispose()
+        public void CollectResponseAsync_DetachedBufferedSequence_PreservesSequenceOwnership()
         {
-            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/fallback-drain"));
-            var context = new RequestContext(request);
-            var source = new StreamingFallbackProbeSource();
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/detached-sequence"));
+                var context = new RequestContext(request);
+                var source = new DetachedBodyProbeSource();
 
-            using var response = await TransportDispatchHelper.CollectResponseAsync(
-                async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
+                UHttpResponse response = null;
+                try
                 {
-                    handler.OnRequestStart(dispatchRequest, dispatchContext);
-                    await handler.OnResponseStartAsync(200, new HttpHeaders(), source, dispatchContext);
-                },
-                request,
-                context,
-                CancellationToken.None);
+                    response = await TransportDispatchHelper.CollectResponseAsync(
+                        async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
+                        {
+                            handler.OnRequestStart(dispatchRequest, dispatchContext);
+                            await handler.OnResponseStartAsync(200, new HttpHeaders(), source, dispatchContext);
+                        },
+                        request,
+                        context,
+                        CancellationToken.None);
 
-            Assert.AreEqual("payload", response.GetBodyAsString());
-            Assert.AreEqual(3, source.ReadCalls);
-            Assert.AreEqual(1, source.TrailersCalls);
-            Assert.AreEqual(1, source.DisposeCalls);
+                    Assert.IsFalse(response.Body.IsSingleSegment);
+                    Assert.AreEqual("payload", response.GetBodyAsString());
+                }
+                finally
+                {
+                    response?.Dispose();
+                }
+
+                Assert.AreEqual(1, source.OwnerDisposeCalls);
+            });
+        }
+
+        [Test]
+        public void CollectResponseAsync_DetachDeclined_FallsBackToDrainAndDispose()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/fallback-drain"));
+                var context = new RequestContext(request);
+                var source = new StreamingFallbackProbeSource();
+
+                using var response = await TransportDispatchHelper.CollectResponseAsync(
+                    async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
+                    {
+                        handler.OnRequestStart(dispatchRequest, dispatchContext);
+                        await handler.OnResponseStartAsync(200, new HttpHeaders(), source, dispatchContext);
+                    },
+                    request,
+                    context,
+                    CancellationToken.None);
+
+                Assert.AreEqual("payload", response.GetBodyAsString());
+                Assert.AreEqual(3, source.ReadCalls);
+                Assert.AreEqual(1, source.TrailersCalls);
+                Assert.AreEqual(1, source.DisposeCalls);
+            });
         }
 
         [Test]

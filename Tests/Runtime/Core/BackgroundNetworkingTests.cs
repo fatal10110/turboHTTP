@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -50,20 +52,29 @@ namespace TurboHTTP.Tests.Core
                     RequireReplayableBodyForQueue = true
                 }, bridge);
 
-                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/post"), body: null);
+                using var stream = new NonSeekableStream(Encoding.UTF8.GetBytes("post"));
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/post"))
+                    .WithStreamBody(stream, contentLength: 4, leaveOpen: true);
                 var context = new RequestContext(request);
 
-                await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
+                try
                 {
-                    await TransportDispatchHelper.CollectResponseAsync(
-                        interceptor.Wrap((req, handler, ctx, ct) => throw new OperationCanceledException(ct)),
-                        request,
-                        context,
-                        CancellationToken.None);
-                });
+                    await TestHelpers.AssertThrowsAsync<OperationCanceledException>(async () =>
+                    {
+                        await TransportDispatchHelper.CollectResponseAsync(
+                            interceptor.Wrap((req, handler, ctx, ct) => throw new OperationCanceledException(ct)),
+                            request,
+                            context,
+                            CancellationToken.None);
+                    });
 
-                Assert.AreEqual(0, interceptor.Queued);
-                Assert.AreEqual(1, interceptor.Dropped);
+                    Assert.AreEqual(0, interceptor.Queued);
+                    Assert.AreEqual(1, interceptor.Dropped);
+                }
+                finally
+                {
+                    request.Dispose();
+                }
             }).GetAwaiter().GetResult();
         }
 
@@ -326,6 +337,16 @@ namespace TurboHTTP.Tests.Core
                 CompleteCalls++;
                 return true;
             }
+        }
+
+        private sealed class NonSeekableStream : MemoryStream
+        {
+            public NonSeekableStream(byte[] buffer)
+                : base(buffer, writable: false)
+            {
+            }
+
+            public override bool CanSeek => false;
         }
     }
 }

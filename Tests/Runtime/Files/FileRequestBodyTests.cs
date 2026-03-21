@@ -14,47 +14,53 @@ namespace TurboHTTP.Tests.Files
     public class FileRequestBodyTests
     {
         [Test]
-        public async Task WithFileBody_ConfiguresFileRequestBody_AndReadsFileContents()
+        public void WithFileBody_ConfiguresFileRequestBody_AndReadsFileContents()
         {
-            var path = CreateTempFile("file-body");
-            try
+            AssertAsync.Run(async () =>
             {
-                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/upload"))
-                    .WithFileBody(path, 8192);
+                var path = CreateTempFile("file-body");
+                try
+                {
+                    var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/upload"))
+                        .WithFileBody(path, 8192);
 
-                Assert.IsInstanceOf<FileRequestBody>(request.Content);
-                var fileBody = (FileRequestBody)request.Content;
-                Assert.AreEqual(path, fileBody.Path);
-                Assert.AreEqual(8192, fileBody.BufferSize);
-                Assert.AreEqual(RequestBodyReplayability.Replayable, fileBody.Replayability);
-                Assert.IsFalse(fileBody.TryGetBufferedData(out _));
-                Assert.AreEqual("file-body", await ReadAllAsync(fileBody.OpenReadSessionAsync(CancellationToken.None)));
-            }
-            finally
-            {
-                File.Delete(path);
-            }
+                    Assert.IsInstanceOf<FileRequestBody>(request.Content);
+                    var fileBody = (FileRequestBody)request.Content;
+                    Assert.AreEqual(path, fileBody.Path);
+                    Assert.AreEqual(8192, fileBody.BufferSize);
+                    Assert.AreEqual(RequestBodyReplayability.Replayable, fileBody.Replayability);
+                    Assert.IsFalse(fileBody.TryGetBufferedData(out _));
+                    Assert.AreEqual("file-body", await ReadAllAsync(fileBody.OpenReadSessionAsync(CancellationToken.None)));
+                }
+                finally
+                {
+                    File.Delete(path);
+                }
+            });
         }
 
         [Test]
-        public async Task Clone_FileBody_CreatesNewWrapperOverSamePath()
+        public void Clone_FileBody_CreatesNewWrapperOverSamePath()
         {
-            var path = CreateTempFile("clone-file-body");
-            try
+            AssertAsync.Run(async () =>
             {
-                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/upload"))
-                    .WithFileBody(path);
+                var path = CreateTempFile("clone-file-body");
+                try
+                {
+                    var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/upload"))
+                        .WithFileBody(path);
 
-                var clone = request.Clone();
+                    var clone = request.Clone();
 
-                Assert.IsInstanceOf<FileRequestBody>(clone.Content);
-                Assert.AreNotSame(request.Content, clone.Content);
-                Assert.AreEqual("clone-file-body", await ReadAllAsync(clone.Content.OpenReadSessionAsync(CancellationToken.None)));
-            }
-            finally
-            {
-                File.Delete(path);
-            }
+                    Assert.IsInstanceOf<FileRequestBody>(clone.Content);
+                    Assert.AreNotSame(request.Content, clone.Content);
+                    Assert.AreEqual("clone-file-body", await ReadAllAsync(clone.Content.OpenReadSessionAsync(CancellationToken.None)));
+                }
+                finally
+                {
+                    File.Delete(path);
+                }
+            });
         }
 
         [Test]

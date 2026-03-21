@@ -14,37 +14,40 @@ namespace TurboHTTP.Tests.Core
     public class UHttpStreamingResponseTests
     {
         [Test]
-        public async Task ResponseBodyStream_ReadsFromNonBufferedSource_AndReportsKnownLength()
+        public void ResponseBodyStream_ReadsFromNonBufferedSource_AndReportsKnownLength()
         {
-            var source = new MockResponseBodySource(
-                new ReadOnlyMemory<byte>[]
-                {
-                    Encoding.UTF8.GetBytes("pay"),
-                    Encoding.UTF8.GetBytes("load")
-                },
-                length: 7);
-            Assert.IsFalse(source.TryGetBufferedData(out _));
-
-            await using var response = new UHttpStreamingResponse(
-                HttpStatusCode.OK,
-                new HttpHeaders(),
-                source);
-
-            Assert.IsTrue(response.Body.CanRead);
-            Assert.AreEqual(7, response.Body.Length);
-
-            var buffer = new byte[3];
-            using var output = new MemoryStream();
-            while (true)
+            AssertAsync.Run(async () =>
             {
-                var read = await response.Body.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None);
-                if (read == 0)
-                    break;
+                var source = new MockResponseBodySource(
+                    new ReadOnlyMemory<byte>[]
+                    {
+                        Encoding.UTF8.GetBytes("pay"),
+                        Encoding.UTF8.GetBytes("load")
+                    },
+                    length: 7);
+                Assert.IsFalse(source.TryGetBufferedData(out _));
 
-                await output.WriteAsync(buffer, 0, read);
-            }
+                await using var response = new UHttpStreamingResponse(
+                    HttpStatusCode.OK,
+                    new HttpHeaders(),
+                    source);
 
-            Assert.AreEqual("payload", Encoding.UTF8.GetString(output.ToArray()));
+                Assert.IsTrue(response.Body.CanRead);
+                Assert.AreEqual(7, response.Body.Length);
+
+                var buffer = new byte[3];
+                using var output = new MemoryStream();
+                while (true)
+                {
+                    var read = await response.Body.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None);
+                    if (read == 0)
+                        break;
+
+                    await output.WriteAsync(buffer, 0, read);
+                }
+
+                Assert.AreEqual("payload", Encoding.UTF8.GetString(output.ToArray()));
+            });
         }
 
         [Test]
@@ -57,135 +60,161 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public async Task ResponseBodyStream_Dispose_BeforeEndOfBody_AbortsSource_WithoutDisposingResponse()
+        public void ResponseBodyStream_Dispose_BeforeEndOfBody_AbortsSource_WithoutDisposingResponse()
         {
-            var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
-            var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
-            int releaseCount = 0;
-            response.AttachRequestRelease(() => releaseCount++);
+            AssertAsync.Run(async () =>
+            {
+                var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
+                var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
+                int releaseCount = 0;
+                response.AttachRequestRelease(() => releaseCount++);
 
-            Assert.AreEqual(3, await response.Body.ReadAsync(new byte[3], 0, 3, CancellationToken.None));
+                Assert.AreEqual(3, await response.Body.ReadAsync(new byte[3], 0, 3, CancellationToken.None));
 
-            response.Body.Dispose();
+                response.Body.Dispose();
 
-            Assert.AreEqual(1, source.AbortCount);
-            Assert.AreEqual(0, source.DisposeAsyncCount);
-            Assert.AreEqual(0, releaseCount);
-            Assert.IsFalse(response.Body.CanRead);
-            AssertAsync.ThrowsAsync<ObjectDisposedException>(
-                async () => await response.Body.ReadAsync(new byte[1], 0, 1, CancellationToken.None));
+                Assert.AreEqual(1, source.AbortCount);
+                Assert.AreEqual(0, source.DisposeAsyncCount);
+                Assert.AreEqual(0, releaseCount);
+                Assert.IsFalse(response.Body.CanRead);
+                AssertAsync.ThrowsAsync<ObjectDisposedException>(
+                    async () => await response.Body.ReadAsync(new byte[1], 0, 1, CancellationToken.None));
 
-            AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await response.GetTrailersAsync());
+                AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await response.GetTrailersAsync());
 
-            await response.DisposeAsync();
+                await response.DisposeAsync();
 
-            Assert.AreEqual(1, source.DisposeAsyncCount);
-            Assert.AreEqual(1, releaseCount);
+                Assert.AreEqual(1, source.DisposeAsyncCount);
+                Assert.AreEqual(1, releaseCount);
+            });
         }
 
         [Test]
-        public async Task ResponseBodyStream_DisposeAsync_AbortsBodyWithoutDisposingResponse()
+        public void ResponseBodyStream_DisposeAsync_AbortsBodyWithoutDisposingResponse()
         {
-            var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
-            var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
-            int releaseCount = 0;
-            response.AttachRequestRelease(() => releaseCount++);
+            AssertAsync.Run(async () =>
+            {
+                var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
+                var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
+                int releaseCount = 0;
+                response.AttachRequestRelease(() => releaseCount++);
 
-            await response.Body.DisposeAsync();
+                await response.Body.DisposeAsync();
 
-            Assert.AreEqual(1, source.AbortCount);
-            Assert.AreEqual(0, source.DisposeAsyncCount);
-            Assert.AreEqual(0, releaseCount);
-            AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await response.GetTrailersAsync());
+                Assert.AreEqual(1, source.AbortCount);
+                Assert.AreEqual(0, source.DisposeAsyncCount);
+                Assert.AreEqual(0, releaseCount);
+                AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await response.GetTrailersAsync());
 
-            await response.DisposeAsync();
+                await response.DisposeAsync();
 
-            Assert.AreEqual(1, source.DisposeAsyncCount);
-            Assert.AreEqual(1, releaseCount);
+                Assert.AreEqual(1, source.DisposeAsyncCount);
+                Assert.AreEqual(1, releaseCount);
+            });
         }
 
         [Test]
-        public async Task UHttpStreamingResponse_GetTrailersAsync_ReturnsConfiguredTrailers()
+        public void UHttpStreamingResponse_GetTrailersAsync_ReturnsConfiguredTrailers()
         {
-            var trailers = new HttpHeaders();
-            trailers.Set("X-Trailer", "ok");
+            AssertAsync.Run(async () =>
+            {
+                var trailers = new HttpHeaders();
+                trailers.Set("X-Trailer", "ok");
 
-            await using var response = new UHttpStreamingResponse(
-                HttpStatusCode.OK,
-                new HttpHeaders(),
-                new MockResponseBodySource(ReadOnlyMemory<byte>.Empty, length: 0, trailers: trailers));
+                await using var response = new UHttpStreamingResponse(
+                    HttpStatusCode.OK,
+                    new HttpHeaders(),
+                    new MockResponseBodySource(ReadOnlyMemory<byte>.Empty, length: 0, trailers: trailers));
 
-            var result = await response.GetTrailersAsync();
+                var result = await response.GetTrailersAsync();
 
-            Assert.AreEqual("ok", result.Get("X-Trailer"));
+                Assert.AreEqual("ok", result.Get("X-Trailer"));
+            });
         }
 
         [Test]
-        public async Task ResponseBodyStream_Dispose_AfterFullRead_PreservesTrailers_AndResponseLifetime()
+        public void ResponseBodyStream_Dispose_AfterFullRead_PreservesTrailers_AndResponseLifetime()
         {
-            var trailers = new HttpHeaders();
-            trailers.Set("X-Trailer", "ok");
+            AssertAsync.Run(async () =>
+            {
+                var trailers = new HttpHeaders();
+                trailers.Set("X-Trailer", "ok");
 
-            var source = new MockResponseBodySource(
-                new ReadOnlyMemory<byte>[]
-                {
-                    Encoding.UTF8.GetBytes("pay"),
-                    Encoding.UTF8.GetBytes("load")
-                },
-                length: 7,
-                trailers: trailers);
-            var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
-            int releaseCount = 0;
-            response.AttachRequestRelease(() => releaseCount++);
+                var source = new MockResponseBodySource(
+                    new ReadOnlyMemory<byte>[]
+                    {
+                        Encoding.UTF8.GetBytes("pay"),
+                        Encoding.UTF8.GetBytes("load")
+                    },
+                    length: 7,
+                    trailers: trailers);
+                var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
+                int releaseCount = 0;
+                response.AttachRequestRelease(() => releaseCount++);
 
-            Assert.AreEqual("payload", await ReadAllAsync(response.Body));
+                Assert.AreEqual("payload", await ReadAllAsync(response.Body));
 
-            response.Body.Dispose();
+                response.Body.Dispose();
 
-            Assert.AreEqual(0, source.AbortCount);
-            Assert.AreEqual(0, source.DisposeAsyncCount);
-            Assert.AreEqual(0, releaseCount);
+                Assert.AreEqual(0, source.AbortCount);
+                Assert.AreEqual(0, source.DisposeAsyncCount);
+                Assert.AreEqual(0, releaseCount);
 
-            var result = await response.GetTrailersAsync();
-            Assert.AreEqual("ok", result.Get("X-Trailer"));
+                var result = await response.GetTrailersAsync();
+                Assert.AreEqual("ok", result.Get("X-Trailer"));
 
-            await response.DisposeAsync();
+                await response.DisposeAsync();
 
-            Assert.AreEqual(1, source.DisposeAsyncCount);
-            Assert.AreEqual(1, releaseCount);
+                Assert.AreEqual(1, source.DisposeAsyncCount);
+                Assert.AreEqual(1, releaseCount);
+            });
         }
 
         [Test]
-        public async Task UHttpStreamingResponse_DisposeAsync_DisposesSource_AndInvokesReleaseCallbackOnce()
+        public void UHttpStreamingResponse_DisposeAsync_DisposesSource_AndInvokesReleaseCallbackOnce()
         {
-            var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
-            var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
-            int releaseCount = 0;
-            response.AttachRequestRelease(() => releaseCount++);
+            AssertAsync.Run(async () =>
+            {
+                var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
+                var response = new UHttpStreamingResponse(HttpStatusCode.OK, new HttpHeaders(), source);
+                int releaseCount = 0;
+                response.AttachRequestRelease(() => releaseCount++);
 
-            await response.DisposeAsync();
-            await response.DisposeAsync();
+                await response.DisposeAsync();
+                await response.DisposeAsync();
 
-            Assert.AreEqual(1, source.DisposeAsyncCount);
-            Assert.AreEqual(0, source.AbortCount);
-            Assert.AreEqual(1, releaseCount);
+                Assert.AreEqual(1, source.DisposeAsyncCount);
+                Assert.AreEqual(0, source.AbortCount);
+                Assert.AreEqual(1, releaseCount);
+            });
         }
 
         [Test]
-        public async Task MockResponseBodySource_DisposeAsync_AfterDetach_DoesNotIncrementDisposeCount()
+        public void MockResponseBodySource_DisposeAsync_AfterDetach_DoesNotIncrementDisposeCount()
         {
-            var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
+            AssertAsync.Run(async () =>
+            {
+                var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
 
-            Assert.IsTrue(source.TryDetachBufferedBody(out var body));
+                Assert.IsTrue(source.TryDetachBufferedBody(out var body));
 
-            await source.DisposeAsync();
-            body.DisposeOwnedResources();
+                await source.DisposeAsync();
+                body.DisposeOwnedResources();
 
-            Assert.AreEqual(0, source.DisposeAsyncCount);
+                Assert.AreEqual(0, source.DisposeAsyncCount);
+            });
         }
 
         private static UHttpStreamingResponse CreateResponse(string body, long? length)
         {
+            if (!length.HasValue)
+            {
+                return new UHttpStreamingResponse(
+                    HttpStatusCode.OK,
+                    new HttpHeaders(),
+                    new UnknownLengthBodySource(Encoding.UTF8.GetBytes(body)));
+            }
+
             return new UHttpStreamingResponse(
                 HttpStatusCode.OK,
                 new HttpHeaders(),
@@ -206,6 +235,53 @@ namespace TurboHTTP.Tests.Core
             }
 
             return Encoding.UTF8.GetString(output.ToArray());
+        }
+
+        private sealed class UnknownLengthBodySource : IResponseBodySource
+        {
+            private readonly MockResponseBodySource _inner;
+
+            public UnknownLengthBodySource(ReadOnlyMemory<byte> data)
+            {
+                _inner = new MockResponseBodySource(data, length: data.Length);
+            }
+
+            public long? Length => null;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                return _inner.TryGetBufferedData(out data);
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                return _inner.TryDetachBufferedBody(out body);
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                return _inner.ReadAsync(destination, ct);
+            }
+
+            public ValueTask DrainAsync(CancellationToken ct)
+            {
+                return _inner.DrainAsync(ct);
+            }
+
+            public void Abort()
+            {
+                _inner.Abort();
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                return _inner.GetTrailersAsync(ct);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return _inner.DisposeAsync();
+            }
         }
     }
 }
