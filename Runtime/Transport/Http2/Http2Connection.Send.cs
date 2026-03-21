@@ -62,7 +62,7 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        private async Task SendDataAsync(
+        private async Task<long> SendDataAsync(
             int streamId,
             UHttpRequestBody content,
             Http2Stream stream,
@@ -76,19 +76,23 @@ namespace TurboHTTP.Transport.Http2
                 if (buffered.IsEmpty)
                 {
                     await SendEmptyEndStreamDataFrameAsync(streamId, stream, ct).ConfigureAwait(false);
-                    return;
+                    return 0;
                 }
 
-                await SendBufferedDataAsync(streamId, buffered, stream, endStreamOnFinalFrame: true, ct)
+                return await SendBufferedDataAsync(
+                        streamId,
+                        buffered,
+                        stream,
+                        endStreamOnFinalFrame: true,
+                        ct)
                     .ConfigureAwait(false);
-                return;
             }
 
             using var session = await content.OpenReadSessionAsync(ct).ConfigureAwait(false);
-            await SendStreamingDataAsync(streamId, session, stream, ct).ConfigureAwait(false);
+            return await SendStreamingDataAsync(streamId, session, stream, ct).ConfigureAwait(false);
         }
 
-        private async Task SendBufferedDataAsync(
+        private async Task<long> SendBufferedDataAsync(
             int streamId,
             ReadOnlyMemory<byte> body,
             Http2Stream stream,
@@ -96,6 +100,7 @@ namespace TurboHTTP.Transport.Http2
             CancellationToken ct)
         {
             int offset = 0;
+            long totalBytesSent = 0;
             while (offset < body.Length)
             {
                 // M6: Stop sending if the stream was reset by the peer
@@ -156,16 +161,20 @@ namespace TurboHTTP.Transport.Http2
                 }
 
                 offset += bytesSent;
+                totalBytesSent += bytesSent;
             }
+
+            return totalBytesSent;
         }
 
-        private async Task SendStreamingDataAsync(
+        private async Task<long> SendStreamingDataAsync(
             int streamId,
             RequestBodyReadSession session,
             Http2Stream stream,
             CancellationToken ct)
         {
             byte[] buffer = null;
+            long totalBytesSent = 0;
             try
             {
                 long? remaining = session.ContentLength;
@@ -174,7 +183,7 @@ namespace TurboHTTP.Transport.Http2
                     while (remaining.Value > 0)
                     {
                         if (stream.IsResponseCompleted)
-                            return;
+                            return totalBytesSent;
 
                         if (buffer == null)
                             buffer = ArrayPool<byte>.Shared.Rent(_streamingSendBufferBytes);
@@ -193,7 +202,7 @@ namespace TurboHTTP.Transport.Http2
                         }
 
                         remaining -= bytesRead;
-                        await SendBufferedDataAsync(
+                        totalBytesSent += await SendBufferedDataAsync(
                                 streamId,
                                 new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
                                 stream,
@@ -202,13 +211,13 @@ namespace TurboHTTP.Transport.Http2
                             .ConfigureAwait(false);
                     }
 
-                    return;
+                    return totalBytesSent;
                 }
 
                 while (true)
                 {
                     if (stream.IsResponseCompleted)
-                        return;
+                        return totalBytesSent;
 
                     if (buffer == null)
                         buffer = ArrayPool<byte>.Shared.Rent(_streamingSendBufferBytes);
@@ -222,10 +231,10 @@ namespace TurboHTTP.Transport.Http2
                         // Unknown-length bodies signal stream completion with an explicit
                         // zero-length END_STREAM frame once EOF is observed.
                         await SendEmptyEndStreamDataFrameAsync(streamId, stream, ct).ConfigureAwait(false);
-                        return;
+                        return totalBytesSent;
                     }
 
-                    await SendBufferedDataAsync(
+                    totalBytesSent += await SendBufferedDataAsync(
                             streamId,
                             new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
                             stream,

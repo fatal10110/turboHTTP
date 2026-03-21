@@ -14,12 +14,23 @@ namespace TurboHTTP.Transport.Http1
     internal sealed class Http11RequestWriteState
     {
         private int _bodyWriteStarted;
+        private long _bodyBytesWritten;
 
         internal bool HasCommittedBodyBytes => Volatile.Read(ref _bodyWriteStarted) != 0;
+        internal long BodyBytesWritten => Interlocked.Read(ref _bodyBytesWritten);
 
         internal void MarkBodyWriteStarted()
         {
             Interlocked.Exchange(ref _bodyWriteStarted, 1);
+        }
+
+        internal void RecordBodyBytesWritten(int bytesWritten)
+        {
+            if (bytesWritten <= 0)
+                return;
+
+            MarkBodyWriteStarted();
+            Interlocked.Add(ref _bodyBytesWritten, bytesWritten);
         }
     }
 
@@ -173,7 +184,7 @@ namespace TurboHTTP.Transport.Http1
             if (bufferedBody.IsEmpty || bufferedBody.Length > smallBufferedRequestThresholdBytes)
                 return false;
 
-            writeState?.MarkBodyWriteStarted();
+            writeState?.RecordBodyBytesWritten(bufferedBody.Length);
             headerWriter.Append(bufferedBody.Span);
             await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
             return true;
@@ -212,7 +223,7 @@ namespace TurboHTTP.Transport.Http1
 
             if (!bodyWriteMode.BufferedBody.IsEmpty)
             {
-                writeState?.MarkBodyWriteStarted();
+                writeState?.RecordBodyBytesWritten(bodyWriteMode.BufferedBody.Length);
                 await stream.WriteAsync(bodyWriteMode.BufferedBody, ct).ConfigureAwait(false);
                 return;
             }
@@ -263,9 +274,9 @@ namespace TurboHTTP.Transport.Http1
                             "Request body ended before the declared Content-Length was fully produced.");
                     }
 
-                    writeState?.MarkBodyWriteStarted();
                     await stream.WriteAsync(new ReadOnlyMemory<byte>(buffer, 0, bytesRead), ct)
                         .ConfigureAwait(false);
+                    writeState?.RecordBodyBytesWritten(bytesRead);
                     remaining -= bytesRead;
                 }
             }
@@ -295,12 +306,12 @@ namespace TurboHTTP.Transport.Http1
                     if (bytesRead == 0)
                         break;
 
-                    writeState?.MarkBodyWriteStarted();
                     int headerLength = FormatChunkHeader(bytesRead, headerBuffer);
                     await stream.WriteAsync(new ReadOnlyMemory<byte>(headerBuffer, 0, headerLength), ct)
                         .ConfigureAwait(false);
                     await stream.WriteAsync(new ReadOnlyMemory<byte>(bodyBuffer, 0, bytesRead), ct)
                         .ConfigureAwait(false);
+                    writeState?.RecordBodyBytesWritten(bytesRead);
                     await stream.WriteAsync(ChunkDataTerminator, ct).ConfigureAwait(false);
                     await stream.FlushAsync(ct).ConfigureAwait(false);
                 }

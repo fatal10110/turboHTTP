@@ -254,11 +254,16 @@ namespace TurboHTTP.Observability
             Exception exception)
         {
             var requestHeaders = CopyHeaders(request?.Headers);
+            ReadOnlyMemory<byte> requestBody = ReadOnlyMemory<byte>.Empty;
+            var requestBodyCaptured = request != null && request.TryGetBufferedContent(out requestBody);
             var requestSnapshot = CreateBodySnapshot(
-                request != null && request.TryGetBufferedContent(out var requestBody)
+                requestBodyCaptured
                     ? requestBody
                     : ReadOnlyMemory<byte>.Empty,
                 requestHeaders);
+            var requestBodyCaptureNote = requestBodyCaptured
+                ? string.Empty
+                : BuildRequestBodyCaptureNote(request?.Content);
 
             var copiedResponseHeaders = CopyHeaders(responseHeaders);
             var responseSnapshot = CreateBodySnapshot(
@@ -279,6 +284,7 @@ namespace TurboHTTP.Observability
                 url: request?.Uri?.ToString(),
                 requestHeaders: requestHeaders,
                 requestBody: requestSnapshot.Body,
+                requestBodyCaptureNote: requestBodyCaptureNote,
                 originalRequestBodySize: requestSnapshot.OriginalSize,
                 isRequestBodyTruncated: requestSnapshot.IsTruncated,
                 isRequestBodyBinary: requestSnapshot.IsBinary,
@@ -294,6 +300,18 @@ namespace TurboHTTP.Observability
                 error: error,
                 errorType: errorType,
                 failureKind: failureKind);
+        }
+
+        private static string BuildRequestBodyCaptureNote(UHttpRequestBody content)
+        {
+            if (content == null || content.IsEmpty)
+                return string.Empty;
+
+            var length = content.Length.HasValue
+                ? content.Length.Value.ToString()
+                : "unknown";
+
+            return $"<Streaming request body unavailable without buffering; length={length}; replayability={content.Replayability}>";
         }
 
         private static IReadOnlyDictionary<string, string> CopyHeaders(HttpHeaders headers)

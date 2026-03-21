@@ -15,9 +15,12 @@ namespace TurboHTTP.Core
     {
         private readonly TaskCompletionSource<UHttpResponse> _tcs =
             new TaskCompletionSource<UHttpResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly object _completionGate = new object();
         private readonly CancellationToken _cancellationToken;
 
         private UHttpRequest _request;
+        private UHttpResponse _stagedResponse;
+        private bool _completionClaimed;
 
         internal BufferedResponseCollectorHandler(
             UHttpRequest request,
@@ -59,8 +62,11 @@ namespace TurboHTTP.Core
                     UHttpErrorType.Unknown,
                     "IHttpHandler.OnResponseError received a null error."));
 
-            if (_tcs.TrySetException(responseError))
+            if (!TryClaimCompletion(out var stagedResponse))
                 return;
+
+            stagedResponse?.Dispose();
+            _tcs.TrySetException(responseError);
         }
 
         /// <summary>
@@ -70,6 +76,11 @@ namespace TurboHTTP.Core
         {
             if (ex is HandlerCallbackException handlerCallback && handlerCallback.InnerException != null)
                 ex = handlerCallback.InnerException;
+
+            if (!TryClaimCompletion(out var stagedResponse))
+                return;
+
+            stagedResponse?.Dispose();
 
             if (ex is OperationCanceledException operationCanceledException)
             {
@@ -89,13 +100,23 @@ namespace TurboHTTP.Core
         /// </summary>
         internal void Cancel()
         {
+            if (!TryClaimCompletion(out var stagedResponse))
+                return;
+
+            stagedResponse?.Dispose();
             _tcs.TrySetCanceled();
         }
 
         internal void EnsureCompleted()
         {
-            if (_tcs.Task.IsCompleted)
+            if (!TryClaimCompletion(out var stagedResponse))
                 return;
+
+            if (stagedResponse != null)
+            {
+                _tcs.TrySetResult(stagedResponse);
+                return;
+            }
 
             _tcs.TrySetException(new InvalidOperationException(
                 "Pipeline completed without delivering a response."));
@@ -184,9 +205,7 @@ namespace TurboHTTP.Core
                         attachedRequestRelease = true;
                     }
 
-                    if (!_tcs.TrySetResult(response))
-                        response.Dispose();
-
+                    StageResponse(response);
                     response = null;
                 }
                 finally
@@ -223,6 +242,45 @@ namespace TurboHTTP.Core
                         Fail(ex);
                     }
                 }
+            }
+        }
+
+        private void StageResponse(UHttpResponse response)
+        {
+            if (response == null)
+                throw new ArgumentNullException(nameof(response));
+
+            var disposeResponse = false;
+            lock (_completionGate)
+            {
+                if (_completionClaimed || _stagedResponse != null)
+                {
+                    disposeResponse = true;
+                }
+                else
+                {
+                    _stagedResponse = response;
+                }
+            }
+
+            if (disposeResponse)
+                response.Dispose();
+        }
+
+        private bool TryClaimCompletion(out UHttpResponse stagedResponse)
+        {
+            lock (_completionGate)
+            {
+                if (_completionClaimed)
+                {
+                    stagedResponse = null;
+                    return false;
+                }
+
+                _completionClaimed = true;
+                stagedResponse = _stagedResponse;
+                _stagedResponse = null;
+                return true;
             }
         }
     }

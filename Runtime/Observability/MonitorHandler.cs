@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
@@ -18,6 +19,7 @@ namespace TurboHTTP.Observability
         private int _bufferedResponseBytes;
         private long _totalResponseBytes;
         private bool _responseBodyWasTruncated;
+        private int _captureCompleted;
 
         internal MonitorHandler(IHttpHandler inner, UHttpRequest request)
         {
@@ -42,12 +44,43 @@ namespace TurboHTTP.Observability
             _bufferedResponseBytes = 0;
             _totalResponseBytes = 0;
             _responseBodyWasTruncated = false;
+            var finalizeOnReturn = true;
+            var bodyToForward = body;
 
-            if (body != null && body.TryGetBufferedData(out var buffered))
-                CaptureBody(buffered.Span);
+            if (body != null)
+            {
+                if (body.TryGetBufferedData(out var buffered))
+                {
+                    CaptureBody(buffered);
+                }
+                else
+                {
+                    finalizeOnReturn = false;
+                    bodyToForward = new ObservedResponseBodySource(
+                        body,
+                        CaptureBody,
+                        completion =>
+                        {
+                            if (!completion.CompletedNaturally)
+                                _responseBodyWasTruncated = _bufferedResponseBytes > 0 || _totalResponseBytes > 0;
 
-            await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
-            Capture(context, exception: null);
+                            CaptureOnce(context, completion.Error);
+                        });
+                }
+            }
+
+            try
+            {
+                await _inner.OnResponseStartAsync(statusCode, headers, bodyToForward, context).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                CaptureOnce(context, ex);
+                throw;
+            }
+
+            if (finalizeOnReturn)
+                CaptureOnce(context, exception: null);
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
@@ -58,12 +91,13 @@ namespace TurboHTTP.Observability
             }
             finally
             {
-                Capture(context, error);
+                CaptureOnce(context, error);
             }
         }
 
-        private void CaptureBody(ReadOnlySpan<byte> chunk)
+        private void CaptureBody(ReadOnlyMemory<byte> chunkMemory)
         {
+            var chunk = chunkMemory.Span;
             if (chunk.IsEmpty)
                 return;
 
@@ -87,8 +121,11 @@ namespace TurboHTTP.Observability
                 _responseBodyWasTruncated = true;
         }
 
-        private void Capture(RequestContext context, Exception exception)
+        private void CaptureOnce(RequestContext context, Exception exception)
         {
+            if (Interlocked.Exchange(ref _captureCompleted, 1) != 0)
+                return;
+
             try
             {
                 var body = _responseBody != null

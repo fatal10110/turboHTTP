@@ -11,7 +11,7 @@ namespace TurboHTTP.Middleware
     /// </summary>
     public sealed class DecompressionInterceptor : IHttpInterceptor
     {
-        internal const long DefaultMaxDecompressedBodySizeBytes = 100L * 1024 * 1024;
+        internal const long DefaultMaxDecompressedBodySizeBytes = 256L * 1024 * 1024;
 
         private readonly bool _automaticDecompression;
         private readonly long _maxDecompressedBodySizeBytes;

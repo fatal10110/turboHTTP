@@ -11,6 +11,7 @@ namespace TurboHTTP.Middleware
     /// </summary>
     public sealed class RedirectInterceptor : IHttpInterceptor
     {
+        private static readonly TimeSpan ResponseDiscardTimeout = TimeSpan.FromSeconds(2);
         private readonly bool _defaultFollowRedirects;
         private readonly int _defaultMaxRedirects;
         private readonly bool _defaultAllowHttpsToHttpDowngrade;
@@ -50,7 +51,8 @@ namespace TurboHTTP.Middleware
                     request,
                     ResolveOptions(request.Metadata),
                     context,
-                    cancellationToken);
+                    cancellationToken,
+                    ResponseDiscardTimeout);
 
                 await next(request, redirectHandler, context, cancellationToken).ConfigureAwait(false);
                 await redirectHandler.Completion.ConfigureAwait(false);
@@ -106,30 +108,13 @@ namespace TurboHTTP.Middleware
             HttpStatusCode statusCode,
             bool crossOrigin)
         {
-            var method = source.Method;
-            byte[] detachedBody = TryDetachRedirectBody(source.Content, source.Method);
+            var followUp = ResolveFollowUpBehavior(source.Method, statusCode);
             var headers = source.Headers.Clone();
 
             headers.Remove("Host");
 
-            if (statusCode == HttpStatusCode.MovedPermanently || statusCode == HttpStatusCode.Found)
-            {
-                if (source.Method == HttpMethod.POST)
-                {
-                    method = HttpMethod.GET;
-                    detachedBody = null;
-                    RemoveBodyHeaders(headers);
-                }
-            }
-            else if (statusCode == HttpStatusCode.SeeOther)
-            {
-                if (source.Method != HttpMethod.HEAD)
-                {
-                    method = HttpMethod.GET;
-                    detachedBody = null;
-                    RemoveBodyHeaders(headers);
-                }
-            }
+            if (followUp.DropsBody)
+                RemoveBodyHeaders(headers);
 
             if (crossOrigin)
             {
@@ -141,11 +126,14 @@ namespace TurboHTTP.Middleware
             var metadata = CloneMetadata(source.Metadata);
             metadata[RequestMetadataKeys.IsCrossSiteRequest] = crossOrigin;
 
-            return new UHttpRequest(
-                method,
+            var content = CreateRedirectContent(source.Content, source.Method, statusCode, followUp.DropsBody);
+
+            return UHttpRequest.CreateDerived(
+                followUp.Method,
                 targetUri,
                 headers,
-                detachedBody,
+                content.Body,
+                content.OwnsContent,
                 source.Timeout,
                 metadata);
         }
@@ -167,13 +155,8 @@ namespace TurboHTTP.Middleware
             if (remaining >= request.Timeout)
                 return request;
 
-            return new UHttpRequest(
-                request.Method,
-                request.Uri,
-                request.Headers,
-                TryDetachRedirectBody(request.Content, request.Method),
-                timeout: remaining,
-                metadata: request.Metadata);
+            request.SetTimeoutInternal(remaining);
+            return request;
         }
 
         internal static bool IsCrossOrigin(Uri from, Uri to)
@@ -218,21 +201,40 @@ namespace TurboHTTP.Middleware
             return new Dictionary<string, object>(metadata);
         }
 
-        private static byte[] TryDetachRedirectBody(UHttpRequestBody content, HttpMethod method)
+        private static RedirectContent CreateRedirectContent(
+            UHttpRequestBody content,
+            HttpMethod method,
+            HttpStatusCode statusCode,
+            bool dropsBody)
         {
-            if (content == null || content.IsEmpty)
-                return null;
+            if (content == null || content.IsEmpty || dropsBody)
+                return RedirectContent.Owned(new EmptyRequestBody());
 
-            if (!content.TryGetBufferedData(out var body))
+            if (content.Replayability == RequestBodyReplayability.NonReplayable)
             {
                 throw CreateRedirectError(
                     UHttpErrorType.InvalidRequest,
-                    $"Redirect handling for non-buffered {method.ToUpperString()} request bodies is not available before the Phase 22a transport streaming steps land.");
+                    $"Cannot follow {(int)statusCode} redirect for non-replayable {method.ToUpperString()} request bodies because the redirect requires preserving the request body. Use a replayable body or disable automatic redirect following.");
             }
 
-            // Redirect hops must own their body bytes independently so later request
-            // disposal or buffer reuse cannot corrupt the follow-up dispatch.
-            return body.ToArray();
+            if (content is StreamRequestBody)
+                return RedirectContent.Shared(content);
+
+            return RedirectContent.Owned(content.CloneDetached());
+        }
+
+        private static RedirectFollowUp ResolveFollowUpBehavior(HttpMethod sourceMethod, HttpStatusCode statusCode)
+        {
+            if ((statusCode == HttpStatusCode.MovedPermanently || statusCode == HttpStatusCode.Found) &&
+                sourceMethod == HttpMethod.POST)
+            {
+                return new RedirectFollowUp(HttpMethod.GET, dropsBody: true);
+            }
+
+            if (statusCode == HttpStatusCode.SeeOther && sourceMethod != HttpMethod.HEAD)
+                return new RedirectFollowUp(HttpMethod.GET, dropsBody: true);
+
+            return new RedirectFollowUp(sourceMethod, dropsBody: false);
         }
 
         private static bool IsRedirectStatus(HttpStatusCode statusCode)
@@ -325,6 +327,40 @@ namespace TurboHTTP.Middleware
             internal int MaxRedirects { get; }
             internal bool AllowHttpsToHttpDowngrade { get; }
             internal bool EnforceRedirectTotalTimeout { get; }
+        }
+
+        private readonly struct RedirectFollowUp
+        {
+            internal RedirectFollowUp(HttpMethod method, bool dropsBody)
+            {
+                Method = method;
+                DropsBody = dropsBody;
+            }
+
+            internal HttpMethod Method { get; }
+            internal bool DropsBody { get; }
+        }
+
+        private readonly struct RedirectContent
+        {
+            private RedirectContent(UHttpRequestBody body, bool ownsContent)
+            {
+                Body = body;
+                OwnsContent = ownsContent;
+            }
+
+            internal UHttpRequestBody Body { get; }
+            internal bool OwnsContent { get; }
+
+            internal static RedirectContent Owned(UHttpRequestBody body)
+            {
+                return new RedirectContent(body, ownsContent: true);
+            }
+
+            internal static RedirectContent Shared(UHttpRequestBody body)
+            {
+                return new RedirectContent(body, ownsContent: false);
+            }
         }
     }
 }

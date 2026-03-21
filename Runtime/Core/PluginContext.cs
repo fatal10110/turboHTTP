@@ -132,6 +132,7 @@ namespace TurboHTTP.Core
                 public readonly HttpMethod Method;
                 public readonly Uri Uri;
                 public readonly UHttpRequestBody Content;
+                public readonly int ContentHash;
                 public readonly TimeSpan Timeout;
                 public readonly int HeaderCount;
                 public readonly int HeaderHash;
@@ -143,6 +144,7 @@ namespace TurboHTTP.Core
                     Method = request.Method;
                     Uri = request.Uri;
                     Content = request.Content;
+                    ContentHash = request.Content?.GetHashCode() ?? 0;
                     Timeout = request.Timeout;
                     HeaderCount = request.Headers?.Count ?? 0;
                     HeaderHash = ComputeHeadersHash(request.Headers);
@@ -167,6 +169,7 @@ namespace TurboHTTP.Core
                     return Method == other.Method &&
                            Equals(Uri, other.Uri) &&
                            ReferenceEquals(Content, other.Content) &&
+                           ContentHash == other.ContentHash &&
                            Timeout == other.Timeout &&
                            HeaderCount == other.HeaderCount &&
                            HeaderHash == other.HeaderHash &&
@@ -181,7 +184,7 @@ namespace TurboHTTP.Core
                         var hash = 17;
                         hash = (hash * 31) ^ (int)Method;
                         hash = (hash * 31) ^ (Uri?.GetHashCode() ?? 0);
-                        hash = (hash * 31) ^ (Content != null ? Content.GetHashCode() : 0);
+                        hash = (hash * 31) ^ ContentHash;
                         hash = (hash * 31) ^ Timeout.GetHashCode();
                         hash = (hash * 31) ^ HeaderCount;
                         hash = (hash * 31) ^ HeaderHash;
@@ -360,7 +363,7 @@ namespace TurboHTTP.Core
                     RequestContext context)
                 {
                     ThrowIfUnauthorizedResponseInjection();
-                    RecordForwarded(ResponseEventSignature.ForResponseStart(statusCode, headers));
+                    RecordForwarded(ResponseEventSignature.ForResponseStart(statusCode, headers, body));
                     return _innerHandler.OnResponseStartAsync(statusCode, headers, body, context);
                 }
 
@@ -606,6 +609,12 @@ namespace TurboHTTP.Core
                         "Plugin interceptor attempted response mutation without MutateResponses capability.");
                 }
 
+                private interface IObservedBodySignature
+                {
+                    int UnderlyingBodyTypeHash { get; }
+                    int ObservationStateHash { get; }
+                }
+
                 private sealed class ObservedHandler : IHttpHandler
                 {
                     private readonly InvocationGuard _owner;
@@ -629,12 +638,9 @@ namespace TurboHTTP.Core
                         IResponseBodySource body,
                         RequestContext context)
                     {
-                        _owner.RecordObserved(ResponseEventSignature.ForResponseStart(statusCode, headers));
-                        return _inner.OnResponseStartAsync(
-                            statusCode,
-                            headers,
-                            new ObservedBodySource(body),
-                            context);
+                        var observedBody = new ObservedBodySource(body);
+                        _owner.RecordObserved(ResponseEventSignature.ForResponseStart(statusCode, headers, observedBody));
+                        return _inner.OnResponseStartAsync(statusCode, headers, observedBody, context);
                     }
 
                     public void OnResponseError(UHttpException error, RequestContext context)
@@ -643,16 +649,45 @@ namespace TurboHTTP.Core
                         _inner.OnResponseError(error, context);
                     }
 
-                    private sealed class ObservedBodySource : IResponseBodySource
+                    private sealed class ObservedBodySource : IResponseBodySource, IObservedBodySignature
                     {
                         private readonly IResponseBodySource _innerBody;
+                        private readonly int _underlyingBodyTypeHash;
+                        private long _bytesRead;
+                        private int _completedNaturally;
+                        private int _trailersFetched;
+                        private int _aborted;
+                        private int _disposed;
+                        private int _detached;
 
                         public ObservedBodySource(IResponseBodySource innerBody)
                         {
                             _innerBody = innerBody ?? throw new ArgumentNullException(nameof(innerBody));
+                            _underlyingBodyTypeHash = innerBody.GetType().GetHashCode();
                         }
 
                         public long? Length => _innerBody.Length;
+
+                        public int UnderlyingBodyTypeHash => _underlyingBodyTypeHash;
+
+                        public int ObservationStateHash
+                        {
+                            get
+                            {
+                                unchecked
+                                {
+                                    var hash = 17;
+                                    hash = (hash * 31) ^ _underlyingBodyTypeHash;
+                                    hash = (hash * 31) ^ Interlocked.Read(ref _bytesRead).GetHashCode();
+                                    hash = (hash * 31) ^ Volatile.Read(ref _completedNaturally);
+                                    hash = (hash * 31) ^ Volatile.Read(ref _trailersFetched);
+                                    hash = (hash * 31) ^ Volatile.Read(ref _aborted);
+                                    hash = (hash * 31) ^ Volatile.Read(ref _disposed);
+                                    hash = (hash * 31) ^ Volatile.Read(ref _detached);
+                                    return hash;
+                                }
+                            }
+                        }
 
                         public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
                         {
@@ -661,12 +696,22 @@ namespace TurboHTTP.Core
 
                         public bool TryDetachBufferedBody(out DetachedBufferedBody body)
                         {
-                            return _innerBody.TryDetachBufferedBody(out body);
+                            var detached = _innerBody.TryDetachBufferedBody(out body);
+                            if (detached)
+                                Interlocked.Exchange(ref _detached, 1);
+
+                            return detached;
                         }
 
                         public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
                         {
-                            return _innerBody.ReadAsync(destination, ct);
+                            var pending = _innerBody.ReadAsync(destination, ct);
+                            if (pending.IsCompletedSuccessfully)
+                            {
+                                return new ValueTask<int>(ObserveReadResult(pending.Result));
+                            }
+
+                            return AwaitReadAsync(pending);
                         }
 
                         public ValueTask DrainAsync(CancellationToken ct)
@@ -676,17 +721,42 @@ namespace TurboHTTP.Core
 
                         public void Abort()
                         {
+                            Interlocked.Exchange(ref _aborted, 1);
                             _innerBody.Abort();
                         }
 
-                        public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+                        public async ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
                         {
-                            return _innerBody.GetTrailersAsync(ct);
+                            var trailers = await _innerBody.GetTrailersAsync(ct).ConfigureAwait(false);
+                            Interlocked.Exchange(ref _trailersFetched, 1);
+                            return trailers;
                         }
 
-                        public ValueTask DisposeAsync()
+                        public async ValueTask DisposeAsync()
                         {
-                            return _innerBody.DisposeAsync();
+                            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                                return;
+
+                            await _innerBody.DisposeAsync().ConfigureAwait(false);
+                        }
+
+                        private async ValueTask<int> AwaitReadAsync(ValueTask<int> pending)
+                        {
+                            return ObserveReadResult(await pending.ConfigureAwait(false));
+                        }
+
+                        private int ObserveReadResult(int read)
+                        {
+                            if (read > 0)
+                            {
+                                Interlocked.Add(ref _bytesRead, read);
+                            }
+                            else if (read == 0)
+                            {
+                                Interlocked.Exchange(ref _completedNaturally, 1);
+                            }
+
+                            return read;
                         }
                     }
                 }
@@ -697,17 +767,23 @@ namespace TurboHTTP.Core
                     private readonly int _arg0;
                     private readonly int _arg1;
                     private readonly int _arg2;
+                    private readonly int _arg3;
+                    private readonly int _arg4;
 
                     private ResponseEventSignature(
                         ResponseEventKind kind,
                         int arg0,
                         int arg1,
-                        int arg2)
+                        int arg2,
+                        int arg3,
+                        int arg4)
                     {
                         _kind = (int)kind;
                         _arg0 = arg0;
                         _arg1 = arg1;
                         _arg2 = arg2;
+                        _arg3 = arg3;
+                        _arg4 = arg4;
                     }
 
                     public static ResponseEventSignature ForRequestStart(UHttpRequest request)
@@ -716,16 +792,23 @@ namespace TurboHTTP.Core
                             ResponseEventKind.RequestStart,
                             RequestMutationSignature.ComputeHash(request),
                             0,
+                            0,
+                            0,
                             0);
                     }
 
-                    public static ResponseEventSignature ForResponseStart(int statusCode, HttpHeaders headers)
+                    public static ResponseEventSignature ForResponseStart(
+                        int statusCode,
+                        HttpHeaders headers,
+                        IResponseBodySource body)
                     {
                         return new ResponseEventSignature(
                             ResponseEventKind.ResponseStart,
                             statusCode,
                             headers?.Count ?? 0,
-                            ComputeHeadersHash(headers));
+                            ComputeHeadersHash(headers),
+                            ComputeBodyTypeHash(body),
+                            ComputeBodyStateHash(body));
                     }
 
                     public static ResponseEventSignature ForResponseError(UHttpException error)
@@ -735,6 +818,8 @@ namespace TurboHTTP.Core
                             ResponseEventKind.ResponseError,
                             (int)(httpError?.Type ?? UHttpErrorType.Unknown),
                             StringComparer.Ordinal.GetHashCode(httpError?.Message ?? string.Empty),
+                            0,
+                            0,
                             0);
                     }
 
@@ -743,7 +828,9 @@ namespace TurboHTTP.Core
                         return _kind == other._kind &&
                                _arg0 == other._arg0 &&
                                _arg1 == other._arg1 &&
-                               _arg2 == other._arg2;
+                               _arg2 == other._arg2 &&
+                               _arg3 == other._arg3 &&
+                               _arg4 == other._arg4;
                     }
 
                     private static int ComputeHeadersHash(HttpHeaders headers)
@@ -764,6 +851,22 @@ namespace TurboHTTP.Core
 
                             return hash;
                         }
+                    }
+
+                    private static int ComputeBodyTypeHash(IResponseBodySource body)
+                    {
+                        if (body is IObservedBodySignature observedBody)
+                            return observedBody.UnderlyingBodyTypeHash;
+
+                        return body?.GetType().GetHashCode() ?? 0;
+                    }
+
+                    private static int ComputeBodyStateHash(IResponseBodySource body)
+                    {
+                        if (body is IObservedBodySignature observedBody)
+                            return observedBody.ObservationStateHash;
+
+                        return 0;
                     }
                 }
 

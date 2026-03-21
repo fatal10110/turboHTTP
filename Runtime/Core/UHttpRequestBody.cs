@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core.Internal;
@@ -168,6 +169,19 @@ namespace TurboHTTP.Core
             GC.SuppressFinalize(this);
         }
 
+        protected static int ComputeStableHash(ReadOnlySpan<byte> data)
+        {
+            unchecked
+            {
+                var hash = 17;
+                for (int i = 0; i < data.Length; i++)
+                {
+                    hash = (hash * 31) ^ data[i];
+                }
+
+                return hash;
+            }
+        }
     }
 
     public sealed class EmptyRequestBody : UHttpRequestBody
@@ -196,6 +210,11 @@ namespace TurboHTTP.Core
         internal override UHttpRequestBody CloneDetached()
         {
             return new EmptyRequestBody();
+        }
+
+        public override int GetHashCode()
+        {
+            return 17;
         }
     }
 
@@ -234,6 +253,11 @@ namespace TurboHTTP.Core
             return _data.IsEmpty
                 ? (UHttpRequestBody)new EmptyRequestBody()
                 : new BufferedRequestBody(_data.ToArray());
+        }
+
+        public override int GetHashCode()
+        {
+            return ComputeStableHash(_data.Span);
         }
     }
 
@@ -293,8 +317,23 @@ namespace TurboHTTP.Core
         {
             DisposeCoreFromFinalizer();
         }
+
+        public override int GetHashCode()
+        {
+            var owner = Volatile.Read(ref _owner);
+            return owner == null
+                ? 0
+                : ComputeStableHash(owner.Memory.Span.Slice(0, _length));
+        }
     }
 
+    /// <summary>
+    /// Request body backed by a caller-provided <see cref="Stream"/>.
+    /// <para><b>22a limitation:</b> TurboHTTP does not yet implement <c>Expect: 100-continue</c>.
+    /// Servers may therefore reject the request only after the body has already started sending.
+    /// For non-replayable streams, prefer <see cref="FactoryRequestBody"/> when the upload may be
+    /// rejected and the body must be recreated safely.</para>
+    /// </summary>
     public sealed class StreamRequestBody : UHttpRequestBody
     {
         private readonly Stream _stream;
@@ -355,8 +394,20 @@ namespace TurboHTTP.Core
         {
             DisposeCoreFromFinalizer();
         }
+
+        public override int GetHashCode()
+        {
+            return RuntimeHelpers.GetHashCode(this);
+        }
     }
 
+    /// <summary>
+    /// Request body backed by a factory that creates a new <see cref="Stream"/> per read session.
+    /// <para><b>22a limitation:</b> TurboHTTP does not yet implement <c>Expect: 100-continue</c>.
+    /// The client may begin sending the request body before the server confirms acceptance.
+    /// Factory-backed bodies remain the recommended choice when uploads may need replay after a
+    /// server-side rejection.</para>
+    /// </summary>
     public sealed class FactoryRequestBody : UHttpRequestBody
     {
         private readonly Func<CancellationToken, ValueTask<Stream>> _factory;
@@ -414,6 +465,11 @@ namespace TurboHTTP.Core
         internal override UHttpRequestBody CloneDetached()
         {
             return new FactoryRequestBody(_factory, _contentLength);
+        }
+
+        public override int GetHashCode()
+        {
+            return RuntimeHelpers.GetHashCode(this);
         }
     }
 }

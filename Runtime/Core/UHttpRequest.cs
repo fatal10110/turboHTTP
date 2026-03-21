@@ -465,6 +465,25 @@ namespace TurboHTTP.Core
                 new Dictionary<string, object>(_metadata));
         }
 
+        internal static UHttpRequest CreateDerived(
+            HttpMethod method,
+            Uri uri,
+            HttpHeaders headers,
+            UHttpRequestBody content,
+            bool ownsContent,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, object> metadata)
+        {
+            return new UHttpRequest(
+                method,
+                uri,
+                headers,
+                content,
+                ownsContent,
+                timeout,
+                metadata);
+        }
+
         private void TryReturnToPool()
         {
             if (_leaseOwner == null)

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -60,6 +61,11 @@ namespace TurboHTTP.Files
         internal override UHttpRequestBody CloneDetached()
         {
             return new FileRequestBody(_path, _bufferSize);
+        }
+
+        public override int GetHashCode()
+        {
+            return RuntimeHelpers.GetHashCode(this);
         }
     }
 }

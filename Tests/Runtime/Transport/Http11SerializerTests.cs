@@ -28,6 +28,23 @@ namespace TurboHTTP.Tests.Transport
             return ParseSerializedBytes(ms.ToArray());
         }
 
+        private static async Task<(string Headers, byte[] Body, Http11RequestWriteState WriteState)> SerializeWithWriteStateAsync(
+            UHttpRequest request,
+            StreamingOptions streamingOptions = null)
+        {
+            using var ms = new MemoryStream();
+            var writeState = new Http11RequestWriteState();
+            await Http11RequestSerializer.SerializeAsync(
+                request,
+                ms,
+                CancellationToken.None,
+                writeState,
+                streamingOptions);
+
+            var parsed = ParseSerializedBytes(ms.ToArray());
+            return (parsed.Headers, parsed.Body, writeState);
+        }
+
         private static int IndexOf(byte[] haystack, byte[] needle)
         {
             for (int i = 0; i <= haystack.Length - needle.Length; i++)
@@ -150,6 +167,23 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void SerializePost_BufferedBody_TracksCommittedBodyBytes()
+        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/"),
+                    body: Encoding.UTF8.GetBytes("hello"));
+
+                var result = await SerializeWithWriteStateAsync(request);
+
+                Assert.AreEqual(5, result.WriteState.BodyBytesWritten);
+                Assert.IsTrue(result.WriteState.HasCommittedBodyBytes);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void SerializePost_KnownLengthFactoryBody_WritesContentLengthAndBody()
         {
             Task.Run(async () =>
@@ -180,6 +214,22 @@ namespace TurboHTTP.Tests.Transport
                 Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: chunked"));
                 Assert.IsFalse(result.Headers.Contains("Content-Length:"));
                 Assert.AreEqual("5\r\nhello\r\n0\r\n\r\n", Encoding.ASCII.GetString(result.Body));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SerializePost_UnknownLengthFactoryBody_TracksCommittedBodyBytes()
+        {
+            Task.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("hello");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(_ => new ValueTask<Stream>(new MemoryStream(body, writable: false)));
+
+                var result = await SerializeWithWriteStateAsync(request);
+
+                Assert.AreEqual(5, result.WriteState.BodyBytesWritten);
+                Assert.IsTrue(result.WriteState.HasCommittedBodyBytes);
             }).GetAwaiter().GetResult();
         }
 

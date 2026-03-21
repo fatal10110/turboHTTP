@@ -1034,13 +1034,20 @@ namespace TurboHTTP.Transport
             CancellationToken ct)
         {
             context.RecordEvent("TransportSending");
-            await Http11RequestSerializer.SerializeAsync(
-                    request,
-                    lease.Connection.Stream,
-                    ct,
-                    requestWriteState,
-                    _streamingOptions)
-                .ConfigureAwait(false);
+            try
+            {
+                await Http11RequestSerializer.SerializeAsync(
+                        request,
+                        lease.Connection.Stream,
+                        ct,
+                        requestWriteState,
+                        _streamingOptions)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                RecordRequestBodyBytesSent(context, requestWriteState);
+            }
 
             context.RecordEvent("TransportReceiving");
             var parsed = await Http11ResponseParser.ParseHeadAsync(
@@ -1062,13 +1069,20 @@ namespace TurboHTTP.Transport
             StreamingOptions streamingOptions)
         {
             context.RecordEvent("TransportSending");
-            await Http11RequestSerializer.SerializeAsync(
-                    request,
-                    stream,
-                    ct,
-                    requestWriteState,
-                    streamingOptions)
-                .ConfigureAwait(false);
+            try
+            {
+                await Http11RequestSerializer.SerializeAsync(
+                        request,
+                        stream,
+                        ct,
+                        requestWriteState,
+                        streamingOptions)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                RecordRequestBodyBytesSent(context, requestWriteState);
+            }
 
             context.RecordEvent("TransportReceiving");
             var parsed = await Http11ResponseParser.ParseAsync(stream, request.Method, ct)
@@ -1076,6 +1090,18 @@ namespace TurboHTTP.Transport
 
             context.RecordEvent("TransportComplete");
             return parsed;
+        }
+
+        private static void RecordRequestBodyBytesSent(
+            RequestContext context,
+            Http11RequestWriteState requestWriteState)
+        {
+            if (context == null || requestWriteState == null)
+                return;
+
+            context.SetState(
+                TransportBehaviorFlags.RequestBodyBytesSent,
+                requestWriteState.BodyBytesWritten);
         }
 
         internal bool HasHttp2Connection(string host, int port)

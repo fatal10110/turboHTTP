@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -164,6 +165,129 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void ReadOnlyMonitoring_StreamingResponseMetadataObservation_IsAllowed()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var recorder = new List<string>();
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = CreateStreamingTransport(),
+                    DisposeTransport = true
+                });
+
+                await client.RegisterPluginAsync(new InterceptorPlugin(
+                    "observe-streaming-metadata",
+                    new StreamingMetadataObservingInterceptor(recorder),
+                    PluginCapabilities.ReadOnlyMonitoring));
+
+                await using var response = await client.Get("https://example.test/observe-streaming").SendStreamingAsync();
+                var bytes = await ReadAllAsync(response.Body).ConfigureAwait(false);
+
+                Assert.AreEqual("hello", Encoding.UTF8.GetString(bytes));
+                CollectionAssert.AreEqual(
+                    new[] { "start:200", "length:5" },
+                    recorder);
+            });
+        }
+
+        [Test]
+        public void StreamingBodyWrap_WithoutMutateResponses_IsRejected()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = CreateStreamingTransport(),
+                    DisposeTransport = true
+                });
+
+                await client.RegisterPluginAsync(new InterceptorPlugin(
+                    "stream-wrap",
+                    new StreamingBodyWrappingInterceptor(),
+                    PluginCapabilities.ReadOnlyMonitoring));
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
+                {
+                    await client.Get("https://example.test/stream-wrap").SendBufferedAsync();
+                });
+
+                Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+                Assert.IsInstanceOf<PluginException>(ex.HttpError.InnerException);
+                StringAssert.Contains("MutateResponses capability", ex.HttpError.Message);
+            });
+        }
+
+        [Test]
+        public void StreamingBodyRead_WithoutMutateResponses_IsRejected()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = CreateStreamingTransport(),
+                    DisposeTransport = true
+                });
+
+                await client.RegisterPluginAsync(new InterceptorPlugin(
+                    "stream-read",
+                    new StreamingBodyReadingInterceptor(),
+                    PluginCapabilities.ReadOnlyMonitoring));
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
+                {
+                    await client.Get("https://example.test/stream-read").SendBufferedAsync();
+                });
+
+                Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+                Assert.IsInstanceOf<PluginException>(ex.HttpError.InnerException);
+                StringAssert.Contains("MutateResponses capability", ex.HttpError.Message);
+            });
+        }
+
+        [Test]
+        public void StreamingTrailerFetch_WithoutMutateResponses_IsRejected()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var trailers = new HttpHeaders();
+                trailers.Set("X-Trailer", "seen");
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new CallbackTransport((request, handler, context, cancellationToken) =>
+                    {
+                        handler.OnRequestStart(request, context);
+                        return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            new MockResponseBodySource(
+                                new[] { (ReadOnlyMemory<byte>)Encoding.UTF8.GetBytes("hello") },
+                                length: 5,
+                                trailers: trailers,
+                                exposeBufferedData: false),
+                            context).AsTask();
+                    }),
+                    DisposeTransport = true
+                });
+
+                await client.RegisterPluginAsync(new InterceptorPlugin(
+                    "stream-trailers",
+                    new StreamingTrailerInspectingInterceptor(),
+                    PluginCapabilities.ReadOnlyMonitoring));
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
+                {
+                    await client.Get("https://example.test/stream-trailers").SendBufferedAsync();
+                });
+
+                Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+                Assert.IsInstanceOf<PluginException>(ex.HttpError.InnerException);
+                StringAssert.Contains("MutateResponses capability", ex.HttpError.Message);
+            });
+        }
+
+        [Test]
         public void ReadOnlyMonitoring_PassThroughTransportError_IsNotMisclassifiedAsHandleErrors()
         {
             AssertAsync.Run(async () =>
@@ -196,6 +320,51 @@ namespace TurboHTTP.Tests.Core
                 Transport = new MockTransport(),
                 DisposeTransport = true
             });
+        }
+
+        private static IHttpTransport CreateStreamingTransport()
+        {
+            return new CallbackTransport((request, handler, context, cancellationToken) =>
+            {
+                handler.OnRequestStart(request, context);
+                return handler.OnResponseStartAsync(
+                    (int)HttpStatusCode.OK,
+                    new HttpHeaders(),
+                    new MockResponseBodySource(
+                        new[]
+                        {
+                            (ReadOnlyMemory<byte>)Encoding.UTF8.GetBytes("hel"),
+                            Encoding.UTF8.GetBytes("lo")
+                        },
+                        length: 5,
+                        trailers: HttpHeaders.Empty,
+                        exposeBufferedData: false),
+                    context).AsTask();
+            });
+        }
+
+        private static async Task<byte[]> ReadAllAsync(ResponseBodyStream body)
+        {
+            var buffer = new byte[5];
+            var total = 0;
+            while (total < buffer.Length)
+            {
+                var read = await body.ReadAsync(
+                        buffer.AsMemory(total, buffer.Length - total),
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                    break;
+
+                total += read;
+            }
+
+            if (total == buffer.Length)
+                return buffer;
+
+            var copy = new byte[total];
+            Buffer.BlockCopy(buffer, 0, copy, 0, total);
+            return copy;
         }
 
         private sealed class InterceptorPlugin : IHttpPlugin
@@ -325,6 +494,55 @@ namespace TurboHTTP.Tests.Core
             }
         }
 
+        private sealed class StreamingMetadataObservingInterceptor : IHttpInterceptor
+        {
+            private readonly List<string> _recorder;
+
+            public StreamingMetadataObservingInterceptor(List<string> recorder)
+            {
+                _recorder = recorder;
+            }
+
+            public DispatchFunc Wrap(DispatchFunc next)
+            {
+                return (request, handler, context, cancellationToken) =>
+                    next(request, new StreamingMetadataObservingHandler(handler, _recorder), context, cancellationToken);
+            }
+        }
+
+        private sealed class StreamingMetadataObservingHandler : IHttpHandler
+        {
+            private readonly IHttpHandler _inner;
+            private readonly List<string> _recorder;
+
+            public StreamingMetadataObservingHandler(IHttpHandler inner, List<string> recorder)
+            {
+                _inner = inner;
+                _recorder = recorder;
+            }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+                _inner.OnRequestStart(request, context);
+            }
+
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
+            {
+                _recorder.Add("start:" + statusCode);
+                _recorder.Add("length:" + (body?.Length?.ToString() ?? "unknown"));
+                return _inner.OnResponseStartAsync(statusCode, headers, body, context);
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                _inner.OnResponseError(error, context);
+            }
+        }
+
         private sealed class ObservingResponseHandler : IHttpHandler
         {
             private readonly IHttpHandler _inner;
@@ -366,6 +584,127 @@ namespace TurboHTTP.Tests.Core
             {
                 return (request, handler, context, cancellationToken) =>
                     next(request, new MiddleByteMutatingHandler(handler), context, cancellationToken);
+            }
+        }
+
+        private sealed class StreamingBodyWrappingInterceptor : IHttpInterceptor
+        {
+            public DispatchFunc Wrap(DispatchFunc next)
+            {
+                return (request, handler, context, cancellationToken) =>
+                    next(request, new StreamingBodyWrappingHandler(handler), context, cancellationToken);
+            }
+        }
+
+        private sealed class StreamingBodyWrappingHandler : IHttpHandler
+        {
+            private readonly IHttpHandler _inner;
+
+            public StreamingBodyWrappingHandler(IHttpHandler inner)
+            {
+                _inner = inner;
+            }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+                _inner.OnRequestStart(request, context);
+            }
+
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
+            {
+                return _inner.OnResponseStartAsync(
+                    statusCode,
+                    headers,
+                    new PassThroughBodySource(body),
+                    context);
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                _inner.OnResponseError(error, context);
+            }
+        }
+
+        private sealed class StreamingBodyReadingInterceptor : IHttpInterceptor
+        {
+            public DispatchFunc Wrap(DispatchFunc next)
+            {
+                return (request, handler, context, cancellationToken) =>
+                    next(request, new StreamingBodyReadingHandler(handler), context, cancellationToken);
+            }
+        }
+
+        private sealed class StreamingBodyReadingHandler : IHttpHandler
+        {
+            private readonly IHttpHandler _inner;
+
+            public StreamingBodyReadingHandler(IHttpHandler inner)
+            {
+                _inner = inner;
+            }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+                _inner.OnRequestStart(request, context);
+            }
+
+            public async ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
+            {
+                var scratch = new byte[1];
+                await body.ReadAsync(scratch, CancellationToken.None).ConfigureAwait(false);
+                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                _inner.OnResponseError(error, context);
+            }
+        }
+
+        private sealed class StreamingTrailerInspectingInterceptor : IHttpInterceptor
+        {
+            public DispatchFunc Wrap(DispatchFunc next)
+            {
+                return (request, handler, context, cancellationToken) =>
+                    next(request, new StreamingTrailerInspectingHandler(handler), context, cancellationToken);
+            }
+        }
+
+        private sealed class StreamingTrailerInspectingHandler : IHttpHandler
+        {
+            private readonly IHttpHandler _inner;
+
+            public StreamingTrailerInspectingHandler(IHttpHandler inner)
+            {
+                _inner = inner;
+            }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+                _inner.OnRequestStart(request, context);
+            }
+
+            public async ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
+            {
+                await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
+                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                _inner.OnResponseError(error, context);
             }
         }
 
@@ -411,6 +750,76 @@ namespace TurboHTTP.Tests.Core
             public void OnResponseError(UHttpException error, RequestContext context)
             {
                 _inner.OnResponseError(error, context);
+            }
+        }
+
+        private sealed class PassThroughBodySource : IResponseBodySource
+        {
+            private readonly IResponseBodySource _inner;
+
+            public PassThroughBodySource(IResponseBodySource inner)
+            {
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            }
+
+            public long? Length => _inner.Length;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                return _inner.TryGetBufferedData(out data);
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                return _inner.TryDetachBufferedBody(out body);
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                return _inner.ReadAsync(destination, ct);
+            }
+
+            public ValueTask DrainAsync(CancellationToken ct)
+            {
+                return _inner.DrainAsync(ct);
+            }
+
+            public void Abort()
+            {
+                _inner.Abort();
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                return _inner.GetTrailersAsync(ct);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return _inner.DisposeAsync();
+            }
+        }
+
+        private sealed class CallbackTransport : IHttpTransport
+        {
+            private readonly Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> _dispatch;
+
+            public CallbackTransport(Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> dispatch)
+            {
+                _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+            }
+
+            public Task DispatchAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                return _dispatch(request, handler, context, cancellationToken);
+            }
+
+            public void Dispose()
+            {
             }
         }
     }

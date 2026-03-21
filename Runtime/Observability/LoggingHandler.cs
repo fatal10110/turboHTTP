@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 
@@ -27,6 +28,7 @@ namespace TurboHTTP.Observability
         private long _bytesReceived;
         private int _statusCode;
         private string _statusText;
+        private int _completionLogged;
 
         internal LoggingHandler(
             IHttpHandler inner,
@@ -84,39 +86,44 @@ namespace TurboHTTP.Observability
             }
 
             _log(GetLogPrefix() + builder);
-            if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
-                CaptureBodyPreview(buffered.Span);
+            var finalizeOnReturn = true;
+            var bodyToForward = body;
+            if (body != null)
+            {
+                if (body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
+                {
+                    CaptureBodyPreview(buffered);
+                }
+                else
+                {
+                    finalizeOnReturn = false;
+                    bodyToForward = new ObservedResponseBodySource(
+                        body,
+                        CaptureBodyPreview,
+                        completion => CompleteLogging(context, completion.Error));
+                }
+            }
 
             try
             {
-                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+                await _inner.OnResponseStartAsync(statusCode, headers, bodyToForward, context).ConfigureAwait(false);
+            }
+            catch
+            {
+                throw;
             }
             finally
             {
-                LogCompletion(context);
-                ReturnBodyPreviewBuffer();
+                if (finalizeOnReturn)
+                    CompleteLogging(context);
             }
         }
 
         public void OnResponseError(UHttpException error, RequestContext context)
         {
-            var elapsed = context.Elapsed - _started;
-            if (elapsed < TimeSpan.Zero)
-                elapsed = TimeSpan.Zero;
-
-            var builder = new StringBuilder();
-            builder.Append("X ")
-                .Append(_request.Method)
-                .Append(' ')
-                .Append(_request.Uri)
-                .Append(" -> ERROR (")
-                .Append(elapsed.TotalMilliseconds.ToString("F0"))
-                .Append("ms)\n  ")
-                .Append(error?.Message ?? "Unknown error");
-
             try
             {
-                _log("[TurboHTTP][ERROR] " + builder);
+                LogError(error, context);
                 _inner.OnResponseError(error, context);
             }
             finally
@@ -155,8 +162,9 @@ namespace TurboHTTP.Observability
             _log(GetLogPrefix() + builder);
         }
 
-        private void CaptureBodyPreview(ReadOnlySpan<byte> chunk)
+        private void CaptureBodyPreview(ReadOnlyMemory<byte> chunkMemory)
         {
+            var chunk = chunkMemory.Span;
             _bytesReceived += chunk.Length;
 
             if (_logLevel < LoggingInterceptor.LogLevel.Detailed || !_logBody || chunk.IsEmpty)
@@ -177,6 +185,47 @@ namespace TurboHTTP.Observability
             {
                 _bodyPreviewTruncated = true;
             }
+        }
+
+        private void CompleteLogging(RequestContext context, Exception error = null)
+        {
+            if (Interlocked.Exchange(ref _completionLogged, 1) != 0)
+                return;
+
+            try
+            {
+                if (error == null)
+                {
+                    LogCompletion(context);
+                }
+                else
+                {
+                    LogError(error, context);
+                }
+            }
+            finally
+            {
+                ReturnBodyPreviewBuffer();
+            }
+        }
+
+        private void LogError(Exception error, RequestContext context)
+        {
+            var elapsed = context.Elapsed - _started;
+            if (elapsed < TimeSpan.Zero)
+                elapsed = TimeSpan.Zero;
+
+            var builder = new StringBuilder();
+            builder.Append("X ")
+                .Append(_request.Method)
+                .Append(' ')
+                .Append(_request.Uri)
+                .Append(" -> ERROR (")
+                .Append(elapsed.TotalMilliseconds.ToString("F0"))
+                .Append("ms)\n  ")
+                .Append(error?.Message ?? "Unknown error");
+
+            _log("[TurboHTTP][ERROR] " + builder);
         }
 
         private string GetLogPrefix()

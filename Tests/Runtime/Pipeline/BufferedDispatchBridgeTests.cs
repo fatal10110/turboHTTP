@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Testing;
 
 namespace TurboHTTP.Tests.Pipeline
 {
@@ -138,6 +139,39 @@ namespace TurboHTTP.Tests.Pipeline
             Assert.AreEqual(3, source.ReadCalls);
             Assert.AreEqual(1, source.TrailersCalls);
             Assert.AreEqual(1, source.DisposeCalls);
+        }
+
+        [Test]
+        public void CollectResponseAsync_LateDispatchFaultAfterBufferedResponse_FailsResponseTask()
+        {
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/late-fault"));
+            var context = new RequestContext(request);
+
+            var responseTask = TransportDispatchHelper.CollectResponseAsync(
+                async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
+                {
+                    handler.OnRequestStart(dispatchRequest, dispatchContext);
+                    await handler.OnResponseStartAsync(
+                            200,
+                            new HttpHeaders(),
+                            new MockResponseBodySource(
+                                new[] { (ReadOnlyMemory<byte>)new byte[] { (byte)'o', (byte)'k' } },
+                                length: 2,
+                                trailers: HttpHeaders.Empty,
+                                exposeBufferedData: false),
+                            dispatchContext)
+                        .ConfigureAwait(false);
+
+                    throw new InvalidOperationException("late fault");
+                },
+                request,
+                context,
+                CancellationToken.None);
+
+            var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+            Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
+            Assert.IsInstanceOf<InvalidOperationException>(ex.HttpError.InnerException);
+            StringAssert.Contains("late fault", ex.HttpError.Message);
         }
 
         private sealed class ReadCancellationProbeBodySource : IResponseBodySource

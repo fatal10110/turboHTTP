@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -242,7 +243,125 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
-        public void DownstreamOnResponseDataFailure_IsConvertedIntoOnResponseError()
+        public void NonBufferedCompressedResponse_IsDecompressed_WhenBufferedResponseIsRequested()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("streaming-buffered-path");
+                var compressed = Compress(body, useGzip: true);
+                var headers = new HttpHeaders();
+                headers.Set("Content-Encoding", "gzip");
+                headers.Set("Content-Length", compressed.Length.ToString());
+
+                UHttpRequest dispatchedRequest = null;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    dispatchedRequest = req;
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            headers,
+                            new MockResponseBodySource(Chunk(compressed, 5), compressed.Length),
+                            ctx)
+                        .AsTask();
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { new DecompressionInterceptor() }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/non-buffered-buffered"));
+                using var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual("gzip, deflate", dispatchedRequest.Headers.Get("Accept-Encoding"));
+                Assert.AreEqual("streaming-buffered-path", response.GetBodyAsString());
+                Assert.IsFalse(response.Headers.Contains("Content-Encoding"));
+                Assert.IsFalse(response.Headers.Contains("Content-Length"));
+            });
+        }
+
+        [Test]
+        public void NonBufferedCompressedResponse_IsDecompressed_WhenStreamingResponseIsRequested()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("streaming-response-path");
+                var compressed = Compress(body, useGzip: true);
+                var headers = new HttpHeaders();
+                headers.Set("Content-Encoding", "gzip");
+                headers.Set("Content-Length", compressed.Length.ToString());
+
+                var trailers = new HttpHeaders();
+                trailers.Set("X-Trailer", "ok");
+
+                UHttpRequest dispatchedRequest = null;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    dispatchedRequest = req;
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            headers,
+                            new MockResponseBodySource(Chunk(compressed, 3), compressed.Length, trailers),
+                            ctx)
+                        .AsTask();
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    Interceptors = new List<IHttpInterceptor> { new DecompressionInterceptor() }
+                });
+
+                await using var response = await client
+                    .Get("https://example.test/non-buffered-streaming")
+                    .SendStreamingAsync()
+                    .ConfigureAwait(false);
+
+                var decompressed = await ReadAllAsync(response.Body).ConfigureAwait(false);
+                var returnedTrailers = await response.GetTrailersAsync().ConfigureAwait(false);
+
+                Assert.AreEqual("gzip, deflate", dispatchedRequest.Headers.Get("Accept-Encoding"));
+                Assert.AreEqual("streaming-response-path", Encoding.UTF8.GetString(decompressed));
+                Assert.IsFalse(response.Headers.Contains("Content-Encoding"));
+                Assert.IsFalse(response.Headers.Contains("Content-Length"));
+                Assert.AreEqual("ok", returnedTrailers.Get("X-Trailer"));
+            });
+        }
+
+        [Test]
+        public void OversizedDecompressedStreamingSource_ReportsResponseError()
+        {
+            var body = Encoding.UTF8.GetBytes(new string('x', 128));
+            var compressed = Compress(body, useGzip: true);
+            var headers = new HttpHeaders();
+            headers.Set("Content-Encoding", "gzip");
+
+            var transport = new CallbackTransport((req, handler, ctx, ct) =>
+            {
+                handler.OnRequestStart(req, ctx);
+                return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        headers,
+                        new MockResponseBodySource(Chunk(compressed, 4), compressed.Length),
+                        ctx)
+                    .AsTask();
+            });
+
+            var pipeline = new TestInterceptorPipeline(
+                new[] { new DecompressionInterceptor(maxDecompressedBodySizeBytes: 32) },
+                transport);
+
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/oversized-streaming"));
+            var context = new RequestContext(request);
+
+            var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+            {
+                using var _ = await pipeline.ExecuteAsync(request, context);
+            });
+
+            Assert.That(ex.HttpError.InnerException?.Message, Does.Contain("maximum size"));
+        }
+
+        [Test]
+        public void DownstreamResponseReadFailure_IsConvertedIntoOnResponseError()
         {
             AssertAsync.Run(async () =>
             {
@@ -254,19 +373,12 @@ namespace TurboHTTP.Tests.Middleware
                 var transport = new CallbackTransport((req, handler, ctx, ct) =>
                 {
                     handler.OnRequestStart(req, ctx);
-                    handler.OnResponseStart((int)HttpStatusCode.OK, headers, ctx);
-
-                    try
-                    {
-                        handler.OnResponseData(compressed, ctx);
-                        handler.OnResponseEnd(HttpHeaders.Empty, ctx);
-                    }
-                    catch
-                    {
-                        // Simulate a transport that shields handler callback failures.
-                    }
-
-                    return Task.CompletedTask;
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            headers,
+                            new MockResponseBodySource(Chunk(compressed, 4), compressed.Length),
+                            ctx)
+                        .AsTask();
                 });
 
                 var pipeline = new InterceptorPipeline(
@@ -321,6 +433,36 @@ namespace TurboHTTP.Tests.Middleware
             return stream.ToArray();
         }
 
+        private static IEnumerable<ReadOnlyMemory<byte>> Chunk(byte[] bytes, int chunkSize)
+        {
+            if (bytes == null)
+                throw new ArgumentNullException(nameof(bytes));
+            if (chunkSize <= 0)
+                throw new ArgumentOutOfRangeException(nameof(chunkSize));
+
+            for (var offset = 0; offset < bytes.Length; offset += chunkSize)
+            {
+                var count = Math.Min(chunkSize, bytes.Length - offset);
+                yield return new ReadOnlyMemory<byte>(bytes, offset, count);
+            }
+        }
+
+        private static async Task<byte[]> ReadAllAsync(Stream stream)
+        {
+            using var output = new MemoryStream();
+            var buffer = new byte[7];
+            while (true)
+            {
+                var read = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+                if (read == 0)
+                    break;
+
+                output.Write(buffer, 0, read);
+            }
+
+            return output.ToArray();
+        }
+
         private sealed class CallbackTransport : IHttpTransport
         {
             private readonly Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> _dispatch;
@@ -336,7 +478,11 @@ namespace TurboHTTP.Tests.Middleware
                 RequestContext context,
                 CancellationToken cancellationToken = default)
             {
-                return _dispatch(request, handler, context, cancellationToken);
+                return _dispatch(
+                    request,
+                    new SafeHandler(handler, context),
+                    context,
+                    cancellationToken);
             }
 
             public ValueTask<UHttpResponse> SendAsync(
@@ -350,6 +496,121 @@ namespace TurboHTTP.Tests.Middleware
             public void Dispose()
             {
             }
+
+            private sealed class SafeHandler : IHttpHandler
+            {
+                private readonly IHttpHandler _inner;
+                private readonly RequestContext _context;
+                private int _terminated;
+
+                internal SafeHandler(IHttpHandler inner, RequestContext context)
+                {
+                    _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                    _context = context ?? throw new ArgumentNullException(nameof(context));
+                }
+
+                public void OnRequestStart(UHttpRequest request, RequestContext context)
+                {
+                    if (Volatile.Read(ref _terminated) != 0)
+                        return;
+
+                    try
+                    {
+                        _inner.OnRequestStart(request, context ?? _context);
+                    }
+                    catch (Exception ex)
+                    {
+                        ReportFailure(ex);
+                    }
+                }
+
+                public ValueTask OnResponseStartAsync(
+                    int statusCode,
+                    HttpHeaders headers,
+                    IResponseBodySource body,
+                    RequestContext context)
+                {
+                    if (body == null)
+                        throw new ArgumentNullException(nameof(body));
+                    if (Volatile.Read(ref _terminated) != 0)
+                    {
+                        TryAbort(body);
+                        return default;
+                    }
+
+                    try
+                    {
+                        var pending = _inner.OnResponseStartAsync(statusCode, headers, body, context ?? _context);
+                        if (pending.IsCompletedSuccessfully)
+                        {
+                            pending.GetAwaiter().GetResult();
+                            Interlocked.Exchange(ref _terminated, 1);
+                            return default;
+                        }
+
+                        return AwaitResponseStartAsync(pending, body);
+                    }
+                    catch (Exception ex)
+                    {
+                        TryAbort(body);
+                        ReportFailure(ex);
+                        return default;
+                    }
+                }
+
+                public void OnResponseError(UHttpException error, RequestContext context)
+                {
+                    if (Interlocked.Exchange(ref _terminated, 1) != 0)
+                        return;
+
+                    _inner.OnResponseError(
+                        error ?? new UHttpException(
+                            new UHttpError(
+                                UHttpErrorType.Unknown,
+                                "IHttpHandler.OnResponseError received a null error.")),
+                        context ?? _context);
+                }
+
+                private async ValueTask AwaitResponseStartAsync(ValueTask pending, IResponseBodySource body)
+                {
+                    try
+                    {
+                        await pending.ConfigureAwait(false);
+                        Interlocked.Exchange(ref _terminated, 1);
+                    }
+                    catch (Exception ex)
+                    {
+                        TryAbort(body);
+                        ReportFailure(ex);
+                    }
+                }
+
+                private void ReportFailure(Exception ex)
+                {
+                    if (Interlocked.Exchange(ref _terminated, 1) != 0)
+                        return;
+
+                    _inner.OnResponseError(
+                        ex as UHttpException
+                        ?? new UHttpException(
+                            new UHttpError(
+                                UHttpErrorType.Unknown,
+                                ex?.Message ?? "Handler callback failed.",
+                                ex)),
+                        _context);
+                }
+
+                private static void TryAbort(IResponseBodySource body)
+                {
+                    try
+                    {
+                        body?.Abort();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
         }
 
         private sealed class ThrowOnDataHandler : IHttpHandler
@@ -360,16 +621,19 @@ namespace TurboHTTP.Tests.Middleware
             {
             }
 
-            public ValueTask OnResponseStartAsync(
+            public async ValueTask OnResponseStartAsync(
                 int statusCode,
                 HttpHeaders headers,
                 IResponseBodySource body,
                 RequestContext context)
             {
-                if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
-                    throw new InvalidOperationException("inner handler failed");
+                if (body != null)
+                {
+                    var buffer = new byte[8];
+                    _ = await body.ReadAsync(buffer, CancellationToken.None).ConfigureAwait(false);
+                }
 
-                return default;
+                throw new InvalidOperationException("inner handler failed");
             }
 
             public void OnResponseError(UHttpException error, RequestContext context)

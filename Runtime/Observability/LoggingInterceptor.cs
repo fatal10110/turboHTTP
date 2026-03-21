@@ -96,15 +96,28 @@ namespace TurboHTTP.Observability
             }
 
             if (_logLevel >= LogLevel.Detailed
-                && _logBody
-                && request.TryGetBufferedContent(out var body)
-                && !body.IsEmpty)
+                && _logBody)
             {
-                int previewBytes = Math.Min(body.Length, 500);
-                var bodyPreview = System.Text.Encoding.UTF8.GetString(body.Span.Slice(0, previewBytes));
-                if (body.Length > 500)
-                    bodyPreview += "...";
-                messageBuilder.Append("\n  Body: ").Append(bodyPreview);
+                if (request.TryGetBufferedContent(out var body) && !body.IsEmpty)
+                {
+                    int previewBytes = Math.Min(body.Length, 500);
+                    var bodyPreview = System.Text.Encoding.UTF8.GetString(body.Span.Slice(0, previewBytes));
+                    if (body.Length > 500)
+                        bodyPreview += "...";
+                    messageBuilder.Append("\n  Body: ").Append(bodyPreview);
+                }
+                else if (request.Content != null && !request.Content.IsEmpty)
+                {
+                    var length = request.Content.Length.HasValue
+                        ? request.Content.Length.Value.ToString()
+                        : "unknown";
+                    messageBuilder
+                        .Append("\n  Body: <streaming body preview unavailable without buffering; length=")
+                        .Append(length)
+                        .Append("; replayability=")
+                        .Append(request.Content.Replayability)
+                        .Append('>');
+                }
             }
 
             _log($"[TurboHTTP] {messageBuilder}");

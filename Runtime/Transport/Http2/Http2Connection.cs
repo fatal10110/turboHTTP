@@ -363,7 +363,9 @@ namespace TurboHTTP.Transport.Http2
 
                 if (hasBody)
                 {
-                    await SendDataAsync(streamId, request.Content, stream, ct).ConfigureAwait(false);
+                    var requestBodyBytesSent = await SendDataAsync(streamId, request.Content, stream, ct)
+                        .ConfigureAwait(false);
+                    context.SetState(TransportBehaviorFlags.RequestBodyBytesSent, requestBodyBytesSent);
                     requestEndStreamSent = true;
                     stream.State = Http2StreamState.HalfClosedLocal;
                 }

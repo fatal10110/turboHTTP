@@ -17,6 +17,8 @@ namespace TurboHTTP.Cache
     /// </summary>
     public sealed class CachePolicy
     {
+        private long _maxCacheableResponseBodyBytes = 8L * 1024 * 1024;
+
         /// <summary> Gets or sets whether caching is enabled. Default true. </summary>
         public bool EnableCache { get; set; } = true;
         /// <summary> Gets or sets whether to cache HEAD requests. </summary>
@@ -41,6 +43,18 @@ namespace TurboHTTP.Cache
         public bool AllowVaryAuthorization { get; set; }
         /// <summary> Gets or sets whether to invalidate cache on unsafe methods like POST, PUT, DELETE. Default true. </summary>
         public bool InvalidateOnUnsafeMethods { get; set; } = true;
+        /// <summary> Gets or sets the maximum response body size retained for cache writes. Default 8 MiB. </summary>
+        public long MaxCacheableResponseBodyBytes
+        {
+            get => _maxCacheableResponseBodyBytes;
+            set
+            {
+                if (value <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), value, "Must be > 0.");
+
+                _maxCacheableResponseBodyBytes = value;
+            }
+        }
         /// <summary> Gets or sets the storage backend. Defaults to in-memory storage. </summary>
         public ICacheStorage Storage { get; set; } = new MemoryCacheStorage();
     }
@@ -1157,6 +1171,13 @@ namespace TurboHTTP.Cache
             CancellationToken cancellationToken)
         {
             return TransportDispatchHelper.CollectResponseAsync(dispatch, request, context, cancellationToken);
+        }
+
+        internal long MaxCacheableResponseBodyBytes => _policy.MaxCacheableResponseBodyBytes;
+
+        internal static bool ShouldConsiderForStorage(HttpMethod requestMethod, int statusCode)
+        {
+            return statusCode > 0 && ShouldConsiderForStorage(requestMethod, (HttpStatusCode)statusCode);
         }
 
         private sealed class NullHttpHandler : IHttpHandler

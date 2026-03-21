@@ -11,6 +11,8 @@ namespace TurboHTTP.Retry
     /// </summary>
     public sealed class RetryInterceptor : IHttpInterceptor
     {
+        private static readonly TimeSpan ResponseDiscardTimeout = TimeSpan.FromSeconds(2);
+
         private readonly Action<string> _log;
         private readonly RetryPolicy _policy;
 
@@ -37,7 +39,7 @@ namespace TurboHTTP.Retry
                 }
 
                 var attempt = 0;
-                var detector = new RetryDetectorHandler(handler);
+                var detector = new RetryDetectorHandler(handler, cancellationToken, ResponseDiscardTimeout);
                 var terminalObserver = new RetryTerminalObserverHandler(handler);
 
                 while (true)
@@ -96,6 +98,12 @@ namespace TurboHTTP.Retry
         private bool ShouldAttemptRetry(UHttpRequest request)
         {
             if (_policy.MaxRetries == 0)
+                return false;
+
+            if (request == null)
+                return false;
+
+            if (request.Content.Replayability == RequestBodyReplayability.NonReplayable)
                 return false;
 
             if (_policy.OnlyRetryIdempotent && !request.Method.IsIdempotent())

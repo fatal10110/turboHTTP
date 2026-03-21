@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
@@ -233,6 +234,98 @@ namespace TurboHTTP.Tests.Retry
         }
 
         [Test]
+        public void ReplayableFactoryBody_OnIdempotentRequest_Retries()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                var payload = Encoding.UTF8.GetBytes("factory-body");
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    int currentCall = Interlocked.Increment(ref callCount);
+                    var status = currentCall == 1
+                        ? HttpStatusCode.InternalServerError
+                        : HttpStatusCode.OK;
+
+                    return Task.FromResult(new UHttpResponse(
+                        status,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RetryInterceptor(CreatePolicy(maxRetries: 2));
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.PUT, new Uri("https://test.com/factory"))
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(new MemoryStream(payload, writable: false)),
+                        payload.Length);
+                var context = new RequestContext(request);
+
+                using var response = await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(2, callCount);
+            });
+        }
+
+        [Test]
+        public void NonReplayableBody_OnIdempotentRequest_IsNotRetriedOnServerError()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var transport = new MockTransport(HttpStatusCode.InternalServerError);
+                var middleware = new RetryInterceptor(CreatePolicy(maxRetries: 3));
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                using var stream = new NonSeekableStream(Encoding.UTF8.GetBytes("once"));
+                var request = new UHttpRequest(HttpMethod.PUT, new Uri("https://test.com/non-replayable"))
+                    .WithStreamBody(stream, contentLength: 4, leaveOpen: true);
+                var context = new RequestContext(request);
+
+                using var response = await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+                Assert.AreEqual(1, transport.RequestCount);
+                Assert.IsFalse(context.Timeline.Any(evt => evt.Name == "RetryScheduled"));
+            });
+        }
+
+        [Test]
+        public void NonReplayableBody_RetryableException_IsNotRetried()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    Interlocked.Increment(ref callCount);
+                    throw new UHttpException(
+                        new UHttpError(UHttpErrorType.NetworkError, "Connection reset"));
+                });
+
+                var middleware = new RetryInterceptor(CreatePolicy(maxRetries: 3));
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                using var stream = new NonSeekableStream(Encoding.UTF8.GetBytes("once"));
+                var request = new UHttpRequest(HttpMethod.PUT, new Uri("https://test.com/non-replayable-error"))
+                    .WithStreamBody(stream, contentLength: 4, leaveOpen: true);
+                var context = new RequestContext(request);
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () =>
+                {
+                    await pipeline.ExecuteAsync(request, context).ConfigureAwait(false);
+                });
+
+                Assert.That(ex.HttpError.Type, Is.EqualTo(UHttpErrorType.NetworkError));
+                Assert.AreEqual(1, callCount);
+                Assert.IsFalse(context.Timeline.Any(evt => evt.Name == "RetryScheduled"));
+            });
+        }
+
+        [Test]
         public void RetryableException_Retries()
         {
             AssertAsync.Run(async () =>
@@ -265,6 +358,102 @@ namespace TurboHTTP.Tests.Retry
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(2, callCount);
+            });
+        }
+
+        [Test]
+        public void Retryable5xxResponse_DrainsBodyBeforeRetry()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                ProbeResponseBodySource probeBody = null;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    int currentCall = Interlocked.Increment(ref callCount);
+                    handler.OnRequestStart(req, ctx);
+
+                    if (currentCall == 1)
+                    {
+                        probeBody = new ProbeResponseBodySource();
+                        return handler.OnResponseStartAsync(
+                                (int)HttpStatusCode.InternalServerError,
+                                new HttpHeaders(),
+                                probeBody,
+                                ctx)
+                            .AsTask();
+                    }
+
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            new BufferedResponseBodySource(Array.Empty<byte>(), HttpHeaders.Empty),
+                            ctx)
+                        .AsTask();
+                });
+
+                var middleware = new RetryInterceptor(CreatePolicy(maxRetries: 1));
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/drain-before-retry"));
+                var context = new RequestContext(request);
+
+                using var response = await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(2, callCount);
+                Assert.NotNull(probeBody);
+                Assert.AreEqual(1, probeBody.DrainAsyncCount);
+                Assert.AreEqual(0, probeBody.AbortCount);
+                Assert.AreEqual(1, probeBody.DisposeAsyncCount);
+            });
+        }
+
+        [Test]
+        public void Retryable5xxResponse_DrainFailure_AbortsBodyBeforeRetry()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                ProbeResponseBodySource probeBody = null;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    int currentCall = Interlocked.Increment(ref callCount);
+                    handler.OnRequestStart(req, ctx);
+
+                    if (currentCall == 1)
+                    {
+                        probeBody = new ProbeResponseBodySource { ThrowOnDrain = true };
+                        return handler.OnResponseStartAsync(
+                                (int)HttpStatusCode.InternalServerError,
+                                new HttpHeaders(),
+                                probeBody,
+                                ctx)
+                            .AsTask();
+                    }
+
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            new BufferedResponseBodySource(Array.Empty<byte>(), HttpHeaders.Empty),
+                            ctx)
+                        .AsTask();
+                });
+
+                var middleware = new RetryInterceptor(CreatePolicy(maxRetries: 1));
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/abort-before-retry"));
+                var context = new RequestContext(request);
+
+                using var response = await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(2, callCount);
+                Assert.NotNull(probeBody);
+                Assert.AreEqual(1, probeBody.DrainAsyncCount);
+                Assert.AreEqual(1, probeBody.AbortCount);
+                Assert.AreEqual(1, probeBody.DisposeAsyncCount);
             });
         }
 
@@ -316,12 +505,14 @@ namespace TurboHTTP.Tests.Retry
                 {
                     Interlocked.Increment(ref callCount);
                     handler.OnRequestStart(req, ctx);
-                    handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
-                    handler.OnResponseData(Encoding.UTF8.GetBytes("partial"), ctx);
-                    handler.OnResponseError(
-                        new UHttpException(new UHttpError(UHttpErrorType.NetworkError, "Connection reset")),
-                        ctx);
-                    return Task.CompletedTask;
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            new FaultingReadBodySource(
+                                new UHttpException(
+                                    new UHttpError(UHttpErrorType.NetworkError, "Connection reset"))),
+                            ctx)
+                        .AsTask();
                 });
 
                 var middleware = new RetryInterceptor(CreatePolicy(maxRetries: 3));
@@ -615,6 +806,121 @@ namespace TurboHTTP.Tests.Retry
             {
                 Assert.Fail($"Unexpected error delivered: {error}");
             }
+        }
+
+        private sealed class ProbeResponseBodySource : IResponseBodySource
+        {
+            public bool ThrowOnDrain { get; set; }
+
+            public int DrainAsyncCount { get; private set; }
+
+            public int AbortCount { get; private set; }
+
+            public int DisposeAsyncCount { get; private set; }
+
+            public long? Length => null;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                data = default;
+                return false;
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                body = default;
+                return false;
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                return new ValueTask<int>(0);
+            }
+
+            public ValueTask DrainAsync(CancellationToken ct)
+            {
+                DrainAsyncCount++;
+                ct.ThrowIfCancellationRequested();
+
+                if (ThrowOnDrain)
+                    throw new IOException("drain failed");
+
+                return default;
+            }
+
+            public void Abort()
+            {
+                AbortCount++;
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                return new ValueTask<HttpHeaders>(HttpHeaders.Empty);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                DisposeAsyncCount++;
+                return default;
+            }
+        }
+
+        private sealed class FaultingReadBodySource : IResponseBodySource
+        {
+            private readonly Exception _readError;
+
+            public FaultingReadBodySource(Exception readError)
+            {
+                _readError = readError ?? throw new ArgumentNullException(nameof(readError));
+            }
+
+            public long? Length => null;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                data = default;
+                return false;
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                body = default;
+                return false;
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                throw _readError;
+            }
+
+            public ValueTask DrainAsync(CancellationToken ct)
+            {
+                return default;
+            }
+
+            public void Abort()
+            {
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                return new ValueTask<HttpHeaders>(HttpHeaders.Empty);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return default;
+            }
+        }
+
+        private sealed class NonSeekableStream : MemoryStream
+        {
+            public NonSeekableStream(byte[] buffer)
+                : base(buffer, writable: false)
+            {
+            }
+
+            public override bool CanSeek => false;
         }
     }
 }

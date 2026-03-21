@@ -77,6 +77,7 @@ namespace TurboHTTP.Observability
         public string Url { get; }
         public IReadOnlyDictionary<string, string> RequestHeaders { get; }
         public ReadOnlyMemory<byte> RequestBody { get; }
+        public string RequestBodyCaptureNote { get; }
         public int OriginalRequestBodySize { get; }
         public bool IsRequestBodyTruncated { get; }
         public bool IsRequestBodyBinary { get; }
@@ -108,6 +109,7 @@ namespace TurboHTTP.Observability
             string url,
             IReadOnlyDictionary<string, string> requestHeaders,
             ReadOnlyMemory<byte> requestBody,
+            string requestBodyCaptureNote,
             int originalRequestBodySize,
             bool isRequestBodyTruncated,
             bool isRequestBodyBinary,
@@ -131,6 +133,7 @@ namespace TurboHTTP.Observability
             Url = url ?? string.Empty;
             RequestHeaders = CopyHeaders(requestHeaders);
             RequestBody = CloneBody(requestBody);
+            RequestBodyCaptureNote = requestBodyCaptureNote ?? string.Empty;
             OriginalRequestBodySize = Math.Max(0, originalRequestBodySize);
             IsRequestBodyTruncated = isRequestBodyTruncated;
             IsRequestBodyBinary = isRequestBodyBinary;
@@ -153,6 +156,9 @@ namespace TurboHTTP.Observability
 
         public string GetRequestBodyAsString()
         {
+            if (RequestBody.IsEmpty && !string.IsNullOrEmpty(RequestBodyCaptureNote))
+                return RequestBodyCaptureNote;
+
             return GetBodyAsString(
                 RequestBody,
                 RequestHeaders,

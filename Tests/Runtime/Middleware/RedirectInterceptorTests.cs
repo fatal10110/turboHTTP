@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -288,6 +289,137 @@ namespace TurboHTTP.Tests.Middleware
 
                 var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            });
+        }
+
+        [Test]
+        public void RedirectInterceptor_PreservesReplayableStreamBody_On307()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var bodyBytes = Encoding.UTF8.GetBytes("stream-body");
+                string redirectedBody = null;
+
+                var transport = new MockTransport(
+                    (Func<UHttpRequest, RequestContext, CancellationToken, Task<UHttpResponse>>)(async (req, ctx, ct) =>
+                {
+                    using (var session = await req.Content.OpenReadSessionAsync(ct).ConfigureAwait(false))
+                    {
+                        using var reader = new StreamReader(session.Stream, Encoding.UTF8, false, 1024, leaveOpen: true);
+                        var requestBody = await reader.ReadToEndAsync().ConfigureAwait(false);
+
+                        if (req.Uri.AbsolutePath == "/submit")
+                        {
+                            Assert.AreEqual("stream-body", requestBody);
+                            var redirectHeaders = new HttpHeaders();
+                            redirectHeaders.Set("Location", "/result");
+                            return new UHttpResponse(
+                                HttpStatusCode.TemporaryRedirect,
+                                redirectHeaders,
+                                Array.Empty<byte>(),
+                                ctx.Elapsed,
+                                req);
+                        }
+
+                        redirectedBody = requestBody;
+                        return new UHttpResponse(
+                            HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req);
+                    }
+                }));
+
+                var middleware = new RedirectInterceptor();
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                using var stream = new MemoryStream(bodyBytes, writable: false);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/submit"))
+                    .WithStreamBody(stream, bodyBytes.Length, leaveOpen: true);
+
+                var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("stream-body", redirectedBody);
+                Assert.AreEqual(2, transport.RequestCount);
+            });
+        }
+
+        [Test]
+        public void RedirectInterceptor_NonReplayablePostBody_IsDroppedOn302Redirect()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var bodyBytes = Encoding.UTF8.GetBytes("stream-body");
+
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    if (req.Uri.AbsolutePath == "/submit")
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/result");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.Found,
+                            headers,
+                            Array.Empty<byte>(),
+                            ctx.Elapsed,
+                            req));
+                    }
+
+                    Assert.AreEqual(HttpMethod.GET, req.Method);
+                    Assert.IsTrue(req.Content.IsEmpty);
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectInterceptor();
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                using var stream = new NonSeekableStream(bodyBytes);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/submit"))
+                    .WithStreamBody(stream, bodyBytes.Length, leaveOpen: true);
+
+                var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(2, transport.RequestCount);
+            });
+        }
+
+        [Test]
+        public void RedirectInterceptor_NonReplayableBody_FailsWhenRedirectMustPreserveBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var bodyBytes = Encoding.UTF8.GetBytes("stream-body");
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    headers.Set("Location", "/result");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.TemporaryRedirect,
+                        headers,
+                        Array.Empty<byte>(),
+                        ctx.Elapsed,
+                        req));
+                });
+
+                var middleware = new RedirectInterceptor();
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                using var stream = new NonSeekableStream(bodyBytes);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://example.test/submit"))
+                    .WithStreamBody(stream, bodyBytes.Length, leaveOpen: true);
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await pipeline.ExecuteAsync(request, new RequestContext(request)));
+
+                Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
+                StringAssert.Contains("non-replayable POST request bodies", ex.Message);
+                Assert.AreEqual(1, transport.RequestCount);
             });
         }
 
@@ -688,6 +820,84 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
+        public void RedirectInterceptor_DrainsRedirectBodyBeforeRedispatch()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                var redirectBody = new ProbeResponseBodySource();
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    callCount++;
+                    handler.OnRequestStart(req, ctx);
+
+                    if (callCount == 1)
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/final");
+                        return handler.OnResponseStartAsync((int)HttpStatusCode.Found, headers, redirectBody, ctx).AsTask();
+                    }
+
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        new MockResponseBodySource(ReadOnlyMemory<byte>.Empty),
+                        ctx).AsTask();
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { new RedirectInterceptor() }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start"));
+                using var _ = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual(1, redirectBody.DrainAsyncCount);
+                Assert.AreEqual(0, redirectBody.AbortCount);
+                Assert.AreEqual(1, redirectBody.DisposeAsyncCount);
+            });
+        }
+
+        [Test]
+        public void RedirectInterceptor_DrainFailure_AbortsRedirectBodyBeforeRedispatch()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                var redirectBody = new ProbeResponseBodySource
+                {
+                    ThrowOnDrain = true
+                };
+
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    callCount++;
+                    handler.OnRequestStart(req, ctx);
+
+                    if (callCount == 1)
+                    {
+                        var headers = new HttpHeaders();
+                        headers.Set("Location", "/final");
+                        return handler.OnResponseStartAsync((int)HttpStatusCode.Found, headers, redirectBody, ctx).AsTask();
+                    }
+
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        new MockResponseBodySource(ReadOnlyMemory<byte>.Empty),
+                        ctx).AsTask();
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { new RedirectInterceptor() }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start"));
+                using var _ = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual(1, redirectBody.DrainAsyncCount);
+                Assert.AreEqual(1, redirectBody.AbortCount);
+                Assert.AreEqual(1, redirectBody.DisposeAsyncCount);
+            });
+        }
+
+        [Test]
         public void RedirectInterceptor_FailsWhenRedirectDispatchCompletesWithoutTerminalCallback()
         {
             AssertAsync.Run(async () =>
@@ -890,6 +1100,73 @@ namespace TurboHTTP.Tests.Middleware
             {
                 LastError = error;
             }
+        }
+
+        private sealed class ProbeResponseBodySource : IResponseBodySource
+        {
+            public bool ThrowOnDrain { get; set; }
+
+            public int DrainAsyncCount { get; private set; }
+
+            public int AbortCount { get; private set; }
+
+            public int DisposeAsyncCount { get; private set; }
+
+            public long? Length => null;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                data = default;
+                return false;
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                body = default;
+                return false;
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                return new ValueTask<int>(0);
+            }
+
+            public ValueTask DrainAsync(CancellationToken ct)
+            {
+                DrainAsyncCount++;
+                ct.ThrowIfCancellationRequested();
+
+                if (ThrowOnDrain)
+                    throw new IOException("drain failed");
+
+                return default;
+            }
+
+            public void Abort()
+            {
+                AbortCount++;
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                return new ValueTask<HttpHeaders>(HttpHeaders.Empty);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                DisposeAsyncCount++;
+                return default;
+            }
+        }
+
+        private sealed class NonSeekableStream : MemoryStream
+        {
+            public NonSeekableStream(byte[] buffer)
+                : base(buffer, writable: false)
+            {
+            }
+
+            public override bool CanSeek => false;
         }
     }
 }

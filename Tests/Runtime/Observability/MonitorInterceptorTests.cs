@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -358,6 +359,149 @@ namespace TurboHTTP.Tests.Observability
             });
         }
 
+        [Test]
+        public void StreamingRequestBody_CapturesMetadataNoteWithoutBuffering()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("https://api.example.com/upload"))
+                    .WithStreamBody(
+                        new NonSeekableStream(Encoding.UTF8.GetBytes("stream")),
+                        contentLength: 6,
+                        leaveOpen: false);
+
+                var pipeline = new TestInterceptorPipeline(
+                    new IHttpInterceptor[] { new MonitorInterceptor() },
+                    new MockTransport());
+
+                await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                var snapshot = new List<HttpMonitorEvent>();
+                MonitorInterceptor.GetHistorySnapshot(snapshot);
+                Assert.AreEqual(1, snapshot.Count);
+
+                var evt = snapshot[0];
+                Assert.IsTrue(evt.RequestBody.IsEmpty);
+                Assert.That(evt.GetRequestBodyAsString(), Does.Contain("Streaming request body unavailable without buffering"));
+                Assert.That(evt.GetRequestBodyAsString(), Does.Contain("length=6"));
+                Assert.That(evt.GetRequestBodyAsString(), Does.Contain("replayability=NonReplayable"));
+            });
+        }
+
+        [Test]
+        public void StreamingResponse_IsCapturedOnlyAfterDispose()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        new MockResponseBodySource(
+                            new[]
+                            {
+                                (ReadOnlyMemory<byte>)Encoding.UTF8.GetBytes("hel"),
+                                Encoding.UTF8.GetBytes("lo")
+                            },
+                            length: 5,
+                            trailers: HttpHeaders.Empty,
+                            exposeBufferedData: false),
+                        ctx).AsTask();
+                });
+
+                var pipeline = new InterceptorPipeline(
+                    new IHttpInterceptor[] { new MonitorInterceptor() },
+                    transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/stream"));
+                var context = new RequestContext(request);
+
+                var response = await StreamingDispatchBridge.CollectResponseAsync(
+                    pipeline.Pipeline,
+                    request,
+                    context,
+                    CancellationToken.None);
+
+                try
+                {
+                    var snapshotBeforeDispose = new List<HttpMonitorEvent>();
+                    MonitorInterceptor.GetHistorySnapshot(snapshotBeforeDispose);
+                    Assert.AreEqual(0, snapshotBeforeDispose.Count);
+
+                    using var reader = new StreamReader(response.Body, Encoding.UTF8, false, 1024, leaveOpen: true);
+                    Assert.AreEqual("hello", await reader.ReadToEndAsync());
+
+                    var snapshotAfterRead = new List<HttpMonitorEvent>();
+                    MonitorInterceptor.GetHistorySnapshot(snapshotAfterRead);
+                    Assert.AreEqual(0, snapshotAfterRead.Count);
+                }
+                finally
+                {
+                    await response.DisposeAsync();
+                }
+
+                var snapshot = new List<HttpMonitorEvent>();
+                MonitorInterceptor.GetHistorySnapshot(snapshot);
+                Assert.AreEqual(1, snapshot.Count);
+                Assert.That(snapshot[0].GetResponseBodyAsString(), Does.Contain("hello"));
+            });
+        }
+
+        [Test]
+        public void StreamingResponseReadFailure_IsCapturedAsTransportFailure()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        new FaultingBodySource(
+                            Encoding.UTF8.GetBytes("abc"),
+                            new IOException("stream broke")),
+                        ctx).AsTask();
+                });
+
+                var pipeline = new InterceptorPipeline(
+                    new IHttpInterceptor[] { new MonitorInterceptor() },
+                    transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/fault"));
+                var context = new RequestContext(request);
+
+                var response = await StreamingDispatchBridge.CollectResponseAsync(
+                    pipeline.Pipeline,
+                    request,
+                    context,
+                    CancellationToken.None);
+
+                try
+                {
+                    var buffer = new byte[3];
+                    Assert.AreEqual(3, await response.Body.ReadAsync(buffer, CancellationToken.None));
+                    Assert.ThrowsAsync<IOException>(async () =>
+                    {
+                        await response.Body.ReadAsync(new byte[1], 0, 1, CancellationToken.None);
+                    });
+                }
+                finally
+                {
+                    await response.DisposeAsync();
+                }
+
+                var snapshot = new List<HttpMonitorEvent>();
+                MonitorInterceptor.GetHistorySnapshot(snapshot);
+                Assert.AreEqual(1, snapshot.Count);
+                Assert.AreEqual(HttpMonitorFailureKind.TransportError, snapshot[0].FailureKind);
+                Assert.That(snapshot[0].Error, Does.Contain("stream broke"));
+                Assert.That(snapshot[0].GetResponseBodyAsString(), Does.Contain("abc"));
+            });
+        }
+
         private static void ResetMonitor()
         {
             MonitorInterceptor.CaptureEnabled = true;
@@ -367,6 +511,110 @@ namespace TurboHTTP.Tests.Observability
             MonitorInterceptor.MaxCaptureSizeBytes = 5 * 1024 * 1024;
             MonitorInterceptor.BinaryPreviewBytes = 64 * 1024;
             MonitorInterceptor.ClearHistory();
+        }
+
+        private sealed class CallbackTransport : IHttpTransport
+        {
+            private readonly Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> _dispatch;
+
+            internal CallbackTransport(Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> dispatch)
+            {
+                _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+            }
+
+            public Task DispatchAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                return _dispatch(request, handler, context, cancellationToken);
+            }
+
+            public ValueTask<UHttpResponse> SendAsync(
+                UHttpRequest request,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                throw new NotSupportedException();
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+
+        private sealed class FaultingBodySource : IResponseBodySource
+        {
+            private readonly ReadOnlyMemory<byte> _firstChunk;
+            private readonly Exception _failure;
+            private int _readCount;
+
+            internal FaultingBodySource(ReadOnlyMemory<byte> firstChunk, Exception failure)
+            {
+                _firstChunk = firstChunk;
+                _failure = failure ?? throw new ArgumentNullException(nameof(failure));
+            }
+
+            public long? Length => null;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                data = default;
+                return false;
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                body = default;
+                return false;
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                if (Interlocked.Increment(ref _readCount) == 1)
+                {
+                    _firstChunk.CopyTo(destination);
+                    return new ValueTask<int>(_firstChunk.Length);
+                }
+
+                throw _failure;
+            }
+
+            public async ValueTask DrainAsync(CancellationToken ct)
+            {
+                byte[] buffer = new byte[16];
+                while (await ReadAsync(buffer, ct).ConfigureAwait(false) != 0)
+                {
+                }
+            }
+
+            public void Abort()
+            {
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                ct.ThrowIfCancellationRequested();
+                return new ValueTask<HttpHeaders>(HttpHeaders.Empty);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return default;
+            }
+        }
+
+        private sealed class NonSeekableStream : MemoryStream
+        {
+            internal NonSeekableStream(byte[] buffer)
+                : base(buffer, writable: false)
+            {
+            }
+
+            public override bool CanSeek => false;
         }
     }
 }

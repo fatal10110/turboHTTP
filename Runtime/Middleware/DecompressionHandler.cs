@@ -30,10 +30,12 @@ namespace TurboHTTP.Middleware
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             if (maxDecompressedBodySizeBytes <= 0)
+            {
                 throw new ArgumentOutOfRangeException(
                     nameof(maxDecompressedBodySizeBytes),
                     maxDecompressedBodySizeBytes,
                     "Must be > 0.");
+            }
 
             _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
             _maxCompressedBodySizeBytes = maxDecompressedBodySizeBytes;
@@ -51,54 +53,84 @@ namespace TurboHTTP.Middleware
             IResponseBodySource body,
             RequestContext context)
         {
-            if (!TryResolveCompression(headers, out _compressionChain))
+            if (body == null || !TryResolveCompression(headers, out _compressionChain))
             {
                 await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
                 return;
             }
 
-            if (body == null || !body.TryGetBufferedData(out var compressed))
+            if (body.Length.HasValue && body.Length.Value > _maxCompressedBodySizeBytes)
             {
-                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+                body.Abort();
+                _inner.OnResponseError(
+                    CreateDecompressionError(
+                        new IOException(
+                            $"Compressed response body exceeded the maximum size ({_maxCompressedBodySizeBytes} bytes).")),
+                    context);
                 return;
             }
 
-            BufferedResponseBodySource decompressedBody = null;
-            HttpHeaders forwardHeaders = null;
-            try
+            var forwardHeaders = headers?.Clone() ?? new HttpHeaders();
+            forwardHeaders.Remove("Content-Encoding");
+            forwardHeaders.Remove("Content-Length");
+
+            if (body.TryGetBufferedData(out var compressed))
             {
-                if (compressed.Length > _maxCompressedBodySizeBytes)
+                BufferedResponseBodySource bufferedBody = null;
+                try
                 {
-                    throw new IOException(
-                        $"Compressed response body exceeded the maximum size ({_maxCompressedBodySizeBytes} bytes).");
+                    var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
+                    var decompressed = DecompressBufferedBody(
+                        compressed,
+                        _compressionChain,
+                        _maxDecompressedBodySizeBytes);
+                    bufferedBody = new BufferedResponseBodySource(decompressed, trailers);
+                }
+                catch (Exception ex) when (ex is InvalidDataException || ex is IOException)
+                {
+                    body.Abort();
+                    _inner.OnResponseError(CreateDecompressionError(ex), context);
+                    return;
+                }
+                finally
+                {
+                    await body.DisposeAsync().ConfigureAwait(false);
                 }
 
-                var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
-                var decompressed = DecompressBufferedBody(compressed);
-                forwardHeaders = headers.Clone();
-                forwardHeaders.Remove("Content-Encoding");
-                forwardHeaders.Remove("Content-Length");
-                decompressedBody = new BufferedResponseBodySource(decompressed, trailers);
-            }
-            catch (Exception ex) when (ex is InvalidDataException || ex is IOException)
-            {
-                _inner.OnResponseError(CreateDecompressionError(ex), context);
+                try
+                {
+                    await _inner.OnResponseStartAsync(statusCode, forwardHeaders, bufferedBody, context)
+                        .ConfigureAwait(false);
+                    bufferedBody = null;
+                }
+                catch
+                {
+                    if (bufferedBody != null)
+                        await bufferedBody.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+
                 return;
             }
-            finally
-            {
-                await body.DisposeAsync().ConfigureAwait(false);
-            }
+
+            var decompressedBody = new DecompressionBodySource(
+                body,
+                _compressionChain,
+                _maxDecompressedBodySizeBytes);
 
             try
             {
-                await _inner.OnResponseStartAsync(statusCode, forwardHeaders, decompressedBody, context).ConfigureAwait(false);
+                await _inner.OnResponseStartAsync(
+                        statusCode,
+                        forwardHeaders,
+                        decompressedBody,
+                        context)
+                    .ConfigureAwait(false);
                 decompressedBody = null;
             }
             catch
             {
-                if (decompressedBody != null)
-                    await decompressedBody.DisposeAsync().ConfigureAwait(false);
+                decompressedBody?.Abort();
                 throw;
             }
         }
@@ -108,15 +140,18 @@ namespace TurboHTTP.Middleware
             _inner.OnResponseError(error, context);
         }
 
-        private byte[] DecompressBufferedBody(ReadOnlyMemory<byte> compressed)
+        private static byte[] DecompressBufferedBody(
+            ReadOnlyMemory<byte> compressed,
+            CompressionKind[] compressionChain,
+            long maxDecompressedBodySizeBytes)
         {
             var compressedSequence = new ReadOnlySequence<byte>(compressed);
             var validateSingleGzipTrailer =
-                _compressionChain.Length == 1 &&
-                _compressionChain[0] == CompressionKind.Gzip;
+                compressionChain.Length == 1 &&
+                compressionChain[0] == CompressionKind.Gzip;
 
             using var compressedStream = new ReadOnlySequenceStream(compressedSequence);
-            using var decompressionStream = CreateDecompressionStream(compressedStream);
+            using var decompressionStream = CreateDecompressionStream(compressedStream, compressionChain);
             using var output = new MemoryStream();
 
             var buffer = new byte[64 * 1024];
@@ -129,10 +164,10 @@ namespace TurboHTTP.Middleware
                     break;
 
                 totalDecompressed += read;
-                if (totalDecompressed > _maxDecompressedBodySizeBytes)
+                if (totalDecompressed > maxDecompressedBodySizeBytes)
                 {
                     throw new IOException(
-                        $"Response decompression exceeded the maximum size ({_maxDecompressedBodySizeBytes} bytes).");
+                        $"Response decompression exceeded the maximum size ({maxDecompressedBodySizeBytes} bytes).");
                 }
 
                 if (validateSingleGzipTrailer)
@@ -166,12 +201,423 @@ namespace TurboHTTP.Middleware
             }
         }
 
-        private Stream CreateDecompressionStream(Stream compressedStream)
+        private sealed class DecompressionBodySource : IResponseBodySource
+        {
+            private const int ReadAheadBufferBytes = 8 * 1024;
+            private const int DrainBufferBytes = 16 * 1024;
+
+            private readonly IResponseBodySource _inner;
+            private readonly long _maxDecompressedBodySizeBytes;
+            private readonly BodySourceStream _compressedStream;
+            private readonly BufferedStream _readAheadStream;
+            private readonly Stream _decompressionStream;
+            private readonly byte[] _overflowProbe = new byte[1];
+
+            private long _bytesRead;
+            private int _completed;
+            private int _disposeStarted;
+            private int _disposed;
+
+            internal DecompressionBodySource(
+                IResponseBodySource inner,
+                CompressionKind[] compressionChain,
+                long maxDecompressedBodySizeBytes)
+            {
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                if (compressionChain == null)
+                    throw new ArgumentNullException(nameof(compressionChain));
+                if (maxDecompressedBodySizeBytes <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        nameof(maxDecompressedBodySizeBytes),
+                        maxDecompressedBodySizeBytes,
+                        "Must be > 0.");
+                }
+
+                _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
+                _compressedStream = new BodySourceStream(inner);
+                _readAheadStream = new BufferedStream(_compressedStream, ReadAheadBufferBytes);
+                _decompressionStream = CreateDecompressionStream(_readAheadStream, compressionChain);
+            }
+
+            public long? Length
+            {
+                get
+                {
+                    ThrowIfDisposed();
+                    return null;
+                }
+            }
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                ThrowIfDisposed();
+                data = default;
+                return false;
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                ThrowIfDisposed();
+                body = default;
+                return false;
+            }
+
+            public async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                ThrowIfDisposed();
+                ct.ThrowIfCancellationRequested();
+
+                if (destination.IsEmpty)
+                    return 0;
+
+                if (Volatile.Read(ref _completed) != 0)
+                    return 0;
+
+                try
+                {
+                    var remainingBudget = _maxDecompressedBodySizeBytes - Interlocked.Read(ref _bytesRead);
+                    if (remainingBudget <= 0)
+                        return await ProbePastLimitAsync(ct).ConfigureAwait(false);
+
+                    var boundedDestination = destination.Slice(
+                        0,
+                        (int)Math.Min(destination.Length, remainingBudget));
+
+                    var read = await _decompressionStream.ReadAsync(boundedDestination, ct).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        Volatile.Write(ref _completed, 1);
+                        return 0;
+                    }
+
+                    var totalRead = Interlocked.Add(ref _bytesRead, read);
+                    if (totalRead > _maxDecompressedBodySizeBytes)
+                        ThrowLimitExceeded();
+
+                    return read;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (UHttpException)
+                {
+                    Abort();
+                    throw;
+                }
+                catch (InvalidDataException ex)
+                {
+                    Abort();
+                    throw CreateDecompressionError(ex);
+                }
+                catch (IOException ex)
+                {
+                    Abort();
+                    throw CreateDecompressionError(ex);
+                }
+            }
+
+            public async ValueTask DrainAsync(CancellationToken ct)
+            {
+                ThrowIfDisposed();
+                ct.ThrowIfCancellationRequested();
+
+                if (Volatile.Read(ref _completed) != 0)
+                    return;
+
+                var buffer = ArrayPool<byte>.Shared.Rent(DrainBufferBytes);
+                try
+                {
+                    while (await ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false) != 0)
+                    {
+                    }
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
+            }
+
+            public void Abort()
+            {
+                if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+                    return;
+
+                Interlocked.Exchange(ref _disposed, 1);
+                DisposeStreams();
+                _inner.Abort();
+            }
+
+            public async ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                ThrowIfDisposed();
+                ct.ThrowIfCancellationRequested();
+
+                if (Volatile.Read(ref _completed) == 0)
+                    await DrainAsync(ct).ConfigureAwait(false);
+
+                return await _inner.GetTrailersAsync(ct).ConfigureAwait(false);
+            }
+
+            public async ValueTask DisposeAsync()
+            {
+                if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+                    return;
+
+                var drained = false;
+                try
+                {
+                    if (Volatile.Read(ref _completed) == 0)
+                    {
+                        await DrainAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
+
+                    drained = true;
+                }
+                catch
+                {
+                    _inner.Abort();
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _disposed, 1);
+                    DisposeStreams();
+                }
+
+                if (drained)
+                {
+                    try
+                    {
+                        await _inner.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        _inner.Abort();
+                    }
+                }
+            }
+
+            private async ValueTask<int> ProbePastLimitAsync(CancellationToken ct)
+            {
+                var read = await _decompressionStream.ReadAsync(_overflowProbe.AsMemory(), ct).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    Volatile.Write(ref _completed, 1);
+                    return 0;
+                }
+
+                ThrowLimitExceeded();
+                return 0;
+            }
+
+            private void ThrowLimitExceeded()
+            {
+                Abort();
+                throw CreateDecompressionError(
+                    new IOException(
+                        $"Response decompression exceeded the maximum size ({_maxDecompressedBodySizeBytes} bytes)."));
+            }
+
+            private void DisposeStreams()
+            {
+                try
+                {
+                    _decompressionStream.Dispose();
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    _readAheadStream.Dispose();
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    _compressedStream.Dispose();
+                }
+                catch
+                {
+                }
+            }
+
+            private void ThrowIfDisposed()
+            {
+                if (Volatile.Read(ref _disposed) != 0)
+                    throw new ObjectDisposedException(nameof(DecompressionBodySource));
+            }
+
+            private sealed class BodySourceStream : Stream
+            {
+                private readonly IResponseBodySource _inner;
+                private int _disposed;
+
+                internal BodySourceStream(IResponseBodySource inner)
+                {
+                    _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                }
+
+                public override bool CanRead => Volatile.Read(ref _disposed) == 0;
+
+                public override bool CanSeek => false;
+
+                public override bool CanWrite => false;
+
+                public override long Length => throw new NotSupportedException();
+
+                public override long Position
+                {
+                    get => throw new NotSupportedException();
+                    set => throw new NotSupportedException();
+                }
+
+                public override void Flush()
+                {
+                }
+
+                public override Task FlushAsync(CancellationToken cancellationToken)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return Task.CompletedTask;
+                }
+
+                public override int Read(byte[] buffer, int offset, int count)
+                {
+                    ValidateReadArguments(buffer, offset, count);
+                    ThrowIfDisposed();
+                    return _inner.ReadAsync(
+                            new Memory<byte>(buffer, offset, count),
+                            CancellationToken.None)
+                        .GetAwaiter()
+                        .GetResult();
+                }
+
+                public override int Read(Span<byte> buffer)
+                {
+                    ThrowIfDisposed();
+                    if (buffer.IsEmpty)
+                        return 0;
+
+                    var rented = ArrayPool<byte>.Shared.Rent(buffer.Length);
+                    try
+                    {
+                        var read = _inner.ReadAsync(
+                                rented.AsMemory(0, buffer.Length),
+                                CancellationToken.None)
+                            .GetAwaiter()
+                            .GetResult();
+                        if (read > 0)
+                            rented.AsSpan(0, read).CopyTo(buffer);
+
+                        return read;
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(rented);
+                    }
+                }
+
+                public override Task<int> ReadAsync(
+                    byte[] buffer,
+                    int offset,
+                    int count,
+                    CancellationToken cancellationToken)
+                {
+                    ValidateReadArguments(buffer, offset, count);
+                    ThrowIfDisposed();
+                    return _inner.ReadAsync(
+                            new Memory<byte>(buffer, offset, count),
+                            cancellationToken)
+                        .AsTask();
+                }
+
+                public override ValueTask<int> ReadAsync(
+                    Memory<byte> buffer,
+                    CancellationToken cancellationToken = default)
+                {
+                    ThrowIfDisposed();
+                    return _inner.ReadAsync(buffer, cancellationToken);
+                }
+
+                public override long Seek(long offset, SeekOrigin origin)
+                {
+                    throw new NotSupportedException();
+                }
+
+                public override void SetLength(long value)
+                {
+                    throw new NotSupportedException();
+                }
+
+                public override void Write(byte[] buffer, int offset, int count)
+                {
+                    throw new NotSupportedException();
+                }
+
+                public override void Write(ReadOnlySpan<byte> buffer)
+                {
+                    throw new NotSupportedException();
+                }
+
+                public override Task WriteAsync(
+                    byte[] buffer,
+                    int offset,
+                    int count,
+                    CancellationToken cancellationToken)
+                {
+                    throw new NotSupportedException();
+                }
+
+                public override ValueTask WriteAsync(
+                    ReadOnlyMemory<byte> buffer,
+                    CancellationToken cancellationToken = default)
+                {
+                    throw new NotSupportedException();
+                }
+
+                protected override void Dispose(bool disposing)
+                {
+                    Interlocked.Exchange(ref _disposed, 1);
+                    base.Dispose(disposing);
+                }
+
+                public override ValueTask DisposeAsync()
+                {
+                    Interlocked.Exchange(ref _disposed, 1);
+                    return default;
+                }
+
+                private void ThrowIfDisposed()
+                {
+                    if (Volatile.Read(ref _disposed) != 0)
+                        throw new ObjectDisposedException(nameof(BodySourceStream));
+                }
+
+                private static void ValidateReadArguments(byte[] buffer, int offset, int count)
+                {
+                    if (buffer == null)
+                        throw new ArgumentNullException(nameof(buffer));
+                    if ((uint)offset > buffer.Length)
+                        throw new ArgumentOutOfRangeException(nameof(offset));
+                    if ((uint)count > buffer.Length - offset)
+                        throw new ArgumentOutOfRangeException(nameof(count));
+                }
+            }
+        }
+
+        private static Stream CreateDecompressionStream(
+            Stream compressedStream,
+            CompressionKind[] compressionChain)
         {
             Stream current = compressedStream;
-            for (int i = _compressionChain.Length - 1; i >= 0; i--)
+            for (int i = compressionChain.Length - 1; i >= 0; i--)
             {
-                current = CreateSingleDecompressionStream(current, _compressionChain[i]);
+                current = CreateSingleDecompressionStream(current, compressionChain[i]);
             }
 
             return current;
@@ -196,15 +642,6 @@ namespace TurboHTTP.Middleware
                 new UHttpError(UHttpErrorType.Unknown, "Response decompression failed.", ex));
         }
 
-        private static UHttpException WrapUnexpectedError(Exception ex)
-        {
-            if (ex is UHttpException uHttpException)
-                return uHttpException;
-
-            return new UHttpException(
-                new UHttpError(UHttpErrorType.Unknown, ex?.Message ?? "Response decompression failed.", ex));
-        }
-
         private static bool TryResolveCompression(HttpHeaders headers, out CompressionKind[] compressionChain)
         {
             if (headers == null)
@@ -221,15 +658,15 @@ namespace TurboHTTP.Middleware
             }
 
             var resolved = new List<CompressionKind>(4);
-            int start = 0;
+            var start = 0;
             while (start < contentEncoding.Length)
             {
-                int end = contentEncoding.IndexOf(',', start);
+                var end = contentEncoding.IndexOf(',', start);
                 if (end < 0)
                     end = contentEncoding.Length;
 
-                int tokenStart = start;
-                int tokenEnd = end;
+                var tokenStart = start;
+                var tokenEnd = end;
                 while (tokenStart < tokenEnd && char.IsWhiteSpace(contentEncoding[tokenStart]))
                     tokenStart++;
                 while (tokenEnd > tokenStart && char.IsWhiteSpace(contentEncoding[tokenEnd - 1]))
@@ -264,8 +701,8 @@ namespace TurboHTTP.Middleware
 
         private static bool TryParseCompressionKind(string token, out CompressionKind? compression)
         {
-            if (string.Equals(token, "gzip", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(token, "x-gzip", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(token, "gzip", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(token, "x-gzip", StringComparison.OrdinalIgnoreCase))
             {
                 compression = CompressionKind.Gzip;
                 return true;
@@ -290,7 +727,7 @@ namespace TurboHTTP.Middleware
         private static uint UpdateCrc32(uint crc32, ReadOnlySpan<byte> data)
         {
             var crc = crc32;
-            for (int i = 0; i < data.Length; i++)
+            for (var i = 0; i < data.Length; i++)
                 crc = Crc32Table[(int)((crc ^ data[i]) & 0xFF)] ^ (crc >> 8);
 
             return crc;
@@ -310,7 +747,7 @@ namespace TurboHTTP.Middleware
             for (uint i = 0; i < table.Length; i++)
             {
                 var value = i;
-                for (int bit = 0; bit < 8; bit++)
+                for (var bit = 0; bit < 8; bit++)
                 {
                     value = (value & 1) != 0
                         ? 0xEDB88320u ^ (value >> 1)

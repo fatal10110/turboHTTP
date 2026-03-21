@@ -14,6 +14,7 @@ namespace TurboHTTP.Middleware
         private readonly RedirectInterceptor.RedirectOptions _options;
         private readonly RequestContext _context;
         private readonly CancellationToken _cancellationToken;
+        private readonly TimeSpan _responseDiscardTimeout;
         private readonly TimeSpan _totalTimeoutBudget;
         private readonly HashSet<string> _visitedTargets = new HashSet<string>(StringComparer.Ordinal);
         private readonly List<string> _redirectChain = new List<string>();
@@ -30,7 +31,8 @@ namespace TurboHTTP.Middleware
             UHttpRequest initialRequest,
             RedirectInterceptor.RedirectOptions options,
             RequestContext context,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            TimeSpan responseDiscardTimeout)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
@@ -38,6 +40,10 @@ namespace TurboHTTP.Middleware
             _options = options;
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _cancellationToken = cancellationToken;
+            if (responseDiscardTimeout <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(responseDiscardTimeout));
+
+            _responseDiscardTimeout = responseDiscardTimeout;
             _totalTimeoutBudget = initialRequest.Timeout;
             _redirectChain.Add(initialRequest.Uri.AbsoluteUri);
         }
@@ -58,18 +64,35 @@ namespace TurboHTTP.Middleware
         {
             try
             {
-                if (!RedirectInterceptor.TryResolveRedirectTarget(_currentRequest.Uri, statusCode, headers, out var targetUri))
+                Uri targetUri;
+                try
                 {
-                    await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
-                    _completion.TrySetResult(null);
+                    if (!RedirectInterceptor.TryResolveRedirectTarget(_currentRequest.Uri, statusCode, headers, out targetUri))
+                    {
+                        try
+                        {
+                            await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+                            _completion.TrySetResult(null);
+                        }
+                        catch (Exception ex)
+                        {
+                            _completion.TrySetException(ex);
+                            throw;
+                        }
+
+                        return;
+                    }
+                }
+                catch (UHttpException ex)
+                {
+                    await DiscardBodyAsync(body).ConfigureAwait(false);
+                    CompleteWithError(ex, context);
                     return;
                 }
 
-                if (body != null)
-                    await body.DisposeAsync().ConfigureAwait(false);
-
                 if (_redirectCount >= _options.MaxRedirects)
                 {
+                    await DiscardBodyAsync(body).ConfigureAwait(false);
                     CompleteWithError(
                         RedirectInterceptor.CreateRedirectError(
                             UHttpErrorType.InvalidRequest,
@@ -81,6 +104,7 @@ namespace TurboHTTP.Middleware
                 if (RedirectInterceptor.IsHttpsToHttpDowngrade(_currentRequest.Uri, targetUri) &&
                          !_options.AllowHttpsToHttpDowngrade)
                 {
+                    await DiscardBodyAsync(body).ConfigureAwait(false);
                     CompleteWithError(
                         RedirectInterceptor.CreateRedirectError(
                             UHttpErrorType.InvalidRequest,
@@ -92,6 +116,7 @@ namespace TurboHTTP.Middleware
                 var loopKey = RedirectInterceptor.BuildLoopKey(targetUri);
                 if (!_visitedTargets.Add(loopKey))
                 {
+                    await DiscardBodyAsync(body).ConfigureAwait(false);
                     CompleteWithError(
                         RedirectInterceptor.CreateRedirectError(
                             UHttpErrorType.InvalidRequest,
@@ -101,14 +126,26 @@ namespace TurboHTTP.Middleware
                 }
 
                 var crossOrigin = RedirectInterceptor.IsCrossOrigin(_currentRequest.Uri, targetUri);
-                var newRequest = RedirectInterceptor.BuildRedirectRequest(
-                    _currentRequest,
-                    targetUri,
-                    (HttpStatusCode)statusCode,
-                    crossOrigin);
+                UHttpRequest newRequest;
+                try
+                {
+                    newRequest = RedirectInterceptor.BuildRedirectRequest(
+                        _currentRequest,
+                        targetUri,
+                        (HttpStatusCode)statusCode,
+                        crossOrigin);
 
-                if (_options.EnforceRedirectTotalTimeout)
-                    newRequest = RedirectInterceptor.ApplyTotalRedirectTimeoutBudget(newRequest, context, _totalTimeoutBudget);
+                    if (_options.EnforceRedirectTotalTimeout)
+                        newRequest = RedirectInterceptor.ApplyTotalRedirectTimeoutBudget(newRequest, context, _totalTimeoutBudget);
+                }
+                catch (UHttpException ex)
+                {
+                    await DiscardBodyAsync(body).ConfigureAwait(false);
+                    CompleteWithError(ex, context);
+                    return;
+                }
+
+                await DiscardBodyAsync(body).ConfigureAwait(false);
 
                 _redirectCount++;
                 _redirectChain.Add(targetUri.AbsoluteUri);
@@ -186,6 +223,68 @@ namespace TurboHTTP.Middleware
             }
 
             _completion.TrySetException(exception ?? mapped);
+        }
+
+        private async ValueTask DiscardBodyAsync(IResponseBodySource body)
+        {
+            if (body == null)
+                return;
+
+            var drained = false;
+            var aborted = false;
+            CancellationTokenSource discardTimeoutCts = null;
+            try
+            {
+                discardTimeoutCts = _cancellationToken.CanBeCanceled
+                    ? CancellationTokenSource.CreateLinkedTokenSource(_cancellationToken)
+                    : new CancellationTokenSource();
+                discardTimeoutCts.CancelAfter(_responseDiscardTimeout);
+
+                try
+                {
+                    await body.DrainAsync(discardTimeoutCts.Token).ConfigureAwait(false);
+                    drained = true;
+                }
+                catch (OperationCanceledException) when (_cancellationToken.IsCancellationRequested)
+                {
+                    body.Abort();
+                    aborted = true;
+                    throw;
+                }
+                catch
+                {
+                    body.Abort();
+                    aborted = true;
+                }
+            }
+            finally
+            {
+                discardTimeoutCts?.Dispose();
+
+                try
+                {
+                    if (!drained && !aborted)
+                    {
+                        body.Abort();
+                        aborted = true;
+                    }
+
+                    await body.DisposeAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    if (!aborted)
+                    {
+                        try
+                        {
+                            body.Abort();
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+            }
         }
     }
 }

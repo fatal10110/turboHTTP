@@ -1,20 +1,30 @@
 using System;
 using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
-using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Retry
 {
     internal sealed class RetryDetectorHandler : IHttpHandler
     {
         private readonly IHttpHandler _inner;
+        private readonly CancellationToken _dispatchCancellationToken;
+        private readonly TimeSpan _responseDiscardTimeout;
         private bool _committed;
         private bool _forwardRequestStart;
 
-        internal RetryDetectorHandler(IHttpHandler inner)
+        internal RetryDetectorHandler(
+            IHttpHandler inner,
+            CancellationToken dispatchCancellationToken,
+            TimeSpan responseDiscardTimeout)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            _dispatchCancellationToken = dispatchCancellationToken;
+            if (responseDiscardTimeout <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(responseDiscardTimeout));
+
+            _responseDiscardTimeout = responseDiscardTimeout;
         }
 
         internal bool WasRetryable { get; private set; }
@@ -48,19 +58,11 @@ namespace TurboHTTP.Retry
         {
             if (statusCode >= 500 && statusCode < 600)
             {
-                if (!context.GetState(TransportBehaviorFlags.SelfDrainsResponseBody, false))
-                {
-                    throw new InvalidOperationException(
-                        "RetryDetectorHandler requires a transport that drains response bodies independently of handler callback forwarding.");
-                }
-
                 // Retryable 5xx responses are suppressed so the outer interceptor can re-dispatch.
-                // This is only safe when the transport continues draining or aborting the response
-                // body without relying on downstream handler consumption.
                 WasRetryable = true;
                 RetryAfterDelay = ParseRetryAfter(headers);
                 if (body != null)
-                    await body.DisposeAsync().ConfigureAwait(false);
+                    await DiscardBodyAsync(body).ConfigureAwait(false);
                 return;
             }
 
@@ -84,6 +86,68 @@ namespace TurboHTTP.Retry
 
             DeliveredError = true;
             _inner.OnResponseError(error, context);
+        }
+
+        private async ValueTask DiscardBodyAsync(IResponseBodySource body)
+        {
+            if (body == null)
+                return;
+
+            var drained = false;
+            var aborted = false;
+            CancellationTokenSource discardTimeoutCts = null;
+            try
+            {
+                discardTimeoutCts = _dispatchCancellationToken.CanBeCanceled
+                    ? CancellationTokenSource.CreateLinkedTokenSource(_dispatchCancellationToken)
+                    : new CancellationTokenSource();
+                discardTimeoutCts.CancelAfter(_responseDiscardTimeout);
+
+                try
+                {
+                    await body.DrainAsync(discardTimeoutCts.Token).ConfigureAwait(false);
+                    drained = true;
+                }
+                catch (OperationCanceledException) when (_dispatchCancellationToken.IsCancellationRequested)
+                {
+                    body.Abort();
+                    aborted = true;
+                    throw;
+                }
+                catch
+                {
+                    body.Abort();
+                    aborted = true;
+                }
+            }
+            finally
+            {
+                discardTimeoutCts?.Dispose();
+
+                try
+                {
+                    if (!drained && !aborted)
+                    {
+                        body.Abort();
+                        aborted = true;
+                    }
+
+                    await body.DisposeAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    if (!aborted)
+                    {
+                        try
+                        {
+                            body.Abort();
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+            }
         }
 
         private static TimeSpan? ParseRetryAfter(HttpHeaders headers)

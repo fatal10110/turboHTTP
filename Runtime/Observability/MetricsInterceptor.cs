@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Observability
 {
@@ -31,11 +32,6 @@ namespace TurboHTTP.Observability
             {
                 Interlocked.Increment(ref _metrics.TotalRequests);
                 _metrics.RequestsByHost.AddOrUpdate(request.Uri.Host, 1, IncrementHostCount);
-                var contentLength = request.Content.Length;
-                if (contentLength.GetValueOrDefault() > 0)
-                {
-                    Interlocked.Add(ref _metrics.TotalBytesSent, contentLength.Value);
-                }
 
                 return next(
                     request,
@@ -43,7 +39,8 @@ namespace TurboHTTP.Observability
                         handler,
                         this,
                         _metrics,
-                        IncrementStatusCodeCount),
+                        IncrementStatusCodeCount,
+                        request),
                     context,
                     cancellationToken);
             };

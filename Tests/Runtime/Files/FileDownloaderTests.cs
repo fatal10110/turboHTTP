@@ -224,6 +224,64 @@ namespace TurboHTTP.Tests.Files
         }
 
         [Test]
+        public void Download_StreamingResponse_ReportsProgressPerChunk()
+        {
+            Task.Run(async () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Content-Length", "9");
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        headers,
+                        new MockResponseBodySource(
+                            new[]
+                            {
+                                (ReadOnlyMemory<byte>)Encoding.UTF8.GetBytes("abc"),
+                                Encoding.UTF8.GetBytes("def"),
+                                Encoding.UTF8.GetBytes("ghi")
+                            },
+                            length: 9,
+                            trailers: HttpHeaders.Empty,
+                            exposeBufferedData: false),
+                        ctx).AsTask();
+                });
+
+                var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
+                var downloader = new FileDownloader(client);
+                var dest = Path.Combine(_tempDir, "stream-progress.txt");
+
+                int progressCount = 0;
+                long maxBytesDownloaded = 0;
+                long maxTotalBytes = 0;
+                var options = new DownloadOptions
+                {
+                    Progress = new Progress<DownloadProgress>(progress =>
+                    {
+                        progressCount++;
+                        if (progress.BytesDownloaded > maxBytesDownloaded)
+                            maxBytesDownloaded = progress.BytesDownloaded;
+                        if (progress.TotalBytes > maxTotalBytes)
+                            maxTotalBytes = progress.TotalBytes;
+                    })
+                };
+
+                var result = await downloader.DownloadFileAsync(
+                    "https://test.com/file", dest, options);
+
+                await Task.Delay(100).ConfigureAwait(false);
+
+                Assert.AreEqual(9, result.FileSize);
+                Assert.That(progressCount, Is.GreaterThanOrEqualTo(3));
+                Assert.AreEqual(9, maxBytesDownloaded);
+                Assert.AreEqual(9, maxTotalBytes);
+                Assert.AreEqual("abcdefghi", Encoding.UTF8.GetString(File.ReadAllBytes(dest)));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void Download_HttpError_Throws()
         {
             AssertAsync.ThrowsAsync<UHttpException>(() =>
@@ -335,6 +393,54 @@ namespace TurboHTTP.Tests.Files
         }
 
         [Test]
+        public void Download_Resume_WithStreamingChecksum_SeedsExistingFileHash()
+        {
+            Task.Run(async () =>
+            {
+                var dest = Path.Combine(_tempDir, "resume-checksum.bin");
+                var prefix = Encoding.UTF8.GetBytes("hello ");
+                var suffix = Encoding.UTF8.GetBytes("world");
+                var full = Encoding.UTF8.GetBytes("hello world");
+                File.WriteAllBytes(dest, prefix);
+
+                var headers = new HttpHeaders();
+                headers.Set("Content-Length", suffix.Length.ToString());
+                headers.Set("Content-Range", "bytes 6-10/11");
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.PartialContent,
+                        headers,
+                        new MockResponseBodySource(
+                            new[] { (ReadOnlyMemory<byte>)suffix },
+                            length: suffix.Length,
+                            trailers: HttpHeaders.Empty,
+                            exposeBufferedData: false),
+                        ctx).AsTask();
+                });
+
+                var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
+                var downloader = new FileDownloader(client);
+
+                var result = await downloader.DownloadFileAsync(
+                    "https://test.com/file.bin",
+                    dest,
+                    new DownloadOptions
+                    {
+                        EnableResume = true,
+                        VerifyChecksum = true,
+                        ExpectedSha256 = ComputeSha256(full)
+                    });
+
+                Assert.IsTrue(result.WasResumed);
+                Assert.AreEqual(full.Length, result.FileSize);
+                Assert.AreEqual("bytes=6-", transport.LastRangeHeader);
+                Assert.AreEqual("hello world", Encoding.UTF8.GetString(File.ReadAllBytes(dest)));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
         public void Download_BasePath_RejectsTraversalOutsideBaseDirectory()
         {
             AssertAsync.ThrowsAsync<ArgumentException>(() =>
@@ -406,6 +512,40 @@ namespace TurboHTTP.Tests.Files
             {
                 var hash = sha256.ComputeHash(data);
                 return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+        private sealed class CallbackTransport : IHttpTransport
+        {
+            private readonly Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> _dispatch;
+
+            internal CallbackTransport(Func<UHttpRequest, IHttpHandler, RequestContext, CancellationToken, Task> dispatch)
+            {
+                _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+            }
+
+            internal string LastRangeHeader { get; private set; }
+
+            public Task DispatchAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                LastRangeHeader = request?.Headers?.Get("Range");
+                return _dispatch(request, handler, context, cancellationToken);
+            }
+
+            public ValueTask<UHttpResponse> SendAsync(
+                UHttpRequest request,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                throw new NotSupportedException();
+            }
+
+            public void Dispose()
+            {
             }
         }
     }
