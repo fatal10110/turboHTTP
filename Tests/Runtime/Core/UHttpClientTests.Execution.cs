@@ -103,6 +103,49 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void Client_CustomStreamingOptions_UsesOwnedFactoryTransport()
+        {
+            var defaultTransport = new TrackingTransport();
+            var customTransport = new TrackingTransport();
+            int capturedSendBufferBytes = -1;
+            int capturedPerStreamBufferBytes = -1;
+            int capturedMaxConnectionBufferedBytes = -1;
+            int capturedStallTimeoutSeconds = -1;
+
+            HttpTransportFactory.Register(
+                () => defaultTransport,
+                tlsBackend => throw new InvalidOperationException("Backend factory should not be used."),
+                (tlsBackend, poolOptions, http2Options, streamingOptions) =>
+                {
+                    capturedSendBufferBytes = streamingOptions.DefaultStreamingSendBufferBytes;
+                    capturedPerStreamBufferBytes = streamingOptions.DefaultHttp2PerStreamReceiveBufferBytes;
+                    capturedMaxConnectionBufferedBytes = streamingOptions.MaxConnectionBufferedBytes;
+                    capturedStallTimeoutSeconds = streamingOptions.Http2StallTimeoutSeconds;
+                    return customTransport;
+                });
+
+            var client = new UHttpClient(new UHttpClientOptions
+            {
+                Streaming = new StreamingOptions
+                {
+                    DefaultStreamingSendBufferBytes = 48 * 1024,
+                    DefaultHttp2PerStreamReceiveBufferBytes = 384 * 1024,
+                    MaxConnectionBufferedBytes = 4 * 1024 * 1024,
+                    Http2StallTimeoutSeconds = 45
+                }
+            });
+
+            client.Dispose();
+
+            Assert.AreEqual(48 * 1024, capturedSendBufferBytes);
+            Assert.AreEqual(384 * 1024, capturedPerStreamBufferBytes);
+            Assert.AreEqual(4 * 1024 * 1024, capturedMaxConnectionBufferedBytes);
+            Assert.AreEqual(45, capturedStallTimeoutSeconds);
+            Assert.IsTrue(customTransport.Disposed);
+            Assert.IsFalse(defaultTransport.Disposed);
+        }
+
+        [Test]
         public void Constructor_InvalidHttp2HeaderLimit_ThrowsArgumentOutOfRangeException()
         {
             var ex = Assert.Throws<ArgumentOutOfRangeException>(() =>

@@ -15,7 +15,7 @@ namespace TurboHTTP.Transport.Http1
     {
         private const int MaxChunkLineLength = 256;
         private const int MaxResponseBodySize = 100 * 1024 * 1024;
-        private const int DefaultDrainBufferBytes = 8192;
+        private const int DefaultDrainBufferBytes = 64 * 1024;
         private const int BufferedDrainReuseThresholdBytes = 64 * 1024;
         private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(2);
 
@@ -29,6 +29,8 @@ namespace TurboHTTP.Transport.Http1
         private readonly double _requestTimeoutSeconds;
         private readonly long? _length;
         private readonly object _tokenLock = new object();
+        private readonly int _drainBufferBytes;
+        private readonly int _bufferedDrainReuseThresholdBytes;
 
         private long _remainingContentLength;
         private long _chunkBytesRemaining;
@@ -36,6 +38,7 @@ namespace TurboHTTP.Transport.Http1
         private long _readToEndBytesRead;
         private bool _awaitingChunkTerminator;
         private bool _awaitingChunkTrailers;
+        private int _hasReadData;
         private int _terminalState; // 0 = active, 1 = completed, 2 = aborted/closed
         private CancellationTokenSource _cachedReadTokenSource;
         private CancellationToken _cachedCallerToken;
@@ -45,7 +48,8 @@ namespace TurboHTTP.Transport.Http1
             ParsedResponseHead head,
             ConnectionLease lease,
             CancellationToken transportReadToken,
-            TimeSpan requestTimeout)
+            TimeSpan requestTimeout,
+            StreamingOptions streamingOptions = null)
         {
             if (head == null)
                 throw new ArgumentNullException(nameof(head));
@@ -58,6 +62,8 @@ namespace TurboHTTP.Transport.Http1
             _keepAlive = head.KeepAlive;
             _transportReadToken = transportReadToken;
             _requestTimeoutSeconds = requestTimeout.TotalSeconds;
+            _drainBufferBytes = streamingOptions?.DefaultStreamingReceiveBufferBytes ?? DefaultDrainBufferBytes;
+            _bufferedDrainReuseThresholdBytes = streamingOptions?.BufferedDrainReuseThresholdBytes ?? BufferedDrainReuseThresholdBytes;
 
             if (head.BodyKind == Http11ResponseBodyKind.ContentLength)
             {
@@ -84,9 +90,35 @@ namespace TurboHTTP.Transport.Http1
             return false;
         }
 
+        public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+        {
+            ThrowIfClosed();
+
+            if (Volatile.Read(ref _hasReadData) != 0)
+            {
+                body = default;
+                return false;
+            }
+
+            if (Volatile.Read(ref _terminalState) == 1 &&
+                (_bodyKind == Http11ResponseBodyKind.Empty ||
+                 (_bodyKind == Http11ResponseBodyKind.ContentLength &&
+                  _length.GetValueOrDefault() == 0)))
+            {
+                // Empty-body cases reach terminal completion through CompleteBody(), which already
+                // returned the connection lease to the pool (or disposed it for non-keepalive).
+                body = default;
+                return true;
+            }
+
+            body = default;
+            return false;
+        }
+
         public async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
         {
             ThrowIfClosed();
+            Interlocked.Exchange(ref _hasReadData, 1);
 
             if (destination.IsEmpty)
                 return 0;
@@ -175,7 +207,9 @@ namespace TurboHTTP.Transport.Http1
             if (Volatile.Read(ref _terminalState) == 1)
                 return;
 
-            var buffer = ArrayPool<byte>.Shared.Rent(DefaultDrainBufferBytes);
+            Interlocked.Exchange(ref _hasReadData, 1);
+
+            var buffer = ArrayPool<byte>.Shared.Rent(_drainBufferBytes);
             try
             {
                 while (Volatile.Read(ref _terminalState) == 0)
@@ -348,7 +382,7 @@ namespace TurboHTTP.Transport.Http1
             switch (_bodyKind)
             {
                 case Http11ResponseBodyKind.ContentLength:
-                    return Interlocked.Read(ref _remainingContentLength) <= BufferedDrainReuseThresholdBytes;
+                    return Interlocked.Read(ref _remainingContentLength) <= _bufferedDrainReuseThresholdBytes;
 
                 case Http11ResponseBodyKind.Chunked:
                     // Unread decoded length is not known up front for chunked bodies. Opt into
@@ -363,13 +397,13 @@ namespace TurboHTTP.Transport.Http1
         private async ValueTask<bool> DrainWithinBudgetAsync(CancellationToken ct)
         {
             if (_bodyKind == Http11ResponseBodyKind.ContentLength &&
-                Interlocked.Read(ref _remainingContentLength) > BufferedDrainReuseThresholdBytes)
+                Interlocked.Read(ref _remainingContentLength) > _bufferedDrainReuseThresholdBytes)
             {
                 return false;
             }
 
-            var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(DefaultDrainBufferBytes, BufferedDrainReuseThresholdBytes));
-            long remainingBudget = BufferedDrainReuseThresholdBytes;
+            var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(_drainBufferBytes, _bufferedDrainReuseThresholdBytes));
+            long remainingBudget = _bufferedDrainReuseThresholdBytes;
             try
             {
                 while (Volatile.Read(ref _terminalState) == 0)

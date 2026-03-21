@@ -171,6 +171,19 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual(1, releaseCount);
         }
 
+        [Test]
+        public async Task MockResponseBodySource_DisposeAsync_AfterDetach_DoesNotIncrementDisposeCount()
+        {
+            var source = new MockResponseBodySource(Encoding.UTF8.GetBytes("payload"), length: 7);
+
+            Assert.IsTrue(source.TryDetachBufferedBody(out var body));
+
+            await source.DisposeAsync();
+            body.DisposeOwnedResources();
+
+            Assert.AreEqual(0, source.DisposeAsyncCount);
+        }
+
         private static UHttpStreamingResponse CreateResponse(string body, long? length)
         {
             return new UHttpStreamingResponse(

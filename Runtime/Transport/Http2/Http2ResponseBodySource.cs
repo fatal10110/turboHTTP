@@ -1,8 +1,10 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -26,6 +28,7 @@ namespace TurboHTTP.Transport.Http2
         private const int TerminalStateCompleted = 1;
         private const int TerminalStateFaulted = 2;
         private const int TerminalStateAborted = 3;
+        private const int TerminalStateDetached = 4;
 
         private readonly Http2Connection _connection;
         private readonly Http2Stream _stream;
@@ -43,6 +46,7 @@ namespace TurboHTTP.Transport.Http2
         // Connection-level accounting separately tracks flow-controlled bytes, including padding.
         private int _bufferedBytes;
         private int _disposed;
+        private int _hasReadData;
         private long _lastConsumptionTick;
         private int _terminalState;
         private Task _cleanupTask;
@@ -81,6 +85,106 @@ namespace TurboHTTP.Transport.Http2
             ThrowIfDisposed();
             data = default;
             return false;
+        }
+
+        public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+        {
+            body = default;
+
+            lock (_cleanupGate)
+            {
+                if (_cleanupTask != null ||
+                    Volatile.Read(ref _disposed) != 0 ||
+                    Volatile.Read(ref _hasReadData) != 0 ||
+                    Volatile.Read(ref _terminalState) != TerminalStateCompleted)
+                {
+                    return false;
+                }
+
+                var trailersTask = _trailersSource.Task;
+                if (!trailersTask.IsCompleted ||
+                    trailersTask.IsCanceled ||
+                    trailersTask.IsFaulted)
+                {
+                    return false;
+                }
+
+                Volatile.Write(ref _terminalState, TerminalStateDetached);
+                Interlocked.Exchange(ref _disposed, 1);
+                _cleanupTask = Task.CompletedTask;
+            }
+
+            List<Http2ResponseBodyChunk> detachedChunks = null;
+            var releasedDataBytes = 0;
+            var releasedFlowControlledBytes = 0;
+            var lifetimeReleased = false;
+
+            try
+            {
+                lock (_currentChunkGate)
+                {
+                    var currentChunk = DetachCurrentChunk_NoLock();
+                    AppendDetachedChunk(
+                        currentChunk,
+                        ref detachedChunks,
+                        ref releasedDataBytes,
+                        ref releasedFlowControlledBytes);
+                }
+
+                while (_queue.TryRead(out var chunk))
+                {
+                    AppendDetachedChunk(
+                        chunk,
+                        ref detachedChunks,
+                        ref releasedDataBytes,
+                        ref releasedFlowControlledBytes);
+                }
+
+                if (releasedDataBytes > 0)
+                    Interlocked.Add(ref _bufferedBytes, -releasedDataBytes);
+
+                if (releasedFlowControlledBytes > 0)
+                {
+                    // Detach releases already-buffered DATA bytes immediately; connection-level
+                    // accounting and WINDOW_UPDATE triggering stay on the normal consumption path.
+                    _connection.OnResponseBytesConsumed(releasedFlowControlledBytes);
+                }
+
+                _stream.ReleaseBodySourceLifetime();
+                lifetimeReleased = true;
+
+                if (detachedChunks == null || detachedChunks.Count == 0)
+                    return true;
+
+                if (detachedChunks.Count == 1)
+                {
+                    var chunk = detachedChunks[0];
+                    body = new DetachedBufferedBody(
+                        new ReadOnlyMemory<byte>(chunk.Buffer, 0, chunk.Length),
+                        new ArrayPoolMemoryOwner<byte>(chunk.Buffer, chunk.Length));
+                    return true;
+                }
+
+                var owner = new DetachedBufferedChunkOwner(detachedChunks.ToArray());
+                body = new DetachedBufferedBody(owner.Sequence, owner);
+                return true;
+            }
+            catch
+            {
+                if (detachedChunks != null)
+                {
+                    for (var i = 0; i < detachedChunks.Count; i++)
+                    {
+                        if (detachedChunks[i].Buffer != null)
+                            ArrayPool<byte>.Shared.Return(detachedChunks[i].Buffer);
+                    }
+                }
+
+                if (!lifetimeReleased)
+                    _stream.ReleaseBodySourceLifetime();
+
+                throw;
+            }
         }
 
         public async ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
@@ -415,6 +519,7 @@ namespace TurboHTTP.Transport.Http2
                 new ReadOnlySpan<byte>(_currentChunk.Buffer, _currentChunkOffset, bytesRead)
                     .CopyTo(destination.Span);
                 _currentChunkOffset += bytesRead;
+                Volatile.Write(ref _hasReadData, 1);
                 Interlocked.Exchange(ref _lastConsumptionTick, Environment.TickCount64);
 
                 completedChunk = _currentChunkOffset >= _currentChunk.Length
@@ -456,6 +561,96 @@ namespace TurboHTTP.Transport.Http2
             _currentChunk = default;
             _currentChunkOffset = 0;
             return chunk;
+        }
+
+        private static void AppendDetachedChunk(
+            Http2ResponseBodyChunk chunk,
+            ref List<Http2ResponseBodyChunk> detachedChunks,
+            ref int releasedDataBytes,
+            ref int releasedFlowControlledBytes)
+        {
+            if (chunk.Buffer == null)
+                return;
+
+            detachedChunks ??= new List<Http2ResponseBodyChunk>(4);
+            detachedChunks.Add(chunk);
+            releasedDataBytes += chunk.Length;
+            releasedFlowControlledBytes += chunk.FlowControlledLength;
+        }
+
+        private sealed class DetachedBufferedChunkOwner : IDisposable
+        {
+            private Http2ResponseBodyChunk[] _chunks;
+            private readonly ReadOnlySequence<byte> _sequence;
+
+            internal DetachedBufferedChunkOwner(Http2ResponseBodyChunk[] chunks)
+            {
+                _chunks = chunks ?? Array.Empty<Http2ResponseBodyChunk>();
+                _sequence = BuildSequence(_chunks);
+            }
+
+            internal ReadOnlySequence<byte> Sequence => _sequence;
+
+            public void Dispose()
+            {
+                var chunks = Interlocked.Exchange(ref _chunks, null);
+                if (chunks == null)
+                    return;
+
+                for (var i = 0; i < chunks.Length; i++)
+                {
+                    if (chunks[i].Buffer != null)
+                        ArrayPool<byte>.Shared.Return(chunks[i].Buffer);
+                }
+            }
+
+            private static ReadOnlySequence<byte> BuildSequence(Http2ResponseBodyChunk[] chunks)
+            {
+                if (chunks == null || chunks.Length == 0)
+                    return ReadOnlySequence<byte>.Empty;
+
+                if (chunks.Length == 1)
+                    return new ReadOnlySequence<byte>(new ReadOnlyMemory<byte>(chunks[0].Buffer, 0, chunks[0].Length));
+
+                DetachedChunkSequenceSegment head = null;
+                DetachedChunkSequenceSegment tail = null;
+                long runningIndex = 0;
+
+                for (var i = 0; i < chunks.Length; i++)
+                {
+                    var segment = new DetachedChunkSequenceSegment(
+                        new ReadOnlyMemory<byte>(chunks[i].Buffer, 0, chunks[i].Length),
+                        runningIndex);
+
+                    if (head == null)
+                    {
+                        head = segment;
+                    }
+                    else
+                    {
+                        tail.SetNext(segment);
+                    }
+
+                    tail = segment;
+                    runningIndex += chunks[i].Length;
+                }
+
+                return new ReadOnlySequence<byte>(head, 0, tail, tail.Memory.Length);
+            }
+        }
+
+        private sealed class DetachedChunkSequenceSegment : ReadOnlySequenceSegment<byte>
+        {
+            internal DetachedChunkSequenceSegment(ReadOnlyMemory<byte> memory, long runningIndex)
+            {
+                Memory = memory;
+                RunningIndex = runningIndex;
+            }
+
+            internal void SetNext(DetachedChunkSequenceSegment next)
+            {
+                Next = next;
+            }
         }
 
         private struct ReleasedBufferCounts

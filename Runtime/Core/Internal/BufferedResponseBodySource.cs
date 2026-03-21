@@ -31,6 +31,24 @@ namespace TurboHTTP.Core.Internal
             return true;
         }
 
+        public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+        {
+            ThrowIfDisposed();
+
+            if (_offset != 0 || _onDispose != null || _trailers.Count != 0)
+            {
+                body = default;
+                return false;
+            }
+
+            body = new DetachedBufferedBody(_data);
+            _offset = _data.Length;
+            _data = default;
+            _trailers = HttpHeaders.Empty;
+            Interlocked.Exchange(ref _disposed, 1);
+            return true;
+        }
+
         public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
         {
             ThrowIfDisposed();

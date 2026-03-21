@@ -10,6 +10,8 @@ namespace TurboHTTP.Core
 
         bool TryGetBufferedData(out ReadOnlyMemory<byte> data);
 
+        bool TryDetachBufferedBody(out DetachedBufferedBody body);
+
         // Body and trailer failures after response start propagate from these methods.
         ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct);
 

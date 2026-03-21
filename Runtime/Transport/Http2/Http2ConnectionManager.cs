@@ -14,6 +14,7 @@ namespace TurboHTTP.Transport.Http2
     internal class Http2ConnectionManager : IDisposable
     {
         private readonly Http2Options _options;
+        private readonly StreamingOptions _streamingOptions;
 
         private readonly ConcurrentDictionary<string, Http2Connection> _connections
             = new ConcurrentDictionary<string, Http2Connection>(StringComparer.OrdinalIgnoreCase);
@@ -22,9 +23,10 @@ namespace TurboHTTP.Transport.Http2
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
         private int _disposed;
 
-        public Http2ConnectionManager(Http2Options options)
+        public Http2ConnectionManager(Http2Options options, StreamingOptions streamingOptions)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
+            _streamingOptions = streamingOptions ?? throw new ArgumentNullException(nameof(streamingOptions));
         }
 
         /// <summary>
@@ -115,7 +117,8 @@ namespace TurboHTTP.Transport.Http2
                     tlsStream,
                     host,
                     port,
-                    _options);
+                    _options,
+                    _streamingOptions);
                 try
                 {
                     await conn.InitializeAsync(ct);

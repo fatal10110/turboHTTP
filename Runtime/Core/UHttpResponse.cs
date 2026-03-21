@@ -286,9 +286,9 @@ namespace TurboHTTP.Core
             if (_bodyBufferRented && _pooledBodyBuffer != null)
                 ArrayPool<byte>.Shared.Return(_pooledBodyBuffer);
 
-            // Release the segmented body owner (returns pooled SegmentedBuffer
-            // segments back to ArrayPool). ArrayPool-backed disposal is safe on
-            // the finalizer thread.
+            // Release the detached body owner (for example SegmentedBuffer or an
+            // ArrayPool-backed response-body owner). ArrayPool-backed disposal is
+            // safe on the finalizer thread.
             var owner = Interlocked.Exchange(ref _segmentedBodyOwner, null);
             owner?.Dispose();
             _body = ReadOnlySequence<byte>.Empty;

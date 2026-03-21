@@ -87,6 +87,9 @@ namespace TurboHTTP.Core
             if (_options.Http2 == null)
                 _options.Http2 = new Http2Options();
 
+            if (_options.Streaming == null)
+                _options.Streaming = new StreamingOptions();
+
             if (_options.Http2.MaxDecodedHeaderBytes <= 0)
             {
                 throw new ArgumentOutOfRangeException(
@@ -102,12 +105,14 @@ namespace TurboHTTP.Core
             }
             else if (_options.TlsBackend != TlsBackend.Auto ||
                      !_options.ConnectionPool.IsDefault() ||
-                     !_options.Http2.IsDefault())
+                     !_options.Http2.IsDefault() ||
+                     !_options.Streaming.IsDefault())
             {
                 _transport = HttpTransportFactory.CreateWithOptions(
                     _options.TlsBackend,
                     _options.ConnectionPool,
-                    _options.Http2);
+                    _options.Http2,
+                    _options.Streaming);
                 _ownsTransport = true;
             }
             else

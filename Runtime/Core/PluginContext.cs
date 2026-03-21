@@ -659,6 +659,11 @@ namespace TurboHTTP.Core
                             return _innerBody.TryGetBufferedData(out data);
                         }
 
+                        public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+                        {
+                            return _innerBody.TryDetachBufferedBody(out body);
+                        }
+
                         public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
                         {
                             return _innerBody.ReadAsync(destination, ct);

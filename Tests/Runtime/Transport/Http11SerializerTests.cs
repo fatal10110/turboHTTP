@@ -14,21 +14,18 @@ namespace TurboHTTP.Tests.Transport
     [TestFixture]
     public class Http11SerializerTests
     {
-        private static async Task<(string Headers, byte[] Body)> SerializeAsync(UHttpRequest request)
+        private static async Task<(string Headers, byte[] Body)> SerializeAsync(
+            UHttpRequest request,
+            StreamingOptions streamingOptions = null)
         {
             using var ms = new MemoryStream();
-            await Http11RequestSerializer.SerializeAsync(request, ms, CancellationToken.None);
+            await Http11RequestSerializer.SerializeAsync(
+                request,
+                ms,
+                CancellationToken.None,
+                streamingOptions: streamingOptions);
 
-            var bytes = ms.ToArray();
-            var marker = new byte[] { 13, 10, 13, 10 };
-            int headerEnd = IndexOf(bytes, marker);
-            if (headerEnd < 0)
-                return (EncodingHelper.Latin1.GetString(bytes, 0, bytes.Length), Array.Empty<byte>());
-
-            var headerText = EncodingHelper.Latin1.GetString(bytes, 0, headerEnd);
-            var body = new byte[bytes.Length - headerEnd - marker.Length];
-            Buffer.BlockCopy(bytes, headerEnd + marker.Length, body, 0, body.Length);
-            return (headerText, body);
+            return ParseSerializedBytes(ms.ToArray());
         }
 
         private static int IndexOf(byte[] haystack, byte[] needle)
@@ -47,6 +44,19 @@ namespace TurboHTTP.Tests.Transport
                 if (match) return i;
             }
             return -1;
+        }
+
+        private static (string Headers, byte[] Body) ParseSerializedBytes(byte[] bytes)
+        {
+            var marker = new byte[] { 13, 10, 13, 10 };
+            int headerEnd = IndexOf(bytes, marker);
+            if (headerEnd < 0)
+                return (EncodingHelper.Latin1.GetString(bytes, 0, bytes.Length), Array.Empty<byte>());
+
+            var headerText = EncodingHelper.Latin1.GetString(bytes, 0, headerEnd);
+            var body = new byte[bytes.Length - headerEnd - marker.Length];
+            Buffer.BlockCopy(bytes, headerEnd + marker.Length, body, 0, body.Length);
+            return (headerText, body);
         }
 
         [Test]
@@ -521,6 +531,141 @@ namespace TurboHTTP.Tests.Transport
                 var result = await SerializeAsync(request);
                 Assert.IsTrue(result.Headers.StartsWith("GET http://example.com/api/users?x=1 HTTP/1.1\r\n"));
             }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SerializePost_SmallBufferedBodyWithinThreshold_UsesSingleWrite()
+        {
+            Task.Run(async () =>
+            {
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/submit"),
+                    body: Encoding.UTF8.GetBytes("hello"));
+                var options = new StreamingOptions
+                {
+                    SmallBufferedRequestThresholdBytes = 16
+                };
+
+                using var stream = new CountingWriteStream();
+                await Http11RequestSerializer.SerializeAsync(
+                    request,
+                    stream,
+                    CancellationToken.None,
+                    streamingOptions: options);
+
+                var result = ParseSerializedBytes(stream.ToArray());
+                Assert.AreEqual(1, stream.WriteCount);
+                Assert.AreEqual("hello", Encoding.UTF8.GetString(result.Body));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SerializePost_BufferedBodyAboveThreshold_UsesSeparateHeaderAndBodyWrites()
+        {
+            Task.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("buffered-body");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/submit"),
+                    body: body);
+                var options = new StreamingOptions
+                {
+                    SmallBufferedRequestThresholdBytes = 4
+                };
+
+                using var stream = new CountingWriteStream();
+                await Http11RequestSerializer.SerializeAsync(
+                    request,
+                    stream,
+                    CancellationToken.None,
+                    streamingOptions: options);
+
+                var result = ParseSerializedBytes(stream.ToArray());
+                Assert.AreEqual(2, stream.WriteCount);
+                Assert.IsTrue(result.Body.SequenceEqual(body));
+            }).GetAwaiter().GetResult();
+        }
+
+        private sealed class CountingWriteStream : Stream
+        {
+            private readonly MemoryStream _inner = new MemoryStream();
+
+            public int WriteCount { get; private set; }
+
+            public override bool CanRead => _inner.CanRead;
+            public override bool CanSeek => _inner.CanSeek;
+            public override bool CanWrite => _inner.CanWrite;
+            public override long Length => _inner.Length;
+
+            public override long Position
+            {
+                get => _inner.Position;
+                set => _inner.Position = value;
+            }
+
+            public byte[] ToArray() => _inner.ToArray();
+
+            public override void Flush() => _inner.Flush();
+
+            public override Task FlushAsync(CancellationToken cancellationToken)
+            {
+                return _inner.FlushAsync(cancellationToken);
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                return _inner.Read(buffer, offset, count);
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                return _inner.Seek(offset, origin);
+            }
+
+            public override void SetLength(long value)
+            {
+                _inner.SetLength(value);
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                WriteCount++;
+                _inner.Write(buffer, offset, count);
+            }
+
+            public override void Write(ReadOnlySpan<byte> buffer)
+            {
+                WriteCount++;
+                _inner.Write(buffer);
+            }
+
+            public override Task WriteAsync(
+                byte[] buffer,
+                int offset,
+                int count,
+                CancellationToken cancellationToken)
+            {
+                WriteCount++;
+                return _inner.WriteAsync(buffer, offset, count, cancellationToken);
+            }
+
+            public override ValueTask WriteAsync(
+                ReadOnlyMemory<byte> buffer,
+                CancellationToken cancellationToken = default)
+            {
+                WriteCount++;
+                return _inner.WriteAsync(buffer, cancellationToken);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                    _inner.Dispose();
+
+                base.Dispose(disposing);
+            }
         }
     }
 }

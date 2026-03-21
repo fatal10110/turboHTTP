@@ -45,6 +45,18 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void CustomStreamingOptions_ShouldAllocateDedicatedTransport()
+        {
+            var options = new UHttpClientOptions();
+            options.Streaming.MaxConnectionBufferedBytes = 2 * 1024 * 1024;
+
+            using var client = new UHttpClient(options);
+
+            Assert.That(client.Transport, Is.Not.SameAs(HttpTransportFactory.Default));
+            Assert.That(client.Transport, Is.InstanceOf<RawSocketTransport>());
+        }
+
+        [Test]
         public void Http2MaxDecodedHeaderBytes_ShouldBeConfiguredOnHttp2Options()
         {
             var options = new UHttpClientOptions();

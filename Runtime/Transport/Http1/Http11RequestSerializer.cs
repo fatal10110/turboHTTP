@@ -28,7 +28,6 @@ namespace TurboHTTP.Transport.Http1
     /// </summary>
     internal static class Http11RequestSerializer
     {
-        private const int DefaultStreamingSendBufferBytes = 32 * 1024;
         private const int MaxChunkHeaderBytes = 18;
         private static readonly byte[] ChunkDataTerminator = { (byte)'\r', (byte)'\n' };
         private static readonly byte[] FinalChunkBytes = { (byte)'0', (byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n' };
@@ -40,12 +39,17 @@ namespace TurboHTTP.Transport.Http1
             UHttpRequest request,
             Stream stream,
             CancellationToken ct,
-            Http11RequestWriteState writeState = null)
+            Http11RequestWriteState writeState = null,
+            StreamingOptions streamingOptions = null)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
             if (stream == null) throw new ArgumentNullException(nameof(stream));
 
+            streamingOptions = streamingOptions ?? new StreamingOptions();
+
             var bodyWriteMode = ResolveBodyWriteMode(request);
+            int smallBufferedRequestThresholdBytes = streamingOptions.SmallBufferedRequestThresholdBytes;
+            int streamingSendBufferBytes = streamingOptions.DefaultStreamingSendBufferBytes;
 
             using var headerWriter = new PooledHeaderWriter();
 
@@ -128,13 +132,51 @@ namespace TurboHTTP.Transport.Http1
             // 7. End of headers
             headerWriter.Append("\r\n");
 
-            // 8. Write header block
+            // 8. Small buffered bodies can be appended directly to the header writer so
+            // the hot JSON/form path reaches the stream with a single write.
+            if (await TryWriteSmallBufferedRequestAsync(
+                    headerWriter,
+                    bodyWriteMode.BufferedBody,
+                    stream,
+                    writeState,
+                    smallBufferedRequestThresholdBytes,
+                    ct).ConfigureAwait(false))
+            {
+                await stream.FlushAsync(ct).ConfigureAwait(false);
+                return;
+            }
+
+            // 9. Write header block
             await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
 
-            // 9. Write body
-            await WriteBodyAsync(request.Content, bodyWriteMode, stream, writeState, ct).ConfigureAwait(false);
+            // 10. Write body
+            await WriteBodyAsync(
+                    request.Content,
+                    bodyWriteMode,
+                    stream,
+                    writeState,
+                    streamingSendBufferBytes,
+                    ct)
+                .ConfigureAwait(false);
 
             await stream.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        private static async Task<bool> TryWriteSmallBufferedRequestAsync(
+            PooledHeaderWriter headerWriter,
+            ReadOnlyMemory<byte> bufferedBody,
+            Stream stream,
+            Http11RequestWriteState writeState,
+            int smallBufferedRequestThresholdBytes,
+            CancellationToken ct)
+        {
+            if (bufferedBody.IsEmpty || bufferedBody.Length > smallBufferedRequestThresholdBytes)
+                return false;
+
+            writeState?.MarkBodyWriteStarted();
+            headerWriter.Append(bufferedBody.Span);
+            await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
+            return true;
         }
 
         private static RequestBodyWriteMode ResolveBodyWriteMode(UHttpRequest request)
@@ -162,6 +204,7 @@ namespace TurboHTTP.Transport.Http1
             RequestBodyWriteMode bodyWriteMode,
             Stream stream,
             Http11RequestWriteState writeState,
+            int streamingSendBufferBytes,
             CancellationToken ct)
         {
             if (bodyWriteMode.Kind == RequestBodyWriteKind.None)
@@ -177,11 +220,17 @@ namespace TurboHTTP.Transport.Http1
             using var session = await content.OpenReadSessionAsync(ct).ConfigureAwait(false);
             if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
             {
-                await WriteChunkedBodyAsync(session, stream, writeState, ct).ConfigureAwait(false);
+                await WriteChunkedBodyAsync(session, stream, writeState, streamingSendBufferBytes, ct).ConfigureAwait(false);
                 return;
             }
 
-            await WriteKnownLengthBodyAsync(session, bodyWriteMode.KnownLength.Value, stream, writeState, ct)
+            await WriteKnownLengthBodyAsync(
+                    session,
+                    bodyWriteMode.KnownLength.Value,
+                    stream,
+                    writeState,
+                    streamingSendBufferBytes,
+                    ct)
                 .ConfigureAwait(false);
         }
 
@@ -190,9 +239,10 @@ namespace TurboHTTP.Transport.Http1
             long knownLength,
             Stream stream,
             Http11RequestWriteState writeState,
+            int streamingSendBufferBytes,
             CancellationToken ct)
         {
-            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(DefaultStreamingSendBufferBytes);
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(streamingSendBufferBytes);
             try
             {
                 long remaining = knownLength;
@@ -229,9 +279,10 @@ namespace TurboHTTP.Transport.Http1
             RequestBodyReadSession session,
             Stream stream,
             Http11RequestWriteState writeState,
+            int streamingSendBufferBytes,
             CancellationToken ct)
         {
-            var bodyBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(DefaultStreamingSendBufferBytes);
+            var bodyBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(streamingSendBufferBytes);
             var headerBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(MaxChunkHeaderBytes);
             try
             {
@@ -376,6 +427,15 @@ namespace TurboHTTP.Transport.Http1
                 var span = _writer.GetSpan(1);
                 span[0] = (byte)value;
                 _writer.Advance(1);
+            }
+
+            public void Append(ReadOnlySpan<byte> value)
+            {
+                if (value.IsEmpty)
+                    return;
+
+                value.CopyTo(_writer.GetSpan(value.Length));
+                _writer.Advance(value.Length);
             }
 
             public void AppendInt(int value)

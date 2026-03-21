@@ -1,9 +1,11 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -89,6 +91,114 @@ namespace TurboHTTP.Tests.Transport.Http2
                 options.TestMaintenanceIntervalMillisecondsOverride = maintenanceIntervalMilliseconds.Value;
 
             return options;
+        }
+
+        [Test]
+        public void Constructor_UsesStreamingOptionsThresholds()
+        {
+            var http2Options = new Http2Options();
+            var streamingOptions = new StreamingOptions
+            {
+                DefaultStreamingSendBufferBytes = 48 * 1024,
+                DefaultHttp2PerStreamReceiveBufferBytes = 384 * 1024,
+                MaxConnectionBufferedBytes = 4 * 1024 * 1024,
+                Http2StallTimeoutSeconds = 45
+            };
+
+            var duplex = new TestDuplexStream();
+            using var conn = new Http2Connection(
+                duplex.ClientStream,
+                "test.example.com",
+                443,
+                http2Options,
+                streamingOptions);
+
+            Assert.AreEqual(48 * 1024, conn.StreamingSendBufferBytes);
+            Assert.AreEqual(384 * 1024, conn.PerStreamReceiveBufferBytes);
+            Assert.AreEqual(4 * 1024 * 1024, conn.MaxConnectionBufferedBytes);
+            Assert.AreEqual(TimeSpan.FromSeconds(45).TotalMilliseconds, conn.StallTimeoutMilliseconds);
+        }
+
+        [Test]
+        public void ResponseBodySource_TryDetachBufferedBody_AfterComplete_ReturnsBufferedSequence()
+        {
+            using var conn = new Http2Connection(
+                new TestDuplexStream().ClientStream,
+                "test.example.com",
+                443,
+                new Http2Options(),
+                new StreamingOptions());
+
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/detach"));
+            var context = new RequestContext(request);
+            var stream = new Http2Stream(
+                1,
+                request,
+                NoOpHttpHandler.Instance,
+                context,
+                Http2Constants.DefaultInitialWindowSize,
+                Http2Constants.DefaultInitialWindowSize);
+            var source = new Http2ResponseBodySource(conn, stream, 7, completed: false);
+
+            var first = Encoding.UTF8.GetBytes("pay");
+            var second = Encoding.UTF8.GetBytes("load");
+
+            Assert.AreEqual(
+                Http2ResponseBodyEnqueueResult.Accepted,
+                source.TryEnqueueData(first, 0, first.Length, first.Length));
+            Assert.AreEqual(
+                Http2ResponseBodyEnqueueResult.Accepted,
+                source.TryEnqueueData(second, 0, second.Length, second.Length));
+
+            source.Complete();
+
+            Assert.IsTrue(source.TryDetachBufferedBody(out var body));
+
+            ReadOnlySequence<byte> sequence = body.Sequence;
+            Assert.IsFalse(sequence.IsSingleSegment);
+            Assert.AreEqual("payload", Encoding.UTF8.GetString(sequence.ToArray()));
+
+            body.DisposeOwnedResources();
+        }
+
+        [Test]
+        public void ResponseBodySource_TryDetachBufferedBody_AfterRead_ReturnsFalse()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var conn = new Http2Connection(
+                    new TestDuplexStream().ClientStream,
+                    "test.example.com",
+                    443,
+                    new Http2Options(),
+                    new StreamingOptions());
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/detach-read"));
+                var context = new RequestContext(request);
+                var stream = new Http2Stream(
+                    1,
+                    request,
+                    NoOpHttpHandler.Instance,
+                    context,
+                    Http2Constants.DefaultInitialWindowSize,
+                    Http2Constants.DefaultInitialWindowSize);
+                var source = new Http2ResponseBodySource(conn, stream, 7, completed: false);
+
+                var payload = Encoding.UTF8.GetBytes("payload");
+                Assert.AreEqual(
+                    Http2ResponseBodyEnqueueResult.Accepted,
+                    source.TryEnqueueData(payload, 0, payload.Length, payload.Length));
+
+                source.Complete();
+
+                var buffer = new byte[3];
+                var read = await source.ReadAsync(buffer, CancellationToken.None);
+
+                Assert.AreEqual(3, read);
+                Assert.IsFalse(source.TryDetachBufferedBody(out _));
+
+                await source.DisposeAsync();
+            });
         }
 
         /// <summary>

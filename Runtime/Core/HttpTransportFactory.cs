@@ -14,6 +14,7 @@ namespace TurboHTTP.Core
         private static volatile Func<IHttpTransport> _factory;
         private static volatile Func<TlsBackend, IHttpTransport> _backendFactory;
         private static volatile Func<TlsBackend, ConnectionPoolOptions, Http2Options, IHttpTransport> _advancedFactory;
+        private static volatile Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport> _advancedFactoryWithStreaming;
         private static volatile Lazy<IHttpTransport> _lazy;
         private static readonly object _lock = new object();
 
@@ -47,6 +48,26 @@ namespace TurboHTTP.Core
                 _factory = factory;
                 _backendFactory = backendFactory;
                 _advancedFactory = advancedFactory;
+                _advancedFactoryWithStreaming = null;
+                _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
+            }
+        }
+
+        /// <summary>
+        /// Register transport factory functions including streaming option support.
+        /// </summary>
+        public static void Register(
+            Func<IHttpTransport> factory,
+            Func<TlsBackend, IHttpTransport> backendFactory,
+            Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport> advancedFactory)
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            lock (_lock)
+            {
+                _factory = factory;
+                _backendFactory = backendFactory;
+                _advancedFactory = null;
+                _advancedFactoryWithStreaming = advancedFactory;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
             }
         }
@@ -110,6 +131,23 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Create a new transport instance with TLS backend, connection-pool options,
+        /// HTTP/2 options, and streaming-path thresholds.
+        /// </summary>
+        public static IHttpTransport CreateWithOptions(
+            TlsBackend tlsBackend,
+            ConnectionPoolOptions poolOptions,
+            Http2Options http2Options,
+            StreamingOptions streamingOptions)
+        {
+            var advancedFactoryWithStreaming = _advancedFactoryWithStreaming;
+            if (advancedFactoryWithStreaming != null)
+                return advancedFactoryWithStreaming(tlsBackend, poolOptions, http2Options, streamingOptions);
+
+            return CreateWithOptions(tlsBackend, poolOptions, http2Options);
+        }
+
+        /// <summary>
         /// Set a transport directly for testing (bypasses factory).
         /// </summary>
         public static void SetForTesting(IHttpTransport transport)
@@ -132,6 +170,7 @@ namespace TurboHTTP.Core
                 _factory = null;
                 _backendFactory = null;
                 _advancedFactory = null;
+                _advancedFactoryWithStreaming = null;
                 _lazy = null;
             }
         }

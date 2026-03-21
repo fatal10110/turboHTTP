@@ -347,7 +347,7 @@ namespace TurboHTTP.Transport.Http2
 
         private void TrimRecentlyResetStreams(long nowTick, bool enforceHardLimit)
         {
-            long cutoff = nowTick - (long)DefaultHttp2StallTimeout.TotalMilliseconds;
+            long cutoff = nowTick - Volatile.Read(ref _stallTimeoutMs);
             foreach (var kvp in _recentlyResetStreams)
             {
                 if (kvp.Value >= cutoff)

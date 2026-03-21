@@ -24,6 +24,11 @@ namespace TurboHTTP.Core
         public Http2Options Http2 { get; set; } = new Http2Options();
 
         /// <summary>
+        /// Thresholds and buffer sizes used by buffered and streaming request/response paths.
+        /// </summary>
+        public StreamingOptions Streaming { get; set; } = new StreamingOptions();
+
+        /// <summary>
         /// Base URL for resolving relative request URLs.
         /// </summary>
         public string BaseUrl { get; set; }
@@ -147,7 +152,8 @@ namespace TurboHTTP.Core
                 DisposeTransport = DisposeTransport,
                 TlsBackend = TlsBackend,
                 ConnectionPool = ConnectionPool?.Clone() ?? new ConnectionPoolOptions(),
-                Http2 = Http2?.Clone() ?? new Http2Options()
+                Http2 = Http2?.Clone() ?? new Http2Options(),
+                Streaming = Streaming?.Clone() ?? new StreamingOptions()
             };
         }
     }

@@ -29,13 +29,14 @@ namespace TurboHTTP.Transport
         private readonly TcpConnectionPool _pool;
         private readonly Http2ConnectionManager _h2Manager;
         private readonly TlsBackend _tlsBackend;
+        private readonly StreamingOptions _streamingOptions;
         private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for atomic CAS)
 
         /// <summary>
         /// Backward-compatible constructor signature retained for binary compatibility.
         /// </summary>
         public RawSocketTransport(TcpConnectionPool pool = null, TlsBackend tlsBackend = TlsBackend.Auto)
-            : this(pool, tlsBackend, new Http2Options())
+            : this(pool, tlsBackend, new Http2Options(), new StreamingOptions())
         {
         }
 
@@ -43,16 +44,30 @@ namespace TurboHTTP.Transport
             TcpConnectionPool pool,
             TlsBackend tlsBackend,
             Http2Options http2Options)
+            : this(pool, tlsBackend, http2Options, new StreamingOptions())
+        {
+        }
+
+        public RawSocketTransport(
+            TcpConnectionPool pool,
+            TlsBackend tlsBackend,
+            Http2Options http2Options,
+            StreamingOptions streamingOptions)
         {
             if (http2Options == null)
             {
                 throw new ArgumentNullException(nameof(http2Options));
             }
+            if (streamingOptions == null)
+            {
+                throw new ArgumentNullException(nameof(streamingOptions));
+            }
 
             _pool = pool ?? new TcpConnectionPool(
                 maxConnectionsPerHost: PlatformConfig.RecommendedMaxConcurrency,
                 tlsBackend: tlsBackend);
-            _h2Manager = new Http2ConnectionManager(http2Options);
+            _streamingOptions = streamingOptions.Clone();
+            _h2Manager = new Http2ConnectionManager(http2Options, _streamingOptions);
             _tlsBackend = tlsBackend;
         }
 
@@ -66,7 +81,7 @@ namespace TurboHTTP.Transport
             HttpTransportFactory.Register(
                 () => new RawSocketTransport(),
                 tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend),
-                (tlsBackend, poolOptions, http2Options) =>
+                (tlsBackend, poolOptions, http2Options, streamingOptions) =>
                     new RawSocketTransport(
                         pool: new TcpConnectionPool(
                             maxConnectionsPerHost: poolOptions.MaxConnectionsPerHost,
@@ -76,7 +91,8 @@ namespace TurboHTTP.Transport
                             happyEyeballsOptions: poolOptions.HappyEyeballs,
                             socketIoMode: poolOptions.SocketIoMode),
                         tlsBackend: tlsBackend,
-                        http2Options: http2Options));
+                        http2Options: http2Options,
+                        streamingOptions: streamingOptions));
         }
 
         public async Task DispatchAsync(
@@ -501,7 +517,8 @@ namespace TurboHTTP.Transport
                         handler,
                         context,
                         writeState,
-                        ct).ConfigureAwait(false);
+                        ct,
+                        _streamingOptions).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (
                     ShouldSurfaceCommittedNonReplayableBodyFailure(
@@ -534,7 +551,8 @@ namespace TurboHTTP.Transport
                     handler,
                     context,
                     tunneledWriteState,
-                    ct).ConfigureAwait(false);
+                    ct,
+                    _streamingOptions).ConfigureAwait(false);
             }
             catch (Exception ex) when (
                 ShouldSurfaceCommittedNonReplayableBodyFailure(
@@ -944,7 +962,8 @@ namespace TurboHTTP.Transport
                     handler,
                     context,
                     transportBodyReadToken,
-                    request.Timeout)
+                    request.Timeout,
+                    _streamingOptions)
                 .ConfigureAwait(false);
 
             context.RecordEvent("TransportComplete");
@@ -956,9 +975,10 @@ namespace TurboHTTP.Transport
             IHttpHandler handler,
             RequestContext context,
             Http11RequestWriteState requestWriteState,
-            CancellationToken ct)
+            CancellationToken ct,
+            StreamingOptions streamingOptions)
         {
-            var parsed = await SendOnStreamAsync(stream, request, context, requestWriteState, ct)
+            var parsed = await SendOnStreamAsync(stream, request, context, requestWriteState, ct, streamingOptions)
                 .ConfigureAwait(false);
             return await EmitParsedResponseAsync(parsed, handler, context).ConfigureAwait(false);
         }
@@ -969,7 +989,8 @@ namespace TurboHTTP.Transport
             IHttpHandler handler,
             RequestContext context,
             CancellationToken transportBodyReadToken,
-            TimeSpan requestTimeout)
+            TimeSpan requestTimeout,
+            StreamingOptions streamingOptions)
         {
             if (head == null)
                 throw new ArgumentNullException(nameof(head));
@@ -988,7 +1009,8 @@ namespace TurboHTTP.Transport
                     head,
                     lease,
                     transportBodyReadToken,
-                    requestTimeout);
+                    requestTimeout,
+                    streamingOptions);
 
                 await safeHandler.OnResponseStartAsync(
                         (int)head.StatusCode,
@@ -1016,7 +1038,8 @@ namespace TurboHTTP.Transport
                     request,
                     lease.Connection.Stream,
                     ct,
-                    requestWriteState)
+                    requestWriteState,
+                    _streamingOptions)
                 .ConfigureAwait(false);
 
             context.RecordEvent("TransportReceiving");
@@ -1035,14 +1058,16 @@ namespace TurboHTTP.Transport
             UHttpRequest request,
             RequestContext context,
             Http11RequestWriteState requestWriteState,
-            CancellationToken ct)
+            CancellationToken ct,
+            StreamingOptions streamingOptions)
         {
             context.RecordEvent("TransportSending");
             await Http11RequestSerializer.SerializeAsync(
                     request,
                     stream,
                     ct,
-                    requestWriteState)
+                    requestWriteState,
+                    streamingOptions)
                 .ConfigureAwait(false);
 
             context.RecordEvent("TransportReceiving");

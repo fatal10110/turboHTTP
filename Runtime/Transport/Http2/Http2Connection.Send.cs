@@ -10,8 +10,6 @@ namespace TurboHTTP.Transport.Http2
 {
     internal partial class Http2Connection
     {
-        private const int DefaultStreamingSendBufferBytes = 32 * 1024;
-
         private async Task SendHeadersAsync(
             int streamId,
             ReadOnlyMemory<byte> headerBlock,
@@ -179,7 +177,7 @@ namespace TurboHTTP.Transport.Http2
                             return;
 
                         if (buffer == null)
-                            buffer = ArrayPool<byte>.Shared.Rent(DefaultStreamingSendBufferBytes);
+                            buffer = ArrayPool<byte>.Shared.Rent(_streamingSendBufferBytes);
 
                         int bytesToRead = remaining.Value > buffer.Length
                             ? buffer.Length
@@ -213,7 +211,7 @@ namespace TurboHTTP.Transport.Http2
                         return;
 
                     if (buffer == null)
-                        buffer = ArrayPool<byte>.Shared.Rent(DefaultStreamingSendBufferBytes);
+                        buffer = ArrayPool<byte>.Shared.Rent(_streamingSendBufferBytes);
 
                     int bytesRead = await session.ReadAsync(
                             new Memory<byte>(buffer, 0, buffer.Length),

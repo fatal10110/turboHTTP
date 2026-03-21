@@ -84,6 +84,22 @@ namespace TurboHTTP.Testing
             return false;
         }
 
+        public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+        {
+            ThrowIfUnavailable();
+            ThrowIfFaulted();
+
+            if (!_hasBufferedData || _chunkIndex != 0 || _chunkOffset != 0 || _trailers.Count != 0)
+            {
+                body = default;
+                return false;
+            }
+
+            body = new DetachedBufferedBody(_bufferedData);
+            Interlocked.Exchange(ref _disposed, 1);
+            return true;
+        }
+
         public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
         {
             ThrowIfUnavailable();
@@ -145,8 +161,10 @@ namespace TurboHTTP.Testing
 
         public ValueTask DisposeAsync()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return default;
+
             Interlocked.Increment(ref _disposeAsyncCount);
-            Interlocked.Exchange(ref _disposed, 1);
             return default;
         }
 

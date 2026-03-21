@@ -108,11 +108,19 @@ namespace TurboHTTP.Core
             RequestContext context)
         {
             SegmentedBuffer bufferedBody = null;
+            DetachedBufferedBody detachedBody = default;
             byte[] rented = null;
+            bool detached = false;
+            IDisposable detachedOwner = null;
+            bool detachedOwnershipTransferred = false;
 
             try
             {
-                if (body.TryGetBufferedData(out var data))
+                if (body.TryDetachBufferedBody(out detachedBody))
+                {
+                    detached = true;
+                }
+                else if (body.TryGetBufferedData(out var data))
                 {
                     if (!data.IsEmpty)
                     {
@@ -134,20 +142,38 @@ namespace TurboHTTP.Core
                     }
                 }
 
-                _ = await body.GetTrailersAsync(_cancellationToken).ConfigureAwait(false);
+                if (!detached)
+                    _ = await body.GetTrailersAsync(_cancellationToken).ConfigureAwait(false);
 
                 UHttpResponse response = null;
                 bool retainedRequest = false;
                 bool attachedRequestRelease = false;
                 try
                 {
-                    response = new UHttpResponse(
-                        (HttpStatusCode)statusCode,
-                        headers ?? new HttpHeaders(),
-                        bufferedBody?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
-                        bufferedBody,
-                        context.Elapsed,
-                        _request);
+                    if (detached)
+                    {
+                        detachedOwner = detachedBody.DetachOwner();
+                        response = new UHttpResponse(
+                            (HttpStatusCode)statusCode,
+                            headers ?? new HttpHeaders(),
+                            detachedBody.Sequence,
+                            detachedOwner,
+                            context.Elapsed,
+                            _request);
+                        detachedOwnershipTransferred = true;
+                        detachedOwner = null;
+                    }
+                    else
+                    {
+                        response = new UHttpResponse(
+                            (HttpStatusCode)statusCode,
+                            headers ?? new HttpHeaders(),
+                            bufferedBody?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
+                            bufferedBody,
+                            context.Elapsed,
+                            _request);
+                    }
+
                     bufferedBody = null;
 
                     if (_request.IsPooled)
@@ -174,6 +200,11 @@ namespace TurboHTTP.Core
             catch (Exception ex)
             {
                 bufferedBody?.Dispose();
+                detachedOwner?.Dispose();
+                // Safe with detachedOwner.Dispose(): DetachOwner() transfers the shared owner token
+                // out of detachedBody, so DisposeOwnedResources() becomes a no-op after transfer.
+                if (detached && !detachedOwnershipTransferred)
+                    detachedBody.DisposeOwnedResources();
                 Fail(ex);
             }
             finally
@@ -181,13 +212,16 @@ namespace TurboHTTP.Core
                 if (rented != null)
                     ArrayPool<byte>.Shared.Return(rented);
 
-                try
+                if (!detached)
                 {
-                    await body.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    Fail(ex);
+                    try
+                    {
+                        await body.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        Fail(ex);
+                    }
                 }
             }
         }

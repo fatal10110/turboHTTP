@@ -225,6 +225,19 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void ClientOptions_Clone_CopiesStreamingOptionsIndependently()
+        {
+            var options = new UHttpClientOptions();
+            options.Streaming.DefaultStreamingSendBufferBytes = 48 * 1024;
+
+            var clone = options.Clone();
+            options.Streaming.DefaultStreamingSendBufferBytes = 16 * 1024;
+
+            Assert.AreEqual(48 * 1024, clone.Streaming.DefaultStreamingSendBufferBytes);
+            Assert.AreEqual(16 * 1024, options.Streaming.DefaultStreamingSendBufferBytes);
+        }
+
+        [Test]
         public void Client_ImplementsIDisposable()
         {
             using var client = new UHttpClient();

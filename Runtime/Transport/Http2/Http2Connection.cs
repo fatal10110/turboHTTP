@@ -17,12 +17,9 @@ namespace TurboHTTP.Transport.Http2
     /// </summary>
     internal partial class Http2Connection : IDisposable
     {
-        private const int DefaultHttp2PerStreamReceiveBufferBytes = 256 * 1024;
-        private const int DefaultMaxConnectionBufferedBytes = 8 * 1024 * 1024;
         private const int DefaultConnectionReceiveWindowTargetBytes = 1024 * 1024;
         private const int RecentlyResetStreamSoftLimit = 512;
         private const int RecentlyResetStreamHardLimit = 1024;
-        private static readonly TimeSpan DefaultHttp2StallTimeout = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan DefaultMaintenanceInterval = TimeSpan.FromSeconds(5);
 
         // Connection identity
@@ -90,6 +87,7 @@ namespace TurboHTTP.Transport.Http2
         // HPACK table size tracking (for detecting changes including back-to-default)
         private int _lastHeaderTableSize = Http2Constants.DefaultHeaderTableSize;
         private readonly int _perStreamReceiveBufferBytes;
+        private readonly int _streamingSendBufferBytes;
         private readonly int _maxConnectionBufferedBytes;
         private readonly int _connectionRecvWindowTarget;
         private readonly TimeSpan _maintenanceInterval;
@@ -98,6 +96,9 @@ namespace TurboHTTP.Transport.Http2
             new ConcurrentDictionary<int, long>();
 
         internal int PerStreamReceiveBufferBytes => _perStreamReceiveBufferBytes;
+        internal int StreamingSendBufferBytes => _streamingSendBufferBytes;
+        internal int MaxConnectionBufferedBytes => _maxConnectionBufferedBytes;
+        internal long StallTimeoutMilliseconds => Volatile.Read(ref _stallTimeoutMs);
 
         public bool IsAlive =>
             !_goawayReceived &&
@@ -109,11 +110,16 @@ namespace TurboHTTP.Transport.Http2
             Stream stream,
             string host,
             int port,
-            Http2Options options)
+            Http2Options options,
+            StreamingOptions streamingOptions)
         {
             if (options == null)
             {
                 throw new ArgumentNullException(nameof(options));
+            }
+            if (streamingOptions == null)
+            {
+                throw new ArgumentNullException(nameof(streamingOptions));
             }
 
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
@@ -125,20 +131,21 @@ namespace TurboHTTP.Transport.Http2
             _schemeHeader = "https";
             _localSettings = new Http2Settings(options);
             _localSettings.Apply(Http2SettingId.EnablePush, options.EnablePush ? 1u : 0u);
+            _streamingSendBufferBytes = streamingOptions.DefaultStreamingSendBufferBytes;
             _perStreamReceiveBufferBytes = options.TestPerStreamReceiveBufferBytesOverride > 0
                 ? options.TestPerStreamReceiveBufferBytesOverride
                 : Math.Max(
-                    DefaultHttp2PerStreamReceiveBufferBytes,
+                    streamingOptions.DefaultHttp2PerStreamReceiveBufferBytes,
                     Math.Max(_localSettings.InitialWindowSize, _localSettings.MaxFrameSize));
             _maxConnectionBufferedBytes = options.TestMaxConnectionBufferedBytesOverride > 0
                 ? options.TestMaxConnectionBufferedBytesOverride
-                : DefaultMaxConnectionBufferedBytes;
+                : streamingOptions.MaxConnectionBufferedBytes;
             _connectionRecvWindowTarget = Math.Max(
                 Http2Constants.DefaultInitialWindowSize,
                 Math.Min(DefaultConnectionReceiveWindowTargetBytes, _maxConnectionBufferedBytes));
             _stallTimeoutMs = options.TestStallTimeoutMillisecondsOverride > 0
                 ? options.TestStallTimeoutMillisecondsOverride
-                : (long)DefaultHttp2StallTimeout.TotalMilliseconds;
+                : (long)TimeSpan.FromSeconds(streamingOptions.Http2StallTimeoutSeconds).TotalMilliseconds;
             _maintenanceInterval = TimeSpan.FromMilliseconds(
                 options.TestMaintenanceIntervalMillisecondsOverride > 0
                     ? options.TestMaintenanceIntervalMillisecondsOverride
@@ -147,9 +154,15 @@ namespace TurboHTTP.Transport.Http2
             _settingsAckSource.PrepareForUse();
         }
 
-        // Backward-compatible constructor that uses default HTTP/2 options.
+        // Backward-compatible constructor that uses default HTTP/2 and streaming options.
         public Http2Connection(Stream stream, string host, int port)
-            : this(stream, host, port, new Http2Options())
+            : this(stream, host, port, new Http2Options(), new StreamingOptions())
+        {
+        }
+
+        // Backward-compatible constructor that uses default streaming options.
+        public Http2Connection(Stream stream, string host, int port, Http2Options options)
+            : this(stream, host, port, options, new StreamingOptions())
         {
         }
 

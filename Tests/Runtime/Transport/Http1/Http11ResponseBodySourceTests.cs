@@ -36,7 +36,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     new SemaphoreSlim(0, 1),
                     new PooledConnection(socket, stream, "example.test", 80, false));
 
-                var source = new Http11ResponseBodySource(
+                await using var source = new Http11ResponseBodySource(
                     head,
                     lease,
                     CancellationToken.None,
@@ -56,6 +56,57 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
                 Assert.That(ex.HttpError.Message, Does.Contain("Response body exceeds maximum size"));
             });
+        }
+
+        [Test]
+        public void TryDetachBufferedBody_AfterReadAttemptOnEmptyBody_ReturnsFalse()
+        {
+            AssertAsync.Run(async () =>
+            {
+                await using var source = CreateEmptyBodySource(Http11ResponseBodyKind.Empty, contentLength: null);
+
+                Assert.AreEqual(0, await source.ReadAsync(new byte[1], CancellationToken.None));
+                Assert.IsFalse(source.TryDetachBufferedBody(out _));
+            });
+        }
+
+        [Test]
+        public void TryDetachBufferedBody_AfterDrainAttemptOnAlreadyCompletedEmptyBody_ReturnsTrue()
+        {
+            AssertAsync.Run(async () =>
+            {
+                await using var source = CreateEmptyBodySource(Http11ResponseBodyKind.ContentLength, contentLength: 0);
+
+                await source.DrainAsync(CancellationToken.None);
+                Assert.IsTrue(source.TryDetachBufferedBody(out _));
+            });
+        }
+
+        private static Http11ResponseBodySource CreateEmptyBodySource(
+            Http11ResponseBodyKind bodyKind,
+            long? contentLength)
+        {
+            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            var stream = new MemoryStream(Array.Empty<byte>(), writable: false);
+            var head = new ParsedResponseHead(new Http11ResponseParser.BufferedStreamReader(stream))
+            {
+                StatusCode = HttpStatusCode.OK,
+                Headers = HttpHeaders.Empty,
+                KeepAlive = false,
+                BodyKind = bodyKind,
+                ContentLength = contentLength
+            };
+
+            var lease = new ConnectionLease(
+                null,
+                new SemaphoreSlim(0, 1),
+                new PooledConnection(socket, stream, "example.test", 80, false));
+
+            return new Http11ResponseBodySource(
+                head,
+                lease,
+                CancellationToken.None,
+                TimeSpan.FromSeconds(30));
         }
 
         private sealed class RepeatingReadStream : Stream
