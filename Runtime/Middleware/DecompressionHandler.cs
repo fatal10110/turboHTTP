@@ -13,12 +13,11 @@ namespace TurboHTTP.Middleware
     internal sealed class DecompressionHandler : IHttpHandler
     {
         private static readonly uint[] Crc32Table = BuildCrc32Table();
+        private static readonly byte[] OverflowProbe = new byte[1];
 
         private readonly IHttpHandler _inner;
         private readonly long _maxDecompressedBodySizeBytes;
         private readonly long _maxCompressedBodySizeBytes;
-
-        private CompressionKind[] _compressionChain;
 
         private enum CompressionKind
         {
@@ -39,7 +38,6 @@ namespace TurboHTTP.Middleware
 
             _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
             _maxCompressedBodySizeBytes = maxDecompressedBodySizeBytes;
-            _compressionChain = Array.Empty<CompressionKind>();
         }
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
@@ -53,7 +51,8 @@ namespace TurboHTTP.Middleware
             IResponseBodySource body,
             RequestContext context)
         {
-            if (body == null || !TryResolveCompression(headers, out _compressionChain))
+            CompressionKind[] compressionChain;
+            if (body == null || !TryResolveCompression(headers, out compressionChain))
             {
                 await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
                 return;
@@ -82,7 +81,7 @@ namespace TurboHTTP.Middleware
                     var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
                     var decompressed = DecompressBufferedBody(
                         compressed,
-                        _compressionChain,
+                        compressionChain,
                         _maxDecompressedBodySizeBytes);
                     bufferedBody = new BufferedResponseBodySource(decompressed, trailers);
                 }
@@ -115,7 +114,7 @@ namespace TurboHTTP.Middleware
 
             var decompressedBody = new DecompressionBodySource(
                 body,
-                _compressionChain,
+                compressionChain,
                 _maxDecompressedBodySizeBytes);
 
             try
@@ -154,30 +153,37 @@ namespace TurboHTTP.Middleware
             using var decompressionStream = CreateDecompressionStream(compressedStream, compressionChain);
             using var output = new MemoryStream();
 
-            var buffer = new byte[64 * 1024];
-            long totalDecompressed = 0;
-            uint crc32 = uint.MaxValue;
-            while (true)
+            var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+            try
             {
-                var read = decompressionStream.Read(buffer, 0, buffer.Length);
-                if (read <= 0)
-                    break;
-
-                totalDecompressed += read;
-                if (totalDecompressed > maxDecompressedBodySizeBytes)
+                long totalDecompressed = 0;
+                uint crc32 = uint.MaxValue;
+                while (true)
                 {
-                    throw new IOException(
-                        $"Response decompression exceeded the maximum size ({maxDecompressedBodySizeBytes} bytes).");
+                    var read = decompressionStream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0)
+                        break;
+
+                    totalDecompressed += read;
+                    if (totalDecompressed > maxDecompressedBodySizeBytes)
+                    {
+                        throw new IOException(
+                            $"Response decompression exceeded the maximum size ({maxDecompressedBodySizeBytes} bytes).");
+                    }
+
+                    if (validateSingleGzipTrailer)
+                        crc32 = UpdateCrc32(crc32, new ReadOnlySpan<byte>(buffer, 0, read));
+
+                    output.Write(buffer, 0, read);
                 }
 
                 if (validateSingleGzipTrailer)
-                    crc32 = UpdateCrc32(crc32, new ReadOnlySpan<byte>(buffer, 0, read));
-
-                output.Write(buffer, 0, read);
+                    ValidateSingleGzipTrailer(compressedSequence, totalDecompressed, crc32 ^ uint.MaxValue);
             }
-
-            if (validateSingleGzipTrailer)
-                ValidateSingleGzipTrailer(compressedSequence, totalDecompressed, crc32 ^ uint.MaxValue);
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
 
             return output.ToArray();
         }
@@ -211,7 +217,6 @@ namespace TurboHTTP.Middleware
             private readonly BodySourceStream _compressedStream;
             private readonly BufferedStream _readAheadStream;
             private readonly Stream _decompressionStream;
-            private readonly byte[] _overflowProbe = new byte[1];
 
             private long _bytesRead;
             private int _completed;
@@ -377,6 +382,9 @@ namespace TurboHTTP.Middleware
                 }
                 catch
                 {
+                    // Abort is the terminal transport-side release primitive for failed drain paths.
+                    // The response-body source contract requires Abort() to tear down remaining
+                    // transport state when DisposeAsync cannot complete a clean drain.
                     _inner.Abort();
                 }
                 finally
@@ -400,7 +408,7 @@ namespace TurboHTTP.Middleware
 
             private async ValueTask<int> ProbePastLimitAsync(CancellationToken ct)
             {
-                var read = await _decompressionStream.ReadAsync(_overflowProbe.AsMemory(), ct).ConfigureAwait(false);
+                var read = await _decompressionStream.ReadAsync(OverflowProbe.AsMemory(), ct).ConfigureAwait(false);
                 if (read == 0)
                 {
                     Volatile.Write(ref _completed, 1);
@@ -490,6 +498,9 @@ namespace TurboHTTP.Middleware
                 {
                     ValidateReadArguments(buffer, offset, count);
                     ThrowIfDisposed();
+                    // GZipStream/DeflateStream call the synchronous Stream.Read path internally. This
+                    // adapter intentionally bridges to IResponseBodySource.ReadAsync via sync-over-async,
+                    // so DecompressionBodySource must only be consumed on non-pumping worker threads.
                     return _inner.ReadAsync(
                             new Memory<byte>(buffer, offset, count),
                             CancellationToken.None)
@@ -503,6 +514,8 @@ namespace TurboHTTP.Middleware
                     if (buffer.IsEmpty)
                         return 0;
 
+                    // Same invariant as Read(byte[],...): this synchronous adapter is only safe when
+                    // the caller is not running on a SynchronizationContext that requires message pumping.
                     var rented = ArrayPool<byte>.Shared.Rent(buffer.Length);
                     try
                     {

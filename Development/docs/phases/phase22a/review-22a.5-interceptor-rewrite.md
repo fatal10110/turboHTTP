@@ -8,6 +8,56 @@
 
 ---
 
+## Review Round 2 (Remediation Verification)
+
+**Verification date:** 2026-03-21
+**Verifier:** implementation follow-up pass against the original `unity-infrastructure-architect` and `unity-network-architect` findings
+**Verdict:** READY FOR 22a.6 — all blocking and non-blocking findings addressed; remaining observation-only notes are informational/accepted
+
+### Resolved in this pass
+
+- **B-1:** `TeeBodySource` now uses `int` state flags with `Interlocked`/`Volatile`, and `Abort()` is idempotent
+- **B-2:** `ObservedResponseBodySource.Abort()` now uses `Interlocked.Exchange`
+- **B-3:** `ObservedResponseBodySource` now records `_error` via `Interlocked.CompareExchange`
+- **B-4 / T-1:** added a streaming cache test that injects a tee accumulator write failure and verifies full response delivery with no cache entry
+- **NB-1:** documented the `BodySourceStream` sync-over-async invariant in `DecompressionHandler`
+- **NB-2:** redirect discard cancellation now completes as canceled instead of leaking `OperationCanceledException` out of `OnResponseStartAsync`
+- **NB-3 / T-2:** retry tests were moved off the legacy compat callback path and now include a non-buffered streaming-body drain regression
+- **NB-4:** `DecompressionHandler` no longer stores a mutable `_compressionChain` field; the chain is resolved once per response start
+- **NB-5 / T-3:** added a full-consumption streaming metrics regression for `TotalBytesReceived`
+- **NB-6:** cache streaming tests now use `AssertAsync.Run(...)`
+- **NB-7:** documented why redirect replay keeps `StreamRequestBody` ownership shared
+- **NB-8:** buffered decompression now rents its 64 KiB scratch buffer from `ArrayPool<byte>`
+- **O-2:** `_overflowProbe` is now shared as a static readonly probe buffer
+- **O-6:** documented the abort-only release path on failed decompression drain
+- **O-7:** extracted the shared response-body discard logic into `ResponseBodyDiscardHelper`
+
+### Accepted observation-only notes
+
+The following review items remain informational and were not treated as correctness blockers in this pass:
+
+- **O-1:** `DecompressionBodySource.DrainAsync` intentionally drains through the decompression stream
+- **O-3:** `MonitorHandler._totalResponseBytes` / `LoggingHandler._bytesReceived` remain request-scoped plain `long` fields
+- **O-4:** `MonitorHandler` still saturates `originalResponseBodySize` to `int.MaxValue`
+- **O-5:** plugin observation still does not count discard-only drains as byte reads
+- **O-8:** cache trailer loading still tolerates post-dispose inner behavior via catch-and-abort fallback
+
+### Verification
+
+- `git diff --check`
+- `dotnet build /tmp/phase22a5-review-fixes-check/phase22a5-review-fixes-check.csproj -v minimal -p:UseAppHost=false`
+- `dotnet run --project /tmp/phase22a5-review-fixes-check/phase22a5-review-fixes-check.csproj --no-build -p:UseAppHost=false -v minimal`
+- `dotnet run --project /tmp/phase22a5-step1-check/phase22a5-step1-check.csproj --no-build -p:UseAppHost=false -v minimal`
+- `dotnet run --project /tmp/phase22a5-step4-check/phase22a5-step4-check.csproj --no-build -p:UseAppHost=false -v minimal`
+- `dotnet run --project /tmp/phase22a5-step5-check/phase22a5-step5-check.csproj --no-build -p:UseAppHost=false -v minimal`
+
+Validation results:
+
+- review-fix harness: `phase22a.5 review-fix checks passed (68 cache/retry/redirect/metrics tests)`
+- decompression harness: `phase22a.5 step1 checks passed`
+- cache harness: `phase22a.5 step4 checks passed (35 cache tests)`
+- observability harness: `phase22a.5 step5 checks passed (72 observability/serializer tests)`
+
 ## Implementation Completeness
 
 All 7 spec steps are implemented:
@@ -305,8 +355,8 @@ Called from `DisposeAsync` after checking `_completedNaturally`. Calls `_inner.G
 | DecompressionBodySource | OK | OK | OK (B-1 fixed) | OK (B-1 fixed) | OK (Middleware assembly) |
 | RetryDetectorHandler | OK | OK | OK | OK | OK (Retry assembly) |
 | RedirectHandler | OK | OK | OK | OK | OK (Middleware assembly) |
-| TeeBodySource | OK | OK | BLOCKED (B-1) | BLOCKED (B-1) | OK (Cache assembly) |
-| ObservedResponseBodySource | OK | OK | BLOCKED (B-2, B-3) | BLOCKED (B-2, B-3) | OK (Observability assembly) |
+| TeeBodySource | OK | OK | OK (B-1 fixed) | OK (B-1 fixed) | OK (Cache assembly) |
+| ObservedResponseBodySource | OK | OK | OK (B-2, B-3 fixed) | OK (B-2, B-3 fixed) | OK (Observability assembly) |
 | FileDownloader | OK | OK | OK | OK | OK (Files assembly) |
 | CapabilityEnforcedInterceptor | OK | OK | OK | OK | OK (Core assembly) |
 
@@ -314,21 +364,68 @@ Called from `DisposeAsync` after checking `_completedNaturally`. Calls `_inner.G
 
 ## Summary Table
 
-| Severity | Count | R1 Status |
-|----------|-------|-----------|
-| Critical/Blocking | 4 | Open |
-| Non-Blocking | 8 | Open |
-| Observations | 8 | Informational |
-| Missing Tests | 3 | Open |
+| Severity | Count | R1 Status | R2 Status |
+|----------|-------|-----------|-----------|
+| Critical/Blocking | 4 | Open | All Fixed |
+| Non-Blocking | 8 | Open | All Fixed |
+| Observations | 8 | Informational | Informational |
+| Missing Tests | 3 | Open | All Fixed |
 
 ---
 
-## Required Changes Before 22a.6
+## ~~Required Changes Before 22a.6~~
 
-1. **B-1:** Convert `TeeBodySource._aborted`, `_completedNaturally`, `_trailersLoaded` to `int` with `Interlocked.Exchange`/`Volatile.Read`. Make `Abort()` idempotent via `Interlocked.Exchange(ref _aborted, 1) != 0`.
-2. **B-2:** Convert `ObservedResponseBodySource._aborted` to `int` with `Interlocked.Exchange`. Make `Abort()` idempotent.
-3. **B-3:** Replace `_error = _error ?? ex` with `Interlocked.CompareExchange(ref _error, ex, null)` in `ObservedResponseBodySource`.
-4. **B-4:** Add cache tee mid-stream write failure test.
+~~1. **B-1:** Convert `TeeBodySource._aborted`, `_completedNaturally`, `_trailersLoaded` to `int` with `Interlocked.Exchange`/`Volatile.Read`. Make `Abort()` idempotent via `Interlocked.Exchange(ref _aborted, 1) != 0`.~~
+~~2. **B-2:** Convert `ObservedResponseBodySource._aborted` to `int` with `Interlocked.Exchange`. Make `Abort()` idempotent.~~
+~~3. **B-3:** Replace `_error = _error ?? ex` with `Interlocked.CompareExchange(ref _error, ex, null)` in `ObservedResponseBodySource`.~~
+~~4. **B-4:** Add cache tee mid-stream write failure test.~~
+
+All four resolved in R2 — see Round 2 below.
+
+---
+
+## Review Round 3 (Agent Verification Pass)
+
+**Review date:** 2026-03-21
+**Reviewers:** unity-infrastructure-architect, unity-network-architect
+**Verdict:** PASS — All 15 items verified with file:line evidence. No regressions.
+
+### Round 2 Fix Verification
+
+| Issue | Infra | Network | Evidence |
+|-------|-------|---------|----------|
+| B-1 TeeBodySource volatile/interlocked | PASS | PASS | `CacheStoringHandler.cs:149-152` (`int` fields), `:242` (`Interlocked.Exchange` abort), `:253,280-282` (`Volatile.Read`), `:203,259` (`Volatile.Write`), `:361` (atomic accumulator detach) |
+| B-2 ObservedResponseBodySource._aborted | PASS | PASS | `ObservedResponseBodySource.cs:37` (`int _aborted`), `:113-119` (`Interlocked.Exchange`), `:160` (`Volatile.Read`) |
+| B-3 ObservedResponseBodySource._error | PASS | PASS | `ObservedResponseBodySource.cs:88,135` (`Interlocked.CompareExchange`), `:161` (`Volatile.Read`) |
+| B-4/T-1 Cache write-failure test | PASS | PASS | `CacheInterceptorTests.Streaming.cs:207-250` (test), `:316-358` (`ThrowAfterBytesAccumulator`) |
+| NB-1 BodySourceStream doc | PASS | — | `DecompressionHandler.cs:501-503,517-518` (sync-over-async invariant documented) |
+| NB-2 Redirect drain cancellation | PASS | PASS | `RedirectHandler.cs:182-184` (`catch OperationCanceledException → TrySetCanceled`), `:233-238` (delegates to `ResponseBodyDiscardHelper`) |
+| NB-3/T-2 Retry streaming tests | PASS | PASS | `RetryInterceptorTests.cs:413-468` (streaming drain test), `:622,679` (legacy API removed) |
+| NB-4 _compressionChain readonly | PASS | — | `DecompressionHandler.cs:54` — no instance field, local var via `out` parameter |
+| NB-5/T-3 Streaming metrics test | PASS | PASS | `MetricsInterceptorTests.cs:254-303` (incremental `TotalBytesReceived` via streaming body) |
+| NB-6 AssertAsync.Run | PASS | — | `CacheInterceptorTests.Streaming.cs:20,67,113,159,209` — all use `AssertAsync.Run` |
+| NB-7 Redirect comment | PASS | — | `RedirectInterceptor.cs:221-223` (ownership comment on `StreamRequestBody` path) |
+| NB-8 ArrayPool decompression | PASS | — | `DecompressionHandler.cs:156-185` (`ArrayPool<byte>.Shared.Rent` with try/finally return) |
+| O-2 _overflowProbe static | PASS | — | `DecompressionHandler.cs:16` (`static readonly byte[]`) |
+| O-6 Abort-only doc | PASS | — | `DecompressionHandler.cs:385-389` (abort-only release path documented) |
+| O-7 ResponseBodyDiscardHelper | PASS | PASS | `ResponseBodyDiscardHelper.cs` exists; `RetryDetectorHandler.cs:92-97` and `RedirectHandler.cs:233-238` both delegate |
+
+### Regression Checks
+
+| File | Verdict | Notes |
+|------|---------|-------|
+| `RetryDetectorHandler.cs` | No regressions | Clean delegation to `ResponseBodyDiscardHelper`, `_committed` guard intact |
+| `RedirectHandler.cs` | No regressions | Outer `OperationCanceledException` catch covers drain cancellation path |
+| `PluginContext.cs` | No regressions | `ObservedBodySource` unchanged, all `Interlocked`/`Volatile` patterns intact |
+| `BufferedDispatchBridgeTests.cs` | No regressions | Existing tests intact |
+| `Http11RequestSerializer.cs` | No regressions | Framing, CRLF validation, chunked encoding all intact |
+| `Http2Connection.Send.cs` | No regressions | Flow control, write lock, stream-reset guard all intact |
+| `RawSocketTransport.cs` | No regressions | Timeout enforcement, exception mapping, atomic disposal intact |
+| `ResponseCollectorHandler.cs` | No regressions | Detach, buffered, streaming paths all intact |
+
+### Informational Note
+
+Older `MetricsInterceptorTests` (pre-22a.5) still use `Task.Run(...).GetAwaiter().GetResult()` — not in scope for this phase. New tests correctly use `AssertAsync.Run`.
 
 ---
 
@@ -337,3 +434,5 @@ Called from `DisposeAsync` after checking `_completedNaturally`. Calls `_inner.G
 | Round | Date | Verdict | Key Actions |
 |-------|------|---------|-------------|
 | 1 | 2026-03-21 | BLOCKED | 4 blocking, 8 non-blocking, 8 observations, 3 test gaps |
+| 2 | 2026-03-21 | READY FOR 22a.6 | All blocking/non-blocking findings resolved; remaining observation notes accepted as informational |
+| 3 | 2026-03-21 | PASS | Both specialist agents verified all 15 fixes. No regressions. Phase cleared for 22a.6. |

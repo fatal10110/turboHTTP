@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Cache;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Testing;
 
 namespace TurboHTTP.Tests.Cache
@@ -16,7 +17,7 @@ namespace TurboHTTP.Tests.Cache
         [Test]
         public void CacheInterceptor_StreamingResponse_CachesAfterNaturalEof()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var storage = new MemoryCacheStorage();
                 var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
@@ -58,13 +59,13 @@ namespace TurboHTTP.Tests.Cache
                 Assert.AreEqual(1, callCount);
                 Assert.AreEqual("HIT", second.Headers.Get("X-Cache"));
                 Assert.AreEqual("payload", second.GetBodyAsString());
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void CacheInterceptor_StreamingResponse_DisposedBeforeEof_IsNotCached()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var storage = new MemoryCacheStorage();
                 var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
@@ -104,13 +105,13 @@ namespace TurboHTTP.Tests.Cache
                 using var second = await bufferedPipeline.ExecuteAsync(request, new RequestContext(request));
                 Assert.AreEqual(2, callCount);
                 Assert.AreEqual("first-second", second.GetBodyAsString());
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void CacheInterceptor_KnownLengthAboveLimit_SkipsCachingWithoutBlockingResponse()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var storage = new MemoryCacheStorage();
                 var middleware = new CacheInterceptor(new CachePolicy
@@ -151,13 +152,13 @@ namespace TurboHTTP.Tests.Cache
                 Assert.AreEqual("payload", second.GetBodyAsString());
                 Assert.AreEqual(2, callCount);
                 Assert.AreEqual(0, await storage.GetCountAsync().ConfigureAwait(false));
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void CacheInterceptor_UnknownLengthAboveLimit_DetachesAccumulatorAndDeliversFullResponse()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var storage = new MemoryCacheStorage();
                 var middleware = new CacheInterceptor(new CachePolicy
@@ -199,7 +200,53 @@ namespace TurboHTTP.Tests.Cache
                 Assert.AreEqual("payload", second.GetBodyAsString());
                 Assert.AreEqual(2, callCount);
                 Assert.AreEqual(0, await storage.GetCountAsync().ConfigureAwait(false));
-            }).GetAwaiter().GetResult();
+            });
+        }
+
+        [Test]
+        public void CacheInterceptor_StreamingAccumulatorWriteFailure_DetachesAndDeliversFullResponse()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var storage = new MemoryCacheStorage();
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+                middleware.StreamingAccumulatorFactory = () => new ThrowAfterBytesAccumulator(3);
+
+                var headers = new HttpHeaders();
+                headers.Set("Cache-Control", "max-age=60");
+
+                int callCount = 0;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    Interlocked.Increment(ref callCount);
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        headers,
+                        new MockResponseBodySource(
+                            new[]
+                            {
+                                (ReadOnlyMemory<byte>)Encoding.UTF8.GetBytes("pay"),
+                                Encoding.UTF8.GetBytes("load")
+                            },
+                            length: null,
+                            trailers: HttpHeaders.Empty,
+                            exposeBufferedData: false),
+                        ctx).AsTask();
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/write-failure"));
+
+                using var first = await pipeline.ExecuteAsync(request, new RequestContext(request));
+                await Task.Delay(50).ConfigureAwait(false);
+                using var second = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual("payload", first.GetBodyAsString());
+                Assert.AreEqual("payload", second.GetBodyAsString());
+                Assert.AreEqual(2, callCount);
+                Assert.AreEqual(0, await storage.GetCountAsync().ConfigureAwait(false));
+            });
         }
 
         private sealed class CallbackTransport : IHttpTransport
@@ -263,6 +310,50 @@ namespace TurboHTTP.Tests.Cache
             public void OnResponseError(UHttpException error, RequestContext context)
             {
                 Assert.Fail("Unexpected error: " + error);
+            }
+        }
+
+        private sealed class ThrowAfterBytesAccumulator : IStreamingCacheAccumulator
+        {
+            private readonly int _byteLimit;
+            private SegmentedBuffer _buffer = new SegmentedBuffer();
+            private int _written;
+
+            internal ThrowAfterBytesAccumulator(int byteLimit)
+            {
+                _byteLimit = byteLimit;
+            }
+
+            public long Length => _buffer?.Length ?? 0;
+
+            public void Write(ReadOnlySpan<byte> chunk)
+            {
+                var remaining = _byteLimit - _written;
+                if (remaining <= 0)
+                    throw new IOException("Simulated tee accumulator failure.");
+
+                if (chunk.Length > remaining)
+                {
+                    _buffer.Write(chunk.Slice(0, remaining));
+                    _written += remaining;
+                    throw new IOException("Simulated tee accumulator failure.");
+                }
+
+                _buffer.Write(chunk);
+                _written += chunk.Length;
+            }
+
+            public SegmentedBuffer DetachBuffer()
+            {
+                var buffer = _buffer;
+                _buffer = null;
+                return buffer;
+            }
+
+            public void Dispose()
+            {
+                _buffer?.Dispose();
+                _buffer = null;
             }
         }
     }

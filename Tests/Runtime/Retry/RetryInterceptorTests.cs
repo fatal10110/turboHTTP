@@ -410,6 +410,64 @@ namespace TurboHTTP.Tests.Retry
         }
 
         [Test]
+        public void Retryable5xxStreamingResponse_DrainsNonBufferedBodyBeforeRetry()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                StreamingDrainProbeBodySource probeBody = null;
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    int currentCall = Interlocked.Increment(ref callCount);
+                    handler.OnRequestStart(req, ctx);
+
+                    if (currentCall == 1)
+                    {
+                        probeBody = new StreamingDrainProbeBodySource(
+                            new MockResponseBodySource(
+                                new[]
+                                {
+                                    (ReadOnlyMemory<byte>)Encoding.UTF8.GetBytes("pay"),
+                                    Encoding.UTF8.GetBytes("load")
+                                },
+                                length: null,
+                                trailers: HttpHeaders.Empty,
+                                exposeBufferedData: false));
+
+                        return handler.OnResponseStartAsync(
+                                (int)HttpStatusCode.InternalServerError,
+                                new HttpHeaders(),
+                                probeBody,
+                                ctx)
+                            .AsTask();
+                    }
+
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            new BufferedResponseBodySource(Array.Empty<byte>(), HttpHeaders.Empty),
+                            ctx)
+                        .AsTask();
+                });
+
+                var middleware = new RetryInterceptor(CreatePolicy(maxRetries: 1));
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/drain-stream-before-retry"));
+                var context = new RequestContext(request);
+
+                using var response = await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(2, callCount);
+                Assert.NotNull(probeBody);
+                Assert.AreEqual(3, probeBody.ReadAsyncCount);
+                Assert.AreEqual(0, probeBody.AbortCount);
+                Assert.AreEqual(1, probeBody.DisposeAsyncCount);
+            });
+        }
+
+        [Test]
         public void Retryable5xxResponse_DrainFailure_AbortsBodyBeforeRetry()
         {
             AssertAsync.Run(async () =>
@@ -578,14 +636,20 @@ namespace TurboHTTP.Tests.Retry
                         // at least one full second ahead to keep the observed delay deterministic.
                         var retryAt = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 2);
                         headers.Set("Retry-After", retryAt.ToString("R"));
-                        handler.OnResponseStart((int)HttpStatusCode.ServiceUnavailable, headers, ctx);
-                        handler.OnResponseEnd(HttpHeaders.Empty, ctx);
-                        return Task.CompletedTask;
+                        return handler.OnResponseStartAsync(
+                                (int)HttpStatusCode.ServiceUnavailable,
+                                headers,
+                                new BufferedResponseBodySource(Array.Empty<byte>(), HttpHeaders.Empty),
+                                ctx)
+                            .AsTask();
                     }
 
-                    handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
-                    handler.OnResponseEnd(HttpHeaders.Empty, ctx);
-                    return Task.CompletedTask;
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            new BufferedResponseBodySource(Array.Empty<byte>(), HttpHeaders.Empty),
+                            ctx)
+                        .AsTask();
                 });
 
                 var middleware = new RetryInterceptor(new RetryPolicy
@@ -621,14 +685,14 @@ namespace TurboHTTP.Tests.Retry
                 {
                     int currentCall = Interlocked.Increment(ref callCount);
                     handler.OnRequestStart(req, ctx);
-                    handler.OnResponseStart(
-                        currentCall == 1
-                            ? (int)HttpStatusCode.InternalServerError
-                            : (int)HttpStatusCode.OK,
-                        new HttpHeaders(),
-                        ctx);
-                    handler.OnResponseEnd(HttpHeaders.Empty, ctx);
-                    return Task.CompletedTask;
+                    return handler.OnResponseStartAsync(
+                            currentCall == 1
+                                ? (int)HttpStatusCode.InternalServerError
+                                : (int)HttpStatusCode.OK,
+                            new HttpHeaders(),
+                            new BufferedResponseBodySource(Array.Empty<byte>(), HttpHeaders.Empty),
+                            ctx)
+                        .AsTask();
                 });
 
                 var middleware = new RetryInterceptor(new RetryPolicy
@@ -862,6 +926,63 @@ namespace TurboHTTP.Tests.Retry
             {
                 DisposeAsyncCount++;
                 return default;
+            }
+        }
+
+        private sealed class StreamingDrainProbeBodySource : IResponseBodySource
+        {
+            private readonly MockResponseBodySource _inner;
+
+            internal StreamingDrainProbeBodySource(MockResponseBodySource inner)
+            {
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            }
+
+            public int ReadAsyncCount { get; private set; }
+            public int AbortCount { get; private set; }
+            public int DisposeAsyncCount { get; private set; }
+
+            public long? Length => _inner.Length;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                return _inner.TryGetBufferedData(out data);
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                return _inner.TryDetachBufferedBody(out body);
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                ReadAsyncCount++;
+                return _inner.ReadAsync(destination, ct);
+            }
+
+            public async ValueTask DrainAsync(CancellationToken ct)
+            {
+                byte[] buffer = new byte[4];
+                while (await ReadAsync(buffer, ct).ConfigureAwait(false) != 0)
+                {
+                }
+            }
+
+            public void Abort()
+            {
+                AbortCount++;
+                _inner.Abort();
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                return _inner.GetTrailersAsync(ct);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                DisposeAsyncCount++;
+                return _inner.DisposeAsync();
             }
         }
 

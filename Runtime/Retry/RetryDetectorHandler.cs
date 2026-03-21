@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Retry
 {
@@ -90,64 +91,9 @@ namespace TurboHTTP.Retry
 
         private async ValueTask DiscardBodyAsync(IResponseBodySource body)
         {
-            if (body == null)
-                return;
-
-            var drained = false;
-            var aborted = false;
-            CancellationTokenSource discardTimeoutCts = null;
-            try
-            {
-                discardTimeoutCts = _dispatchCancellationToken.CanBeCanceled
-                    ? CancellationTokenSource.CreateLinkedTokenSource(_dispatchCancellationToken)
-                    : new CancellationTokenSource();
-                discardTimeoutCts.CancelAfter(_responseDiscardTimeout);
-
-                try
-                {
-                    await body.DrainAsync(discardTimeoutCts.Token).ConfigureAwait(false);
-                    drained = true;
-                }
-                catch (OperationCanceledException) when (_dispatchCancellationToken.IsCancellationRequested)
-                {
-                    body.Abort();
-                    aborted = true;
-                    throw;
-                }
-                catch
-                {
-                    body.Abort();
-                    aborted = true;
-                }
-            }
-            finally
-            {
-                discardTimeoutCts?.Dispose();
-
-                try
-                {
-                    if (!drained && !aborted)
-                    {
-                        body.Abort();
-                        aborted = true;
-                    }
-
-                    await body.DisposeAsync().ConfigureAwait(false);
-                }
-                catch
-                {
-                    if (!aborted)
-                    {
-                        try
-                        {
-                            body.Abort();
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }
-            }
+            await ResponseBodyDiscardHelper
+                .DiscardAsync(body, _dispatchCancellationToken, _responseDiscardTimeout)
+                .ConfigureAwait(false);
         }
 
         private static TimeSpan? ParseRetryAfter(HttpHeaders headers)

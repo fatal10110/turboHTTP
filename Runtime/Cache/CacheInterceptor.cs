@@ -96,6 +96,8 @@ namespace TurboHTTP.Cache
         private readonly object _pendingMutationLock = new object();
         private readonly Dictionary<string, Task> _pendingMutations = new Dictionary<string, Task>(StringComparer.Ordinal);
         private readonly CancellationTokenSource _backgroundWorkCancellation = new CancellationTokenSource();
+        private Func<IStreamingCacheAccumulator> _streamingAccumulatorFactory =
+            static () => new SegmentedBufferStreamingCacheAccumulator();
         private int _disposed;
 
         private sealed class VariantBucket
@@ -1174,6 +1176,17 @@ namespace TurboHTTP.Cache
         }
 
         internal long MaxCacheableResponseBodyBytes => _policy.MaxCacheableResponseBodyBytes;
+
+        internal Func<IStreamingCacheAccumulator> StreamingAccumulatorFactory
+        {
+            get => _streamingAccumulatorFactory;
+            set => _streamingAccumulatorFactory = value ?? throw new ArgumentNullException(nameof(value));
+        }
+
+        internal IStreamingCacheAccumulator CreateStreamingAccumulator()
+        {
+            return _streamingAccumulatorFactory();
+        }
 
         internal static bool ShouldConsiderForStorage(HttpMethod requestMethod, int statusCode)
         {

@@ -143,12 +143,12 @@ namespace TurboHTTP.Cache
         private readonly HttpHeaders _responseHeaders;
         private readonly long _maxCacheableResponseBodyBytes;
 
-        private SegmentedBuffer _accumulator = new SegmentedBuffer();
+        private IStreamingCacheAccumulator _accumulator;
         private long _accumulatedBytes;
         private HttpHeaders _trailers;
-        private bool _trailersLoaded;
-        private bool _completedNaturally;
-        private bool _aborted;
+        private int _trailersLoaded;
+        private int _completedNaturally;
+        private int _aborted;
         private int _disposed;
 
         internal TeeBodySource(
@@ -174,6 +174,7 @@ namespace TurboHTTP.Cache
                 throw new ArgumentOutOfRangeException(nameof(maxCacheableResponseBodyBytes));
 
             _maxCacheableResponseBodyBytes = maxCacheableResponseBodyBytes;
+            _accumulator = owner.CreateStreamingAccumulator();
         }
 
         public long? Length => _inner.Length;
@@ -199,7 +200,7 @@ namespace TurboHTTP.Cache
                 var read = await _inner.ReadAsync(destination, ct).ConfigureAwait(false);
                 if (read == 0)
                 {
-                    _completedNaturally = true;
+                    Volatile.Write(ref _completedNaturally, 1);
                     return 0;
                 }
 
@@ -238,10 +239,9 @@ namespace TurboHTTP.Cache
 
         public void Abort()
         {
-            if (_aborted)
+            if (Interlocked.Exchange(ref _aborted, 1) != 0)
                 return;
 
-            _aborted = true;
             DetachAccumulator();
             _inner.Abort();
         }
@@ -250,13 +250,13 @@ namespace TurboHTTP.Cache
         {
             ThrowIfDisposed();
 
-            if (_trailersLoaded)
+            if (Volatile.Read(ref _trailersLoaded) != 0)
                 return _trailers ?? HttpHeaders.Empty;
 
             try
             {
                 _trailers = await _inner.GetTrailersAsync(ct).ConfigureAwait(false);
-                _trailersLoaded = true;
+                Volatile.Write(ref _trailersLoaded, 1);
                 return _trailers ?? HttpHeaders.Empty;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -277,13 +277,14 @@ namespace TurboHTTP.Cache
 
             try
             {
-                if (!_aborted &&
-                    _completedNaturally &&
-                    _accumulator != null &&
+                if (Volatile.Read(ref _aborted) == 0 &&
+                    Volatile.Read(ref _completedNaturally) != 0 &&
+                    Volatile.Read(ref _accumulator) != null &&
                     await EnsureTrailersLoadedForStoreAsync().ConfigureAwait(false))
                 {
-                    var bodyToStore = _accumulator;
-                    _accumulator = null;
+                    var bodyToStore = DetachAccumulatorForStore();
+                    if (bodyToStore == null)
+                        return;
 
                     try
                     {
@@ -309,8 +310,7 @@ namespace TurboHTTP.Cache
             }
             finally
             {
-                _accumulator?.Dispose();
-                _accumulator = null;
+                Interlocked.Exchange(ref _accumulator, null)?.Dispose();
                 await _inner.DisposeAsync().ConfigureAwait(false);
             }
         }
@@ -340,13 +340,13 @@ namespace TurboHTTP.Cache
 
         private async ValueTask<bool> EnsureTrailersLoadedForStoreAsync()
         {
-            if (_trailersLoaded)
+            if (Volatile.Read(ref _trailersLoaded) != 0)
                 return true;
 
             try
             {
                 _trailers = await _inner.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
-                _trailersLoaded = true;
+                Volatile.Write(ref _trailersLoaded, 1);
                 return true;
             }
             catch
@@ -358,8 +358,23 @@ namespace TurboHTTP.Cache
 
         private void DetachAccumulator()
         {
-            _accumulator?.Dispose();
-            _accumulator = null;
+            Interlocked.Exchange(ref _accumulator, null)?.Dispose();
+        }
+
+        private SegmentedBuffer DetachAccumulatorForStore()
+        {
+            var accumulator = Interlocked.Exchange(ref _accumulator, null);
+            if (accumulator == null)
+                return null;
+
+            try
+            {
+                return accumulator.DetachBuffer();
+            }
+            finally
+            {
+                accumulator.Dispose();
+            }
         }
 
         private void ThrowIfDisposed()

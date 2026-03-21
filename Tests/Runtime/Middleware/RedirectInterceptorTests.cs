@@ -898,6 +898,42 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
+        public void RedirectInterceptor_CancellationDuringRedirectBodyDiscard_PropagatesOperationCanceledException()
+        {
+            AssertAsync.Run(async () =>
+            {
+                int callCount = 0;
+                var redirectBody = new ProbeResponseBodySource
+                {
+                    BlockOnDrainUntilCanceled = true
+                };
+
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    callCount++;
+                    handler.OnRequestStart(req, ctx);
+
+                    var headers = new HttpHeaders();
+                    headers.Set("Location", "/final");
+                    return handler.OnResponseStartAsync((int)HttpStatusCode.Found, headers, redirectBody, ctx).AsTask();
+                });
+
+                var pipeline = new TestInterceptorPipeline(new[] { new RedirectInterceptor() }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/start"));
+                using var cts = new CancellationTokenSource();
+                cts.CancelAfter(TimeSpan.FromMilliseconds(25));
+
+                AssertAsync.ThrowsAsync<OperationCanceledException, UHttpResponse>(() =>
+                    pipeline.ExecuteAsync(request, new RequestContext(request), cts.Token));
+
+                Assert.AreEqual(1, callCount);
+                Assert.AreEqual(1, redirectBody.DrainAsyncCount);
+                Assert.AreEqual(1, redirectBody.AbortCount);
+                Assert.AreEqual(1, redirectBody.DisposeAsyncCount);
+            });
+        }
+
+        [Test]
         public void RedirectInterceptor_FailsWhenRedirectDispatchCompletesWithoutTerminalCallback()
         {
             AssertAsync.Run(async () =>
@@ -1105,6 +1141,7 @@ namespace TurboHTTP.Tests.Middleware
         private sealed class ProbeResponseBodySource : IResponseBodySource
         {
             public bool ThrowOnDrain { get; set; }
+            public bool BlockOnDrainUntilCanceled { get; set; }
 
             public int DrainAsyncCount { get; private set; }
 
@@ -1135,6 +1172,9 @@ namespace TurboHTTP.Tests.Middleware
             {
                 DrainAsyncCount++;
                 ct.ThrowIfCancellationRequested();
+
+                if (BlockOnDrainUntilCanceled)
+                    return new ValueTask(Task.Delay(Timeout.Infinite, ct));
 
                 if (ThrowOnDrain)
                     throw new IOException("drain failed");

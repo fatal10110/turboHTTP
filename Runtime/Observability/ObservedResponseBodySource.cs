@@ -33,8 +33,8 @@ namespace TurboHTTP.Observability
         private readonly Action<ObservedResponseBodyCompletion> _onDispose;
 
         private long _totalBytesObserved;
-        private bool _completedNaturally;
-        private bool _aborted;
+        private int _completedNaturally;
+        private int _aborted;
         private Exception _error;
         private int _disposed;
 
@@ -71,11 +71,11 @@ namespace TurboHTTP.Observability
                 var read = await _inner.ReadAsync(destination, ct).ConfigureAwait(false);
                 if (read == 0)
                 {
-                    _completedNaturally = true;
+                    Volatile.Write(ref _completedNaturally, 1);
                     return 0;
                 }
 
-                _totalBytesObserved += read;
+                Interlocked.Add(ref _totalBytesObserved, read);
                 _onChunkRead?.Invoke(destination.Slice(0, read));
                 return read;
             }
@@ -85,7 +85,7 @@ namespace TurboHTTP.Observability
             }
             catch (Exception ex)
             {
-                _error = _error ?? ex;
+                Interlocked.CompareExchange(ref _error, ex, null);
                 Abort();
                 throw;
             }
@@ -112,10 +112,9 @@ namespace TurboHTTP.Observability
 
         public void Abort()
         {
-            if (_aborted)
+            if (Interlocked.Exchange(ref _aborted, 1) != 0)
                 return;
 
-            _aborted = true;
             _inner.Abort();
         }
 
@@ -133,7 +132,7 @@ namespace TurboHTTP.Observability
             }
             catch (Exception ex)
             {
-                _error = _error ?? ex;
+                Interlocked.CompareExchange(ref _error, ex, null);
                 Abort();
                 throw;
             }
@@ -150,16 +149,16 @@ namespace TurboHTTP.Observability
             }
             catch (Exception ex)
             {
-                _error = _error ?? ex;
+                Interlocked.CompareExchange(ref _error, ex, null);
                 throw;
             }
             finally
             {
                 _onDispose?.Invoke(new ObservedResponseBodyCompletion(
-                    _totalBytesObserved,
-                    _completedNaturally,
-                    _aborted,
-                    _error));
+                    Interlocked.Read(ref _totalBytesObserved),
+                    Volatile.Read(ref _completedNaturally) != 0,
+                    Volatile.Read(ref _aborted) != 0,
+                    Volatile.Read(ref _error)));
             }
         }
 

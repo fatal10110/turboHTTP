@@ -218,6 +218,8 @@ namespace TurboHTTP.Middleware
             }
 
             if (content is StreamRequestBody)
+                // Redirect follow-ups reuse the original seekable stream instance; the source request
+                // keeps ownership and replay resets the stream position before redispatch.
                 return RedirectContent.Shared(content);
 
             return RedirectContent.Owned(content.CloneDetached());

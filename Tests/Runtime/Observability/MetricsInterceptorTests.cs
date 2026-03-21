@@ -251,6 +251,58 @@ namespace TurboHTTP.Tests.Observability
         }
 
         [Test]
+        public void StreamingResponse_FullConsumption_CountsAllReceivedBytes()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var middleware = new MetricsInterceptor();
+                var transport = new CallbackTransport((req, handler, ctx, ct) =>
+                {
+                    handler.OnRequestStart(req, ctx);
+                    return handler.OnResponseStartAsync(
+                        (int)HttpStatusCode.OK,
+                        new HttpHeaders(),
+                        new MockResponseBodySource(
+                            new[]
+                            {
+                                (ReadOnlyMemory<byte>)Encoding.UTF8.GetBytes("data"),
+                                Encoding.UTF8.GetBytes("more")
+                            },
+                            length: 8,
+                            trailers: HttpHeaders.Empty,
+                            exposeBufferedData: false),
+                        ctx).AsTask();
+                });
+
+                var pipeline = new InterceptorPipeline(new[] { middleware }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com/stream-full"));
+                var context = new RequestContext(request);
+
+                var response = await StreamingDispatchBridge.CollectResponseAsync(
+                    pipeline.Pipeline,
+                    request,
+                    context,
+                    CancellationToken.None);
+
+                try
+                {
+                    var buffer = new byte[8];
+                    Assert.AreEqual(4, await response.Body.ReadAsync(buffer.AsMemory(0, 4), CancellationToken.None));
+                    Assert.AreEqual(4, await response.Body.ReadAsync(buffer.AsMemory(4, 4), CancellationToken.None));
+                    Assert.AreEqual(8, middleware.Metrics.TotalBytesReceived);
+                }
+                finally
+                {
+                    await response.DisposeAsync();
+                }
+
+                Assert.AreEqual(1, middleware.Metrics.SuccessfulRequests);
+                Assert.AreEqual(0, middleware.Metrics.FailedRequests);
+                Assert.AreEqual(8, middleware.Metrics.TotalBytesReceived);
+            });
+        }
+
+        [Test]
         public void StreamingRequestBody_UsesTransportReportedBytesSent()
         {
             Task.Run(async () =>
