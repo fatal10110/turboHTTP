@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Threading;
 using NUnit.Framework;
 using TurboHTTP.Core;
@@ -82,12 +83,157 @@ namespace TurboHTTP.Tests.Transport.Http1
             });
         }
 
+        [Test]
+        public void GetTrailersAsync_ChunkedBody_ReturnsParsedTrailers()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var bodyBytes = Encoding.ASCII.GetBytes(
+                    "1\r\nA\r\n0\r\nX-Trailer: yes\r\nDigest: sha-256=abc\r\n\r\n");
+
+                await using var source = CreateBodySource(bodyBytes, Http11ResponseBodyKind.Chunked, contentLength: null);
+
+                var buffer = new byte[1];
+                Assert.AreEqual(1, await source.ReadAsync(buffer, CancellationToken.None));
+                Assert.AreEqual((byte)'A', buffer[0]);
+
+                var trailers = await source.GetTrailersAsync(CancellationToken.None);
+                Assert.AreEqual("yes", trailers.Get("X-Trailer"));
+                Assert.AreEqual("sha-256=abc", trailers.Get("Digest"));
+                Assert.AreEqual(0, await source.ReadAsync(buffer, CancellationToken.None));
+            });
+        }
+
+        [Test]
+        public void GetTrailersAsync_ChunkedBody_WithoutPriorReads_DrainsAndReturnsTrailers()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var bodyBytes = Encoding.ASCII.GetBytes("1\r\nA\r\n0\r\nX-Trailer: yes\r\n\r\n");
+                await using var source = CreateBodySource(bodyBytes, Http11ResponseBodyKind.Chunked, contentLength: null);
+
+                var trailers = await source.GetTrailersAsync(CancellationToken.None);
+                Assert.AreEqual("yes", trailers.Get("X-Trailer"));
+                Assert.AreEqual(0, await source.ReadAsync(new byte[1], CancellationToken.None));
+            });
+        }
+
+        [Test]
+        public void GetTrailersAsync_ContentLengthBody_DrainsAndReturnsEmpty()
+        {
+            AssertAsync.Run(async () =>
+            {
+                await using var source = CreateBodySource(
+                    Encoding.ASCII.GetBytes("Hello"),
+                    Http11ResponseBodyKind.ContentLength,
+                    contentLength: 5);
+
+                var trailers = await source.GetTrailersAsync(CancellationToken.None);
+                Assert.AreSame(HttpHeaders.Empty, trailers);
+                Assert.AreEqual(0, await source.ReadAsync(new byte[1], CancellationToken.None));
+            });
+        }
+
+        [Test]
+        public void GetTrailersAsync_AfterDisposeBeforeEof_ThrowsObjectDisposedException()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var bodyBytes = Encoding.ASCII.GetBytes("1\r\nA\r\n0\r\nX-Trailer: yes\r\n\r\n");
+                var source = CreateBodySource(bodyBytes, Http11ResponseBodyKind.Chunked, contentLength: null);
+
+                await source.DisposeAsync();
+
+                AssertAsync.ThrowsAsync<ObjectDisposedException>(
+                    async () => await source.GetTrailersAsync(CancellationToken.None));
+            });
+        }
+
+        [Test]
+        public void Abort_FaultsChunkedTrailerTask()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var bodyBytes = Encoding.ASCII.GetBytes("1\r\nA\r\n0\r\nX-Trailer: yes\r\n\r\n");
+                await using var source = CreateBodySource(bodyBytes, Http11ResponseBodyKind.Chunked, contentLength: null);
+
+                source.Abort();
+
+                AssertAsync.ThrowsAsync<ObjectDisposedException>(
+                    async () => await source.GetTrailersAsync(CancellationToken.None));
+            });
+        }
+
+        [Test]
+        public void GetTrailersAsync_ChunkedBody_WithEmbeddedCarriageReturnInTrailer_ThrowsUHttpException()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var bodyBytes = Encoding.ASCII.GetBytes("1\r\nA\r\n0\r\nX-Trailer: ok\rinjected\r\n\r\n");
+                await using var source = CreateBodySource(bodyBytes, Http11ResponseBodyKind.Chunked, contentLength: null);
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(
+                    async () => await source.GetTrailersAsync(CancellationToken.None));
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                StringAssert.Contains("Malformed HTTP response", ex.HttpError.Message);
+            });
+        }
+
+        [Test]
+        public void GetTrailersAsync_ChunkedBody_TotalTrailerBytesExceedLimit_ThrowsUHttpException()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var oversizedValue = new string('a', 7000);
+                var bodyBytes = Encoding.ASCII.GetBytes(
+                    "1\r\nA\r\n0\r\n" +
+                    "X-One: " + oversizedValue + "\r\n" +
+                    "X-Two: " + oversizedValue + "\r\n" +
+                    "X-Three: " + oversizedValue + "\r\n" +
+                    "X-Four: " + oversizedValue + "\r\n" +
+                    "X-Five: " + oversizedValue + "\r\n\r\n");
+                await using var source = CreateBodySource(bodyBytes, Http11ResponseBodyKind.Chunked, contentLength: null);
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(
+                    async () => await source.GetTrailersAsync(CancellationToken.None));
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                StringAssert.Contains("Response trailers exceed maximum size", ex.HttpError.Message);
+            });
+        }
+
+        [Test]
+        public void DeferredTrailerCompletion_IsAllocatedOnlyForChunkedBodies()
+        {
+            AssertAsync.Run(async () =>
+            {
+                await using var chunked = CreateBodySource(
+                    Encoding.ASCII.GetBytes("0\r\n\r\n"),
+                    Http11ResponseBodyKind.Chunked,
+                    contentLength: null);
+                await using var contentLength = CreateBodySource(
+                    Encoding.ASCII.GetBytes("Hello"),
+                    Http11ResponseBodyKind.ContentLength,
+                    contentLength: 5);
+
+                Assert.IsTrue(chunked.HasDeferredTrailersForTests);
+                Assert.IsFalse(contentLength.HasDeferredTrailersForTests);
+            });
+        }
+
         private static Http11ResponseBodySource CreateEmptyBodySource(
             Http11ResponseBodyKind bodyKind,
             long? contentLength)
         {
+            return CreateBodySource(Array.Empty<byte>(), bodyKind, contentLength);
+        }
+
+        private static Http11ResponseBodySource CreateBodySource(
+            byte[] bodyBytes,
+            Http11ResponseBodyKind bodyKind,
+            long? contentLength)
+        {
             var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            var stream = new MemoryStream(Array.Empty<byte>(), writable: false);
+            var stream = new MemoryStream(bodyBytes ?? Array.Empty<byte>(), writable: false);
             var head = new ParsedResponseHead(new Http11ResponseParser.BufferedStreamReader(stream))
             {
                 StatusCode = HttpStatusCode.OK,
@@ -102,11 +248,13 @@ namespace TurboHTTP.Tests.Transport.Http1
                 new SemaphoreSlim(0, 1),
                 new PooledConnection(socket, stream, "example.test", 80, false));
 
-            return new Http11ResponseBodySource(
+            var source = new Http11ResponseBodySource(
                 head,
                 lease,
                 CancellationToken.None,
                 TimeSpan.FromSeconds(30));
+            head.Dispose();
+            return source;
         }
 
         private sealed class RepeatingReadStream : Stream

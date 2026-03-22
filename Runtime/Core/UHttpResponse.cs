@@ -18,6 +18,11 @@ namespace TurboHTTP.Core
         public HttpHeaders Headers { get; }
 
         /// <summary>
+        /// Trailer headers received after the response body.
+        /// </summary>
+        public HttpHeaders Trailers { get; }
+
+        /// <summary>
         /// Response body sequence. This is the primary body representation.
         /// </summary>
         /// <remarks>
@@ -82,10 +87,12 @@ namespace TurboHTTP.Core
             TimeSpan elapsedTime,
             UHttpRequest request,
             UHttpError error = null,
-            bool bodyFromPool = false)
+            bool bodyFromPool = false,
+            HttpHeaders trailers = null)
         {
             StatusCode = statusCode;
             Headers = headers ?? new HttpHeaders();
+            Trailers = trailers ?? HttpHeaders.Empty;
             _body = body.IsEmpty
                 ? ReadOnlySequence<byte>.Empty
                 : new ReadOnlySequence<byte>(body);
@@ -114,10 +121,12 @@ namespace TurboHTTP.Core
             IDisposable segmentedBodyOwner,
             TimeSpan elapsedTime,
             UHttpRequest request,
-            UHttpError error = null)
+            UHttpError error = null,
+            HttpHeaders trailers = null)
         {
             StatusCode = statusCode;
             Headers = headers ?? new HttpHeaders();
+            Trailers = trailers ?? HttpHeaders.Empty;
             _body = body;
             _segmentedBodyOwner = segmentedBodyOwner;
             ElapsedTime = elapsedTime;

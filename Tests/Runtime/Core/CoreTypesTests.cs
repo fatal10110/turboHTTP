@@ -150,6 +150,38 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
+        public void UHttpResponse_Trailers_DefaultToEmpty()
+        {
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));
+            var response = new UHttpResponse(
+                HttpStatusCode.OK,
+                new HttpHeaders(),
+                ReadOnlyMemory<byte>.Empty,
+                TimeSpan.Zero,
+                request);
+
+            Assert.AreSame(HttpHeaders.Empty, response.Trailers);
+        }
+
+        [Test]
+        public void UHttpResponse_Trailers_ExposeConfiguredHeaders()
+        {
+            var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));
+            var trailers = new HttpHeaders();
+            trailers.Set("X-Trailer", "ok");
+
+            var response = new UHttpResponse(
+                HttpStatusCode.OK,
+                new HttpHeaders(),
+                ReadOnlyMemory<byte>.Empty,
+                TimeSpan.Zero,
+                request,
+                trailers: trailers);
+
+            Assert.AreEqual("ok", response.Trailers.Get("X-Trailer"));
+        }
+
+        [Test]
         public void UHttpResponse_Dispose_BodyAccessThrowsObjectDisposedException()
         {
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test"));

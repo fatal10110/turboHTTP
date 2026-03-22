@@ -45,6 +45,8 @@ namespace TurboHTTP.Transport.Http1
 
         public bool KeepAlive { get; set; }
 
+        public HttpHeaders Trailers { get; set; }
+
         /// <summary>
         /// Clears all fields so this instance can be safely returned to
         /// <see cref="ParsedResponsePool"/> and rented again for a new response.
@@ -56,6 +58,7 @@ namespace TurboHTTP.Transport.Http1
             ReleaseBodyBuffers();
             StatusCode = default;
             Headers = null;
+            Trailers = null;
             KeepAlive = false;
         }
 
@@ -147,7 +150,8 @@ namespace TurboHTTP.Transport.Http1
     /// </summary>
     internal static class Http11ResponseParser
     {
-        private const int MaxHeaderLineLength = 8192;
+        internal const int MaxHeaderLineLength = 8192;
+        internal const int MaxTotalTrailerBytes = 32 * 1024;
         private const int MaxTotalHeaderBytes = 102400; // 100KB
         private const int MaxResponseBodySize = 100 * 1024 * 1024; // 100MB
         private const int Max1xxResponses = 10;
@@ -276,6 +280,7 @@ namespace TurboHTTP.Transport.Http1
                 parsedResult.Body = bodyResult.Body;
                 parsedResult.BodyFromPool = bodyResult.BodyFromPool;
                 parsedResult.SegmentedBody = bodyResult.SegmentedBody;
+                parsedResult.Trailers = bodyResult.Trailers;
                 parsedResult.KeepAlive = head.KeepAlive;
 
                 var toReturn = parsedResult;
@@ -289,7 +294,11 @@ namespace TurboHTTP.Transport.Http1
             }
         }
 
-        private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool, SegmentedBuffer SegmentedBody)>
+        private static async Task<(
+            ReadOnlyMemory<byte> Body,
+            bool BodyFromPool,
+            SegmentedBuffer SegmentedBody,
+            HttpHeaders Trailers)>
             ReadBufferedBodyAsync(
             ParsedResponseHead head,
             CancellationToken ct)
@@ -297,30 +306,33 @@ namespace TurboHTTP.Transport.Http1
             switch (head.BodyKind)
             {
                 case Http11ResponseBodyKind.Empty:
-                    return (ReadOnlyMemory<byte>.Empty, false, null);
+                    return (ReadOnlyMemory<byte>.Empty, false, null, HttpHeaders.Empty);
 
                 case Http11ResponseBodyKind.Chunked:
+                    var chunkedBody = await ReadChunkedBodyAsync(head.Reader, ct).ConfigureAwait(false);
                     return (
                         ReadOnlyMemory<byte>.Empty,
                         false,
-                        await ReadChunkedBodyAsync(head.Reader, ct).ConfigureAwait(false));
+                        chunkedBody.Body,
+                        chunkedBody.Trailers);
 
                 case Http11ResponseBodyKind.ContentLength:
                     if (head.ContentLength.GetValueOrDefault() == 0)
-                        return (ReadOnlyMemory<byte>.Empty, false, null);
+                        return (ReadOnlyMemory<byte>.Empty, false, null, HttpHeaders.Empty);
 
                     var fixedBody = await ReadFixedBodyAsync(
                             head.Reader,
                             checked((int)head.ContentLength.Value),
                             ct)
                         .ConfigureAwait(false);
-                    return (fixedBody.Body, fixedBody.BodyFromPool, null);
+                    return (fixedBody.Body, fixedBody.BodyFromPool, null, HttpHeaders.Empty);
 
                 case Http11ResponseBodyKind.ReadToEnd:
                     return (
                         ReadOnlyMemory<byte>.Empty,
                         false,
-                        await ReadToEndAsync(head.Reader, ct).ConfigureAwait(false));
+                        await ReadToEndAsync(head.Reader, ct).ConfigureAwait(false),
+                        HttpHeaders.Empty);
 
                 default:
                     throw new InvalidOperationException($"Unsupported HTTP/1.1 body kind: {head.BodyKind}");
@@ -527,6 +539,26 @@ namespace TurboHTTP.Transport.Http1
             return true;
         }
 
+        internal static bool AddResponseTrailer(HttpHeaders trailers, string line)
+        {
+            if (trailers == null)
+                throw new ArgumentNullException(nameof(trailers));
+
+            if (!TryParseHeaderLine(line, out var name, out var value))
+                return false;
+
+            if (!IsValidHeaderFieldName(name))
+                return false;
+
+            ValidateHeaderValue(name, value);
+
+            if (TrailerFieldValidator.IsProhibitedResponseTrailer(name))
+                return false;
+
+            trailers.Add(name, value);
+            return true;
+        }
+
         internal static long ParseChunkSizeLine(string sizeLine)
         {
             // Strip chunk extensions (RFC 9112 Section 7.1.1): "1A; ext=value"
@@ -651,11 +683,10 @@ namespace TurboHTTP.Transport.Http1
         }
 
         /// <returns>
-        /// A <see cref="SegmentedBuffer"/> containing the reassembled body, or <c>null</c>
-        /// if the chunked body was empty (terminal chunk immediately followed by trailers).
-        /// Callers must check for null before use.
+        /// A tuple containing the reassembled body (or <c>null</c> for an empty chunked body)
+        /// and any parsed response trailers.
         /// </returns>
-        private static async Task<SegmentedBuffer> ReadChunkedBodyAsync(
+        private static async Task<(SegmentedBuffer Body, HttpHeaders Trailers)> ReadChunkedBodyAsync(
             BufferedStreamReader reader,
             CancellationToken ct)
         {
@@ -697,24 +728,15 @@ namespace TurboHTTP.Transport.Http1
                     await reader.ReadExpectedCrlfAsync(ct).ConfigureAwait(false);
                 }
 
-                // Read and discard trailers (RFC 9112 §7.1.2).
-                // Known limitation: trailer fields declared via the Trailer header
-                // (e.g. Content-MD5, Digest) are consumed but not merged into the
-                // response headers. Future work: expose trailers on ParsedResponse.
-                while (true)
-                {
-                    var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
-                    if (string.IsNullOrEmpty(line))
-                        break;
-                }
+                var trailers = await ReadChunkedTrailersAsync(reader, ct).ConfigureAwait(false);
 
                 if (segBuffer.IsEmpty)
                 {
                     segBuffer.Dispose();
-                    return null;
+                    return (null, trailers);
                 }
 
-                return segBuffer;
+                return (segBuffer, trailers);
             }
             catch
             {
@@ -724,6 +746,84 @@ namespace TurboHTTP.Transport.Http1
             finally
             {
                 ArrayPool<byte>.Shared.Return(readBuf);
+            }
+        }
+
+        private static async Task<HttpHeaders> ReadChunkedTrailersAsync(
+            BufferedStreamReader reader,
+            CancellationToken ct)
+        {
+            HttpHeaders trailers = null;
+            int totalTrailerBytes = 0;
+            while (true)
+            {
+                var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(line))
+                    break;
+
+                totalTrailerBytes += line.Length;
+                if (totalTrailerBytes > MaxTotalTrailerBytes)
+                    throw new FormatException("Response trailers exceed maximum size");
+
+                trailers ??= new HttpHeaders();
+                AddResponseTrailer(trailers, line);
+            }
+
+            return trailers == null || trailers.Count == 0
+                ? HttpHeaders.Empty
+                : trailers;
+        }
+
+        private static void ValidateHeaderValue(string name, string value)
+        {
+            if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
+                throw new FormatException($"Header value for '{name}' contains CRLF characters");
+        }
+
+        private static bool IsValidHeaderFieldName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return false;
+
+            var nameSpan = name.AsSpan();
+            for (int i = 0; i < nameSpan.Length; i++)
+            {
+                if (!IsRfc9110TChar(nameSpan[i]))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsRfc9110TChar(char c)
+        {
+            if ((c >= '0' && c <= '9') ||
+                (c >= 'A' && c <= 'Z') ||
+                (c >= 'a' && c <= 'z'))
+            {
+                return true;
+            }
+
+            switch (c)
+            {
+                case '!':
+                case '#':
+                case '$':
+                case '%':
+                case '&':
+                case '\'':
+                case '*':
+                case '+':
+                case '-':
+                case '.':
+                case '^':
+                case '_':
+                case '`':
+                case '|':
+                case '~':
+                    return true;
+                default:
+                    return false;
             }
         }
 

@@ -1315,6 +1315,51 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
+        public void HttpViaProxy_BufferedChunkedResponse_PreservesTrailers()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string requestLine = null;
+
+                using var proxyServer = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    requestLine = captured.RequestLine;
+
+                    var response =
+                        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
+                        "2\r\nok\r\n" +
+                        "0\r\nX-Trailer: yes\r\n\r\n";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                using var response = await client
+                    .Get("http://origin.example.com/resource?id=42")
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("ok", response.GetBodyAsString());
+                Assert.AreEqual("yes", response.Trailers.Get("X-Trailer"));
+                Assert.AreEqual("GET http://origin.example.com/resource?id=42 HTTP/1.1", requestLine);
+            });
+        }
+
+        [Test]
         public void Connect407_RetryWithAuthOnce()
         {
             AssertAsync.Run(async () =>

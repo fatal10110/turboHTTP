@@ -29,6 +29,7 @@ namespace TurboHTTP.Transport.Http1
         private readonly CancellationToken _transportReadToken;
         private readonly double _requestTimeoutSeconds;
         private readonly long? _length;
+        private readonly TaskCompletionSource<HttpHeaders> _trailersSource;
         private readonly object _tokenLock = new object();
         private readonly int _drainBufferBytes;
         private readonly int _bufferedDrainReuseThresholdBytes;
@@ -65,6 +66,11 @@ namespace TurboHTTP.Transport.Http1
             _requestTimeoutSeconds = requestTimeout.TotalSeconds;
             _drainBufferBytes = streamingOptions?.DefaultStreamingReceiveBufferBytes ?? DefaultDrainBufferBytes;
             _bufferedDrainReuseThresholdBytes = streamingOptions?.BufferedDrainReuseThresholdBytes ?? BufferedDrainReuseThresholdBytes;
+            if (head.BodyKind == Http11ResponseBodyKind.Chunked)
+            {
+                _trailersSource = new TaskCompletionSource<HttpHeaders>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
 
             if (head.BodyKind == Http11ResponseBodyKind.ContentLength)
             {
@@ -84,6 +90,8 @@ namespace TurboHTTP.Transport.Http1
         }
 
         public long? Length => _length;
+
+        internal bool HasDeferredTrailersForTests => _trailersSource != null;
 
         public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
         {
@@ -149,55 +157,75 @@ namespace TurboHTTP.Transport.Http1
             }
             catch (OperationCanceledException ex)
             {
-                CloseBody();
+                Exception terminalException = ex;
                 if (_transportReadToken.CanBeCanceled &&
                     _transportReadToken.IsCancellationRequested &&
                     !ct.IsCancellationRequested)
                 {
-                    throw CreateTimeoutException(ex);
+                    terminalException = CreateTimeoutException(ex);
                 }
 
-                throw;
+                TrySetTrailersException(terminalException);
+                CloseBody();
+                throw terminalException;
             }
             catch (FormatException ex)
             {
-                CloseBody();
-                throw new UHttpException(new UHttpError(
+                var wrapped = new UHttpException(new UHttpError(
                     UHttpErrorType.NetworkError,
                     $"Malformed HTTP response: {ex.Message}",
                     ex));
+                TrySetTrailersException(wrapped);
+                CloseBody();
+                throw wrapped;
             }
             catch (NotSupportedException ex)
             {
-                CloseBody();
-                throw new UHttpException(new UHttpError(
+                var wrapped = new UHttpException(new UHttpError(
                     UHttpErrorType.NetworkError,
                     $"Unsupported HTTP response: {ex.Message}",
                     ex));
+                TrySetTrailersException(wrapped);
+                CloseBody();
+                throw wrapped;
             }
             catch (IOException ex)
             {
-                CloseBody();
+                Exception terminalException;
                 if (_transportReadToken.CanBeCanceled &&
                     _transportReadToken.IsCancellationRequested &&
                     !ct.IsCancellationRequested)
                 {
-                    throw CreateTimeoutException(ex);
+                    terminalException = CreateTimeoutException(ex);
+                }
+                else
+                {
+                    terminalException = new UHttpException(
+                        new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
                 }
 
-                throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
+                TrySetTrailersException(terminalException);
+                CloseBody();
+                throw terminalException;
             }
             catch (SocketException ex)
             {
-                CloseBody();
+                Exception terminalException;
                 if (_transportReadToken.CanBeCanceled &&
                     _transportReadToken.IsCancellationRequested &&
                     !ct.IsCancellationRequested)
                 {
-                    throw CreateTimeoutException(ex);
+                    terminalException = CreateTimeoutException(ex);
+                }
+                else
+                {
+                    terminalException = new UHttpException(
+                        new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
                 }
 
-                throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
+                TrySetTrailersException(terminalException);
+                CloseBody();
+                throw terminalException;
             }
         }
 
@@ -228,17 +256,27 @@ namespace TurboHTTP.Transport.Http1
 
         public void Abort()
         {
+            TrySetTrailersException(CreateDisposedTrailersException());
             CloseBody();
         }
 
-        public async ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+        public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
         {
-            ThrowIfClosed();
+            if (_trailersSource == null)
+            {
+                // Non-chunked HTTP/1.1 responses cannot carry trailers, so closed sources keep
+                // the existing synchronous ObjectDisposedException behavior instead of a deferred TCS.
+                ThrowIfClosed();
+                if (Volatile.Read(ref _terminalState) == 0)
+                    return DrainThenReturnEmptyAsync(ct);
+
+                return new ValueTask<HttpHeaders>(HttpHeaders.Empty);
+            }
 
             if (Volatile.Read(ref _terminalState) == 0)
-                await DrainAsync(ct).ConfigureAwait(false);
+                return DrainThenGetTrailersAsync(ct);
 
-            return HttpHeaders.Empty;
+            return new ValueTask<HttpHeaders>(_trailersSource.Task);
         }
 
         public async ValueTask DisposeAsync()
@@ -249,6 +287,7 @@ namespace TurboHTTP.Transport.Http1
 
             if (!ShouldAttemptDisposeDrain())
             {
+                TrySetTrailersException(CreateDisposedTrailersException());
                 CloseBody();
                 return;
             }
@@ -263,10 +302,14 @@ namespace TurboHTTP.Transport.Http1
 
                 var drained = await DrainWithinBudgetAsync(timeoutCts.Token).ConfigureAwait(false);
                 if (!drained)
+                {
+                    TrySetTrailersException(CreateDisposedTrailersException());
                     CloseBody();
+                }
             }
             catch
             {
+                TrySetTrailersException(CreateDisposedTrailersException());
                 CloseBody();
             }
             finally
@@ -322,7 +365,8 @@ namespace TurboHTTP.Transport.Http1
 
                 if (_awaitingChunkTrailers)
                 {
-                    await ReadAndDiscardChunkTrailersAsync(ct).ConfigureAwait(false);
+                    var trailers = await ReadChunkedTrailersAsync(ct).ConfigureAwait(false);
+                    TrySetTrailersResult(trailers);
                     CompleteBody();
                     return 0;
                 }
@@ -367,15 +411,44 @@ namespace TurboHTTP.Transport.Http1
             return read;
         }
 
-        private async ValueTask ReadAndDiscardChunkTrailersAsync(CancellationToken ct)
+        private async ValueTask<HttpHeaders> ReadChunkedTrailersAsync(CancellationToken ct)
         {
             var effectiveToken = GetEffectiveReadToken(ct);
+            HttpHeaders trailers = null;
+            int totalTrailerBytes = 0;
             while (true)
             {
-                var line = await ReadLineAsync(effectiveToken, ct, 8192).ConfigureAwait(false);
+                var line = await ReadLineAsync(
+                        effectiveToken,
+                        ct,
+                        Http11ResponseParser.MaxHeaderLineLength)
+                    .ConfigureAwait(false);
                 if (string.IsNullOrEmpty(line))
-                    return;
+                    break;
+
+                totalTrailerBytes += line.Length;
+                if (totalTrailerBytes > Http11ResponseParser.MaxTotalTrailerBytes)
+                    throw new FormatException("Response trailers exceed maximum size");
+
+                trailers ??= new HttpHeaders();
+                Http11ResponseParser.AddResponseTrailer(trailers, line);
             }
+
+            return trailers == null || trailers.Count == 0
+                ? HttpHeaders.Empty
+                : trailers;
+        }
+
+        private async ValueTask<HttpHeaders> DrainThenReturnEmptyAsync(CancellationToken ct)
+        {
+            await DrainAsync(ct).ConfigureAwait(false);
+            return HttpHeaders.Empty;
+        }
+
+        private async ValueTask<HttpHeaders> DrainThenGetTrailersAsync(CancellationToken ct)
+        {
+            await DrainAsync(ct).ConfigureAwait(false);
+            return await _trailersSource.Task.ConfigureAwait(false);
         }
 
         private bool ShouldAttemptDisposeDrain()
@@ -650,6 +723,27 @@ namespace TurboHTTP.Transport.Http1
                 UHttpErrorType.Timeout,
                 $"Request timed out after {_requestTimeoutSeconds}s",
                 inner));
+        }
+
+        private void TrySetTrailersResult(HttpHeaders trailers)
+        {
+            if (_trailersSource == null)
+                return;
+
+            _trailersSource.TrySetResult(trailers ?? HttpHeaders.Empty);
+        }
+
+        private void TrySetTrailersException(Exception exception)
+        {
+            if (_trailersSource == null || exception == null)
+                return;
+
+            _trailersSource.TrySetException(exception);
+        }
+
+        private static ObjectDisposedException CreateDisposedTrailersException()
+        {
+            return new ObjectDisposedException(nameof(Http11ResponseBodySource));
         }
     }
 }

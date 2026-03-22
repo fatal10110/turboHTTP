@@ -919,21 +919,24 @@ namespace TurboHTTP.Transport
                 throw new ArgumentNullException(nameof(context));
 
             var keepAlive = parsed.KeepAlive;
+            var statusCode = (int)parsed.StatusCode;
+            var headers = parsed.Headers;
 
             var safeHandler = HandlerCallbackSafetyWrapper.Wrap(handler, context);
             BufferedResponseBodySource bodySource;
             if (parsed.SegmentedBody != null)
             {
+                var trailers = parsed.Trailers ?? HttpHeaders.Empty;
                 var copied = parsed.SegmentedBody.AsSequence().ToArray();
                 parsed.ReleaseBodyBuffers();
                 ParsedResponsePool.Return(parsed);
-                bodySource = new BufferedResponseBodySource(copied, HttpHeaders.Empty);
+                bodySource = new BufferedResponseBodySource(copied, trailers);
             }
             else
             {
                 bodySource = new BufferedResponseBodySource(
                     parsed.Body,
-                    HttpHeaders.Empty,
+                    parsed.Trailers ?? HttpHeaders.Empty,
                     () =>
                     {
                         parsed.ReleaseBodyBuffers();
@@ -942,8 +945,8 @@ namespace TurboHTTP.Transport
             }
 
             await safeHandler.OnResponseStartAsync(
-                    (int)parsed.StatusCode,
-                    parsed.Headers,
+                    statusCode,
+                    headers,
                     bodySource,
                     context)
                 .ConfigureAwait(false);

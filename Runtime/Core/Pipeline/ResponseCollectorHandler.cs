@@ -134,6 +134,7 @@ namespace TurboHTTP.Core
             bool detached = false;
             IDisposable detachedOwner = null;
             bool detachedOwnershipTransferred = false;
+            HttpHeaders trailers = HttpHeaders.Empty;
 
             try
             {
@@ -164,7 +165,7 @@ namespace TurboHTTP.Core
                 }
 
                 if (!detached)
-                    _ = await body.GetTrailersAsync(_cancellationToken).ConfigureAwait(false);
+                    trailers = await body.GetTrailersAsync(_cancellationToken).ConfigureAwait(false);
 
                 UHttpResponse response = null;
                 bool retainedRequest = false;
@@ -180,7 +181,8 @@ namespace TurboHTTP.Core
                             detachedBody.Sequence,
                             detachedOwner,
                             context.Elapsed,
-                            _request);
+                            _request,
+                            trailers: HttpHeaders.Empty);
                         detachedOwnershipTransferred = true;
                         detachedOwner = null;
                     }
@@ -192,7 +194,8 @@ namespace TurboHTTP.Core
                             bufferedBody?.AsSequence() ?? ReadOnlySequence<byte>.Empty,
                             bufferedBody,
                             context.Elapsed,
-                            _request);
+                            _request,
+                            trailers: trailers);
                     }
 
                     bufferedBody = null;

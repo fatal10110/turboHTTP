@@ -150,9 +150,43 @@ namespace TurboHTTP.Tests.Pipeline
                     CancellationToken.None);
 
                 Assert.AreEqual("payload", response.GetBodyAsString());
+                Assert.AreSame(HttpHeaders.Empty, response.Trailers);
                 Assert.AreEqual(3, source.ReadCalls);
                 Assert.AreEqual(1, source.TrailersCalls);
                 Assert.AreEqual(1, source.DisposeCalls);
+            });
+        }
+
+        [Test]
+        public void CollectResponseAsync_PropagatesBufferedTrailersToResponse()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/propagate-trailers"));
+                var context = new RequestContext(request);
+                var trailers = new HttpHeaders();
+                trailers.Set("X-Trailer", "yes");
+
+                using var response = await TransportDispatchHelper.CollectResponseAsync(
+                    async (dispatchRequest, handler, dispatchContext, cancellationToken) =>
+                    {
+                        handler.OnRequestStart(dispatchRequest, dispatchContext);
+                        await handler.OnResponseStartAsync(
+                            200,
+                            new HttpHeaders(),
+                            new MockResponseBodySource(
+                                new[] { (ReadOnlyMemory<byte>)new byte[] { (byte)'p', (byte)'a', (byte)'y', (byte)'l', (byte)'o', (byte)'a', (byte)'d' } },
+                                length: 7,
+                                trailers: trailers,
+                                exposeBufferedData: false),
+                            dispatchContext);
+                    },
+                    request,
+                    context,
+                    CancellationToken.None);
+
+                Assert.AreEqual("payload", response.GetBodyAsString());
+                Assert.AreEqual("yes", response.Trailers.Get("X-Trailer"));
             });
         }
 

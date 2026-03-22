@@ -175,6 +175,102 @@ namespace TurboHTTP.Tests.Transport
 
                 var parsed = await ParseAsync(response);
                 Assert.AreEqual("A", Encoding.ASCII.GetString(parsed.Body.Span));
+                Assert.AreEqual("yes", parsed.Trailers.Get("X-Trailer"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Parse_ChunkedBody_ProhibitedTrailers_AreDiscarded()
+        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                               "1\r\nA\r\n" +
+                               "0\r\n" +
+                               "Content-Length: 1\r\n" +
+                               "Authorization: nope\r\n" +
+                               "If-None-Match: tag\r\n" +
+                               "X-Allowed: yes\r\n\r\n";
+
+                var parsed = await ParseAsync(response);
+                Assert.AreEqual("yes", parsed.Trailers.Get("X-Allowed"));
+                Assert.IsFalse(parsed.Trailers.Contains("Content-Length"));
+                Assert.IsFalse(parsed.Trailers.Contains("Authorization"));
+                Assert.IsFalse(parsed.Trailers.Contains("If-None-Match"));
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Parse_ChunkedBody_MalformedTrailers_AreSkipped()
+        {
+            Task.Run(async () =>
+            {
+                var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                               "1\r\nA\r\n" +
+                               "0\r\n" +
+                               "MissingColon\r\n" +
+                               ": empty-name\r\n" +
+                               "X-Allowed: yes\r\n\r\n";
+
+                var parsed = await ParseAsync(response);
+                Assert.AreEqual("yes", parsed.Trailers.Get("X-Allowed"));
+                Assert.AreEqual(1, parsed.Trailers.Count);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void Parse_ChunkedBody_TrailerValueWithEmbeddedCarriageReturn_ThrowsFormatException()
+        {
+            var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                           "1\r\nA\r\n" +
+                           "0\r\n" +
+                           "X-Allowed: ok\rinjected\r\n\r\n";
+
+            AssertAsync.ThrowsAsync<FormatException>(async () => await ParseAsync(response));
+        }
+
+        [Test]
+        public void Parse_ChunkedBody_OverlongTrailerLine_ThrowsFormatException()
+        {
+            var overlongValue = new string('a', 8200);
+            var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                           "1\r\nA\r\n" +
+                           "0\r\n" +
+                           "X-Allowed: " + overlongValue + "\r\n\r\n";
+
+            AssertAsync.ThrowsAsync<FormatException>(async () => await ParseAsync(response));
+        }
+
+        [Test]
+        public void Parse_ChunkedBody_TotalTrailerBytesExceedLimit_ThrowsFormatException()
+        {
+            var oversizedValue = new string('a', 7000);
+            var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                           "1\r\nA\r\n" +
+                           "0\r\n" +
+                           "X-One: " + oversizedValue + "\r\n" +
+                           "X-Two: " + oversizedValue + "\r\n" +
+                           "X-Three: " + oversizedValue + "\r\n" +
+                           "X-Four: " + oversizedValue + "\r\n" +
+                           "X-Five: " + oversizedValue + "\r\n\r\n";
+
+            AssertAsync.ThrowsAsync<FormatException>(async () => await ParseAsync(response));
+        }
+
+        [Test]
+        public void Parse_ChunkedBody_WithFragmentedTrailerLine_ParsesCorrectly()
+        {
+            Task.Run(async () =>
+            {
+                var response = Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                    "1\r\nA\r\n" +
+                    "0\r\n" +
+                    "X-Fragmented-Trailer: yes\r\n\r\n");
+
+                var parsed = await ParseFragmentedAsync(response, new[] { 1, 2, 1, 3, 2, 1, 4 });
+                Assert.AreEqual("A", Encoding.ASCII.GetString(parsed.Body.Span));
+                Assert.AreEqual("yes", parsed.Trailers.Get("X-Fragmented-Trailer"));
             }).GetAwaiter().GetResult();
         }
 
