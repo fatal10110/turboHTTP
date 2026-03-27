@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Buffers.Text;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -41,7 +42,6 @@ namespace TurboHTTP.Transport.Http1
     {
         private const int MaxChunkHeaderBytes = 18;
         private static readonly byte[] ChunkDataTerminator = { (byte)'\r', (byte)'\n' };
-        private static readonly byte[] FinalChunkBytes = { (byte)'0', (byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n' };
 
         /// <summary>
         /// Serialize the request to the given stream in HTTP/1.1 wire format.
@@ -59,8 +59,10 @@ namespace TurboHTTP.Transport.Http1
             streamingOptions = streamingOptions ?? new StreamingOptions();
 
             var bodyWriteMode = ResolveBodyWriteMode(request);
+            ValidateTrailerCompatibility(request.Content, bodyWriteMode);
             int smallBufferedRequestThresholdBytes = streamingOptions.SmallBufferedRequestThresholdBytes;
             int streamingSendBufferBytes = streamingOptions.DefaultStreamingSendBufferBytes;
+            bool hasRequestTrailers = request.Content.TrailerProvider != null;
 
             using var headerWriter = new PooledHeaderWriter();
 
@@ -102,8 +104,11 @@ namespace TurboHTTP.Transport.Http1
             // 3. User headers — framing headers are transport-owned in 22a.
             foreach (var name in request.Headers.Names)
             {
-                if (IsFramingHeader(name))
+                if (IsFramingHeader(name) ||
+                    (hasRequestTrailers && string.Equals(name, "Trailer", StringComparison.OrdinalIgnoreCase)))
+                {
                     continue;
+                }
 
                 var values = request.Headers.GetValues(name);
                 foreach (var value in values)
@@ -126,6 +131,11 @@ namespace TurboHTTP.Transport.Http1
             else if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
             {
                 headerWriter.Append("Transfer-Encoding: chunked\r\n");
+            }
+
+            if (hasRequestTrailers)
+            {
+                AppendDeclaredTrailerHeader(headerWriter, request.Content.DeclaredTrailerNames);
             }
 
             // 5. Auto-add User-Agent
@@ -192,10 +202,13 @@ namespace TurboHTTP.Transport.Http1
 
         private static RequestBodyWriteMode ResolveBodyWriteMode(UHttpRequest request)
         {
+            bool hasRequestTrailers = request.Content != null && request.Content.TrailerProvider != null;
             if (request.TryGetBufferedContent(out var bufferedBody))
             {
                 if (bufferedBody.IsEmpty)
-                    return RequestBodyWriteMode.None;
+                    return hasRequestTrailers
+                        ? RequestBodyWriteMode.Chunked
+                        : RequestBodyWriteMode.None;
 
                 return RequestBodyWriteMode.FromKnownLength(bufferedBody.Length, bufferedBody);
             }
@@ -205,9 +218,28 @@ namespace TurboHTTP.Transport.Http1
                 return RequestBodyWriteMode.Chunked;
 
             if (contentLength.Value <= 0)
-                return RequestBodyWriteMode.None;
+            {
+                return hasRequestTrailers
+                    ? RequestBodyWriteMode.Chunked
+                    : RequestBodyWriteMode.None;
+            }
 
             return RequestBodyWriteMode.FromKnownLength(contentLength.Value, default);
+        }
+
+        private static void ValidateTrailerCompatibility(
+            UHttpRequestBody content,
+            RequestBodyWriteMode bodyWriteMode)
+        {
+            if (content == null || content.TrailerProvider == null)
+                return;
+
+            if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
+                return;
+
+            throw new InvalidOperationException(
+                "Request trailers require chunked transfer encoding. " +
+                "Use an unknown-length body or remove the trailer provider.");
         }
 
         private static async Task WriteBodyAsync(
@@ -231,7 +263,14 @@ namespace TurboHTTP.Transport.Http1
             using var session = await content.OpenReadSessionAsync(ct).ConfigureAwait(false);
             if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
             {
-                await WriteChunkedBodyAsync(session, stream, writeState, streamingSendBufferBytes, ct).ConfigureAwait(false);
+                await WriteChunkedBodyAsync(
+                        session,
+                        content,
+                        stream,
+                        writeState,
+                        streamingSendBufferBytes,
+                        ct)
+                    .ConfigureAwait(false);
                 return;
             }
 
@@ -288,6 +327,7 @@ namespace TurboHTTP.Transport.Http1
 
         private static async Task WriteChunkedBodyAsync(
             RequestBodyReadSession session,
+            UHttpRequestBody content,
             Stream stream,
             Http11RequestWriteState writeState,
             int streamingSendBufferBytes,
@@ -315,8 +355,11 @@ namespace TurboHTTP.Transport.Http1
                     await stream.WriteAsync(ChunkDataTerminator, ct).ConfigureAwait(false);
                 }
 
-                await stream.WriteAsync(FinalChunkBytes, ct).ConfigureAwait(false);
-                await stream.FlushAsync(ct).ConfigureAwait(false);
+                using var trailerWriter = new PooledHeaderWriter();
+                trailerWriter.Append("0\r\n");
+                AppendRequestTrailers(trailerWriter, content.TrailerProvider);
+                trailerWriter.Append("\r\n");
+                await trailerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -337,6 +380,53 @@ namespace TurboHTTP.Transport.Http1
             return written;
         }
 
+        private static void AppendDeclaredTrailerHeader(
+            PooledHeaderWriter headerWriter,
+            IReadOnlyList<string> declaredTrailerNames)
+        {
+            if (declaredTrailerNames == null || declaredTrailerNames.Count == 0)
+                return;
+
+            headerWriter.Append("Trailer: ");
+            for (int i = 0; i < declaredTrailerNames.Count; i++)
+            {
+                if (i > 0)
+                    headerWriter.Append(", ");
+
+                headerWriter.Append(declaredTrailerNames[i]);
+            }
+
+            headerWriter.Append("\r\n");
+        }
+
+        private static void AppendRequestTrailers(
+            PooledHeaderWriter headerWriter,
+            Func<HttpHeaders> trailerProvider)
+        {
+            if (trailerProvider == null)
+                return;
+
+            var trailers = trailerProvider();
+            if (trailers == null || trailers.Count == 0)
+                return;
+
+            foreach (var name in trailers.Names)
+            {
+                if (TrailerFieldValidator.IsProhibitedRequestTrailer(name))
+                    continue;
+
+                var values = trailers.GetValues(name);
+                for (int i = 0; i < values.Count; i++)
+                {
+                    ValidateHeader(name, values[i]);
+                    headerWriter.Append(name);
+                    headerWriter.Append(": ");
+                    headerWriter.Append(values[i]);
+                    headerWriter.Append("\r\n");
+                }
+            }
+        }
+
         private static bool IsFramingHeader(string name)
         {
             return string.Equals(name, "Content-Length", StringComparison.OrdinalIgnoreCase)
@@ -351,44 +441,12 @@ namespace TurboHTTP.Transport.Http1
             var nameSpan = name.AsSpan();
             for (int i = 0; i < nameSpan.Length; i++)
             {
-                if (!IsRfc9110TChar(nameSpan[i]))
+                if (!EncodingHelper.IsRfc9110TChar(nameSpan[i]))
                     throw new ArgumentException($"Header name contains invalid characters: {name}");
             }
 
             if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
                 throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
-        }
-
-        private static bool IsRfc9110TChar(char c)
-        {
-            if ((c >= '0' && c <= '9') ||
-                (c >= 'A' && c <= 'Z') ||
-                (c >= 'a' && c <= 'z'))
-            {
-                return true;
-            }
-
-            switch (c)
-            {
-                case '!':
-                case '#':
-                case '$':
-                case '%':
-                case '&':
-                case '\'':
-                case '*':
-                case '+':
-                case '-':
-                case '.':
-                case '^':
-                case '_':
-                case '`':
-                case '|':
-                case '~':
-                    return true;
-                default:
-                    return false;
-            }
         }
 
         private static string GetRequestTarget(UHttpRequest request)

@@ -52,6 +52,38 @@ namespace TurboHTTP.Transport.Internal
         internal static int GetLatin1ByteCount(string value) =>
             value == null ? 0 : value.Length;
 
+        internal static bool IsRfc9110TChar(char c)
+        {
+            if ((c >= '0' && c <= '9') ||
+                (c >= 'A' && c <= 'Z') ||
+                (c >= 'a' && c <= 'z'))
+            {
+                return true;
+            }
+
+            switch (c)
+            {
+                case '!':
+                case '#':
+                case '$':
+                case '%':
+                case '&':
+                case '\'':
+                case '*':
+                case '+':
+                case '-':
+                case '.':
+                case '^':
+                case '_':
+                case '`':
+                case '|':
+                case '~':
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         private static Encoding InitLatin1()
         {
             try

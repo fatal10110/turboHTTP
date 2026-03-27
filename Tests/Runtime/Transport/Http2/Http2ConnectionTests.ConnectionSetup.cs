@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -325,6 +326,200 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 var response = await responseTask;
                 Assert.AreEqual((HttpStatusCode)202, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithKnownLengthStreamBodyAndRequestTrailers_SendsTrailingHeaders()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                using var bodyStream = new MemoryStream(Encoding.UTF8.GetBytes("stream body"), writable: false);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/api"))
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .WithRequestTrailers(
+                        new[] { "Digest" },
+                        () =>
+                        {
+                            var trailers = new HttpHeaders();
+                            trailers.Set("Digest", "sha-256=abc");
+                            return trailers;
+                        });
+                request.Headers.Set("Trailer", "X-Wrong");
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                Assert.IsFalse(headersFrame.HasFlag(Http2FrameFlags.EndStream));
+                int streamId = headersFrame.StreamId;
+
+                var decoder = new HpackDecoder();
+                var decodedHeaders = decoder.Decode(headersFrame.Payload, 0, headersFrame.Length);
+                Assert.AreEqual(1, decodedHeaders.Count(h => h.Name == "trailer"));
+                Assert.IsTrue(decodedHeaders.Any(h => h.Name == "trailer" && h.Value == "Digest"));
+                Assert.IsFalse(decodedHeaders.Any(h => h.Name == "trailer" && h.Value == "X-Wrong"));
+
+                var dataFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Data, dataFrame.Type);
+                Assert.IsFalse(dataFrame.HasFlag(Http2FrameFlags.EndStream));
+                Assert.AreEqual("stream body", Encoding.UTF8.GetString(dataFrame.Payload));
+
+                var trailerFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, trailerFrame.Type);
+                Assert.IsTrue(trailerFrame.HasFlag(Http2FrameFlags.EndHeaders));
+                Assert.IsTrue(trailerFrame.HasFlag(Http2FrameFlags.EndStream));
+                var decodedTrailers = decoder.Decode(trailerFrame.Payload, 0, trailerFrame.Length);
+                Assert.IsTrue(decodedTrailers.Any(h => h.Name == "digest" && h.Value == "sha-256=abc"));
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 201, endStream: true),
+                    cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual((HttpStatusCode)201, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithKnownLengthStreamBodyAndEmptyRequestTrailers_KeepsEndStreamOnData()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                using var bodyStream = new MemoryStream(Encoding.UTF8.GetBytes("stream body"), writable: false);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/api"))
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .WithRequestTrailers(new[] { "Digest" }, () => null);
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                int streamId = headersFrame.StreamId;
+
+                var dataFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Data, dataFrame.Type);
+                Assert.IsTrue(dataFrame.HasFlag(Http2FrameFlags.EndStream));
+                Assert.AreEqual("stream body", Encoding.UTF8.GetString(dataFrame.Payload));
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 201, endStream: true),
+                    cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual((HttpStatusCode)201, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithRequestTrailers_FiltersProhibitedFields_AndAllowsUndeclaredOnes()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                using var bodyStream = new MemoryStream(Encoding.UTF8.GetBytes("stream body"), writable: false);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/api"))
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .WithRequestTrailers(
+                        new[] { "Digest" },
+                        () =>
+                        {
+                            var trailers = new HttpHeaders();
+                            trailers.Set("Digest", "sha-256=abc");
+                            trailers.Set("X-Extra", "ok");
+                            trailers.Set("Authorization", "Bearer secret");
+                            return trailers;
+                        });
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = headersFrame.StreamId;
+                await serverCodec.ReadFrameAsync(16384, cts.Token);
+
+                var trailerFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, trailerFrame.Type);
+                var decoder = new HpackDecoder();
+                _ = decoder.Decode(headersFrame.Payload, 0, headersFrame.Length);
+                var decodedTrailers = decoder.Decode(trailerFrame.Payload, 0, trailerFrame.Length);
+
+                Assert.IsTrue(decodedTrailers.Any(h => h.Name == "digest" && h.Value == "sha-256=abc"));
+                Assert.IsTrue(decodedTrailers.Any(h => h.Name == "x-extra" && h.Value == "ok"));
+                Assert.IsFalse(decodedTrailers.Any(h => h.Name == "authorization"));
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 201, endStream: true),
+                    cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual((HttpStatusCode)201, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithInvalidRequestTrailerValue_FailsRequestAndResetsStream()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                using var bodyStream = new MemoryStream(Encoding.UTF8.GetBytes("stream body"), writable: false);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/api"))
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .WithRequestTrailers(
+                        new[] { "Digest" },
+                        () =>
+                        {
+                            var trailers = new HttpHeaders();
+                            trailers.Set("Digest", "sha-256=abc\r\nInjected: nope");
+                            return trailers;
+                        });
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                int streamId = headersFrame.StreamId;
+
+                var rstFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.RstStream, rstFrame.Type);
+                Assert.AreEqual(streamId, rstFrame.StreamId);
+
+                UHttpException ex = null;
+                try
+                {
+                    await responseTask;
+                    Assert.Fail("Expected request trailer validation to fail.");
+                }
+                catch (UHttpException caught)
+                {
+                    ex = caught;
+                }
+
+                Assert.IsNotNull(ex);
+                StringAssert.Contains("CRLF", ex.Message);
+                Assert.IsInstanceOf<ArgumentException>(ex.InnerException);
 
                 conn.Dispose();
             });

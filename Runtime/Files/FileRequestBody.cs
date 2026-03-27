@@ -58,7 +58,7 @@ namespace TurboHTTP.Files
                 CreateReadSession(stream, _length));
         }
 
-        internal override UHttpRequestBody CloneDetached()
+        internal override UHttpRequestBody CloneDetachedCore()
         {
             return new FileRequestBody(_path, _bufferSize);
         }

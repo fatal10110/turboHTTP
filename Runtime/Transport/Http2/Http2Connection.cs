@@ -315,6 +315,7 @@ namespace TurboHTTP.Transport.Http2
             try
             {
                 bool hasBody = HasRequestBody(request.Content);
+                bool hasRequestTrailers = request.Content != null && request.Content.TrailerProvider != null;
 
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
@@ -327,8 +328,12 @@ namespace TurboHTTP.Transport.Http2
 
                     foreach (var name in request.Headers.Names)
                     {
-                        if (IsHttp2ForbiddenHeader(name))
+                        if (IsHttp2ForbiddenHeader(name) ||
+                            (hasRequestTrailers &&
+                             string.Equals(name, "trailer", StringComparison.OrdinalIgnoreCase)))
+                        {
                             continue;
+                        }
 
                         if (string.Equals(name, "te", StringComparison.OrdinalIgnoreCase))
                         {
@@ -345,6 +350,9 @@ namespace TurboHTTP.Transport.Http2
                         foreach (var value in request.Headers.GetValues(name))
                             _headerListScratch.Add((lowerName, value));
                     }
+
+                    if (hasRequestTrailers)
+                        AppendRequestTrailerDeclarationHeader(_headerListScratch, request.Content.DeclaredTrailerNames);
 
                     if (!request.Headers.Contains("user-agent"))
                         _headerListScratch.Add(("user-agent", "TurboHTTP/1.0"));
@@ -441,6 +449,9 @@ namespace TurboHTTP.Transport.Http2
             if (content == null)
                 return false;
 
+            if (content.TrailerProvider != null)
+                return true;
+
             if (content.TryGetBufferedData(out var buffered))
                 return !buffered.IsEmpty;
 
@@ -469,6 +480,36 @@ namespace TurboHTTP.Transport.Http2
             }
 
             return value;
+        }
+
+        private static void AppendRequestTrailerDeclarationHeader(
+            List<(string Name, string Value)> headers,
+            IReadOnlyList<string> declaredTrailerNames)
+        {
+            if (headers == null || declaredTrailerNames == null || declaredTrailerNames.Count == 0)
+                return;
+
+            headers.Add(("trailer", BuildDeclaredTrailerHeaderValue(declaredTrailerNames)));
+        }
+
+        private static string BuildDeclaredTrailerHeaderValue(IReadOnlyList<string> declaredTrailerNames)
+        {
+            if (declaredTrailerNames == null || declaredTrailerNames.Count == 0)
+                return string.Empty;
+
+            if (declaredTrailerNames.Count == 1)
+                return declaredTrailerNames[0];
+
+            var builder = new System.Text.StringBuilder();
+            for (int i = 0; i < declaredTrailerNames.Count; i++)
+            {
+                if (i > 0)
+                    builder.Append(", ");
+
+                builder.Append(declaredTrailerNames[i]);
+            }
+
+            return builder.ToString();
         }
     }
 }

@@ -1,10 +1,12 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
+using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -75,21 +77,49 @@ namespace TurboHTTP.Transport.Http2
             {
                 if (buffered.IsEmpty)
                 {
-                    await SendEmptyEndStreamDataFrameAsync(streamId, stream, ct).ConfigureAwait(false);
+                    var trailerHeaderBlock = await PrepareRequestTrailerBlockAsync(
+                            content.TrailerProvider,
+                            stream,
+                            ct)
+                        .ConfigureAwait(false);
+                    if (!trailerHeaderBlock.IsEmpty)
+                    {
+                        await SendTrailingHeadersAsync(streamId, trailerHeaderBlock, stream, ct)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await SendEmptyEndStreamDataFrameAsync(streamId, stream, ct).ConfigureAwait(false);
+                    }
+
                     return 0;
                 }
 
-                return await SendBufferedDataAsync(
+                var preparedBufferedTrailers = await PrepareRequestTrailerBlockAsync(
+                        content.TrailerProvider,
+                        stream,
+                        ct)
+                    .ConfigureAwait(false);
+                var totalBufferedBytes = await SendBufferedDataAsync(
                         streamId,
                         buffered,
                         stream,
-                        endStreamOnFinalFrame: true,
+                        endStreamOnFinalFrame: preparedBufferedTrailers.IsEmpty,
                         ct)
                     .ConfigureAwait(false);
+
+                if (!preparedBufferedTrailers.IsEmpty)
+                {
+                    await SendTrailingHeadersAsync(streamId, preparedBufferedTrailers, stream, ct)
+                        .ConfigureAwait(false);
+                }
+
+                return totalBufferedBytes;
             }
 
             using var session = await content.OpenReadSessionAsync(ct).ConfigureAwait(false);
-            return await SendStreamingDataAsync(streamId, session, stream, ct).ConfigureAwait(false);
+            return await SendStreamingDataAsync(streamId, session, content.TrailerProvider, stream, ct)
+                .ConfigureAwait(false);
         }
 
         private async Task<long> SendBufferedDataAsync(
@@ -170,6 +200,7 @@ namespace TurboHTTP.Transport.Http2
         private async Task<long> SendStreamingDataAsync(
             int streamId,
             RequestBodyReadSession session,
+            Func<HttpHeaders> trailerProvider,
             Http2Stream stream,
             CancellationToken ct)
         {
@@ -202,13 +233,29 @@ namespace TurboHTTP.Transport.Http2
                         }
 
                         remaining -= bytesRead;
+                        ReadOnlyMemory<byte> preparedTrailers = default;
+                        if (remaining.Value == 0)
+                        {
+                            preparedTrailers = await PrepareRequestTrailerBlockAsync(
+                                    trailerProvider,
+                                    stream,
+                                    ct)
+                                .ConfigureAwait(false);
+                        }
+
                         totalBytesSent += await SendBufferedDataAsync(
                                 streamId,
                                 new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
                                 stream,
-                                endStreamOnFinalFrame: remaining.Value == 0,
+                                endStreamOnFinalFrame: remaining.Value == 0 && preparedTrailers.IsEmpty,
                                 ct)
                             .ConfigureAwait(false);
+
+                        if (!preparedTrailers.IsEmpty)
+                        {
+                            await SendTrailingHeadersAsync(streamId, preparedTrailers, stream, ct)
+                                .ConfigureAwait(false);
+                        }
                     }
 
                     return totalBytesSent;
@@ -228,6 +275,18 @@ namespace TurboHTTP.Transport.Http2
                         .ConfigureAwait(false);
                     if (bytesRead == 0)
                     {
+                        var preparedTrailers = await PrepareRequestTrailerBlockAsync(
+                                trailerProvider,
+                                stream,
+                                ct)
+                            .ConfigureAwait(false);
+                        if (!preparedTrailers.IsEmpty)
+                        {
+                            await SendTrailingHeadersAsync(streamId, preparedTrailers, stream, ct)
+                                .ConfigureAwait(false);
+                            return totalBytesSent;
+                        }
+
                         // Unknown-length bodies signal stream completion with an explicit
                         // zero-length END_STREAM frame once EOF is observed.
                         await SendEmptyEndStreamDataFrameAsync(streamId, stream, ct).ConfigureAwait(false);
@@ -276,6 +335,101 @@ namespace TurboHTTP.Transport.Http2
             {
                 _writeLock.Release();
             }
+        }
+
+        private async Task SendTrailingHeadersAsync(
+            int streamId,
+            ReadOnlyMemory<byte> trailerHeaderBlock,
+            Http2Stream stream,
+            CancellationToken ct)
+        {
+            if (trailerHeaderBlock.IsEmpty || stream.IsResponseCompleted)
+                return;
+
+            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (stream.IsResponseCompleted)
+                    return;
+
+                await SendHeadersAsync(streamId, trailerHeaderBlock, endStream: true, ct)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+        }
+
+        private async Task<ReadOnlyMemory<byte>> PrepareRequestTrailerBlockAsync(
+            Func<HttpHeaders> trailerProvider,
+            Http2Stream stream,
+            CancellationToken ct)
+        {
+            if (trailerProvider == null || stream.IsResponseCompleted)
+                return default;
+
+            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (stream.IsResponseCompleted)
+                    return default;
+
+                _headerListScratch.Clear();
+                AppendPreparedRequestTrailers(_headerListScratch, trailerProvider);
+                if (_headerListScratch.Count == 0)
+                    return default;
+
+                return _hpackEncoder.Encode(_headerListScratch);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+        }
+
+        private static void AppendPreparedRequestTrailers(
+            List<(string Name, string Value)> destination,
+            Func<HttpHeaders> trailerProvider)
+        {
+            if (destination == null)
+                throw new ArgumentNullException(nameof(destination));
+            if (trailerProvider == null)
+                return;
+
+            var trailers = trailerProvider();
+            if (trailers == null || trailers.Count == 0)
+                return;
+
+            foreach (var name in trailers.Names)
+            {
+                if (TrailerFieldValidator.IsProhibitedRequestTrailer(name))
+                    continue;
+
+                var lowerName = ToLowerAsciiHeaderName(name);
+                var values = trailers.GetValues(name);
+                for (int i = 0; i < values.Count; i++)
+                {
+                    ValidateTrailerHeader(name, values[i]);
+                    destination.Add((lowerName, values[i]));
+                }
+            }
+        }
+
+        private static void ValidateTrailerHeader(string name, string value)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Header name cannot be null or empty");
+
+            var nameSpan = name.AsSpan();
+            for (int i = 0; i < nameSpan.Length; i++)
+            {
+                if (!EncodingHelper.IsRfc9110TChar(nameSpan[i]))
+                    throw new ArgumentException($"Header name contains invalid characters: {name}");
+            }
+
+            if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
+                throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
         }
 
         private async Task WaitForWindowUpdateAsync(CancellationToken ct)

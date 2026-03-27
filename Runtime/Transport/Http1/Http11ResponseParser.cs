@@ -788,43 +788,11 @@ namespace TurboHTTP.Transport.Http1
             var nameSpan = name.AsSpan();
             for (int i = 0; i < nameSpan.Length; i++)
             {
-                if (!IsRfc9110TChar(nameSpan[i]))
+                if (!EncodingHelper.IsRfc9110TChar(nameSpan[i]))
                     return false;
             }
 
             return true;
-        }
-
-        private static bool IsRfc9110TChar(char c)
-        {
-            if ((c >= '0' && c <= '9') ||
-                (c >= 'A' && c <= 'Z') ||
-                (c >= 'a' && c <= 'z'))
-            {
-                return true;
-            }
-
-            switch (c)
-            {
-                case '!':
-                case '#':
-                case '$':
-                case '%':
-                case '&':
-                case '\'':
-                case '*':
-                case '+':
-                case '-':
-                case '.':
-                case '^':
-                case '_':
-                case '`':
-                case '|':
-                case '~':
-                    return true;
-                default:
-                    return false;
-            }
         }
 
         private static async Task<(ReadOnlyMemory<byte> Body, bool BodyFromPool)> ReadFixedBodyAsync(

@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -10,11 +11,14 @@ namespace TurboHTTP.Core
 {
     public abstract class UHttpRequestBody : IDisposable
     {
+        private static readonly string[] EmptyDeclaredTrailerNames = Array.Empty<string>();
         private int _activeSession;
         private int _openedNonReplayable;
         private int _disposed;
         private int _resourcesDisposed;
         private int _sessionFaulted;
+        private Func<HttpHeaders> _trailerProvider;
+        private string[] _declaredTrailerNames = EmptyDeclaredTrailerNames;
 
         public abstract bool IsEmpty { get; }
 
@@ -24,7 +28,74 @@ namespace TurboHTTP.Core
 
         public abstract bool TryGetBufferedData(out ReadOnlyMemory<byte> data);
 
-        internal abstract UHttpRequestBody CloneDetached();
+        internal Func<HttpHeaders> TrailerProvider => Volatile.Read(ref _trailerProvider);
+
+        internal IReadOnlyList<string> DeclaredTrailerNames => Volatile.Read(ref _declaredTrailerNames);
+
+        internal UHttpRequestBody CloneDetached()
+        {
+            var clone = CloneDetachedCore();
+            if (clone == null)
+                throw new InvalidOperationException("Request body clone factory returned null.");
+
+            clone.CopyTrailerConfigurationFrom(this);
+            return clone;
+        }
+
+        internal abstract UHttpRequestBody CloneDetachedCore();
+
+        internal void SetRequestTrailers(
+            IReadOnlyList<string> declaredTrailerNames,
+            Func<HttpHeaders> trailerProvider)
+        {
+            if (trailerProvider == null)
+            {
+                Volatile.Write(ref _trailerProvider, null);
+                Volatile.Write(ref _declaredTrailerNames, EmptyDeclaredTrailerNames);
+                return;
+            }
+
+            if (declaredTrailerNames == null)
+                throw new ArgumentNullException(nameof(declaredTrailerNames));
+
+            Volatile.Write(ref _declaredTrailerNames, CloneDeclaredTrailerNames(declaredTrailerNames));
+            Volatile.Write(ref _trailerProvider, trailerProvider);
+        }
+
+        internal void CopyTrailerConfigurationFrom(UHttpRequestBody source)
+        {
+            if (source == null)
+            {
+                Volatile.Write(ref _trailerProvider, null);
+                Volatile.Write(ref _declaredTrailerNames, EmptyDeclaredTrailerNames);
+                return;
+            }
+
+            var sourceProvider = Volatile.Read(ref source._trailerProvider);
+            if (sourceProvider == null)
+            {
+                Volatile.Write(ref _trailerProvider, null);
+                Volatile.Write(ref _declaredTrailerNames, EmptyDeclaredTrailerNames);
+                return;
+            }
+
+            Volatile.Write(
+                ref _declaredTrailerNames,
+                CloneDeclaredTrailerNames(Volatile.Read(ref source._declaredTrailerNames)));
+            Volatile.Write(ref _trailerProvider, sourceProvider);
+        }
+
+        private static string[] CloneDeclaredTrailerNames(IReadOnlyList<string> declaredTrailerNames)
+        {
+            if (declaredTrailerNames == null || declaredTrailerNames.Count == 0)
+                return EmptyDeclaredTrailerNames;
+
+            var copy = new string[declaredTrailerNames.Count];
+            for (int i = 0; i < declaredTrailerNames.Count; i++)
+                copy[i] = declaredTrailerNames[i];
+
+            return copy;
+        }
 
         internal ValueTask<RequestBodyReadSession> OpenReadSessionAsync(CancellationToken ct)
         {
@@ -206,7 +277,7 @@ namespace TurboHTTP.Core
                     0));
         }
 
-        internal override UHttpRequestBody CloneDetached()
+        internal override UHttpRequestBody CloneDetachedCore()
         {
             return new EmptyRequestBody();
         }
@@ -247,7 +318,7 @@ namespace TurboHTTP.Core
                     _data.Length));
         }
 
-        internal override UHttpRequestBody CloneDetached()
+        internal override UHttpRequestBody CloneDetachedCore()
         {
             return _data.IsEmpty
                 ? (UHttpRequestBody)new EmptyRequestBody()
@@ -299,7 +370,7 @@ namespace TurboHTTP.Core
                     _length));
         }
 
-        internal override UHttpRequestBody CloneDetached()
+        internal override UHttpRequestBody CloneDetachedCore()
         {
             ThrowIfDisposed();
             return _length == 0
@@ -377,7 +448,7 @@ namespace TurboHTTP.Core
                 CreateReadSession(_stream, _contentLength, disposeStream: false));
         }
 
-        internal override UHttpRequestBody CloneDetached()
+        internal override UHttpRequestBody CloneDetachedCore()
         {
             throw new InvalidOperationException(
                 "Stream-backed request bodies cannot be detached-cloned. Use a replayable factory body or a shared-content copy for same-dispatch mutations.");
@@ -461,7 +532,7 @@ namespace TurboHTTP.Core
             return CreateReadSession(stream, _contentLength);
         }
 
-        internal override UHttpRequestBody CloneDetached()
+        internal override UHttpRequestBody CloneDetachedCore()
         {
             return new FactoryRequestBody(_factory, _contentLength);
         }

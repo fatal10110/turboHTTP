@@ -26,6 +26,7 @@ namespace TurboHTTP.Core
         private int _responseHoldCount;
         private int _sendInProgress;
         private int _disposed;
+        private int _hasManagedTrailerHeader;
 
         /// <summary> Gets the HTTP method for this request. </summary>
         public HttpMethod Method { get; private set; }
@@ -129,6 +130,9 @@ namespace TurboHTTP.Core
             _metadata = metadata != null
                 ? new Dictionary<string, object>(metadata)
                 : new Dictionary<string, object>();
+            _hasManagedTrailerHeader = _content != null && _content.TrailerProvider != null ? 1 : 0;
+            if (_hasManagedTrailerHeader != 0)
+                SyncManagedTrailerHeader();
         }
 
         /// <summary>
@@ -156,6 +160,11 @@ namespace TurboHTTP.Core
             ValidateHeaderInput(name, nameof(name));
             ValidateHeaderInput(value, nameof(value));
             _headers.Set(name, value);
+            if (Volatile.Read(ref _hasManagedTrailerHeader) != 0 &&
+                string.Equals(name, "Trailer", StringComparison.OrdinalIgnoreCase))
+            {
+                SyncManagedTrailerHeader();
+            }
             return this;
         }
 
@@ -170,6 +179,7 @@ namespace TurboHTTP.Core
 
             _headers.Clear();
             CopyHeaders(newHeaders, _headers);
+            SyncManagedTrailerHeader();
             return this;
         }
 
@@ -252,6 +262,30 @@ namespace TurboHTTP.Core
                     ? (UHttpRequestBody)new FactoryRequestBody(factory, contentLength)
                     : new EmptyRequestBody(),
                 ownsContent: true);
+            return this;
+        }
+
+        /// <summary>
+        /// Declares request trailers and attaches a provider that will produce them after the body reaches EOF.
+        /// The declared names are mirrored into the Trailer request header for transport serialization.
+        /// HTTP/1.1 sends request trailers only on chunked bodies; zero-length bodies with request trailers
+        /// are emitted as chunked requests so the terminal trailer block can still be written.
+        /// </summary>
+        public UHttpRequest WithRequestTrailers(
+            IReadOnlyList<string> declaredNames,
+            Func<HttpHeaders> provider)
+        {
+            ThrowIfDisposed();
+            if (declaredNames == null)
+                throw new ArgumentNullException(nameof(declaredNames));
+            if (provider == null)
+                throw new ArgumentNullException(nameof(provider));
+
+            ValidateDeclaredTrailerNames(declaredNames);
+
+            Content.SetRequestTrailers(declaredNames, provider);
+            Interlocked.Exchange(ref _hasManagedTrailerHeader, 1);
+            SyncManagedTrailerHeader();
             return this;
         }
 
@@ -375,6 +409,7 @@ namespace TurboHTTP.Core
             Timeout = timeout;
             _headers.Clear();
             _metadata.Clear();
+            Interlocked.Exchange(ref _hasManagedTrailerHeader, 0);
             ReplaceContent(new EmptyRequestBody(), ownsContent: true);
         }
 
@@ -508,6 +543,7 @@ namespace TurboHTTP.Core
             Timeout = TimeSpan.FromSeconds(30);
             _headers.Clear();
             _metadata.Clear();
+            Interlocked.Exchange(ref _hasManagedTrailerHeader, 0);
             ReplaceContent(new EmptyRequestBody(), ownsContent: true);
             Interlocked.Exchange(ref _disposeRequested, 0);
             Interlocked.Exchange(ref _responseHoldCount, 0);
@@ -561,9 +597,122 @@ namespace TurboHTTP.Core
 
             _content = nextContent;
             _ownsContent = ownsContent;
+            if (nextContent.TrailerProvider != null)
+                Interlocked.Exchange(ref _hasManagedTrailerHeader, 1);
+
+            SyncManagedTrailerHeader();
 
             if (previousOwned && previousContent != null && !ReferenceEquals(previousContent, nextContent))
                 previousContent.Dispose();
+        }
+
+        private void SyncManagedTrailerHeader()
+        {
+            if (Volatile.Read(ref _hasManagedTrailerHeader) == 0)
+                return;
+
+            if (_content == null || _content.TrailerProvider == null)
+            {
+                _headers.Remove("Trailer");
+                Interlocked.Exchange(ref _hasManagedTrailerHeader, 0);
+                return;
+            }
+
+            var declaredNames = _content.DeclaredTrailerNames;
+            if (declaredNames == null || declaredNames.Count == 0)
+            {
+                _headers.Remove("Trailer");
+                return;
+            }
+
+            _headers.Set("Trailer", BuildDeclaredTrailerHeaderValue(declaredNames));
+        }
+
+        private static void ValidateDeclaredTrailerNames(IReadOnlyList<string> declaredNames)
+        {
+            // Core validates syntax and duplicate declarations only.
+            // Transport-specific prohibited trailer fields are filtered later because Core must
+            // remain independent from the transport assembly.
+            var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < declaredNames.Count; i++)
+            {
+                var name = declaredNames[i];
+                ValidateHeaderInput(name, nameof(declaredNames));
+                ValidateTrailerFieldName(name);
+                if (!seenNames.Add(name))
+                {
+                    throw new ArgumentException(
+                        $"Duplicate trailer field name declared: {name}",
+                        nameof(declaredNames));
+                }
+            }
+        }
+
+        private static string BuildDeclaredTrailerHeaderValue(IReadOnlyList<string> declaredNames)
+        {
+            if (declaredNames == null || declaredNames.Count == 0)
+                return string.Empty;
+
+            if (declaredNames.Count == 1)
+                return declaredNames[0];
+
+            var builder = new StringBuilder();
+            for (int i = 0; i < declaredNames.Count; i++)
+            {
+                if (i > 0)
+                    builder.Append(", ");
+
+                builder.Append(declaredNames[i]);
+            }
+
+            return builder.ToString();
+        }
+
+        private static void ValidateTrailerFieldName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Trailer field name cannot be null or empty.", nameof(name));
+
+            var span = name.AsSpan();
+            for (int i = 0; i < span.Length; i++)
+            {
+                if (!IsRfc9110TChar(span[i]))
+                    throw new ArgumentException(
+                        $"Trailer field name contains invalid characters: {name}",
+                        nameof(name));
+            }
+        }
+
+        private static bool IsRfc9110TChar(char c)
+        {
+            if ((c >= '0' && c <= '9') ||
+                (c >= 'A' && c <= 'Z') ||
+                (c >= 'a' && c <= 'z'))
+            {
+                return true;
+            }
+
+            switch (c)
+            {
+                case '!':
+                case '#':
+                case '$':
+                case '%':
+                case '&':
+                case '\'':
+                case '*':
+                case '+':
+                case '-':
+                case '.':
+                case '^':
+                case '_':
+                case '`':
+                case '|':
+                case '~':
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private void DisposeContent()

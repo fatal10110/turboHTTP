@@ -214,6 +214,54 @@ namespace TurboHTTP.Tests.Core
             });
         }
 
+        [Test]
+        public void RequestBodyTrailers_AreStoredDefensively_AndDetachedClonePreservesThem()
+        {
+            var declaredNames = new[] { "Digest", "X-Chunk-Count" };
+            Func<HttpHeaders> provider = () =>
+            {
+                var headers = new HttpHeaders();
+                headers.Set("Digest", "sha-256=abc");
+                return headers;
+            };
+
+            var body = new BufferedRequestBody(Encoding.UTF8.GetBytes("abc"));
+            body.SetRequestTrailers(declaredNames, provider);
+
+            declaredNames[0] = "Corrupted";
+
+            Assert.AreEqual(2, body.DeclaredTrailerNames.Count);
+            Assert.AreEqual("Digest", body.DeclaredTrailerNames[0]);
+            Assert.AreSame(provider, body.TrailerProvider);
+
+            var clone = body.CloneDetached();
+            Assert.AreEqual(2, clone.DeclaredTrailerNames.Count);
+            Assert.AreEqual("Digest", clone.DeclaredTrailerNames[0]);
+            Assert.AreEqual("X-Chunk-Count", clone.DeclaredTrailerNames[1]);
+            Assert.AreSame(provider, clone.TrailerProvider);
+            Assert.AreNotSame(body.DeclaredTrailerNames, clone.DeclaredTrailerNames);
+        }
+
+        [Test]
+        public void RequestBodyTrailers_CanBeCleared()
+        {
+            var body = new BufferedRequestBody(Encoding.UTF8.GetBytes("abc"));
+            body.SetRequestTrailers(
+                new[] { "Digest" },
+                () =>
+                {
+                    var headers = new HttpHeaders();
+                    headers.Set("Digest", "sha-256=abc");
+                    return headers;
+                });
+
+            body.SetRequestTrailers(null, null);
+
+            Assert.IsNull(body.TrailerProvider);
+            Assert.NotNull(body.DeclaredTrailerNames);
+            Assert.AreEqual(0, body.DeclaredTrailerNames.Count);
+        }
+
         private static async Task<string> ReadAllAsync(ValueTask<RequestBodyReadSession> pendingSession)
         {
             return await ReadAllAsync(await pendingSession.ConfigureAwait(false));

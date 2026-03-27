@@ -1,77 +1,74 @@
 # Phase 22b.3 Review — HTTP/1.1 Response Trailer Parsing
 
-**Date:** 2026-03-21
 **Reviewers:** unity-infrastructure-architect, unity-network-architect
+
+---
+
+## Round 1 (2026-03-21)
+
 **Verdict:** Both reviews pass. No blocking correctness bugs.
 
----
+### Infrastructure Architect Findings
 
-## Infrastructure Architect
+| # | Finding | Severity | Status |
+|---|---------|----------|--------|
+| 1 | `TryAddResponseTrailer` throws `FormatException` on CRLF injection, violating `Try` prefix contract. Rename to `AddResponseTrailer`. | Medium | Fixed R2 |
+| 2 | Inconsistent trailer reader method names: `ReadChunkTrailersAsync` (BodySource) vs `ReadChunkedTrailersAsync` (Parser). | Low | Fixed R2 |
+| 3 | `ProhibitedRequestTrailers` copies response set — overly restrictive but safe. Refine when 22b.4 is implemented. | Informational | Deferred to 22b.4 |
+| 4 | TCS behavioral asymmetry: non-chunked abort throws synchronously, chunked abort returns faulted `ValueTask`. Same result at `await` site — document as intentional. | Informational | Accepted |
 
-### Findings
+Test gaps: abort-path TCS fault, streaming CRLF injection, `DrainThenGetTrailersAsync` path.
 
-| # | Finding | Severity | Blocking |
-|---|---------|----------|----------|
-| 1 | `TryAddResponseTrailer` throws `FormatException` on CRLF injection, violating `Try` prefix contract. Rename to `AddResponseTrailer`. | Medium | No |
-| 2 | Inconsistent trailer reader method names: `ReadChunkTrailersAsync` (BodySource) vs `ReadChunkedTrailersAsync` (Parser). | Low | No |
-| 3 | `ProhibitedRequestTrailers` copies response set — overly restrictive but safe. Refine when 22b.4 is implemented. | Informational | No |
-| 4 | TCS behavioral asymmetry: non-chunked abort throws synchronously, chunked abort returns faulted `ValueTask`. Same result at `await` site — document as intentional. | Informational | No |
+### Network Architect Findings
 
-### Confirmed Correct
+| # | Finding | Severity | Status |
+|---|---------|----------|--------|
+| 1 | No `MaxTotalTrailerBytes` limit. Individual lines capped at 8192 but no cumulative cap — DoS vector. Recommend 32KB limit. | Moderate | Fixed R2 |
+| 2 | `Content-Location` missing from prohibited trailer list. | Low | Fixed R2 |
+| 3 | Request trailer prohibited set includes response-only headers (`Age`, `Vary`, etc.). Cosmetic — overly restrictive is safe. | Cosmetic | Deferred to 22b.4 |
 
-- TCS lifecycle complete: all error/abort/dispose paths resolve the TCS before `CloseBody()`.
-- Pool safety: `ParsedResponse.Reset()` nulls `Trailers`; `HttpHeaders` is not pooled, no use-after-return.
-- `TaskCompletionSource<HttpHeaders>` is safe on IL2CPP/AOT (reference-type generic, no reflection).
-- Module boundaries respected: no new asmdef changes, no cross-module coupling.
-- Allocation profile clean: TCS only for chunked bodies, `HttpHeaders.Empty` reused on non-trailer paths.
-- `GetTrailersAsync` cannot hang: TCS is always resolved by either the read-success path or an exception/abort/dispose path.
-
-### Test Gaps Identified
-
-- No test for abort-path TCS fault on chunked source (`Abort()` followed by `GetTrailersAsync`).
-- No test for CRLF injection in the streaming body source path (only the parser test covers this).
-- No test for `DrainThenGetTrailersAsync` path (chunked body never read by consumer before `GetTrailersAsync`).
+Test gaps: fragmented-read trailer parsing, abort-during-read TCS fault, buffered proxy path with trailers.
 
 ---
 
-## Network Architect
+## Round 2 (2026-03-22)
 
-### Findings
+**Verdict:** Both reviews pass. All round 1 findings resolved. No new blocking issues.
 
-| # | Finding | Severity | Blocking |
-|---|---------|----------|----------|
-| 1 | No `MaxTotalTrailerBytes` limit. Individual lines capped at 8192 but no cumulative cap — DoS vector. Recommend 32KB limit in both parser paths. | Moderate | No |
-| 2 | `Content-Location` missing from prohibited trailer list. Defensible per RFC but recommend adding for completeness. | Low | No |
-| 3 | Request trailer prohibited set includes response-only headers (`Age`, `Vary`, etc.). Cosmetic — overly restrictive is safe. | Cosmetic | No |
+### Fixes Verified
 
-### RFC Compliance Confirmed
+| # | Fix | Infra | Network |
+|---|-----|-------|---------|
+| 1 | Renamed `TryAddResponseTrailer` → `AddResponseTrailer` | PASS | PASS |
+| 2 | Added `MaxTotalTrailerBytes` (32KB) in both parser paths | PASS | PASS |
+| 3 | Added `Content-Location` to `ProhibitedResponseTrailers` | PASS | PASS |
+| 4 | Unified method names to `ReadChunkedTrailersAsync` | PASS | PASS |
+| 5 | Fixed `EmitParsedResponseAsync` pool-return regression (snapshot status/headers before return) | PASS | PASS |
+| 6 | Added missing tests (fragmented reads, size overflow, streaming CRLF, abort-path TCS, proxy trailers) | PASS | PASS |
 
-- **RFC 9112 Section 7.1.2:** Trailers parsed only after terminal chunk in both buffered and streaming paths.
-- **RFC 9110 Section 6.6.2:** Prohibited list covers all mandatory categories (framing, routing, request modifiers, authentication, control data, self-reference).
-- **tchar validation:** `IsRfc9110TChar` correctly implements RFC 9110 Section 5.6.2 token character set.
-- **CRLF injection:** `ValidateHeaderValue` blocks embedded `\r` and `\n` in trailer values. `ReadLineAsync` strips trailing `\r`, so bare `\r` within a value is the only surviving vector — correctly caught.
-- **Line length:** `MaxHeaderLineLength` (8192) applied to trailer lines, consistent with header limits.
-- **Security:** Prohibited trailers prevent framing attacks (`Transfer-Encoding`, `Content-Length`), credential injection (`Authorization`), and header smuggling via trailers. Malformed lines silently skipped.
+### Confirmed Correct (cumulative)
 
-### Test Gaps Identified
+- TCS lifecycle complete: all error/abort/dispose paths resolve the TCS before `CloseBody()`
+- Pool safety: `ParsedResponse.Reset()` nulls `Trailers`; `HttpHeaders` not pooled, no use-after-return
+- `TaskCompletionSource<HttpHeaders>` safe on IL2CPP/AOT (reference-type generic, no reflection)
+- Module boundaries respected: no new asmdef changes, no cross-module coupling
+- Allocation profile clean: TCS only for chunked bodies, `HttpHeaders.Empty` reused on non-trailer paths
+- `GetTrailersAsync` cannot hang: TCS always resolved
+- RFC 9112 Section 7.1.2: trailers parsed only after terminal chunk
+- RFC 9110 Section 6.6.2: prohibited list covers all mandatory categories
+- tchar validation correct per RFC 9110 Section 5.6.2
+- CRLF injection blocked by `ValidateHeaderValue`
+- `MaxTotalTrailerBytes` (32KB) enforced in both buffered and streaming paths
+- `EmitParsedResponseAsync` snapshots status/headers before pool return — no use-after-return
 
-- No test for fragmented-read trailer parsing (trailer line spanning buffer boundaries).
-- No test for abort-during-read TCS fault path.
-- No test for buffered `RawSocketTransport` proxy path with trailers present.
+### Observations (non-blocking)
 
----
+1. **Detached-body path hardcodes `HttpHeaders.Empty` for trailers** — correct today (detached bodies are never chunked), but latent trap if future `IResponseBodySource` changes detach semantics. Worth a comment.
+2. **Parser tests use `Task.Run(...).GetAwaiter().GetResult()`** — older pattern; newer tests correctly use `AssertAsync.Run`. Not a correctness issue.
+3. **`totalTrailerBytes` counts `string.Length` (characters) not wire bytes** — matches existing `MaxTotalHeaderBytes` accounting. For RFC-compliant servers (ASCII tchar names, VCHAR/obs-text values), character count equals byte count. Acceptable.
 
-## Recommended Actions
+### Still Deferred
 
-### Should fix (this slice)
-
-1. **Rename `TryAddResponseTrailer` → `AddResponseTrailer`** — the method intentionally throws `FormatException` for CRLF injection (correct security behavior) but this violates the `Try` naming convention used consistently elsewhere in the parser.
-2. **Add `MaxTotalTrailerBytes` (32KB)** to both `ReadChunkedTrailersAsync` implementations (parser and body source) — mirrors existing `MaxTotalHeaderBytes` pattern for headers.
-
-### Track for follow-up
-
-3. Add `Content-Location` to `ProhibitedResponseTrailers`.
-4. Add missing test coverage: abort-path TCS fault, fragmented reads, streaming CRLF injection.
-5. Refine `ProhibitedRequestTrailers` to RFC 9110 §6.5.2 request-specific set when 22b.4 lands.
-6. IL2CPP physical device validation with chunked trailer response (already tracked in journal).
-7. Unify method names: `ReadChunkTrailersAsync` / `ReadChunkedTrailersAsync`.
+1. IL2CPP physical device validation with chunked trailer response.
+2. Refine `ProhibitedRequestTrailers` to RFC 9110 §6.5.2 request-specific set when 22b.4 lands.
+3. Trailer persistence in cache replay.

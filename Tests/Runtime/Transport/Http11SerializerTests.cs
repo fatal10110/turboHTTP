@@ -218,6 +218,148 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void SerializePost_UnknownLengthFactoryBody_WithRequestTrailers_WritesTrailerSection()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("hello");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(_ => new ValueTask<Stream>(new MemoryStream(body, writable: false)))
+                    .WithRequestTrailers(
+                        new[] { "Digest", "X-Chunk-Count" },
+                        () =>
+                        {
+                            var trailers = new HttpHeaders();
+                            trailers.Set("Digest", "sha-256=abc");
+                            trailers.Set("X-Chunk-Count", "1");
+                            return trailers;
+                        });
+
+                var result = await SerializeAsync(request);
+
+                Assert.IsTrue(result.Headers.Contains("Trailer: Digest, X-Chunk-Count"));
+                Assert.AreEqual(
+                    "5\r\nhello\r\n0\r\nDigest: sha-256=abc\r\nX-Chunk-Count: 1\r\n\r\n",
+                    Encoding.ASCII.GetString(result.Body));
+            });
+        }
+
+        [Test]
+        public void SerializePost_EmptyBodyWithRequestTrailers_UsesChunkedTransferEncodingAndWritesTrailerSection()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBody(ReadOnlyMemory<byte>.Empty)
+                    .WithRequestTrailers(new[] { "Digest" }, CreateDigestTrailerProvider());
+
+                var result = await SerializeAsync(request);
+
+                Assert.IsTrue(result.Headers.Contains("Transfer-Encoding: chunked"));
+                Assert.IsFalse(result.Headers.Contains("Content-Length:"));
+                Assert.AreEqual(
+                    "0\r\nDigest: sha-256=abc\r\n\r\n",
+                    Encoding.ASCII.GetString(result.Body));
+            });
+        }
+
+        [Test]
+        public void SerializePost_KnownLengthFactoryBody_WithRequestTrailers_ThrowsInvalidOperationException()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("hello");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(new MemoryStream(body, writable: false)),
+                        body.Length)
+                    .WithRequestTrailers(new[] { "Digest" }, CreateDigestTrailerProvider());
+
+                var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(async () => await SerializeAsync(request));
+                StringAssert.Contains("chunked transfer encoding", ex.Message);
+            });
+        }
+
+        [Test]
+        public void SerializePost_BufferedBody_WithRequestTrailers_ThrowsInvalidOperationException()
+        {
+            var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                .WithBody("hello")
+                .WithRequestTrailers(new[] { "Digest" }, CreateDigestTrailerProvider());
+
+            var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(async () => await SerializeAsync(request));
+            StringAssert.Contains("chunked transfer encoding", ex.Message);
+        }
+
+        [Test]
+        public void SerializePost_RequestTrailers_FilterProhibitedFields_AndAllowUndeclaredFields()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(
+                            new MemoryStream(Encoding.UTF8.GetBytes("hello"), writable: false)))
+                    .WithRequestTrailers(
+                        new[] { "Digest" },
+                        () =>
+                        {
+                            var trailers = new HttpHeaders();
+                            trailers.Set("Digest", "sha-256=abc");
+                            trailers.Set("X-Extra", "ok");
+                            trailers.Set("Content-Length", "999");
+                            return trailers;
+                        });
+
+                var result = await SerializeAsync(request);
+                var bodyText = Encoding.ASCII.GetString(result.Body);
+
+                StringAssert.Contains("Digest: sha-256=abc\r\n", bodyText);
+                StringAssert.Contains("X-Extra: ok\r\n", bodyText);
+                Assert.IsFalse(bodyText.Contains("Content-Length: 999"));
+            });
+        }
+
+        [Test]
+        public void SerializePost_RequestTrailers_NullProviderResult_WritesPlainTerminalChunk()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(
+                            new MemoryStream(Encoding.UTF8.GetBytes("hello"), writable: false)))
+                    .WithRequestTrailers(new[] { "Digest" }, () => null);
+
+                var result = await SerializeAsync(request);
+                Assert.AreEqual("5\r\nhello\r\n0\r\n\r\n", Encoding.ASCII.GetString(result.Body));
+            });
+        }
+
+        [Test]
+        public void SerializePost_RequestTrailers_CRLFInjection_ThrowsArgumentException()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(
+                            new MemoryStream(Encoding.UTF8.GetBytes("hello"), writable: false)))
+                    .WithRequestTrailers(
+                        new[] { "Digest" },
+                        () =>
+                        {
+                            var trailers = new HttpHeaders();
+                            trailers.Set("Digest", "sha-256=abc\r\nInjected: bad");
+                            return trailers;
+                        });
+
+                var ex = AssertAsync.ThrowsAsync<ArgumentException>(async () => await SerializeAsync(request));
+                StringAssert.Contains("CRLF", ex.Message);
+            });
+        }
+
+        [Test]
         public void SerializePost_UnknownLengthFactoryBody_TracksCommittedBodyBytes()
         {
             Task.Run(async () =>
@@ -231,6 +373,16 @@ namespace TurboHTTP.Tests.Transport
                 Assert.AreEqual(5, result.WriteState.BodyBytesWritten);
                 Assert.IsTrue(result.WriteState.HasCommittedBodyBytes);
             }).GetAwaiter().GetResult();
+        }
+
+        private static Func<HttpHeaders> CreateDigestTrailerProvider()
+        {
+            return () =>
+            {
+                var trailers = new HttpHeaders();
+                trailers.Set("Digest", "sha-256=abc");
+                return trailers;
+            };
         }
 
         [Test]

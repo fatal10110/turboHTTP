@@ -43,6 +43,9 @@ namespace TurboHTTP.Transport.Internal
                 "Vary"
             };
 
+        // Requests currently use the same conservative forbidden set as responses so framing,
+        // routing, authentication, and representation metadata never migrate into trailers on
+        // either path. Narrowing this set later should happen as an explicit transport decision.
         internal static readonly HashSet<string> ProhibitedRequestTrailers =
             new HashSet<string>(ProhibitedResponseTrailers, StringComparer.OrdinalIgnoreCase);
 
