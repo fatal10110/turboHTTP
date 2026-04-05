@@ -92,6 +92,79 @@ namespace TurboHTTP.Tests.Transport
             }
         }
 
+        private sealed class ForwardingStream : Stream
+        {
+            private readonly Stream _inner;
+
+            public ForwardingStream(Stream inner)
+            {
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            }
+
+            public override bool CanRead => _inner.CanRead;
+            public override bool CanSeek => _inner.CanSeek;
+            public override bool CanWrite => _inner.CanWrite;
+            public override long Length => _inner.Length;
+            public override long Position
+            {
+                get => _inner.Position;
+                set => _inner.Position = value;
+            }
+
+            public override void Flush() => _inner.Flush();
+
+            public override int Read(byte[] buffer, int offset, int count)
+                => _inner.Read(buffer, offset, count);
+
+            public override long Seek(long offset, SeekOrigin origin)
+                => _inner.Seek(offset, origin);
+
+            public override void SetLength(long value) => _inner.SetLength(value);
+
+            public override void Write(byte[] buffer, int offset, int count)
+                => _inner.Write(buffer, offset, count);
+
+            public override Task FlushAsync(CancellationToken cancellationToken)
+                => _inner.FlushAsync(cancellationToken);
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+                => _inner.ReadAsync(buffer, offset, count, cancellationToken);
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+                => _inner.ReadAsync(buffer, cancellationToken);
+
+            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+                => _inner.WriteAsync(buffer, offset, count, cancellationToken);
+
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+                => _inner.WriteAsync(buffer, cancellationToken);
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                    _inner.Dispose();
+
+                base.Dispose(disposing);
+            }
+        }
+
+        private static async Task WaitForAcceptCountAsync(PassiveServer server, int expectedCount, int timeoutMs = 1000)
+        {
+            var deadline = Environment.TickCount64 + timeoutMs;
+            while (server.AcceptCount < expectedCount && Environment.TickCount64 < deadline)
+            {
+                await Task.Delay(10);
+            }
+        }
+
+        private static string BuildTunnelPoolKey(PassiveServer server, string targetHost, int targetPort)
+        {
+            return "tunnel|" +
+                TcpConnectionPool.BuildConnectionKey("127.0.0.1", server.Port, secure: false) +
+                "|" +
+                TcpConnectionPool.BuildConnectionKey(targetHost, targetPort, secure: true);
+        }
+
         [Test]
         public void GetConnection_CreatesNewConnection()        {
             Task.Run(async () =>
@@ -119,6 +192,85 @@ namespace TurboHTTP.Tests.Transport
                 using var lease2 = await pool.GetConnectionAsync("127.0.0.1", server.Port, false, CancellationToken.None);
                 Assert.AreSame(conn1, lease2.Connection);
                 Assert.IsTrue(lease2.Connection.IsReused);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void GetConnection_WithPoolKeyOverride_ReuseIsScopedToTunnelKey()
+        {
+            Task.Run(async () =>
+            {
+                using var server = new PassiveServer();
+                using var pool = new TcpConnectionPool(maxConnectionsPerHost: 2);
+
+                var tunnelKeyA = BuildTunnelPoolKey(server, "localhost", 443);
+                var tunnelKeyB = BuildTunnelPoolKey(server, "example.test", 443);
+
+                using (var lease1 = await pool.GetConnectionAsync("127.0.0.1", server.Port, false, tunnelKeyA, CancellationToken.None))
+                {
+                    var wrappedStream = new ForwardingStream(lease1.Connection.Stream);
+                    lease1.Connection.UpdateTransportBinding(
+                        wrappedStream,
+                        "localhost",
+                        443,
+                        isSecure: true,
+                        poolKey: tunnelKeyA,
+                        tlsVersion: "1.3",
+                        tlsProviderName: "TestTls",
+                        negotiatedAlpnProtocol: "http/1.1");
+
+                    lease1.ReturnToPool();
+                }
+
+                using var lease2 = await pool.GetConnectionAsync("127.0.0.1", server.Port, false, tunnelKeyA, CancellationToken.None);
+                await WaitForAcceptCountAsync(server, 1);
+                Assert.AreEqual(1, server.AcceptCount);
+                Assert.IsTrue(lease2.Connection.IsReused);
+                Assert.IsTrue(lease2.Connection.IsSecure);
+                Assert.AreEqual("localhost", lease2.Connection.Host);
+                Assert.AreEqual(443, lease2.Connection.Port);
+                Assert.AreEqual("1.3", lease2.Connection.TlsVersion);
+                Assert.AreEqual("TestTls", lease2.Connection.TlsProviderName);
+                Assert.AreEqual("http/1.1", lease2.Connection.NegotiatedAlpnProtocol);
+
+                using var lease3 = await pool.GetConnectionAsync("127.0.0.1", server.Port, false, tunnelKeyB, CancellationToken.None);
+                await WaitForAcceptCountAsync(server, 2);
+                Assert.AreEqual(2, server.AcceptCount);
+                Assert.AreNotSame(lease2.Connection, lease3.Connection);
+            }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void GetConnection_WithPoolKeyOverride_SemaphoreUsesPhysicalEndpoint()
+        {
+            Task.Run(async () =>
+            {
+                using var server = new PassiveServer();
+                using var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
+
+                using var lease1 = await pool.GetConnectionAsync(
+                    "127.0.0.1",
+                    server.Port,
+                    false,
+                    BuildTunnelPoolKey(server, "first.test", 443),
+                    CancellationToken.None);
+
+                var pendingLeaseTask = pool.GetConnectionAsync(
+                    "127.0.0.1",
+                    server.Port,
+                    false,
+                    BuildTunnelPoolKey(server, "second.test", 443),
+                    CancellationToken.None).AsTask();
+
+                var completed = await Task.WhenAny(pendingLeaseTask, Task.Delay(100));
+                Assert.IsNotSame(pendingLeaseTask, completed);
+
+                lease1.Dispose();
+
+                using var lease2 = await pendingLeaseTask;
+                await WaitForAcceptCountAsync(server, 2);
+                Assert.AreEqual(2, server.AcceptCount);
+                Assert.IsFalse(lease2.Connection.IsReused);
             }).GetAwaiter().GetResult();
         }
 

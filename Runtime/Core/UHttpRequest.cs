@@ -290,6 +290,23 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Sets or clears the Expect: 100-continue header on this request.
+        /// The transport-specific wait semantics are applied only when the request
+        /// ultimately carries a body.
+        /// </summary>
+        public UHttpRequest WithExpectContinue(bool enable = true)
+        {
+            ThrowIfDisposed();
+
+            if (enable)
+                _headers.Set("Expect", "100-continue");
+            else
+                _headers.Remove("Expect");
+
+            return this;
+        }
+
+        /// <summary>
         /// Sets the timeout for this request. Note: Mutates the request in-place.
         /// </summary>
         public UHttpRequest WithTimeout(TimeSpan timeout)

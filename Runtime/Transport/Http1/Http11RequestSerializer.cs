@@ -65,7 +65,222 @@ namespace TurboHTTP.Transport.Http1
             bool hasRequestTrailers = request.Content.TrailerProvider != null;
 
             using var headerWriter = new PooledHeaderWriter();
+            AppendHeaders(headerWriter, request, bodyWriteMode, hasRequestTrailers);
 
+            // 8. Small buffered bodies can be appended directly to the header writer so
+            // the hot JSON/form path reaches the stream with a single write.
+            if (await TryWriteSmallBufferedRequestAsync(
+                    headerWriter,
+                    bodyWriteMode.BufferedBody,
+                    stream,
+                    writeState,
+                    smallBufferedRequestThresholdBytes,
+                    ct).ConfigureAwait(false))
+            {
+                await stream.FlushAsync(ct).ConfigureAwait(false);
+                return;
+            }
+
+            // 9. Write header block
+            await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
+
+            // 10. Write body
+            if (bodyWriteMode.Kind != RequestBodyWriteKind.None)
+            {
+                using var session = await request.Content.OpenReadSessionAsync(ct).ConfigureAwait(false);
+                await WriteBodyAsync(
+                        request.Content,
+                        bodyWriteMode,
+                        session,
+                        stream,
+                        writeState,
+                        streamingSendBufferBytes,
+                        ct)
+                    .ConfigureAwait(false);
+            }
+
+            await stream.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Writes request line, headers, and the terminating CRLF without writing any body bytes.
+        /// Does not flush the target stream; callers performing an expect-continue wait must flush explicitly.
+        /// </summary>
+        internal static async Task SerializeHeadersAsync(
+            UHttpRequest request,
+            Stream stream,
+            CancellationToken ct)
+        {
+            if (request == null) throw new ArgumentNullException(nameof(request));
+            if (stream == null) throw new ArgumentNullException(nameof(stream));
+
+            var bodyWriteMode = ResolveBodyWriteMode(request);
+            bool hasRequestTrailers = request.Content.TrailerProvider != null;
+            ValidateTrailerCompatibility(request.Content, bodyWriteMode);
+
+            using var headerWriter = new PooledHeaderWriter();
+            AppendHeaders(headerWriter, request, bodyWriteMode, hasRequestTrailers);
+            await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Writes only the request body using the provided read session.
+        /// Does not flush the target stream; callers are responsible for flushing after body transmission completes.
+        /// </summary>
+        internal static async Task SerializeBodyAsync(
+            Stream stream,
+            UHttpRequestBody body,
+            RequestBodyReadSession session,
+            CancellationToken ct,
+            Http11RequestWriteState writeState = null,
+            StreamingOptions streamingOptions = null)
+        {
+            if (stream == null) throw new ArgumentNullException(nameof(stream));
+            if (body == null) throw new ArgumentNullException(nameof(body));
+
+            streamingOptions = streamingOptions ?? new StreamingOptions();
+            var bodyWriteMode = ResolveBodyWriteMode(body);
+            ValidateTrailerCompatibility(body, bodyWriteMode);
+
+            if (bodyWriteMode.Kind == RequestBodyWriteKind.None)
+                return;
+
+            if (bodyWriteMode.BufferedBody.IsEmpty && session == null)
+            {
+                throw new ArgumentNullException(
+                    nameof(session),
+                    "A request body read session is required for non-empty streaming or chunked bodies.");
+            }
+
+            await WriteBodyAsync(
+                    body,
+                    bodyWriteMode,
+                    session,
+                    stream,
+                    writeState,
+                    streamingOptions.DefaultStreamingSendBufferBytes,
+                    ct)
+                .ConfigureAwait(false);
+        }
+
+        private static async Task<bool> TryWriteSmallBufferedRequestAsync(
+            PooledHeaderWriter headerWriter,
+            ReadOnlyMemory<byte> bufferedBody,
+            Stream stream,
+            Http11RequestWriteState writeState,
+            int smallBufferedRequestThresholdBytes,
+            CancellationToken ct)
+        {
+            if (bufferedBody.IsEmpty || bufferedBody.Length > smallBufferedRequestThresholdBytes)
+                return false;
+
+            writeState?.RecordBodyBytesWritten(bufferedBody.Length);
+            headerWriter.Append(bufferedBody.Span);
+            await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
+            return true;
+        }
+
+        private static RequestBodyWriteMode ResolveBodyWriteMode(UHttpRequest request)
+        {
+            if (request == null)
+                throw new ArgumentNullException(nameof(request));
+
+            return ResolveBodyWriteMode(request.Content);
+        }
+
+        private static RequestBodyWriteMode ResolveBodyWriteMode(UHttpRequestBody content)
+        {
+            if (content == null)
+                return RequestBodyWriteMode.None;
+
+            bool hasRequestTrailers = content.TrailerProvider != null;
+            if (content.TryGetBufferedData(out var bufferedBody))
+            {
+                if (bufferedBody.IsEmpty)
+                    return hasRequestTrailers
+                        ? RequestBodyWriteMode.Chunked
+                        : RequestBodyWriteMode.None;
+
+                return RequestBodyWriteMode.FromKnownLength(bufferedBody.Length, bufferedBody);
+            }
+
+            var contentLength = content.Length;
+            if (!contentLength.HasValue)
+                return RequestBodyWriteMode.Chunked;
+
+            if (contentLength.Value <= 0)
+            {
+                return hasRequestTrailers
+                    ? RequestBodyWriteMode.Chunked
+                    : RequestBodyWriteMode.None;
+            }
+
+            return RequestBodyWriteMode.FromKnownLength(contentLength.Value, default);
+        }
+
+        private static void ValidateTrailerCompatibility(
+            UHttpRequestBody content,
+            RequestBodyWriteMode bodyWriteMode)
+        {
+            if (content == null || content.TrailerProvider == null)
+                return;
+
+            if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
+                return;
+
+            throw new InvalidOperationException(
+                "Request trailers require chunked transfer encoding. " +
+                "Use an unknown-length body or remove the trailer provider.");
+        }
+
+        private static async Task WriteBodyAsync(
+            UHttpRequestBody content,
+            RequestBodyWriteMode bodyWriteMode,
+            RequestBodyReadSession session,
+            Stream stream,
+            Http11RequestWriteState writeState,
+            int streamingSendBufferBytes,
+            CancellationToken ct)
+        {
+            if (bodyWriteMode.Kind == RequestBodyWriteKind.None)
+                return;
+
+            if (!bodyWriteMode.BufferedBody.IsEmpty)
+            {
+                writeState?.RecordBodyBytesWritten(bodyWriteMode.BufferedBody.Length);
+                await stream.WriteAsync(bodyWriteMode.BufferedBody, ct).ConfigureAwait(false);
+                return;
+            }
+
+            if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
+            {
+                await WriteChunkedBodyAsync(
+                        session,
+                        content,
+                        stream,
+                        writeState,
+                        streamingSendBufferBytes,
+                        ct)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            await WriteKnownLengthBodyAsync(
+                    session,
+                    bodyWriteMode.KnownLength.Value,
+                    stream,
+                    writeState,
+                    streamingSendBufferBytes,
+                    ct)
+                .ConfigureAwait(false);
+        }
+
+        private static void AppendHeaders(
+            PooledHeaderWriter headerWriter,
+            UHttpRequest request,
+            RequestBodyWriteMode bodyWriteMode,
+            bool hasRequestTrailers)
+        {
             // 1. Request line: METHOD /path HTTP/1.1\r\n
             headerWriter.Append(request.Method.ToUpperString());
             headerWriter.Append(' ');
@@ -94,7 +309,6 @@ namespace TurboHTTP.Transport.Http1
                 if (!isDefaultPort)
                     hostValue = hostValue + ":" + request.Uri.Port;
 
-                // Defense-in-depth: validate even though Uri.Host is pre-validated by .NET
                 ValidateHeader("Host", hostValue);
                 headerWriter.Append("Host: ");
                 headerWriter.Append(hostValue);
@@ -134,154 +348,18 @@ namespace TurboHTTP.Transport.Http1
             }
 
             if (hasRequestTrailers)
-            {
                 AppendDeclaredTrailerHeader(headerWriter, request.Content.DeclaredTrailerNames);
-            }
 
             // 5. Auto-add User-Agent
             if (!request.Headers.Contains("User-Agent"))
-            {
                 headerWriter.Append("User-Agent: TurboHTTP/1.0\r\n");
-            }
 
             // 6. Auto-add Connection: keep-alive
             if (!request.Headers.Contains("Connection"))
-            {
                 headerWriter.Append("Connection: keep-alive\r\n");
-            }
 
             // 7. End of headers
             headerWriter.Append("\r\n");
-
-            // 8. Small buffered bodies can be appended directly to the header writer so
-            // the hot JSON/form path reaches the stream with a single write.
-            if (await TryWriteSmallBufferedRequestAsync(
-                    headerWriter,
-                    bodyWriteMode.BufferedBody,
-                    stream,
-                    writeState,
-                    smallBufferedRequestThresholdBytes,
-                    ct).ConfigureAwait(false))
-            {
-                await stream.FlushAsync(ct).ConfigureAwait(false);
-                return;
-            }
-
-            // 9. Write header block
-            await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
-
-            // 10. Write body
-            await WriteBodyAsync(
-                    request.Content,
-                    bodyWriteMode,
-                    stream,
-                    writeState,
-                    streamingSendBufferBytes,
-                    ct)
-                .ConfigureAwait(false);
-
-            await stream.FlushAsync(ct).ConfigureAwait(false);
-        }
-
-        private static async Task<bool> TryWriteSmallBufferedRequestAsync(
-            PooledHeaderWriter headerWriter,
-            ReadOnlyMemory<byte> bufferedBody,
-            Stream stream,
-            Http11RequestWriteState writeState,
-            int smallBufferedRequestThresholdBytes,
-            CancellationToken ct)
-        {
-            if (bufferedBody.IsEmpty || bufferedBody.Length > smallBufferedRequestThresholdBytes)
-                return false;
-
-            writeState?.RecordBodyBytesWritten(bufferedBody.Length);
-            headerWriter.Append(bufferedBody.Span);
-            await headerWriter.WriteToAsync(stream, ct).ConfigureAwait(false);
-            return true;
-        }
-
-        private static RequestBodyWriteMode ResolveBodyWriteMode(UHttpRequest request)
-        {
-            bool hasRequestTrailers = request.Content != null && request.Content.TrailerProvider != null;
-            if (request.TryGetBufferedContent(out var bufferedBody))
-            {
-                if (bufferedBody.IsEmpty)
-                    return hasRequestTrailers
-                        ? RequestBodyWriteMode.Chunked
-                        : RequestBodyWriteMode.None;
-
-                return RequestBodyWriteMode.FromKnownLength(bufferedBody.Length, bufferedBody);
-            }
-
-            var contentLength = request.Content.Length;
-            if (!contentLength.HasValue)
-                return RequestBodyWriteMode.Chunked;
-
-            if (contentLength.Value <= 0)
-            {
-                return hasRequestTrailers
-                    ? RequestBodyWriteMode.Chunked
-                    : RequestBodyWriteMode.None;
-            }
-
-            return RequestBodyWriteMode.FromKnownLength(contentLength.Value, default);
-        }
-
-        private static void ValidateTrailerCompatibility(
-            UHttpRequestBody content,
-            RequestBodyWriteMode bodyWriteMode)
-        {
-            if (content == null || content.TrailerProvider == null)
-                return;
-
-            if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
-                return;
-
-            throw new InvalidOperationException(
-                "Request trailers require chunked transfer encoding. " +
-                "Use an unknown-length body or remove the trailer provider.");
-        }
-
-        private static async Task WriteBodyAsync(
-            UHttpRequestBody content,
-            RequestBodyWriteMode bodyWriteMode,
-            Stream stream,
-            Http11RequestWriteState writeState,
-            int streamingSendBufferBytes,
-            CancellationToken ct)
-        {
-            if (bodyWriteMode.Kind == RequestBodyWriteKind.None)
-                return;
-
-            if (!bodyWriteMode.BufferedBody.IsEmpty)
-            {
-                writeState?.RecordBodyBytesWritten(bodyWriteMode.BufferedBody.Length);
-                await stream.WriteAsync(bodyWriteMode.BufferedBody, ct).ConfigureAwait(false);
-                return;
-            }
-
-            using var session = await content.OpenReadSessionAsync(ct).ConfigureAwait(false);
-            if (bodyWriteMode.Kind == RequestBodyWriteKind.Chunked)
-            {
-                await WriteChunkedBodyAsync(
-                        session,
-                        content,
-                        stream,
-                        writeState,
-                        streamingSendBufferBytes,
-                        ct)
-                    .ConfigureAwait(false);
-                return;
-            }
-
-            await WriteKnownLengthBodyAsync(
-                    session,
-                    bodyWriteMode.KnownLength.Value,
-                    stream,
-                    writeState,
-                    streamingSendBufferBytes,
-                    ct)
-                .ConfigureAwait(false);
         }
 
         private static async Task WriteKnownLengthBodyAsync(

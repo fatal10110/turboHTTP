@@ -24,14 +24,18 @@ namespace TurboHTTP.Tests.Transport.Http2
         /// and return an initialized Http2Connection.
         /// </summary>
         private async Task<(Http2Connection conn, Stream serverStream, TestDuplexStream duplex)>
-            CreateInitializedConnectionAsync(CancellationToken ct = default, Http2Options options = null)
+            CreateInitializedConnectionAsync(
+                CancellationToken ct = default,
+                Http2Options options = null,
+                StreamingOptions streamingOptions = null)
         {
             var duplex = new TestDuplexStream();
             var conn = new Http2Connection(
                 duplex.ClientStream,
                 "test.example.com",
                 443,
-                options ?? new Http2Options());
+                options ?? new Http2Options(),
+                streamingOptions ?? new StreamingOptions());
 
             var serverCodec = new Http2FrameCodec(duplex.ServerStream);
             var serverTask = Task.Run(async () =>
@@ -72,6 +76,21 @@ namespace TurboHTTP.Tests.Transport.Http2
             await serverTask;
 
             return (conn, duplex.ServerStream, duplex);
+        }
+
+        private static async Task AssertNoFrameWithinAsync(
+            Http2FrameCodec serverCodec,
+            TimeSpan timeout)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeout);
+            try
+            {
+                var unexpected = await serverCodec.ReadFrameAsync(16384, timeoutCts.Token);
+                Assert.Fail($"Expected no frame within {timeout}, but received {unexpected.Type} on stream {unexpected.StreamId}.");
+            }
+            catch (OperationCanceledException)
+            {
+            }
         }
 
         private static Http2Options CreateTestHttp2Options(

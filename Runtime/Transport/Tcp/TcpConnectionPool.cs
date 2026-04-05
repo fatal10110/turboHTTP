@@ -23,16 +23,18 @@ namespace TurboHTTP.Transport.Tcp
         public Socket Socket { get; }
 
         /// <summary> Gets the active network or TLS stream. </summary>
-        public Stream Stream { get; }
+        public Stream Stream { get; internal set; }
 
         /// <summary> Gets the target hostname. </summary>
-        public string Host { get; }
+        public string Host { get; internal set; }
 
         /// <summary> Gets the target port. </summary>
-        public int Port { get; }
+        public int Port { get; internal set; }
 
         /// <summary> Gets whether this connection uses TLS. </summary>
-        public bool IsSecure { get; }
+        public bool IsSecure { get; internal set; }
+
+        internal string PoolKey { get; private set; }
 
         /// <summary>
         /// Set to true when a connection is dequeued from the idle pool (previously used and returned).
@@ -95,6 +97,34 @@ namespace TurboHTTP.Transport.Tcp
             Host = host ?? throw new ArgumentNullException(nameof(host));
             Port = port;
             IsSecure = isSecure;
+            PoolKey = TcpConnectionPool.BuildConnectionKey(host, port, isSecure);
+            LastUsed = DateTime.UtcNow;
+        }
+
+        internal void UpdateTransportBinding(
+            Stream stream,
+            string host,
+            int port,
+            bool isSecure,
+            string poolKey,
+            string tlsVersion,
+            string tlsProviderName,
+            string negotiatedAlpnProtocol)
+        {
+            // Called only while a ConnectionLease has exclusive ownership of the connection,
+            // before the lease is handed back to another consumer or returned to the pool.
+            // The await boundary that publishes the lease provides the acquire/release ordering
+            // for these plain field writes on supported runtimes, including IL2CPP ARM64.
+            Stream = stream ?? throw new ArgumentNullException(nameof(stream));
+            Host = host ?? throw new ArgumentNullException(nameof(host));
+            Port = port;
+            IsSecure = isSecure;
+            PoolKey = string.IsNullOrEmpty(poolKey)
+                ? TcpConnectionPool.BuildConnectionKey(host, port, isSecure)
+                : poolKey;
+            TlsVersion = tlsVersion;
+            TlsProviderName = tlsProviderName;
+            NegotiatedAlpnProtocol = negotiatedAlpnProtocol;
             LastUsed = DateTime.UtcNow;
         }
 
@@ -238,6 +268,11 @@ namespace TurboHTTP.Transport.Tcp
         private const int DefaultDnsTimeoutMs = 10000;
         private const int MaxSemaphoreEntries = 1000;
 
+        internal static string BuildConnectionKey(string host, int port, bool secure)
+        {
+            return $"{host}:{port}:{(secure ? "s" : string.Empty)}";
+        }
+
         private readonly int _maxConnectionsPerHost;
         private readonly TimeSpan _connectionIdleTimeout;
         private readonly TlsBackend _tlsBackend;
@@ -306,24 +341,39 @@ namespace TurboHTTP.Transport.Tcp
         public ValueTask<ConnectionLease> GetConnectionAsync(
             string host, int port, bool secure, CancellationToken ct)
         {
+            return GetConnectionAsync(host, port, secure, poolKeyOverride: null, ct);
+        }
+
+        public ValueTask<ConnectionLease> GetConnectionAsync(
+            string host,
+            int port,
+            bool secure,
+            string poolKeyOverride,
+            CancellationToken ct)
+        {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(TcpConnectionPool));
 
-            var key = $"{host}:{port}:{(secure ? "s" : "")}";
+            var semaphoreKey = BuildConnectionKey(host, port, secure);
+            var poolKey = string.IsNullOrEmpty(poolKeyOverride)
+                ? semaphoreKey
+                : poolKeyOverride;
 
-            var semaphore = _semaphores.GetOrAdd(key, _ => new SemaphoreSlim(_maxConnectionsPerHost, _maxConnectionsPerHost));
+            var semaphore = _semaphores.GetOrAdd(
+                semaphoreKey,
+                _ => new SemaphoreSlim(_maxConnectionsPerHost, _maxConnectionsPerHost));
 
-            EvictSemaphoresIfNeeded(key);
+            EvictSemaphoresIfNeeded(semaphoreKey);
 
             var waitTask = semaphore.WaitAsync(ct);
             if (waitTask.IsCompletedSuccessfully)
             {
-                return AcquireConnectionWithOwnedPermit(key, host, port, secure, semaphore, ct);
+                return AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, ct);
             }
 
             return new ValueTask<ConnectionLease>(AcquireConnectionAfterWaitAsync(
                 waitTask,
-                key,
+                poolKey,
                 host,
                 port,
                 secure,
@@ -333,7 +383,7 @@ namespace TurboHTTP.Transport.Tcp
 
         private async Task<ConnectionLease> AcquireConnectionAfterWaitAsync(
             Task waitTask,
-            string key,
+            string poolKey,
             string host,
             int port,
             bool secure,
@@ -341,11 +391,11 @@ namespace TurboHTTP.Transport.Tcp
             CancellationToken ct)
         {
             await waitTask.ConfigureAwait(false);
-            return await AcquireConnectionWithOwnedPermit(key, host, port, secure, semaphore, ct).ConfigureAwait(false);
+            return await AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, ct).ConfigureAwait(false);
         }
 
         private ValueTask<ConnectionLease> AcquireConnectionWithOwnedPermit(
-            string key,
+            string poolKey,
             string host,
             int port,
             bool secure,
@@ -356,7 +406,7 @@ namespace TurboHTTP.Transport.Tcp
             try
             {
                 // Try to dequeue an idle connection
-                if (_idleConnections.TryGetValue(key, out var queue))
+                if (_idleConnections.TryGetValue(poolKey, out var queue))
                 {
                     while (queue.TryDequeue(out var candidate))
                     {
@@ -380,7 +430,13 @@ namespace TurboHTTP.Transport.Tcp
                 }
 
                 // No reusable connection — create new
-                return new ValueTask<ConnectionLease>(CreateConnectionLeaseAsync(host, port, secure, semaphore, ct));
+                return new ValueTask<ConnectionLease>(CreateConnectionLeaseAsync(
+                    host,
+                    port,
+                    secure,
+                    poolKey,
+                    semaphore,
+                    ct));
             }
             catch
             {
@@ -393,12 +449,26 @@ namespace TurboHTTP.Transport.Tcp
             string host,
             int port,
             bool secure,
+            string poolKey,
             SemaphoreSlim semaphore,
             CancellationToken ct)
         {
             try
             {
                 var connection = await CreateConnectionAsync(host, port, secure, ct).ConfigureAwait(false);
+                if (!string.Equals(connection.PoolKey, poolKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    connection.UpdateTransportBinding(
+                        connection.Stream,
+                        connection.Host,
+                        connection.Port,
+                        connection.IsSecure,
+                        poolKey,
+                        connection.TlsVersion,
+                        connection.TlsProviderName,
+                        connection.NegotiatedAlpnProtocol);
+                }
+
                 return new ConnectionLease(this, semaphore, connection);
             }
             catch
@@ -421,7 +491,9 @@ namespace TurboHTTP.Transport.Tcp
             }
 
             connection.LastUsed = DateTime.UtcNow;
-            var key = $"{connection.Host}:{connection.Port}:{(connection.IsSecure ? "s" : "")}";
+            var key = string.IsNullOrEmpty(connection.PoolKey)
+                ? BuildConnectionKey(connection.Host, connection.Port, connection.IsSecure)
+                : connection.PoolKey;
             var queue = _idleConnections.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
             queue.Enqueue(connection);
         }

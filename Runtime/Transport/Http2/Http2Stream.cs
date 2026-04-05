@@ -44,6 +44,7 @@ namespace TurboHTTP.Transport.Http2
         private long? _responseContentLength;
         private Http2ResponseBodySource _responseBodySource;
         private CancellationToken _requestCancellationToken;
+        private TaskCompletionSource<bool> _expectContinueSource;
         private ManualResetValueTaskSourceCore<VoidResult> _completionSource;
 
         internal Http2Stream()
@@ -156,6 +157,7 @@ namespace TurboHTTP.Transport.Http2
             HeaderBlockBuffer.SetLength(0);
             _sendWindowSize = initialSendWindowSize;
             _recvWindowSize = initialRecvWindowSize;
+            _expectContinueSource = null;
             CancellationRegistration = default;
             Interlocked.Exchange(ref _handlerFaulted, 0);
             Interlocked.Exchange(ref _responseStarted, 0);
@@ -186,6 +188,7 @@ namespace TurboHTTP.Transport.Http2
             _requestCancellationToken = default;
             _sendWindowSize = 0;
             _recvWindowSize = 0;
+            TryCancelExpectContinueWait();
             Interlocked.Exchange(ref _handlerFaulted, 0);
             Interlocked.Exchange(ref _responseStarted, 0);
             Interlocked.Exchange(ref _completionSignaled, 0);
@@ -253,6 +256,31 @@ namespace TurboHTTP.Transport.Http2
 
             _ = InvokeResponseStartAsync(ResponseBodySource);
             return true;
+        }
+
+        public void EnableExpectContinueWait()
+        {
+            ThrowIfDisposed();
+
+            var source = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (Interlocked.CompareExchange(ref _expectContinueSource, source, null) != null)
+                throw new InvalidOperationException("Expect-continue wait is already active.");
+        }
+
+        public Task<bool> WaitForExpectContinueAsync()
+        {
+            var source = Volatile.Read(ref _expectContinueSource);
+            return source != null ? source.Task : Task.FromResult(true);
+        }
+
+        public void SignalExpectContinueContinue()
+        {
+            Interlocked.Exchange(ref _expectContinueSource, null)?.TrySetResult(true);
+        }
+
+        public void SignalExpectContinueFinalResponse()
+        {
+            Interlocked.Exchange(ref _expectContinueSource, null)?.TrySetResult(false);
         }
 
         public void AppendTrailers(HttpHeaders trailers)
@@ -323,6 +351,8 @@ namespace TurboHTTP.Transport.Http2
             if (Volatile.Read(ref _disposed) != 0)
                 return;
 
+            TryCancelExpectContinueWait(cancellationToken);
+
             // Request/transport cancellation keeps its native cancellation shape so
             // streaming consumers can distinguish it from transport/network faults.
             var responseBodySource = ResponseBodySource;
@@ -343,6 +373,8 @@ namespace TurboHTTP.Transport.Http2
 
             var normalizedException = NormalizeTransportException(
                 exception ?? new InvalidOperationException("HTTP/2 stream failed."));
+
+            TryFailExpectContinueWait(normalizedException);
 
             // Transport/protocol failures stay fault-shaped even after response start so
             // middleware and callers continue to observe them as network errors.
@@ -370,6 +402,7 @@ namespace TurboHTTP.Transport.Http2
             _headers = null;
             _responseContentLength = null;
             ResponseBodySource = null;
+            TryCancelExpectContinueWait();
             HeaderBlockBuffer.Dispose();
         }
 
@@ -489,6 +522,28 @@ namespace TurboHTTP.Transport.Http2
         {
             if (Interlocked.Decrement(ref _lifetimeRefCount) == 0)
                 Http2StreamPool.Return(this);
+        }
+
+        private void TryFailExpectContinueWait(Exception exception)
+        {
+            var source = Interlocked.Exchange(ref _expectContinueSource, null);
+            source?.TrySetException(exception ?? new InvalidOperationException("HTTP/2 expect-continue wait failed."));
+        }
+
+        private void TryCancelExpectContinueWait(CancellationToken cancellationToken = default)
+        {
+            var source = Interlocked.Exchange(ref _expectContinueSource, null);
+            if (source == null)
+                return;
+
+            if (cancellationToken.CanBeCanceled)
+            {
+                source.TrySetCanceled(cancellationToken);
+            }
+            else
+            {
+                source.TrySetCanceled();
+            }
         }
 
         private void ThrowIfDisposed()

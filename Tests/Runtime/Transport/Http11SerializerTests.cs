@@ -45,6 +45,27 @@ namespace TurboHTTP.Tests.Transport
             return (parsed.Headers, parsed.Body, writeState);
         }
 
+        private static async Task<(string Headers, byte[] Body)> SerializeInStagesAsync(
+            UHttpRequest request,
+            StreamingOptions streamingOptions = null)
+        {
+            using var ms = new MemoryStream();
+            await Http11RequestSerializer.SerializeHeadersAsync(
+                request,
+                ms,
+                CancellationToken.None);
+
+            using var session = await request.Content.OpenReadSessionAsync(CancellationToken.None);
+            await Http11RequestSerializer.SerializeBodyAsync(
+                ms,
+                request.Content,
+                session,
+                CancellationToken.None,
+                streamingOptions: streamingOptions);
+
+            return ParseSerializedBytes(ms.ToArray());
+        }
+
         private static int IndexOf(byte[] haystack, byte[] needle)
         {
             for (int i = 0; i <= haystack.Length - needle.Length; i++)
@@ -733,6 +754,73 @@ namespace TurboHTTP.Tests.Transport
                 var result = await SerializeAsync(request);
                 Assert.IsTrue(result.Headers.StartsWith("GET http://example.com/api/users?x=1 HTTP/1.1\r\n"));
             }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void SerializeHeadersAsync_WritesHeaderBlockWithoutBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("http://example.com/upload"),
+                    body: Encoding.UTF8.GetBytes("hello"));
+
+                using var stream = new MemoryStream();
+                await Http11RequestSerializer.SerializeHeadersAsync(
+                    request,
+                    stream,
+                    CancellationToken.None);
+
+                var result = ParseSerializedBytes(stream.ToArray());
+                Assert.IsTrue(result.Headers.Contains("Content-Length: 5"));
+                Assert.AreEqual(0, result.Body.Length);
+            });
+        }
+
+        [Test]
+        public void SerializeInStages_KnownLengthFactoryBody_MatchesSerializeAsync()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("stream-body");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(new MemoryStream(body, writable: false)),
+                        body.Length);
+
+                var staged = await SerializeInStagesAsync(request);
+                var singleShot = await SerializeAsync(request);
+
+                Assert.AreEqual(singleShot.Headers, staged.Headers);
+                CollectionAssert.AreEqual(singleShot.Body, staged.Body);
+            });
+        }
+
+        [Test]
+        public void SerializeInStages_ChunkedBodyWithTrailers_MatchesSerializeAsync()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var body = Encoding.UTF8.GetBytes("hello");
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithBodyFactory(_ => new ValueTask<Stream>(new MemoryStream(body, writable: false)))
+                    .WithRequestTrailers(
+                        new[] { "Digest", "X-Chunk-Count" },
+                        () =>
+                        {
+                            var trailers = new HttpHeaders();
+                            trailers.Set("Digest", "sha-256=abc");
+                            trailers.Set("X-Chunk-Count", "1");
+                            return trailers;
+                        });
+
+                var staged = await SerializeInStagesAsync(request);
+                var singleShot = await SerializeAsync(request);
+
+                Assert.AreEqual(singleShot.Headers, staged.Headers);
+                CollectionAssert.AreEqual(singleShot.Body, staged.Body);
+            });
         }
 
         [Test]

@@ -496,6 +496,443 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
+        public void RawSocketTransport_ExpectContinue_Interim100_SendsBodyAndReturnsFinalResponse()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string expectHeader = null;
+                string requestBody = null;
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Expect", out expectHeader);
+
+                    await WriteResponseHeadAsync(stream, "HTTP/1.1 100 Continue\r\n\r\n");
+                    var bodyBytes = await ReadExactAsync(stream, int.Parse(captured.Headers["Content-Length"]));
+                    requestBody = Encoding.UTF8.GetString(bodyBytes);
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                    client.Close();
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(
+                        pool: null,
+                        tlsBackend: TlsBackend.Auto,
+                        http2Options: new Http2Options(),
+                        streamingOptions: new StreamingOptions
+                        {
+                            ExpectContinueTimeoutMs = 100
+                        }),
+                    DisposeTransport = true
+                });
+
+                const string payload = "phase22b1-continue";
+                using var response = await client.Post($"http://127.0.0.1:{server.Port}/continue")
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(new MemoryStream(Encoding.UTF8.GetBytes(payload), writable: false)),
+                        payload.Length)
+                    .WithExpectContinue()
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("ok", response.GetBodyAsString());
+                Assert.AreEqual("100-continue", expectHeader);
+                Assert.AreEqual(payload, requestBody);
+            });
+        }
+
+        [Test]
+        public void RawSocketTransport_ExpectContinue_FinalResponseBefore100_DoesNotConsumeBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string expectHeader = null;
+                int trailingByteRead = int.MinValue;
+                var bodyStream = new TrackingNonSeekableReadStream(Encoding.UTF8.GetBytes("one-shot-body"));
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Expect", out expectHeader);
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope");
+
+                    trailingByteRead = await TryReadSingleByteAsync(stream, TimeSpan.FromMilliseconds(200));
+                    client.Close();
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(
+                        pool: null,
+                        tlsBackend: TlsBackend.Auto,
+                        http2Options: new Http2Options(),
+                        streamingOptions: new StreamingOptions
+                        {
+                            ExpectContinueTimeoutMs = 500
+                        }),
+                    DisposeTransport = true
+                });
+
+                using var response = await client.Post($"http://127.0.0.1:{server.Port}/reject")
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .WithExpectContinue()
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.ExpectationFailed, response.StatusCode);
+                Assert.AreEqual("nope", response.GetBodyAsString());
+                Assert.AreEqual("100-continue", expectHeader);
+                Assert.AreEqual(0, bodyStream.BytesRead);
+                Assert.LessOrEqual(trailingByteRead, 0);
+            });
+        }
+
+        [Test]
+        public void RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_ReusesConnectionAfterDrain()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string followUpRequestLine = null;
+                using var bodyStream = new TrackingNonSeekableReadStream(Encoding.UTF8.GetBytes("reject-me"));
+
+                using var server = new HttpServer(async (client, index) =>
+                {
+                    using var stream = client.GetStream();
+
+                    if (index == 1)
+                    {
+                        var first = await ReadRequestStartAndHeadersAsync(stream);
+                        Assert.AreEqual("POST /reject HTTP/1.1", first.RequestLine);
+
+                        await WriteResponseAsync(
+                            stream,
+                            "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\nnope");
+
+                        var followUp = await TryReadRequestStartAndHeadersAsync(stream, TimeSpan.FromSeconds(2));
+                        followUpRequestLine = followUp?.RequestLine;
+                        if (followUp != null)
+                        {
+                            await WriteResponseAsync(
+                                stream,
+                                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                        }
+
+                        client.Close();
+                        return;
+                    }
+
+                    var fallback = await ReadRequestStartAndHeadersAsync(stream);
+                    if (followUpRequestLine == null)
+                        followUpRequestLine = fallback.RequestLine;
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                    client.Close();
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true
+                });
+
+                using (var rejectResponse = await client.Post($"http://127.0.0.1:{server.Port}/reject")
+                           .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                           .WithExpectContinue()
+                           .SendBufferedAsync())
+                {
+                    Assert.AreEqual(HttpStatusCode.ExpectationFailed, rejectResponse.StatusCode);
+                    Assert.AreEqual("nope", rejectResponse.GetBodyAsString());
+                }
+
+                using var followUpResponse = await client.Get($"http://127.0.0.1:{server.Port}/follow-up")
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, followUpResponse.StatusCode);
+                Assert.AreEqual("ok", followUpResponse.GetBodyAsString());
+                Assert.AreEqual(0, bodyStream.BytesRead);
+                Assert.AreEqual("GET /follow-up HTTP/1.1", followUpRequestLine);
+                Assert.AreEqual(1, server.AcceptCount);
+            });
+        }
+
+        [Test]
+        public void RawSocketTransport_ExpectContinue_Timeout_SendsBodyAnyway()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string expectHeader = null;
+                string requestBody = null;
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Expect", out expectHeader);
+
+                    await Task.Delay(TimeSpan.FromMilliseconds(150));
+                    var bodyBytes = await ReadExactAsync(stream, int.Parse(captured.Headers["Content-Length"]));
+                    requestBody = Encoding.UTF8.GetString(bodyBytes);
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                    client.Close();
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(
+                        pool: null,
+                        tlsBackend: TlsBackend.Auto,
+                        http2Options: new Http2Options(),
+                        streamingOptions: new StreamingOptions
+                        {
+                            ExpectContinueTimeoutMs = 50
+                        }),
+                    DisposeTransport = true
+                });
+
+                const string payload = "timeout-upload";
+                using var response = await client.Post($"http://127.0.0.1:{server.Port}/timeout")
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(new MemoryStream(Encoding.UTF8.GetBytes(payload), writable: false)),
+                        payload.Length)
+                    .WithExpectContinue()
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("ok", response.GetBodyAsString());
+                Assert.AreEqual("100-continue", expectHeader);
+                Assert.AreEqual(payload, requestBody);
+            });
+        }
+
+        [Test]
+        public void RawSocketTransport_ExpectContinue_Timeout_Late100DuringSlowBody_CompletesWithoutByteLoss()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string expectHeader = null;
+                byte[] requestBody = null;
+                var payload = Encoding.ASCII.GetBytes(new string('x', 300));
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Expect", out expectHeader);
+
+                    var firstChunk = await ReadExactAsync(stream, 100);
+                    await WriteResponseHeadAsync(stream, "HTTP/1.1 100 Continue\r\n\r\n");
+
+                    var remaining = await ReadExactAsync(stream, payload.Length - firstChunk.Length);
+                    requestBody = new byte[payload.Length];
+                    Buffer.BlockCopy(firstChunk, 0, requestBody, 0, firstChunk.Length);
+                    Buffer.BlockCopy(remaining, 0, requestBody, firstChunk.Length, remaining.Length);
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndone");
+                    client.Close();
+                });
+
+                using var bodyStream = new DelayedChunkReadStream(
+                    payload,
+                    chunkSize: 100,
+                    delayPerRead: TimeSpan.FromMilliseconds(100));
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(
+                        pool: null,
+                        tlsBackend: TlsBackend.Auto,
+                        http2Options: new Http2Options(),
+                        streamingOptions: new StreamingOptions
+                        {
+                            ExpectContinueTimeoutMs = 50
+                        }),
+                    DisposeTransport = true
+                });
+
+                using var response = await client.Post($"http://127.0.0.1:{server.Port}/slow-timeout")
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .WithExpectContinue()
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("done", response.GetBodyAsString());
+                Assert.AreEqual("100-continue", expectHeader);
+                Assert.AreEqual(payload.Length, bodyStream.BytesRead);
+                Assert.AreEqual(3, bodyStream.ReadCount);
+                CollectionAssert.AreEqual(payload, requestBody);
+            });
+        }
+
+        [Test]
+        public void RawSocketTransport_ExpectContinue_BodySendFailureAfterContinue_ThrowsTransportError()
+        {
+            AssertAsync.Run(async () =>
+            {
+                const int bytesBeforeFailure = 5;
+                int bytesReceived = 0;
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    await ReadRequestStartAndHeadersAsync(stream);
+                    await WriteResponseHeadAsync(stream, "HTTP/1.1 100 Continue\r\n\r\n");
+
+                    var partial = await ReadExactAsync(stream, bytesBeforeFailure);
+                    bytesReceived = partial.Length;
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                    client.Close();
+                });
+
+                using var bodyStream = new FailingAfterBytesReadStream(
+                    Encoding.ASCII.GetBytes("abcdefghij"),
+                    bytesBeforeFailure,
+                    new IOException("body-send-failure"));
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(
+                        pool: null,
+                        tlsBackend: TlsBackend.Auto,
+                        http2Options: new Http2Options(),
+                        streamingOptions: new StreamingOptions
+                        {
+                            ExpectContinueTimeoutMs = 100
+                        }),
+                    DisposeTransport = true
+                });
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await client.Post($"http://127.0.0.1:{server.Port}/failing-body")
+                        .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                        .WithExpectContinue()
+                        .SendBufferedAsync());
+
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.IsInstanceOf<IOException>(ex.HttpError.InnerException);
+                Assert.AreEqual("body-send-failure", ex.HttpError.InnerException.Message);
+                Assert.AreEqual(bytesBeforeFailure, bytesReceived);
+                Assert.AreEqual(bytesBeforeFailure, bodyStream.BytesRead);
+            });
+        }
+
+        [Test]
+        public void RawSocketTransport_AutoExpectContinueThreshold_InjectsHeaderBeforeHandlerCallbacks()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string expectHeader = null;
+                string requestBody = null;
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Expect", out expectHeader);
+
+                    await WriteResponseHeadAsync(stream, "HTTP/1.1 100 Continue\r\n\r\n");
+                    var bodyBytes = await ReadExactAsync(stream, int.Parse(captured.Headers["Content-Length"]));
+                    requestBody = Encoding.UTF8.GetString(bodyBytes);
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    client.Close();
+                });
+
+                using var transport = new RawSocketTransport(
+                    pool: null,
+                    tlsBackend: TlsBackend.Auto,
+                    http2Options: new Http2Options(),
+                    streamingOptions: new StreamingOptions
+                    {
+                        AutoExpectContinueThresholdBytes = 4,
+                        ExpectContinueTimeoutMs = 100
+                    });
+
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri($"http://127.0.0.1:{server.Port}/auto"),
+                    body: Encoding.UTF8.GetBytes("payload"));
+                var context = new RequestContext(request);
+                var handler = new CapturingRequestStartHandler();
+
+                await transport.DispatchAsync(request, handler, context, CancellationToken.None);
+
+                Assert.AreEqual("100-continue", handler.RequestExpectHeader);
+                Assert.AreEqual("100-continue", context.Request.Headers.Get("Expect"));
+                Assert.AreEqual("100-continue", expectHeader);
+                Assert.AreEqual("payload", requestBody);
+                Assert.AreEqual(200, handler.ResponseStatusCode);
+            });
+        }
+
+        [Test]
+        public void RawSocketTransport_AutoExpectContinueThreshold_UnknownLengthBody_DoesNotInjectHeader()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string expectHeader = null;
+                string requestBody = null;
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Expect", out expectHeader);
+
+                    var bodyBytes = await ReadChunkedBodyAsync(stream);
+                    requestBody = Encoding.UTF8.GetString(bodyBytes);
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    client.Close();
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(
+                        pool: null,
+                        tlsBackend: TlsBackend.Auto,
+                        http2Options: new Http2Options(),
+                        streamingOptions: new StreamingOptions
+                        {
+                            AutoExpectContinueThresholdBytes = 1,
+                            ExpectContinueTimeoutMs = 50
+                        }),
+                    DisposeTransport = true
+                });
+
+                const string payload = "chunked-auto-threshold";
+                using var response = await client.Post($"http://127.0.0.1:{server.Port}/chunked-auto")
+                    .WithBodyFactory(
+                        _ => new ValueTask<Stream>(new MemoryStream(Encoding.UTF8.GetBytes(payload), writable: false)))
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.IsNull(expectHeader);
+                Assert.AreEqual(payload, requestBody);
+            });
+        }
+
+        [Test]
         public void RawSocketTransport_StaleConnection_NonReplayableKnownLengthBody_NoRetry()
         {
             AssertAsync.Run(async () =>
@@ -1315,6 +1752,311 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
+        public void HttpViaProxy_DisallowPlaintextProxyAuth_StripsSuppliedProxyAuthorization()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string proxyAuth = null;
+
+                using var proxyServer = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Proxy-Authorization", out proxyAuth);
+
+                    var response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    Credentials = new NetworkCredential("user", "pass"),
+                    AllowPlaintextProxyAuth = false,
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                using var response = await client
+                    .Get("http://origin.example.com/resource?id=42")
+                    .WithHeader("Proxy-Authorization", "Basic should-not-leak")
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("ok", response.GetBodyAsString());
+                Assert.IsNull(proxyAuth);
+            });
+        }
+
+        [Test]
+        public void HttpViaProxy_StreamingRequestBody_UsesAbsoluteFormAndStreamsContent()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string requestLine = null;
+                byte[] requestBody = null;
+
+                using var proxyServer = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    requestLine = captured.RequestLine;
+                    requestBody = await ReadExactAsync(stream, int.Parse(captured.Headers["Content-Length"]));
+
+                    var response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                    await WriteResponseAsync(stream, response);
+                    client.Close();
+                });
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    UseEnvironmentVariables = false
+                };
+
+                using var bodyStream = new TrackingNonSeekableReadStream(Encoding.UTF8.GetBytes("stream body"));
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                using var response = await client
+                    .Post("http://origin.example.com/upload?x=1")
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("ok", response.GetBodyAsString());
+                Assert.AreEqual("POST http://origin.example.com/upload?x=1 HTTP/1.1", requestLine);
+                Assert.AreEqual("stream body", Encoding.UTF8.GetString(requestBody));
+                Assert.AreEqual(bodyStream.Length, bodyStream.BytesRead);
+            });
+        }
+
+        [Test]
+        public void HttpViaProxy_StreamingResponse_Dispose_ReusesProxyConnection()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string firstRequestLine = null;
+                string sameConnectionFollowUp = null;
+
+                using var proxyServer = new HttpServer(async (client, index) =>
+                {
+                    using var stream = client.GetStream();
+
+                    if (index == 1)
+                    {
+                        var first = await ReadRequestStartAndHeadersAsync(stream);
+                        firstRequestLine = first.RequestLine;
+
+                        await WriteResponseHeadAsync(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\n");
+                        await stream.WriteAsync(Encoding.ASCII.GetBytes("Hello"), 0, 5);
+                        await stream.FlushAsync();
+
+                        var followUp = await TryReadRequestStartAndHeadersAsync(stream, TimeSpan.FromSeconds(2));
+                        sameConnectionFollowUp = followUp?.RequestLine;
+                        if (followUp != null)
+                        {
+                            await WriteResponseAsync(
+                                stream,
+                                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                        }
+
+                        client.Close();
+                        return;
+                    }
+
+                    var fallback = await ReadRequestStartAndHeadersAsync(stream);
+                    if (sameConnectionFollowUp == null)
+                        sameConnectionFollowUp = fallback.RequestLine;
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                    client.Close();
+                });
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(),
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                await using (var response = await client
+                                 .Get("http://origin.example.com/first")
+                                 .SendStreamingAsync())
+                {
+                    var buffer = new byte[1];
+                    var read = await response.Body.ReadAsync(buffer, 0, 1);
+                    Assert.AreEqual(1, read);
+                    await response.DisposeAsync();
+                }
+
+                using var followUpResponse = await client
+                    .Get("http://second.example.com/second")
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, followUpResponse.StatusCode);
+                Assert.AreEqual("ok", followUpResponse.GetBodyAsString());
+                Assert.AreEqual("GET http://origin.example.com/first HTTP/1.1", firstRequestLine);
+                Assert.AreEqual("GET http://second.example.com/second HTTP/1.1", sameConnectionFollowUp);
+                Assert.AreEqual(1, proxyServer.AcceptCount);
+            });
+        }
+
+        [Test]
+        public void HttpViaProxy_StaleProxyConnection_Idempotent_Retries()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string requestLine = null;
+
+                using var proxyServer = new HttpServer(async (client, index) =>
+                {
+                    if (index == 1)
+                    {
+                        // Keep open so the injected pooled connection stays "alive" until the
+                        // failing stream triggers the stale-retry path in the transport.
+                        return;
+                    }
+
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    requestLine = captured.RequestLine;
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                    client.Close();
+                });
+
+                var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
+                using var transport = new RawSocketTransport(pool);
+
+                var failingClient = new TcpClient();
+                await failingClient.ConnectAsync(IPAddress.Loopback, proxyServer.Port);
+                var failingStream = new FailingStream(failingClient.GetStream());
+                var failingConn = new PooledConnection(
+                    failingClient.Client,
+                    failingStream,
+                    "127.0.0.1",
+                    proxyServer.Port,
+                    false);
+
+                var idleField = typeof(TcpConnectionPool).GetField(
+                    "_idleConnections",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
+                var key = "127.0.0.1:" + proxyServer.Port + ":";
+                var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
+                queue.Enqueue(failingConn);
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                using var response = await client
+                    .Get("http://origin.example.com/retry")
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("ok", response.GetBodyAsString());
+                Assert.AreEqual("GET http://origin.example.com/retry HTTP/1.1", requestLine);
+                Assert.GreaterOrEqual(proxyServer.AcceptCount, 2);
+            });
+        }
+
+        [Test]
+        public void HttpViaProxy_StaleProxyConnection_NonIdempotent_NoRetry()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var proxyServer = new HttpServer(async (client, index) =>
+                {
+                    if (index == 1)
+                    {
+                        return;
+                    }
+
+                    using var stream = client.GetStream();
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                });
+
+                var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
+                using var transport = new RawSocketTransport(pool);
+
+                var failingClient = new TcpClient();
+                await failingClient.ConnectAsync(IPAddress.Loopback, proxyServer.Port);
+                var failingStream = new FailingStream(failingClient.GetStream());
+                var failingConn = new PooledConnection(
+                    failingClient.Client,
+                    failingStream,
+                    "127.0.0.1",
+                    proxyServer.Port,
+                    false);
+
+                var idleField = typeof(TcpConnectionPool).GetField(
+                    "_idleConnections",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
+                var key = "127.0.0.1:" + proxyServer.Port + ":";
+                var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
+                queue.Enqueue(failingConn);
+
+                var proxySettings = new ProxySettings
+                {
+                    Address = new Uri($"http://127.0.0.1:{proxyServer.Port}"),
+                    UseEnvironmentVariables = false
+                };
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = true,
+                    Proxy = proxySettings
+                });
+
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    await client
+                        .Post("http://origin.example.com/retry")
+                        .WithBody("test")
+                        .SendBufferedAsync());
+
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.AreEqual(1, proxyServer.AcceptCount);
+            });
+        }
+
+        [Test]
         public void HttpViaProxy_BufferedChunkedResponse_PreservesTrailers()
         {
             AssertAsync.Run(async () =>
@@ -1365,6 +2107,10 @@ namespace TurboHTTP.Tests.Transport.Http1
             AssertAsync.Run(async () =>
             {
                 int connectCount = 0;
+                string firstConnection = null;
+                string secondConnection = null;
+                string firstProxyConnection = null;
+                string secondProxyConnection = null;
                 string firstAuth = null;
                 string secondAuth = null;
 
@@ -1374,6 +2120,8 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                     var first = await ReadRequestStartAndHeadersAsync(stream);
                     connectCount++;
+                    first.Headers.TryGetValue("Connection", out firstConnection);
+                    first.Headers.TryGetValue("Proxy-Connection", out firstProxyConnection);
                     first.Headers.TryGetValue("Proxy-Authorization", out firstAuth);
                     await WriteResponseAsync(
                         stream,
@@ -1381,6 +2129,8 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                     var second = await ReadRequestStartAndHeadersAsync(stream);
                     connectCount++;
+                    second.Headers.TryGetValue("Connection", out secondConnection);
+                    second.Headers.TryGetValue("Proxy-Connection", out secondProxyConnection);
                     second.Headers.TryGetValue("Proxy-Authorization", out secondAuth);
                     await WriteResponseAsync(
                         stream,
@@ -1408,6 +2158,10 @@ namespace TurboHTTP.Tests.Transport.Http1
                     await client.Get("https://origin.example.com/secure").SendBufferedAsync());
 
                 Assert.AreEqual(2, connectCount);
+                Assert.AreEqual("keep-alive", firstConnection);
+                Assert.AreEqual("keep-alive", secondConnection);
+                Assert.IsNull(firstProxyConnection);
+                Assert.IsNull(secondProxyConnection);
                 Assert.IsNull(firstAuth);
                 Assert.IsNotNull(secondAuth);
                 StringAssert.StartsWith("Basic ", secondAuth);
@@ -1645,6 +2399,20 @@ namespace TurboHTTP.Tests.Transport.Http1
             return body.ToArray();
         }
 
+        private static async Task<int> TryReadSingleByteAsync(NetworkStream stream, TimeSpan timeout)
+        {
+            var buffer = new byte[1];
+            using var cts = new CancellationTokenSource(timeout);
+            try
+            {
+                return await stream.ReadAsync(buffer, 0, 1, cts.Token);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                return -1;
+            }
+        }
+
         private static async Task<string> ReadLineAsync(NetworkStream stream)
         {
             return await ReadLineAsync(stream, CancellationToken.None);
@@ -1694,6 +2462,32 @@ namespace TurboHTTP.Tests.Transport.Http1
             }
         }
 
+        private sealed class CapturingRequestStartHandler : IHttpHandler
+        {
+            public string RequestExpectHeader { get; private set; }
+            public int ResponseStatusCode { get; private set; }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+                RequestExpectHeader = request.Headers.Get("Expect");
+            }
+
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
+            {
+                ResponseStatusCode = statusCode;
+                return default;
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                throw new AssertionException("Did not expect OnResponseError: " + error?.Message);
+            }
+        }
+
         private sealed class ThrowingTerminalHandler : IHttpHandler
         {
             public void OnRequestStart(UHttpRequest request, RequestContext context)
@@ -1713,6 +2507,202 @@ namespace TurboHTTP.Tests.Transport.Http1
             {
                 throw new InvalidOperationException("handler-error-failure");
             }
+        }
+
+        private sealed class TrackingNonSeekableReadStream : Stream
+        {
+            private readonly MemoryStream _inner;
+
+            public TrackingNonSeekableReadStream(byte[] bytes)
+            {
+                _inner = new MemoryStream(bytes ?? Array.Empty<byte>(), writable: false);
+            }
+
+            public int BytesRead { get; private set; }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => _inner.Length;
+            public override long Position
+            {
+                get => _inner.Position;
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                var read = _inner.Read(buffer, offset, count);
+                BytesRead += read;
+                return read;
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                return ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
+            }
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                var read = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                BytesRead += read;
+                return read;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        private sealed class DelayedChunkReadStream : Stream
+        {
+            private readonly byte[] _bytes;
+            private readonly int _chunkSize;
+            private readonly TimeSpan _delayPerRead;
+            private int _position;
+
+            public DelayedChunkReadStream(byte[] bytes, int chunkSize, TimeSpan delayPerRead)
+            {
+                _bytes = bytes ?? Array.Empty<byte>();
+                _chunkSize = chunkSize <= 0 ? throw new ArgumentOutOfRangeException(nameof(chunkSize)) : chunkSize;
+                _delayPerRead = delayPerRead;
+            }
+
+            public int BytesRead { get; private set; }
+            public int ReadCount { get; private set; }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => _bytes.Length;
+            public override long Position
+            {
+                get => _position;
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (_position >= _bytes.Length)
+                    return 0;
+
+                if (_delayPerRead > TimeSpan.Zero)
+                    Task.Delay(_delayPerRead).GetAwaiter().GetResult();
+
+                int bytesToCopy = Math.Min(Math.Min(count, _chunkSize), _bytes.Length - _position);
+                Buffer.BlockCopy(_bytes, _position, buffer, offset, bytesToCopy);
+                _position += bytesToCopy;
+                BytesRead += bytesToCopy;
+                ReadCount++;
+                return bytesToCopy;
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                return ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
+            }
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                if (_position >= _bytes.Length)
+                    return 0;
+
+                if (_delayPerRead > TimeSpan.Zero)
+                    await Task.Delay(_delayPerRead, cancellationToken).ConfigureAwait(false);
+
+                int bytesToCopy = Math.Min(Math.Min(buffer.Length, _chunkSize), _bytes.Length - _position);
+                _bytes.AsMemory(_position, bytesToCopy).CopyTo(buffer);
+                _position += bytesToCopy;
+                BytesRead += bytesToCopy;
+                ReadCount++;
+                return bytesToCopy;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        private sealed class FailingAfterBytesReadStream : Stream
+        {
+            private readonly byte[] _bytes;
+            private readonly int _throwAfterBytes;
+            private readonly Exception _failure;
+            private int _position;
+
+            public FailingAfterBytesReadStream(byte[] bytes, int throwAfterBytes, Exception failure)
+            {
+                _bytes = bytes ?? Array.Empty<byte>();
+                _throwAfterBytes = throwAfterBytes;
+                _failure = failure ?? throw new ArgumentNullException(nameof(failure));
+            }
+
+            public int BytesRead { get; private set; }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => _bytes.Length;
+            public override long Position
+            {
+                get => _position;
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (_position >= _bytes.Length)
+                    return 0;
+                if (_position >= _throwAfterBytes)
+                    throw _failure;
+
+                int bytesToCopy = Math.Min(Math.Min(count, _throwAfterBytes - _position), _bytes.Length - _position);
+                Buffer.BlockCopy(_bytes, _position, buffer, offset, bytesToCopy);
+                _position += bytesToCopy;
+                BytesRead += bytesToCopy;
+                return bytesToCopy;
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                return ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
+            }
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                if (_position >= _bytes.Length)
+                    return new ValueTask<int>(0);
+                if (_position >= _throwAfterBytes)
+                    return ValueTask.FromException<int>(_failure);
+
+                int bytesToCopy = Math.Min(Math.Min(buffer.Length, _throwAfterBytes - _position), _bytes.Length - _position);
+                _bytes.AsMemory(_position, bytesToCopy).CopyTo(buffer);
+                _position += bytesToCopy;
+                BytesRead += bytesToCopy;
+                return new ValueTask<int>(bytesToCopy);
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         }
     }
 }

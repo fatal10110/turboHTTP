@@ -248,6 +248,209 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void SendPostRequest_WithExpectContinue_Interim100_SendsBodyAfterContinue()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(
+                    cts.Token,
+                    streamingOptions: new StreamingOptions
+                    {
+                        ExpectContinueTimeoutMs = 500
+                    });
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var body = Encoding.UTF8.GetBytes("request body");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("https://test.example.com/api"),
+                    body: body)
+                    .WithExpectContinue();
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                Assert.IsFalse(headersFrame.HasFlag(Http2FrameFlags.EndStream));
+                int streamId = headersFrame.StreamId;
+
+                var decoder = new HpackDecoder();
+                var decodedHeaders = decoder.Decode(headersFrame.Payload, 0, headersFrame.Length);
+                Assert.IsTrue(decodedHeaders.Any(h => h.Name == "expect" && h.Value == "100-continue"));
+
+                await AssertNoFrameWithinAsync(serverCodec, TimeSpan.FromMilliseconds(150));
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 100),
+                    cts.Token);
+
+                var dataFrame = await TestHelpers.AssertCompletesWithinAsync(
+                    serverCodec.ReadFrameAsync(16384, cts.Token),
+                    TimeSpan.FromSeconds(1));
+                Assert.AreEqual(Http2FrameType.Data, dataFrame.Type);
+                Assert.IsTrue(dataFrame.HasFlag(Http2FrameFlags.EndStream));
+                Assert.AreEqual("request body", Encoding.UTF8.GetString(dataFrame.Payload));
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 201, endStream: true),
+                    cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual((HttpStatusCode)201, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithExpectContinue_FinalResponseSkipsBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(
+                    cts.Token,
+                    streamingOptions: new StreamingOptions
+                    {
+                        ExpectContinueTimeoutMs = 500
+                    });
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var body = Encoding.UTF8.GetBytes("request body");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("https://test.example.com/api"),
+                    body: body)
+                    .WithExpectContinue();
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                Assert.IsFalse(headersFrame.HasFlag(Http2FrameFlags.EndStream));
+                int streamId = headersFrame.StreamId;
+
+                await AssertNoFrameWithinAsync(serverCodec, TimeSpan.FromMilliseconds(150));
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 417, endStream: true),
+                    cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual((HttpStatusCode)417, response.StatusCode);
+
+                await AssertNoFrameWithinAsync(serverCodec, TimeSpan.FromMilliseconds(150));
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithExpectContinue_TimeoutSendsBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(
+                    cts.Token,
+                    streamingOptions: new StreamingOptions
+                    {
+                        ExpectContinueTimeoutMs = 50
+                    });
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var body = Encoding.UTF8.GetBytes("request body");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("https://test.example.com/api"),
+                    body: body)
+                    .WithExpectContinue();
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                Assert.IsFalse(headersFrame.HasFlag(Http2FrameFlags.EndStream));
+                int streamId = headersFrame.StreamId;
+
+                var dataFrame = await TestHelpers.AssertCompletesWithinAsync(
+                    serverCodec.ReadFrameAsync(16384, cts.Token),
+                    TimeSpan.FromSeconds(1));
+                Assert.AreEqual(Http2FrameType.Data, dataFrame.Type);
+                Assert.IsTrue(dataFrame.HasFlag(Http2FrameFlags.EndStream));
+                Assert.AreEqual("request body", Encoding.UTF8.GetString(dataFrame.Payload));
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 202, endStream: true),
+                    cts.Token);
+
+                var response = await responseTask;
+                Assert.AreEqual((HttpStatusCode)202, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void SendPostRequest_WithExpectContinue_RstStreamDuringWaitFaultsRequest()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(
+                    cts.Token,
+                    streamingOptions: new StreamingOptions
+                    {
+                        ExpectContinueTimeoutMs = 500
+                    });
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var body = Encoding.UTF8.GetBytes("request body");
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("https://test.example.com/api"),
+                    body: body)
+                    .WithExpectContinue();
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var headersFrame = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Headers, headersFrame.Type);
+                Assert.IsFalse(headersFrame.HasFlag(Http2FrameFlags.EndStream));
+                int streamId = headersFrame.StreamId;
+
+                await AssertNoFrameWithinAsync(serverCodec, TimeSpan.FromMilliseconds(150));
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.RstStream,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = streamId,
+                    Payload = new byte[]
+                    {
+                        0,
+                        0,
+                        0,
+                        (byte)Http2ErrorCode.Cancel
+                    },
+                    Length = 4
+                }, cts.Token);
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                StringAssert.Contains("RST_STREAM", ex.HttpError.Message);
+
+                var clientRst = await TestHelpers.AssertCompletesWithinAsync(
+                    serverCodec.ReadFrameAsync(16384, cts.Token),
+                    TimeSpan.FromSeconds(1));
+                Assert.AreEqual(Http2FrameType.RstStream, clientRst.Type);
+                Assert.AreEqual(streamId, clientRst.StreamId);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
         public void SendPostRequest_WithKnownLengthStreamBody()
         {
             AssertAsync.Run(async () =>

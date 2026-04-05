@@ -379,6 +379,16 @@ namespace TurboHTTP.Transport.Http2
             }
             else
             {
+                if (statusCode >= 100 && statusCode < 200)
+                {
+                    if (statusCode == 100)
+                        stream.SignalExpectContinueContinue();
+
+                    stream.ClearHeaderBlock();
+                    return;
+                }
+
+                stream.SignalExpectContinueFinalResponse();
                 stream.TryStartResponse(
                     statusCode,
                     responseHeaders,

@@ -57,7 +57,7 @@ builder.WithExpectContinue(bool enable = true)
 
 ### Auto-Injection
 
-If `StreamingOptions.AutoExpectContinueThresholdBytes` is set and the body's `Length` (when known) exceeds the threshold, the `Expect: 100-continue` header is injected automatically by the transport before serialization. Unknown-length bodies (chunked) do not trigger the automatic path.
+If `StreamingOptions.AutoExpectContinueThresholdBytes` is set and the body's `Length` (when known) exceeds the threshold, the `Expect: 100-continue` header is injected automatically by the transport before serialization. Unknown-length bodies (chunked) do not trigger the automatic path. A threshold of `0` means all known-length non-empty bodies opt into the wait.
 
 **Immutability constraint:** `UHttpRequest` is immutable. The transport must create a modified copy via `request.WithHeader("Expect", "100-continue")` and use this copy consistently throughout the entire dispatch path — serialization, `handler.OnResponseStartAsync(...)`, logging, and observability. The original request must not be passed to any handler after auto-injection.
 
@@ -136,6 +136,7 @@ The split must not introduce measurable overhead for the non-100-continue path. 
 **Stage 3 — Send body:**
 1. Open the `RequestBodyReadSession` and stream the body normally via `SerializeBodyAsync`
 2. After body send completes, read the final response (or continue reading if already received in Stage 2)
+3. If body production or socket write fails after the wait has committed to body transmission, surface that send failure even if a final response head also arrives. Partial uploads are treated as transport failures rather than silent success.
 
 ### Implementation Detail — `Task.WhenAny`
 

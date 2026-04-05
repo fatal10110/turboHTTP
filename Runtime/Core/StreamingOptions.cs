@@ -14,6 +14,7 @@ namespace TurboHTTP.Core
         private const int DefaultBufferedDrainReuseThresholdBytesValue = 64 * 1024;
         private const int DefaultMaxConnectionBufferedBytesValue = 8 * 1024 * 1024;
         private const int DefaultHttp2StallTimeoutSecondsValue = 60;
+        private const int DefaultExpectContinueTimeoutMsValue = 1000;
 
         private int _smallBufferedRequestThresholdBytes = DefaultSmallBufferedRequestThresholdBytesValue;
         private int _defaultStreamingSendBufferBytes = DefaultStreamingSendBufferBytesValue;
@@ -22,6 +23,8 @@ namespace TurboHTTP.Core
         private int _bufferedDrainReuseThresholdBytes = DefaultBufferedDrainReuseThresholdBytesValue;
         private int _maxConnectionBufferedBytes = DefaultMaxConnectionBufferedBytesValue;
         private int _http2StallTimeoutSeconds = DefaultHttp2StallTimeoutSecondsValue;
+        private int _expectContinueTimeoutMs = DefaultExpectContinueTimeoutMsValue;
+        private long? _autoExpectContinueThresholdBytes;
 
         public int SmallBufferedRequestThresholdBytes
         {
@@ -70,6 +73,29 @@ namespace TurboHTTP.Core
             set => _http2StallTimeoutSeconds = ValidatePositive(value, nameof(Http2StallTimeoutSeconds));
         }
 
+        /// <summary>
+        /// Timeout in milliseconds to wait for a 100 Continue response before proceeding
+        /// with request body transmission.
+        /// </summary>
+        public int ExpectContinueTimeoutMs
+        {
+            get => _expectContinueTimeoutMs;
+            set => _expectContinueTimeoutMs = ValidatePositive(value, nameof(ExpectContinueTimeoutMs));
+        }
+
+        /// <summary>
+        /// Optional known-length threshold for automatically injecting Expect: 100-continue.
+        /// A null value disables the automatic path. A value of 0 injects the header for all
+        /// known-length non-empty bodies.
+        /// </summary>
+        public long? AutoExpectContinueThresholdBytes
+        {
+            get => _autoExpectContinueThresholdBytes;
+            set => _autoExpectContinueThresholdBytes = ValidateNonNegativeNullable(
+                value,
+                nameof(AutoExpectContinueThresholdBytes));
+        }
+
         public StreamingOptions Clone()
         {
             return new StreamingOptions
@@ -80,7 +106,9 @@ namespace TurboHTTP.Core
                 _defaultHttp2PerStreamReceiveBufferBytes = _defaultHttp2PerStreamReceiveBufferBytes,
                 _bufferedDrainReuseThresholdBytes = _bufferedDrainReuseThresholdBytes,
                 _maxConnectionBufferedBytes = _maxConnectionBufferedBytes,
-                _http2StallTimeoutSeconds = _http2StallTimeoutSeconds
+                _http2StallTimeoutSeconds = _http2StallTimeoutSeconds,
+                _expectContinueTimeoutMs = _expectContinueTimeoutMs,
+                _autoExpectContinueThresholdBytes = _autoExpectContinueThresholdBytes
             };
         }
 
@@ -92,13 +120,23 @@ namespace TurboHTTP.Core
                    _defaultHttp2PerStreamReceiveBufferBytes == DefaultHttp2PerStreamReceiveBufferBytesValue &&
                    _bufferedDrainReuseThresholdBytes == DefaultBufferedDrainReuseThresholdBytesValue &&
                    _maxConnectionBufferedBytes == DefaultMaxConnectionBufferedBytesValue &&
-                   _http2StallTimeoutSeconds == DefaultHttp2StallTimeoutSecondsValue;
+                   _http2StallTimeoutSeconds == DefaultHttp2StallTimeoutSecondsValue &&
+                   _expectContinueTimeoutMs == DefaultExpectContinueTimeoutMsValue &&
+                   !_autoExpectContinueThresholdBytes.HasValue;
         }
 
         private static int ValidatePositive(int value, string paramName)
         {
             if (value <= 0)
                 throw new ArgumentOutOfRangeException(paramName, "Must be greater than 0.");
+
+            return value;
+        }
+
+        private static long? ValidateNonNegativeNullable(long? value, string paramName)
+        {
+            if (value.HasValue && value.Value < 0)
+                throw new ArgumentOutOfRangeException(paramName, "Must be greater than or equal to 0.");
 
             return value;
         }

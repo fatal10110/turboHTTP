@@ -156,6 +156,33 @@ namespace TurboHTTP.Transport.Http1
         private const int MaxResponseBodySize = 100 * 1024 * 1024; // 100MB
         private const int Max1xxResponses = 10;
 
+        internal readonly struct ParsedResponseHeadData
+        {
+            public ParsedResponseHeadData(
+                HttpStatusCode statusCode,
+                HttpHeaders headers,
+                bool keepAlive,
+                Http11ResponseBodyKind bodyKind,
+                long? contentLength)
+            {
+                StatusCode = statusCode;
+                Headers = headers;
+                KeepAlive = keepAlive;
+                BodyKind = bodyKind;
+                ContentLength = contentLength;
+            }
+
+            public HttpStatusCode StatusCode { get; }
+
+            public HttpHeaders Headers { get; }
+
+            public bool KeepAlive { get; }
+
+            public Http11ResponseBodyKind BodyKind { get; }
+
+            public long? ContentLength { get; }
+        }
+
         /// <summary>
         /// Parse an HTTP/1.1 response from the stream.
         /// </summary>
@@ -178,57 +205,87 @@ namespace TurboHTTP.Transport.Http1
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
-            string httpVersion = null;
-            int statusCode = 0;
-            HttpHeaders headers = null;
-            int interim1xxCount = 0;
             BufferedStreamReader reader = null;
             ParsedResponseHead head = null;
+            try
+            {
+                reader = new BufferedStreamReader(stream);
+                head = await ParseHeadAsync(reader, requestMethod, ct, context).ConfigureAwait(false);
+
+                reader = null;
+                var toReturn = head;
+                head = null;
+                return toReturn;
+            }
+            finally
+            {
+                head?.Dispose();
+                reader?.Dispose();
+            }
+        }
+
+        internal static async Task<ParsedResponseHead> ParseHeadAsync(
+            BufferedStreamReader reader,
+            HttpMethod requestMethod,
+            CancellationToken ct,
+            RequestContext context = null,
+            int initialInterim1xxCount = 0)
+        {
+            if (reader == null)
+                throw new ArgumentNullException(nameof(reader));
+
+            int interim1xxCount = initialInterim1xxCount;
+            while (true)
+            {
+                var data = await ParseNextHeadDataAsync(reader, requestMethod, ct, context)
+                    .ConfigureAwait(false);
+                var statusCode = (int)data.StatusCode;
+                if (statusCode == 101 || statusCode < 100 || statusCode >= 200)
+                    return CreateParsedResponseHead(reader, data);
+
+                interim1xxCount++;
+                if (interim1xxCount > Max1xxResponses)
+                    throw new FormatException("Too many 1xx interim responses");
+            }
+        }
+
+        internal static async Task<ParsedResponseHeadData> ParseNextHeadDataAsync(
+            BufferedStreamReader reader,
+            HttpMethod requestMethod,
+            CancellationToken ct,
+            RequestContext context = null)
+        {
+            if (reader == null)
+                throw new ArgumentNullException(nameof(reader));
 
             var scratch = HeaderParseScratchPool.Rent();
             try
             {
-                reader = new BufferedStreamReader(stream);
+                var statusLine = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(statusLine))
+                    throw new FormatException("Empty HTTP status line");
 
-                do
+                ParseStatusLine(statusLine, out var httpVersion, out var statusCode);
+
+                scratch.RawHeaders.Clear();
+                int totalHeaderBytes = 0;
+                while (true)
                 {
-                    var statusLine = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
-                    if (string.IsNullOrEmpty(statusLine))
-                        throw new FormatException("Empty HTTP status line");
-
-                    ParseStatusLine(statusLine, out httpVersion, out statusCode);
-
-                    scratch.RawHeaders.Clear();
-                    int totalHeaderBytes = 0;
-                    while (true)
-                    {
-                        var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
-                        if (string.IsNullOrEmpty(line))
-                            break;
-
-                        totalHeaderBytes += line.Length;
-                        if (totalHeaderBytes > MaxTotalHeaderBytes)
-                            throw new FormatException("Response headers exceed maximum size");
-
-                        if (TryParseHeaderLine(line, out var name, out var value))
-                            scratch.RawHeaders.Add((name, value));
-                    }
-
-                    headers = new HttpHeaders();
-                    foreach (var (n, v) in scratch.RawHeaders)
-                        headers.Add(n, v);
-
-                    if (statusCode == 101)
+                    var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
+                    if (string.IsNullOrEmpty(line))
                         break;
 
-                    if (statusCode >= 100 && statusCode < 200)
-                    {
-                        interim1xxCount++;
-                        if (interim1xxCount > Max1xxResponses)
-                            throw new FormatException("Too many 1xx interim responses");
-                    }
+                    totalHeaderBytes += line.Length;
+                    if (totalHeaderBytes > MaxTotalHeaderBytes)
+                        throw new FormatException("Response headers exceed maximum size");
+
+                    if (TryParseHeaderLine(line, out var name, out var value))
+                        scratch.RawHeaders.Add((name, value));
                 }
-                while (statusCode >= 100 && statusCode < 200);
+
+                var headers = new HttpHeaders();
+                foreach (var (n, v) in scratch.RawHeaders)
+                    headers.Add(n, v);
 
                 var bodyKind = DetermineBodyKind(
                     requestMethod,
@@ -241,26 +298,34 @@ namespace TurboHTTP.Transport.Http1
                 if (bodyKind == Http11ResponseBodyKind.ReadToEnd)
                     keepAlive = false;
 
-                head = new ParsedResponseHead(reader)
-                {
-                    StatusCode = (HttpStatusCode)statusCode,
-                    Headers = headers,
-                    KeepAlive = keepAlive,
-                    BodyKind = bodyKind,
-                    ContentLength = contentLength
-                };
-
-                reader = null;
-                var toReturn = head;
-                head = null;
-                return toReturn;
+                return new ParsedResponseHeadData(
+                    (HttpStatusCode)statusCode,
+                    headers,
+                    keepAlive,
+                    bodyKind,
+                    contentLength);
             }
             finally
             {
                 HeaderParseScratchPool.Return(scratch);
-                head?.Dispose();
-                reader?.Dispose();
             }
+        }
+
+        internal static ParsedResponseHead CreateParsedResponseHead(
+            BufferedStreamReader reader,
+            ParsedResponseHeadData data)
+        {
+            if (reader == null)
+                throw new ArgumentNullException(nameof(reader));
+
+            return new ParsedResponseHead(reader)
+            {
+                StatusCode = data.StatusCode,
+                Headers = data.Headers,
+                KeepAlive = data.KeepAlive,
+                BodyKind = data.BodyKind,
+                ContentLength = data.ContentLength
+            };
         }
 
         internal static async Task<ParsedResponse> CompleteBufferedResponseAsync(

@@ -13,6 +13,7 @@ using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Http1;
 using TurboHTTP.Transport.Http2;
+using TurboHTTP.Transport.Internal;
 using TurboHTTP.Transport.Tcp;
 using TurboHTTP.Transport.Tls;
 
@@ -106,11 +107,13 @@ namespace TurboHTTP.Transport
             if (context == null)
                 throw new ArgumentNullException(nameof(context));
 
+            var effectiveRequest = PrepareEffectiveRequest(request, context);
+
             context.SetState(TransportBehaviorFlags.SelfDrainsResponseBody, true);
 
             try
             {
-                handler.OnRequestStart(request, context);
+                handler.OnRequestStart(effectiveRequest, context);
             }
             catch (Exception ex)
             {
@@ -127,7 +130,7 @@ namespace TurboHTTP.Transport
 
             try
             {
-                await DispatchCoreAsync(request, handler, context, cancellationToken)
+                await DispatchCoreAsync(effectiveRequest, handler, context, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (UHttpException ex)
@@ -193,6 +196,38 @@ namespace TurboHTTP.Transport
                 UHttpErrorType.NetworkError,
                 "Connection failed after a non-replayable request body started sending. The request cannot be retried.",
                 ex));
+        }
+
+        private UHttpRequest PrepareEffectiveRequest(UHttpRequest request, RequestContext context)
+        {
+            if (request == null)
+                throw new ArgumentNullException(nameof(request));
+
+            if (!ShouldAutoInjectExpectContinue(request))
+            {
+                if (!ReferenceEquals(context?.Request, request))
+                    context?.UpdateRequest(request);
+
+                return request;
+            }
+
+            var effectiveRequest = request.CopyWithSharedContent().WithExpectContinue();
+            context?.UpdateRequest(effectiveRequest);
+            return effectiveRequest;
+        }
+
+        private bool ShouldAutoInjectExpectContinue(UHttpRequest request)
+        {
+            if (request == null || ExpectContinueHelper.HasExpectContinueHeader(request.Headers))
+                return false;
+
+            var threshold = _streamingOptions.AutoExpectContinueThresholdBytes;
+            if (!threshold.HasValue || threshold.Value < 0)
+                return false;
+
+            return ExpectContinueHelper.TryGetKnownRequestBodyLength(request.Content, out var length) &&
+                   length > threshold.Value &&
+                   length > 0;
         }
 
         private async Task DispatchCoreAsync(
@@ -512,67 +547,218 @@ namespace TurboHTTP.Transport
                 : proxy.Address.Port;
 
             context.RecordEvent("TransportProxyConnecting");
-            using var lease = await _pool.GetConnectionAsync(proxyHost, proxyPort, secure: false, ct)
-                .ConfigureAwait(false);
-            var stream = lease.Connection.Stream;
-
             if (!secure)
             {
                 var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
+                await DispatchProxyHttp11WithRetryAsync(
+                        proxyHost,
+                        proxyPort,
+                        poolKeyOverride: null,
+                        establishTunnel: false,
+                        targetHost: null,
+                        targetPort: 0,
+                        proxy,
+                        forwardedRequest,
+                        request,
+                        handler,
+                        context,
+                        ct)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            var tunnelPoolKey = BuildConnectTunnelPoolKey(proxyHost, proxyPort, host, port);
+            var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
+            await DispatchProxyHttp11WithRetryAsync(
+                    proxyHost,
+                    proxyPort,
+                    tunnelPoolKey,
+                    establishTunnel: true,
+                    host,
+                    port,
+                    proxy,
+                    tunneledRequest,
+                    request,
+                    handler,
+                    context,
+                    ct)
+                .ConfigureAwait(false);
+        }
+
+        private async Task DispatchProxyHttp11WithRetryAsync(
+            string proxyHost,
+            int proxyPort,
+            string poolKeyOverride,
+            bool establishTunnel,
+            string targetHost,
+            int targetPort,
+            ProxySettings proxy,
+            UHttpRequest dispatchRequest,
+            UHttpRequest originalRequest,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            ConnectionLease lease = null;
+            try
+            {
+                lease = await AcquirePreparedProxyLeaseAsync(
+                        proxyHost,
+                        proxyPort,
+                        poolKeyOverride,
+                        establishTunnel,
+                        targetHost,
+                        targetPort,
+                        proxy,
+                        context,
+                        ct)
+                    .ConfigureAwait(false);
+
                 var writeState = new Http11RequestWriteState();
                 try
                 {
-                    await DispatchOnStreamAsync(
-                        stream,
-                        forwardedRequest,
-                        handler,
-                        context,
-                        writeState,
-                        ct,
-                        _streamingOptions).ConfigureAwait(false);
+                    await DispatchOnLeaseAsync(
+                            lease,
+                            dispatchRequest,
+                            handler,
+                            context,
+                            writeState,
+                            ct)
+                        .ConfigureAwait(false);
+                    lease = null;
+                    return;
+                }
+                catch (Exception ex) when (
+                    lease != null &&
+                    lease.Connection.IsReused &&
+                    (ex is IOException || ex is SocketException) &&
+                    CanRetryHttp11RequestAfterTransportFailure(originalRequest, writeState))
+                {
+                    lease.Dispose();
+                    lease = null;
+
+                    context.RecordEvent("TransportRetryStale");
+                    context.RecordEvent("TransportProxyConnecting");
+
+                    ConnectionLease freshLease = null;
+                    try
+                    {
+                        freshLease = await AcquirePreparedProxyLeaseAsync(
+                                proxyHost,
+                                proxyPort,
+                                poolKeyOverride,
+                                establishTunnel,
+                                targetHost,
+                                targetPort,
+                                proxy,
+                                context,
+                                ct)
+                            .ConfigureAwait(false);
+
+                        var retryWriteState = new Http11RequestWriteState();
+                        try
+                        {
+                            await DispatchOnLeaseAsync(
+                                    freshLease,
+                                    dispatchRequest,
+                                    handler,
+                                    context,
+                                    retryWriteState,
+                                    ct)
+                                .ConfigureAwait(false);
+                            freshLease = null;
+                            return;
+                        }
+                        catch (Exception retryEx) when (
+                            ShouldSurfaceCommittedNonReplayableBodyFailure(
+                                originalRequest,
+                                retryWriteState,
+                                ct,
+                                retryEx))
+                        {
+                            throw CreateCommittedNonReplayableBodyFailure(retryEx);
+                        }
+                    }
+                    finally
+                    {
+                        freshLease?.Dispose();
+                    }
                 }
                 catch (Exception ex) when (
                     ShouldSurfaceCommittedNonReplayableBodyFailure(
-                        request,
+                        originalRequest,
                         writeState,
                         ct,
                         ex))
                 {
                     throw CreateCommittedNonReplayableBodyFailure(ex);
                 }
-                return;
             }
+            finally
+            {
+                lease?.Dispose();
+            }
+        }
 
-            context.RecordEvent("TransportProxyConnect");
-            context.RecordEvent("TransportProxyConnectHttp11Only");
-            stream = await EstablishConnectTunnelAsync(
-                stream,
-                host,
-                port,
-                proxy,
-                ct).ConfigureAwait(false);
-
-            var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-            var tunneledWriteState = new Http11RequestWriteState();
+        private async Task<ConnectionLease> AcquirePreparedProxyLeaseAsync(
+            string proxyHost,
+            int proxyPort,
+            string poolKeyOverride,
+            bool establishTunnel,
+            string targetHost,
+            int targetPort,
+            ProxySettings proxy,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            ConnectionLease lease = null;
             try
             {
-                await DispatchOnStreamAsync(
-                    stream,
-                    tunneledRequest,
-                    handler,
-                    context,
-                    tunneledWriteState,
-                    ct,
-                    _streamingOptions).ConfigureAwait(false);
+                lease = await _pool.GetConnectionAsync(
+                        proxyHost,
+                        proxyPort,
+                        secure: false,
+                        poolKeyOverride,
+                        ct)
+                    .ConfigureAwait(false);
+
+                if (!establishTunnel)
+                    return lease;
+
+                // Idle validation for TLS-wrapped tunnels is best-effort because the pool can
+                // only observe the outer proxy TCP socket. The stale-retry path remains the
+                // correctness backstop if the origin-side tunnel state has already gone bad.
+                if (lease.Connection.IsSecure)
+                {
+                    if (string.Equals(
+                            lease.Connection.PoolKey,
+                            poolKeyOverride,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return lease;
+                    }
+
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        "Reused proxy tunnel connection was bound to an unexpected target."));
+                }
+
+                context.RecordEvent("TransportProxyConnect");
+                context.RecordEvent("TransportProxyConnectHttp11Only");
+                var tlsResult = await EstablishConnectTunnelAsync(
+                        lease.Connection.Stream,
+                        targetHost,
+                        targetPort,
+                        proxy,
+                        ct)
+                    .ConfigureAwait(false);
+                RebindConnectTunnelLease(lease, targetHost, targetPort, poolKeyOverride, tlsResult);
+                return lease;
             }
-            catch (Exception ex) when (
-                ShouldSurfaceCommittedNonReplayableBodyFailure(
-                    request,
-                    tunneledWriteState,
-                    ct,
-                    ex))
+            catch
             {
-                throw CreateCommittedNonReplayableBodyFailure(ex);
+                lease?.Dispose();
+                throw;
             }
         }
 
@@ -605,6 +791,10 @@ namespace TurboHTTP.Transport
                 {
                     headers.Set("Proxy-Authorization", proxyAuthValue);
                 }
+                else
+                {
+                    headers.Remove("Proxy-Authorization");
+                }
             }
             else
             {
@@ -629,7 +819,46 @@ namespace TurboHTTP.Transport
                 .WithMetadata(metadata);
         }
 
-        private async Task<Stream> EstablishConnectTunnelAsync(
+        private static string BuildConnectTunnelPoolKey(
+            string proxyHost,
+            int proxyPort,
+            string targetHost,
+            int targetPort)
+        {
+            return "tunnel|" +
+                TcpConnectionPool.BuildConnectionKey(proxyHost, proxyPort, false) +
+                "|" +
+                TcpConnectionPool.BuildConnectionKey(targetHost, targetPort, true);
+        }
+
+        private static void RebindConnectTunnelLease(
+            ConnectionLease lease,
+            string targetHost,
+            int targetPort,
+            string tunnelPoolKey,
+            TlsResult tlsResult)
+        {
+            if (lease == null)
+                throw new ArgumentNullException(nameof(lease));
+            if (string.IsNullOrEmpty(targetHost))
+                throw new ArgumentNullException(nameof(targetHost));
+            if (tlsResult == null)
+                throw new ArgumentNullException(nameof(tlsResult));
+
+            // Preserve IsReused through the rebind. It tracks whether the underlying proxy TCP
+            // socket came from the pool, not whether the CONNECT tunnel/TLS session is fresh.
+            lease.Connection.UpdateTransportBinding(
+                tlsResult.SecureStream,
+                targetHost,
+                targetPort,
+                isSecure: true,
+                tunnelPoolKey,
+                tlsResult.TlsVersion,
+                tlsResult.ProviderName,
+                tlsResult.NegotiatedAlpn);
+        }
+
+        private async Task<TlsResult> EstablishConnectTunnelAsync(
             Stream proxyStream,
             string targetHost,
             int targetPort,
@@ -655,12 +884,11 @@ namespace TurboHTTP.Transport
                     // CONNECT tunnels currently run request framing through the HTTP/1.1 parser path only.
                     // Advertising h2 ALPN here would negotiate HTTP/2 that this tunnel code path cannot
                     // yet service safely.
-                    var tlsResult = await tlsProvider.WrapAsync(
+                    return await tlsProvider.WrapAsync(
                         proxyStream,
                         targetHost,
                         new[] { "http/1.1" },
                         ct).ConfigureAwait(false);
-                    return tlsResult.SecureStream;
                 }
 
                 if (response.StatusCode == 407 &&
@@ -697,7 +925,7 @@ namespace TurboHTTP.Transport
             sb.Append("Host: ");
             sb.Append(authority);
             sb.Append("\r\n");
-            sb.Append("Proxy-Connection: keep-alive\r\n");
+            sb.Append("Connection: keep-alive\r\n");
 
             if (includeAuth)
             {
@@ -1048,6 +1276,17 @@ namespace TurboHTTP.Transport
             CancellationToken ct)
         {
             context.RecordEvent("TransportSending");
+            if (ExpectContinueHelper.ShouldAwaitExpectContinue(request))
+            {
+                return await SendOnLeaseWithExpectContinueAsync(
+                        lease,
+                        request,
+                        context,
+                        requestWriteState,
+                        ct)
+                    .ConfigureAwait(false);
+            }
+
             try
             {
                 await Http11RequestSerializer.SerializeAsync(
@@ -1072,6 +1311,217 @@ namespace TurboHTTP.Transport
                 .ConfigureAwait(false);
 
             return parsed;
+        }
+
+        private async Task<ParsedResponseHead> SendOnLeaseWithExpectContinueAsync(
+            ConnectionLease lease,
+            UHttpRequest request,
+            RequestContext context,
+            Http11RequestWriteState requestWriteState,
+            CancellationToken ct)
+        {
+            var stream = lease.Connection.Stream;
+            var reader = new Http11ResponseParser.BufferedStreamReader(stream);
+            bool readerOwned = true;
+            try
+            {
+                await Http11RequestSerializer.SerializeHeadersAsync(request, stream, ct)
+                    .ConfigureAwait(false);
+                await stream.FlushAsync(ct).ConfigureAwait(false);
+
+                context.RecordEvent("TransportReceiving");
+
+                using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var timeoutTask = Task.Delay(_streamingOptions.ExpectContinueTimeoutMs, delayCts.Token);
+                var initialHeadTask = Http11ResponseParser.ParseNextHeadDataAsync(
+                    reader,
+                    request.Method,
+                    ct,
+                    context);
+
+                var winner = await Task.WhenAny(timeoutTask, initialHeadTask).ConfigureAwait(false);
+                if (winner == initialHeadTask)
+                {
+                    delayCts.Cancel();
+                    var initialHead = await initialHeadTask.ConfigureAwait(false);
+                    if ((int)initialHead.StatusCode != 100)
+                    {
+                        readerOwned = false;
+                        return Http11ResponseParser.CreateParsedResponseHead(reader, initialHead);
+                    }
+
+                    var bodySendException = await TrySendRequestBodyAsync(
+                            stream,
+                            request,
+                            requestWriteState,
+                            ct)
+                        .ConfigureAwait(false);
+
+                    try
+                    {
+                        var finalHead = await Http11ResponseParser.ParseHeadAsync(
+                                reader,
+                                request.Method,
+                                ct,
+                                context,
+                                initialInterim1xxCount: 1)
+                            .ConfigureAwait(false);
+                        if (bodySendException != null)
+                        {
+                            using (finalHead)
+                            {
+                                ThrowCapturedBodySendException(
+                                    bodySendException,
+                                    context,
+                                    responseStatusCode: finalHead.StatusCode);
+                            }
+                        }
+
+                        readerOwned = false;
+                        return finalHead;
+                    }
+                    catch (Exception responseReadException) when (bodySendException != null)
+                    {
+                        ThrowCapturedBodySendException(
+                            bodySendException,
+                            context,
+                            responseReadException);
+                        throw;
+                    }
+                }
+
+                var timeoutBodySendException = await TrySendRequestBodyAsync(
+                        stream,
+                        request,
+                        requestWriteState,
+                        ct)
+                    .ConfigureAwait(false);
+
+                Http11ResponseParser.ParsedResponseHeadData timedHead;
+                try
+                {
+                    timedHead = await initialHeadTask.ConfigureAwait(false);
+                }
+                catch when (timeoutBodySendException != null)
+                {
+                    ExceptionDispatchInfo.Capture(timeoutBodySendException).Throw();
+                    throw;
+                }
+
+                if ((int)timedHead.StatusCode != 100)
+                {
+                    readerOwned = false;
+                    return Http11ResponseParser.CreateParsedResponseHead(reader, timedHead);
+                }
+
+                try
+                {
+                    var finalHead = await Http11ResponseParser.ParseHeadAsync(
+                            reader,
+                            request.Method,
+                            ct,
+                            context,
+                            initialInterim1xxCount: 1)
+                        .ConfigureAwait(false);
+                    if (timeoutBodySendException != null)
+                    {
+                        using (finalHead)
+                        {
+                            ThrowCapturedBodySendException(
+                                timeoutBodySendException,
+                                context,
+                                responseStatusCode: finalHead.StatusCode);
+                        }
+                    }
+
+                    readerOwned = false;
+                    return finalHead;
+                }
+                catch (Exception responseReadException) when (timeoutBodySendException != null)
+                {
+                    ThrowCapturedBodySendException(
+                        timeoutBodySendException,
+                        context,
+                        responseReadException);
+                    throw;
+                }
+            }
+            finally
+            {
+                RecordRequestBodyBytesSent(context, requestWriteState);
+                if (readerOwned)
+                    reader.Dispose();
+            }
+        }
+
+        private static void ThrowCapturedBodySendException(
+            Exception bodySendException,
+            RequestContext context,
+            Exception responseReadException = null,
+            HttpStatusCode? responseStatusCode = null)
+        {
+            if (bodySendException == null)
+                return;
+
+            if (responseReadException != null)
+            {
+                bodySendException.Data["TurboHTTP.ExpectContinue.ResponseReadFailureType"] =
+                    responseReadException.GetType().FullName ?? responseReadException.GetType().Name;
+                bodySendException.Data["TurboHTTP.ExpectContinue.ResponseReadFailureMessage"] =
+                    responseReadException.Message;
+            }
+
+            Dictionary<string, object> eventData = null;
+            if (context != null)
+            {
+                eventData = new Dictionary<string, object>
+                {
+                    ["bodyExceptionType"] = bodySendException.GetType().FullName ?? bodySendException.GetType().Name,
+                    ["bodyExceptionMessage"] = bodySendException.Message
+                };
+
+                if (responseReadException != null)
+                {
+                    eventData["responseReadExceptionType"] =
+                        responseReadException.GetType().FullName ?? responseReadException.GetType().Name;
+                    eventData["responseReadExceptionMessage"] = responseReadException.Message;
+                }
+
+                if (responseStatusCode.HasValue)
+                    eventData["responseStatusCode"] = (int)responseStatusCode.Value;
+
+                context.RecordEvent("TransportExpectContinueBodySendFailed", eventData);
+            }
+
+            ExceptionDispatchInfo.Capture(bodySendException).Throw();
+        }
+
+        private async Task<Exception> TrySendRequestBodyAsync(
+            Stream stream,
+            UHttpRequest request,
+            Http11RequestWriteState requestWriteState,
+            CancellationToken ct)
+        {
+            try
+            {
+                // Body-send faults are captured so the expect-continue path can finish any
+                // in-flight response parsing and then re-surface the original send failure.
+                using var session = await request.Content.OpenReadSessionAsync(ct).ConfigureAwait(false);
+                await Http11RequestSerializer.SerializeBodyAsync(
+                        stream,
+                        request.Content,
+                        session,
+                        ct,
+                        requestWriteState,
+                        _streamingOptions)
+                    .ConfigureAwait(false);
+                await stream.FlushAsync(ct).ConfigureAwait(false);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex;
+            }
         }
 
         private static async Task<ParsedResponse> SendOnStreamAsync(

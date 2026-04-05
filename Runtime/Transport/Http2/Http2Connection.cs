@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
+using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -97,6 +98,7 @@ namespace TurboHTTP.Transport.Http2
         private readonly int _maxConnectionBufferedBytes;
         private readonly int _connectionRecvWindowTarget;
         private readonly TimeSpan _maintenanceInterval;
+        private readonly int _expectContinueTimeoutMs;
         private long _stallTimeoutMs;
         private readonly ConcurrentDictionary<int, long> _recentlyResetStreams =
             new ConcurrentDictionary<int, long>();
@@ -149,6 +151,7 @@ namespace TurboHTTP.Transport.Http2
             _connectionRecvWindowTarget = Math.Max(
                 Http2Constants.DefaultInitialWindowSize,
                 Math.Min(DefaultConnectionReceiveWindowTargetBytes, _maxConnectionBufferedBytes));
+            _expectContinueTimeoutMs = streamingOptions.ExpectContinueTimeoutMs;
             _stallTimeoutMs = options.TestStallTimeoutMillisecondsOverride > 0
                 ? options.TestStallTimeoutMillisecondsOverride
                 : (long)TimeSpan.FromSeconds(streamingOptions.Http2StallTimeoutSeconds).TotalMilliseconds;
@@ -314,8 +317,12 @@ namespace TurboHTTP.Transport.Http2
 
             try
             {
-                bool hasBody = HasRequestBody(request.Content);
+                bool shouldWaitForExpectContinue = ExpectContinueHelper.ShouldAwaitExpectContinue(request);
+                bool hasBody = shouldWaitForExpectContinue || ExpectContinueHelper.HasRequestBody(request.Content);
                 bool hasRequestTrailers = request.Content != null && request.Content.TrailerProvider != null;
+
+                if (shouldWaitForExpectContinue)
+                    stream.EnableExpectContinueWait();
 
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
@@ -373,11 +380,22 @@ namespace TurboHTTP.Transport.Http2
 
                 if (hasBody)
                 {
-                    var requestBodyBytesSent = await SendDataAsync(streamId, request.Content, stream, ct)
-                        .ConfigureAwait(false);
-                    context.SetState(TransportBehaviorFlags.RequestBodyBytesSent, requestBodyBytesSent);
-                    requestEndStreamSent = true;
-                    stream.State = Http2StreamState.HalfClosedLocal;
+                    bool sendRequestBody = true;
+                    if (shouldWaitForExpectContinue)
+                        sendRequestBody = await WaitForExpectContinueAsync(stream, ct).ConfigureAwait(false);
+
+                    if (sendRequestBody)
+                    {
+                        var requestBodyBytesSent = await SendDataAsync(streamId, request.Content, stream, ct)
+                            .ConfigureAwait(false);
+                        context.SetState(TransportBehaviorFlags.RequestBodyBytesSent, requestBodyBytesSent);
+                        requestEndStreamSent = true;
+                        stream.State = Http2StreamState.HalfClosedLocal;
+                    }
+                    else
+                    {
+                        context.SetState(TransportBehaviorFlags.RequestBodyBytesSent, 0L);
+                    }
                 }
 
                 context.RecordEvent("TransportH2RequestSent");
@@ -444,18 +462,32 @@ namespace TurboHTTP.Transport.Http2
             await stream.CompletionTask.ConfigureAwait(false);
         }
 
-        private static bool HasRequestBody(UHttpRequestBody content)
+        private async Task<bool> WaitForExpectContinueAsync(Http2Stream stream, CancellationToken ct)
         {
-            if (content == null)
-                return false;
+            if (stream == null)
+                throw new ArgumentNullException(nameof(stream));
 
-            if (content.TrailerProvider != null)
-                return true;
+            var expectContinueTask = stream.WaitForExpectContinueAsync();
+            using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var timeoutTask = Task.Delay(_expectContinueTimeoutMs, delayCts.Token);
 
-            if (content.TryGetBufferedData(out var buffered))
-                return !buffered.IsEmpty;
+            var winner = await Task.WhenAny(expectContinueTask, timeoutTask).ConfigureAwait(false);
+            if (winner == expectContinueTask)
+            {
+                delayCts.Cancel();
+                return await expectContinueTask.ConfigureAwait(false);
+            }
 
-            return !content.Length.HasValue || content.Length.Value > 0;
+            // Re-check the signal task before proceeding so a near-simultaneous
+            // 100/final HEADERS completion still wins over the timeout branch.
+            if (expectContinueTask.IsCompleted)
+            {
+                delayCts.Cancel();
+                return await expectContinueTask.ConfigureAwait(false);
+            }
+
+            stream.SignalExpectContinueContinue();
+            return true;
         }
 
         private static string ToLowerAsciiHeaderName(string value)
