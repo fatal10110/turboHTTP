@@ -114,6 +114,18 @@ namespace TurboHTTP.Tests.Transport.Http2
             return payload;
         }
 
+        private static int ParseWindowUpdateIncrement(Http2Frame frame)
+        {
+            Assert.IsNotNull(frame);
+            Assert.AreEqual(Http2FrameType.WindowUpdate, frame.Type);
+            Assert.AreEqual(4, frame.Length);
+
+            return ((frame.Payload[0] & 0x7F) << 24) |
+                   (frame.Payload[1] << 16) |
+                   (frame.Payload[2] << 8) |
+                   frame.Payload[3];
+        }
+
         // --- Basic Window Update ---
 
         [Test]
@@ -748,7 +760,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         public void LargeResponse_CompletesWithStreamWindowUpdates()        {
             AssertAsync.Run(async () =>
             {
-                // Fix 1: Verify responses > 65535 bytes complete (stream-level WINDOW_UPDATE prevents stall)
+                // A compliant peer must stop once it exhausts the advertised stream window
+                // and wait for the consumer-driven WINDOW_UPDATE before sending more DATA.
                 using var cts = new CancellationTokenSource(20000);
                 var (conn, serverStream, duplex) = await CreateInitializedConnectionAsync(cts.Token);
                 var serverCodec = new Http2FrameCodec(serverStream);
@@ -764,12 +777,28 @@ namespace TurboHTTP.Tests.Transport.Http2
                 await serverCodec.WriteFrameAsync(
                     BuildResponseHeadersFrame(streamId, 200), cts.Token);
 
-                // Send 128KB of data (well over the 65535 initial window)
+                // Send 128KB of data (well over the 65535 initial window) while obeying the
+                // stream-level receive window the client has actually advertised.
                 int totalToSend = 128 * 1024;
                 int sent = 0;
+                int availableStreamWindow = Http2Constants.DefaultInitialWindowSize;
                 while (sent < totalToSend)
                 {
-                    int chunkSize = Math.Min(16384, totalToSend - sent);
+                    if (availableStreamWindow <= 0)
+                    {
+                        var streamWindowUpdate = await ReadMatchingFrameAsync(
+                            serverCodec,
+                            frame => frame.Type == Http2FrameType.WindowUpdate && frame.StreamId == streamId,
+                            timeoutMs: 5000);
+
+                        int increment = ParseWindowUpdateIncrement(streamWindowUpdate);
+                        Assert.Greater(increment, 0);
+                        availableStreamWindow += increment;
+                    }
+
+                    int chunkSize = Math.Min(
+                        16384,
+                        Math.Min(totalToSend - sent, availableStreamWindow));
                     bool isLast = (sent + chunkSize) >= totalToSend;
 
                     await serverCodec.WriteFrameAsync(new Http2Frame
@@ -781,15 +810,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                         Length = chunkSize
                     }, cts.Token);
                     sent += chunkSize;
-
-                    // Read any WINDOW_UPDATEs the client sends (must consume them to prevent blocking)
-                    // The server stream is a TestDuplexStream, so we try to read non-blockingly
-                    // by doing a short attempt — but since WINDOW_UPDATEs arrive async, just keep sending
-                    // and handle them as they come
+                    availableStreamWindow -= chunkSize;
                 }
 
-                // Drain any remaining WINDOW_UPDATEs (non-blocking reads would be ideal, but
-                // the response task completing means the client processed everything)
                 var response = await responseTask;
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual(totalToSend, response.Body.Length);

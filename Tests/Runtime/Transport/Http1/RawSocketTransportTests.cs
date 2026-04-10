@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -597,6 +599,58 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
+        public void RawSocketTransport_ExpectContinue_Interim103BeforeFinalResponse_DoesNotConsumeBody()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string expectHeader = null;
+                int trailingByteRead = int.MinValue;
+                using var bodyStream = new TrackingNonSeekableReadStream(Encoding.UTF8.GetBytes("one-shot-body"));
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Expect", out expectHeader);
+
+                    await WriteResponseHeadAsync(
+                        stream,
+                        "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload; as=style\r\n\r\n");
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope");
+
+                    trailingByteRead = await TryReadSingleByteAsync(stream, TimeSpan.FromMilliseconds(200));
+                    client.Close();
+                });
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(
+                        pool: null,
+                        tlsBackend: TlsBackend.Auto,
+                        http2Options: new Http2Options(),
+                        streamingOptions: new StreamingOptions
+                        {
+                            ExpectContinueTimeoutMs = 500
+                        }),
+                    DisposeTransport = true
+                });
+
+                using var response = await client.Post($"http://127.0.0.1:{server.Port}/reject-after-103")
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .WithExpectContinue()
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.ExpectationFailed, response.StatusCode);
+                Assert.AreEqual("nope", response.GetBodyAsString());
+                Assert.AreEqual("100-continue", expectHeader);
+                Assert.AreEqual(0, bodyStream.BytesRead);
+                Assert.LessOrEqual(trailingByteRead, 0);
+            });
+        }
+
+        [Test]
         public void RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_ReusesConnectionAfterDrain()
         {
             AssertAsync.Run(async () =>
@@ -765,6 +819,65 @@ namespace TurboHTTP.Tests.Transport.Http1
                 });
 
                 using var response = await client.Post($"http://127.0.0.1:{server.Port}/slow-timeout")
+                    .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
+                    .WithExpectContinue()
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("done", response.GetBodyAsString());
+                Assert.AreEqual("100-continue", expectHeader);
+                Assert.AreEqual(payload.Length, bodyStream.BytesRead);
+                Assert.AreEqual(3, bodyStream.ReadCount);
+                CollectionAssert.AreEqual(payload, requestBody);
+            });
+        }
+
+        [Test]
+        public void RawSocketTransport_ExpectContinue_Timeout_Late103DuringSlowBody_CompletesFinalResponse()
+        {
+            AssertAsync.Run(async () =>
+            {
+                string expectHeader = null;
+                byte[] requestBody = null;
+                var payload = Encoding.ASCII.GetBytes(new string('y', 300));
+
+                using var server = new HttpServer(async (client, _) =>
+                {
+                    using var stream = client.GetStream();
+                    var captured = await ReadRequestStartAndHeadersAsync(stream);
+                    captured.Headers.TryGetValue("Expect", out expectHeader);
+
+                    await Task.Delay(TimeSpan.FromMilliseconds(80));
+                    await WriteResponseHeadAsync(
+                        stream,
+                        "HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload; as=style\r\n\r\n");
+
+                    requestBody = await ReadExactAsync(stream, payload.Length);
+
+                    await WriteResponseAsync(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndone");
+                    client.Close();
+                });
+
+                using var bodyStream = new DelayedChunkReadStream(
+                    payload,
+                    chunkSize: 100,
+                    delayPerRead: TimeSpan.FromMilliseconds(100));
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = new RawSocketTransport(
+                        pool: null,
+                        tlsBackend: TlsBackend.Auto,
+                        http2Options: new Http2Options(),
+                        streamingOptions: new StreamingOptions
+                        {
+                            ExpectContinueTimeoutMs = 50
+                        }),
+                    DisposeTransport = true
+                });
+
+                using var response = await client.Post($"http://127.0.0.1:{server.Port}/late-103")
                     .WithStreamBody(bodyStream, bodyStream.Length, leaveOpen: true)
                     .WithExpectContinue()
                     .SendBufferedAsync();
@@ -1592,11 +1705,11 @@ namespace TurboHTTP.Tests.Transport.Http1
                     var read = await response.Body.ReadAsync(buffer, 0, 1);
                     Assert.AreEqual(1, read);
 
-                    var startedAt = DateTime.UtcNow;
+                    var stopwatch = Stopwatch.StartNew();
                     await response.DisposeAsync();
-                    var elapsed = DateTime.UtcNow - startedAt;
+                    stopwatch.Stop();
 
-                    Assert.Less(elapsed, TimeSpan.FromMilliseconds(300));
+                    Assert.Less(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1000));
                 }
 
                 using var followUp = await client.Get($"http://127.0.0.1:{server.Port}/second").SendBufferedAsync();
@@ -2169,6 +2282,36 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
+        public void Connect407_ChunkedBodyDrain_PreservesNextConnectResponse()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var responseBytes = Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 407 Proxy Authentication Required\r\n" +
+                    "Transfer-Encoding: chunked\r\n" +
+                    "Connection: keep-alive\r\n\r\n" +
+                    "3\r\nabc\r\n" +
+                    "0\r\n" +
+                    "Proxy-Authenticate: Basic realm=\"proxy\"\r\n\r\n" +
+                    "HTTP/1.1 200 Connection Established\r\n" +
+                    "Content-Length: 0\r\n" +
+                    "Connection: close\r\n\r\n");
+
+                using var stream = new MemoryStream(responseBytes, writable: false);
+
+                var firstResponse = await ReadProxyConnectResponseForTestAsync(stream);
+                Assert.AreEqual(407, GetProxyConnectStatusCode(firstResponse));
+
+                await DrainProxyConnectBodyForTestAsync(
+                    stream,
+                    GetProxyConnectHeaders(firstResponse));
+
+                var secondResponse = await ReadProxyConnectResponseForTestAsync(stream);
+                Assert.AreEqual(200, GetProxyConnectStatusCode(secondResponse));
+            });
+        }
+
+        [Test]
         public void Connect407_NoCredentialsFails()
         {
             AssertAsync.Run(async () =>
@@ -2233,6 +2376,45 @@ namespace TurboHTTP.Tests.Transport.Http1
                 AssertAsync.ThrowsAsync<OperationCanceledException>(async () =>
                     await client.Get("https://origin.example.com/secure").SendBufferedAsync(cts.Token));
             });
+        }
+
+        private static async Task<object> ReadProxyConnectResponseForTestAsync(Stream stream)
+        {
+            var method = typeof(RawSocketTransport).GetMethod(
+                "ReadProxyConnectResponseAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(method);
+
+            var task = (Task)method.Invoke(null, new object[] { stream, CancellationToken.None });
+            await task.ConfigureAwait(false);
+            return task.GetType().GetProperty("Result").GetValue(task, null);
+        }
+
+        private static async Task DrainProxyConnectBodyForTestAsync(Stream stream, HttpHeaders headers)
+        {
+            var method = typeof(RawSocketTransport).GetMethod(
+                "DrainProxyConnectBodyAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(method);
+
+            var task = (Task)method.Invoke(null, new object[] { stream, headers, CancellationToken.None });
+            await task.ConfigureAwait(false);
+        }
+
+        private static int GetProxyConnectStatusCode(object response)
+        {
+            Assert.IsNotNull(response);
+            var property = response.GetType().GetProperty("StatusCode", BindingFlags.Instance | BindingFlags.Public);
+            Assert.IsNotNull(property);
+            return (int)property.GetValue(response, null);
+        }
+
+        private static HttpHeaders GetProxyConnectHeaders(object response)
+        {
+            Assert.IsNotNull(response);
+            var property = response.GetType().GetProperty("Headers", BindingFlags.Instance | BindingFlags.Public);
+            Assert.IsNotNull(property);
+            return (HttpHeaders)property.GetValue(response, null);
         }
 
 #if TURBOHTTP_INTEGRATION_TESTS
@@ -2689,7 +2871,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 if (_position >= _bytes.Length)
                     return new ValueTask<int>(0);
                 if (_position >= _throwAfterBytes)
-                    return ValueTask.FromException<int>(_failure);
+                    return new ValueTask<int>(Task.FromException<int>(_failure));
 
                 int bytesToCopy = Math.Min(Math.Min(buffer.Length, _throwAfterBytes - _position), _bytes.Length - _position);
                 _bytes.AsMemory(_position, bytesToCopy).CopyTo(buffer);

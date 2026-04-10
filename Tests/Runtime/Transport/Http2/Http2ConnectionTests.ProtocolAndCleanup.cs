@@ -438,6 +438,60 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void UnexpectedResponsePseudoHeader_FailsOnlyAffectedStream()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/illegal-pseudo"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token);
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                var encoder = new HpackEncoder();
+                byte[] headerBlock = encoder.Encode(
+                    new List<(string, string)>
+                    {
+                        (":status", "200"),
+                        (":path", "/illegal")
+                    }).ToArray();
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Headers,
+                    Flags = Http2FrameFlags.EndHeaders | Http2FrameFlags.EndStream,
+                    StreamId = streamId,
+                    Payload = headerBlock,
+                    Length = headerBlock.Length
+                }, cts.Token);
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.That(ex.Message, Does.Contain("Unexpected pseudo-header"));
+                Assert.IsTrue(conn.IsAlive);
+
+                var followUpRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/follow-up"));
+                var followUpContext = new RequestContext(followUpRequest);
+                var followUpTask = conn.SendRequestAsync(followUpRequest, followUpContext, cts.Token);
+
+                var followUpHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(followUpHeaders.StreamId, 200, endStream: true),
+                    cts.Token);
+
+                using var followUpResponse = await followUpTask;
+                Assert.AreEqual(HttpStatusCode.OK, followUpResponse.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
         public void TrailingHeaders_WithoutStatus_AreAccepted()
         {
             AssertAsync.Run(async () =>
@@ -486,6 +540,65 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 Assert.AreEqual("hello", response.GetBodyAsString());
                 Assert.IsNull(response.Headers.Get("grpc-status"));
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void TrailingHeaders_WithoutEndStream_FailsOnlyAffectedStream()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/trailing-no-endstream"));
+                var context = new RequestContext(request);
+                var responseTask = conn.SendRequestAsync(request, context, cts.Token).AsTask();
+
+                var requestHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                int streamId = requestHeaders.StreamId;
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(streamId, 200, endStream: false),
+                    cts.Token);
+
+                var trailerEncoder = new HpackEncoder();
+                var trailerBlock = trailerEncoder.Encode(new List<(string, string)>
+                {
+                    ("grpc-status", "0")
+                }).ToArray();
+
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Headers,
+                    Flags = Http2FrameFlags.EndHeaders,
+                    StreamId = streamId,
+                    Payload = trailerBlock,
+                    Length = trailerBlock.Length
+                }, cts.Token);
+
+                var completed = await Task.WhenAny(responseTask, Task.Delay(1000, cts.Token));
+                Assert.AreSame(responseTask, completed);
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Assert.That(ex.Message, Does.Contain("without END_STREAM"));
+                Assert.IsTrue(conn.IsAlive);
+
+                var followUpRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/follow-up-after-trailer-failure"));
+                var followUpContext = new RequestContext(followUpRequest);
+                var followUpTask = conn.SendRequestAsync(followUpRequest, followUpContext, cts.Token);
+
+                var followUpHeaders = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(followUpHeaders.StreamId, 200, endStream: true),
+                    cts.Token);
+
+                using var followUpResponse = await followUpTask;
+                Assert.AreEqual(HttpStatusCode.OK, followUpResponse.StatusCode);
 
                 conn.Dispose();
             });

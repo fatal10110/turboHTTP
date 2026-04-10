@@ -355,6 +355,13 @@ namespace TurboHTTP.Transport.Http2
                     RemoveActiveStream(stream.StreamId);
                     return;
                 }
+                else
+                {
+                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        $"Unexpected pseudo-header in response headers: {name}")));
+                    RemoveActiveStream(stream.StreamId);
+                    return;
+                }
             }
 
             if (!isTrailingHeaders && !hasStatus)
@@ -367,15 +374,20 @@ namespace TurboHTTP.Transport.Http2
 
             if (isTrailingHeaders)
             {
-                stream.AppendTrailers(responseHeaders);
-                if (endStream)
+                if (!endStream)
                 {
+                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        "Trailing HEADERS frame received without END_STREAM flag (RFC 9113 §8.1)")));
                     RemoveActiveStream(stream.StreamId);
-                    stream.State = stream.State == Http2StreamState.HalfClosedLocal
-                        ? Http2StreamState.Closed
-                        : Http2StreamState.HalfClosedRemote;
-                    stream.CompleteResponseBody();
+                    return;
                 }
+
+                stream.AppendTrailers(responseHeaders);
+                RemoveActiveStream(stream.StreamId);
+                stream.State = stream.State == Http2StreamState.HalfClosedLocal
+                    ? Http2StreamState.Closed
+                    : Http2StreamState.HalfClosedRemote;
+                stream.CompleteResponseBody();
             }
             else
             {

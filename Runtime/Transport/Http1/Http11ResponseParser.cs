@@ -154,7 +154,7 @@ namespace TurboHTTP.Transport.Http1
         internal const int MaxTotalTrailerBytes = 32 * 1024;
         private const int MaxTotalHeaderBytes = 102400; // 100KB
         private const int MaxResponseBodySize = 100 * 1024 * 1024; // 100MB
-        private const int Max1xxResponses = 10;
+        internal const int Max1xxResponses = 10;
 
         internal readonly struct ParsedResponseHeadData
         {
@@ -831,6 +831,8 @@ namespace TurboHTTP.Transport.Http1
                     throw new FormatException("Response trailers exceed maximum size");
 
                 trailers ??= new HttpHeaders();
+                // Invalid or prohibited trailers are skipped for wire compatibility with
+                // permissive servers/proxies; malformed framing still throws earlier.
                 AddResponseTrailer(trailers, line);
             }
 

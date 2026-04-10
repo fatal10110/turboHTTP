@@ -592,6 +592,7 @@ namespace TurboHTTP.Tests.Integration
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void Http2IntegrationCoverage_Phase9_ValidatesAlpnNegotiation()
         {
             Task.Run(async () =>
@@ -604,14 +605,14 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true
                 });
 
-                var response = await client.Get("https://nghttp2.org/httpbin/get")
+                var response = await client.Get("https://httpbin.org/get")
                     .WithTimeout(TimeSpan.FromSeconds(25))
                     .SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
-                bool usedHttp2 = TryHasHttp2Connection(transport, "nghttp2.org", 443);
-                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "nghttp2.org");
+                bool usedHttp2 = TryHasHttp2Connection(transport, "httpbin.org", 443);
+                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "httpbin.org");
                 if (string.Equals(negotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
                 {
                     Assert.IsTrue(

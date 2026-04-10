@@ -27,6 +27,7 @@ namespace TurboHTTP.Transport
     /// </summary>
     public sealed class RawSocketTransport : IHttpTransport
     {
+        private static readonly string[] s_connectTunnelAlpnProtocols = { "http/1.1" };
         private readonly TcpConnectionPool _pool;
         private readonly Http2ConnectionManager _h2Manager;
         private readonly TlsBackend _tlsBackend;
@@ -887,7 +888,7 @@ namespace TurboHTTP.Transport
                     return await tlsProvider.WrapAsync(
                         proxyStream,
                         targetHost,
-                        new[] { "http/1.1" },
+                        s_connectTunnelAlpnProtocols,
                         ct).ConfigureAwait(false);
                 }
 
@@ -1026,29 +1027,172 @@ namespace TurboHTTP.Transport
             if (headers == null)
                 return;
 
+            var transferEncoding = headers.Get("Transfer-Encoding");
+            if (!string.IsNullOrWhiteSpace(transferEncoding))
+            {
+                if (EndsWithTransferCodingToken(transferEncoding, "chunked"))
+                {
+                    await DrainChunkedBodyAsync(stream, ct).ConfigureAwait(false);
+                    return;
+                }
+            }
+
             var contentLength = headers.Get("Content-Length");
-            if (string.IsNullOrWhiteSpace(contentLength))
-                return;
+            if (!string.IsNullOrWhiteSpace(contentLength))
+            {
+                if (!int.TryParse(contentLength, out var length) || length <= 0)
+                    return;
 
-            if (!int.TryParse(contentLength, out var length) || length <= 0)
-                return;
+                var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(4096, length));
+                try
+                {
+                    await DrainFixedLengthBodyAsync(stream, buffer, length, ct).ConfigureAwait(false);
+                    return;
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
+            }
 
-            var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(4096, length));
+            if (!string.IsNullOrWhiteSpace(transferEncoding))
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    "Proxy CONNECT response used an unsupported Transfer-Encoding without a Content-Length. " +
+                    "The connection cannot be safely reused."));
+            }
+        }
+
+        private static async Task DrainFixedLengthBodyAsync(
+            Stream stream,
+            byte[] buffer,
+            int length,
+            CancellationToken ct)
+        {
+            var remaining = length;
+            while (remaining > 0)
+            {
+                var toRead = Math.Min(remaining, buffer.Length);
+                var read = await stream.ReadAsync(buffer, 0, toRead, ct).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        "Unexpected EOF while draining proxy CONNECT response body."));
+                }
+
+                remaining -= read;
+            }
+        }
+
+        private static async Task DrainChunkedBodyAsync(
+            Stream stream,
+            CancellationToken ct)
+        {
+            var buffer = ArrayPool<byte>.Shared.Rent(4096);
             try
             {
-                var remaining = length;
-                while (remaining > 0)
+                while (true)
                 {
-                    var toRead = Math.Min(remaining, buffer.Length);
-                    var read = await stream.ReadAsync(buffer, 0, toRead, ct).ConfigureAwait(false);
-                    if (read <= 0)
-                        break;
-                    remaining -= read;
+                    var sizeLine = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
+                    var chunkSize = Http11ResponseParser.ParseChunkSizeLine(sizeLine);
+                    if (chunkSize < 0 || chunkSize > int.MaxValue)
+                    {
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.NetworkError,
+                            "Proxy CONNECT chunked response body exceeded the supported drain size."));
+                    }
+
+                    if (chunkSize == 0)
+                    {
+                        await DrainHeaderSectionAsync(stream, ct).ConfigureAwait(false);
+                        return;
+                    }
+
+                    await DrainFixedLengthBodyAsync(stream, buffer, (int)chunkSize, ct).ConfigureAwait(false);
+                    await ReadExpectedCrlfAsync(stream, ct).ConfigureAwait(false);
                 }
+            }
+            catch (FormatException ex)
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    "Invalid chunked proxy CONNECT response body.", ex));
             }
             finally
             {
                 ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private static async Task DrainHeaderSectionAsync(Stream stream, CancellationToken ct)
+        {
+            while (true)
+            {
+                var line = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
+                if (line.Length == 0)
+                    return;
+            }
+        }
+
+        private static bool EndsWithTransferCodingToken(string transferEncoding, string token)
+        {
+            if (string.IsNullOrEmpty(transferEncoding))
+                return false;
+
+            int start = 0;
+            int end = transferEncoding.Length - 1;
+            while (start <= end && char.IsWhiteSpace(transferEncoding[start]))
+                start++;
+            while (end >= start && char.IsWhiteSpace(transferEncoding[end]))
+                end--;
+
+            int trimmedLength = end - start + 1;
+            if (trimmedLength < token.Length)
+                return false;
+
+            var trimmed = transferEncoding.AsSpan(start, trimmedLength);
+            var suffix = trimmed.Slice(trimmedLength - token.Length);
+            if (!suffix.Equals(token.AsSpan(), StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (trimmedLength == token.Length)
+                return true;
+
+            var preceding = trimmed[trimmedLength - token.Length - 1];
+            return preceding == ',' || char.IsWhiteSpace(preceding);
+        }
+
+        private static async Task ReadExpectedCrlfAsync(Stream stream, CancellationToken ct)
+        {
+            var delimiter = ArrayPool<byte>.Shared.Rent(2);
+            try
+            {
+                int read = 0;
+                while (read < 2)
+                {
+                    var current = await stream.ReadAsync(delimiter, read, 2 - read, ct).ConfigureAwait(false);
+                    if (current <= 0)
+                    {
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.NetworkError,
+                            "Unexpected EOF while draining proxy CONNECT response body."));
+                    }
+
+                    read += current;
+                }
+
+                if (delimiter[0] != (byte)'\r' || delimiter[1] != (byte)'\n')
+                {
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        "Invalid chunked proxy CONNECT response body framing."));
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(delimiter);
             }
         }
 
@@ -1323,6 +1467,7 @@ namespace TurboHTTP.Transport
             var stream = lease.Connection.Stream;
             var reader = new Http11ResponseParser.BufferedStreamReader(stream);
             bool readerOwned = true;
+            int interim1xxCount = 0;
             try
             {
                 await Http11RequestSerializer.SerializeHeadersAsync(request, stream, ct)
@@ -1331,31 +1476,109 @@ namespace TurboHTTP.Transport
 
                 context.RecordEvent("TransportReceiving");
 
-                using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                var timeoutTask = Task.Delay(_streamingOptions.ExpectContinueTimeoutMs, delayCts.Token);
-                var initialHeadTask = Http11ResponseParser.ParseNextHeadDataAsync(
-                    reader,
-                    request.Method,
-                    ct,
-                    context);
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(_streamingOptions.ExpectContinueTimeoutMs);
+                var timeoutTask = Task.Delay(Timeout.InfiniteTimeSpan, timeoutCts.Token);
 
-                var winner = await Task.WhenAny(timeoutTask, initialHeadTask).ConfigureAwait(false);
-                if (winner == initialHeadTask)
+                while (true)
                 {
-                    delayCts.Cancel();
-                    var initialHead = await initialHeadTask.ConfigureAwait(false);
-                    if ((int)initialHead.StatusCode != 100)
+                    var initialHeadTask = Http11ResponseParser.ParseNextHeadDataAsync(
+                        reader,
+                        request.Method,
+                        ct,
+                        context);
+
+                    var winner = await Task.WhenAny(timeoutTask, initialHeadTask).ConfigureAwait(false);
+                    if (winner == initialHeadTask)
                     {
-                        readerOwned = false;
-                        return Http11ResponseParser.CreateParsedResponseHead(reader, initialHead);
+                        var initialHead = await initialHeadTask.ConfigureAwait(false);
+                        if (ShouldReturnExpectContinueHead(initialHead.StatusCode))
+                        {
+                            timeoutCts.Cancel();
+                            readerOwned = false;
+                            return Http11ResponseParser.CreateParsedResponseHead(reader, initialHead);
+                        }
+
+                        interim1xxCount = IncrementExpectContinueInterimCount(interim1xxCount);
+                        if ((int)initialHead.StatusCode != 100)
+                        {
+                            // Non-100 informational responses do not satisfy Expect: 100-continue.
+                            // Keep the original deadline running so a server cannot extend the wait
+                            // indefinitely by streaming additional interim responses.
+                            continue;
+                        }
+
+                        timeoutCts.Cancel();
+
+                        var bodySendException = await TrySendRequestBodyAsync(
+                                stream,
+                                request,
+                                requestWriteState,
+                                ct)
+                            .ConfigureAwait(false);
+
+                        try
+                        {
+                            var finalHead = await Http11ResponseParser.ParseHeadAsync(
+                                    reader,
+                                    request.Method,
+                                    ct,
+                                    context,
+                                    initialInterim1xxCount: interim1xxCount)
+                                .ConfigureAwait(false);
+                            if (bodySendException != null)
+                            {
+                                using (finalHead)
+                                {
+                                    ThrowCapturedBodySendException(
+                                        bodySendException,
+                                        context,
+                                        responseStatusCode: finalHead.StatusCode);
+                                }
+                            }
+
+                            readerOwned = false;
+                            return finalHead;
+                        }
+                        catch (Exception responseReadException) when (bodySendException != null)
+                        {
+                            ThrowCapturedBodySendException(
+                                bodySendException,
+                                context,
+                                responseReadException);
+                            throw;
+                        }
                     }
 
-                    var bodySendException = await TrySendRequestBodyAsync(
+                    // This is the caller's request-scoped cancellation token, not timeoutCts.Token.
+                    // The expect-continue timeout already expired if we reached this branch.
+                    ct.ThrowIfCancellationRequested();
+
+                    var timeoutBodySendException = await TrySendRequestBodyAsync(
                             stream,
                             request,
                             requestWriteState,
                             ct)
                         .ConfigureAwait(false);
+
+                    Http11ResponseParser.ParsedResponseHeadData timedHead;
+                    try
+                    {
+                        timedHead = await initialHeadTask.ConfigureAwait(false);
+                    }
+                    catch when (timeoutBodySendException != null)
+                    {
+                        ExceptionDispatchInfo.Capture(timeoutBodySendException).Throw();
+                        throw;
+                    }
+
+                    if (ShouldReturnExpectContinueHead(timedHead.StatusCode))
+                    {
+                        readerOwned = false;
+                        return Http11ResponseParser.CreateParsedResponseHead(reader, timedHead);
+                    }
+
+                    interim1xxCount = IncrementExpectContinueInterimCount(interim1xxCount);
 
                     try
                     {
@@ -1364,14 +1587,14 @@ namespace TurboHTTP.Transport
                                 request.Method,
                                 ct,
                                 context,
-                                initialInterim1xxCount: 1)
+                                initialInterim1xxCount: interim1xxCount)
                             .ConfigureAwait(false);
-                        if (bodySendException != null)
+                        if (timeoutBodySendException != null)
                         {
                             using (finalHead)
                             {
                                 ThrowCapturedBodySendException(
-                                    bodySendException,
+                                    timeoutBodySendException,
                                     context,
                                     responseStatusCode: finalHead.StatusCode);
                             }
@@ -1380,70 +1603,14 @@ namespace TurboHTTP.Transport
                         readerOwned = false;
                         return finalHead;
                     }
-                    catch (Exception responseReadException) when (bodySendException != null)
+                    catch (Exception responseReadException) when (timeoutBodySendException != null)
                     {
                         ThrowCapturedBodySendException(
-                            bodySendException,
+                            timeoutBodySendException,
                             context,
                             responseReadException);
                         throw;
                     }
-                }
-
-                var timeoutBodySendException = await TrySendRequestBodyAsync(
-                        stream,
-                        request,
-                        requestWriteState,
-                        ct)
-                    .ConfigureAwait(false);
-
-                Http11ResponseParser.ParsedResponseHeadData timedHead;
-                try
-                {
-                    timedHead = await initialHeadTask.ConfigureAwait(false);
-                }
-                catch when (timeoutBodySendException != null)
-                {
-                    ExceptionDispatchInfo.Capture(timeoutBodySendException).Throw();
-                    throw;
-                }
-
-                if ((int)timedHead.StatusCode != 100)
-                {
-                    readerOwned = false;
-                    return Http11ResponseParser.CreateParsedResponseHead(reader, timedHead);
-                }
-
-                try
-                {
-                    var finalHead = await Http11ResponseParser.ParseHeadAsync(
-                            reader,
-                            request.Method,
-                            ct,
-                            context,
-                            initialInterim1xxCount: 1)
-                        .ConfigureAwait(false);
-                    if (timeoutBodySendException != null)
-                    {
-                        using (finalHead)
-                        {
-                            ThrowCapturedBodySendException(
-                                timeoutBodySendException,
-                                context,
-                                responseStatusCode: finalHead.StatusCode);
-                        }
-                    }
-
-                    readerOwned = false;
-                    return finalHead;
-                }
-                catch (Exception responseReadException) when (timeoutBodySendException != null)
-                {
-                    ThrowCapturedBodySendException(
-                        timeoutBodySendException,
-                        context,
-                        responseReadException);
-                    throw;
                 }
             }
             finally
@@ -1452,6 +1619,21 @@ namespace TurboHTTP.Transport
                 if (readerOwned)
                     reader.Dispose();
             }
+        }
+
+        private static bool ShouldReturnExpectContinueHead(HttpStatusCode statusCode)
+        {
+            int code = (int)statusCode;
+            return code == 101 || code < 100 || code >= 200;
+        }
+
+        private static int IncrementExpectContinueInterimCount(int interim1xxCount)
+        {
+            interim1xxCount++;
+            if (interim1xxCount > Http11ResponseParser.Max1xxResponses)
+                throw new FormatException("Too many 1xx interim responses");
+
+            return interim1xxCount;
         }
 
         private static void ThrowCapturedBodySendException(

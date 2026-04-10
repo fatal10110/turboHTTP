@@ -431,6 +431,8 @@ namespace TurboHTTP.Transport.Http1
                     throw new FormatException("Response trailers exceed maximum size");
 
                 trailers ??= new HttpHeaders();
+                // Match the buffered parser path: invalid/prohibited trailers are ignored for
+                // interoperability once the chunk framing itself has been validated.
                 Http11ResponseParser.AddResponseTrailer(trailers, line);
             }
 

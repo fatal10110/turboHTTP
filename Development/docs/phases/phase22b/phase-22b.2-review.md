@@ -220,16 +220,16 @@ Add a test covering the drain-or-close policy when a streaming response through 
 | Streaming dispatch through CONNECT tunnel | ✓ PASS | `DispatchOnLeaseAsync` via `DispatchProxyHttp11WithRetryAsync` |
 | `ConnectionLease` ownership transfer for streaming proxy responses | ✓ PASS | `lease = null` pattern; body source owns lease lifetime |
 | Connection reuse after fully-consumed streaming response through tunnel | ✓ PASS | `HttpsViaProxy_StreamingResponseDispose_ReusesConnectTunnel` |
-| Early-dispose of streaming response through tunnel (drain-or-close) | ⚠ UNTESTED | No test covering this path (Rec 5) |
+| Early-dispose of streaming response through tunnel (drain-or-close) | ✓ PASS | `HttpsViaProxy_StreamingResponseDisposeOverBudget_ClosesTunnel` |
 | Pool key prevents incorrect tunnel reuse across origins | ✓ PASS | Composite tunnel key; `HttpsViaProxy_DifferentOrigins_OpenSeparateTunnels` |
 | Semaphore bounded by physical proxy endpoint | ✓ PASS | Semaphore key = `(proxyHost, proxyPort)` regardless of origin |
 | Stale-retry for forward proxy reused connections | ✓ PASS | `RawSocketTransportTests` |
-| Stale-retry for CONNECT tunnel reused connections | ✓ PASS (logic) | No test (Rec 4) |
+| Stale-retry for CONNECT tunnel reused connections | ✓ PASS | `HttpsViaProxy_StaleTunnel_Idempotent_Retries` |
 | CONNECT request uses authority-form URI | ✓ PASS | `BuildConnectRequest` |
 | `Proxy-Authorization` not forwarded in inner (tunneled) request | ✓ PASS | `PrepareHttpsProxyTunnelRequest` removes it |
-| `Proxy-Authorization` stripped when `AllowPlaintextProxyAuth` false | ✗ BUG | Fix 1 required |
+| `Proxy-Authorization` stripped when `AllowPlaintextProxyAuth` false | ✓ PASS | Fixed — `else headers.Remove(...)` branch added |
 | Absolute-form URI for forward proxy | ✓ PASS | `ProxyAbsoluteForm` metadata key wired correctly |
-| CONNECT header: `Connection: keep-alive` (not `Proxy-Connection`) | ✗ NON-STANDARD | Fix 3 required |
+| CONNECT header: `Connection: keep-alive` (not `Proxy-Connection`) | ✓ PASS | Fixed — `Connection: keep-alive` |
 | ALPN on inner TLS restricted to `http/1.1` | ✓ PASS (intentional) | H2-through-CONNECT deferred to Phase 22c |
 | `Expect: 100-continue` through forward proxy (22b.1 complete) | ✓ PASS | Works unchanged (proxy relays Expect header) |
 | `Expect: 100-continue` through CONNECT tunnel (22b.1 complete) | ✓ PASS | Tunnel is transparent; inner connection behaves as direct |
@@ -267,7 +267,7 @@ Add a test covering the drain-or-close policy when a streaming response through 
 
 4. **Composite pool key prevents cross-origin tunnel reuse.** `"tunnel|{proxyHost}:{proxyPort}:|{targetHost}:{targetPort}:s"` provides the necessary isolation. `HttpsViaProxy_DifferentOrigins_OpenSeparateTunnels` verifies this at the transport level.
 
-5. **Security gap in `PrepareHttpProxyForwardRequest`.** The missing `else headers.Remove(...)` branch is small but consequential — it breaks the security guarantee that `AllowPlaintextProxyAuth = false` prevents credential exposure.
+5. **Security gap in `PrepareHttpProxyForwardRequest` — resolved in Round 2.** The missing `else headers.Remove(...)` branch was added.
 
 ---
 
@@ -283,17 +283,77 @@ Add a test covering the drain-or-close policy when a streaming response through 
 
 ## Summary
 
-| Category | Status |
-|----------|--------|
-| **Architectural soundness** | ✓ Excellent |
-| **RFC compliance** | ⚠ One non-standard header (`Proxy-Connection`) — Fix 3 |
-| **Security** | ✗ Auth header leak — Fix 1 required |
-| **Thread safety** | ✓ Correct (ownership invariant holds) |
-| **IL2CPP/AOT safety** | ✓ Correct (no reflection) |
-| **Memory efficiency** | ✓ Good (body no-copy, lease reuse) |
-| **Test coverage** | ⚠ Two gaps (stale-tunnel-retry, early-dispose-through-tunnel) |
-| **Test build correctness** | ✗ `WaitForAcceptCountAsync` compile error — Fix 2 required |
-| **Test reliability** | ⚠ `RelayTunnelAsync` race — Fix 4 required |
-| **Documentation** | ⚠ `IsReused` / `UpdateTransportBinding` invariants uncommented |
+| Category | Round 1 | Round 2 |
+|----------|---------|---------|
+| **Architectural soundness** | ✓ Excellent | ✓ Excellent |
+| **RFC compliance** | ⚠ `Proxy-Connection` non-standard | ✓ Fixed (`Connection: keep-alive`) |
+| **Security** | ✗ Auth header leak | ✓ Fixed (`else headers.Remove(...)`) |
+| **Thread safety** | ✓ Correct | ✓ Correct |
+| **IL2CPP/AOT safety** | ✓ Correct | ✓ Correct |
+| **Memory efficiency** | ✓ Good | ✓ Good |
+| **Test coverage** | ⚠ Two gaps | ✓ Both tests added |
+| **Test build correctness** | ✗ Compile error | ✓ Fixed |
+| **Test reliability** | ⚠ Pump race | ✓ Fixed (`Task.WhenAll`) |
+| **Documentation** | ⚠ Invariants uncommented | ✓ Comments added |
 
-**Recommendation:** Apply Fixes 1–4 (security bug, build bug, RFC header, test race), then request a verification pass before final sign-off.
+**Phase 22b.2 is approved for sign-off** pending physical device validation.
+
+---
+
+## Round 2 (2026-04-07)
+
+**Verdict:** Both reviews PASS. All Round 1 findings resolved. No new blocking issues.
+
+### Fixes Verified
+
+| # | Fix | Round 1 Severity | Infra | Network |
+|---|-----|-----------------|-------|---------|
+| I-1 | `WaitForAcceptCountAsync` moved outside `#if TURBOHTTP_INTEGRATION_TESTS` block (now line 151) | HIGH | FIXED | — |
+| I-2 | `UpdateTransportBinding` ownership invariant and ARM64 Task-barrier dependency documented in comment | MEDIUM | FIXED | — |
+| I-3 | `BuildTunnelPoolKey` test helper uses `TcpConnectionPool.BuildConnectionKey` components — format matches production | LOW | FIXED | FIXED |
+| I-4 | `HttpsViaProxy_StaleTunnel_Idempotent_Retries` added — injects stale tunnel via `FailingStream`+reflection, asserts `proxyServer.AcceptCount >= 2` and `originServer.AcceptCount == 1` | LOW | FIXED | FIXED |
+| I-5 | Comment in `RebindConnectTunnelLease` explains `IsReused` reflects proxy TCP socket reuse, not tunnel reuse | LOW | FIXED | — |
+| I-6 | Comment in `AcquirePreparedProxyLeaseAsync` notes `HasUnexpectedData` is best-effort for TLS-wrapped tunnels | LOW | FIXED | — |
+| N-1 | `PrepareHttpProxyForwardRequest` adds `else headers.Remove("Proxy-Authorization")` when `AllowPlaintextProxyAuth` is false | HIGH | FIXED | FIXED |
+| N-2 | `BuildConnectRequest` emits `Connection: keep-alive` (line 928), not `Proxy-Connection` | MEDIUM | FIXED | FIXED |
+| N-3 | `AcquirePreparedProxyLeaseAsync` tunnel-reuse guard uses `string.Equals(PoolKey, poolKeyOverride)` with explicit `UHttpException` on mismatch | MEDIUM | FIXED | FIXED |
+| N-4 | `RelayTunnelAsync` uses `Task.WhenAll`; `PumpAsync` swallows `IOException`, `ObjectDisposedException`, `SocketException` internally | MEDIUM | FIXED | FIXED |
+| N-5 | `HttpsViaProxy_StreamingResponseDisposeOverBudget_ClosesTunnel` added — 65,538-byte body, 1 byte read, asserts 2 proxy accepts and no same-tunnel follow-up | MEDIUM | FIXED | FIXED |
+
+### New Issues Found (Round 2)
+
+| # | Finding | Severity | Status |
+|---|---------|----------|--------|
+| NEW-1 | `HttpsViaProxy_StaleTunnel_Idempotent_Retries` injects stale connection via reflection on `_idleConnections` — type mismatch would be a runtime error, not compile error | LOW | Accepted (no test injection API available) |
+| NEW-2 | `HttpsViaProxy_StreamingResponseDisposeOverBudget_ClosesTunnel` does not assert second request used a fresh CONNECT specifically (vs. any new connection) | LOW | Note only |
+
+### Confirmed Correct (cumulative)
+
+- Lease ownership: `lease = null` / `finally { lease?.Dispose(); }` — no double-dispose risk
+- `IsReused` predicate: reflects proxy TCP socket origin; preserved through `UpdateTransportBinding` so stale-retry guard fires correctly
+- Replayability check: `originalRequest.Content` and `dispatchRequest.Content` are the same object via `CopyWithSharedContent()` — checking `originalRequest` is correct
+- Composite pool key: `"tunnel|{proxyHost}:{proxyPort}:|{targetHost}:{targetPort}:s"` prevents cross-origin tunnel reuse; `EnqueueConnection` reads `connection.PoolKey` (composite after rebind)
+- Semaphore bounded by physical proxy endpoint regardless of tunnel origin
+- `AcquirePreparedProxyLeaseAsync` catch: bare catch, disposes lease, re-throws — no leak on CONNECT failure
+- `FailingStream` in stale-tunnel test throws `IOException` — caught by stale-retry filter `ex is IOException || ex is SocketException`; `UHttpException(NetworkError)` from key-mismatch guard is NOT caught by stale-retry (correct — mismatch is a logic error, not transience)
+- Module boundaries clean: all runtime changes in `TurboHTTP.Transport`
+- No reflection, no AOT-unsafe patterns
+
+### Test Coverage (Round 2)
+
+| Test | Present? |
+|------|----------|
+| Streaming response through CONNECT tunnel — full consume + reuse | Yes (`HttpsViaProxy_StreamingResponseDispose_ReusesConnectTunnel`) |
+| Different origins open separate tunnels | Yes (`HttpsViaProxy_DifferentOrigins_OpenSeparateTunnels`) |
+| Early-dispose over drain budget — tunnel closed | Yes (`HttpsViaProxy_StreamingResponseDisposeOverBudget_ClosesTunnel`) |
+| Stale tunnel retry — re-CONNECT on stale pooled TCP | Yes (`HttpsViaProxy_StaleTunnel_Idempotent_Retries`) |
+| Pool key isolation — reuse scoped to composite key | Yes (`GetConnection_WithPoolKeyOverride_ReuseIsScopedToTunnelKey`) |
+| Semaphore bounded by physical proxy endpoint | Yes (`GetConnection_WithPoolKeyOverride_SemaphoreUsesPhysicalEndpoint`) |
+| Stale forward proxy retry (idempotent) | Yes (`RawSocketTransportTests`) |
+| Stale forward proxy no-retry (non-idempotent) | Yes (`RawSocketTransportTests`) |
+
+### Still Deferred
+
+1. Physical proxy + IL2CPP validation (iOS/Android) — required before M3
+2. H2-through-CONNECT — deferred to Phase 22c
+3. Spec tests 4, 5, 7, 8 from Phase 22b.1 deferred list

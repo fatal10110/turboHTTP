@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -150,8 +151,8 @@ namespace TurboHTTP.Tests.Transport
 
         private static async Task WaitForAcceptCountAsync(PassiveServer server, int expectedCount, int timeoutMs = 1000)
         {
-            var deadline = Environment.TickCount64 + timeoutMs;
-            while (server.AcceptCount < expectedCount && Environment.TickCount64 < deadline)
+            var stopwatch = Stopwatch.StartNew();
+            while (server.AcceptCount < expectedCount && stopwatch.ElapsedMilliseconds < timeoutMs)
             {
                 await Task.Delay(10);
             }
@@ -262,8 +263,8 @@ namespace TurboHTTP.Tests.Transport
                     BuildTunnelPoolKey(server, "second.test", 443),
                     CancellationToken.None).AsTask();
 
-                var completed = await Task.WhenAny(pendingLeaseTask, Task.Delay(100));
-                Assert.IsNotSame(pendingLeaseTask, completed);
+                await Task.Delay(100);
+                Assert.IsFalse(pendingLeaseTask.IsCompleted);
 
                 lease1.Dispose();
 

@@ -15,7 +15,7 @@ namespace TurboHTTP.Tests.Transport.Tls
     public class TlsIntegrationTests
     {
         private const string BouncyFetchUrl = "https://sha256.badssl.com/";
-        private const string Http2ProbeUrl = "https://nghttp2.org/httpbin/get";
+        private const string Http2ProbeUrl = "https://httpbin.org/get";
 
         [SetUp]
         public void SetUp()
@@ -105,6 +105,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void HttpClient_Http2_Works()        {
             Task.Run(async () =>
             {
@@ -119,8 +120,8 @@ namespace TurboHTTP.Tests.Transport.Tls
                 var response = await SendWithGuardedTimeoutAsync(client, Http2ProbeUrl);
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
-                bool usedHttp2 = TryHasHttp2Connection(transport, "nghttp2.org", 443);
-                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "nghttp2.org");
+                bool usedHttp2 = TryHasHttp2Connection(transport, "httpbin.org", 443);
+                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "httpbin.org");
                 if (string.Equals(negotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
                 {
                     Assert.IsTrue(
