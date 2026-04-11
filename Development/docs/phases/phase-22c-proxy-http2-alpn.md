@@ -34,7 +34,9 @@ var tlsResult = await tlsProvider.WrapAsync(
 return tlsResult.SecureStream;
 ```
 
-After the TLS handshake, `DispatchViaProxyAsync` passes the stream directly to `DispatchOnStreamAsync` — the HTTP/1.1-only dispatch path. There is no ALPN check, no `Http2ConnectionManager` integration, no protocol routing. This means:
+After the TLS handshake, the secure proxy path remains inside the 22b.2 lease-based HTTP/1.1
+helpers (`DispatchProxyHttp11WithRetryAsync` / `AcquirePreparedProxyLeaseAsync`). There is no
+ALPN check, no `Http2ConnectionManager` integration, and no protocol routing. This means:
 
 1. **No HTTP/2 multiplexing through proxies.** Each request to the same origin through the same proxy requires a separate CONNECT tunnel and TCP connection. For APIs that serve many concurrent requests to one origin (dashboards, real-time feeds, asset loading), this is a significant performance gap.
 2. **No HTTP/2 server push through proxies.** (Server push is not implemented in TurboHTTP, but the tunnel limitation would block it if added later.)
@@ -86,7 +88,9 @@ if (lease.Connection.NegotiatedAlpnProtocol == "h2") {
 // 4d. HTTP/1.1 path
 ```
 
-The proxy path (`DispatchViaProxyAsync`) bypasses all of this. It creates its own connection lease to the proxy, establishes the tunnel, and dispatches directly on the tunnel stream. To enable HTTP/2 through tunnels, we need to:
+The proxy path still bypasses the direct HTTP/2 routing flow. Since 22b.2 it does so through a
+prepared-lease helper path rather than a raw-stream dispatch. To enable HTTP/2 through tunnels,
+we need to:
 
 1. **Change the ALPN list** from `{ "http/1.1" }` to `{ "h2", "http/1.1" }` in the tunnel TLS handshake.
 2. **Add protocol routing** after the tunnel TLS handshake — check `NegotiatedAlpn` and route to `Http2ConnectionManager` when `h2`.
@@ -175,13 +179,13 @@ if (h2Conn != null)
 {
     try
     {
-        await h2Conn.DispatchAsync(request, handler, context, ct);
+        await h2Conn.DispatchAsync(tunneledRequest, handler, context, ct);
         return;
     }
     catch (Exception) when (!ct.IsCancellationRequested)
     {
         _h2Manager.Remove(tunnelKey);
-        if (!request.Method.IsIdempotent())
+        if (!CanRetryH2RequestAfterTransportFailure(tunneledRequest))
             throw;
         // Fall through to establish a new CONNECT tunnel
     }
@@ -262,7 +266,8 @@ internal bool HasConnection(string originHost, int originPort, string proxyHost,
 
 ### `RawSocketTransport.DispatchViaProxyAsync` Changes
 
-The method is restructured into three stages:
+The secure proxy path is restructured into three stages while preserving the existing 22b.2
+prepared-lease HTTP/1.1 behavior:
 
 #### Stage 1: Check for Existing Tunneled HTTP/2 Connection (Fast Path)
 
@@ -285,6 +290,9 @@ private async Task DispatchViaProxyAsync(
 
     var proxyHost = proxy.Address.Host;
     var proxyPort = proxy.Address.IsDefaultPort ? 80 : proxy.Address.Port;
+    var tunneledRequest = secure
+        ? PrepareHttpsProxyTunnelRequest(request)
+        : null;
 
     // Stage 1: HTTP/2 fast path for HTTPS through proxy
     if (secure)
@@ -295,41 +303,20 @@ private async Task DispatchViaProxyAsync(
             try
             {
                 context.RecordEvent("TransportProxyH2Reuse");
-                await h2Conn.DispatchAsync(request, handler, context, ct).ConfigureAwait(false);
+                await h2Conn.DispatchAsync(tunneledRequest, handler, context, ct)
+                    .ConfigureAwait(false);
                 return;
             }
             catch (Exception) when (!ct.IsCancellationRequested)
             {
                 _h2Manager.Remove(host, port, proxyHost, proxyPort);
-                if (!request.Method.IsIdempotent())
+                if (!CanRetryH2RequestAfterTransportFailure(tunneledRequest))
                     throw;
                 context.RecordEvent("TransportProxyH2StaleRetry");
                 // Fall through to establish new tunnel
             }
         }
     }
-
-    // Stage 2: Establish CONNECT tunnel (or forward proxy for HTTP)
-    context.RecordEvent("TransportProxyConnecting");
-    using var lease = await _pool.GetConnectionAsync(proxyHost, proxyPort, secure: false, ct)
-        .ConfigureAwait(false);
-    var stream = lease.Connection.Stream;
-
-    if (!secure)
-    {
-        // HTTP forward proxy — unchanged, always HTTP/1.1
-        var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
-        await DispatchOnStreamAsync(stream, forwardedRequest, handler, context, ct).ConfigureAwait(false);
-        return;
-    }
-
-    // HTTPS CONNECT tunnel
-    context.RecordEvent("TransportProxyConnect");
-    stream = await EstablishConnectTunnelAsync(stream, host, port, proxy, ct).ConfigureAwait(false);
-
-    // Stage 3: Protocol routing based on ALPN (NEW)
-    // EstablishConnectTunnelAsync now returns a TunnelResult with ALPN info
-    // (see EstablishConnectTunnelAsync changes below)
 }
 ```
 
@@ -411,32 +398,30 @@ private async Task<TunnelResult> EstablishConnectTunnelAsync(
 
 #### Stage 3: Protocol Routing After Tunnel TLS
 
-Back in `DispatchViaProxyAsync`, after the tunnel is established:
+Back in the secure proxy path, after a prepared tunnel lease has been acquired / rebound:
 
 ```csharp
-    // ... (after EstablishConnectTunnelAsync returns) ...
+    // ... (after AcquirePreparedProxyLeaseAsync returns a rebound lease) ...
+    var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
 
-    var tunnelResult = await EstablishConnectTunnelAsync(stream, host, port, proxy, ct)
-        .ConfigureAwait(false);
-
-    // Stage 3: Protocol routing based on ALPN
-    if (tunnelResult.NegotiatedAlpn == "h2")
+    // Stage 3: Protocol routing based on the prepared lease metadata
+    if (lease.Connection.NegotiatedAlpnProtocol == "h2")
     {
         context.RecordEvent("TransportProxyH2Init");
         lease.TransferOwnership(); // Transfer proxy connection to Http2ConnectionManager
 
         var h2Conn = await _h2Manager.GetOrCreateAsync(
             host, port, proxyHost, proxyPort,
-            tunnelResult.SecureStream, ct).ConfigureAwait(false);
+            lease.Connection.Stream, ct).ConfigureAwait(false);
 
-        await h2Conn.DispatchAsync(request, handler, context, ct).ConfigureAwait(false);
+        await h2Conn.DispatchAsync(tunneledRequest, handler, context, ct)
+            .ConfigureAwait(false);
         return;
     }
 
-    // HTTP/1.1 fallback — same as current behavior
+    // HTTP/1.1 fallback — continue through the existing lease-based proxy helper path
     context.RecordEvent("TransportProxyH1Dispatch");
-    var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-    await DispatchOnStreamAsync(tunnelResult.SecureStream, tunneledRequest, handler, context, ct)
+    await DispatchPreparedProxyHttp11Async(lease, tunneledRequest, request, handler, context, ct)
         .ConfigureAwait(false);
 ```
 
@@ -711,7 +696,7 @@ Completion criteria:
 Deliverables:
 
 1. Add `TunnelResult` readonly struct to `RawSocketTransport` (or a separate internal file)
-2. Change `EstablishConnectTunnelAsync` return type from `Task<Stream>` to `Task<TunnelResult>`
+2. Change `EstablishConnectTunnelAsync` return type from `Task<TlsResult>` to `Task<TunnelResult>`
 3. Change ALPN list from `new[] { "http/1.1" }` to `new[] { "h2", "http/1.1" }`
 4. Populate `TunnelResult` with `NegotiatedAlpn`, `TlsVersion`, `TlsProviderName` from `tlsProvider.WrapAsync` result
 5. Add `MarkSslStreamViable()` guard for SslStream through tunnel (same condition as direct path)
@@ -723,7 +708,7 @@ Completion criteria:
 - [ ] ALPN negotiation offers both `h2` and `http/1.1`
 - [ ] `MarkSslStreamViable()` called only when `Auto` backend and `SslStream` provider
 - [ ] BouncyCastle fallback marks SslStream broken and throws recoverable error
-- [ ] All existing callers updated to use `TunnelResult` (only `DispatchViaProxyAsync`)
+- [ ] All existing callers updated to use `TunnelResult` in the prepared-lease proxy path (`AcquirePreparedProxyLeaseAsync` / `RebindConnectTunnelLease`)
 - [ ] Unit test: tunnel TLS with ALPN `h2` returns correct `NegotiatedAlpn`
 - [ ] Unit test: tunnel TLS with ALPN `http/1.1` returns correct `NegotiatedAlpn`
 - [ ] Unit test: tunnel TLS failure with BouncyCastle available calls `MarkSslStreamBroken()`
@@ -734,12 +719,12 @@ Completion criteria:
 
 Deliverables:
 
-1. Add HTTP/2 fast path at the top of `DispatchViaProxyAsync`: check `_h2Manager.GetIfExists(host, port, proxyHost, proxyPort)` before establishing a new tunnel
-2. Add stale-connection retry logic for tunneled HTTP/2 (same pattern as direct: catch, remove, retry if idempotent)
-3. Add protocol routing after `EstablishConnectTunnelAsync`: check `TunnelResult.NegotiatedAlpn` for `h2` vs `http/1.1`
-4. HTTP/2 path: `lease.TransferOwnership()` + `_h2Manager.GetOrCreateAsync(host, port, proxyHost, proxyPort, tlsStream)` + `h2Conn.DispatchAsync`
-5. HTTP/1.1 path: existing `DispatchOnStreamAsync` (unchanged)
-6. Add BouncyCastle inline retry: catch TLS error from `EstablishConnectTunnelAsync`, dispose failed lease, acquire fresh lease, re-establish tunnel with BouncyCastle
+1. Add HTTP/2 fast path at the top of `DispatchViaProxyAsync`: check `_h2Manager.GetIfExists(host, port, proxyHost, proxyPort)` before establishing a new tunnel, and dispatch the sanitized tunneled request
+2. Add stale-connection retry logic for tunneled HTTP/2 using the same `CanRetryH2RequestAfterTransportFailure(...)` gate as the direct path
+3. Add protocol routing after prepared tunnel acquisition: branch on `lease.Connection.NegotiatedAlpnProtocol` for `h2` vs `http/1.1`
+4. HTTP/2 path: `lease.TransferOwnership()` + `_h2Manager.GetOrCreateAsync(host, port, proxyHost, proxyPort, tlsStream)` + `h2Conn.DispatchAsync(tunneledRequest, ...)`
+5. HTTP/1.1 path: existing lease-based proxy/tunnel dispatch semantics remain unchanged
+6. Add BouncyCastle inline retry: catch TLS error from prepared tunnel acquisition, reacquire a fresh prepared tunnel, and retry after `MarkSslStreamBroken()` has forced BouncyCastle
 7. Add all new `RecordEvent` calls: `TransportProxyH2Reuse`, `TransportProxyH2StaleRetry`, `TransportProxyH2Init`, `TransportProxyTlsFallbackRetry`, `TransportProxyH1Dispatch`
 
 Completion criteria:
@@ -749,18 +734,18 @@ Completion criteria:
 - [ ] Request to same origin through different proxy: separate CONNECT + HTTP/2 connection
 - [ ] Request to different origin through same proxy: separate CONNECT + HTTP/2 connection
 - [ ] Direct request to same origin (no proxy): uses direct HTTP/2 connection, not tunneled one
-- [ ] Stale tunneled HTTP/2 connection: removed from manager, new tunnel established (idempotent methods only)
-- [ ] Non-idempotent request on stale tunneled HTTP/2: exception propagated (no retry)
-- [ ] ALPN negotiates `http/1.1`: falls back to HTTP/1.1 dispatch (existing behavior)
+- [ ] Stale tunneled HTTP/2 connection: removed from manager, new tunnel established only when `CanRetryH2RequestAfterTransportFailure(...)` allows replay
+- [ ] Non-replayable request on stale tunneled HTTP/2: exception propagated (no retry)
+- [ ] ALPN negotiates `http/1.1`: falls back to the existing lease-based HTTP/1.1 proxy dispatch path
 - [ ] BouncyCastle fallback: failed SslStream → new tunnel with BouncyCastle → success
 - [ ] `TransferOwnership()` correctly releases proxy semaphore permit
 - [ ] Timeline events recorded for all paths
 - [ ] Unit test: HTTP/2 fast path reuses existing tunneled connection
 - [ ] Unit test: stale HTTP/2 tunneled connection retry
-- [ ] Unit test: non-idempotent stale failure propagation
+- [ ] Unit test: non-replayable stale failure propagation
 - [ ] Unit test: ALPN `http/1.1` fallback through tunnel
 - [ ] Unit test: BouncyCastle inline retry through tunnel
-- [ ] Unit test: concurrent requests to same origin through same proxy multiplex on one HTTP/2 connection
+- [ ] Unit test: concurrent requests to same origin through same proxy retain only one `Http2Connection`; a transient second CONNECT/TLS attempt is acceptable if disposed without leak
 - [ ] Unit test: concurrent requests to different origins through same proxy create separate tunnels
 - [ ] Integration test: full round-trip through mock CONNECT proxy with HTTP/2 ALPN
 
@@ -772,20 +757,20 @@ Deliverables:
 
 1. Connection lifecycle validation: tunneled HTTP/2 connection death correctly disposes the entire chain (TLS stream → tunnel stream → proxy socket)
 2. GOAWAY handling through tunnel: verify `Http2Connection`'s existing GOAWAY handling works correctly when the underlying stream is a tunnel (no tunnel-specific GOAWAY behavior needed)
-3. Concurrent tunnel establishment: verify that two concurrent requests to the same origin through the same proxy don't race to create two tunnels — `Http2ConnectionManager._initLocks` should serialize this, but the race window is between the `GetIfExists` check and the `GetOrCreateAsync` call
-4. Proxy authentication with HTTP/2: verify that `PrepareHttpsProxyTunnelRequest` header cleanup (removing `Proxy-Authorization`) works correctly for HTTP/2 requests
+3. Concurrent tunnel establishment: verify that two concurrent requests to the same origin through the same proxy retain only one `Http2Connection`; duplicate CONNECT/TLS work inside the accepted race window must be disposed without leak
+4. Proxy authentication with HTTP/2: verify that the sanitized tunneled request (`PrepareHttpsProxyTunnelRequest` or equivalent) is used for HTTP/2 requests so `Proxy-Authorization` never reaches the origin
 5. `HasHttp2Connection` proxy-aware overload for internal diagnostics
 
 Completion criteria:
 
 - [ ] Connection death tears down entire tunnel chain (TLS → tunnel → socket)
 - [ ] GOAWAY through tunnel fails all pending streams and marks connection not alive
-- [ ] Concurrent tunnel establishment serialized by `_initLocks` (second request waits for first's tunnel)
+- [ ] Concurrent tunnel establishment retains only one `Http2Connection`; duplicate CONNECT/TLS work, if it occurs inside the accepted race window, is disposed without leak
 - [ ] Proxy authentication headers not leaked to origin on HTTP/2 path
 - [ ] `HasHttp2Connection(host, port, proxyHost, proxyPort)` returns correct result
 - [ ] Unit test: connection disposal chain verification
 - [ ] Unit test: GOAWAY handling through tunnel
-- [ ] Unit test: concurrent tunnel establishment (only one CONNECT handshake occurs)
+- [ ] Unit test: concurrent tunnel establishment (one retained `Http2Connection`, no leak from any discarded second tunnel)
 - [ ] Unit test: proxy auth header isolation
 
 ---

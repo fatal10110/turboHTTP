@@ -27,7 +27,7 @@ namespace TurboHTTP.Transport
     /// </summary>
     public sealed class RawSocketTransport : IHttpTransport
     {
-        private static readonly string[] s_connectTunnelAlpnProtocols = { "http/1.1" };
+        private static readonly string[] s_connectTunnelAlpnProtocols = { "h2", "http/1.1" };
         private readonly TcpConnectionPool _pool;
         private readonly Http2ConnectionManager _h2Manager;
         private readonly TlsBackend _tlsBackend;
@@ -547,9 +547,39 @@ namespace TurboHTTP.Transport
                 ? 80
                 : proxy.Address.Port;
 
-            context.RecordEvent("TransportProxyConnecting");
+            if (secure)
+            {
+                var existingH2 = _h2Manager.GetIfExists(host, port, proxyHost, proxyPort);
+                if (existingH2 != null)
+                {
+                    var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
+                    try
+                    {
+                        context.RecordEvent("TransportProxyH2Reuse");
+                        await existingH2.DispatchAsync(tunneledRequest, handler, context, ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+                    catch (Exception ex) when (
+                        !ct.IsCancellationRequested &&
+                        (ex is IOException ||
+                         (ex is UHttpException uhe &&
+                          uhe.HttpError != null &&
+                          uhe.HttpError.IsRetryable())))
+                    {
+                        _h2Manager.Remove(host, port, proxyHost, proxyPort);
+
+                        if (!CanRetryH2RequestAfterTransportFailure(request))
+                            throw;
+
+                        context.RecordEvent("TransportProxyH2StaleRetry");
+                    }
+                }
+            }
+
             if (!secure)
             {
+                context.RecordEvent("TransportProxyConnecting");
                 var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
                 await DispatchProxyHttp11WithRetryAsync(
                         proxyHost,
@@ -569,21 +599,64 @@ namespace TurboHTTP.Transport
             }
 
             var tunnelPoolKey = BuildConnectTunnelPoolKey(proxyHost, proxyPort, host, port);
-            var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-            await DispatchProxyHttp11WithRetryAsync(
-                    proxyHost,
-                    proxyPort,
-                    tunnelPoolKey,
-                    establishTunnel: true,
-                    host,
-                    port,
-                    proxy,
-                    tunneledRequest,
-                    request,
-                    handler,
-                    context,
-                    ct)
-                .ConfigureAwait(false);
+            ConnectionLease lease = null;
+            try
+            {
+                context.RecordEvent("TransportProxyConnecting");
+                lease = await AcquirePreparedProxyLeaseAsync(
+                        proxyHost,
+                        proxyPort,
+                        tunnelPoolKey,
+                        establishTunnel: true,
+                        host,
+                        port,
+                        proxy,
+                        context,
+                        ct)
+                    .ConfigureAwait(false);
+
+                var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
+                if (lease.Connection.NegotiatedAlpnProtocol == "h2")
+                {
+                    context.RecordEvent("TransportProxyH2Init");
+                    lease.TransferOwnership();
+                    var h2Conn = await _h2Manager.GetOrCreateAsync(
+                            host,
+                            port,
+                            proxyHost,
+                            proxyPort,
+                            lease.Connection.Stream,
+                            ct)
+                        .ConfigureAwait(false);
+                    lease = null;
+
+                    await h2Conn.DispatchAsync(tunneledRequest, handler, context, ct)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                context.RecordEvent("TransportProxyH1Dispatch");
+                await DispatchProxyHttp11WithRetryAsync(
+                        proxyHost,
+                        proxyPort,
+                        tunnelPoolKey,
+                        establishTunnel: true,
+                        host,
+                        port,
+                        proxy,
+                        tunneledRequest,
+                        request,
+                        handler,
+                        context,
+                        ct,
+                        lease)
+                    .ConfigureAwait(false);
+                lease = null;
+            }
+            finally
+            {
+                lease?.Dispose();
+            }
         }
 
         private async Task DispatchProxyHttp11WithRetryAsync(
@@ -598,22 +671,27 @@ namespace TurboHTTP.Transport
             UHttpRequest originalRequest,
             IHttpHandler handler,
             RequestContext context,
-            CancellationToken ct)
+            CancellationToken ct,
+            ConnectionLease preparedLease = null)
         {
             ConnectionLease lease = null;
             try
             {
-                lease = await AcquirePreparedProxyLeaseAsync(
-                        proxyHost,
-                        proxyPort,
-                        poolKeyOverride,
-                        establishTunnel,
-                        targetHost,
-                        targetPort,
-                        proxy,
-                        context,
-                        ct)
-                    .ConfigureAwait(false);
+                lease = preparedLease;
+                if (lease == null)
+                {
+                    lease = await AcquirePreparedProxyLeaseAsync(
+                            proxyHost,
+                            proxyPort,
+                            poolKeyOverride,
+                            establishTunnel,
+                            targetHost,
+                            targetPort,
+                            proxy,
+                            context,
+                            ct)
+                        .ConfigureAwait(false);
+                }
 
                 var writeState = new Http11RequestWriteState();
                 try
@@ -745,7 +823,7 @@ namespace TurboHTTP.Transport
                 }
 
                 context.RecordEvent("TransportProxyConnect");
-                context.RecordEvent("TransportProxyConnectHttp11Only");
+                context.RecordEvent("TransportProxyConnectTunnelEstablished");
                 var tlsResult = await EstablishConnectTunnelAsync(
                         lease.Connection.Stream,
                         targetHost,
@@ -882,14 +960,14 @@ namespace TurboHTTP.Transport
                 if (response.StatusCode == 200)
                 {
                     var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
-                    // CONNECT tunnels currently run request framing through the HTTP/1.1 parser path only.
-                    // Advertising h2 ALPN here would negotiate HTTP/2 that this tunnel code path cannot
-                    // yet service safely.
-                    return await tlsProvider.WrapAsync(
+                    var tlsResult = await tlsProvider.WrapAsync(
                         proxyStream,
                         targetHost,
                         s_connectTunnelAlpnProtocols,
                         ct).ConfigureAwait(false);
+
+                    MarkSslStreamViableIfAuto(_tlsBackend, tlsResult);
+                    return tlsResult;
                 }
 
                 if (response.StatusCode == 407 &&
@@ -912,6 +990,12 @@ namespace TurboHTTP.Transport
                     UHttpErrorType.NetworkError,
                     $"CONNECT tunnel failed with status {response.StatusCode}."));
             }
+        }
+
+        private static void MarkSslStreamViableIfAuto(TlsBackend tlsBackend, TlsResult tlsResult)
+        {
+            if (tlsBackend == TlsBackend.Auto && tlsResult.ProviderName == "SslStream")
+                TlsProviderSelector.MarkSslStreamViable();
         }
 
         private static string BuildConnectRequest(
@@ -1753,6 +1837,16 @@ namespace TurboHTTP.Transport
         internal bool HasHttp2Connection(string host, int port)
         {
             return _h2Manager != null && _h2Manager.HasConnection(host, port);
+        }
+
+        internal bool HasHttp2Connection(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort)
+        {
+            return _h2Manager != null &&
+                _h2Manager.HasConnection(originHost, originPort, proxyHost, proxyPort);
         }
 
         public void Dispose()

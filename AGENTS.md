@@ -30,6 +30,10 @@ This file provides repository-specific guidance for coding agents working in Tur
 - Preserve the current error model: transport/network failures become `UHttpException`/`UHttpError`, while HTTP 4xx/5xx remain normal responses with bodies intact.
 - Timeout enforcement belongs in transport cancellation logic, not in a dedicated timeout middleware.
 - Keep sensitive-header redaction enabled by default in logging and observability paths.
+- HTTP/2 through CONNECT proxy tunnels is keyed by origin x proxy
+  (`originHost:originPort|via|proxyHost:proxyPort`). Direct and tunneled HTTP/2 manager entries
+  must not alias, and `Proxy-Authorization` must remain proxy-only and be stripped before origin
+  dispatch.
 
 ## Module Rules
 
@@ -64,6 +68,8 @@ Dependency constraints:
 ## Known Risk Areas
 
 - `SslStream` ALPN behavior on IL2CPP/mobile remains a critical validation area.
+- HTTP/2 ALPN through CONNECT tunnels still requires physical-device IL2CPP validation before
+  Phase 22c can be marked complete.
 - BouncyCastle fallback is a transport fallback, not a bypass for certificate or authentication failures.
 - JSON must stay behind the `TurboHTTP.JSON` abstraction. Default behavior is the built-in `LiteJsonSerializer`, with optional `System.Text.Json` support gated by `TURBOHTTP_USE_SYSTEM_TEXT_JSON`.
 - WebGL cannot use the socket transport path.

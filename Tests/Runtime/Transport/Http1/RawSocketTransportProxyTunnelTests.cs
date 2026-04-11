@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -13,7 +14,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport;
+using TurboHTTP.Transport.Http2;
 using TurboHTTP.Transport.Tcp;
 using TurboHTTP.Transport.Tls;
 
@@ -251,6 +254,491 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 base.Dispose(disposing);
             }
+        }
+
+        private sealed class ConnectThenFailTlsStream : Stream
+        {
+            private readonly byte[] _connectResponse = Encoding.ASCII.GetBytes(
+                "HTTP/1.1 200 Connection Established\r\nContent-Length: 0\r\n\r\n");
+            private readonly StringBuilder _connectRequest = new StringBuilder();
+            private int _responseOffset;
+            private bool _connectResponseFullyRead;
+
+            public string ConnectRequest => _connectRequest.ToString();
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => true;
+            public override long Length => throw new NotSupportedException();
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override Task FlushAsync(CancellationToken cancellationToken)
+            {
+                return Task.CompletedTask;
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (_responseOffset >= _connectResponse.Length)
+                {
+                    _connectResponseFullyRead = true;
+                    return 0;
+                }
+
+                var available = _connectResponse.Length - _responseOffset;
+                var toCopy = Math.Min(available, count);
+                Buffer.BlockCopy(_connectResponse, _responseOffset, buffer, offset, toCopy);
+                _responseOffset += toCopy;
+                if (_responseOffset >= _connectResponse.Length)
+                    _connectResponseFullyRead = true;
+
+                return toCopy;
+            }
+
+            public override Task<int> ReadAsync(
+                byte[] buffer,
+                int offset,
+                int count,
+                CancellationToken cancellationToken)
+            {
+                return Task.FromResult(Read(buffer, offset, count));
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                if (_connectResponseFullyRead)
+                    throw new IOException("Injected TLS write failure.");
+
+                _connectRequest.Append(Encoding.ASCII.GetString(buffer, offset, count));
+            }
+
+            public override Task WriteAsync(
+                byte[] buffer,
+                int offset,
+                int count,
+                CancellationToken cancellationToken)
+            {
+                Write(buffer, offset, count);
+                return Task.CompletedTask;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+        }
+
+        private sealed class ConnectAuthChallengeThenFailTlsStream : Stream
+        {
+            private static readonly byte[] AuthRequiredResponse = Encoding.ASCII.GetBytes(
+                "HTTP/1.1 407 Proxy Authentication Required\r\n" +
+                "Proxy-Authenticate: Basic realm=\"test\"\r\n" +
+                "Content-Length: 0\r\n\r\n");
+            private static readonly byte[] ConnectEstablishedResponse = Encoding.ASCII.GetBytes(
+                "HTTP/1.1 200 Connection Established\r\nContent-Length: 0\r\n\r\n");
+
+            private readonly List<string> _connectRequests = new List<string>();
+            private readonly StringBuilder _pendingRequest = new StringBuilder();
+            private byte[] _currentResponse;
+            private int _responseOffset;
+            private bool _connectEstablished;
+
+            public IReadOnlyList<string> ConnectRequests => _connectRequests;
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => true;
+            public override long Length => throw new NotSupportedException();
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush()
+            {
+            }
+
+            public override Task FlushAsync(CancellationToken cancellationToken)
+            {
+                return Task.CompletedTask;
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (_currentResponse == null || _responseOffset >= _currentResponse.Length)
+                    return 0;
+
+                var available = _currentResponse.Length - _responseOffset;
+                var toCopy = Math.Min(available, count);
+                Buffer.BlockCopy(_currentResponse, _responseOffset, buffer, offset, toCopy);
+                _responseOffset += toCopy;
+                if (_responseOffset >= _currentResponse.Length &&
+                    _connectRequests.Count >= 2)
+                {
+                    _connectEstablished = true;
+                }
+
+                return toCopy;
+            }
+
+            public override Task<int> ReadAsync(
+                byte[] buffer,
+                int offset,
+                int count,
+                CancellationToken cancellationToken)
+            {
+                return Task.FromResult(Read(buffer, offset, count));
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                if (_connectEstablished)
+                    throw new IOException("Injected TLS write failure.");
+
+                _pendingRequest.Append(Encoding.ASCII.GetString(buffer, offset, count));
+                if (_pendingRequest.ToString().Contains("\r\n\r\n"))
+                {
+                    _connectRequests.Add(_pendingRequest.ToString());
+                    _pendingRequest.Length = 0;
+                    _currentResponse = _connectRequests.Count == 1
+                        ? AuthRequiredResponse
+                        : ConnectEstablishedResponse;
+                    _responseOffset = 0;
+                }
+            }
+
+            public override Task WriteAsync(
+                byte[] buffer,
+                int offset,
+                int count,
+                CancellationToken cancellationToken)
+            {
+                Write(buffer, offset, count);
+                return Task.CompletedTask;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+        }
+
+        private sealed class SocketPair : IDisposable
+        {
+            private readonly TcpClient _client;
+            private readonly TcpClient _server;
+
+            public Socket ClientSocket => _client.Client;
+            public int Port { get; }
+
+            private SocketPair(TcpClient client, TcpClient server, int port)
+            {
+                _client = client;
+                _server = server;
+                Port = port;
+            }
+
+            public static async Task<SocketPair> CreateAsync()
+            {
+                var listener = new TcpListener(IPAddress.Loopback, 0);
+                listener.Start();
+                var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                var acceptTask = listener.AcceptTcpClientAsync();
+                var client = new TcpClient();
+                try
+                {
+                    await client.ConnectAsync(IPAddress.Loopback, port);
+                    var server = await acceptTask;
+                    listener.Stop();
+                    return new SocketPair(client, server, port);
+                }
+                catch
+                {
+                    listener.Stop();
+                    try { client.Close(); } catch { }
+                    throw;
+                }
+            }
+
+            public void Dispose()
+            {
+                try { _client.Close(); } catch { }
+                try { _server.Close(); } catch { }
+            }
+        }
+
+        [Test]
+        public void ConnectTunnelAlpnProtocols_AdvertisesH2BeforeHttp11()
+        {
+            var field = typeof(RawSocketTransport).GetField(
+                "s_connectTunnelAlpnProtocols",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(field);
+
+            var protocols = (string[])field.GetValue(null);
+            CollectionAssert.AreEqual(new[] { "h2", "http/1.1" }, protocols);
+        }
+
+        [TestCase("h2")]
+        [TestCase("http/1.1")]
+        [TestCase(null)]
+        public void RebindConnectTunnelLease_StoresNegotiatedAlpn(string negotiatedAlpn)
+        {
+            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            using var originalStream = new MemoryStream();
+            using var secureStream = new MemoryStream();
+            using var semaphore = new SemaphoreSlim(0, 1);
+
+            var connection = new PooledConnection(
+                socket,
+                originalStream,
+                "127.0.0.1",
+                8080,
+                false);
+            using var lease = new ConnectionLease(null, semaphore, connection);
+            var tlsResult = new TlsResult(
+                secureStream,
+                negotiatedAlpn,
+                "1.3",
+                providerName: "SslStream");
+
+            InvokeRebindConnectTunnelLease(
+                lease,
+                "api.example.com",
+                443,
+                "tunnel|proxy|origin",
+                tlsResult);
+
+            Assert.AreSame(secureStream, lease.Connection.Stream);
+            Assert.AreEqual("api.example.com", lease.Connection.Host);
+            Assert.AreEqual(443, lease.Connection.Port);
+            Assert.IsTrue(lease.Connection.IsSecure);
+            Assert.AreEqual("SslStream", lease.Connection.TlsProviderName);
+            Assert.AreEqual("1.3", lease.Connection.TlsVersion);
+            Assert.AreEqual(negotiatedAlpn, lease.Connection.NegotiatedAlpnProtocol);
+        }
+
+        [Test]
+        public void MarkSslStreamViableIfAuto_SslStreamProvider_SetsViableProbeState()
+        {
+            TlsProviderSelector.ResetProbeState();
+            try
+            {
+                using var stream = new MemoryStream();
+                var tlsResult = new TlsResult(stream, "h2", "1.3", providerName: "SslStream");
+
+                InvokeMarkSslStreamViableIfAuto(TlsBackend.Auto, tlsResult);
+
+                Assert.AreEqual(1, GetSslStreamViabilityState());
+                Assert.IsFalse(TlsProviderSelector.IsSslStreamKnownBroken());
+            }
+            finally
+            {
+                TlsProviderSelector.ResetProbeState();
+            }
+        }
+
+        [Test]
+        public void MarkSslStreamViableIfAuto_BouncyCastleProvider_DoesNotPromoteSslStream()
+        {
+            TlsProviderSelector.ResetProbeState();
+            try
+            {
+                using var stream = new MemoryStream();
+                var tlsResult = new TlsResult(stream, "h2", "1.3", providerName: "BouncyCastle");
+
+                InvokeMarkSslStreamViableIfAuto(TlsBackend.Auto, tlsResult);
+
+                Assert.AreEqual(0, GetSslStreamViabilityState());
+                Assert.IsFalse(TlsProviderSelector.IsSslStreamKnownBroken());
+            }
+            finally
+            {
+                TlsProviderSelector.ResetProbeState();
+            }
+        }
+
+        [Test]
+        public void EstablishConnectTunnelAsync_TlsFailure_PropagatesProviderException()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
+                if (!provider.IsAlpnSupported())
+                    Assert.Ignore("SslStream ALPN is unavailable in this runtime.");
+
+                using var transport = new RawSocketTransport(tlsBackend: TlsBackend.SslStream);
+                var stream = new ConnectThenFailTlsStream();
+
+                Exception exception = null;
+                try
+                {
+                    await InvokeEstablishConnectTunnelAsync(
+                        transport,
+                        stream,
+                        "api.example.com",
+                        443,
+                        CancellationToken.None);
+                    Assert.Fail("Expected TLS provider failure.");
+                }
+                catch (Exception ex)
+                {
+                    exception = ex;
+                }
+
+                Assert.IsNotNull(exception);
+                Assert.IsFalse(exception is UHttpException);
+                StringAssert.Contains("Injected TLS write failure.", exception.ToString());
+                StringAssert.StartsWith("CONNECT api.example.com:443 HTTP/1.1", stream.ConnectRequest);
+            });
+        }
+
+        [Test]
+        public void PrepareHttpsProxyTunnelRequest_StripsProxyAuthorizationBeforeOriginDispatch()
+        {
+            var request = new UHttpRequest(
+                HttpMethod.GET,
+                new Uri("https://api.example.com/resource"))
+                .WithHeader("Proxy-Authorization", "Basic should-not-leak")
+                .WithHeader("X-Test", "kept");
+
+            var tunneled = InvokePrepareHttpsProxyTunnelRequest(request);
+
+            Assert.IsFalse(tunneled.Headers.Contains("Proxy-Authorization"));
+            Assert.AreEqual("kept", tunneled.Headers.Get("X-Test"));
+        }
+
+        [Test]
+        public void EstablishConnectTunnelAsync_ProxyAuthChallenge_SendsProxyAuthorizationOnlyToProxy()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
+                if (!provider.IsAlpnSupported())
+                    Assert.Ignore("SslStream ALPN is unavailable in this runtime.");
+
+                using var transport = new RawSocketTransport(tlsBackend: TlsBackend.SslStream);
+                var stream = new ConnectAuthChallengeThenFailTlsStream();
+                var proxy = new ProxySettings
+                {
+                    Credentials = new NetworkCredential("user", "pass"),
+                    AllowPlaintextProxyAuth = true
+                };
+
+                try
+                {
+                    await InvokeEstablishConnectTunnelAsync(
+                        transport,
+                        stream,
+                        "api.example.com",
+                        443,
+                        proxy,
+                        CancellationToken.None);
+                    Assert.Fail("Expected TLS provider failure after CONNECT authentication.");
+                }
+                catch (Exception ex)
+                {
+                    Assert.IsFalse(ex is UHttpException);
+                    StringAssert.Contains("Injected TLS write failure.", ex.ToString());
+                }
+
+                Assert.AreEqual(2, stream.ConnectRequests.Count);
+                StringAssert.StartsWith(
+                    "CONNECT api.example.com:443 HTTP/1.1",
+                    stream.ConnectRequests[0]);
+                StringAssert.DoesNotContain(
+                    "Proxy-Authorization:",
+                    stream.ConnectRequests[0]);
+                StringAssert.Contains(
+                    "Proxy-Authorization: Basic dXNlcjpwYXNz",
+                    stream.ConnectRequests[1]);
+            });
+        }
+
+        [Test]
+        public void HttpsViaProxy_PreparedTunnelWithH2Alpn_UsesTunneledHttp2AndFastPathReuse()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var duplex = new TestDuplexStream();
+                var observedRequests = new List<List<(string Name, string Value)>>();
+                var serverTask = RunHttp2OriginAsync(
+                    duplex.ServerStream,
+                    new[] { "one", "two" },
+                    observedRequests,
+                    cts.Token);
+
+                using var socketPair = await SocketPair.CreateAsync();
+                using var pool = new TcpConnectionPool(maxConnectionsPerHost: 1, tlsBackend: TlsBackend.SslStream);
+                using var transport = new RawSocketTransport(pool, TlsBackend.SslStream);
+
+                var tunnelPoolKey = BuildTunnelPoolKey(socketPair.Port, "example.com", 443);
+                var connection = new PooledConnection(
+                    socketPair.ClientSocket,
+                    duplex.ClientStream,
+                    "127.0.0.1",
+                    socketPair.Port,
+                    false);
+                connection.UpdateTransportBinding(
+                    duplex.ClientStream,
+                    "example.com",
+                    443,
+                    isSecure: true,
+                    poolKey: tunnelPoolKey,
+                    tlsVersion: "1.3",
+                    tlsProviderName: "TestTls",
+                    negotiatedAlpnProtocol: "h2");
+                EnqueueIdleConnection(pool, tunnelPoolKey, connection);
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = false,
+                    Proxy = new ProxySettings
+                    {
+                        Address = new Uri($"http://127.0.0.1:{socketPair.Port}"),
+                        UseEnvironmentVariables = false
+                    }
+                });
+
+                using (var first = await client
+                           .Get("https://example.com/h2-first")
+                           .WithHeader("Proxy-Authorization", "Basic should-not-leak")
+                           .SendBufferedAsync())
+                {
+                    Assert.AreEqual(HttpStatusCode.OK, first.StatusCode);
+                    Assert.AreEqual("one", first.GetBodyAsString());
+                }
+
+                Assert.IsTrue(transport.HasHttp2Connection(
+                    "example.com",
+                    443,
+                    "127.0.0.1",
+                    socketPair.Port));
+
+                using (var second = await client
+                           .Get("https://example.com/h2-second")
+                           .SendBufferedAsync())
+                {
+                    Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
+                    Assert.AreEqual("two", second.GetBodyAsString());
+                }
+
+                await serverTask;
+
+                Assert.AreEqual(2, observedRequests.Count);
+                AssertHeader(observedRequests[0], ":path", "/h2-first");
+                AssertHeader(observedRequests[1], ":path", "/h2-second");
+                AssertNoHeader(observedRequests[0], "proxy-authorization");
+            });
         }
 
         [Test]
@@ -592,6 +1080,234 @@ namespace TurboHTTP.Tests.Transport.Http1
                 throw new InvalidOperationException("CONNECT request line is missing authority port.");
 
             return (authority.Substring(0, colon), int.Parse(authority.Substring(colon + 1)));
+        }
+
+        private static void InvokeRebindConnectTunnelLease(
+            ConnectionLease lease,
+            string targetHost,
+            int targetPort,
+            string tunnelPoolKey,
+            TlsResult tlsResult)
+        {
+            var method = typeof(RawSocketTransport).GetMethod(
+                "RebindConnectTunnelLease",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(method);
+
+            method.Invoke(null, new object[] { lease, targetHost, targetPort, tunnelPoolKey, tlsResult });
+        }
+
+        private static void EnqueueIdleConnection(
+            TcpConnectionPool pool,
+            string poolKey,
+            PooledConnection connection)
+        {
+            var idleField = typeof(TcpConnectionPool).GetField(
+                "_idleConnections",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(idleField);
+
+            var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)idleField.GetValue(pool);
+            var queue = idle.GetOrAdd(poolKey, _ => new ConcurrentQueue<PooledConnection>());
+            queue.Enqueue(connection);
+        }
+
+        private static void InvokeMarkSslStreamViableIfAuto(TlsBackend tlsBackend, TlsResult tlsResult)
+        {
+            var method = typeof(RawSocketTransport).GetMethod(
+                "MarkSslStreamViableIfAuto",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(method);
+
+            method.Invoke(null, new object[] { tlsBackend, tlsResult });
+        }
+
+        private static Task<TlsResult> InvokeEstablishConnectTunnelAsync(
+            RawSocketTransport transport,
+            Stream stream,
+            string targetHost,
+            int targetPort,
+            CancellationToken ct)
+        {
+            return InvokeEstablishConnectTunnelAsync(
+                transport,
+                stream,
+                targetHost,
+                targetPort,
+                null,
+                ct);
+        }
+
+        private static Task<TlsResult> InvokeEstablishConnectTunnelAsync(
+            RawSocketTransport transport,
+            Stream stream,
+            string targetHost,
+            int targetPort,
+            ProxySettings proxy,
+            CancellationToken ct)
+        {
+            var method = typeof(RawSocketTransport).GetMethod(
+                "EstablishConnectTunnelAsync",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.IsNotNull(method);
+
+            return (Task<TlsResult>)method.Invoke(
+                transport,
+                new object[] { stream, targetHost, targetPort, proxy, ct });
+        }
+
+        private static UHttpRequest InvokePrepareHttpsProxyTunnelRequest(UHttpRequest request)
+        {
+            var method = typeof(RawSocketTransport).GetMethod(
+                "PrepareHttpsProxyTunnelRequest",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(method);
+
+            return (UHttpRequest)method.Invoke(null, new object[] { request });
+        }
+
+        private static int GetSslStreamViabilityState()
+        {
+            var field = typeof(TlsProviderSelector).GetField(
+                "_sslStreamViabilityState",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.IsNotNull(field);
+
+            return (int)field.GetValue(null);
+        }
+
+        private static async Task RunHttp2OriginAsync(
+            Stream serverStream,
+            string[] responseBodies,
+            List<List<(string Name, string Value)>> observedRequests,
+            CancellationToken ct)
+        {
+            var codec = await CompleteHttp2HandshakeAsync(serverStream, ct);
+            var decoder = new HpackDecoder();
+
+            for (int i = 0; i < responseBodies.Length; i++)
+            {
+                var requestHeaders = await ReadNextHeadersFrameAsync(codec, ct);
+                observedRequests.Add(decoder.Decode(
+                    requestHeaders.Payload,
+                    0,
+                    requestHeaders.Length));
+
+                await codec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(requestHeaders.StreamId, 200),
+                    ct);
+
+                var bodyBytes = Encoding.ASCII.GetBytes(responseBodies[i]);
+                await codec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.Data,
+                    Flags = Http2FrameFlags.EndStream,
+                    StreamId = requestHeaders.StreamId,
+                    Payload = bodyBytes,
+                    Length = bodyBytes.Length
+                }, ct);
+            }
+        }
+
+        private static async Task<Http2FrameCodec> CompleteHttp2HandshakeAsync(
+            Stream serverStream,
+            CancellationToken ct)
+        {
+            await ReadExactlyAsync(serverStream, new byte[Http2Constants.ConnectionPreface.Length], ct);
+
+            var codec = new Http2FrameCodec(serverStream);
+            await codec.ReadFrameAsync(16384, ct);
+            await codec.WriteFrameAsync(new Http2Frame
+            {
+                Type = Http2FrameType.Settings,
+                Flags = Http2FrameFlags.None,
+                StreamId = 0,
+                Payload = Array.Empty<byte>(),
+                Length = 0
+            }, ct);
+            await codec.WriteFrameAsync(new Http2Frame
+            {
+                Type = Http2FrameType.Settings,
+                Flags = Http2FrameFlags.Ack,
+                StreamId = 0,
+                Payload = Array.Empty<byte>(),
+                Length = 0
+            }, ct);
+            await codec.ReadFrameAsync(16384, ct);
+            return codec;
+        }
+
+        private static async Task<Http2Frame> ReadNextHeadersFrameAsync(
+            Http2FrameCodec codec,
+            CancellationToken ct)
+        {
+            while (true)
+            {
+                var frame = await codec.ReadFrameAsync(16384, ct);
+                if (frame.Type == Http2FrameType.Headers)
+                    return frame;
+            }
+        }
+
+        private static Http2Frame BuildResponseHeadersFrame(
+            int streamId,
+            int statusCode)
+        {
+            var encoder = new HpackEncoder();
+            var headerBlock = encoder.Encode(new List<(string, string)>
+            {
+                (":status", statusCode.ToString())
+            }).ToArray();
+
+            return new Http2Frame
+            {
+                Type = Http2FrameType.Headers,
+                Flags = Http2FrameFlags.EndHeaders,
+                StreamId = streamId,
+                Payload = headerBlock,
+                Length = headerBlock.Length
+            };
+        }
+
+        private static async Task ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken ct)
+        {
+            int read = 0;
+            while (read < buffer.Length)
+            {
+                int n = await stream.ReadAsync(buffer, read, buffer.Length - read, ct);
+                if (n == 0)
+                    throw new IOException("Unexpected end of stream.");
+
+                read += n;
+            }
+        }
+
+        private static void AssertHeader(
+            List<(string Name, string Value)> headers,
+            string name,
+            string value)
+        {
+            foreach (var header in headers)
+            {
+                if (string.Equals(header.Name, name, StringComparison.Ordinal) &&
+                    string.Equals(header.Value, value, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+
+            Assert.Fail($"Expected HTTP/2 header {name}: {value}.");
+        }
+
+        private static void AssertNoHeader(
+            List<(string Name, string Value)> headers,
+            string name)
+        {
+            foreach (var header in headers)
+            {
+                if (string.Equals(header.Name, name, StringComparison.OrdinalIgnoreCase))
+                    Assert.Fail($"Did not expect HTTP/2 header {name}.");
+            }
         }
 
         private static X509Certificate2 TryCreateLocalhostCertificate()

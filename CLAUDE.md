@@ -56,6 +56,9 @@ All optional modules depend only on `TurboHTTP.Core`, never on each other. Trans
 - **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation
 - **JSON:** `TurboHTTP.JSON` assembly (references Core) provides `JsonSerializer` static facade with pluggable `IJsonSerializer` interface, response extensions (`AsJson`, `GetJsonAsync`, etc.), and all request builder JSON extensions (`WithJsonBody(string)`, `WithJsonBody<T>`). Default: `LiteJsonSerializer` (AOT-safe). Optional: `System.Text.Json` via `TURBOHTTP_USE_SYSTEM_TEXT_JSON` define. Core has zero dependency on JSON — users add `TurboHTTP.JSON` only if needed.
 - **HTTP/2:** Native binary framing, HPACK compression, stream multiplexing, flow control
+- **HTTP/2 through CONNECT proxies:** Tunneled HTTP/2 manager keys are origin x proxy
+  (`originHost:originPort|via|proxyHost:proxyPort`). Direct and tunneled entries must not alias.
+  `Proxy-Authorization` is proxy-only and must be stripped before origin dispatch.
 - **Middleware:** ASP.NET Core-style pipeline pattern for request/response interception
 - **Namespaces:** Each module uses `TurboHTTP.<ModuleName>` (e.g., `TurboHTTP.Core`, `TurboHTTP.Transport`)
 - **Transport Factory:** `HttpTransportFactory` uses `Register(Func<IHttpTransport>)` pattern with `Lazy<T>` thread-safe initialization. Phase 3 registers `RawSocketTransport` via C# 9 `[ModuleInitializer]` in the Transport assembly — auto-runs when assembly loads, no Unity bootstrap needed. `RawSocketTransport.EnsureRegistered()` fallback for IL2CPP timing issues. This avoids Core → Transport circular dependency while keeping `TurboHTTP.Unity` optional.
@@ -115,6 +118,7 @@ Implementation follows 14 phases documented in `Development/docs/phases/`.
 - **Phase 22b (Advanced HTTP Semantics):** IN PROGRESS — Sub-phases 22b.3 (response trailers) and 22b.4 (request trailers) complete. 22b.1 (`Expect: 100-continue`) and 22b.2 (proxy streaming) remain pending.
   - **Phase 22b.3 (Response Trailers):** COMPLETE — Response trailer parsing for HTTP/1.1 chunked and HTTP/2 trailing HEADERS. See `Development/docs/phases/phase22b/phase-22b.3-review.md`.
   - **Phase 22b.4 (Request Trailers):** COMPLETE — Request-trailer support across Core (`WithRequestTrailers` builder, managed `Trailer` declaration header, `UHttpRequestBody` trailer state), HTTP/1.1 (chunked terminal block with filtered trailers, `ValidateTrailerCompatibility` pre-write guard), and HTTP/2 (`END_STREAM` on trailing HEADERS, lowercase name normalization, `PrepareRequestTrailerBlockAsync` using `_headerListScratch` inside `_writeLock`). `TrailerFieldValidator` shared between both protocols. Empty body + trailers promoted to chunked for HTTP/1.1; HTTP/2 sends HEADERS → trailing HEADERS (no DATA). ARM64 safety: `int`-based flags with `Volatile`/`Interlocked`, correct store ordering for trailer provider/names. 2-round review pass. See `Development/docs/implementation-journal/2026-03-phase22b.4-request-trailers.md`.
+- **Phase 22c (HTTP/2 Through CONNECT Proxy Tunnels):** LOCAL VALIDATION COMPLETE / DEVICE VALIDATION PENDING — 22c.1 through 22c.4 are implemented and passed focused Editor PlayMode validation. Includes CONNECT tunnel ALPN `h2` advertisement, origin x proxy HTTP/2 manager keys, proxy protocol routing, h2 fast-path reuse, lifecycle/GOAWAY/race/header-isolation tests, and `Http2Connection` stream-dispose-once hardening. Physical iOS or Android IL2CPP validation for BouncyCastle ALPN `h2` through CONNECT remains required before marking COMPLETE. See `Development/docs/implementation-journal/2026-04-phase22c-proxy-http2-alpn.md`.
 - **Phase 8 + Phases 12–14:** Not started.
 
 Check `Development/docs/00-overview.md` for the full roadmap and `Development/docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
@@ -128,7 +132,7 @@ Check `Development/docs/00-overview.md` for the full roadmap and `Development/do
 
 ## Critical Risk Areas
 
-1. **SslStream ALPN under IL2CPP** — Must validate HTTP/2 negotiation on physical iOS/Android devices before scaling past Phase 3B. Phase 3C defines BouncyCastle TLS fallback if SslStream ALPN fails on mobile platforms.
+1. **SslStream/BouncyCastle ALPN under IL2CPP** — Must validate HTTP/2 negotiation on physical iOS/Android devices, including BouncyCastle ALPN `h2` through CONNECT tunnels before Phase 22c can be marked complete.
 2. **System.Text.Json + IL2CPP/AOT** — Serialization behavior needs early validation
 3. **HTTP/2 flow control** — Stream multiplexing, window updates, HPACK correctness require rigorous testing
 4. **Memory target (phased):**

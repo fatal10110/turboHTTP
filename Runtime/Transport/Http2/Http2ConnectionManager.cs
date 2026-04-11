@@ -44,9 +44,37 @@ namespace TurboHTTP.Transport.Http2
             return null;
         }
 
+        /// <summary>
+        /// Get an existing alive h2 connection for this origin through a CONNECT proxy tunnel, or null.
+        /// Fast path — no locking, no async.
+        /// </summary>
+        public Http2Connection GetIfExists(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return null;
+
+            string key = BuildTunnelKey(originHost, originPort, proxyHost, proxyPort);
+            if (_connections.TryGetValue(key, out var conn) && conn.IsAlive)
+                return conn;
+            return null;
+        }
+
         internal bool HasConnection(string host, int port)
         {
             return GetIfExists(host, port) != null;
+        }
+
+        internal bool HasConnection(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort)
+        {
+            return GetIfExists(originHost, originPort, proxyHost, proxyPort) != null;
         }
 
         /// <summary>
@@ -73,6 +101,46 @@ namespace TurboHTTP.Transport.Http2
                 return new ValueTask<Http2Connection>(existing);
             }
 
+            return GetOrCreateCoreAsync(key, host, port, tlsStream, ct);
+        }
+
+        /// <summary>
+        /// Get or create an h2 connection for this origin through a CONNECT proxy tunnel.
+        /// The provided stream must already be TLS-wrapped with h2 ALPN negotiated.
+        /// </summary>
+        public ValueTask<Http2Connection> GetOrCreateAsync(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort,
+            Stream tlsStream,
+            CancellationToken ct)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                tlsStream?.Dispose();
+                throw new ObjectDisposedException(nameof(Http2ConnectionManager));
+            }
+
+            string key = BuildTunnelKey(originHost, originPort, proxyHost, proxyPort);
+
+            // Fast path: existing alive connection
+            if (_connections.TryGetValue(key, out var existing) && existing.IsAlive)
+            {
+                tlsStream.Dispose();
+                return new ValueTask<Http2Connection>(existing);
+            }
+
+            return GetOrCreateCoreAsync(key, originHost, originPort, tlsStream, ct);
+        }
+
+        private ValueTask<Http2Connection> GetOrCreateCoreAsync(
+            string key,
+            string host,
+            int port,
+            Stream tlsStream,
+            CancellationToken ct)
+        {
             return new ValueTask<Http2Connection>(GetOrCreateSlowAsync(
                 key,
                 host,
@@ -89,51 +157,63 @@ namespace TurboHTTP.Transport.Http2
             CancellationToken ct)
         {
             Http2Connection existing;
+            Http2Connection newConnection = null;
+            bool published = false;
 
-            // Slow path: create with per-key lock
-            var initLock = _initLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
-            await initLock.WaitAsync(ct);
             try
             {
-                // Double-check after acquiring lock
-                if (_connections.TryGetValue(key, out existing) && existing.IsAlive)
-                {
-                    tlsStream.Dispose();
-                    return existing;
-                }
+                // Slow path: create with per-key lock
+                var initLock = _initLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+                await initLock.WaitAsync(ct);
 
-                // Remove stale connection
-                if (existing != null)
-                {
-                    _connections.TryRemove(key, out _);
-                    existing.Dispose();
-                }
-
-                // Create and initialize new connection (consumes tlsStream).
-                // If InitializeAsync fails (timeout, protocol error, cancellation),
-                // dispose the connection to clean up the stream + read loop.
-                // The lease was already transferred, so we own the stream.
-                var conn = new Http2Connection(
-                    tlsStream,
-                    host,
-                    port,
-                    _options,
-                    _streamingOptions);
                 try
                 {
-                    await conn.InitializeAsync(ct);
+                    // Double-check after acquiring lock
+                    if (_connections.TryGetValue(key, out existing) && existing.IsAlive)
+                    {
+                        tlsStream.Dispose();
+                        tlsStream = null;
+                        return existing;
+                    }
+
+                    // Remove stale connection
+                    if (existing != null)
+                    {
+                        _connections.TryRemove(key, out _);
+                        existing.Dispose();
+                    }
+
+                    // Create and initialize new connection (consumes tlsStream).
+                    // If InitializeAsync fails (timeout, protocol error, cancellation),
+                    // dispose the connection to clean up the stream + read loop.
+                    // The lease was already transferred, so we own the stream.
+                    newConnection = new Http2Connection(
+                        tlsStream,
+                        host,
+                        port,
+                        _options,
+                        _streamingOptions);
+                    tlsStream = null;
+
+                    await newConnection.InitializeAsync(ct);
+                    _connections[key] = newConnection;
+                    published = true;
+                    return newConnection;
                 }
-                catch
+                finally
                 {
-                    conn.Dispose();
-                    throw;
+                    initLock.Release();
                 }
-                _connections[key] = conn;
-                return conn;
             }
-            finally
+            catch
             {
-                initLock.Release();
+                if (!published)
+                {
+                    newConnection?.Dispose();
+                    tlsStream?.Dispose();
+                }
+
+                throw;
             }
         }
 
@@ -146,6 +226,25 @@ namespace TurboHTTP.Transport.Http2
                 return;
 
             string key = $"{host}:{port}";
+            if (_connections.TryRemove(key, out var conn))
+            {
+                conn.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Remove and dispose a stale tunneled connection.
+        /// </summary>
+        public void Remove(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
+            string key = BuildTunnelKey(originHost, originPort, proxyHost, proxyPort);
             if (_connections.TryRemove(key, out var conn))
             {
                 conn.Dispose();
@@ -168,6 +267,15 @@ namespace TurboHTTP.Transport.Http2
                 kvp.Value.Dispose();
             }
             _initLocks.Clear();
+        }
+
+        private static string BuildTunnelKey(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort)
+        {
+            return $"{originHost}:{originPort}|via|{proxyHost}:{proxyPort}";
         }
     }
 }

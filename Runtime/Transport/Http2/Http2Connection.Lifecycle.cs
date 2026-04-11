@@ -484,7 +484,7 @@ namespace TurboHTTP.Transport.Http2
             SendGoAwayOnDisposeBestEffort();
 
             FailAllStreams(new ObjectDisposedException(nameof(Http2Connection)));
-            _stream?.Dispose();
+            DisposeStreamOnce();
 
             var shutdownTasks = CollectBackgroundTasks();
             if (shutdownTasks.IsCompleted)
@@ -545,9 +545,15 @@ namespace TurboHTTP.Transport.Http2
             _windowWaiter?.Dispose();
             _connectionRecvWindowUpdateLock?.Dispose();
             _writeLock?.Dispose();
-            _stream?.Dispose();
+            DisposeStreamOnce();
             // Return the HpackEncoder's reusable output buffer to ArrayPool.
             _hpackEncoder?.Dispose();
+        }
+
+        private void DisposeStreamOnce()
+        {
+            if (Interlocked.Exchange(ref _streamDisposed, 1) == 0)
+                _stream?.Dispose();
         }
 
         private void SendGoAwayOnDisposeBestEffort()

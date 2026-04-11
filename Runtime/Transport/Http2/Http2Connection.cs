@@ -102,6 +102,7 @@ namespace TurboHTTP.Transport.Http2
         private long _stallTimeoutMs;
         private readonly ConcurrentDictionary<int, long> _recentlyResetStreams =
             new ConcurrentDictionary<int, long>();
+        private int _streamDisposed;
 
         internal int PerStreamReceiveBufferBytes => _perStreamReceiveBufferBytes;
         internal int StreamingSendBufferBytes => _streamingSendBufferBytes;
