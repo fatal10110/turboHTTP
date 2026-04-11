@@ -734,6 +734,26 @@ namespace TurboHTTP.Transport
                                 ct)
                             .ConfigureAwait(false);
 
+                        if (establishTunnel &&
+                            freshLease.Connection.NegotiatedAlpnProtocol == "h2")
+                        {
+                            context.RecordEvent("TransportProxyH2Init");
+                            freshLease.TransferOwnership();
+                            var h2Conn = await _h2Manager.GetOrCreateAsync(
+                                    targetHost,
+                                    targetPort,
+                                    proxyHost,
+                                    proxyPort,
+                                    freshLease.Connection.Stream,
+                                    ct)
+                                .ConfigureAwait(false);
+                            freshLease = null;
+
+                            await h2Conn.DispatchAsync(dispatchRequest, handler, context, ct)
+                                .ConfigureAwait(false);
+                            return;
+                        }
+
                         var retryWriteState = new Http11RequestWriteState();
                         try
                         {
@@ -981,9 +1001,18 @@ namespace TurboHTTP.Transport
 
                 if (response.StatusCode == 407)
                 {
+                    // Distinguish the two failure modes so operators can diagnose correctly:
+                    //   - Credentials supplied but AllowPlaintextProxyAuth is disabled → retry was
+                    //     never attempted; tell the caller how to enable it.
+                    //   - Credentials were submitted (attemptedAuth = true) but rejected by the proxy.
+                    //   - No credentials were configured at all.
+                    string reason = proxy?.Credentials != null && !proxy.AllowPlaintextProxyAuth
+                        ? "credentials were supplied but AllowPlaintextProxyAuth is disabled"
+                        : "credentials were not provided or were rejected";
+
                     throw new UHttpException(new UHttpError(
                         UHttpErrorType.InvalidRequest,
-                        "Proxy authentication required (407) and credentials were not accepted."));
+                        $"Proxy authentication required (407); {reason}."));
                 }
 
                 throw new UHttpException(new UHttpError(

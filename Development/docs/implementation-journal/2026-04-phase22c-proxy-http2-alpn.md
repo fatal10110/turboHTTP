@@ -1,7 +1,7 @@
 # Phase 22c: HTTP/2 Through CONNECT Proxy Tunnels
 
-**Date:** 2026-04-11  
-**Phase:** 22c.1 `Http2ConnectionManager` key extension  
+**Date:** 2026-04-11
+**Phase:** 22c.1 `Http2ConnectionManager` key extension
 **Status:** 22c.1 implemented and validated with focused Unity PlayMode tests
 
 ## What was implemented
@@ -546,3 +546,94 @@ Result:
    - verify HTTP/2 frames are exchanged through the tunnel
 2. Do not mark Phase 22c complete in project status docs until the physical-device validation
    result is recorded.
+
+---
+
+## 2026-04-11 Post-Review Fixes (full review pass)
+
+**Status:** Three Important issues found in the full specialist review and fixed.
+
+### Issues fixed
+
+1. **`_initLocks` unbounded growth** (`Http2ConnectionManager.cs`)
+   - Per-key `SemaphoreSlim` entries were added on every slow-path creation and never removed.
+   - Fixed by adding `_initLocks.TryRemove(key, out _)` inside the inner `finally` block, gated on
+     `published`. Retry paths leave the semaphore in place; successful publish removes it.
+   - The removal is safe because waiters hold the semaphore by value (from `GetOrAdd`) before
+     `TryRemove` runs; removing from the dictionary does not affect in-flight waiters.
+
+2. **GOAWAY stale entry retention** (`Http2ConnectionManager.cs`)
+   - A GOAWAY'd connection would remain in `_connections` indefinitely if no new request arrived to
+     trigger the slow-path stale cleanup. Long-idle sessions accumulate dead `Http2Connection` objects.
+   - Fixed by adding `_connections.TryRemove(key, out _)` in both `GetIfExists` overloads when
+     `conn != null && !conn.IsAlive`. `ConcurrentDictionary.TryRemove` is idempotent; concurrent
+     double-TryRemove for the same key is safe. The subsequent `GetOrCreateAsync` call proceeds through
+     the normal slow path (fast-path double-check finds no entry, creates fresh connection).
+
+3. **Misleading 407 error message** (`RawSocketTransport.cs`)
+   - The old message "credentials were not accepted" was emitted even when no retry was attempted
+     (because `AllowPlaintextProxyAuth = false`), making it impossible to distinguish the two
+     distinct operator error modes.
+   - Fixed with a conditional `reason` string: "credentials were supplied but AllowPlaintextProxyAuth
+     is disabled" vs "credentials were not provided or were rejected".
+
+### Files modified
+
+- `Runtime/Transport/Http2/Http2ConnectionManager.cs`
+- `Runtime/Transport/RawSocketTransport.cs`
+
+### Verification
+
+Both specialist agents (infrastructure + network) ran a focused verification pass and confirmed all
+three fixes are correct. No test breakage identified. No new issues introduced.
+
+---
+
+## 2026-04-11 Review Finding Fixes
+
+**Status:** Two follow-up review findings fixed and validated.
+
+### Issues fixed
+
+1. **Exact stale HTTP/2 manager eviction** (`Http2ConnectionManager.cs`)
+   - `GetIfExists(...)` now removes a stale entry only if the dictionary still maps the key to the
+     same observed `Http2Connection` instance.
+   - The removed connection is disposed immediately, closing the tunneled TLS/proxy stream chain.
+   - This avoids both stale stream leaks and the race where a fresh connection published between
+     lookup and removal could be removed by a blind `TryRemove(key, out _)`.
+
+2. **Proxy HTTP/1.1 stale retry ALPN rerouting** (`RawSocketTransport.cs`)
+   - When the proxy HTTP/1.1 stale-retry path reacquires a prepared CONNECT tunnel, it now checks
+     the fresh lease's `NegotiatedAlpnProtocol`.
+   - A fresh `h2` tunnel is transferred to the proxy-aware `Http2ConnectionManager` overload and
+     dispatched over HTTP/2 instead of sending HTTP/1.1 framing over an HTTP/2 TLS session.
+
+### Files modified
+
+- `Runtime/Transport/Http2/Http2ConnectionManager.cs`
+- `Runtime/Transport/RawSocketTransport.cs`
+- `Tests/Runtime/Transport/Http2/Http2ConnectionManagerTests.cs`
+- `Tests/Runtime/Transport/Http1/RawSocketTransportProxyTunnelTests.cs`
+- `Development/docs/implementation-journal/2026-04-phase22c-proxy-http2-alpn.md`
+
+### Tests added
+
+- `GetIfExists_StaleTunnelConnection_RemovesAndDisposesObservedConnection`
+- `HttpsViaProxy_StaleHttp11RetryWithH2Alpn_ReroutesToHttp2`
+
+### Verification
+
+- `git diff --check`
+- Unity PlayMode: `TurboHTTP.Tests.Transport.Http2.Http2ConnectionManagerTests`
+  - total: 10
+  - passed: 10
+  - failed: 0
+  - skipped: 0
+- Unity PlayMode: `TurboHTTP.Tests.Transport.Http1.RawSocketTransportProxyTunnelTests`
+  - total: 15
+  - passed: 11
+  - failed: 0
+  - skipped: 4
+
+Skipped proxy tunnel tests still require local self-signed certificate generation support in the
+Unity runtime environment.

@@ -742,6 +742,94 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
+        public void HttpsViaProxy_StaleHttp11RetryWithH2Alpn_ReroutesToHttp2()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var duplex = new TestDuplexStream();
+                var observedRequests = new List<List<(string Name, string Value)>>();
+                var serverTask = RunHttp2OriginAsync(
+                    duplex.ServerStream,
+                    new[] { "rerouted" },
+                    observedRequests,
+                    cts.Token);
+
+                using var staleSocketPair = await SocketPair.CreateAsync();
+                using var h2SocketPair = await SocketPair.CreateAsync();
+                using var pool = new TcpConnectionPool(maxConnectionsPerHost: 1, tlsBackend: TlsBackend.SslStream);
+                using var transport = new RawSocketTransport(pool, TlsBackend.SslStream);
+
+                var tunnelPoolKey = BuildTunnelPoolKey(h2SocketPair.Port, "example.com", 443);
+                var staleStream = new FailingStream(
+                    new NetworkStream(staleSocketPair.ClientSocket, ownsSocket: false));
+                var staleConnection = new PooledConnection(
+                    staleSocketPair.ClientSocket,
+                    staleStream,
+                    "example.com",
+                    443,
+                    true);
+                staleConnection.UpdateTransportBinding(
+                    staleStream,
+                    "example.com",
+                    443,
+                    isSecure: true,
+                    poolKey: tunnelPoolKey,
+                    tlsVersion: "1.3",
+                    tlsProviderName: "TestTls",
+                    negotiatedAlpnProtocol: "http/1.1");
+
+                var h2Connection = new PooledConnection(
+                    h2SocketPair.ClientSocket,
+                    duplex.ClientStream,
+                    "example.com",
+                    443,
+                    true);
+                h2Connection.UpdateTransportBinding(
+                    duplex.ClientStream,
+                    "example.com",
+                    443,
+                    isSecure: true,
+                    poolKey: tunnelPoolKey,
+                    tlsVersion: "1.3",
+                    tlsProviderName: "TestTls",
+                    negotiatedAlpnProtocol: "h2");
+
+                EnqueueIdleConnection(pool, tunnelPoolKey, staleConnection);
+                EnqueueIdleConnection(pool, tunnelPoolKey, h2Connection);
+
+                using var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = false,
+                    Proxy = new ProxySettings
+                    {
+                        Address = new Uri($"http://127.0.0.1:{h2SocketPair.Port}"),
+                        UseEnvironmentVariables = false
+                    }
+                });
+
+                using (var response = await client
+                           .Get("https://example.com/reroute")
+                           .SendBufferedAsync())
+                {
+                    Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                    Assert.AreEqual("rerouted", response.GetBodyAsString());
+                }
+
+                await serverTask;
+
+                Assert.IsTrue(transport.HasHttp2Connection(
+                    "example.com",
+                    443,
+                    "127.0.0.1",
+                    h2SocketPair.Port));
+                Assert.AreEqual(1, observedRequests.Count);
+                AssertHeader(observedRequests[0], ":path", "/reroute");
+            });
+        }
+
+        [Test]
         public void HttpsViaProxy_StreamingResponseDispose_ReusesConnectTunnel()
         {
             AssertAsync.Run(async () =>

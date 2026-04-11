@@ -1,7 +1,7 @@
 # Phase 22c Plan Review Fixes
 
-**Date:** 2026-04-10  
-**Phase:** 22c planning documentation follow-up  
+**Date:** 2026-04-10
+**Phase:** 22c planning documentation follow-up
 **Status:** Plan corrected to match the current 22b.2 proxy/tunnel transport architecture
 
 ## What was updated

@@ -255,6 +255,44 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void GetIfExists_StaleTunnelConnection_RemovesAndDisposesObservedConnection()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                using var manager = CreateManager();
+                var duplex = new TestDuplexStream();
+                var trackingStream = new DisposeTrackingStream(duplex.ClientStream);
+                var serverTask = CompleteHandshakeAsync(duplex.ServerStream, cts.Token);
+                var connection = await manager.GetOrCreateAsync(
+                    OriginHost,
+                    OriginPort,
+                    ProxyAHost,
+                    ProxyAPort,
+                    trackingStream,
+                    cts.Token);
+                await serverTask;
+
+                var serverCodec = new Http2FrameCodec(duplex.ServerStream);
+                await serverCodec.WriteFrameAsync(
+                    BuildGoAwayFrame(lastStreamId: 0, errorCode: 0),
+                    cts.Token);
+
+                for (int i = 0; i < 100 && connection.IsAlive; i++)
+                    await Task.Delay(10, cts.Token);
+
+                Assert.IsFalse(connection.IsAlive);
+                Assert.IsNull(manager.GetIfExists(
+                    OriginHost,
+                    OriginPort,
+                    ProxyAHost,
+                    ProxyAPort));
+                Assert.AreEqual(1, trackingStream.DisposeCallCount);
+                Assert.IsFalse(manager.HasConnection(OriginHost, OriginPort, ProxyAHost, ProxyAPort));
+            });
+        }
+
+        [Test]
         public void GetOrCreateAsync_ConcurrentTunnelCreation_RetainsOneConnectionAndDisposesDiscardedStream()
         {
             AssertAsync.Run(async () =>

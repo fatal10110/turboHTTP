@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,6 +42,13 @@ namespace TurboHTTP.Transport.Http2
             string key = $"{host}:{port}";
             if (_connections.TryGetValue(key, out var conn) && conn.IsAlive)
                 return conn;
+
+            // Proactively evict stale entries so they do not accumulate in long-idle sessions.
+            // A GOAWAY'd connection sets IsAlive = false but the slow-path cleanup may never
+            // run if no new request arrives. Eviction here prevents unbounded dead-object retention.
+            if (conn != null)
+                RemoveExactAndDispose(key, conn);
+
             return null;
         }
 
@@ -60,6 +68,11 @@ namespace TurboHTTP.Transport.Http2
             string key = BuildTunnelKey(originHost, originPort, proxyHost, proxyPort);
             if (_connections.TryGetValue(key, out var conn) && conn.IsAlive)
                 return conn;
+
+            // Same proactive eviction as the direct overload.
+            if (conn != null)
+                RemoveExactAndDispose(key, conn);
+
             return null;
         }
 
@@ -203,6 +216,12 @@ namespace TurboHTTP.Transport.Http2
                 finally
                 {
                     initLock.Release();
+                    // Remove init lock after a successful publish: future callers hit the fast-path
+                    // TryGetValue and never need the semaphore again. Removal prevents unbounded
+                    // _initLocks growth for long-lived managers with many distinct tunnel destinations.
+                    // On failure paths the semaphore is left so a retry can re-enter the slow path.
+                    if (published)
+                        _initLocks.TryRemove(key, out _);
                 }
             }
             catch
@@ -276,6 +295,13 @@ namespace TurboHTTP.Transport.Http2
             int proxyPort)
         {
             return $"{originHost}:{originPort}|via|{proxyHost}:{proxyPort}";
+        }
+
+        private void RemoveExactAndDispose(string key, Http2Connection connection)
+        {
+            var entry = new KeyValuePair<string, Http2Connection>(key, connection);
+            if (((ICollection<KeyValuePair<string, Http2Connection>>)_connections).Remove(entry))
+                connection.Dispose();
         }
     }
 }
