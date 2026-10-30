@@ -11,7 +11,6 @@ Build/
 Builds/
 UserSettings/
 MemoryCaptures/
-*.meta
 
 # Visual Studio / Rider / Unity
 *.csproj
@@ -27,3 +26,7 @@ MemoryCaptures/
 
 # Benchmark capture artifacts
 Tests/Benchmarks/*.observed.json
+
+# Local tooling output (Tools~/ci)
+.build/
+.tools/
