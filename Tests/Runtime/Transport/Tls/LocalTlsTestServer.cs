@@ -68,7 +68,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             _certificate.Dispose();
         }
 
-        private static X509Certificate2 TryCreateLocalhostCertificate()
+        internal static X509Certificate2 TryCreateLocalhostCertificate()
         {
             try
             {
