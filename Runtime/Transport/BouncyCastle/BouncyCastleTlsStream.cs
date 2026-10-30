@@ -43,6 +43,13 @@ namespace TurboHTTP.Transport.BouncyCastle
         // records); one maximum record (2^14 + 2048 + header) keeps a full record per I/O call.
         private const int CiphertextBufferSize = 16 * 1024 + 2048 + 5;
 
+        // Bound on records the read path leaves queued in the engine while a writer holds the
+        // gate (CLAUDE.md section 3: peer-controlled sizes are bounded). A legitimate peer makes
+        // the client queue at most a few small records (alerts, close_notify); a hostile one can
+        // make it queue one alert per tiny record it sends (TLS 1.2 hello_request is answered
+        // with a no_renegotiation warning, about 7x amplification) while the socket is stalled.
+        internal const int DefaultMaxPendingOutputBytes = 64 * 1024;
+
         private readonly Stream _inner;
         private readonly TlsClientProtocol _protocol;
         private readonly object _protocolLock = new object();
@@ -58,6 +65,12 @@ namespace TurboHTTP.Transport.BouncyCastle
 
         private int _readInProgress;
         private int _disposed;
+
+        /// <summary>
+        /// Output bytes the engine may hold after the read path tried to flush; above it the read
+        /// fails and the connection is aborted. Settable for tests; set before the first read.
+        /// </summary>
+        internal int MaxPendingOutputBytes { get; set; } = DefaultMaxPendingOutputBytes;
 
         internal BouncyCastleTlsStream(Stream inner)
         {
@@ -177,6 +190,7 @@ namespace TurboHTTP.Transport.BouncyCastle
                     }
 
                     FlushPendingOutput();
+                    EnforceOutputBacklogLimit();
                 }
             }
             finally
@@ -313,6 +327,7 @@ namespace TurboHTTP.Transport.BouncyCastle
                     }
 
                     await FlushPendingOutputAsync().ConfigureAwait(false);
+                    EnforceOutputBacklogLimit();
                 }
             }
             finally
@@ -435,6 +450,28 @@ namespace TurboHTTP.Transport.BouncyCastle
             {
                 return _protocol.GetAvailableOutputBytes() > 0;
             }
+        }
+
+        /// <summary>
+        /// Called by the reader after its flush attempt. When a writer holds the gate (stalled on
+        /// a full socket) the flush cannot run, and every record the peer makes the engine queue
+        /// stays in memory; past the bound the connection is aborted instead of growing the queue.
+        /// Disposing the inner stream also fails the stalled write.
+        /// </summary>
+        private void EnforceOutputBacklogLimit()
+        {
+            int pending;
+            lock (_protocolLock)
+            {
+                pending = _protocol.GetAvailableOutputBytes();
+            }
+
+            if (pending <= MaxPendingOutputBytes)
+                return;
+
+            Abort();
+            throw new IOException(
+                "The TLS peer caused more queued output than the connection can send; connection aborted.");
         }
 
         private int TakeOutput()

@@ -62,6 +62,11 @@
     handshake_failure, protocol_version, bad_certificate or internal_error. Covers the exception
     type and message, plus `RetryInterceptor` (MaxRetries 2): 1 connection for the non-transient
     alerts, 3 for internal_error.
+  - `BouncyCastleOutputBacklogTests.cs` (review r1): a writer is stalled on a test inner stream
+    and the server sends close_notify. The client engine queues its close_notify reply, and with
+    the bound lowered to 1 byte (set by reflection, because the test assembly does not reference
+    the BC assembly) the read must fail with `IOException`. The test also checks that the inner
+    stream is disposed and the stalled write faults. Without the check, the read returns 0.
 - `Tests/Runtime/Transport/Tls/LocalTlsTestServer.cs`: `TryCreateLocalhostCertificate` is now
   `internal` so the new server can reuse it.
 
@@ -78,14 +83,25 @@
   to the pool while the socket still writes into it.
 - **Dispose sends close_notify best effort and synchronously.** `Stream.Dispose` is synchronous;
   the old `TlsStream.Dispose` did the same. close_notify is skipped when a write holds the gate.
+- **Bounded engine output queue (review r1).** The read path cannot send while a writer holds
+  `_writeGate` (stalled on a full socket). Records the peer makes the engine queue meanwhile stay
+  in memory. Example: a TLS 1.2 hello_request (4 bytes) is answered with a ~31-byte
+  no_renegotiation warning, so the queue grows about 7x faster than the peer sends. After every
+  flush attempt the reader checks `GetAvailableOutputBytes()` against
+  `DefaultMaxPendingOutputBytes` (64 KiB). Above it, the reader aborts the connection (disposing
+  the inner stream also fails the stalled write) and throws `IOException`. The worst case is the
+  bound plus one read buffer's worth of amplified output. Waiting for the gate in that case was
+  rejected: a stalled write would then block the read, which is the #36 defect again.
 - **Loopback h2 server.** "50 concurrent requests against a real h2 server" runs a real
   `Http2Connection` over a real BC TLS session against a minimal scripted h2 server on loopback.
   The test rules forbid public hosts outside `ExternalNetwork`.
 
 ## Not done / hand-offs
 
-- **bc-csharp roots.** fatal10110/bc-csharp should refresh the roots file in its strip (coordination
-  item; see bc-csharp #29/#58). No TurboHTTP code depends on it in this lane.
+- **bc-csharp roots: owner action pending.** fatal10110/bc-csharp should refresh the roots file in
+  its strip. This has **not** been raised there: this session is not allowed to post to bc-csharp
+  (an earlier attempt to comment on bc-csharp #29 was refused). The owner needs to open the issue or
+  comment. No TurboHTTP code in this lane depends on it.
 - **#169 device item.** "Device run on Android IL2CPP recorded in #99" stays open. The PR says
   "Part of #169". #36's device item is already in the #99 matrix.
 - **#33 interaction.** The new tests rely on the BC client accepting the self-signed loopback
@@ -99,7 +115,8 @@
   Unity tests run on PR CI.
 - Extra local evidence: the new test files plus `BouncyCastleProviderTests` were compiled into a
   scratch net8.0 NUnit project against the shadow-build assemblies and run there.
-  - New code: 18/18 pass.
+  - New code: 19/19 pass (18 plus the review-r1 backlog test).
+  - With the backlog check removed, the backlog test fails ("it returned 0").
   - With `origin/main`'s provider swapped in: every new #36/#169/#164 regression test fails (the
     three #36 tests time out, the 6 alert tests get `TlsFatalAlertReceived` or a retried
     `NetworkError`, and the SAEA test stalls). The internal_error guards pass in both runs.
