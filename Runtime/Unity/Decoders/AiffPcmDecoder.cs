@@ -167,16 +167,16 @@ namespace TurboHTTP.Unity.Decoders
                     return ReadInt16BigEndian(bytes, offset) / 32768f;
 
                 case 24:
-                {
-                    var value = (bytes[offset] << 16)
+                    {
+                        var value = (bytes[offset] << 16)
                               | (bytes[offset + 1] << 8)
                               | bytes[offset + 2];
 
-                    if ((value & 0x800000) != 0)
-                        value |= unchecked((int)0xFF000000);
+                        if ((value & 0x800000) != 0)
+                            value |= unchecked((int)0xFF000000);
 
-                    return value / 8388608f;
-                }
+                        return value / 8388608f;
+                    }
 
                 case 32:
                     return ReadInt32BigEndian(bytes, offset) / 2147483648f;

@@ -134,7 +134,7 @@ namespace TurboHTTP.Tests.JSON
         public void Write_UnsupportedType_ThrowsException()
         {
             var writer = new JsonWriter();
-            Assert.That(() => writer.Write(new CustomClass()), 
+            Assert.That(() => writer.Write(new CustomClass()),
                 Throws.TypeOf<JsonSerializationException>());
         }
 
@@ -147,7 +147,7 @@ namespace TurboHTTP.Tests.JSON
             object nested = new List<object>();
             for (int i = 0; i < 64; i++)
                 nested = new List<object> { nested };
-            
+
             var writer = new JsonWriter();
             Assert.That(() => writer.Write(nested), Throws.TypeOf<JsonSerializationException>()
                 .With.Message.Contains("Maximum nesting depth"));
@@ -160,7 +160,7 @@ namespace TurboHTTP.Tests.JSON
             object nested = new List<object>();
             for (int i = 0; i < 63; i++)
                 nested = new List<object> { nested };
-            
+
             var writer = new JsonWriter();
             Assert.That(() => writer.Write(nested), Throws.Nothing);
         }

@@ -16,7 +16,8 @@ namespace TurboHTTP.Tests.Observability
     public class MetricsInterceptorTests
     {
         [Test]
-        public void TracksSuccessfulRequest()        {
+        public void TracksSuccessfulRequest()
+        {
             Task.Run(async () =>
             {
                 var middleware = new MetricsInterceptor();
@@ -35,7 +36,8 @@ namespace TurboHTTP.Tests.Observability
         }
 
         [Test]
-        public void TracksFailedRequest()        {
+        public void TracksFailedRequest()
+        {
             Task.Run(async () =>
             {
                 var middleware = new MetricsInterceptor();
@@ -54,7 +56,8 @@ namespace TurboHTTP.Tests.Observability
         }
 
         [Test]
-        public void TracksByHost()        {
+        public void TracksByHost()
+        {
             Task.Run(async () =>
             {
                 var middleware = new MetricsInterceptor();
@@ -73,7 +76,8 @@ namespace TurboHTTP.Tests.Observability
         }
 
         [Test]
-        public void TracksByStatusCode()        {
+        public void TracksByStatusCode()
+        {
             Task.Run(async () =>
             {
                 var middleware = new MetricsInterceptor();
@@ -90,7 +94,8 @@ namespace TurboHTTP.Tests.Observability
         }
 
         [Test]
-        public void TracksBytesSent()        {
+        public void TracksBytesSent()
+        {
             Task.Run(async () =>
             {
                 var middleware = new MetricsInterceptor();
@@ -109,7 +114,8 @@ namespace TurboHTTP.Tests.Observability
         }
 
         [Test]
-        public void TracksBytesReceived()        {
+        public void TracksBytesReceived()
+        {
             Task.Run(async () =>
             {
                 var responseBody = Encoding.UTF8.GetBytes("{\"status\": \"ok\"}");
@@ -128,7 +134,8 @@ namespace TurboHTTP.Tests.Observability
         }
 
         [Test]
-        public void Reset_ClearsAllMetrics()        {
+        public void Reset_ClearsAllMetrics()
+        {
             Task.Run(async () =>
             {
                 var middleware = new MetricsInterceptor();

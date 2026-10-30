@@ -16,7 +16,8 @@ namespace TurboHTTP.Tests.Integration
     public class PipelineIntegrationTests
     {
         [Test]
-        public void FullPipeline_AllInterceptorsExecute()        {
+        public void FullPipeline_AllInterceptorsExecute()
+        {
             Task.Run(async () =>
             {
                 var logs = new List<string>();
@@ -61,7 +62,8 @@ namespace TurboHTTP.Tests.Integration
         }
 
         [Test]
-        public void NoMiddlewares_WorksLikeDirectTransport()        {
+        public void NoMiddlewares_WorksLikeDirectTransport()
+        {
             Task.Run(async () =>
             {
                 var transport = new MockTransport();
@@ -76,7 +78,8 @@ namespace TurboHTTP.Tests.Integration
         }
 
         [Test]
-        public void RetryOnTimeoutException_RetriesWhenTransportTimesOut()        {
+        public void RetryOnTimeoutException_RetriesWhenTransportTimesOut()
+        {
             Task.Run(async () =>
             {
                 int callCount = 0;

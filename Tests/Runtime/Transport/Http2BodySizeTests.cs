@@ -25,12 +25,12 @@ namespace TurboHTTP.Tests.Transport.Http2
 
             // Simulate the read-loop size guard before any body bytes are accepted.
             byte[] largeData = Encoding.UTF8.GetBytes("This is much longer than ten bytes.");
-            
+
             // Note: Since Http2Stream itself doesn't enforce MaxResponseBodySize, 
             // the enforcement happens in Http2Connection.ReadLoop. We simulate that logic here.
-            
+
             long maxBodySize = localSettings.MaxResponseBodySize;
-            
+
             Exception thrownException = null;
             try
             {
@@ -39,7 +39,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                     throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
                         $"Response body size exceeded maximum allowed ({maxBodySize} bytes)"));
                 }
-                
+
             }
             catch (Exception ex)
             {
@@ -50,7 +50,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             Assert.That(thrownException, Is.Not.Null);
             Assert.That(thrownException, Is.InstanceOf<UHttpException>());
             Assert.That(((UHttpException)thrownException).HttpError.Type, Is.EqualTo(UHttpErrorType.NetworkError));
-            
+
             // Clean up
             stream.Dispose();
         }

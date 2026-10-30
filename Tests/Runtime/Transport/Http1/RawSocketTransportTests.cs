@@ -201,7 +201,8 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public void SendAsync_UnsupportedTransferEncoding_MapsToNetworkError()        {
+        public void SendAsync_UnsupportedTransferEncoding_MapsToNetworkError()
+        {
             AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer(async (client, _) =>
@@ -317,7 +318,8 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public void RawSocketTransport_StaleConnection_RetriesOnce()        {
+        public void RawSocketTransport_StaleConnection_RetriesOnce()
+        {
             AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer(async (client, index) =>
@@ -362,7 +364,8 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public void RawSocketTransport_StaleConnection_NonIdempotent_NoRetry()        {
+        public void RawSocketTransport_StaleConnection_NonIdempotent_NoRetry()
+        {
             AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer(async (client, index) =>
@@ -1796,7 +1799,8 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public void NonKeepAlive_Response_SemaphoreReleased()        {
+        public void NonKeepAlive_Response_SemaphoreReleased()
+        {
             AssertAsync.Run(async () =>
             {
                 using var server = new HttpServer(async (client, _) =>

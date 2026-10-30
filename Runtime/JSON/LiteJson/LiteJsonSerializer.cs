@@ -203,18 +203,18 @@ namespace TurboHTTP.JSON.Lite
         {
             var targetType = typeof(T);
             var underlying = Nullable.GetUnderlyingType(targetType);
-            
+
             // Handle nullable types (P1 fix)
             if (underlying != null)
             {
                 if (value == null)
                     return default; // null for Nullable<T>
-                
+
                 // Convert to underlying type and box back
                 var converted = ConvertPrimitive(value, underlying);
                 return (T)converted;
             }
-            
+
             if (value == null)
             {
                 if (default(T) == null)

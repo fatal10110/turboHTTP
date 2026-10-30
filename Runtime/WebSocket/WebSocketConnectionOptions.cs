@@ -261,10 +261,23 @@ namespace TurboHTTP.WebSocket
 
                 switch (c)
                 {
-                    case '(': case ')': case '<': case '>': case '@':
-                    case ',': case ';': case ':': case '\\': case '"':
-                    case '/': case '[': case ']': case '?': case '=':
-                    case '{': case '}':
+                    case '(':
+                    case ')':
+                    case '<':
+                    case '>':
+                    case '@':
+                    case ',':
+                    case ';':
+                    case ':':
+                    case '\\':
+                    case '"':
+                    case '/':
+                    case '[':
+                    case ']':
+                    case '?':
+                    case '=':
+                    case '{':
+                    case '}':
                         return false;
                 }
             }

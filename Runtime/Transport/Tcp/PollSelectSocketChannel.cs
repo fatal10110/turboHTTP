@@ -379,14 +379,14 @@ namespace TurboHTTP.Transport.Tcp
         private static async ValueTask<int> WrapWithCancellationCleanup(
             ValueTask<int> task, CancellationTokenRegistration reg)
         {
-            try   { return await task.ConfigureAwait(false); }
+            try { return await task.ConfigureAwait(false); }
             finally { reg.Dispose(); }
         }
 
         private static async ValueTask WrapSendWithCancellationCleanup(
             ValueTask task, CancellationTokenRegistration reg)
         {
-            try   { await task.ConfigureAwait(false); }
+            try { await task.ConfigureAwait(false); }
             finally { reg.Dispose(); }
         }
     }

@@ -150,16 +150,16 @@ namespace TurboHTTP.Unity.Decoders
                     return ReadInt16LittleEndian(wav, offset) / 32768f;
 
                 case 24:
-                {
-                    var value = wav[offset] |
+                    {
+                        var value = wav[offset] |
                                 (wav[offset + 1] << 8) |
                                 (wav[offset + 2] << 16);
 
-                    if ((value & 0x800000) != 0)
-                        value |= unchecked((int)0xFF000000);
+                        if ((value & 0x800000) != 0)
+                            value |= unchecked((int)0xFF000000);
 
-                    return value / 8388608f;
-                }
+                        return value / 8388608f;
+                    }
 
                 case 32:
                     return ReadInt32LittleEndian(wav, offset) / 2147483648f;

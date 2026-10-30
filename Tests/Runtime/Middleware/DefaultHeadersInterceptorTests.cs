@@ -11,7 +11,8 @@ namespace TurboHTTP.Tests.Middleware
     public class DefaultHeadersInterceptorTests
     {
         [Test]
-        public void AddsDefaultHeaders()        {
+        public void AddsDefaultHeaders()
+        {
             Task.Run(async () =>
             {
                 var defaults = new HttpHeaders();
@@ -33,7 +34,8 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
-        public void DoesNotOverrideExistingHeaders()        {
+        public void DoesNotOverrideExistingHeaders()
+        {
             Task.Run(async () =>
             {
                 var defaults = new HttpHeaders();
@@ -57,7 +59,8 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
-        public void OverridesWhenConfigured()        {
+        public void OverridesWhenConfigured()
+        {
             Task.Run(async () =>
             {
                 var defaults = new HttpHeaders();
@@ -80,7 +83,8 @@ namespace TurboHTTP.Tests.Middleware
         }
 
         [Test]
-        public void ClonesRequestWhenInjectingHeaders()        {
+        public void ClonesRequestWhenInjectingHeaders()
+        {
             Task.Run(async () =>
             {
                 var defaults = new HttpHeaders();

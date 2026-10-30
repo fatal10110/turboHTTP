@@ -90,9 +90,9 @@ namespace TurboHTTP.Tests.Platform
         {
             // This runs the full suite of compatibility checks defined in Core
             bool passed = IL2CPPCompatibility.Validate(out string report);
-            
+
             Debug.Log(report);
-            
+
             Assert.IsTrue(passed, $"IL2CPP Compatibility Checks Failed:\n{report}");
         }
 

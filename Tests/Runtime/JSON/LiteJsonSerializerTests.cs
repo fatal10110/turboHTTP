@@ -55,21 +55,21 @@ namespace TurboHTTP.Tests.JSON
         [Test]
         public void Deserialize_InvalidJson_ThrowsException()
         {
-            Assert.That(() => _serializer.Deserialize<object>("invalid"), 
+            Assert.That(() => _serializer.Deserialize<object>("invalid"),
                 Throws.TypeOf<JsonSerializationException>());
         }
 
         [Test]
         public void Deserialize_EmptyString_ThrowsException()
         {
-            Assert.That(() => _serializer.Deserialize<object>(""), 
+            Assert.That(() => _serializer.Deserialize<object>(""),
                 Throws.TypeOf<JsonSerializationException>());
         }
 
         [Test]
         public void Deserialize_Null_ThrowsException()
         {
-            Assert.That(() => _serializer.Deserialize<object>(null), 
+            Assert.That(() => _serializer.Deserialize<object>(null),
                 Throws.TypeOf<JsonSerializationException>());
         }
 

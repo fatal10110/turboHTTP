@@ -129,7 +129,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         // --- Basic Window Update ---
 
         [Test]
-        public void WindowUpdate_IncreasesConnectionWindow()        {
+        public void WindowUpdate_IncreasesConnectionWindow()
+        {
             AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
@@ -155,7 +156,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void WindowUpdate_IncreasesStreamWindow()        {
+        public void WindowUpdate_IncreasesStreamWindow()
+        {
             AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
@@ -190,7 +192,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void WindowUpdate_Zero_ConnectionDies()        {
+        public void WindowUpdate_Zero_ConnectionDies()
+        {
             AssertAsync.Run(async () =>
             {
                 // Zero WINDOW_UPDATE → PROTOCOL_ERROR
@@ -273,7 +276,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void WindowUpdate_Overflow_ConnectionDies()        {
+        public void WindowUpdate_Overflow_ConnectionDies()
+        {
             AssertAsync.Run(async () =>
             {
                 // WINDOW_UPDATE that causes overflow → FLOW_CONTROL_ERROR [R2-3]
@@ -303,7 +307,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         // --- Data Sending and Flow Control ---
 
         [Test]
-        public void DataSending_RespectsConnectionWindow()        {
+        public void DataSending_RespectsConnectionWindow()
+        {
             AssertAsync.Run(async () =>
             {
                 // Send a body larger than default window to verify chunking
@@ -347,7 +352,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void DataReceiving_SendsWindowUpdate()        {
+        public void DataReceiving_SendsWindowUpdate()
+        {
             AssertAsync.Run(async () =>
             {
                 // Server sends data that consumes more than half the window → client sends WINDOW_UPDATE
@@ -428,7 +434,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void WindowSize_AtomicAccess()        {
+        public void WindowSize_AtomicAccess()
+        {
             AssertAsync.Run(async () =>
             {
                 // Verify Http2Stream.WindowSize uses Interlocked [GPT-6]
@@ -462,7 +469,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void DataSending_BlocksWhenWindowExhausted_ThenUnblocks()        {
+        public void DataSending_BlocksWhenWindowExhausted_ThenUnblocks()
+        {
             AssertAsync.Run(async () =>
             {
                 // Send body larger than window → blocks until WINDOW_UPDATE
@@ -570,7 +578,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void DataSending_StreamBody_BlocksWhenWindowExhausted_ThenUnblocks()        {
+        public void DataSending_StreamBody_BlocksWhenWindowExhausted_ThenUnblocks()
+        {
             AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(15000);
@@ -674,7 +683,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         // --- New tests for review fixes ---
 
         [Test]
-        public void StreamLevelRecvWindow_SendsStreamWindowUpdate()        {
+        public void StreamLevelRecvWindow_SendsStreamWindowUpdate()
+        {
             AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(15000);
@@ -757,7 +767,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void LargeResponse_CompletesWithStreamWindowUpdates()        {
+        public void LargeResponse_CompletesWithStreamWindowUpdates()
+        {
             AssertAsync.Run(async () =>
             {
                 // A compliant peer must stop once it exhausts the advertised stream window
@@ -822,7 +833,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void DataReceiving_ExceedsConnectionWindow_FlowControlError()        {
+        public void DataReceiving_ExceedsConnectionWindow_FlowControlError()
+        {
             AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
@@ -874,7 +886,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void DataReceiving_ExceedsStreamWindow_FlowControlError()        {
+        public void DataReceiving_ExceedsStreamWindow_FlowControlError()
+        {
             AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);
@@ -929,7 +942,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void InitialWindowSizeDelta_OverflowCheckedPerStream()        {
+        public void InitialWindowSizeDelta_OverflowCheckedPerStream()
+        {
             AssertAsync.Run(async () =>
             {
                 using var cts = new CancellationTokenSource(10000);

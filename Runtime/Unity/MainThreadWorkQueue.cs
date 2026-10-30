@@ -348,18 +348,18 @@ namespace TurboHTTP.Unity
                                 "MainThreadDispatcher queue is full and rejected new user work.");
 
                         case MainThreadBackpressurePolicy.DropOldest:
-                        {
-                            if (_userQueue.Count > 0)
                             {
-                                var dropped = _userQueue.Dequeue();
-                                droppedWorkItem = dropped.WorkItem;
-                                _droppedItems++;
-                            }
+                                if (_userQueue.Count > 0)
+                                {
+                                    var dropped = _userQueue.Dequeue();
+                                    droppedWorkItem = dropped.WorkItem;
+                                    _droppedItems++;
+                                }
 
-                            EnqueueUser_NoLock(workItem);
-                            SignalSpaceWaiter_NoLock();
-                            break;
-                        }
+                                EnqueueUser_NoLock(workItem);
+                                SignalSpaceWaiter_NoLock();
+                                break;
+                            }
 
                         case MainThreadBackpressurePolicy.Wait:
                         default:
@@ -432,19 +432,19 @@ namespace TurboHTTP.Unity
                 switch (_backpressurePolicy)
                 {
                     case MainThreadBackpressurePolicy.DropOldest:
-                    {
-                        if (_userQueue.Count > 0)
                         {
-                            var droppedEntry = _userQueue.Dequeue();
-                            dropped = droppedEntry.WorkItem;
-                            _droppedItems++;
-                        }
+                            if (_userQueue.Count > 0)
+                            {
+                                var droppedEntry = _userQueue.Dequeue();
+                                dropped = droppedEntry.WorkItem;
+                                _droppedItems++;
+                            }
 
-                        EnqueueUser_NoLock(workItem);
-                        SignalSpaceWaiter_NoLock();
-                        rejection = null;
-                        break;
-                    }
+                            EnqueueUser_NoLock(workItem);
+                            SignalSpaceWaiter_NoLock();
+                            rejection = null;
+                            break;
+                        }
 
                     case MainThreadBackpressurePolicy.Wait:
                         _rejectedItems++;

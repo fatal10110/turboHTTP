@@ -13,7 +13,7 @@ namespace TurboHTTP.Tests.Core
         {
             var options = new UHttpClientOptions();
             using var client = new UHttpClient(options);
-            
+
             // Should reuse the factory default transport
             Assert.That(client.Transport, Is.SameAs(HttpTransportFactory.Default));
         }
@@ -23,9 +23,9 @@ namespace TurboHTTP.Tests.Core
         {
             var options = new UHttpClientOptions();
             options.ConnectionPool.ConnectionIdleTimeout = TimeSpan.FromMinutes(10);
-            
+
             using var client = new UHttpClient(options);
-            
+
             // Should allocate a new transport instead of reusing default
             Assert.That(client.Transport, Is.Not.SameAs(HttpTransportFactory.Default));
             Assert.That(client.Transport, Is.InstanceOf<RawSocketTransport>());
@@ -36,9 +36,9 @@ namespace TurboHTTP.Tests.Core
         {
             var options = new UHttpClientOptions();
             options.Http2.MaxResponseBodySize = 1024 * 1024;
-            
+
             using var client = new UHttpClient(options);
-            
+
             // Should allocate a new transport instead of reusing default
             Assert.That(client.Transport, Is.Not.SameAs(HttpTransportFactory.Default));
             Assert.That(client.Transport, Is.InstanceOf<RawSocketTransport>());

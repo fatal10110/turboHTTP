@@ -12,7 +12,7 @@ namespace TurboHTTP.JSON.Lite
     public sealed class JsonReader
     {
         private const int MaxDepth = 64;
-        
+
         private readonly string _json;
         private readonly StringBuilder _stringBuffer;
         private int _position;
@@ -39,17 +39,17 @@ namespace TurboHTTP.JSON.Lite
             SkipWhitespace();
             var result = ReadValue();
             SkipWhitespace();
-            
+
             if (_position < _json.Length)
                 throw new JsonParseException($"Unexpected character at position {_position}");
-            
+
             return result;
         }
 
         private object ReadValue()
         {
             SkipWhitespace();
-            
+
             if (_position >= _json.Length)
                 throw new JsonParseException("Unexpected end of JSON");
 
@@ -67,7 +67,7 @@ namespace TurboHTTP.JSON.Lite
                 return ReadNull();
             if (c == '-' || char.IsDigit(c))
                 return ReadNumber();
-            
+
             throw new JsonParseException($"Unexpected character '{c}' at position {_position}");
         }
 
@@ -183,15 +183,15 @@ namespace TurboHTTP.JSON.Lite
             while (_position < _json.Length)
             {
                 char c = _json[_position++];
-                
+
                 if (c == '"')
                     return _stringBuffer.ToString();
-                
+
                 if (c == '\\')
                 {
                     if (_position >= _json.Length)
                         throw new JsonParseException("Unterminated string escape");
-                    
+
                     char escaped = _json[_position++];
                     switch (escaped)
                     {
@@ -224,7 +224,7 @@ namespace TurboHTTP.JSON.Lite
         private void AppendUnicodeEscape()
         {
             int codePoint = ReadHexCodeUnit();
-            
+
             // Check for high surrogate (U+D800 to U+DBFF)
             if (codePoint >= 0xD800 && codePoint <= 0xDBFF)
             {
@@ -235,7 +235,7 @@ namespace TurboHTTP.JSON.Lite
                 {
                     _position += 2; // Skip \u
                     int lowSurrogate = ReadHexCodeUnit();
-                    
+
                     // Check for low surrogate (U+DC00 to U+DFFF)
                     if (lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF)
                     {
@@ -247,13 +247,13 @@ namespace TurboHTTP.JSON.Lite
                 }
                 throw new JsonParseException("Invalid surrogate pair: missing low surrogate");
             }
-            
+
             // Check for lone low surrogate (invalid)
             if (codePoint >= 0xDC00 && codePoint <= 0xDFFF)
             {
                 throw new JsonParseException("Invalid surrogate pair: unexpected low surrogate");
             }
-            
+
             _stringBuffer.Append((char)codePoint);
         }
 
@@ -261,13 +261,13 @@ namespace TurboHTTP.JSON.Lite
         {
             if (_position + 4 > _json.Length)
                 throw new JsonParseException("Invalid unicode escape sequence");
-            
+
             string hex = _json.Substring(_position, 4);
             _position += 4;
-            
+
             if (int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int codePoint))
                 return codePoint;
-            
+
             throw new JsonParseException($"Invalid unicode escape sequence '\\u{hex}'");
         }
 
@@ -338,13 +338,13 @@ namespace TurboHTTP.JSON.Lite
         {
             if (_position + expected.Length > _json.Length)
                 return false;
-            
+
             for (int i = 0; i < expected.Length; i++)
             {
                 if (_json[_position + i] != expected[i])
                     return false;
             }
-            
+
             _position += expected.Length;
             return true;
         }

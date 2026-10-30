@@ -12,7 +12,8 @@ namespace TurboHTTP.Tests.Auth
     public class AuthInterceptorTests
     {
         [Test]
-        public void AddsAuthorizationHeader()        {
+        public void AddsAuthorizationHeader()
+        {
             Task.Run(async () =>
             {
                 var provider = new StaticTokenProvider("test-token-123");
@@ -32,7 +33,8 @@ namespace TurboHTTP.Tests.Auth
         }
 
         [Test]
-        public void CustomScheme()        {
+        public void CustomScheme()
+        {
             Task.Run(async () =>
             {
                 var provider = new StaticTokenProvider("api-key-456");
@@ -52,7 +54,8 @@ namespace TurboHTTP.Tests.Auth
         }
 
         [Test]
-        public void EmptyToken_SkipsHeader()        {
+        public void EmptyToken_SkipsHeader()
+        {
             Task.Run(async () =>
             {
                 var provider = new StaticTokenProvider("");
@@ -70,7 +73,8 @@ namespace TurboHTTP.Tests.Auth
         }
 
         [Test]
-        public void NullToken_SkipsHeader()        {
+        public void NullToken_SkipsHeader()
+        {
             Task.Run(async () =>
             {
                 var provider = new StaticTokenProvider(null);

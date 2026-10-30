@@ -38,7 +38,7 @@ namespace TurboHTTP.Core
             try
             {
                 bool result = check();
-                report.AppendLine($"[{ (result ? "PASS" : "FAIL") }] {name}");
+                report.AppendLine($"[{(result ? "PASS" : "FAIL")}] {name}");
                 return result;
             }
             catch (Exception ex)
@@ -72,7 +72,7 @@ namespace TurboHTTP.Core
             // Verify CancellationTokenSource is not stripped/broken
             using var cts = new CancellationTokenSource();
             if (cts.Token.CanBeCanceled != true) return false;
-            
+
             cts.Cancel();
             return cts.IsCancellationRequested;
         }

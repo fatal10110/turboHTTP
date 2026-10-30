@@ -11,7 +11,8 @@ namespace TurboHTTP.Tests.Transport.Http2
     public class Http2FrameCodecTests
     {
         [Test]
-        public void DataFrame_RoundTrip()        {
+        public void DataFrame_RoundTrip()
+        {
             Task.Run(async () =>
             {
                 await AssertFrameRoundTrip(new Http2Frame
@@ -26,7 +27,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void HeadersFrame_RoundTrip()        {
+        public void HeadersFrame_RoundTrip()
+        {
             Task.Run(async () =>
             {
                 await AssertFrameRoundTrip(new Http2Frame
@@ -41,7 +43,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void SettingsFrame_RoundTrip()        {
+        public void SettingsFrame_RoundTrip()
+        {
             Task.Run(async () =>
             {
                 var payload = new byte[] { 0x00, 0x02, 0x00, 0x00, 0x00, 0x00 }; // ENABLE_PUSH=0
@@ -57,7 +60,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void PingFrame_RoundTrip()        {
+        public void PingFrame_RoundTrip()
+        {
             Task.Run(async () =>
             {
                 var payload = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
@@ -73,7 +77,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void GoAwayFrame_RoundTrip()        {
+        public void GoAwayFrame_RoundTrip()
+        {
             Task.Run(async () =>
             {
                 var payload = new byte[8];
@@ -90,7 +95,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void WindowUpdateFrame_RoundTrip()        {
+        public void WindowUpdateFrame_RoundTrip()
+        {
             Task.Run(async () =>
             {
                 var payload = new byte[] { 0x00, 0x00, 0xFF, 0xFF };
@@ -106,7 +112,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void RstStreamFrame_RoundTrip()        {
+        public void RstStreamFrame_RoundTrip()
+        {
             Task.Run(async () =>
             {
                 var payload = new byte[] { 0x00, 0x00, 0x00, 0x08 }; // CANCEL
@@ -122,7 +129,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void ContinuationFrame_RoundTrip()        {
+        public void ContinuationFrame_RoundTrip()
+        {
             Task.Run(async () =>
             {
                 await AssertFrameRoundTrip(new Http2Frame
@@ -137,7 +145,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void StreamId_31BitMasking_HighBitCleared()        {
+        public void StreamId_31BitMasking_HighBitCleared()
+        {
             Task.Run(async () =>
             {
                 var ms = new MemoryStream();
@@ -160,7 +169,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void StreamId_Zero_ConnectionLevel()        {
+        public void StreamId_Zero_ConnectionLevel()
+        {
             Task.Run(async () =>
             {
                 await AssertFrameRoundTrip(new Http2Frame
@@ -174,7 +184,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void ZeroPayload_EmptyArray()        {
+        public void ZeroPayload_EmptyArray()
+        {
             Task.Run(async () =>
             {
                 var ms = new MemoryStream();
@@ -198,7 +209,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void WriteFrameAsync_UsesFrameLengthNotPayloadBufferLength()        {
+        public void WriteFrameAsync_UsesFrameLengthNotPayloadBufferLength()
+        {
             Task.Run(async () =>
             {
                 var ms = new MemoryStream();
@@ -226,7 +238,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void WriteFrameAsync_LengthExceedsPayload_Throws()        {
+        public void WriteFrameAsync_LengthExceedsPayload_Throws()
+        {
             Task.Run(async () =>
             {
                 var ms = new MemoryStream();
@@ -279,7 +292,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void FrameSizeValidation_RejectsOversized()        {
+        public void FrameSizeValidation_RejectsOversized()
+        {
             Task.Run(async () =>
             {
                 var ms = new MemoryStream();
@@ -301,7 +315,8 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void WritePrefaceAsync_Correct24Bytes()        {
+        public void WritePrefaceAsync_Correct24Bytes()
+        {
             Task.Run(async () =>
             {
                 var ms = new MemoryStream();

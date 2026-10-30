@@ -115,7 +115,7 @@ namespace TurboHTTP.Transport.Http2
             {
                 var (id, value) = settings[i];
                 int offset = i * Http2Constants.SettingEntrySize;
-                payload[offset]     = (byte)(((ushort)id >> 8) & 0xFF);
+                payload[offset] = (byte)(((ushort)id >> 8) & 0xFF);
                 payload[offset + 1] = (byte)((ushort)id & 0xFF);
                 payload[offset + 2] = (byte)((value >> 24) & 0xFF);
                 payload[offset + 3] = (byte)((value >> 16) & 0xFF);

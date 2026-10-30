@@ -13,7 +13,7 @@ namespace TurboHTTP.JSON.Lite
     public sealed class JsonWriter
     {
         private const int MaxDepth = 64;
-        
+
         private readonly StringBuilder _sb;
         private readonly bool _prettyPrint;
         private int _indent;
@@ -215,7 +215,7 @@ namespace TurboHTTP.JSON.Lite
         private void WriteEnum(Enum e)
         {
             var underlyingType = Enum.GetUnderlyingType(e.GetType());
-            
+
             if (underlyingType == typeof(ulong))
             {
                 // Safely convert ulong-backed enums

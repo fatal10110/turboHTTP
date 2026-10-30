@@ -72,9 +72,9 @@ namespace TurboHTTP.Transport.BouncyCastle
         private void ValidateHostname(TlsCertificate tlsCertificate, string hostname)
         {
             var cert = new X509Certificate(tlsCertificate.GetEncoded());
-            
+
             var sans = GetSubjectAlternativeNames(cert);
-            
+
             if (sans.Any(san => MatchesHostname(san, hostname)))
             {
                 return;
@@ -159,7 +159,7 @@ namespace TurboHTTP.Transport.BouncyCastle
             {
                 var suffix = pattern.Substring(2);
                 var dotIndex = hostname.IndexOf('.');
-                
+
                 if (dotIndex > 0)
                 {
                     var hostSuffix = hostname.Substring(dotIndex + 1);

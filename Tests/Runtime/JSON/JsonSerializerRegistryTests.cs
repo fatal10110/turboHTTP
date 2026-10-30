@@ -40,7 +40,7 @@ namespace TurboHTTP.Tests.JSON
         [Test]
         public void SetDefault_Null_ThrowsException()
         {
-            Assert.That(() => JsonSerializer.SetDefault(null), 
+            Assert.That(() => JsonSerializer.SetDefault(null),
                 Throws.TypeOf<ArgumentNullException>());
         }
 

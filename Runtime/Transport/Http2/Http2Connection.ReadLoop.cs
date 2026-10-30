@@ -32,16 +32,16 @@ namespace TurboHTTP.Transport.Http2
 
                         switch (frame.Type)
                         {
-                            case Http2FrameType.Data:         await HandleDataFrameAsync(frame, ct); break;
-                            case Http2FrameType.Headers:      HandleHeadersFrame(frame); break;
+                            case Http2FrameType.Data: await HandleDataFrameAsync(frame, ct); break;
+                            case Http2FrameType.Headers: HandleHeadersFrame(frame); break;
                             case Http2FrameType.Continuation: HandleContinuationFrame(frame); break;
-                            case Http2FrameType.Settings:     await HandleSettingsFrameAsync(frame, ct); break;
-                            case Http2FrameType.Ping:         await HandlePingFrameAsync(frame, ct); break;
-                            case Http2FrameType.GoAway:       HandleGoAwayFrame(frame); break;
+                            case Http2FrameType.Settings: await HandleSettingsFrameAsync(frame, ct); break;
+                            case Http2FrameType.Ping: await HandlePingFrameAsync(frame, ct); break;
+                            case Http2FrameType.GoAway: HandleGoAwayFrame(frame); break;
                             case Http2FrameType.WindowUpdate: await HandleWindowUpdateFrameAsync(frame); break;
-                            case Http2FrameType.RstStream:    HandleRstStreamFrame(frame); break;
-                            case Http2FrameType.PushPromise:  await RejectPushPromiseAsync(frame); break;
-                            case Http2FrameType.Priority:     HandlePriorityFrame(frame); break;
+                            case Http2FrameType.RstStream: HandleRstStreamFrame(frame); break;
+                            case Http2FrameType.PushPromise: await RejectPushPromiseAsync(frame); break;
+                            case Http2FrameType.Priority: HandlePriorityFrame(frame); break;
                         }
                     }
                 }
@@ -301,122 +301,122 @@ namespace TurboHTTP.Transport.Http2
             try
             {
 
-            // Enforce SETTINGS_MAX_HEADER_LIST_SIZE (RFC 7540 Section 6.5.2).
-            // Header list size = sum of (name length + value length + 32) for each header.
-            int headerListSize = 0;
-            foreach (var (n, v) in decoded)
-            {
-                headerListSize += n.Length + v.Length + 32;
-            }
-            if (headerListSize > _localSettings.MaxHeaderListSize)
-            {
-                stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                    $"Response header list size {headerListSize} exceeds limit {_localSettings.MaxHeaderListSize}")));
-                RemoveActiveStream(stream.StreamId);
-                return;
-            }
-
-            var responseHeaders = new HttpHeaders();
-            var statusCode = 0;
-            var hasStatus = false;
-            foreach (var (name, value) in decoded)
-            {
-                if (name == ":status")
+                // Enforce SETTINGS_MAX_HEADER_LIST_SIZE (RFC 7540 Section 6.5.2).
+                // Header list size = sum of (name length + value length + 32) for each header.
+                int headerListSize = 0;
+                foreach (var (n, v) in decoded)
                 {
-                    if (isTrailingHeaders)
+                    headerListSize += n.Length + v.Length + 32;
+                }
+                if (headerListSize > _localSettings.MaxHeaderListSize)
+                {
+                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        $"Response header list size {headerListSize} exceeds limit {_localSettings.MaxHeaderListSize}")));
+                    RemoveActiveStream(stream.StreamId);
+                    return;
+                }
+
+                var responseHeaders = new HttpHeaders();
+                var statusCode = 0;
+                var hasStatus = false;
+                foreach (var (name, value) in decoded)
+                {
+                    if (name == ":status")
+                    {
+                        if (isTrailingHeaders)
+                        {
+                            stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                                "Unexpected :status pseudo-header in trailing headers")));
+                            RemoveActiveStream(stream.StreamId);
+                            return;
+                        }
+
+                        if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out statusCode)
+                            && statusCode >= 100 && statusCode <= 999)
+                        {
+                            hasStatus = true;
+                        }
+                        else
+                        {
+                            stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                                $"Invalid :status value: {value}")));
+                            RemoveActiveStream(stream.StreamId);
+                            return;
+                        }
+                    }
+                    else if (!name.StartsWith(":"))
+                    {
+                        responseHeaders.Add(name, value);
+                    }
+                    else if (isTrailingHeaders)
                     {
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                            "Unexpected :status pseudo-header in trailing headers")));
+                            $"Unexpected pseudo-header in trailing headers: {name}")));
                         RemoveActiveStream(stream.StreamId);
                         return;
-                    }
-
-                    if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out statusCode)
-                        && statusCode >= 100 && statusCode <= 999)
-                    {
-                        hasStatus = true;
                     }
                     else
                     {
                         stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                            $"Invalid :status value: {value}")));
+                            $"Unexpected pseudo-header in response headers: {name}")));
                         RemoveActiveStream(stream.StreamId);
                         return;
                     }
                 }
-                else if (!name.StartsWith(":"))
-                {
-                    responseHeaders.Add(name, value);
-                }
-                else if (isTrailingHeaders)
-                {
-                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        $"Unexpected pseudo-header in trailing headers: {name}")));
-                    RemoveActiveStream(stream.StreamId);
-                    return;
-                }
-                else
-                {
-                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        $"Unexpected pseudo-header in response headers: {name}")));
-                    RemoveActiveStream(stream.StreamId);
-                    return;
-                }
-            }
 
-            if (!isTrailingHeaders && !hasStatus)
-            {
-                stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                    "Missing :status pseudo-header in HTTP/2 response")));
-                RemoveActiveStream(stream.StreamId);
-                return;
-            }
-
-            if (isTrailingHeaders)
-            {
-                if (!endStream)
+                if (!isTrailingHeaders && !hasStatus)
                 {
                     stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        "Trailing HEADERS frame received without END_STREAM flag (RFC 9113 §8.1)")));
+                        "Missing :status pseudo-header in HTTP/2 response")));
                     RemoveActiveStream(stream.StreamId);
                     return;
                 }
 
-                stream.AppendTrailers(responseHeaders);
-                RemoveActiveStream(stream.StreamId);
-                stream.State = stream.State == Http2StreamState.HalfClosedLocal
-                    ? Http2StreamState.Closed
-                    : Http2StreamState.HalfClosedRemote;
-                stream.CompleteResponseBody();
-            }
-            else
-            {
-                if (statusCode >= 100 && statusCode < 200)
+                if (isTrailingHeaders)
                 {
-                    if (statusCode == 100)
-                        stream.SignalExpectContinueContinue();
+                    if (!endStream)
+                    {
+                        stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                            "Trailing HEADERS frame received without END_STREAM flag (RFC 9113 §8.1)")));
+                        RemoveActiveStream(stream.StreamId);
+                        return;
+                    }
 
-                    stream.ClearHeaderBlock();
-                    return;
-                }
-
-                stream.SignalExpectContinueFinalResponse();
-                stream.TryStartResponse(
-                    statusCode,
-                    responseHeaders,
-                    GetContentLength(responseHeaders),
-                    endStream);
-
-                if (endStream)
-                {
+                    stream.AppendTrailers(responseHeaders);
                     RemoveActiveStream(stream.StreamId);
                     stream.State = stream.State == Http2StreamState.HalfClosedLocal
                         ? Http2StreamState.Closed
                         : Http2StreamState.HalfClosedRemote;
+                    stream.CompleteResponseBody();
                 }
-            }
+                else
+                {
+                    if (statusCode >= 100 && statusCode < 200)
+                    {
+                        if (statusCode == 100)
+                            stream.SignalExpectContinueContinue();
 
-            stream.ClearHeaderBlock();
+                        stream.ClearHeaderBlock();
+                        return;
+                    }
+
+                    stream.SignalExpectContinueFinalResponse();
+                    stream.TryStartResponse(
+                        statusCode,
+                        responseHeaders,
+                        GetContentLength(responseHeaders),
+                        endStream);
+
+                    if (endStream)
+                    {
+                        RemoveActiveStream(stream.StreamId);
+                        stream.State = stream.State == Http2StreamState.HalfClosedLocal
+                            ? Http2StreamState.Closed
+                            : Http2StreamState.HalfClosedRemote;
+                    }
+                }
+
+                stream.ClearHeaderBlock();
             }
             finally
             {

@@ -1,0 +1,84 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{json,asmdef,asmref,yml,yaml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+# Whitespace/layout is enforced by `dotnet format whitespace` (Tools~/ci/check.sh).
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_preserve_single_line_statements = true
+csharp_preserve_single_line_blocks = true
+dotnet_sort_system_directives_first = true
+# Keep hand-aligned columns (enum values, switch tables).
+csharp_space_around_declaration_statements = ignore
+
+# Analyzer rules for the shadow build (Tools~/ci/shadow_build.py). Every warning from
+# TurboHTTP sources fails CI unless it is in Tools~/ci/analyzer-baseline.txt (a ratchet).
+# Correctness / runtime-safety rules relevant to a pooled, async, IL2CPP library:
+# ValueTask consumed more than once / not awaited
+dotnet_diagnostic.CA2012.severity = warning
+# ReferenceEquals on value types
+dotnet_diagnostic.CA2013.severity = warning
+# stackalloc in loops
+dotnet_diagnostic.CA2014.severity = warning
+# finalizer on MemoryManager<T>-derived types
+dotnet_diagnostic.CA2015.severity = warning
+# forward CancellationToken
+dotnet_diagnostic.CA2016.severity = warning
+# rethrow loses stack trace
+dotnet_diagnostic.CA2200.severity = warning
+# property assigned in its own setter
+dotnet_diagnostic.CA2011.severity = warning
+# self-assignment
+dotnet_diagnostic.CA2245.severity = warning
+# empty finalizer
+dotnet_diagnostic.CA1821.severity = warning
+# ToImmutable on immutable collection
+dotnet_diagnostic.CA2009.severity = warning
+# Buffer.BlockCopy count is bytes
+dotnet_diagnostic.CA2018.severity = warning
+# ThreadStatic with initializer
+dotnet_diagnostic.CA2019.severity = warning
+# Cast/OfType incompatible types
+dotnet_diagnostic.CA2021.severity = warning
+dotnet_diagnostic.CA1018.severity = warning
+# culture-sensitive formatting is reviewed by hand
+dotnet_diagnostic.CA1305.severity = none
+dotnet_diagnostic.CA1307.severity = none
+dotnet_diagnostic.CA1309.severity = none
+# culture-sensitive string comparison
+dotnet_diagnostic.CA1310.severity = warning
+# IL2CPP/AOT and protocol hazards banned via Tools~/ci/BannedSymbols.txt:
+dotnet_diagnostic.RS0030.severity = warning
+# Compiler warnings that indicate real bugs:
+dotnet_diagnostic.CS0162.severity = warning
+# un-awaited task
+dotnet_diagnostic.CS4014.severity = warning
+dotnet_diagnostic.CS1998.severity = warning
+# volatile passed by ref to Interlocked/Volatile is intended
+dotnet_diagnostic.CS0420.severity = none
+
+# Vendored third-party code: never analyzed or formatted.
+[Runtime/Transport/BouncyCastle/Lib/**.cs]
+generated_code = true
+dotnet_analyzer_diagnostic.severity = none
+
+[Runtime/Unity/Decoders/**.cs]
+dotnet_diagnostic.RS0030.severity = none

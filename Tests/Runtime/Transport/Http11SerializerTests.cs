@@ -98,7 +98,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SerializeGet_ProducesCorrectRequestLine()        {
+        public void SerializeGet_ProducesCorrectRequestLine()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/path"));
@@ -108,7 +109,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SerializeGet_AutoAddsHostHeader()        {
+        public void SerializeGet_AutoAddsHostHeader()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
@@ -118,7 +120,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SerializeGet_NonDefaultPort_IncludesPortInHost()        {
+        public void SerializeGet_NonDefaultPort_IncludesPortInHost()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com:8080/"));
@@ -128,7 +131,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SerializeGet_UserSetHostHeader_Preserved()        {
+        public void SerializeGet_UserSetHostHeader_Preserved()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -141,7 +145,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SerializeGet_AutoAddsConnectionKeepAlive()        {
+        public void SerializeGet_AutoAddsConnectionKeepAlive()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
@@ -151,7 +156,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SerializeGet_UserSetConnectionHeader_NotOverridden()        {
+        public void SerializeGet_UserSetConnectionHeader_NotOverridden()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -164,7 +170,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SerializePost_AutoAddsContentLength()        {
+        public void SerializePost_AutoAddsContentLength()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(
@@ -177,7 +184,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SerializePost_WritesBody()        {
+        public void SerializePost_WritesBody()
+        {
             Task.Run(async () =>
             {
                 var body = Encoding.UTF8.GetBytes("hello");
@@ -407,7 +415,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_MultiValueHeaders_EmitsSeparateLines()        {
+        public void Serialize_MultiValueHeaders_EmitsSeparateLines()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -475,7 +484,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_HeaderNameWithValidRfc9110TChars_AcceptsRequest()        {
+        public void Serialize_HeaderNameWithValidRfc9110TChars_AcceptsRequest()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -487,7 +497,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_NoBody_NoContentLength()        {
+        public void Serialize_NoBody_NoContentLength()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
@@ -497,7 +508,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_UserSetContentLength_Mismatch_IsNormalizedToActualBodyLength()        {
+        public void Serialize_UserSetContentLength_Mismatch_IsNormalizedToActualBodyLength()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -515,7 +527,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_UserSetContentLength_Correct_Preserved()        {
+        public void Serialize_UserSetContentLength_Correct_Preserved()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -532,7 +545,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_DuplicateContentLength_ConflictingValues_AreReplacedByTransportValue()        {
+        public void Serialize_DuplicateContentLength_ConflictingValues_AreReplacedByTransportValue()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -589,7 +603,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_CommaSeparatedContentLength_ConflictingValues_AreReplacedByTransportValue()        {
+        public void Serialize_CommaSeparatedContentLength_ConflictingValues_AreReplacedByTransportValue()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -607,7 +622,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_TransferEncodingAndContentLength_OnEmptyRequest_AreStripped()        {
+        public void Serialize_TransferEncodingAndContentLength_OnEmptyRequest_AreStripped()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -622,7 +638,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_AutoAddsUserAgent()        {
+        public void Serialize_AutoAddsUserAgent()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com/"));
@@ -632,7 +649,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_UserSetUserAgent_NotOverridden()        {
+        public void Serialize_UserSetUserAgent_NotOverridden()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -645,7 +663,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_TransferEncodingSet_OnEmptyRequest_IsStripped()        {
+        public void Serialize_TransferEncodingSet_OnEmptyRequest_IsStripped()
+        {
             Task.Run(async () =>
             {
                 var headers = new HttpHeaders();
@@ -707,7 +726,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_PathAndQuery_EmptyFallsBackToSlash()        {
+        public void Serialize_PathAndQuery_EmptyFallsBackToSlash()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://example.com"));
@@ -717,7 +737,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_IPv6Host_WrappedInBrackets()        {
+        public void Serialize_IPv6Host_WrappedInBrackets()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://[::1]/"));
@@ -727,7 +748,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Serialize_IPv6Host_NonDefaultPort_IncludesPortAfterBrackets()        {
+        public void Serialize_IPv6Host_NonDefaultPort_IncludesPortAfterBrackets()
+        {
             Task.Run(async () =>
             {
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("http://[::1]:8080/"));

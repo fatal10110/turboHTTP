@@ -111,7 +111,7 @@ namespace TurboHTTP.Unity.Decoders
                 {
                     builder.AddAudioDecoder(AudioDecoders[i]);
                 }
-                
+
                 // Initialization is startup-only; keep configure under lock to avoid
                 // duplicate configure callback invocation in concurrent bootstrap races.
                 configure?.Invoke(builder);

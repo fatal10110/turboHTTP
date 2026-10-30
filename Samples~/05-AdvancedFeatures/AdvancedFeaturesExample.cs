@@ -74,7 +74,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             await Example2_Retries();
             await Example3_RateLimiting();
             await Example4_WebSockets();
-            
+
             PrintMetrics();
         }
 
@@ -89,7 +89,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             Debug.Log("Request 2 (Cache)...");
             var r2 = await _client.Get("/get").SendAsync();
             Debug.Log($"Status: {r2.StatusCode}, Time: {r2.ElapsedTime.TotalMilliseconds}ms");
-            
+
             if (r2.ElapsedTime.TotalMilliseconds < 10)
             {
                 Debug.Log("Request served from cache instantly!");
@@ -106,7 +106,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
                 // Note: httpbin might not reliably accept /status/503 for retries if implementation expects specific errors
                 // But let's assume standard behavior.
                 var response = await _client.Get("/status/503").WithTimeout(TimeSpan.FromSeconds(2)).SendAsync();
-                
+
                 Debug.Log($"Final Status: {response.StatusCode}");
             }
             catch (UHttpException ex)
@@ -124,15 +124,15 @@ namespace TurboHTTP.Samples.AdvancedFeatures
                 try
                 {
                     await _client.Get("/get").SendAsync();
-                    Debug.Log($"Request {i+1} success");
+                    Debug.Log($"Request {i + 1} success");
                 }
                 catch (UHttpException ex) when (ex.HttpError.Type == UHttpErrorType.HttpError && ex.HttpError.Code == (System.Net.HttpStatusCode)429)
                 {
-                    Debug.Log($"Request {i+1} rate limited (429)!");
+                    Debug.Log($"Request {i + 1} rate limited (429)!");
                 }
                 catch (Exception ex)
                 {
-                    Debug.Log($"Request {i+1} failed: {ex.Message}");
+                    Debug.Log($"Request {i + 1} failed: {ex.Message}");
                 }
             }
         }
@@ -154,7 +154,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
 
             // Create a WebSocket connection
             var ws = _client.WebSockets.Create("wss://echo.websocket.events");
-            
+
             await ws.ConnectAsync(System.Threading.CancellationToken.None);
             Debug.Log("WebSocket connected.");
 
@@ -165,7 +165,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             // For this sample, we just wait briefly for the echo.
             var buffer = new byte[1024];
             var result = await ws.ReceiveAsync(buffer.AsMemory(), System.Threading.CancellationToken.None);
-            
+
             if (result.MessageType == TurboHTTP.WebSocket.WebSocketMessageType.Text)
             {
                 var text = System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count);

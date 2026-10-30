@@ -104,10 +104,10 @@ namespace TurboHTTP.Transport.BouncyCastle
             CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
-            
+
             var secureRandom = new SecureRandom();
             var crypto = new BcTlsCrypto(secureRandom);
-            
+
             ct.ThrowIfCancellationRequested();
 
             var protocol = new TlsClientProtocol(innerStream);
@@ -130,7 +130,7 @@ namespace TurboHTTP.Transport.BouncyCastle
                 // Close protocol to release resources — protocol.Stream may not
                 // cascade disposal back to TlsClientProtocol.
                 try { protocol.Close(); } catch { }
-                
+
                 if (ex is TlsFatalAlert alert)
                 {
                     throw new System.Security.Authentication.AuthenticationException(

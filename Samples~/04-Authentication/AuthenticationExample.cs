@@ -25,7 +25,7 @@ namespace TurboHTTP.Samples.Authentication
             {
                 BaseUrl = "https://httpbin.org" // Using httpbin to test headers
             };
-            
+
             // Add auth middleware
             options.Middlewares.Add(new AuthMiddleware(_tokenProvider));
 
@@ -43,7 +43,7 @@ namespace TurboHTTP.Samples.Authentication
         async Task Example1_AuthenticatedRequest()
         {
             Debug.Log("=== Example 1: Authenticated Request ===");
-            
+
             // The middleware will automatically add the Authorization header
             var response = await _client.Get("/bearer").SendAsync();
 

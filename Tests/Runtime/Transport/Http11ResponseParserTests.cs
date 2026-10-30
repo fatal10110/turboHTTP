@@ -119,7 +119,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_200OK_ContentLength_ReturnsBodyAndHeaders()        {
+        public void Parse_200OK_ContentLength_ReturnsBodyAndHeaders()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Test: A\r\n\r\nHello";
@@ -131,7 +132,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_404NotFound_ReturnsStatusCode()        {
+        public void Parse_404NotFound_ReturnsStatusCode()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
@@ -141,7 +143,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_500InternalServerError_ReturnsStatusCode()        {
+        public void Parse_500InternalServerError_ReturnsStatusCode()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
@@ -151,7 +154,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_ChunkedBody_ReassemblesCorrectly()        {
+        public void Parse_ChunkedBody_ReassemblesCorrectly()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
@@ -165,7 +169,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_ChunkedBody_WithTrailers_Completes()        {
+        public void Parse_ChunkedBody_WithTrailers_Completes()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
@@ -284,7 +289,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_ChunkedBody_EmptyChunks_Handled()        {
+        public void Parse_ChunkedBody_EmptyChunks_Handled()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
@@ -296,7 +302,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_NoContentLength_NoChunked_ReadsToEnd()        {
+        public void Parse_NoContentLength_NoChunked_ReadsToEnd()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\n\r\nHello";
@@ -306,7 +313,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_HeadResponse_WithContentLength_SkipsBody()        {
+        public void Parse_HeadResponse_WithContentLength_SkipsBody()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello";
@@ -330,7 +338,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_204NoContent_SkipsBody()        {
+        public void Parse_204NoContent_SkipsBody()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\nHello";
@@ -340,7 +349,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_304NotModified_SkipsBody()        {
+        public void Parse_304NotModified_SkipsBody()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 304 Not Modified\r\nContent-Length: 5\r\n\r\nHello";
@@ -350,7 +360,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_100Continue_SkippedBeforeFinalResponse()        {
+        public void Parse_100Continue_SkippedBeforeFinalResponse()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 100 Continue\r\n\r\n" +
@@ -361,7 +372,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_KeepAlive_HTTP11_Default_ReturnsTrue()        {
+        public void Parse_KeepAlive_HTTP11_Default_ReturnsTrue()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
@@ -371,7 +383,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_ConnectionClose_ReturnsFalse()        {
+        public void Parse_ConnectionClose_ReturnsFalse()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
@@ -381,7 +394,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_ConnectionCloseTokenized_ReturnsFalse()        {
+        public void Parse_ConnectionCloseTokenized_ReturnsFalse()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nConnection: keep-alive, close\r\nContent-Length: 0\r\n\r\n";
@@ -391,7 +405,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_ConnectionHeaderMultiValue_CloseWins_ReturnsFalse()        {
+        public void Parse_ConnectionHeaderMultiValue_CloseWins_ReturnsFalse()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nConnection: close, Upgrade\r\nContent-Length: 0\r\n\r\n";
@@ -401,7 +416,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_HTTP10_Default_ReturnsFalse()        {
+        public void Parse_HTTP10_Default_ReturnsFalse()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n";
@@ -411,7 +427,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_HTTP10_KeepAliveTokenized_ReturnsTrue()        {
+        public void Parse_HTTP10_KeepAliveTokenized_ReturnsTrue()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.0 200 OK\r\nConnection: Upgrade, keep-alive\r\nContent-Length: 0\r\n\r\n";
@@ -421,7 +438,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_MultipleSetCookieHeaders_AllPreserved()        {
+        public void Parse_MultipleSetCookieHeaders_AllPreserved()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nContent-Length: 0\r\n\r\n";
@@ -461,7 +479,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_TransferEncodingGzipChunked_ReturnsRawCompressedChunks()        {
+        public void Parse_TransferEncodingGzipChunked_ReturnsRawCompressedChunks()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n" +
@@ -498,7 +517,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_TransferEncoding_TakesPrecedenceOverContentLength()        {
+        public void Parse_TransferEncoding_TakesPrecedenceOverContentLength()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 100\r\n\r\n" +
@@ -553,7 +573,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_MultipleContentLength_Same_Accepted()        {
+        public void Parse_MultipleContentLength_Same_Accepted()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\nHey";
@@ -563,7 +584,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_EmptyBody_ReturnsEmptyArray()        {
+        public void Parse_EmptyBody_ReturnsEmptyArray()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
@@ -573,7 +595,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_TransferEncodingIdentity_TreatedAsAbsent()        {
+        public void Parse_TransferEncodingIdentity_TreatedAsAbsent()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: identity\r\nContent-Length: 5\r\n\r\nHello";
@@ -583,7 +606,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_StatusLine_NoReasonPhrase_Parses()        {
+        public void Parse_StatusLine_NoReasonPhrase_Parses()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200\r\nContent-Length: 0\r\n\r\n";
@@ -593,7 +617,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_StatusLine_EmptyReasonPhrase_Parses()        {
+        public void Parse_StatusLine_EmptyReasonPhrase_Parses()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 \r\nContent-Length: 0\r\n\r\n";
@@ -603,7 +628,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_StatusLine_MultiWordReasonPhrase_Parses()        {
+        public void Parse_StatusLine_MultiWordReasonPhrase_Parses()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 All Good Here\r\nContent-Length: 0\r\n\r\n";
@@ -640,7 +666,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_ChunkedBody_WithExtensions_StripsExtensionsBeforeParsing()        {
+        public void Parse_ChunkedBody_WithExtensions_StripsExtensionsBeforeParsing()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" +
@@ -680,7 +707,8 @@ namespace TurboHTTP.Tests.Transport
 #endif
 
         [Test]
-        public void Parse_MultipleSetCookieHeaders_AllPreservedViaAdd()        {
+        public void Parse_MultipleSetCookieHeaders_AllPreservedViaAdd()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nContent-Length: 0\r\n\r\n";
@@ -691,7 +719,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_ReadToEnd_ForcesKeepAliveFalse()        {
+        public void Parse_ReadToEnd_ForcesKeepAliveFalse()
+        {
             Task.Run(async () =>
             {
                 var response = "HTTP/1.1 200 OK\r\n\r\nHello";

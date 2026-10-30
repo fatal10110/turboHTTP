@@ -86,10 +86,10 @@ namespace TurboHTTP.Transport.Tls
                     "BouncyCastle TLS provider is not available. " +
                     "Ensure TurboHTTP.Transport.BouncyCastle assembly is included in your project.");
             }
-            
+
             return _bouncyCastleProvider.Value;
         }
-        
+
         private static ITlsProvider LoadBouncyCastleProvider()
         {
             // Use reflection to load BouncyCastle provider

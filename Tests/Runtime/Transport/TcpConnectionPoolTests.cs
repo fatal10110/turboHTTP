@@ -167,7 +167,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void GetConnection_CreatesNewConnection()        {
+        public void GetConnection_CreatesNewConnection()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -179,7 +180,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ReturnConnection_ConnectionReused()        {
+        public void ReturnConnection_ConnectionReused()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -276,7 +278,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ReturnConnection_StaleConnection_Disposed()        {
+        public void ReturnConnection_StaleConnection_Disposed()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -334,7 +337,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Dispose_DrainsAllConnections()        {
+        public void Dispose_DrainsAllConnections()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -358,7 +362,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void MaxConnectionsPerHost_BlocksWhenAtLimit()        {
+        public void MaxConnectionsPerHost_BlocksWhenAtLimit()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -377,7 +382,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void MaxConnectionsPerHost_WaitThenProceed()        {
+        public void MaxConnectionsPerHost_WaitThenProceed()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -397,7 +403,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void DisposedPool_ReturnConnection_DisposesConnection()        {
+        public void DisposedPool_ReturnConnection_DisposesConnection()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -415,7 +422,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void CaseInsensitiveHostKey_SharesPool()        {
+        public void CaseInsensitiveHostKey_SharesPool()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -432,7 +440,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void PooledConnection_IsReused_FalseForNewConnection()        {
+        public void PooledConnection_IsReused_FalseForNewConnection()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -444,7 +453,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void PooledConnection_IsReused_TrueAfterPoolDequeue()        {
+        public void PooledConnection_IsReused_TrueAfterPoolDequeue()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -460,7 +470,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ConnectionLease_Dispose_AlwaysReleasesSemaphore()        {
+        public void ConnectionLease_Dispose_AlwaysReleasesSemaphore()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -475,7 +486,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ConnectionLease_ReturnToPool_ThenDispose_DoesNotDisposeConnection()        {
+        public void ConnectionLease_ReturnToPool_ThenDispose_DoesNotDisposeConnection()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -493,7 +505,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ConnectionLease_NoReturnToPool_ThenDispose_DisposesConnection()        {
+        public void ConnectionLease_NoReturnToPool_ThenDispose_DisposesConnection()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -508,7 +521,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ConnectionLease_ExceptionPath_SemaphoreReleased()        {
+        public void ConnectionLease_ExceptionPath_SemaphoreReleased()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -531,7 +545,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ConnectionLease_DoubleDispose_Idempotent()        {
+        public void ConnectionLease_DoubleDispose_Idempotent()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -543,7 +558,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void PooledConnection_IsAlive_AfterDispose_ReturnsFalse()        {
+        public void PooledConnection_IsAlive_AfterDispose_ReturnsFalse()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -556,7 +572,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ConnectionLease_Dispose_AfterPoolDispose_DoesNotThrow()        {
+        public void ConnectionLease_Dispose_AfterPoolDispose_DoesNotThrow()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -568,7 +585,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void ConnectionLease_ConcurrentReturnAndDispose_NoRace()        {
+        public void ConnectionLease_ConcurrentReturnAndDispose_NoRace()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -620,7 +638,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void EnqueueConnection_AfterPoolDispose_DisposesConnection()        {
+        public void EnqueueConnection_AfterPoolDispose_DisposesConnection()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -638,7 +657,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SemaphoreCapEviction_DrainsIdleConnections_BeforeRemoval()        {
+        public void SemaphoreCapEviction_DrainsIdleConnections_BeforeRemoval()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -676,7 +696,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SemaphoreCapEviction_NeverEvictsCurrentKey()        {
+        public void SemaphoreCapEviction_NeverEvictsCurrentKey()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();
@@ -700,7 +721,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void SemaphoreCapEviction_DoesNotDisposeSemaphores()        {
+        public void SemaphoreCapEviction_DoesNotDisposeSemaphores()
+        {
             Task.Run(async () =>
             {
                 using var server = new PassiveServer();

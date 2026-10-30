@@ -16,7 +16,8 @@ namespace TurboHTTP.Tests.Pipeline
     public class LoggingInterceptorTests
     {
         [Test]
-        public void LogsRequestAndResponse()        {
+        public void LogsRequestAndResponse()
+        {
             Task.Run(async () =>
             {
                 var logs = new List<string>();
@@ -37,7 +38,8 @@ namespace TurboHTTP.Tests.Pipeline
         }
 
         [Test]
-        public void LogLevelNone_NoLogs()        {
+        public void LogLevelNone_NoLogs()
+        {
             Task.Run(async () =>
             {
                 var logs = new List<string>();
@@ -57,7 +59,8 @@ namespace TurboHTTP.Tests.Pipeline
         }
 
         [Test]
-        public void NonSuccessStatus_LogsWarn()        {
+        public void NonSuccessStatus_LogsWarn()
+        {
             Task.Run(async () =>
             {
                 var logs = new List<string>();

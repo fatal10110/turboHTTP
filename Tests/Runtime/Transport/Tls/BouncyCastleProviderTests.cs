@@ -190,7 +190,8 @@ namespace TurboHTTP.Tests.Transport.Tls
 #endif
 
         [Test]
-        public void WrapAsync_PreCancelledToken_ThrowsOperationCancelledException()        {
+        public void WrapAsync_PreCancelledToken_ThrowsOperationCancelledException()
+        {
             Task.Run(async () =>
             {
                 if (!IsAvailable())
