@@ -94,7 +94,10 @@ namespace TurboHTTP.Tests.Transport.Tls
                 BouncyCastleLoopbackServer.DrainUntilClosed(stream);
             });
             if (server == null)
+            {
                 Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                return;
+            }
 
             ThreadPool.GetMaxThreads(out int maxWorkers, out int maxIo);
             ThreadPool.GetMinThreads(out int minWorkers, out int minIo);

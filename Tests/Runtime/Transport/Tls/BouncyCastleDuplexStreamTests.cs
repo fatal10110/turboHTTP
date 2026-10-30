@@ -27,17 +27,16 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         private static async Task<TlsResult> ConnectAsync(ITlsProvider provider, int port, string[] alpn)
         {
-            var tcp = new TcpClient();
+            var stream = await BouncyCastleLoopbackServer.ConnectAsync(port).ConfigureAwait(false);
             try
             {
-                await tcp.ConnectAsync(IPAddress.Loopback, port).ConfigureAwait(false);
                 using var cts = new CancellationTokenSource(Bound);
-                return await provider.WrapAsync(tcp.GetStream(), "localhost", alpn, cts.Token)
+                return await provider.WrapAsync(stream, "localhost", alpn, cts.Token)
                     .ConfigureAwait(false);
             }
             catch
             {
-                tcp.Dispose();
+                stream.Dispose();
                 throw;
             }
         }
@@ -78,7 +77,10 @@ namespace TurboHTTP.Tests.Transport.Tls
                 BouncyCastleLoopbackServer.DrainUntilClosed(stream);
             });
             if (server == null)
+            {
                 Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                return;
+            }
 
             AssertAsync.Run(async () =>
             {
@@ -108,7 +110,10 @@ namespace TurboHTTP.Tests.Transport.Tls
             using var server = BouncyCastleLoopbackServer.TryStartTls(stream =>
                 ServeHttp2Async(stream).GetAwaiter().GetResult());
             if (server == null)
+            {
                 Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                return;
+            }
 
             AssertAsync.Run(async () =>
             {
@@ -166,7 +171,10 @@ namespace TurboHTTP.Tests.Transport.Tls
                 BouncyCastleLoopbackServer.DrainUntilClosed(stream);
             });
             if (server == null)
+            {
                 Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                return;
+            }
 
             AssertAsync.Run(async () =>
             {

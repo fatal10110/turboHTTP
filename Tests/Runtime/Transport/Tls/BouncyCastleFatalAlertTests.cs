@@ -49,10 +49,9 @@ namespace TurboHTTP.Tests.Transport.Tls
         private static async Task<TlsResult> HandshakeAsync(ITlsProvider provider, int port)
         {
             // Only failing handshakes use this helper; the provider disposes the stream on failure.
-            using var tcp = new TcpClient();
-            await tcp.ConnectAsync(IPAddress.Loopback, port).ConfigureAwait(false);
+            using var stream = await BouncyCastleLoopbackServer.ConnectAsync(port).ConfigureAwait(false);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            return await provider.WrapAsync(tcp.GetStream(), "localhost", new[] { "http/1.1" }, cts.Token)
+            return await provider.WrapAsync(stream, "localhost", new[] { "http/1.1" }, cts.Token)
                 .ConfigureAwait(false);
         }
 
@@ -88,7 +87,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             }
 
             Assert.IsInstanceOf<IOException>(failure);
-            StringAssert.Contains("internal_error(80)", failure.Message);
+            StringAssert.Contains("internal_error(80)", failure?.Message);
         }
 
         [TestCase(HandshakeFailure, UHttpErrorType.CertificateError, 1)]

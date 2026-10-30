@@ -1,8 +1,6 @@
 using System;
 using System.IO;
-using System.Net;
 using System.Net.Security;
-using System.Net.Sockets;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -40,13 +38,14 @@ namespace TurboHTTP.Tests.Transport.Tls
                 BouncyCastleLoopbackServer.DrainUntilClosed(stream);
             });
             if (server == null)
+            {
                 Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                return;
+            }
 
             AssertAsync.Run(async () =>
             {
-                using var tcp = new TcpClient();
-                await tcp.ConnectAsync(IPAddress.Loopback, server.Port);
-                var inner = new StallableStream(tcp.GetStream());
+                var inner = new StallableStream(await BouncyCastleLoopbackServer.ConnectAsync(server.Port));
                 TlsResult tls;
                 using (var handshakeCts = new CancellationTokenSource(Bound))
                 {
@@ -72,18 +71,15 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 var winner = await Task.WhenAny(readTask, Task.Delay(Bound));
                 Assert.AreSame(readTask, winner, "The read must fail instead of queueing output forever.");
-                IOException readError = null;
-                int readResult = -1;
                 try
                 {
-                    readResult = await readTask;
+                    int readResult = await readTask;
+                    Assert.Fail($"The read must fail at the bound (it returned {readResult}).");
                 }
                 catch (IOException ex)
                 {
-                    readError = ex;
+                    StringAssert.Contains("queued output", ex.Message);
                 }
-                Assert.IsNotNull(readError, $"The read must fail at the bound (it returned {readResult}).");
-                StringAssert.Contains("queued output", readError.Message);
                 Assert.IsTrue(inner.IsDisposed, "The connection must be aborted at the bound.");
 
                 winner = await Task.WhenAny(writeTask, Task.Delay(Bound));

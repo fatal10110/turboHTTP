@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Transport.Tls;
 
@@ -67,6 +68,25 @@ namespace TurboHTTP.Tests.Transport.Tls
             return TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
         }
 
+        /// <summary>
+        /// Client side: a <see cref="NetworkStream"/> over a socket connected to the loopback port.
+        /// The stream owns the socket.
+        /// </summary>
+        public static async Task<Stream> ConnectAsync(int port)
+        {
+            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            try
+            {
+                await socket.ConnectAsync(IPAddress.Loopback, port).ConfigureAwait(false);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        }
+
         public static void ReadExact(Stream stream, byte[] buffer, int count)
         {
             int read = 0;
@@ -87,6 +107,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             {
                 while (stream.Read(buffer, 0, buffer.Length) > 0)
                 {
+                    // Discard: only the close matters.
                 }
             }
             catch (IOException)
