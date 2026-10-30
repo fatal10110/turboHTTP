@@ -36,6 +36,11 @@ gh api repos/fatal10110/turboHTTP/pulls/<N>/comments --paginate      # existing 
 - Read the **whole** diff (page it). Never write a finding from a truncated view.
 - Existing reviews/threads: do not repost what is raised or resolved. On a re-review, first spend a
   pass on what earlier reviews never questioned, then diff since the last reviewed head.
+- Code-scanning threads (CodeQL alerts posted by `github-advanced-security`) are not "raised" by
+  anyone who will act on them: triage every unresolved one. A real defect becomes a finding of
+  yours; noise gets a one-line reason and is resolved
+  (`python3 'Tools~/agent-tools/wave_mail.py' threads --pr <N>` lists them, `resolve-thread --id
+  <id> --reply '<text>'` answers one). Wait for the head's `analyze (csharp)` check first.
 - Linked issues: every `Closes/Fixes/Resolves #X`, cross-checked with `closingIssuesReferences`.
   For each, `'Tools~/agent-tools/issue_slice.py' <X>` and copy its **Acceptance criteria** into
   your checklist before reading the diff. Read its entry in

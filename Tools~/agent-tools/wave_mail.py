@@ -16,6 +16,7 @@ where <repo> is the primary turboHTTP checkout this script belongs to).
 
 import argparse
 import contextlib
+import datetime
 import subprocess
 import re
 import fcntl
@@ -619,6 +620,119 @@ def cmd_pr_state(a):
         out({"error": str(e)})
 
 
+# Code scanning posts its alerts as review threads a few minutes after a push, once the CodeQL
+# analysis has uploaded; the reviewer waits for these check runs before triaging threads.
+CODE_SCANNING_CHECKS = ("CodeQL", "analyze")
+CODE_SCANNING_GRACE = float(os.environ.get("WAVES_CODEQL_GRACE", "60"))
+BOT_AUTHORS = ("github-advanced-security",)
+
+THREADS_QUERY = """query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){
+reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated path line
+comments(first:20){totalCount nodes{author{login} body url}}}}}}}"""
+
+
+def gh_graphql(query, **variables):
+    gh = os.environ.get("WAVES_GH", "gh")
+    args = [gh, "api", "graphql", "-f", f"query={query}"]
+    for k, v in variables.items():
+        if v is not None:
+            args += ["-F" if isinstance(v, int) else "-f", f"{k}={v}"]
+    r = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[-300:])
+    return json.loads(r.stdout)
+
+
+def code_scanning_state(check_runs):
+    """done | pending | absent for the code-scanning check runs of one head (newest run per name)."""
+    latest = {}
+    for r in check_runs:
+        n = r.get("name", "")
+        if any(n == c or n.startswith(c + " ") for c in CODE_SCANNING_CHECKS):
+            if n not in latest or (r.get("id") or 0) > (latest[n].get("id") or 0):
+                latest[n] = r
+    if not latest:
+        return "absent", ""
+    if any(r.get("status") != "completed" for r in latest.values()):
+        return "pending", ""
+    return "done", max((r.get("completed_at") or "") for r in latest.values())
+
+
+def summarize_threads(nodes):
+    """Unresolved review threads; unanswered = nobody replied after the opening comment."""
+    threads = []
+    for t in nodes:
+        if t.get("isResolved"):
+            continue
+        comments = (t.get("comments") or {}).get("nodes") or []
+        first = comments[0] if comments else {}
+        author = (first.get("author") or {}).get("login", "")
+        total = (t.get("comments") or {}).get("totalCount", len(comments))
+        body = (first.get("body") or "").strip()
+        title = next((ln.lstrip("#").strip() for ln in body.splitlines() if ln.strip()), "")
+        threads.append({"id": t.get("id"), "path": t.get("path"), "line": t.get("line"), "outdated": bool(t.get("isOutdated")),
+                        "author": author, "bot": author in BOT_AUTHORS, "replies": max(total - 1, 0),
+                        "title": title[:160], "url": first.get("url", "")})
+    return {"unresolved": len(threads), "unanswered": sum(1 for t in threads if t["replies"] == 0), "threads": threads}
+
+
+def pr_threads(pr):
+    owner, name = GH_REPO.split("/", 1)
+    nodes, cursor = [], None
+    while True:
+        d = gh_graphql(THREADS_QUERY, o=owner, r=name, n=int(pr), c=cursor)
+        rt = d["data"]["repository"]["pullRequest"]["reviewThreads"]
+        nodes += rt["nodes"]
+        if not rt["pageInfo"]["hasNextPage"]:
+            return summarize_threads(nodes)
+        cursor = rt["pageInfo"]["endCursor"]
+
+
+def cmd_threads(a):
+    """Unresolved review threads of a PR (CodeQL alerts included). With --head, first wait (up to
+    --wait seconds) for that head's code-scanning check runs plus a grace period, so alerts on the
+    newest push are in the list."""
+    try:
+        res = {"pr": a.pr}
+        if a.head:
+            deadline = now() + wait_secs(a.wait)
+            while True:
+                runs = gh_api(f"repos/{GH_REPO}/commits/{a.head}/check-runs?per_page=100").get("check_runs", [])
+                state, done_at = code_scanning_state(runs)
+                if state == "done" and done_at:
+                    finished = datetime.datetime.strptime(done_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+                    if time.time() - finished < CODE_SCANNING_GRACE and now() < deadline:
+                        time.sleep(min(POLL * 5, max(deadline - now(), 0)))
+                        continue
+                if state != "pending" or now() >= deadline:
+                    break
+                time.sleep(min(POLL * 5, max(deadline - now(), 0)))
+            res.update({"head": a.head, "code_scanning": state})
+        res.update(pr_threads(a.pr))
+        out(res)
+    except (RuntimeError, KeyError, ValueError, TypeError) as e:
+        out({"error": str(e)})
+
+
+REPLY_MUTATION = """mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{url}}}"""
+RESOLVE_MUTATION = """mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}"""
+
+
+def cmd_resolve_thread(a):
+    """Reply on a review thread (optional) and resolve it: one call instead of two MCP round trips."""
+    try:
+        res = {"id": a.id}
+        if a.reply:
+            d = gh_graphql(REPLY_MUTATION, t=a.id, b=a.reply)
+            res["reply_url"] = d["data"]["addPullRequestReviewThreadReply"]["comment"]["url"]
+        if not a.keep_open:
+            d = gh_graphql(RESOLVE_MUTATION, t=a.id)
+            res["resolved"] = bool(d["data"]["resolveReviewThread"]["thread"]["isResolved"])
+        out(res)
+    except (RuntimeError, KeyError, ValueError, TypeError) as e:
+        out({"error": str(e)})
+
+
 def check_summary(head):
     runs = gh_api(f"repos/{GH_REPO}/commits/{head}/check-runs?per_page=100").get("check_runs", [])
     latest = {}
@@ -835,6 +949,16 @@ def main(argv=None):
 
     s = add("pr-state", cmd_pr_state, run=False)
     s.add_argument("--pr", required=True, type=int)
+
+    s = add("threads", cmd_threads, run=False)
+    s.add_argument("--pr", required=True, type=int)
+    s.add_argument("--head", help="wait for this head's code-scanning check runs (CodeQL alerts) first")
+    s.add_argument("--wait", type=float, default=MAX_WAIT)
+
+    s = add("resolve-thread", cmd_resolve_thread, run=False)
+    s.add_argument("--id", required=True, help="review thread node id (PRRT_...) from the threads command")
+    s.add_argument("--reply", help="reply body posted on the thread first")
+    s.add_argument("--keep-open", action="store_true", help="reply only, do not resolve")
 
     s = add("ci-wait", cmd_ci_wait)
     s.add_argument("--head", required=True)
