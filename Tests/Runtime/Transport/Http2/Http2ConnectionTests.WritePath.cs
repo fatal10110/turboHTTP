@@ -644,11 +644,13 @@ namespace TurboHTTP.Tests.Transport.Http2
             try
             {
                 await WithWatchdog(task, watchdog);
-                Assert.Fail("Expected the cancelled request to fail with OperationCanceledException.");
             }
             catch (OperationCanceledException) when (!watchdog.IsCancellationRequested)
             {
+                return; // the expected outcome
             }
+
+            Assert.Fail("Expected the cancelled request to fail with OperationCanceledException.");
         }
 
         private static async Task WithWatchdog(Task task, CancellationToken watchdog)
