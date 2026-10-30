@@ -1,0 +1,32 @@
+# APIs banned in TurboHTTP sources (RS0030, enforced by Tools~/ci/shadow_build.py).
+# Existing uses are listed in Tools~/ci/analyzer-baseline.txt; new uses fail CI.
+# Format: DocumentationCommentId;reason
+
+# IL2CPP/AOT: runtime code generation is unavailable or interpreted on iOS/consoles.
+N:System.Reflection.Emit;No runtime code generation under IL2CPP/AOT
+M:System.Linq.Expressions.LambdaExpression.Compile;Expression compilation is interpreted/unsupported under IL2CPP; use delegates
+M:System.Linq.Expressions.Expression`1.Compile;Expression compilation is interpreted/unsupported under IL2CPP; use delegates
+M:System.Reflection.MethodInfo.MakeGenericMethod(System.Type[]);AOT may lack the instantiation; register a closed delegate instead
+M:System.Type.MakeGenericType(System.Type[]);AOT may lack the instantiation
+M:System.Activator.CreateInstance(System.Type);Stripped/AOT-unsafe; use factories or [Preserve]
+
+# Sync-over-async: deadlocks Unity's main thread and blocks pooled threads.
+M:System.Threading.Tasks.Task.Wait;Blocks the caller; await instead
+M:System.Threading.Tasks.Task.Wait(System.Int32);Blocks the caller; await instead
+M:System.Threading.Tasks.Task.Wait(System.Threading.CancellationToken);Blocks the caller; await instead
+M:System.Threading.Tasks.Task.Wait(System.TimeSpan);Blocks the caller; await instead
+P:System.Threading.Tasks.Task`1.Result;Blocks the caller; await instead
+M:System.Runtime.CompilerServices.TaskAwaiter.GetResult;Sync-over-async; await instead
+M:System.Runtime.CompilerServices.TaskAwaiter`1.GetResult;Sync-over-async; await instead
+
+# Time: wall clock jumps on mobile; use Stopwatch for durations, UtcNow for timestamps.
+P:System.DateTime.Now;Local wall clock; use DateTime.UtcNow or Stopwatch
+
+# Security: process-global TLS validation overrides.
+P:System.Net.ServicePointManager.ServerCertificateValidationCallback;Global TLS override; validate per connection
+P:System.Net.ServicePointManager.SecurityProtocol;Global TLS override
+
+# Architecture: TurboHTTP never delegates to other HTTP stacks.
+T:System.Net.Http.HttpClient;TurboHTTP uses its own transport
+T:System.Net.WebClient;TurboHTTP uses its own transport
+T:System.Net.HttpWebRequest;TurboHTTP uses its own transport

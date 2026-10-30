@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  # Branch pushes are covered by pull_request (the ruleset requires a PR that is
+  # up to date with main); main pushes still run to keep caches warm.
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Repo invariants (.meta, asmdef graph, JSON), whitespace format, shadow build of every
+  # asmdef for the Editor/iOS/Android define sets with analyzers + banned APIs (ratchet
+  # baseline), actionlint, shellcheck and the Python tool tests. Same as Tools~/ci/check.sh --full.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Unity version
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      # 34 MB of managed DLLs extracted from the ~4 GB unityci/editor image; the
+      # image is only pulled when the cache misses (new Unity version).
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v4
+        with:
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
+
+      - name: Install actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Check
+        run: '"Tools~/ci/check.sh" --full'
+
+  # Unity Test Runner (EditMode + PlayMode) on the pinned Unity version via GameCI.
+  # Needs the UNITY_LICENSE, UNITY_EMAIL and UNITY_PASSWORD secrets (see
+  # Development/docs/agents/tooling.md). Without them the job warns and passes, so
+  # forks and fresh clones still get the lint gate.
+  unity-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        testMode: [EditMode, PlayMode]
+    env:
+      HAS_UNITY_LICENSE: ${{ secrets.UNITY_LICENSE != '' }}
+    steps:
+      - name: License check
+        if: env.HAS_UNITY_LICENSE != 'true'
+        run: echo "::warning::UNITY_LICENSE secret is not set; Unity tests were not run"
+
+      - uses: actions/checkout@v4
+        if: env.HAS_UNITY_LICENSE == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Unity version
+        if: env.HAS_UNITY_LICENSE == 'true'
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - uses: game-ci/unity-test-runner@v4
+        if: env.HAS_UNITY_LICENSE == 'true'
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          packageMode: true
+          projectPath: .
+          unityVersion: ${{ steps.unity.outputs.version }}
+          testMode: ${{ matrix.testMode }}
+          # Tests that need the public internet stay out of PR CI.
+          customParameters: -testCategory "!ExternalNetwork"
+          artifactsPath: artifacts-${{ matrix.testMode }}
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+          checkName: Unity ${{ matrix.testMode }} results
+
+      - uses: actions/upload-artifact@v4
+        if: always() && env.HAS_UNITY_LICENSE == 'true'
+        with:
+          name: unity-${{ matrix.testMode }}-results
+          path: artifacts-${{ matrix.testMode }}
+
+  # The ruleset requires this single check; it passes only when every job above does.
+  ci:
+    if: always()
+    needs: [lint, unity-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          LINT: ${{ needs.lint.result }}
+          UNITY: ${{ needs.unity-tests.result }}
+        run: '[ "$LINT" = success ] && [ "$UNITY" = success ]'

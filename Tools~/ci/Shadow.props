@@ -1,0 +1,27 @@
+<Project>
+  <!-- Shared settings for the generated shadow-build projects (Tools~/ci/shadow_build.py).
+       Mirrors Unity 2021.3: .NET Standard 2.1 API profile, C# 9, no implicit usings/attributes. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <Deterministic>true</Deterministic>
+    <!-- Unity defines NETSTANDARD2_1/NETSTANDARD but none of the SDK's *_OR_GREATER symbols;
+         vendored BouncyCastle relies on that. Defines come from shadow_build.py. -->
+    <DisableImplicitFrameworkDefines>true</DisableImplicitFrameworkDefines>
+    <NoWarn>$(NoWarn);CS1591;NU1701</NoWarn>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Default</AnalysisMode>
+    <!-- Respect the repository .editorconfig for files outside the project directory. -->
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="3.3.4" PrivateAssets="all" />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" />
+  </ItemGroup>
+</Project>

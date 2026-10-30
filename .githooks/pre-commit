@@ -1,0 +1,21 @@
+#!/bin/sh
+# Fast gate on commit: repo invariants and formatting of staged C# files, plus the
+# shadow build when C# or asmdef files are staged. Enable once per clone:
+#   git config core.hooksPath .githooks
+# Skip for one commit: git commit --no-verify
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+python3 "Tools~/ci/check_repo.py"
+
+cs=$(git diff --cached --name-only --diff-filter=ACMR -- '*.cs' | grep -v '^Runtime/Transport/BouncyCastle/Lib/' || true)
+if [ -n "$cs" ]; then
+	# shellcheck disable=SC2086 # cs is a newline-separated path list without spaces
+	if ! dotnet format whitespace --folder --verify-no-changes --include $cs -v q; then
+		echo "pre-commit: formatting needed: Tools~/ci/check.sh --fix, then re-stage" >&2
+		exit 1
+	fi
+fi
+if git diff --cached --name-only -- '*.cs' '*.asmdef' | grep -q .; then
+	python3 "Tools~/ci/shadow_build.py"
+fi
