@@ -19,13 +19,18 @@ namespace TurboHTTP.Editor
     /// <remarks>
     /// Each <c>link.xml</c> belongs to the assembly of the nearest <c>.asmdef</c> above it and is
     /// merged only when that assembly is part of the build, so module rules (for example the
-    /// whole-assembly BouncyCastle preserve) apply only when the module ships.
+    /// whole-assembly BouncyCastle preserve) apply only when the module ships. Every merged
+    /// <c>assembly</c> element whose DLL is not confirmed in the linker input carries
+    /// <c>ignoreIfMissing="1"</c>, so a rule for an assembly absent from a player build can never
+    /// fail UnityLinker with an unresolved-assembly error.
     /// </remarks>
     internal sealed class TurboHttpLinkerProcessor : IUnityLinkerProcessor
     {
         internal const string PackageName = "com.turbohttp.complete";
         private const string LinkXmlFileName = "link.xml";
         private const string OutputFileName = "TurboHTTP.link.xml";
+        private const string CoreAssemblyName = "TurboHTTP.Core";
+        private const string IgnoreIfMissingAttribute = "ignoreIfMissing";
 
         public int callbackOrder => 0;
 
@@ -39,14 +44,7 @@ namespace TurboHTTP.Editor
                     "rules cannot be passed to UnityLinker and stripped reflection targets would fail at runtime.");
             }
 
-            var inputDirectory = data?.inputDirectory;
-            Func<string, bool> isAssemblyInBuild;
-            if (string.IsNullOrEmpty(inputDirectory) || !Directory.Exists(inputDirectory))
-                isAssemblyInBuild = _ => true;
-            else
-                isAssemblyInBuild = name => File.Exists(Path.Combine(inputDirectory, name + ".dll"));
-
-            var merged = BuildMergedLinkXml(packageRoot, isAssemblyInBuild);
+            var merged = BuildMergedLinkXml(packageRoot, CreateAssemblyProbe(data?.inputDirectory));
 
             var outputDirectory = Path.Combine(Path.GetFullPath("Temp"), "TurboHTTP");
             Directory.CreateDirectory(outputDirectory);
@@ -74,6 +72,23 @@ namespace TurboHTTP.Editor
             var editorDirectory = Path.GetDirectoryName(Path.GetFullPath(asmdefPath));
             var root = editorDirectory == null ? null : Path.GetDirectoryName(editorDirectory);
             return IsPackageRoot(root) ? root : null;
+        }
+
+        /// <summary>
+        /// Probe answering whether an assembly is in the build: true when its DLL is in
+        /// <paramref name="inputDirectory"/>, false when it is not, and null (unknown) for every name
+        /// when the directory is missing or does not hold <c>TurboHTTP.Core.dll</c>, i.e. when it is
+        /// not a linker input this processor can reason about.
+        /// </summary>
+        internal static Func<string, bool?> CreateAssemblyProbe(string inputDirectory)
+        {
+            if (string.IsNullOrEmpty(inputDirectory)
+                || !File.Exists(Path.Combine(inputDirectory, CoreAssemblyName + ".dll")))
+            {
+                return _ => null;
+            }
+
+            return name => File.Exists(Path.Combine(inputDirectory, name + ".dll"));
         }
 
         /// <summary>Every <c>link.xml</c> under <c>Runtime/</c>, in ordinal path order.</summary>
@@ -113,10 +128,11 @@ namespace TurboHTTP.Editor
 
         /// <summary>
         /// Merges the package's <c>link.xml</c> files into one document, one <c>assembly</c>
-        /// element per assembly name. A file whose owning assembly is not in the build
-        /// (<paramref name="isAssemblyInBuild"/> returns false) is skipped.
+        /// element per assembly name. A file whose owning assembly is known not to be in the build
+        /// (<paramref name="isAssemblyInBuild"/> returns false) is skipped; every <c>assembly</c>
+        /// element not confirmed in the build (false or null) gets <c>ignoreIfMissing="1"</c>.
         /// </summary>
-        internal static XDocument BuildMergedLinkXml(string packageRoot, Func<string, bool> isAssemblyInBuild)
+        internal static XDocument BuildMergedLinkXml(string packageRoot, Func<string, bool?> isAssemblyInBuild)
         {
             if (packageRoot == null)
                 throw new ArgumentNullException(nameof(packageRoot));
@@ -130,7 +146,7 @@ namespace TurboHTTP.Editor
             foreach (var file in FindLinkXmlFiles(packageRoot))
             {
                 var owner = FindOwningAssembly(file, packageRoot);
-                if (owner != null && !isAssemblyInBuild(owner))
+                if (owner != null && isAssemblyInBuild(owner) == false)
                     continue;
 
                 var root = XDocument.Load(file).Root;
@@ -166,6 +182,12 @@ namespace TurboHTTP.Editor
                     assemblies.Add(fullname, copy);
                     linker.Add(copy);
                 }
+            }
+
+            foreach (var pair in assemblies)
+            {
+                if (isAssemblyInBuild(pair.Key) != true)
+                    pair.Value.SetAttributeValue(IgnoreIfMissingAttribute, "1");
             }
 
             linker.AddFirst(new XComment(

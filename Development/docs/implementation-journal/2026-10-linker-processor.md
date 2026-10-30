@@ -18,8 +18,20 @@
   - `WebSocketTransportModuleInitializer`, `RawSocketWebSocketTransport` in the new
     `Runtime/WebSocket.Transport/link.xml`.
 - #35: SslStream, SslClientAuthenticationOptions and SslApplicationProtocol are now preserved under
-  assembly `System` (where Unity's class libraries implement them); the `System.Net.Security` entry is
-  kept for other profiles.
+  assembly `System`, where Unity's class libraries implement them. The `System.Net.Security` and
+  `System.Security.Cryptography.Algorithms` facade entries were dropped: they are type forwarders on
+  Unity's profiles, preserve nothing, and are not in a player build unless referenced.
+- Review round 1: the processor now hands UnityLinker this package's rules for the first time, so
+  every rule naming the wrong assembly became a real defect. Checked against the 2021.3.45f2
+  `unityaot-linux` and `unityjit-linux` class libraries (TypeDef tables read from the
+  `unityci/editor` image): `StackTrace`/`StackFrame` are in `mscorlib`, not `System`
+  (`Runtime/Observability/link.xml` fixed); `SHA256CryptoServiceProvider` is in `System.Core`, not
+  `mscorlib` (`Runtime/Testing/link.xml` fixed). SslStream, SslClientAuthenticationOptions and
+  SslApplicationProtocol are in `System`; SHA1, SHA1Managed, RandomNumberGenerator, List`1,
+  ManualResetValueTaskSourceCore`1 and IAsyncDisposable are in `mscorlib`.
+- Every merged `<assembly>` element whose DLL is not confirmed in the linker input gets
+  `ignoreIfMissing="1"`, so a rule for an assembly absent from a player build cannot fail
+  UnityLinker with an unresolved-assembly error.
 - Closed generic names (`ValueTask`1[[...]]`, `SingleReaderChannel`1[[...]]`) removed from
   `Runtime/Transport/link.xml` and `Runtime/Core/link.xml`; UnityLinker ignores them and the open
   templates were already listed.
@@ -38,18 +50,25 @@
   `TurboHTTP.Editor` asmdef location (copy embedded under `Assets/`).
 - When the package root cannot be found the processor throws `BuildFailedException` instead of
   silently producing a player whose reflection targets are stripped.
-- When `inputDirectory` is missing every file is merged (fail toward preserving).
+- `CreateAssemblyProbe(inputDirectory)` is tri-state: true/false when `inputDirectory` holds
+  `TurboHTTP.Core.dll`, unknown otherwise (directory missing, or a layout this processor cannot read).
+  On unknown every file is merged (fail toward preserving) and every assembly element is marked
+  `ignoreIfMissing="1"`.
 - The #35 test asserts, on the running class library, that the merged file has an entry under the
   assembly `typeof(SslStream|SslClientAuthenticationOptions|SslApplicationProtocol).Assembly` really
-  is, and that framework assembly names come from an explicit allow-list
-  (`mscorlib`, `System`, `System.Net.Security`, `System.Security.Cryptography.Algorithms`).
+  is. A second test resolves every framework `<type>` with `Type.GetType("<type>, <assembly>")` and
+  requires the resolved type's assembly to be the named one (a facade resolves through a type forward
+  but preserves nothing), unless the entry is marked `ignoreIfMissing="1"`.
 - Rules stay per module (no central list in the processor) so other lanes edit only their module's
   `link.xml`. If #67/#95 (json-registration) or #1 (bootstrap) remove a reflection path, drop the
   matching rule and the matching `TestCase` in `TurboHttpLinkerProcessorTests`.
 
 ## Deferred
-- IL2CPP High build without BC contains no `TurboHTTP.SecureProtocol` types: CI player build (#100).
-  Actually excluding BC from builds that do not use it is #143.
+- IL2CPP High build without BC contains no `TurboHTTP.SecureProtocol` types: not met.
+  `TurboHTTP.Transport.BouncyCastle.asmdef` has no platform or define constraint, so its DLL is in
+  every player build and `preserve="all"` keeps all of it. Excluding BC from builds that do not use
+  it is tracked in the follow-up issue linked from the PR; the CI player-build check is #100. #8 and
+  #35 therefore stay open (`Part of`).
 - IL2CPP device smoke test, ALPN members kept and HTTP/2 negotiated over SslStream: #99
   (needs-device-validation).
 - `JsonWebSocketSerializer` coverage in the WebSocket link.xml (review row M) is outside #8's list.

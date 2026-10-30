@@ -5,16 +5,12 @@
     AuthenticateAsClientAsync(options, CancellationToken), NegotiatedApplicationProtocol).
     If stripped, AuthenticateWithAlpnAsync falls back to non-ALPN auth and HTTP/2 is never
     negotiated over SslStream.
-    On Unity Mono/IL2CPP these types are implemented in System.dll, so the "System" entry is the
-    one that takes effect (#35). The "System.Net.Security" entry covers profiles that ship the
-    types in their own assembly; UnityLinker ignores an entry whose assembly is not in the build.
+    On Unity 2021.3 Mono/IL2CPP (unityaot and unityjit profiles) these types are implemented in
+    System.dll; System.Net.Security.dll is only a .NET Standard facade that forwards to it, so the
+    rule must name "System" (#35). No facade is named: a facade is not in a player build unless
+    something references it, and preserving a forwarded type there keeps nothing.
   -->
   <assembly fullname="System">
-    <type fullname="System.Net.Security.SslStream" preserve="all"/>
-    <type fullname="System.Net.Security.SslClientAuthenticationOptions" preserve="all"/>
-    <type fullname="System.Net.Security.SslApplicationProtocol" preserve="all"/>
-  </assembly>
-  <assembly fullname="System.Net.Security">
     <type fullname="System.Net.Security.SslStream" preserve="all"/>
     <type fullname="System.Net.Security.SslClientAuthenticationOptions" preserve="all"/>
     <type fullname="System.Net.Security.SslApplicationProtocol" preserve="all"/>

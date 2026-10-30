@@ -4,8 +4,9 @@
     Required when building with IL2CPP high stripping level and TURBOHTTP_POOL_DIAGNOSTICS
     or DEBUG scripting defines are active. Without this, the StackTrace constructor and
     StackFrame.GetFileName/GetFileLineNumber may be stripped, causing link errors.
+    Both types are implemented in mscorlib on Unity's Mono/IL2CPP class libraries.
   -->
-  <assembly fullname="System">
+  <assembly fullname="mscorlib">
     <type fullname="System.Diagnostics.StackTrace" preserve="all"/>
     <type fullname="System.Diagnostics.StackFrame" preserve="all"/>
   </assembly>

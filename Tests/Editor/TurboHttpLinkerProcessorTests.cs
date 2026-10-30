@@ -19,17 +19,7 @@ namespace TurboHTTP.Tests.Editor
     public class TurboHttpLinkerProcessorTests
     {
         private const string BouncyCastleAssembly = "TurboHTTP.Transport.BouncyCastle";
-
-        // Non-TurboHTTP assembly names a package link.xml may use. "System" and "mscorlib" are the
-        // implementation assemblies of Unity's Mono/IL2CPP class libraries; the other two are
-        // .NET Standard facades kept for profiles that implement the types there (#35).
-        private static readonly HashSet<string> AllowedFrameworkAssemblies = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "mscorlib",
-            "System",
-            "System.Net.Security",
-            "System.Security.Cryptography.Algorithms",
-        };
+        private const string IgnoreIfMissing = "ignoreIfMissing";
 
         private string _packageRoot;
 
@@ -65,12 +55,13 @@ namespace TurboHTTP.Tests.Editor
         [TestCase("System.Net.Security.SslStream")]
         [TestCase("System.Net.Security.SslClientAuthenticationOptions")]
         [TestCase("System.Net.Security.SslApplicationProtocol")]
-        public void MergedLinkXml_PreservesSslStreamAlpnTypesUnderSystemAndFacade(string typeName)
+        public void MergedLinkXml_PreservesSslStreamAlpnTypesUnderSystem(string typeName)
         {
             var merged = TurboHttpLinkerProcessor.BuildMergedLinkXml(_packageRoot, _ => true);
 
             AssertPreservesAll(merged, "System", typeName);
-            AssertPreservesAll(merged, "System.Net.Security", typeName);
+            Assert.That(AssemblyNames(merged), Does.Not.Contain("System.Net.Security"),
+                "System.Net.Security is a facade on Unity's class libraries");
         }
 
         [Test]
@@ -91,8 +82,15 @@ namespace TurboHTTP.Tests.Editor
             AssertPreservesAll(merged, typeof(List<>).Assembly.GetName().Name, "System.Collections.Generic.List`1");
         }
 
+        /// <summary>
+        /// Every framework rule names the assembly that implements the type on this class library
+        /// (the Editor's unityjit profile places these types exactly like the players' unityaot
+        /// profile). A facade name resolves through a type forward but preserves nothing, and an
+        /// assembly that does not exist would fail UnityLinker, so both are rejected unless the
+        /// entry opts out with ignoreIfMissing="1".
+        /// </summary>
         [Test]
-        public void PackageLinkXml_NamesOnlyKnownAssemblies()
+        public void PackageLinkXml_FrameworkRulesNameTheImplementingAssembly()
         {
             var packageAssemblies = PackageAssemblyNames();
 
@@ -103,9 +101,24 @@ namespace TurboHTTP.Tests.Editor
                     var name = (string)assembly.Attribute("fullname");
                     Assert.That(name, Is.Not.Null.And.Not.Empty, file);
                     if (name.StartsWith("TurboHTTP.", StringComparison.Ordinal))
+                    {
                         Assert.That(packageAssemblies, Does.Contain(name), file + ": no asmdef named " + name);
-                    else
-                        Assert.That(AllowedFrameworkAssemblies, Does.Contain(name), file + ": unknown assembly " + name);
+                        continue;
+                    }
+
+                    if ((string)assembly.Attribute(IgnoreIfMissing) == "1")
+                        continue;
+
+                    Assert.DoesNotThrow(() => System.Reflection.Assembly.Load(name), file + ": no assembly " + name);
+                    foreach (var type in assembly.Elements("type"))
+                    {
+                        var typeName = (string)type.Attribute("fullname");
+                        var resolved = Type.GetType(typeName + ", " + name, throwOnError: false);
+                        Assert.That(resolved, Is.Not.Null, file + ": " + typeName + " does not resolve in " + name);
+                        Assert.That(resolved.Assembly.GetName().Name, Is.EqualTo(name),
+                            file + ": " + typeName + " is implemented in " + resolved.Assembly.GetName().Name +
+                            ", not " + name);
+                    }
                 }
             }
         }
@@ -184,6 +197,45 @@ namespace TurboHTTP.Tests.Editor
         }
 
         [Test]
+        public void MergedLinkXml_MarksAssembliesNotConfirmedInTheBuildIgnoreIfMissing()
+        {
+            var inputDirectory = Path.Combine(Path.GetTempPath(), "TurboHttpLinkerTest_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(inputDirectory);
+            try
+            {
+                foreach (var name in new[] { "TurboHTTP.Core", "TurboHTTP.Transport", "System" })
+                    File.WriteAllBytes(Path.Combine(inputDirectory, name + ".dll"), Array.Empty<byte>());
+
+                var merged = TurboHttpLinkerProcessor.BuildMergedLinkXml(
+                    _packageRoot, TurboHttpLinkerProcessor.CreateAssemblyProbe(inputDirectory));
+
+                Assert.That(AssemblyNames(merged), Does.Not.Contain(BouncyCastleAssembly));
+                Assert.That(AssemblyNames(merged), Does.Not.Contain("TurboHTTP.JSON"));
+                Assert.That(IgnoreIfMissingOf(merged, "TurboHTTP.Transport"), Is.Null);
+                Assert.That(IgnoreIfMissingOf(merged, "System"), Is.Null);
+                Assert.That(IgnoreIfMissingOf(merged, "mscorlib"), Is.EqualTo("1"));
+            }
+            finally
+            {
+                Directory.Delete(inputDirectory, recursive: true);
+            }
+        }
+
+        [Test]
+        public void MergedLinkXml_WithUnknownLinkerInput_KeepsEveryRuleAndMarksAllIgnoreIfMissing()
+        {
+            var unknown = Path.Combine(Path.GetTempPath(), "TurboHttpLinkerTest_" + Guid.NewGuid().ToString("N"));
+            var probe = TurboHttpLinkerProcessor.CreateAssemblyProbe(unknown);
+            Assert.That(probe("TurboHTTP.Core"), Is.Null);
+
+            var merged = TurboHttpLinkerProcessor.BuildMergedLinkXml(_packageRoot, probe);
+
+            Assert.That(AssemblyNames(merged), Does.Contain(BouncyCastleAssembly));
+            foreach (var assembly in merged.Descendants("assembly"))
+                Assert.That((string)assembly.Attribute(IgnoreIfMissing), Is.EqualTo("1"), (string)assembly.Attribute("fullname"));
+        }
+
+        [Test]
         public void MergedLinkXml_HasOneElementPerAssembly()
         {
             var names = AssemblyNames(TurboHttpLinkerProcessor.BuildMergedLinkXml(_packageRoot, _ => true));
@@ -199,6 +251,13 @@ namespace TurboHTTP.Tests.Editor
                 .SelectMany(a => a.Elements("type"))
                 .Any(t => (string)t.Attribute("fullname") == typeName && (string)t.Attribute("preserve") == "all");
             Assert.That(preserved, Is.True, "no preserve=\"all\" rule for " + typeName + " in assembly " + assemblyName);
+        }
+
+        private static string IgnoreIfMissingOf(XDocument linkXml, string assemblyName)
+        {
+            return (string)linkXml.Descendants("assembly")
+                .Single(a => (string)a.Attribute("fullname") == assemblyName)
+                .Attribute(IgnoreIfMissing);
         }
 
         private static List<string> AssemblyNames(XDocument linkXml)
