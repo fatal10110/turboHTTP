@@ -25,9 +25,11 @@ normal responses.
   `ParseResponseHeaderLine` for the main head: rejects (FormatException) obs-fold / any
   whitespace-led line, whitespace between name and colon, a missing colon, an empty name and
   non-token names. Values keep the OWS trim.
-- **#174 status-line version (RFC 9112 §2.3).** `ParseStatusLine` accepts exactly `HTTP/1.0`
-  and `HTTP/1.1` (case-sensitive) and stores the interned constant; `IsKeepAlive` compares
-  ordinally. Error messages no longer echo peer bytes.
+- **#174 status-line version (RFC 9112 §2.3).** `ParseStatusLine` accepts `HTTP/1.0` and
+  `HTTP/1.1` (case-sensitive) and stores the interned constant; `IsKeepAlive` compares
+  ordinally. Per RFC 9110 §2.5 a higher single-digit minor (`HTTP/1.2`..`HTTP/1.9`) is processed
+  as `HTTP/1.1` (review round 1); `HTTP/1.10`, `HTTP/1.`, lowercase, `HTTP/2.0` and `HTTP/9` are
+  rejected. Error messages no longer echo peer bytes.
 
 ## Files
 
@@ -56,6 +58,8 @@ normal responses.
   closed afterwards because both headers were present.
 - **HTTP/1.0 + TE** is delimited by connection close per the issue text ("treat framing as
   faulty", RFC 9112 §6.1), even if the coding is chunked; the TE header stays visible.
+- **Higher HTTP/1.x minor versions** are accepted as HTTP/1.1, which conflicts with the #174
+  issue text ("anything else → FormatException"); RFC 9110 §2.5 wins (CLAUDE.md §2).
 - **Trailers** keep the lenient skip for malformed/invalid lines (22b.3 "wire compatibility"
   decision, `Parse_ChunkedBody_MalformedTrailers_AreSkipped`); only EOF inside the trailer
   section is now an error.
@@ -67,7 +71,7 @@ normal responses.
 - `'./Tools~/ci/check.sh'`: OK (invariants, format, shadow build with analyzers).
 - The new fixture plus `Http11ResponseParserTests` and `Http11ResponseBodySourceTests` were
   compiled into an ad-hoc net8.0 NUnit project against the shadow-built `TurboHTTP.Core` /
-  `TurboHTTP.Transport` DLLs: 104/104 pass. Against a Transport DLL built from `origin/main`,
+  `TurboHTTP.Transport` DLLs: 108/108 pass (104 at the first push). Against a Transport DLL built from `origin/main`,
   29 of the 34 new cases fail (the 5 passing are positive controls and the preserved
   "Empty HTTP status line" signal).
 - The rest of `Tests/Runtime/Transport/Http1` ran the same way: every failure was a

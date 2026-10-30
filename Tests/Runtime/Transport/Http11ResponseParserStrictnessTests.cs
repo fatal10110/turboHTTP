@@ -298,7 +298,8 @@ namespace TurboHTTP.Tests.Transport
         [TestCase("http/1.1 200 OK")]
         [TestCase("HTTP/1. 200 OK")]
         [TestCase("HTTP/9 200 OK")]
-        [TestCase("HTTP/1.2 200 OK")]
+        [TestCase("HTTP/1.a 200 OK")]
+        [TestCase("HTTP/1.1x 200 OK")]
         public void Parse_InvalidStatusLineVersion_ThrowsFormatException(string statusLine)
         {
             AssertAsync.ThrowsAsync<FormatException>(
@@ -307,6 +308,8 @@ namespace TurboHTTP.Tests.Transport
 
         [TestCase("HTTP/1.1", true)]
         [TestCase("HTTP/1.0", false)]
+        [TestCase("HTTP/1.2", true)]
+        [TestCase("HTTP/1.9", true)]
         public void Parse_SupportedStatusLineVersion_Parses(string version, bool expectedKeepAlive)
         {
             AssertAsync.Run(async () =>
@@ -314,6 +317,19 @@ namespace TurboHTTP.Tests.Transport
                 var parsed = await ParseAsync(version + " 200 OK\r\nContent-Length: 0\r\n\r\n");
                 Assert.AreEqual(HttpStatusCode.OK, parsed.StatusCode);
                 Assert.AreEqual(expectedKeepAlive, parsed.KeepAlive);
+            });
+        }
+
+        [Test]
+        public void Parse_HigherMinorVersionWithTransferEncoding_TreatedAsHttp11()
+        {
+            // RFC 9110 Section 2.5: HTTP/1.2 is processed as HTTP/1.1, so the HTTP/1.0
+            // Transfer-Encoding rule (RFC 9112 Section 6.1) does not apply: chunked framing is used.
+            AssertAsync.Run(async () =>
+            {
+                var parsed = await ParseAsync("HTTP/1.2 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n");
+                Assert.AreEqual("abc", Encoding.ASCII.GetString(parsed.Body.Span));
+                Assert.IsTrue(parsed.KeepAlive);
             });
         }
 

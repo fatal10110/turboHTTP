@@ -657,12 +657,15 @@ namespace TurboHTTP.Transport.Http1
                 throw new FormatException("Invalid HTTP status line");
 
             // RFC 9112 Section 2.3: HTTP-version = "HTTP" "/" DIGIT "." DIGIT, case-sensitive.
-            // This parser speaks HTTP/1.x only, so exactly HTTP/1.0 and HTTP/1.1 are accepted.
+            // This parser speaks HTTP/1.x only. RFC 9110 Section 2.5: a higher minor version
+            // (HTTP/1.2..HTTP/1.9) is processed as the highest supported minor, HTTP/1.1.
             var versionSpan = statusSpan.Slice(0, firstSpace);
-            if (versionSpan.SequenceEqual(Http11Version.AsSpan()))
-                httpVersion = Http11Version;
-            else if (versionSpan.SequenceEqual(Http10Version.AsSpan()))
+            if (versionSpan.SequenceEqual(Http10Version.AsSpan()))
                 httpVersion = Http10Version;
+            else if (versionSpan.Length == Http11Version.Length
+                && versionSpan.StartsWith("HTTP/1.".AsSpan())
+                && versionSpan[7] >= '1' && versionSpan[7] <= '9')
+                httpVersion = Http11Version;
             else
                 throw new FormatException("Invalid HTTP version in status line");
 
