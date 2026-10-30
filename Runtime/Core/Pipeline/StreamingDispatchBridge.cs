@@ -142,7 +142,7 @@ namespace TurboHTTP.Core
                             headers,
                             body);
 
-                        if (_request.IsPooled)
+                        if (_request.IsClientOwned)
                         {
                             _request.RetainForResponse();
                             retainedRequest = true;

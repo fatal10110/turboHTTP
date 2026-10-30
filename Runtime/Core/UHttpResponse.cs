@@ -305,13 +305,12 @@ namespace TurboHTTP.Core
             _body = ReadOnlySequence<byte>.Empty;
 
             // IMPORTANT: Only invoke managed callbacks on the explicit-Dispose path.
-            // The _onDispose callback triggers ReleaseResponseHold -> TryReturnToPool
-            // -> ObjectPool.Return, which acquires a managed lock. Invoking this from
-            // the finalizer thread risks deadlock (finalizer blocked on a lock held by
-            // a GC-waiting thread) and accessing partially-finalized objects
-            // (_leaseOwner may already be finalized). If the user forgets Dispose(),
-            // the pooled UHttpRequest slot is permanently retained — detectable via
-            // PoolHealthReporter diagnostics.
+            // The _onDispose callback triggers ReleaseResponseHold -> TryCompleteLease,
+            // which disposes the request's owned body content (possibly returning pooled
+            // buffers under a lock). Invoking this from the finalizer thread risks deadlock
+            // (finalizer blocked on a lock held by a GC-waiting thread) and accessing
+            // partially-finalized objects. If the user forgets Dispose(), the request's
+            // lease never completes and its owned body content is not disposed eagerly.
             if (disposing)
             {
                 Action callback;

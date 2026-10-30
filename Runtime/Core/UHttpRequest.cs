@@ -10,8 +10,11 @@ namespace TurboHTTP.Core
 {
     /// <summary>
     /// Mutable HTTP request.
-    /// Instances created via <see cref="UHttpClient.CreateRequest"/> are leased from a pool
-    /// and must be disposed to return them.
+    /// Instances created via <see cref="UHttpClient.CreateRequest"/> are owned by that client for a single
+    /// lease: <see cref="Dispose"/> (or <see cref="SendBufferedAsync"/>/<see cref="SendStreamingAsync"/>,
+    /// which dispose the request when the send completes) ends the lease. A request is never reused after
+    /// its lease ends, so any later mutation or send through a stale reference throws
+    /// <see cref="ObjectDisposedException"/>.
     /// </summary>
     public sealed class UHttpRequest : IDisposable
     {
@@ -19,6 +22,14 @@ namespace TurboHTTP.Core
         private readonly HttpHeaders _headers;
         private readonly Dictionary<string, object> _metadata;
 
+        // Lease state of a client-created request (_leaseOwner != null). All flags are ints accessed only
+        // through Interlocked/Volatile (no lock). A lease is one-shot: _isLeased is 1 from construction until
+        // TryCompleteLease CASes it to 0 exactly once, and nothing ever sets it back to 1, so a stale
+        // reference can never observe a later lease (#62). _disposeRequested is CASed 0->1 once by Dispose.
+        // _sendInProgress is owned by BeginSend/EndSend of the single in-flight send; _responseHoldCount is
+        // incremented by the pipeline while that send is in progress and decremented by response disposal.
+        // _content/_ownsContent are written by the caller's mutators before the send and by the single
+        // thread that wins the _isLeased CAS (DisposeContent); _disposed is used only by standalone requests.
         private UHttpRequestBody _content;
         private bool _ownsContent;
         private int _isLeased;
@@ -68,21 +79,28 @@ namespace TurboHTTP.Core
             return _content.TryGetBufferedData(out data);
         }
 
-        internal bool IsPooled => _leaseOwner != null;
+        /// <summary>True for requests created by a <see cref="UHttpClient"/> (leased, client-bound).</summary>
+        internal bool IsClientOwned => _leaseOwner != null;
+
+        /// <summary>True while the lease of a client-created request has not completed.</summary>
+        internal bool IsLeaseActive => Volatile.Read(ref _isLeased) != 0;
 
         internal bool IsOwnedBy(UHttpClient client)
         {
             return ReferenceEquals(_leaseOwner, client);
         }
 
-        internal UHttpRequest(UHttpClient leaseOwner)
+        internal UHttpRequest(UHttpClient leaseOwner, HttpMethod method, Uri uri, TimeSpan timeout)
         {
             _leaseOwner = leaseOwner ?? throw new ArgumentNullException(nameof(leaseOwner));
+            Uri = uri ?? throw new ArgumentNullException(nameof(uri));
+            Method = method;
+            Timeout = timeout;
             _headers = new HttpHeaders();
             _metadata = new Dictionary<string, object>();
             _content = new EmptyRequestBody();
             _ownsContent = true;
-            Timeout = TimeSpan.FromSeconds(30);
+            _isLeased = 1;
         }
 
         /// <summary>
@@ -391,6 +409,11 @@ namespace TurboHTTP.Core
             return $"{Method} {Uri}";
         }
 
+        /// <summary>
+        /// Releases the request. For a client-created request this ends the lease: owned body content is
+        /// disposed once the in-flight send (if any) has finished and every response referencing the request
+        /// has been disposed. Calling it more than once is a no-op.
+        /// </summary>
         public void Dispose()
         {
             if (_leaseOwner == null)
@@ -405,29 +428,7 @@ namespace TurboHTTP.Core
             if (Interlocked.CompareExchange(ref _disposeRequested, 1, 0) != 0)
                 return;
 
-            TryReturnToPool();
-        }
-
-        internal void ActivateLease(HttpMethod method, Uri uri, TimeSpan timeout)
-        {
-            if (uri == null)
-                throw new ArgumentNullException(nameof(uri));
-            if (_leaseOwner == null)
-                throw new InvalidOperationException("Only pooled requests can be activated.");
-            if (Interlocked.CompareExchange(ref _isLeased, 1, 0) != 0)
-                throw new InvalidOperationException("Request is already leased.");
-
-            Interlocked.Exchange(ref _disposeRequested, 0);
-            Interlocked.Exchange(ref _responseHoldCount, 0);
-            Interlocked.Exchange(ref _sendInProgress, 0);
-
-            Method = method;
-            Uri = uri;
-            Timeout = timeout;
-            _headers.Clear();
-            _metadata.Clear();
-            Interlocked.Exchange(ref _hasManagedTrailerHeader, 0);
-            ReplaceContent(new EmptyRequestBody(), ownsContent: true);
+            TryCompleteLease();
         }
 
         internal void ApplyDefaultHeaders(HttpHeaders defaultHeaders)
@@ -444,7 +445,7 @@ namespace TurboHTTP.Core
             if (Volatile.Read(ref _responseHoldCount) != 0)
             {
                 throw new InvalidOperationException(
-                    "Cannot send a pooled request while a previous response still references it.");
+                    "Cannot send a client-created request while a previous response still references it.");
             }
 
             if (Interlocked.CompareExchange(ref _sendInProgress, 1, 0) != 0)
@@ -459,7 +460,7 @@ namespace TurboHTTP.Core
                 return;
 
             Interlocked.Exchange(ref _sendInProgress, 0);
-            TryReturnToPool();
+            TryCompleteLease();
         }
 
         internal void RetainForResponse()
@@ -475,14 +476,21 @@ namespace TurboHTTP.Core
             if (_leaseOwner == null)
                 return;
 
-            var remaining = Interlocked.Decrement(ref _responseHoldCount);
-            if (remaining < 0)
+            // An unmatched release (a double release by a caller bug) is clamped: the count is only
+            // decremented while positive, so it is never observed below zero (a transient negative value made
+            // a concurrent EndSend/Dispose skip completion and the old early return then skipped it too,
+            // leaking the lease, #148). Completion is always attempted afterwards; TryCompleteLease is
+            // idempotent (CAS on _isLeased), so the lease still completes exactly once.
+            int current;
+            do
             {
-                Interlocked.Exchange(ref _responseHoldCount, 0);
-                return;
+                current = Volatile.Read(ref _responseHoldCount);
+                if (current <= 0)
+                    break;
             }
+            while (Interlocked.CompareExchange(ref _responseHoldCount, current - 1, current) != current);
 
-            TryReturnToPool();
+            TryCompleteLease();
         }
 
         internal void SetTimeoutInternal(TimeSpan timeout)
@@ -536,7 +544,7 @@ namespace TurboHTTP.Core
                 metadata);
         }
 
-        private void TryReturnToPool()
+        private void TryCompleteLease()
         {
             if (_leaseOwner == null)
                 return;
@@ -549,23 +557,8 @@ namespace TurboHTTP.Core
             if (Interlocked.CompareExchange(ref _isLeased, 0, 1) != 1)
                 return;
 
-            ResetForPool();
-            _leaseOwner.ReturnRequestToPool(this);
-        }
-
-        private void ResetForPool()
-        {
-            Method = HttpMethod.GET;
-            Uri = null;
-            Timeout = TimeSpan.FromSeconds(30);
-            _headers.Clear();
-            _metadata.Clear();
-            Interlocked.Exchange(ref _hasManagedTrailerHeader, 0);
-            ReplaceContent(new EmptyRequestBody(), ownsContent: true);
-            Interlocked.Exchange(ref _disposeRequested, 0);
-            Interlocked.Exchange(ref _responseHoldCount, 0);
-            Interlocked.Exchange(ref _sendInProgress, 0);
-            Interlocked.Exchange(ref _disposed, 0);
+            // The lease is one-shot: the request object is never handed out again, so nothing is reset.
+            DisposeContent();
         }
 
         private void ThrowIfDisposed()
