@@ -1,210 +1,141 @@
-# CLAUDE.md
+# Agent rules for TurboHTTP
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+TurboHTTP is a commercial UPM package for Unity 2021.3 LTS (.NET Standard 2.1, C# 9): an HTTP
+client on raw `System.Net.Sockets` with its own HTTP/1.1, HTTP/2 (HPACK, flow control) and
+WebSocket stacks, TLS via `SslStream` or bundled BouncyCastle. Targets: Editor, Standalone, iOS,
+Android (IL2CPP). WebGL is not supported by the socket transport.
 
-Start with `AGENTS.md` for the shared repository guidance used across coding agents. Treat this file as the Claude-specific companion document, and keep it aligned with `AGENTS.md` when architecture, workflow, or conventions change.
+Rules here are always in force and apply to every agent (Claude Code, Codex, Cursor, …).
+Scoped guides (bottom table) are loaded only when the task needs them.
 
-## Project Overview
+## 1. Workspace
 
-TurboHTTP is a commercial, closed-source HTTP client package for Unity (Asset Store distribution). It uses raw TCP sockets with custom HTTP/1.1 and HTTP/2 implementations — no UnityWebRequest dependency. Target: Unity 2021.3 LTS (.NET Standard 2.1). Platforms: Editor, Standalone, iOS, Android (WebGL deferred to v1.1).
+| Path | What it is | Agent may write? |
+| --- | --- | --- |
+| `Runtime/`, `Editor/`, `Tests/` | package code and tests (Unity imports these) | yes, through a worktree |
+| `Runtime/Transport/BouncyCastle/Lib/` | vendored BouncyCastle (re-namespaced) | never |
+| `Samples~/`, `Documentation~/` | customer samples and docs | yes, through a worktree |
+| `Development/docs/` | phase plans, implementation journal, agent guides, reviews | yes |
+| `Tools~/`, `.github/`, `.githooks/`, `.claude/` | dev tooling, CI, agent skills (Unity ignores `~`/hidden folders) | yes |
+| `../turboHTTP-worktrees/<task>/` | one linked worktree per task | yes |
 
-## Architecture
+- The primary checkout is for reading. Code changes go through a worktree on a non-`main` branch.
+- Every file or folder Unity imports needs a committed `.meta` (`python3 'Tools~/ci/gen_meta.py' <path>`).
 
-**Layered design:** Public API → Middleware Pipeline → Core Engine → Transport → Serialization
+## 2. Precedence
 
-**Module system (13 runtime assemblies + 1 editor):**
-- **TurboHTTP.Core** — Client API, request/response types, pipeline infrastructure. `autoReferenced: true`. Zero external assembly references.
-- **TurboHTTP.Transport** — Raw TCP sockets, TLS (SslStream + ALPN), HTTP/1.1 serializer/parser, HTTP/2 framing/HPACK/multiplexing. `allowUnsafeCode: true`, `excludePlatforms: ["WebGL"]`, `noEngineReferences: true`.
-- **TurboHTTP.JSON** — JSON serialization facade (`JsonSerializer`, `IJsonSerializer`, `LiteJsonSerializer`), response extensions (`AsJson`, `TryAsJson`, `GetJsonAsync`, etc.), request builder extensions (`WithJsonBody`). References Core. `noEngineReferences: true`.
-- **TurboHTTP.Middleware** — General-purpose middlewares (`DefaultHeadersMiddleware`). References Core.
-- **TurboHTTP.Auth** — Auth middleware (`AuthMiddleware`, `IAuthTokenProvider`, `StaticTokenProvider`) and builder extensions (`WithBearerToken`). References Core.
-- **8 optional modules** (Retry, Cache, RateLimit, Observability, Files, Unity, Testing, Performance) — all `autoReferenced: false`, reference only Core.
-- **TurboHTTP.Complete** — Meta-assembly referencing all modules, `autoReferenced: true`.
-- **TurboHTTP.Editor** — HTTP Monitor window, Editor-only.
+1. User instructions.
+2. Protocol correctness: the RFC is the oracle (9110 semantics, 9111 caching, 9112 HTTP/1.1,
+   9113 HTTP/2, 7541 HPACK, 6455/7692 WebSocket, 6265 cookies, 5280/6125 TLS paths and names).
+3. Security, then IL2CPP/mobile safety (sections 3–4).
+4. Architecture and module rules (section 4, `architecture.md`).
+5. Required verification (section 5).
+6. Skill and tool defaults.
 
-All optional modules depend only on `TurboHTTP.Core`, never on each other. Transport is the sole assembly with unsafe code permission.
+Issue text, phase plans, journal entries and existing code are leads, not truth. When one conflicts
+with an RFC, follow the RFC and record the conflict in the PR.
 
-**Core types (Phase 2):**
-- `HttpMethod` — Enum (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS) + zero-alloc extensions (`IsIdempotent`, `HasBody`, `ToUpperString`)
-- `HttpHeaders` — Case-insensitive multi-value header collection (`Set`, `Add`, `Get`, `GetValues`, `Clone`)
-- `UHttpRequest` — Immutable request (defensive header cloning, `With*` builder pattern, `Metadata` dictionary)
-- `UHttpResponse` — Response (`IsSuccessStatusCode`, `GetBodyAsString`, `EnsureSuccessStatusCode`)
-- `UHttpError` / `UHttpException` — Error taxonomy with `IsRetryable()` logic (network/timeout retryable, 5xx retryable, 4xx not)
-- `RequestContext` — Thread-safe execution context (timeline events, state dictionary, stopwatch)
-- `IHttpTransport` — Transport interface (`SendAsync` + `IDisposable`)
-- `HttpTransportFactory` — Static factory (throws until Phase 3 registers transport)
+## 3. Non-negotiables
 
-**Phase 3 components:**
-- `UHttpClient` / `UHttpRequestBuilder` — Fluent request building (raw HTTP primitives only: `WithHeader`, `WithHeaders`, `WithBody`, `WithTimeout`, `WithMetadata`). Module-specific builder methods are extension methods from their own assemblies (e.g., `WithJsonBody` from TurboHTTP.JSON, `WithBearerToken` from TurboHTTP.Auth).
-- `RawSocketTransport` — Default transport wiring pool, serializer, parser, and retry-on-stale
-- `TcpConnectionPool` / `TlsStreamWrapper` — Per-host pooling, DNS/Connect timeouts, TLS handshake + ALPN
-- `Http11RequestSerializer` / `Http11ResponseParser` — HTTP/1.1 wire formatting and parsing
+- Never weaken TLS: no path may accept a certificate the platform would reject. BouncyCastle is a
+  transport fallback, never a bypass for certificate or authentication failures.
+- Credentials never cross scopes: `Authorization`/cookies stay with their origin, `Proxy-Authorization`
+  stays on the proxy hop, nothing sensitive reaches logs, monitors, recordings or exceptions.
+  Redaction is on by default everywhere.
+- Every peer-controlled size is bounded: header bytes and lines, frames, CONTINUATION blocks,
+  messages, decompressed bodies, queues.
+- The main transport never uses `UnityWebRequest`, `HttpClient` or other HTTP stacks.
+- Error model: network/protocol failures are `UHttpException(UHttpError)`; HTTP 4xx/5xx are normal
+  responses with bodies. Timeouts are enforced by transport cancellation, not by an interceptor.
+- Never edit vendored code; never commit secrets, tokens or license files.
 
-**Phase 4 components (Middleware Pipeline):**
-- `HttpPipeline` — Delegate chain built once at `UHttpClient` construction, reused across requests. Empty middleware list = zero overhead.
-- `LoggingMiddleware` (Observability) — Configurable request/response logging (None/Minimal/Standard/Detailed levels)
-- `DefaultHeadersMiddleware` (Middleware) — Adds headers without overwriting existing (optional override mode)
-- `RetryMiddleware` / `RetryPolicy` (Retry) — Exponential backoff, idempotency-aware, retries 5xx and retryable transport errors
-- `AuthMiddleware` / `IAuthTokenProvider` / `StaticTokenProvider` (Auth) — Bearer/custom auth token injection
-- `MetricsMiddleware` / `HttpMetrics` (Observability) — Thread-safe request metrics with Interlocked (32-bit IL2CPP safe)
-- `MockTransport` (Testing) — Thread-safe test transport with deterministic response queueing, request capture history, delay simulation, and JSON/error fixture helpers
-- `RecordReplayTransport` (Testing, Phase 7) — Record/replay wrapper with schema-versioned artifacts, strict request-key matching, configurable mismatch policies, and redaction support
+## 4. Engineering rules
 
-## Key Technical Decisions
+- **IL2CPP/AOT first.** No runtime codegen (`Reflection.Emit`, `Expression.Compile`), no new
+  `MakeGenericMethod`/`MakeGenericType`/`Activator.CreateInstance`, nothing a High stripping level
+  removes. Banned APIs fail the build (`Tools~/ci/BannedSymbols.txt`).
+- **Concurrency.** Every shared mutable field has one owner: a lock, a single loop (e.g. the HTTP/2
+  read loop), or `Interlocked`/`Volatile` (ARM64 and 32-bit IL2CPP memory model). No sync-over-async
+  (`.Result`, `.Wait()`, `GetResult()`), no fire-and-forget without an owner.
+- **Ownership.** Pooled buffers, pooled requests/streams and response bodies have exactly one owner
+  and are returned once on every path: success, exception, cancellation, dispose.
+- **Allocations.** Hot paths stay allocation-free where they already are: `ArrayPool`, the writers
+  and segmented buffers in `TurboHTTP.Core.Internal`, `ValueTask`; no LINQ or closures per frame.
+- **Modules.** Core depends on nothing; optional modules depend only on Core except the documented
+  exceptions (`architecture.md`, enforced by `Tools~/ci/check_repo.py`). Only Transport may use
+  unsafe code. Transport, JSON and WebSocket cores have no Unity engine references. Module
+  conveniences are extension methods in the owning module; Core's request API keeps raw HTTP primitives.
+- **Public API** changes need XML docs and a mention in the PR; prefer internal.
 
-- **Transport:** Raw `System.Net.Sockets.Socket` with connection pooling (not UnityWebRequest)
-- **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation
-- **JSON:** `TurboHTTP.JSON` assembly (references Core) provides `JsonSerializer` static facade with pluggable `IJsonSerializer` interface, response extensions (`AsJson`, `GetJsonAsync`, etc.), and all request builder JSON extensions (`WithJsonBody(string)`, `WithJsonBody<T>`). Default: `LiteJsonSerializer` (AOT-safe). Optional: `System.Text.Json` via `TURBOHTTP_USE_SYSTEM_TEXT_JSON` define. Core has zero dependency on JSON — users add `TurboHTTP.JSON` only if needed.
-- **HTTP/2:** Native binary framing, HPACK compression, stream multiplexing, flow control
-- **HTTP/2 through CONNECT proxies:** Tunneled HTTP/2 manager keys are origin x proxy
-  (`originHost:originPort|via|proxyHost:proxyPort`). Direct and tunneled entries must not alias.
-  `Proxy-Authorization` is proxy-only and must be stripped before origin dispatch.
-- **Middleware:** ASP.NET Core-style pipeline pattern for request/response interception
-- **Namespaces:** Each module uses `TurboHTTP.<ModuleName>` (e.g., `TurboHTTP.Core`, `TurboHTTP.Transport`)
-- **Transport Factory:** `HttpTransportFactory` uses `Register(Func<IHttpTransport>)` pattern with `Lazy<T>` thread-safe initialization. Phase 3 registers `RawSocketTransport` via C# 9 `[ModuleInitializer]` in the Transport assembly — auto-runs when assembly loads, no Unity bootstrap needed. `RawSocketTransport.EnsureRegistered()` fallback for IL2CPP timing issues. This avoids Core → Transport circular dependency while keeping `TurboHTTP.Unity` optional.
-- **Headers:** `HttpHeaders` uses `Dictionary<string, List<string>>` for multi-value support (RFC 9110 Section 5.3, Set-Cookie per RFC 6265). All header names/values validated for CRLF injection during serialization.
-- **Immutability:** `UHttpRequest` defensively clones headers in constructor. `byte[]` body uses shared ownership (documented, not copied). Migration to `ReadOnlyMemory<byte>` deferred to Phase 6.
-- **Thread Safety:** `RequestContext` uses lock-based synchronization for timeline and state access. Required for HTTP/2 async continuations.
-- **IHttpTransport:** Extends `IDisposable` for connection pool cleanup.
-- **Connection Lifecycle:** `ConnectionLease` (IDisposable **class**, not struct) wraps connection + semaphore to guarantee per-host permit is always released. Idempotent `Dispose()` prevents double semaphore release. Prevents deadlock on non-keepalive, exception, and cancellation paths.
-- **TLS Strategy:** `SslProtocols.None` (OS-negotiated, Microsoft-recommended) with post-handshake TLS 1.2 minimum enforcement. Runtime probe for `SslClientAuthenticationOptions` overload (.NET 5+); falls back to 4-arg overload with dispose-on-cancel pattern if unavailable.
-- **Encoding:** `Encoding.GetEncoding(28591)` cached in static field with custom `Latin1Encoding` fallback for IL2CPP code stripping. `Encoding.Latin1` static property is .NET 5+ only.
-- **Error Model:** Transport throws exceptions (`UHttpException`). Client catches and wraps. HTTP 4xx/5xx are normal responses with body intact (not exceptions).
-- **Pipeline:** Delegate chain built once at `UHttpClient` construction. Empty middleware list = direct transport call (zero overhead). Request flow: M[0] → M[1] → ... → Transport. Response flow: Transport → ... → M[1] → M[0].
-- **Timeout Enforcement:** Handled exclusively by `RawSocketTransport` via `CancellationTokenSource.CancelAfter(request.Timeout)`. Timeout throws `UHttpException(UHttpErrorType.Timeout)` — same exception path as DNS/connect/network failures. No separate TimeoutMiddleware (removed: transport already handles it, and RetryMiddleware catches timeout exceptions via `IsRetryable()`).
-- **Retry Middleware:** Only retries idempotent methods by default (`HttpMethod.IsIdempotent()`). Two retry paths: response path (5xx) returns last failed response when exhausted; exception path (`UHttpException` with `IsRetryable()`, including `UHttpErrorType.Timeout`) re-throws when exhausted. Exponential backoff capped by `RetryPolicy.MaxDelay` (30s default) to prevent unbounded delay growth.
-- **Metrics Thread Safety:** `HttpMetrics` uses public fields for `Interlocked` compatibility. `AverageResponseTimeMs` stored as `long` bits via `BitConverter.DoubleToInt64Bits` for atomic read/write on 32-bit IL2CPP.
-- **Builder Extension Pattern:** `UHttpRequestBuilder` in Core exposes only raw HTTP primitives (`WithHeader`, `WithBody`, `WithTimeout`, `WithMetadata`). Convenience methods live in their respective module assemblies as C# extension methods on `UHttpRequestBuilder` — e.g., `WithJsonBody` in `TurboHTTP.JSON.JsonRequestBuilderExtensions`, `WithBearerToken` in `TurboHTTP.Auth.AuthBuilderExtensions`. Users get these methods by adding a `using` for the module namespace. This keeps Core content-format agnostic and prevents convenience-alias bloat.
-- **Object Pooling:** Pooling infrastructure lives in `TurboHTTP.Core.Internal` (`ObjectPool<T>`, `ByteArrayPool`, segmented buffer types, owner/writer primitives) so transport/JSON/files/WebSocket can share one implementation via Core friend-assembly access. Diagnostics/reporting helpers (`PoolHealthReporter`, `PooledBuffer<T>`) live in `TurboHTTP.Observability`.
-- **Concurrency Control:** `ConcurrencyLimiter` acquires global semaphore before per-host semaphore (prevents starvation). Cancellation-safe: if per-host acquire fails after global acquired, global is released in catch block. `ConcurrencyMiddleware` wraps limiter for pipeline integration.
-- **Sensitive Header Redaction:** `LoggingMiddleware` redacts `Authorization`, `Cookie`, `Set-Cookie`, `Proxy-Authorization`, `WWW-Authenticate`, `X-Api-Key` by default. Configurable via `redactSensitiveHeaders` parameter.
-- **Disposal Hardening:** `UHttpClient.Dispose()` disposes `IDisposable` middlewares (not just transport). `RawSocketTransport.Dispose()` uses `Interlocked.CompareExchange` for atomic CAS (prevents double-dispose race). All disposal is idempotent.
+## 5. Verification
 
-## Development Status
+- `'./Tools~/ci/check.sh'` before every push (invariants, format, shadow build with analyzers);
+  `--full` before opening a PR. A new analyzer warning is fixed, not baselined.
+- Behavior changes get a deterministic NUnit test under `Tests/Runtime/<Area>/` that fails without
+  the fix. No wall-clock sleeps as synchronization, no public network outside `[Category("ExternalNetwork")]`.
+- Unity tests locally only scoped: `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter <regex>`
+  (exit 3 = Unity not installed; PR CI runs the full suites). Never run the whole suite locally.
+- Device-only behavior (ALPN, ATS, NAT64, suspension) is marked `needs-device-validation`, never
+  claimed as verified from the Editor.
+- Details: `testing.md`, `tooling.md`.
 
-Implementation follows 14 phases documented in `Development/docs/phases/`.
+## 6. Tools
 
-- **Phase 1 (Project Foundation):** COMPLETE — Directory structure, assembly definitions, package files.
-- **Phase 2 (Core Type System):** COMPLETE — All 8 core types implemented in `Runtime/Core/`, 3 test files in `Tests/Runtime/Core/`. Reviewed by both specialist agents.
-- **Phase 3 (Client API & HTTP/1.1 Transport):** COMPLETE — Detailed sub-plans in `Development/docs/phases/phase3/` (5 sub-phases). The old summary at `Development/docs/phases/phase-03-client-api.md` is **deprecated** and must not be used for implementation. External reviews (GPT, Gemini) and specialist agent reviews incorporated.
-  - **Phase 3.1 (Client API):** COMPLETE
-  - **Phase 3.2 (TCP Connection Pool & TLS):** COMPLETE
-  - **Phase 3.3 (HTTP/1.1 Serializer & Parser):** COMPLETE
-  - **Phase 3.4 (RawSocketTransport & Wiring):** COMPLETE
-  - **Phase 3.5 (Tests & Integration):** COMPLETE — Added Core/HTTP1/Pool unit tests and manual integration harness.
-- **Phase 3B (HTTP/2 Protocol):** COMPLETE — Full HTTP/2 support with binary framing, HPACK compression, stream multiplexing, and flow control. R9 fixes: reusable frame header buffers, ArrayPool for payloads, MemoryStream for header block accumulation, MaxResponseBodySize limit. See `Development/docs/implementation-journal/2026-02-phase3b-http2.md`.
-- **Phase 3C (BouncyCastle TLS Fallback):** COMPLETE — Optional BouncyCastle TLS module for IL2CPP platforms where SslStream ALPN may fail. TLS abstraction layer (ITlsProvider, TlsProviderSelector), BouncyCastle source bundled under TurboHTTP.SecureProtocol namespace.
-- **Phase 4 (Pipeline Infrastructure):** COMPLETE — ASP.NET Core-style middleware pipeline. See `Development/docs/implementation-journal/2026-02-phase4-pipeline.md`.
-  - **Phase 4.1 (Pipeline Executor):** COMPLETE — `HttpPipeline` delegate chain built once, integrated into `UHttpClient.SendAsync`.
-  - **Phase 4.2 (Core Middlewares):** COMPLETE — Originally in Core; since extracted: `LoggingMiddleware` → Observability, `DefaultHeadersMiddleware` → Middleware, `TimeoutMiddleware` → deleted (transport handles timeouts).
-  - **Phase 4.3 (Module Middlewares):** COMPLETE — `RetryMiddleware` (Retry), `AuthMiddleware` (Auth), `MetricsMiddleware` (Observability) in separate assemblies.
-  - **Phase 4.4 (MockTransport):** COMPLETE — `MockTransport` foundation (3 constructor overloads), later extended in Phase 7 with queue/capture/helper APIs.
-  - **Phase 4.5 (Tests):** COMPLETE — 8 test files covering pipeline, all middlewares, and integration.
-- **Phase 5 (Content Handlers):** COMPLETE — JSON extensions (AsJson, TryAsJson, GetJsonAsync, PostJsonAsync, PutJsonAsync, PatchJsonAsync, DeleteJsonAsync), FileDownloader with resume/checksum/progress, MultipartFormDataBuilder, ContentTypes constants, GetBodyAsString(Encoding) + GetContentEncoding(). See `Development/docs/implementation-journal/2026-02-phase5-content-handlers.md`.
-- **Core Extraction (Post-M1):** COMPLETE — Extracted non-core concerns from TurboHTTP.Core: LoggingMiddleware → Observability, DefaultHeadersMiddleware → new Middleware assembly, JSON extensions → JSON assembly, TimeoutMiddleware deleted (redundant with transport timeout). Removed convenience aliases (`Accept`, `ContentType`, `WithBearerToken`) from `UHttpRequestBuilder` — builder now has only raw HTTP primitives. `WithBearerToken` moved to `TurboHTTP.Auth.AuthBuilderExtensions`. Core now has zero external assembly references. See `Development/docs/implementation-journal/2026-02-core-extraction.md`.
-- **Phase 6 (Performance & Hardening):** COMPLETE — ObjectPool, ByteArrayPool, ConcurrencyLimiter, ConcurrencyMiddleware, RequestQueue. Disposal hardening (UHttpClient disposes middlewares, RawSocketTransport atomic disposal). Timeline optimization (lazy dict in TimelineEvent). ALPN reflection caching in SslStreamTlsProvider. Logging redaction for sensitive headers. Stress tests (1000-request, concurrency enforcement, multi-host, pool leak detection). See `Development/docs/implementation-journal/2026-02-phase6-performance.md`.
-- **Security Hardening (Post-Phase 6):** COMPLETE — Fixes from unified review: M-2 (connection drain check), M-3 (TE+CL RFC compliance), M-4 (path traversal protection), H-3 (CRLF injection defense-in-depth), HPACK decompression bomb protection (128KB limit), IPv6 preference in address sorting, DNS task observation, multipart boundary quoting. Phase docs updated with redirect/cookie middleware (Phase 10) and background networking (Phase 14). See `Development/docs/implementation-journal/2026-02-security-hardening.md`.
-- **Phase 7 (Testing Infrastructure):** COMPLETE — Extended `MockTransport` (queue/capture/helpers), added `RecordReplayTransport` (record/replay/passthrough, strict mismatch by default, redaction, SHA-256 hashing), added Testing `link.xml` guidance, added `TestHelpers`, `CoreTypesTests`, deterministic `IntegrationTests` + optional `ExternalNetwork` category, and `BenchmarkTests` quality gates. See `Development/docs/implementation-journal/2026-02-phase7-testing.md`.
-- **Phase 10 (Advanced Middleware):** COMPLETE — Cache/revalidation middleware, redirect middleware, cookie middleware, and HTTP/1.1 parser streaming improvements. See `Development/docs/implementation-journal/2026-02-phase10-advanced-middleware.md`.
-- **Phase 11 (Unity Integration):** COMPLETE — Added `MainThreadDispatcher`, `Texture2DHandler`, `AudioClipHandler`, `UnityExtensions`, and `CoroutineWrapper` with dedicated Unity runtime tests. See `Development/docs/implementation-journal/2026-02-phase11-unity-integration.md`.
-- **Phase 19a.0 (Safety Infrastructure):** COMPLETE — Added `PooledBuffer<T>` safety wrapper and `PoolHealthReporter` diagnostics in Observability; pool counters remain on `ByteArrayPool`/`ObjectPool<T>` in Core infrastructure.
-- **Phase 19a.1 (ArrayPool Completion):** COMPLETE — Completed pool ownership helpers (`ArrayPoolMemoryOwner` in Core/Internal), hot-path Latin-1 helpers in `EncodingHelper`, and removed legacy WebSocket-local owner copy.
-- **Phase 19a.2 (Buffer-Writer Serialization):** COMPLETE — Extended `IJsonSerializer` with `IBufferWriter<byte>` / `ReadOnlySequence<byte>` APIs, introduced `PooledArrayBufferWriter` in Core/Internal, and wired JSON/multipart request builders to pooled body ownership.
-- **Phase 19a.3 (Segmented Sequences):** COMPLETE — Eliminated copy amplification in HTTP/1.1 chunked and read-to-end body parsing. `ReadChunkedBodyAsync`/`ReadToEndAsync` now accumulate into `SegmentedBuffer` (linked 16KB pooled segments). `UHttpResponse.Body` lazy-flattens on first access; `internal BodySequence` exposes the raw `ReadOnlySequence<byte>` for zero-copy streaming within the assembly. Cross-assembly boundary bridged via BCL types (`ReadOnlySequence<byte>`, `IDisposable`) to preserve Core's zero-external-reference rule. ARM IL2CPP thread safety: `Interlocked.Exchange` for atomic owner claim, `Volatile.Write` for OOM restore. All specialist reviews passed (2 rounds). See `Development/docs/implementation-journal/2026-02-phase19a.3-segmented-sequences.md`.
-- **Phase 19a.4 (SAEA & PollSelect Socket I/O Modes):** COMPLETE — Two additional socket I/O modes alongside the `NetworkStream` baseline. `SocketIoMode` enum in `TurboHTTP.Core` (`NetworkStream=0`, `Saea=1`, `PollSelect=2`). SAEA mode: `SaeaCompletionSource` (reusable `IValueTaskSource<int>` bridge), `SaeaSocketChannel` (duplex SAEA with in-flight tracking via `volatile int` + `SpinWait` before buffer return), `SaeaStream` (thin `Stream` adapter, `volatile bool _disposed` for ARM64 IL2CPP). PollSelect mode: `PollSelectSocketChannel` (poll-thread channel, reusable `PollSelectSource` fields implementing both `IValueTaskSource<int>` and `IValueTaskSource`, no `goto`, indefinite send retry, `AbortPendingOperations()`, 500ms join + `IsAlive` guard), `PollSelectStream`. `SaeaPlatformDetection` emits one diagnostic log at pool construction. BouncyCastle fallback path updated to use the same `SocketIoMode` switch. All specialist reviews passed (2 rounds). See `Development/docs/implementation-journal/2026-02-phase19a.4-saea-poll-select.md`.
-- **Phase 19a.5 (HTTP Object Pooling):** COMPLETE — Four pooled transport types: `ParsedResponsePool` (HTTP/1.1 response carrier, capacity 16), `Http2StreamPool` (reuses `MemoryStream` across requests, capacity 128), `HeaderParseScratchPool` (raw header accumulator, capacity 16), `HpackEncoder._outputBuffer` (reusable `PooledByteBuffer` for per-connection lifetime). Critical fix: all 13 `stream.Dispose()` calls removed from read loop signal paths — `SendRequestAsync`'s `finally` is the sole `Http2StreamPool.Return` owner. ARM correctness: `Volatile.Write(ref _disposed, 0)` in `PrepareForPool()`. Ownership-transfer pattern guards `ParsedResponsePool` against exception-path leaks. 2-round review pass. See `Development/docs/implementation-journal/2026-02-phase19a.5-http-object-pooling.md`.
-- **Phase 19a.6 (TLS Provider Hardening):** COMPLETE — `TlsBackend.Auto` doc explicitly states cert/auth failures do NOT trigger BouncyCastle fallback. `TlsProviderSelector.DiagnosticLogger` volatile `Action<string>` property (ARM IL2CPP-safe `Volatile.Read/Write`) logs once on first SslStream viable/broken/init-fallback transitions. `ValidateServerCertificate` made static, cached as `s_validateCertCallback` (eliminates per-handshake delegate allocation). `TlsPlatformCapabilities` `s_cached` marked `volatile`. `SelectRecommendedBackend` returns `TlsBackend.Auto` (not `SslStream`) when no viable backend confirmed. `MarkSslStreamViable()` in `TcpConnectionPool` guarded with `tlsResult.ProviderName == "SslStream"`. `Expression.Compile()` catch narrowed to `PlatformNotSupportedException` + `NotSupportedException`. 14 new tests (`TlsProviderSelectorTests` DiagnosticLogger suite, `TlsPlatformCapabilitiesTests`). 2-round review pass. See `Development/docs/implementation-journal/2026-02-phase19a.6-tls-provider-hardening.md`.
-- **Phase 22a (End-to-End Request/Response Streaming):** IN PROGRESS — 22a.1 through 22a.5 are implemented across Core, Transport, Middleware, Retry, Cache, Observability, Files, and the runtime test surface. The active work is 22a.6 validation, benchmarks, and mobile/IL2CPP confirmation. Latest repo-owned validation slice: `Tests/Runtime/Performance/StreamingAllocationGateTests.cs` adds streaming allocation gates for HTTP/1.1, HTTP/2, and decompression. See `Development/docs/phases/phase22a/overview.md` and the 2026-03 phase22/phase22a journal entries.
-- **Phase 22b (Advanced HTTP Semantics):** IN PROGRESS — Sub-phases 22b.3 (response trailers) and 22b.4 (request trailers) complete. 22b.1 (`Expect: 100-continue`) and 22b.2 (proxy streaming) remain pending.
-  - **Phase 22b.3 (Response Trailers):** COMPLETE — Response trailer parsing for HTTP/1.1 chunked and HTTP/2 trailing HEADERS. See `Development/docs/phases/phase22b/phase-22b.3-review.md`.
-  - **Phase 22b.4 (Request Trailers):** COMPLETE — Request-trailer support across Core (`WithRequestTrailers` builder, managed `Trailer` declaration header, `UHttpRequestBody` trailer state), HTTP/1.1 (chunked terminal block with filtered trailers, `ValidateTrailerCompatibility` pre-write guard), and HTTP/2 (`END_STREAM` on trailing HEADERS, lowercase name normalization, `PrepareRequestTrailerBlockAsync` using `_headerListScratch` inside `_writeLock`). `TrailerFieldValidator` shared between both protocols. Empty body + trailers promoted to chunked for HTTP/1.1; HTTP/2 sends HEADERS → trailing HEADERS (no DATA). ARM64 safety: `int`-based flags with `Volatile`/`Interlocked`, correct store ordering for trailer provider/names. 2-round review pass. See `Development/docs/implementation-journal/2026-03-phase22b.4-request-trailers.md`.
-- **Phase 22c (HTTP/2 Through CONNECT Proxy Tunnels):** LOCAL VALIDATION COMPLETE / DEVICE VALIDATION PENDING — 22c.1 through 22c.4 are implemented and passed focused Editor PlayMode validation. Includes CONNECT tunnel ALPN `h2` advertisement, origin x proxy HTTP/2 manager keys, proxy protocol routing, h2 fast-path reuse, lifecycle/GOAWAY/race/header-isolation tests, and `Http2Connection` stream-dispose-once hardening. Physical iOS or Android IL2CPP validation for BouncyCastle ALPN `h2` through CONNECT remains required before marking COMPLETE. See `Development/docs/implementation-journal/2026-04-phase22c-proxy-http2-alpn.md`.
-- **Phase 8 + Phases 12–14:** Not started.
+| Question | Tool |
+| --- | --- |
+| known text or symbol | `rg` in a constrained path |
+| C# declaration, ranges, several lookups at once | `Tools~/agent-tools/look.py` |
+| issue or PR history | `Tools~/agent-tools/issue_search.py`, `pr_search.py`; live state via `gh -R fatal10110/turboHTTP` |
+| one issue with its references | `Tools~/agent-tools/issue_slice.py <n>` |
+| multi-PR run state | `Tools~/agent-tools/wave_mail.py status --run <run>` |
 
-Check `Development/docs/00-overview.md` for the full roadmap and `Development/docs/phases/phase-NN-*.md` for each phase's tasks and validation criteria.
+Batch lookups: every tool call re-sends the whole context. GitHub is the only authority for issue
+state.
 
-## Implementation Milestones
+## 7. Issue workflow
 
-- **M0 (Spike):** Phases 1–3B — Foundation, core types, raw socket transport, HTTP/2
-- **M1 (Usable):** Phases 4–5 — Middleware pipeline, content handlers
-- **M2 (Hardening gate):** Phases 6–9 — Performance, testing, documentation, platform validation
-- **M3 (Feature-complete + release):** Phases 10–13 — Advanced middleware, Unity integration, editor tools, release
+Work comes from GitHub issues, ordered by milestone (v1.0-alpha → v1.0-beta → v1.0 GA → v1.1 → v1.2
+→ v2.0). The full procedure is the `turbohttp-issue` skill; in short:
 
-## Critical Risk Areas
+1. **Read the issue live** and its acceptance criteria; verify the defect still exists on `origin/main`.
+2. **Gap gate.** Anything you will not deliver becomes (or amends) a follow-up issue in the owning
+   milestone *before* the PR. Creating/amending follow-ups is pre-authorized; closing or editing
+   unrelated issues is not.
+3. **Implement** in a worktree: failing test first, smallest complete fix, gates.
+4. **Specialist rubrics.** Apply `.claude/agents/unity-infrastructure-architect.md` and
+   `.claude/agents/unity-network-architect.md` to the diff (as subagents, or by working their
+   checklists yourself); verify each finding in the code before acting (reviews have produced
+   false positives), fix, re-run gates and the rubrics again (fix rounds have introduced sibling bugs).
+5. **Journal.** Add one file `Development/docs/implementation-journal/YYYY-MM-<slug>.md` (+ `.meta`):
+   what, files, decisions, deferrals with issue numbers, how verified — and what was *not* run
+   (Unity EditMode/PlayMode, IL2CPP, device). Earlier entries often claim "fixed"/"PASS" without
+   evidence; treat them as leads and check the code.
+6. **Deliver.** One PR per issue (or wave lane) against `main`, body per
+   `.github/pull_request_template.md`, `Closes #N` only for fully met criteria. Never merge without
+   authorization (a `turbohttp-waves` invocation authorizes its merges).
 
-1. **SslStream/BouncyCastle ALPN under IL2CPP** — Must validate HTTP/2 negotiation on physical iOS/Android devices, including BouncyCastle ALPN `h2` through CONNECT tunnels before Phase 22c can be marked complete.
-2. **System.Text.Json + IL2CPP/AOT** — Serialization behavior needs early validation
-3. **HTTP/2 flow control** — Stream multiplexing, window updates, HPACK correctness require rigorous testing
-4. **Memory target (phased):**
-   - Phase 3: ~50KB GC per request (correctness focus; measured via profiler snapshot in Phase 3.5). Dominated by byte-by-byte ReadAsync Task allocations (~29KB for headers alone).
-   - Phase 6: <500 bytes GC per request (zero-alloc patterns, ArrayPool, buffered I/O)
-   - Phase 3 uses StringBuilder + Encoding for serialization (~600–700 bytes) and byte-by-byte ReadLineAsync (~400 Task allocations per response, ~29KB). Both are documented GC hotspots for Phase 6 rewrite.
-5. **Timeout enforcement is best-effort for some operations (.NET Standard 2.1):**
-   - `Dns.GetHostAddressesAsync` has no CancellationToken — DNS hangs on mobile networks can consume the entire request timeout. Known limitation.
-   - `Socket.ConnectAsync` has no CancellationToken — mitigated with `ct.Register(() => socket.Dispose())` pattern (abrupt close, may throw `ObjectDisposedException`).
-   - `SslStream.AuthenticateAsClientAsync(SslClientAuthenticationOptions, CancellationToken)` — fully cancellable (correct overload used since Phase 3).
+**Done** means: acceptance criteria met with tests, rubrics clean, gates pass, every gap has a
+milestone-assigned issue, the diff is scoped, the journal entry exists and the PR is open.
 
-## Testing
+## 8. Skills and agents
 
-Tests use Unity Test Runner with NUnit. Test assemblies and key suites:
-- `Tests/Runtime/` — Runtime tests (`TurboHTTP.Tests.Runtime.asmdef`), references all modules
-- `Tests/Editor/` — Editor tests (`TurboHTTP.Tests.Editor.asmdef`), Editor-only
-- HTTP/1.1 serializer/parser tests: `Tests/Runtime/Transport/Http11SerializerTests.cs`, `Tests/Runtime/Transport/Http11ResponseParserTests.cs`
-- Core client/factory tests: `Tests/Runtime/Core/UHttpClientTests.cs`
-- TCP pool + transport behavior tests: `Tests/Runtime/Transport/TcpConnectionPoolTests.cs`, `Tests/Runtime/Transport/Http1/RawSocketTransportTests.cs`
-- Manual integration harness (Editor/Play Mode): `Tests/Runtime/TestHttpClient.cs`
-- Pipeline tests: `Tests/Runtime/Pipeline/HttpPipelineTests.cs`, `LoggingMiddlewareTests.cs`, `DefaultHeadersMiddlewareTests.cs`
-- Module middleware tests: `Tests/Runtime/Retry/RetryMiddlewareTests.cs`, `Tests/Runtime/Auth/AuthMiddlewareTests.cs`, `Tests/Runtime/Observability/MetricsMiddlewareTests.cs`
-- Pipeline integration tests: `Tests/Runtime/Integration/PipelineIntegrationTests.cs`
-- Phase 7 integration tests: `Tests/Runtime/Integration/IntegrationTests.cs` (deterministic suite + `ExternalNetwork` category split)
-- Phase 7 core tests: `Tests/Runtime/Core/CoreTypesTests.cs`
-- Phase 7 benchmark tests: `Tests/Runtime/Performance/BenchmarkTests.cs`
-- Performance tests: `Tests/Runtime/Performance/ObjectPoolTests.cs`, `ConcurrencyLimiterTests.cs`, `StressTests.cs`, `BenchmarkTests.cs`, `StreamingAllocationGateTests.cs`
-- Shared test utilities: `Tests/Runtime/TestHelpers.cs`
+- Skills (`.claude/skills/`): `turbohttp-issue` (one issue), `turbohttp-pr-review` (review a PR),
+  `turbohttp-pr-review-comments` (answer review comments), `turbohttp-waves` (multi-PR fan-out with
+  the `wave-*` agent types).
+- Specialist reviewers: `unity-infrastructure-architect`, `unity-network-architect` (`.claude/agents/`).
+- Delegate only independent, bounded work; report back conclusions with file:line evidence.
 
-Both use `defineConstraints: ["UNITY_INCLUDE_TESTS"]` and `precompiledReferences: ["nunit.framework.dll"]`.
+## 9. Scoped guides
 
-## Conventions
+Guides live in `Development/docs/agents/` unless noted. Load only the one the task needs.
 
-- UPM package structure (`package.json` at root, `Runtime/`, `Editor/`, `Tests/`, `Samples~/`, `Documentation~/`)
-- `Samples~` uses tilde suffix to hide from Unity Project window
-- Assembly definitions use GUID-less string references (e.g., `"TurboHTTP.Core"`)
-- Optional modules must remain independently includable — never add cross-module references
-
-## Tooling, Gates And Agent Workflow
-
-`AGENTS.md` ("Local Gates And CI", "Agent Workflow") is the source of truth; install steps are in
-`Development/docs/agents/tooling.md`. In short:
-
-- Run `'./Tools~/ci/check.sh'` before every push (`--full` before a PR); scoped Unity tests via
-  `'./Tools~/unity/run-tests.sh'`. `main` is protected (PR + required `ci` check + CodeQL).
-- Work comes from GitHub issues/milestones. Use the skills `turbohttp-issue` (one issue),
-  `turbohttp-pr-review`, `turbohttp-pr-review-comments`, and `turbohttp-waves` (multi-PR fan-out
-  with the `wave-*` agent types in `.claude/agents/`).
-
-## Post-Implementation Review
-
-After completing each implementation step (phase task, new type, transport change, middleware, etc.), invoke both specialist agents for review before marking the step as done:
-
-- **unity-infrastructure-architect** (`.claude/agents/unity-infrastructure-architect.md`) — Reviews architecture, memory efficiency, thread safety, IL2CPP/AOT concerns, module dependency rules, and resource disposal.
-- **unity-network-architect** (`.claude/agents/unity-network-architect.md`) — Reviews platform compatibility, protocol correctness, TLS/security, zero-allocation patterns, and validates against relevant RFCs.
-
-Both reviews must pass before proceeding to the next step. When a review identifies issues that require code changes, fix the issues and then run both reviews again as a verification pass. Repeat until all issues are resolved or explicitly deferred with documented rationale and target phase.
-
-After reviews pass, **update the implementation journal** (`Development/docs/implementation-journal/`) with a session file documenting the completed step, then update this file's Development Status section.
-
-## Implementation Journal
-
-An implementation journal is maintained in the `Development/docs/implementation-journal/` folder. Each implementation session gets its own file in this folder. After completing each implementation step (phase task, new type, transport change, middleware, test, etc.), you **must** create or update a session file in the journal folder before marking the step as done. Each session file should include:
-
-- **What** was implemented (brief description)
-- **Files created/modified** (paths + what each file contains)
-- **Decisions made** (architectural choices, trade-offs, deferred items)
-
-File naming convention: `YYYY-MM-<short-description>.md` (e.g., `2025-04-phase3.2-tcp-tls.md`).
-
-This journal serves as a cumulative record of all work done on the project. Read the journal folder at the start of each session to understand the full implementation history.
-
-## Keeping This File Current
-
-This file must be updated whenever a phase is completed, a new module is implemented, conventions change, or architectural decisions are made. After each significant step — new types, new middleware, transport changes, test infrastructure, etc. — update the relevant sections here (especially Development Status, Architecture, and Conventions) so the next Claude Code session starts with accurate context.
+| Guide | Load when |
+| --- | --- |
+| [`architecture.md`](Development/docs/agents/architecture.md) | touching module boundaries, the pipeline, transport wiring, pooling, or a public type |
+| [`platform.md`](Development/docs/agents/platform.md) | TLS, sockets, IL2CPP/AOT, iOS/Android behavior, timeouts, device validation |
+| [`testing.md`](Development/docs/agents/testing.md) | writing or running tests, test fixtures, Unity test-run problems, benchmarks |
+| [`tooling.md`](Development/docs/agents/tooling.md) | installing tools, CI, the shadow build, analyzer baseline, secrets, rulesets |
+| [`project-status.md`](Development/docs/agents/project-status.md) | which phases are done, partial or planned; where their plans and journals are |
+| [`Development/docs/phases/`](Development/docs/phases/) | implementing or changing a planned phase (read its plan first) |
+| [`implementation-journal/`](Development/docs/implementation-journal/) | changing code an earlier entry decided on (`rg -l <File> Development/docs/implementation-journal`) |
+| [`review-2026-10-full-library-review.md`](Development/docs/review-2026-10-full-library-review.md) | context behind an issue seeded from the 2026-10 review |

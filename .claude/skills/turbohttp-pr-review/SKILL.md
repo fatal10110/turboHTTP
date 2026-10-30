@@ -61,7 +61,7 @@ gh api repos/fatal10110/turboHTTP/pulls/<N>/comments --paginate      # existing 
 
 New public API, a new type/interface with one implementation, a new asmdef reference, a new
 dependency, reflection, or an option that silently does nothing without another module: each needs
-a reason in the issue or the PR. A new cross-module asmdef reference outside AGENTS.md's documented
+a reason in the issue or the PR. A new cross-module asmdef reference outside the documented
 exceptions, or Unity engine types in Transport/JSON/WebSocket cores, is a `[blocker]`.
 
 ## 4. Review the diff

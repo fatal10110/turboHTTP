@@ -3,7 +3,7 @@
 
 Checks (all on git-tracked files):
   meta      every asset Unity imports has a sibling .meta; no orphan .meta; GUIDs unique
-  asmdef    assembly dependency graph follows the module rules in AGENTS.md
+  asmdef    assembly dependency graph follows the module rules in Development/docs/agents/architecture.md
   json      every .json/.asmdef parses; package.json has the required UPM fields
 
 Usage: Tools~/ci/check_repo.py [meta|asmdef|json ...]   (default: all)
@@ -20,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # once the folder is renamed with a `~` suffix or moved out (issue REL-06).
 META_EXEMPT_TOP = {"Development"}
 
-# Allowed references per assembly (AGENTS.md "Module Rules"). Anything not listed here may
+# Allowed references per assembly (Development/docs/agents/architecture.md, "Assemblies and allowed references"). Anything not listed here may
 # reference only TurboHTTP.Core. Expanding an entry needs a documented architecture decision.
 ALLOWED_REFS = {
     "TurboHTTP.Core": set(),
@@ -94,7 +94,7 @@ def check_asmdef(files):
             for r in refs:
                 if r not in allowed and r not in {"UnityEngine.TestRunner", "UnityEditor.TestRunner"}:
                     errors.append(f"asmdef: {name} must not reference {r} (allowed: {sorted(allowed) or 'nothing'}; "
-                                  "see AGENTS.md Module Rules)")
+                                  "see Development/docs/agents/architecture.md)")
         if a.get("allowUnsafeCode") and name not in UNSAFE_ALLOWED:
             errors.append(f"asmdef: {name} enables allowUnsafeCode; only {sorted(UNSAFE_ALLOWED)} may")
         if name in ENGINE_FREE and not a.get("noEngineReferences"):
