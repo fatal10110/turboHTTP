@@ -301,7 +301,7 @@ After Steps 1–4, the full method body looks like:
     b. If alive: PrepareHttpsProxyTunnelRequest(request) → DispatchAsync → return
     c. On transport exception, Remove + check retryability → fall through
 3.  if (!secure): HTTP forward proxy dispatch via the existing helper and return
-4.  [Stage 2] Build tunnelPoolKey; acquire prepared proxy lease (BouncyCastle retry if TlsError)
+4.  [Stage 2] Build tunnelPoolKey; acquire prepared proxy lease (TLS errors propagate; no provider retry)
 5.  Build tunneledRequest = PrepareHttpsProxyTunnelRequest(request)  ← first use on new-tunnel path
 6.  Call DispatchPreparedTunneledRequestAsync(lease, ...)
 7.  lease = null                 ← MUST be set after the call returns on the HTTP/2 path;

@@ -94,7 +94,12 @@ namespace TurboHTTP.Tests.Transport.Tls
             {
                 return null;
             }
-            catch (PlatformNotSupportedException)
+            catch (NotSupportedException)
+            {
+                // Also covers PlatformNotSupportedException.
+                return null;
+            }
+            catch (NotImplementedException)
             {
                 return null;
             }

@@ -97,16 +97,20 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             using var server = LocalTlsTestServer.TryStart();
             if (server == null)
+            {
                 Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                return;
+            }
 
             var provider = new SslStreamTlsProvider(simulateNoAlpn: true);
             Exception failure = CaptureFailure(async () =>
             {
-                using var client = new TcpClient();
-                await client.ConnectAsync(IPAddress.Loopback, server.Port).ConfigureAwait(false);
+                // Same stream shape as TcpConnectionPool: a connected Socket owned by a NetworkStream.
+                var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                using var networkStream = await ConnectStreamAsync(socket, server.Port).ConfigureAwait(false);
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 var result = await provider.WrapAsync(
-                    client.GetStream(), "localhost", H2AndHttp11, cts.Token).ConfigureAwait(false);
+                    networkStream, "localhost", H2AndHttp11, cts.Token).ConfigureAwait(false);
                 result.SecureStream.Dispose();
             });
 
@@ -117,6 +121,20 @@ namespace TurboHTTP.Tests.Transport.Tls
             Assert.IsNotInstanceOf<PlatformNotSupportedException>(failure);
             Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(failure),
                 "Expected a handshake/certificate failure, got " + failure.GetType().Name);
+        }
+
+        private static async Task<NetworkStream> ConnectStreamAsync(Socket socket, int port)
+        {
+            try
+            {
+                await socket.ConnectAsync(IPAddress.Loopback, port).ConfigureAwait(false);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
         }
 
         private static Exception CaptureFailure(Func<Task> action)
