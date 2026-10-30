@@ -211,6 +211,15 @@ namespace TurboHTTP.Transport.Http2
                     // Http2FrameCodec.WriteFrameAsync accepts ReadOnlyMemory<byte> and writes
                     // it straight to the network stream. Request body ownership stays on
                     // UHttpRequest until the outer request lifecycle ends.
+                    // Debit BEFORE the write, still under _writeLock (RFC 9113 Section 6.9.1). Once
+                    // the frame is on the wire the peer may legally answer with a WINDOW_UPDATE for it;
+                    // the read loop must see the debited window or a window already at 2^31-1 would
+                    // overflow into a spurious FLOW_CONTROL_ERROR. The write below is not
+                    // request-cancellable and any write failure fails the whole connection, so a
+                    // debit for a frame that never completes is never observed by a live sender.
+                    Interlocked.Add(ref _connectionSendWindow, -actualAvailable);
+                    stream.AdjustSendWindowSize(-actualAvailable);
+
                     await WriteFrameLockedAsync(
                             Http2FrameType.Data,
                             isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,
@@ -218,10 +227,6 @@ namespace TurboHTTP.Transport.Http2
                             body.Slice(offset, actualAvailable))
                         .ConfigureAwait(false);
 
-                    // Windows count only DATA actually written (RFC 9113 Section 6.9.1): debit after
-                    // the frame is on the wire, still under _writeLock so senders cannot overcommit.
-                    Interlocked.Add(ref _connectionSendWindow, -actualAvailable);
-                    stream.AdjustSendWindowSize(-actualAvailable);
                     bytesSent = actualAvailable;
                 }
                 finally

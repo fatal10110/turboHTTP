@@ -309,6 +309,67 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void DataFrameOnWire_PeerReturnsCreditBeforeWriteCompletes_MaxWindowDoesNotOverflow()
+        {
+            AssertAsync.Run(async () =>
+            {
+                // The client has read the server's SETTINGS and SETTINGS ACK (two empty frames).
+                const int frameHeaderSize = 9;
+                const int windowUpdateFrameSize = frameHeaderSize + 4;
+                long clientBytesRead = 2 * frameHeaderSize;
+
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, gate) = await CreateGatedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+                var decoder = new HpackDecoder();
+
+                // Raise the connection send window to the RFC 9113 Section 6.9.1 maximum, 2^31-1.
+                int initialConnectionWindow = ReadConnectionSendWindow(conn);
+                var processed = gate.WaitForReadStartedAfter(clientBytesRead += windowUpdateFrameSize);
+                await serverCodec.WriteFrameAsync(
+                    BuildWindowUpdateFrame(0, int.MaxValue - initialConnectionWindow), cts.Token);
+                await WithWatchdog(processed, cts.Token);
+                Assert.AreEqual(int.MaxValue, ReadConnectionSendWindow(conn));
+
+                var body = Enumerable.Repeat((byte)'b', 100).ToArray();
+                var payloadHeld = gate.BlockWrite(count => count == body.Length);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/upload"))
+                    .WithBody(body);
+                var task = conn.SendRequestAsync(request, new RequestContext(request), cts.Token).AsTask();
+
+                var headers = await ReadHeaderBlockAsync(serverCodec, cts.Token);
+                decoder.Decode(headers.Block, 0, headers.Block.Length);
+
+                // The DATA frame is being written. The peer may return its credit as soon as it has
+                // the frame, so the read loop can see the WINDOW_UPDATE before the write call returns.
+                await WithWatchdog(payloadHeld, cts.Token);
+                processed = gate.WaitForReadStartedAfter(clientBytesRead += windowUpdateFrameSize);
+                await serverCodec.WriteFrameAsync(BuildWindowUpdateFrame(0, body.Length), cts.Token);
+                await WithWatchdog(processed, cts.Token);
+
+                Assert.IsTrue(conn.IsAlive, "a legal WINDOW_UPDATE must not overflow the send window");
+                Assert.AreEqual(int.MaxValue, ReadConnectionSendWindow(conn));
+
+                gate.Release();
+
+                var data = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Data, data.Type);
+                Assert.AreEqual(headers.StreamId, data.StreamId);
+                Assert.AreEqual(body.Length, data.Length);
+                Assert.IsTrue(data.HasFlag(Http2FrameFlags.EndStream));
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(headers.StreamId, 200, endStream: true), cts.Token);
+                Assert.AreEqual(HttpStatusCode.OK, (await task).StatusCode);
+
+                await AssertNextRequestSucceedsAsync(conn, serverCodec, decoder, headers.StreamId, cts.Token);
+                Assert.AreEqual(int.MaxValue, ReadConnectionSendWindow(conn));
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
         public void RequestCancelledMidHeaderBlock_ContinuationCompletes_ConnectionStaysUsable()
         {
             AssertAsync.Run(async () =>

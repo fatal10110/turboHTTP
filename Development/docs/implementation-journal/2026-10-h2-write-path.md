@@ -20,7 +20,7 @@
   `_cts.Token`, so request cancellation never interrupts a started frame or header block. On any
   write exception it calls `FailAllStreams` (connection dead), wrapping non-UHttp errors in
   `UHttpException(NetworkError)`. `SendBufferedDataAsync` debits the connection and stream send
-  windows only after the DATA frame is written (still under `_writeLock`). `DispatchAsync` rethrows
+  windows before the DATA frame is written, under the same `_writeLock` hold. `DispatchAsync` rethrows
   `OperationCanceledException` only when the request token is cancelled or the connection is still
   open. An OCE caused by connection teardown maps to `UHttpException(NetworkError)`.
 - **#27**: `HpackEncoder.SetMaxDynamicTableSize` only records a pending change, under a small
@@ -34,7 +34,7 @@
 ## Files
 
 - `Runtime/Transport/Http2/Http2Connection.cs`: Dispatch HEADERS critical section, OCE filter, removed `_lastHeaderTableSize`
-- `Runtime/Transport/Http2/Http2Connection.Send.cs`: `WriteFrameLockedAsync`, `FailConnectionAfterWriteError`, trailers, window debit after write
+- `Runtime/Transport/Http2/Http2Connection.Send.cs`: `WriteFrameLockedAsync`, `FailConnectionAfterWriteError`, trailers, window debit before write
 - `Runtime/Transport/Http2/Http2Connection.Lifecycle.cs`: pooled control frames use `WriteFrameLockedAsync`
 - `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs`: per-entry HEADER_TABLE_SIZE recording
 - `Runtime/Transport/Http2/HpackEncoder.cs`: pending size updates (min then final)
@@ -46,8 +46,12 @@
 - The codec still writes the frame header and payload as two writes. Because both use the
   connection token, the frame cannot be split by request cancellation, and the zero-copy DATA path
   stays as it is (no coalescing copy).
-- Debit after a successful write, rather than credit back on failure: a failed write kills the
-  connection anyway.
+- The send windows are debited before the DATA write, under the same lock hold (review round 1).
+  A debit after the write would race the read loop: the peer can return the frame's credit with a
+  WINDOW_UPDATE before the write call returns, and with the window at 2^31-1 that update would
+  overflow into a spurious connection FLOW_CONTROL_ERROR (RFC 9113 Section 6.9.1). A debit for a
+  frame that never completes is harmless, because the write is no longer request-cancellable and
+  any write failure fails the connection.
 - Lock order is `_writeLock` (async) then `_streamCreateLock` (monitor, never held across an await).
 
 ## Earlier journal corrected
@@ -64,6 +68,9 @@
 ## Verification
 
 - `./Tools~/ci/check.sh`: OK.
+- Review round 1: `DataFrameOnWire_PeerReturnsCreditBeforeWriteCompletes_MaxWindowDoesNotOverflow`
+  passes and fails against the debit-after-write code (the read loop dies on the overflow). The
+  scratch harness ran 195/195.
 - The `Tests/Runtime/Transport/Http2` NUnit tests (194, all except the Unity-only
   `Http2FlowControlTests.cs`) were compiled into a scratch net8.0 NUnit project against the
   shadow-built DLLs: all pass, and the new tests passed 5 runs in a row. The same harness against

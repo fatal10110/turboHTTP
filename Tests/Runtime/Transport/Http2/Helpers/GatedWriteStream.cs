@@ -9,7 +9,8 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
     /// Stream decorator that can hold one chosen write until the test releases it, so a test can
     /// cancel a request while a frame is half written. Like a socket write, a held write honours the
     /// cancellation token it was called with: cancelling that token fails the write without writing
-    /// its bytes. Reads, flushes and all other writes pass straight through.
+    /// its bytes. It can also signal when a read starts after a given byte count. Reads, flushes and
+    /// all other writes pass straight through.
     /// </summary>
     internal sealed class GatedWriteStream : Stream
     {
@@ -18,6 +19,9 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
         private Func<int, bool> _blockPredicate;
         private TaskCompletionSource<bool> _blocked;
         private TaskCompletionSource<bool> _release;
+        private long _bytesRead;
+        private long _readWaitThreshold;
+        private TaskCompletionSource<bool> _readWaiter;
 
         public GatedWriteStream(Stream inner)
         {
@@ -37,6 +41,23 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
                 _blocked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 return _blocked.Task;
+            }
+        }
+
+        /// <summary>
+        /// Returns a task that completes once a read is started after at least
+        /// <paramref name="totalBytes"/> bytes have been read through this stream in total. A frame
+        /// reader that reads exact lengths starts its next read only after it has handled the
+        /// previous frame, so this proves the frames that end at <paramref name="totalBytes"/> were
+        /// processed.
+        /// </summary>
+        public Task WaitForReadStartedAfter(long totalBytes)
+        {
+            lock (_gate)
+            {
+                _readWaitThreshold = totalBytes;
+                _readWaiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                return _readWaiter.Task;
             }
         }
 
@@ -60,10 +81,21 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
             set => throw new NotSupportedException();
         }
 
-        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            OnReadStarting();
+            int read = _inner.Read(buffer, offset, count);
+            Interlocked.Add(ref _bytesRead, read);
+            return read;
+        }
 
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            => _inner.ReadAsync(buffer, offset, count, cancellationToken);
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            OnReadStarting();
+            int read = await _inner.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+            Interlocked.Add(ref _bytesRead, read);
+            return read;
+        }
 
         public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
 
@@ -90,6 +122,21 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
             }
 
             base.Dispose(disposing);
+        }
+
+        private void OnReadStarting()
+        {
+            TaskCompletionSource<bool> waiter = null;
+            lock (_gate)
+            {
+                if (_readWaiter != null && Interlocked.Read(ref _bytesRead) >= _readWaitThreshold)
+                {
+                    waiter = _readWaiter;
+                    _readWaiter = null;
+                }
+            }
+
+            waiter?.TrySetResult(true);
         }
 
         private async ValueTask WriteGatedAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
