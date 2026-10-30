@@ -91,8 +91,6 @@ namespace TurboHTTP.Transport.Http2
         // Initialization handshake
         private readonly ResettableValueTaskSource<bool> _settingsAckSource;
 
-        // HPACK table size tracking (for detecting changes including back-to-default)
-        private int _lastHeaderTableSize = Http2Constants.DefaultHeaderTableSize;
         private readonly int _perStreamReceiveBufferBytes;
         private readonly int _streamingSendBufferBytes;
         private readonly int _maxConnectionBufferedBytes;
@@ -263,71 +261,65 @@ namespace TurboHTTP.Transport.Http2
             bool requestHeadersSent = false;
             bool requestEndStreamSent = false;
 
-            lock (_streamCreateLock)
-            {
-                if (_goawayReceived)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Connection received GOAWAY"));
-                }
-                if (_cts.IsCancellationRequested)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Connection is closed"));
-                }
-
-                if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        $"MAX_CONCURRENT_STREAMS limit reached ({_remoteSettings.MaxConcurrentStreams})"));
-                }
-
-                streamId = AllocateNextStreamId();
-                if (_goawayReceived || (_lastGoawayStreamId > 0 && streamId > _lastGoawayStreamId))
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Connection closed during stream creation"));
-                }
-
-                stream = Http2StreamPool.Rent(
-                    streamId,
-                    request,
-                    handler,
-                    context,
-                    _remoteSettings.InitialWindowSize,
-                    _localSettings.InitialWindowSize,
-                    this);
-                _activeStreams[streamId] = stream;
-            }
-
-            if (ct.IsCancellationRequested)
-            {
-                RemoveActiveStream(streamId);
-                throw new OperationCanceledException(ct);
-            }
-
-            stream.SetRequestCancellationToken(ct);
-            stream.CancellationRegistration = ct.Register(
-                s_requestCancellationCallback,
-                stream,
-                useSynchronizationContext: false);
-
             try
             {
                 bool shouldWaitForExpectContinue = ExpectContinueHelper.ShouldAwaitExpectContinue(request);
                 bool hasBody = shouldWaitForExpectContinue || ExpectContinueHelper.HasRequestBody(request.Content);
                 bool hasRequestTrailers = request.Content != null && request.Content.TrailerProvider != null;
 
-                if (shouldWaitForExpectContinue)
-                    stream.EnableExpectContinueWait();
-
+                // The request token only gates acquiring the write lock. Stream-id allocation and the
+                // HEADERS write share one _writeLock hold so ids reach the wire in increasing order
+                // (RFC 9113 Section 5.1.1), and a request cancelled while waiting consumes no id.
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
                 {
+                    ct.ThrowIfCancellationRequested();
+
+                    lock (_streamCreateLock)
+                    {
+                        if (_goawayReceived)
+                        {
+                            throw new UHttpException(new UHttpError(
+                                UHttpErrorType.NetworkError,
+                                "Connection received GOAWAY"));
+                        }
+                        if (_cts.IsCancellationRequested)
+                        {
+                            throw new UHttpException(new UHttpError(
+                                UHttpErrorType.NetworkError,
+                                "Connection is closed"));
+                        }
+
+                        if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
+                        {
+                            throw new UHttpException(new UHttpError(
+                                UHttpErrorType.NetworkError,
+                                $"MAX_CONCURRENT_STREAMS limit reached ({_remoteSettings.MaxConcurrentStreams})"));
+                        }
+
+                        streamId = AllocateNextStreamId();
+                        if (_goawayReceived || (_lastGoawayStreamId > 0 && streamId > _lastGoawayStreamId))
+                        {
+                            throw new UHttpException(new UHttpError(
+                                UHttpErrorType.NetworkError,
+                                "Connection closed during stream creation"));
+                        }
+
+                        // Registered before HEADERS hit the wire: the response may arrive at once.
+                        stream = Http2StreamPool.Rent(
+                            streamId,
+                            request,
+                            handler,
+                            context,
+                            _remoteSettings.InitialWindowSize,
+                            _localSettings.InitialWindowSize,
+                            this);
+                        _activeStreams[streamId] = stream;
+                    }
+
+                    if (shouldWaitForExpectContinue)
+                        stream.EnableExpectContinueWait();
+
                     _headerListScratch.Clear();
                     _headerListScratch.Add((":method", request.Method.ToUpperString()));
                     _headerListScratch.Add((":scheme", _schemeHeader));
@@ -367,7 +359,7 @@ namespace TurboHTTP.Transport.Http2
 
                     var headerBlock = _hpackEncoder.Encode(_headerListScratch);
 
-                    await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct)
+                    await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody)
                         .ConfigureAwait(false);
                     requestHeadersSent = true;
                     requestEndStreamSent = !hasBody;
@@ -378,6 +370,15 @@ namespace TurboHTTP.Transport.Http2
                 {
                     _writeLock.Release();
                 }
+
+                // Registered only once HEADERS are on the wire, so the cancellation RST_STREAM can
+                // never precede them (an RST_STREAM on an idle stream is a connection error,
+                // RFC 9113 Section 6.4). An already-cancelled token runs the callback here.
+                stream.SetRequestCancellationToken(ct);
+                stream.CancellationRegistration = ct.Register(
+                    s_requestCancellationCallback,
+                    stream,
+                    useSynchronizationContext: false);
 
                 if (hasBody)
                 {
@@ -403,12 +404,14 @@ namespace TurboHTTP.Transport.Http2
                 await AwaitResponseCompletionOrCancellationAsync(stream)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested || !_cts.IsCancellationRequested)
             {
                 throw;
             }
             catch (Exception ex)
             {
+                // Includes an OperationCanceledException raised by the connection token (the
+                // connection was failed or disposed): mapped to a network error below.
                 if (stream != null &&
                     requestHeadersSent &&
                     !requestEndStreamSent &&

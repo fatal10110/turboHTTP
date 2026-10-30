@@ -12,11 +12,16 @@ namespace TurboHTTP.Transport.Http2
 {
     internal partial class Http2Connection
     {
+        /// <summary>
+        /// Writes a HEADERS frame (plus CONTINUATION frames) carrying <paramref name="headerBlock"/>.
+        /// The caller holds <see cref="_writeLock"/> for the whole call, the block was encoded in the
+        /// same hold, and the frames are written with the connection token only: a header block is
+        /// contiguous on the wire and never left unterminated (RFC 9113 Sections 4.3 and 6.10).
+        /// </summary>
         private async Task SendHeadersAsync(
             int streamId,
             ReadOnlyMemory<byte> headerBlock,
-            bool endStream,
-            CancellationToken ct)
+            bool endStream)
         {
             int maxPayload = _remoteSettings.MaxFrameSize;
 
@@ -25,12 +30,11 @@ namespace TurboHTTP.Transport.Http2
                 var flags = Http2FrameFlags.EndHeaders;
                 if (endStream) flags |= Http2FrameFlags.EndStream;
 
-                await _codec.WriteFrameAsync(
+                await WriteFrameLockedAsync(
                         Http2FrameType.Headers,
                         flags,
                         streamId,
-                        headerBlock,
-                        ct)
+                        headerBlock)
                     .ConfigureAwait(false);
             }
             else
@@ -51,16 +55,55 @@ namespace TurboHTTP.Transport.Http2
                     if (isLast)
                         flags |= Http2FrameFlags.EndHeaders;
 
-                    await _codec.WriteFrameAsync(
+                    await WriteFrameLockedAsync(
                             frameType,
                             flags,
                             streamId,
                             payload,
-                            ct,
                             flush: isLast)
                         .ConfigureAwait(false);
                     first = false;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Writes one frame while the caller holds <see cref="_writeLock"/>. A started frame is
+        /// finished with the connection token only, never the request token: request cancellation
+        /// must not leave a partial frame on the wire (RFC 9113 Section 4.1). Any write failure leaves
+        /// the peer's view of the framing undefined, so the connection is failed.
+        /// </summary>
+        private async Task WriteFrameLockedAsync(
+            Http2FrameType type,
+            Http2FrameFlags flags,
+            int streamId,
+            ReadOnlyMemory<byte> payload,
+            bool flush = true)
+        {
+            try
+            {
+                await _codec.WriteFrameAsync(type, flags, streamId, payload, _cts.Token, flush)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                FailConnectionAfterWriteError(ex);
+                throw;
+            }
+        }
+
+        private void FailConnectionAfterWriteError(Exception ex)
+        {
+            try
+            {
+                FailAllStreams(ex as UHttpException ?? new UHttpException(new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    "HTTP/2 frame write failed; the connection is closed",
+                    ex)));
+            }
+            catch (ObjectDisposedException)
+            {
+                // Connection resources were already released by Dispose.
             }
         }
 
@@ -77,14 +120,10 @@ namespace TurboHTTP.Transport.Http2
             {
                 if (buffered.IsEmpty)
                 {
-                    var trailerHeaderBlock = await PrepareRequestTrailerBlockAsync(
-                            content.TrailerProvider,
-                            stream,
-                            ct)
-                        .ConfigureAwait(false);
-                    if (!trailerHeaderBlock.IsEmpty)
+                    var trailers = CollectRequestTrailers(content.TrailerProvider, stream);
+                    if (trailers != null)
                     {
-                        await SendTrailingHeadersAsync(streamId, trailerHeaderBlock, stream, ct)
+                        await SendTrailingHeadersAsync(streamId, trailers, stream, ct)
                             .ConfigureAwait(false);
                     }
                     else
@@ -95,22 +134,20 @@ namespace TurboHTTP.Transport.Http2
                     return 0;
                 }
 
-                var preparedBufferedTrailers = await PrepareRequestTrailerBlockAsync(
-                        content.TrailerProvider,
-                        stream,
-                        ct)
-                    .ConfigureAwait(false);
+                // Trailers are collected (not encoded) before the body so the final DATA frame knows
+                // whether it carries END_STREAM; they are encoded at send time.
+                var bufferedTrailers = CollectRequestTrailers(content.TrailerProvider, stream);
                 var totalBufferedBytes = await SendBufferedDataAsync(
                         streamId,
                         buffered,
                         stream,
-                        endStreamOnFinalFrame: preparedBufferedTrailers.IsEmpty,
+                        endStreamOnFinalFrame: bufferedTrailers == null,
                         ct)
                     .ConfigureAwait(false);
 
-                if (!preparedBufferedTrailers.IsEmpty)
+                if (bufferedTrailers != null)
                 {
-                    await SendTrailingHeadersAsync(streamId, preparedBufferedTrailers, stream, ct)
+                    await SendTrailingHeadersAsync(streamId, bufferedTrailers, stream, ct)
                         .ConfigureAwait(false);
                 }
 
@@ -170,19 +207,26 @@ namespace TurboHTTP.Transport.Http2
 
                     bool isLast = endStreamOnFinalFrame && (offset + actualAvailable) >= body.Length;
 
-                    Interlocked.Add(ref _connectionSendWindow, -actualAvailable);
-                    stream.AdjustSendWindowSize(-actualAvailable);
-
                     // Zero-copy: pass the body slice directly — no intermediate ArrayPool copy.
                     // Http2FrameCodec.WriteFrameAsync accepts ReadOnlyMemory<byte> and writes
                     // it straight to the network stream. Request body ownership stays on
                     // UHttpRequest until the outer request lifecycle ends.
-                    await _codec.WriteFrameAsync(
-                        Http2FrameType.Data,
-                        isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,
-                        streamId,
-                        body.Slice(offset, actualAvailable),
-                        ct);
+                    // Debit BEFORE the write, still under _writeLock (RFC 9113 Section 6.9.1). Once
+                    // the frame is on the wire the peer may legally answer with a WINDOW_UPDATE for it;
+                    // the read loop must see the debited window or a window already at 2^31-1 would
+                    // overflow into a spurious FLOW_CONTROL_ERROR. The write below is not
+                    // request-cancellable and any write failure fails the whole connection, so a
+                    // debit for a frame that never completes is never observed by a live sender.
+                    Interlocked.Add(ref _connectionSendWindow, -actualAvailable);
+                    stream.AdjustSendWindowSize(-actualAvailable);
+
+                    await WriteFrameLockedAsync(
+                            Http2FrameType.Data,
+                            isLast ? Http2FrameFlags.EndStream : Http2FrameFlags.None,
+                            streamId,
+                            body.Slice(offset, actualAvailable))
+                        .ConfigureAwait(false);
+
                     bytesSent = actualAvailable;
                 }
                 finally
@@ -233,27 +277,21 @@ namespace TurboHTTP.Transport.Http2
                         }
 
                         remaining -= bytesRead;
-                        ReadOnlyMemory<byte> preparedTrailers = default;
+                        List<(string Name, string Value)> trailers = null;
                         if (remaining.Value == 0)
-                        {
-                            preparedTrailers = await PrepareRequestTrailerBlockAsync(
-                                    trailerProvider,
-                                    stream,
-                                    ct)
-                                .ConfigureAwait(false);
-                        }
+                            trailers = CollectRequestTrailers(trailerProvider, stream);
 
                         totalBytesSent += await SendBufferedDataAsync(
                                 streamId,
                                 new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
                                 stream,
-                                endStreamOnFinalFrame: remaining.Value == 0 && preparedTrailers.IsEmpty,
+                                endStreamOnFinalFrame: remaining.Value == 0 && trailers == null,
                                 ct)
                             .ConfigureAwait(false);
 
-                        if (!preparedTrailers.IsEmpty)
+                        if (trailers != null)
                         {
-                            await SendTrailingHeadersAsync(streamId, preparedTrailers, stream, ct)
+                            await SendTrailingHeadersAsync(streamId, trailers, stream, ct)
                                 .ConfigureAwait(false);
                         }
                     }
@@ -275,14 +313,10 @@ namespace TurboHTTP.Transport.Http2
                         .ConfigureAwait(false);
                     if (bytesRead == 0)
                     {
-                        var preparedTrailers = await PrepareRequestTrailerBlockAsync(
-                                trailerProvider,
-                                stream,
-                                ct)
-                            .ConfigureAwait(false);
-                        if (!preparedTrailers.IsEmpty)
+                        var trailers = CollectRequestTrailers(trailerProvider, stream);
+                        if (trailers != null)
                         {
-                            await SendTrailingHeadersAsync(streamId, preparedTrailers, stream, ct)
+                            await SendTrailingHeadersAsync(streamId, trailers, stream, ct)
                                 .ConfigureAwait(false);
                             return totalBytesSent;
                         }
@@ -323,12 +357,11 @@ namespace TurboHTTP.Transport.Http2
                 if (stream.IsResponseCompleted)
                     return;
 
-                await _codec.WriteFrameAsync(
+                await WriteFrameLockedAsync(
                         Http2FrameType.Data,
                         Http2FrameFlags.EndStream,
                         streamId,
-                        ReadOnlyMemory<byte>.Empty,
-                        ct)
+                        ReadOnlyMemory<byte>.Empty)
                     .ConfigureAwait(false);
             }
             finally
@@ -337,13 +370,19 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
+        /// <summary>
+        /// Encodes and writes the request trailer block in ONE <see cref="_writeLock"/> hold, so the
+        /// encoder output is consumed before any other block is encoded and the encoder's dynamic
+        /// table evolves in wire order (RFC 7541 Section 2.2). When the trailers are skipped (the
+        /// response already completed) nothing is encoded, so encoder state is untouched.
+        /// </summary>
         private async Task SendTrailingHeadersAsync(
             int streamId,
-            ReadOnlyMemory<byte> trailerHeaderBlock,
+            List<(string Name, string Value)> trailers,
             Http2Stream stream,
             CancellationToken ct)
         {
-            if (trailerHeaderBlock.IsEmpty || stream.IsResponseCompleted)
+            if (trailers == null || trailers.Count == 0 || stream.IsResponseCompleted)
                 return;
 
             await _writeLock.WaitAsync(ct).ConfigureAwait(false);
@@ -352,7 +391,8 @@ namespace TurboHTTP.Transport.Http2
                 if (stream.IsResponseCompleted)
                     return;
 
-                await SendHeadersAsync(streamId, trailerHeaderBlock, endStream: true, ct)
+                var trailerHeaderBlock = _hpackEncoder.Encode(trailers);
+                await SendHeadersAsync(streamId, trailerHeaderBlock, endStream: true)
                     .ConfigureAwait(false);
             }
             finally
@@ -361,46 +401,23 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        private async Task<ReadOnlyMemory<byte>> PrepareRequestTrailerBlockAsync(
+        /// <summary>
+        /// Runs the caller's trailer provider (outside <see cref="_writeLock"/>) and returns the
+        /// validated, lower-cased trailer fields to send, or null when there are none. Nothing is
+        /// HPACK-encoded here.
+        /// </summary>
+        private static List<(string Name, string Value)> CollectRequestTrailers(
             Func<HttpHeaders> trailerProvider,
-            Http2Stream stream,
-            CancellationToken ct)
+            Http2Stream stream)
         {
             if (trailerProvider == null || stream.IsResponseCompleted)
-                return default;
-
-            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                if (stream.IsResponseCompleted)
-                    return default;
-
-                _headerListScratch.Clear();
-                AppendPreparedRequestTrailers(_headerListScratch, trailerProvider);
-                if (_headerListScratch.Count == 0)
-                    return default;
-
-                return _hpackEncoder.Encode(_headerListScratch);
-            }
-            finally
-            {
-                _writeLock.Release();
-            }
-        }
-
-        private static void AppendPreparedRequestTrailers(
-            List<(string Name, string Value)> destination,
-            Func<HttpHeaders> trailerProvider)
-        {
-            if (destination == null)
-                throw new ArgumentNullException(nameof(destination));
-            if (trailerProvider == null)
-                return;
+                return null;
 
             var trailers = trailerProvider();
             if (trailers == null || trailers.Count == 0)
-                return;
+                return null;
 
+            List<(string Name, string Value)> fields = null;
             foreach (var name in trailers.Names)
             {
                 if (TrailerFieldValidator.IsProhibitedRequestTrailer(name))
@@ -411,9 +428,12 @@ namespace TurboHTTP.Transport.Http2
                 for (int i = 0; i < values.Count; i++)
                 {
                     ValidateTrailerHeader(name, values[i]);
-                    destination.Add((lowerName, values[i]));
+                    fields ??= new List<(string Name, string Value)>();
+                    fields.Add((lowerName, values[i]));
                 }
             }
+
+            return fields;
         }
 
         private static void ValidateTrailerHeader(string name, string value)

@@ -468,6 +468,12 @@ namespace TurboHTTP.Transport.Http2
             foreach (var (id, value) in settings)
             {
                 _remoteSettings.Apply(id, value);
+
+                // RFC 7541 Section 4.2: every HEADER_TABLE_SIZE value counts toward the smallest size
+                // the encoder must signal before its next block. The encoder only records the change;
+                // it resizes its table inside Encode, under _writeLock.
+                if (id == Http2SettingId.HeaderTableSize)
+                    _hpackEncoder.SetMaxDynamicTableSize(_remoteSettings.HeaderTableSize);
             }
 
             // Adjust stream send windows if InitialWindowSize changed
@@ -484,15 +490,6 @@ namespace TurboHTTP.Transport.Http2
                             "INITIAL_WINDOW_SIZE change causes stream window overflow");
                     stream.AdjustSendWindowSize(delta);
                 }
-            }
-
-            // Fix 2: Update HPACK encoder whenever header table size changes from its
-            // previous value, including changes back to the default.
-            int newHeaderTableSize = _remoteSettings.HeaderTableSize;
-            if (newHeaderTableSize != _lastHeaderTableSize)
-            {
-                _hpackEncoder.SetMaxDynamicTableSize(newHeaderTableSize);
-                _lastHeaderTableSize = newHeaderTableSize;
             }
 
             // Send SETTINGS ACK
