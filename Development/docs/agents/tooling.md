@@ -8,7 +8,7 @@ cloud agent containers).
 
 | Gate | Local command | CI job | Blocks merge |
 | --- | --- | --- | --- |
-| Repo invariants: every imported asset has a `.meta`, no orphan/duplicate GUIDs, asmdef dependency graph follows AGENTS.md Module Rules, JSON/asmdef/package.json valid | `python3 "Tools~/ci/check_repo.py"` | `lint` | yes |
+| Repo invariants: every imported asset has a `.meta`, no orphan/duplicate GUIDs, asmdef dependency graph follows `architecture.md`, JSON/asmdef/package.json valid | `python3 "Tools~/ci/check_repo.py"` | `lint` | yes |
 | Whitespace format (`.editorconfig`, `dotnet format whitespace`) | `"Tools~/ci/check.sh"` (`--fix` to apply) | `lint` | yes |
 | Shadow build: every runtime/editor asmdef compiled by the .NET SDK for the Editor, iOS and Android define sets, with Roslyn analyzers and banned APIs (`Tools~/ci/BannedSymbols.txt`), warnings ratcheted by `Tools~/ci/analyzer-baseline.txt` | `"Tools~/ci/check.sh"` (editor) / `--full` (all) | `lint` | yes |
 | actionlint, shellcheck, Python tool tests, issue-seed validation | `"Tools~/ci/check.sh" --full` | `lint` | yes |

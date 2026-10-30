@@ -12,7 +12,7 @@ description: >
 
 # turboHTTP issue implementation
 
-Repository rules live in `AGENTS.md` and `CLAUDE.md` (module rules, design constraints, known
+Repository rules live in `CLAUDE.md` and the scoped guides it lists (module rules, design constraints, known
 risk areas, journal and review requirements); nothing here repeats them — read the sections your
 change touches. A turbohttp-waves prompt overrides this file on test scope, worktree commands and
 GitHub tooling.
@@ -77,7 +77,7 @@ Every change answers three questions in the PR body, from evidence:
    mid-headers) and assert the bound holds. New files and folders need a `.meta`:
    `python3 'Tools~/ci/gen_meta.py' <path>...` (CI fails on a missing or orphan `.meta`).
 6. **Implement.** The smallest complete fix in the owning assembly. No new asmdef references
-   outside AGENTS.md's documented exceptions, no Unity engine types in Transport/JSON/WebSocket
+   outside the documented exceptions (`Development/docs/agents/architecture.md`), no Unity engine types in Transport/JSON/WebSocket
    cores, no unsafe code outside Transport, no new public API unless the issue asks for it (then
    XML-document it). Keep hot paths allocation-free where they already are (pooled buffers,
    `ValueTask`, no LINQ/closures in per-frame code). Never edit
@@ -98,9 +98,9 @@ Every change answers three questions in the PR body, from evidence:
    otherwise read both files and work their checklists yourself). Fix findings, re-run the gates,
    and record any deliberate deferral with rationale and target milestone (and a follow-up issue).
 9. **Journal.** Add one new file `Development/docs/implementation-journal/YYYY-MM-<issue-slug>.md`
-   (what, files, decisions, deferred items, how verified) with its `.meta`. Update CLAUDE.md /
-   AGENTS.md only when phase status, architecture or conventions change and you are not in a
-   turbohttp-waves lane (lanes leave them alone).
+   (what, files, decisions, deferred items, how verified) with its `.meta`. Update CLAUDE.md or
+   the guides in `Development/docs/agents/` only when phase status, architecture or conventions
+   change and you are not in a turbohttp-waves lane (lanes leave them alone).
 10. **Deliver.**
     - Audit the final diff (`git diff origin/main...`): only in-scope files; no debug code; every
       acceptance checkbox maps to a hunk or a test.
