@@ -51,8 +51,10 @@ recorded in the journal and in this table.
   `WithBearerToken` in Auth); Core's request API keeps raw HTTP primitives.
 - `UHttpClient.Dispose()` disposes `IDisposable` interceptors (ownership issue #63). Disposal is
   idempotent everywhere (`RawSocketTransport` uses `Interlocked.CompareExchange`).
-- `UHttpRequest` is mutable and pooled (lease/`ResetForPool`); `SendBufferedAsync` returns it to the
-  pool. A stale reference after re-lease is unsafe (#62).
+- `UHttpRequest` is mutable and single-lease: `UHttpClient.CreateRequest` allocates a new instance (not
+  pooled, #62), and `Dispose`/`SendBufferedAsync` end the lease. The lease completes (owned body disposed)
+  exactly once, after dispose, the end of the send and every response hold (#148); a stale reference
+  always throws `ObjectDisposedException`.
 
 ## Transport
 
