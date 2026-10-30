@@ -128,17 +128,16 @@ namespace TurboHTTP.Transport.Http2
             {
                 fillPayload?.Invoke(payload);
 
+                // ct only gates the lock; the frame itself is finished with the connection token.
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
                 {
-                    await _codec.WriteFrameAsync(new Http2Frame
-                    {
-                        Type = type,
-                        Flags = Http2FrameFlags.None,
-                        StreamId = streamId,
-                        Payload = payload,
-                        Length = payloadLength
-                    }, ct).ConfigureAwait(false);
+                    await WriteFrameLockedAsync(
+                            type,
+                            Http2FrameFlags.None,
+                            streamId,
+                            new ReadOnlyMemory<byte>(payload, 0, payloadLength))
+                        .ConfigureAwait(false);
                 }
                 finally
                 {
