@@ -9,4 +9,13 @@
     <type fullname="System.Diagnostics.StackTrace" preserve="all"/>
     <type fullname="System.Diagnostics.StackFrame" preserve="all"/>
   </assembly>
+
+  <!--
+    UHttpClient (TurboHTTP.Core) creates TurboHTTP.Observability.MonitorInterceptor by name and reads
+    its static CaptureEnabled property through reflection. Today that path is compiled only under
+    UNITY_EDITOR; the rule keeps the type if a player build ever takes the same path.
+  -->
+  <assembly fullname="TurboHTTP.Observability">
+    <type fullname="TurboHTTP.Observability.MonitorInterceptor" preserve="all"/>
+  </assembly>
 </linker>

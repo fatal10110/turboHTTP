@@ -1,11 +1,19 @@
 <linker>
   <!--
-    SslStream types for reflection-based ALPN (SslStreamTlsProvider).
-    Preserves internal APIs accessed via reflection to enable HTTP/2 ALPN
-    negotiation on platforms where public APIs aren't exposed.
-    If stripped, AuthenticateWithAlpnAsync falls back to non-ALPN auth;
-    BouncyCastle provides ALPN on those platforms.
+    SslStream types for reflection-based ALPN (SslStreamTlsProvider static constructor:
+    SslClientAuthenticationOptions, ApplicationProtocols, SslApplicationProtocol.Http2/Http11,
+    AuthenticateAsClientAsync(options, CancellationToken), NegotiatedApplicationProtocol).
+    If stripped, AuthenticateWithAlpnAsync falls back to non-ALPN auth and HTTP/2 is never
+    negotiated over SslStream.
+    On Unity Mono/IL2CPP these types are implemented in System.dll, so the "System" entry is the
+    one that takes effect (#35). The "System.Net.Security" entry covers profiles that ship the
+    types in their own assembly; UnityLinker ignores an entry whose assembly is not in the build.
   -->
+  <assembly fullname="System">
+    <type fullname="System.Net.Security.SslStream" preserve="all"/>
+    <type fullname="System.Net.Security.SslClientAuthenticationOptions" preserve="all"/>
+    <type fullname="System.Net.Security.SslApplicationProtocol" preserve="all"/>
+  </assembly>
   <assembly fullname="System.Net.Security">
     <type fullname="System.Net.Security.SslStream" preserve="all"/>
     <type fullname="System.Net.Security.SslClientAuthenticationOptions" preserve="all"/>
@@ -16,31 +24,24 @@
     Generic instantiation hint for IL2CPP/AOT.
     MakeGenericType(typeof(SslApplicationProtocol)) in SslStreamTlsProvider
     needs the open generic List<> template preserved.
+    UnityLinker matches open generic type names only; closed instantiations such as
+    ValueTask`1[[...]] are ignored, so only the open templates are listed.
   -->
   <assembly fullname="mscorlib">
     <type fullname="System.Collections.Generic.List`1" preserve="all"/>
     <type fullname="System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1" preserve="all"/>
-    <type fullname="System.Threading.Tasks.ValueTask`1[[System.Int32, mscorlib]]" preserve="all"/>
-    <type fullname="System.Threading.Tasks.ValueTask`1[[TurboHTTP.Transport.Http2.Http2ResponseBodyChunk, TurboHTTP.Transport]]" preserve="all"/>
   </assembly>
 
   <!--
     22a.1 HTTP/2 receive-queue primitive used by the streaming design.
     Preserve the generic channel template so IL2CPP keeps its async-waiter methods.
+    Transport registration: TransportModuleInitializer calls RawSocketTransport.EnsureRegistered
+    and nothing else references either type statically.
   -->
   <assembly fullname="TurboHTTP.Transport">
     <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1" preserve="all"/>
-    <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1[[TurboHTTP.Transport.Http2.Http2ResponseBodyChunk, TurboHTTP.Transport]]" preserve="all"/>
     <type fullname="TurboHTTP.Transport.Http2.Http2ResponseBodySource" preserve="all"/>
+    <type fullname="TurboHTTP.Transport.TransportModuleInitializer" preserve="all"/>
+    <type fullname="TurboHTTP.Transport.RawSocketTransport" preserve="all"/>
   </assembly>
-
-  <!--
-    BouncyCastle TLS provider (repackaged source).
-    Preserve the entire assembly because:
-    1. Entry point (BouncyCastleTlsProvider) is loaded via reflection
-    2. BC internally resolves algorithms by string OIDs (e.g. "AES/GCM/NoPadding"),
-       so the linker can't statically trace all code paths
-    3. Can be narrowed to specific ciphers later for size optimization
-  -->
-  <assembly fullname="TurboHTTP.Transport.BouncyCastle" preserve="all"/>
 </linker>

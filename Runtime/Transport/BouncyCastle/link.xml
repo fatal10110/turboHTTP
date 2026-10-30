@@ -1,0 +1,13 @@
+<linker>
+  <!--
+    BouncyCastle TLS provider (repackaged source).
+    Preserve the entire assembly because:
+    1. Entry point (BouncyCastleTlsProvider) is loaded via reflection
+    2. BC internally resolves algorithms by string OIDs (e.g. "AES/GCM/NoPadding"),
+       so the linker can't statically trace all code paths
+    3. Can be narrowed to specific ciphers later for size optimization
+    This file lives in the BouncyCastle folder so that TurboHttpLinkerProcessor passes it to
+    UnityLinker only when the TurboHTTP.Transport.BouncyCastle assembly is part of the build.
+  -->
+  <assembly fullname="TurboHTTP.Transport.BouncyCastle" preserve="all"/>
+</linker>
