@@ -22,11 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
 
@@ -37,13 +37,13 @@ jobs:
       # 34 MB of managed DLLs extracted from the ~4 GB unityci/editor image; the
       # image is only pulled when the cache misses (new Unity version).
       - name: Cache Unity managed DLLs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .tools/unity-managed
           key: unity-managed-${{ steps.unity.outputs.version }}
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
           key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
@@ -75,7 +75,7 @@ jobs:
         if: env.HAS_UNITY_LICENSE != 'true'
         run: echo "::warning::UNITY_LICENSE secret is not set; Unity tests were not run"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.HAS_UNITY_LICENSE == 'true'
         with:
           persist-credentials: false
@@ -102,7 +102,7 @@ jobs:
           githubToken: ${{ secrets.GITHUB_TOKEN }}
           checkName: Unity ${{ matrix.testMode }} results
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && env.HAS_UNITY_LICENSE == 'true'
         with:
           name: unity-${{ matrix.testMode }}-results
