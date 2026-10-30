@@ -50,6 +50,9 @@ if [ "$full" = 1 ]; then
     python3 -m unittest discover -s "Tools~/agent-tools" -p 'test_*.py' -q || fail "agent-tools tests"
   fi
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"
+  step "waves orchestration simulation"
+  if command -v node >/dev/null; then node .claude/skills/turbohttp-waves/waves_sim.mjs >/dev/null || fail "waves_sim"
+  else echo "skip: node not installed"; fi
 fi
 
 if [ "$status" = 0 ]; then echo "check.sh: OK"; else echo "check.sh: FAILED"; fi
