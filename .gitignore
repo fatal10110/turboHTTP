@@ -30,3 +30,7 @@ Tests/Benchmarks/*.observed.json
 # Local tooling output (Tools~/ci)
 .build/
 .tools/
+
+# Unity-generated metas for the internal docs folder (not shipped; see issue #6 for the Development~ rename)
+Development.meta
+Development/**/*.meta
