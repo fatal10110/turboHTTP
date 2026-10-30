@@ -155,6 +155,8 @@ namespace TurboHTTP.Transport.Http1
         private const int MaxTotalHeaderBytes = 102400; // 100KB
         private const int MaxResponseBodySize = 100 * 1024 * 1024; // 100MB
         internal const int Max1xxResponses = 10;
+        private const string Http10Version = "HTTP/1.0";
+        private const string Http11Version = "HTTP/1.1";
 
         internal readonly struct ParsedResponseHeadData
         {
@@ -261,6 +263,9 @@ namespace TurboHTTP.Transport.Http1
             var scratch = HeaderParseScratchPool.Rent();
             try
             {
+                // null = the peer closed before sending any status-line byte. Keep the exact
+                // "Empty HTTP status line" FormatException: RawSocketTransport's
+                // IsConnectionClosedBeforeStatusLine matches on it.
                 var statusLine = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
                 if (string.IsNullOrEmpty(statusLine))
                     throw new FormatException("Empty HTTP status line");
@@ -272,30 +277,39 @@ namespace TurboHTTP.Transport.Http1
                 while (true)
                 {
                     var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
-                    if (string.IsNullOrEmpty(line))
+                    if (line == null)
+                    {
+                        // RFC 9112 Section 8: a head cut off before the empty line is incomplete.
+                        throw new IOException("Unexpected end of stream in HTTP response headers");
+                    }
+
+                    if (line.Length == 0)
                         break;
 
                     totalHeaderBytes += line.Length;
                     if (totalHeaderBytes > MaxTotalHeaderBytes)
                         throw new FormatException("Response headers exceed maximum size");
 
-                    if (TryParseHeaderLine(line, out var name, out var value))
-                        scratch.RawHeaders.Add((name, value));
+                    ParseResponseHeaderLine(line, out var name, out var value);
+                    scratch.RawHeaders.Add((name, value));
                 }
 
                 var headers = new HttpHeaders();
                 foreach (var (n, v) in scratch.RawHeaders)
                     headers.Add(n, v);
 
+                bool isHttp10 = string.Equals(httpVersion, Http10Version, StringComparison.Ordinal);
                 var bodyKind = DetermineBodyKind(
                     requestMethod,
                     statusCode,
+                    isHttp10,
                     headers,
                     context,
-                    out var contentLength);
+                    out var contentLength,
+                    out var faultyFraming);
 
                 bool keepAlive = IsKeepAlive(httpVersion, headers);
-                if (bodyKind == Http11ResponseBodyKind.ReadToEnd)
+                if (bodyKind == Http11ResponseBodyKind.ReadToEnd || faultyFraming)
                     keepAlive = false;
 
                 return new ParsedResponseHeadData(
@@ -404,14 +418,40 @@ namespace TurboHTTP.Transport.Http1
             }
         }
 
+        /// <summary>
+        /// Message body length per RFC 9112 Section 6.3 for a response.
+        /// <paramref name="faultyFraming"/> is true when the connection must be closed after the
+        /// response even though the body itself is delimited: Transfer-Encoding together with
+        /// Content-Length (Section 6.1, 6.3 item 3) or Transfer-Encoding in an HTTP/1.0 response
+        /// (Section 6.1). In both cases Content-Length is removed from <paramref name="headers"/>
+        /// so callers never see a length that did not frame the body.
+        /// </summary>
         private static Http11ResponseBodyKind DetermineBodyKind(
             HttpMethod requestMethod,
             int statusCode,
+            bool isHttp10,
             HttpHeaders headers,
             RequestContext context,
-            out long? contentLength)
+            out long? contentLength,
+            out bool faultyFraming)
         {
             contentLength = null;
+
+            var transferEncodingValues = headers.GetValues("Transfer-Encoding");
+            bool hasTransferEncoding = transferEncodingValues.Count > 0;
+            bool hasContentLength = headers.Get("Content-Length") != null;
+            faultyFraming = hasTransferEncoding && (isHttp10 || hasContentLength);
+
+            if (hasTransferEncoding && hasContentLength)
+            {
+                context?.RecordEvent(
+                    "Http11DualFramingHeaders",
+                    new Dictionary<string, object>
+                    {
+                        ["transfer_encoding"] = string.Join(", ", transferEncodingValues),
+                        ["content_length"] = headers.Get("Content-Length")
+                    });
+            }
 
             if (requestMethod == HttpMethod.HEAD ||
                 statusCode == 101 ||
@@ -422,12 +462,31 @@ namespace TurboHTTP.Transport.Http1
                 return Http11ResponseBodyKind.Empty;
             }
 
-            var transferEncoding = headers.Get("Transfer-Encoding");
-            if (transferEncoding != null)
+            if (!hasTransferEncoding)
             {
-                var te = transferEncoding.Trim();
-                if (string.Equals(te, "identity", StringComparison.OrdinalIgnoreCase))
+                if (TryGetValidatedContentLength(headers, out var length))
                 {
+                    contentLength = length;
+                    return Http11ResponseBodyKind.ContentLength;
+                }
+
+                return Http11ResponseBodyKind.ReadToEnd;
+            }
+
+            if (isHttp10)
+            {
+                // RFC 9112 Section 6.1: an HTTP/1.0 message with Transfer-Encoding has faulty
+                // framing "even if a Content-Length is present": delimit by connection close.
+                if (hasContentLength)
+                    headers.Remove("Content-Length");
+                return Http11ResponseBodyKind.ReadToEnd;
+            }
+
+            switch (ClassifyTransferEncoding(transferEncodingValues))
+            {
+                case TransferCodingKind.IdentityOnly:
+                    // "identity" (RFC 2616, no transformation) is treated as absent; the
+                    // connection still closes afterwards when Content-Length was also sent.
                     if (TryGetValidatedContentLength(headers, out var identityLength))
                     {
                         contentLength = identityLength;
@@ -435,35 +494,63 @@ namespace TurboHTTP.Transport.Http1
                     }
 
                     return Http11ResponseBodyKind.ReadToEnd;
-                }
 
-                if (EndsWithTransferCodingToken(te, "chunked"))
+                case TransferCodingKind.Chunked:
+                    // RFC 9112 Section 6.3 item 3: Transfer-Encoding overrides Content-Length.
+                    if (hasContentLength)
+                        headers.Remove("Content-Length");
+                    return Http11ResponseBodyKind.Chunked;
+
+                default:
+                    // Other transfer codings (gzip, deflate, ...) are never decoded here, and a
+                    // final coding other than chunked would need read-to-close framing of
+                    // still-encoded content: reject instead of returning undecoded bytes.
+                    throw new NotSupportedException(
+                        "Unsupported Transfer-Encoding: only 'chunked' (and 'identity') are supported.");
+            }
+        }
+
+        private enum TransferCodingKind
+        {
+            IdentityOnly,
+            Chunked,
+            Unsupported
+        }
+
+        /// <summary>
+        /// Classifies the transfer-coding list formed by every Transfer-Encoding field line in
+        /// order (RFC 9110 Section 5.3 list combination). Only a list that is exactly
+        /// "chunked" (ignoring "identity" members) is <see cref="TransferCodingKind.Chunked"/>.
+        /// </summary>
+        private static TransferCodingKind ClassifyTransferEncoding(IReadOnlyList<string> values)
+        {
+            int chunkedCount = 0;
+            for (int i = 0; i < values.Count; i++)
+            {
+                var span = values[i].AsSpan();
+                while (true)
                 {
-                    if (headers.Get("Content-Length") != null)
+                    int comma = span.IndexOf(',');
+                    var token = TrimWhitespace(comma >= 0 ? span.Slice(0, comma) : span);
+                    if (!token.IsEmpty &&
+                        !token.Equals("identity".AsSpan(), StringComparison.OrdinalIgnoreCase))
                     {
-                        context?.RecordEvent(
-                            "Http11DualFramingHeaders",
-                            new Dictionary<string, object>
-                            {
-                                ["transfer_encoding"] = te,
-                                ["content_length"] = headers.Get("Content-Length")
-                            });
+                        if (!token.Equals("chunked".AsSpan(), StringComparison.OrdinalIgnoreCase))
+                            return TransferCodingKind.Unsupported;
+
+                        // Chunked applied more than once is invalid (RFC 9112 Section 6.1).
+                        if (++chunkedCount > 1)
+                            return TransferCodingKind.Unsupported;
                     }
 
-                    return Http11ResponseBodyKind.Chunked;
+                    if (comma < 0)
+                        break;
+
+                    span = span.Slice(comma + 1);
                 }
-
-                throw new NotSupportedException(
-                    $"Unsupported Transfer-Encoding: {te}. Only 'chunked' and 'identity' are supported.");
             }
 
-            if (TryGetValidatedContentLength(headers, out var length))
-            {
-                contentLength = length;
-                return Http11ResponseBodyKind.ContentLength;
-            }
-
-            return Http11ResponseBodyKind.ReadToEnd;
+            return chunkedCount == 1 ? TransferCodingKind.Chunked : TransferCodingKind.IdentityOnly;
         }
 
         private static bool TryGetValidatedContentLength(HttpHeaders headers, out long contentLength)
@@ -541,10 +628,9 @@ namespace TurboHTTP.Transport.Http1
             if (sawKeepAliveToken)
                 return true;
 
-            // HTTP/1.1 defaults to keep-alive; HTTP/1.0 defaults to close.
-            // Exact match prevents malformed version strings (e.g., "HTTP/1.10") from
-            // incorrectly being treated as keep-alive, which would cause pool leaks.
-            return string.Equals(httpVersion, "HTTP/1.1", StringComparison.OrdinalIgnoreCase);
+            // HTTP/1.1 defaults to keep-alive; HTTP/1.0 defaults to close. ParseStatusLine only
+            // admits exactly "HTTP/1.0" or "HTTP/1.1" (RFC 9112 Section 2.3).
+            return string.Equals(httpVersion, Http11Version, StringComparison.Ordinal);
         }
 
         private static bool TryParseStatusCode(ReadOnlySpan<char> statusCodeSpan, out int statusCode)
@@ -570,14 +656,19 @@ namespace TurboHTTP.Transport.Http1
             if (firstSpace <= 0)
                 throw new FormatException("Invalid HTTP status line");
 
+            // RFC 9112 Section 2.3: HTTP-version = "HTTP" "/" DIGIT "." DIGIT, case-sensitive.
+            // This parser speaks HTTP/1.x only. RFC 9110 Section 2.5: a higher minor version
+            // (HTTP/1.2..HTTP/1.9) is processed as the highest supported minor, HTTP/1.1.
             var versionSpan = statusSpan.Slice(0, firstSpace);
-            if (!MemoryExtensions.StartsWith(
-                versionSpan,
-                "HTTP/".AsSpan(),
-                StringComparison.OrdinalIgnoreCase))
-                throw new FormatException($"Invalid HTTP version: {versionSpan.ToString()}");
+            if (versionSpan.SequenceEqual(Http10Version.AsSpan()))
+                httpVersion = Http10Version;
+            else if (versionSpan.Length == Http11Version.Length
+                && versionSpan.StartsWith("HTTP/1.".AsSpan())
+                && versionSpan[7] >= '1' && versionSpan[7] <= '9')
+                httpVersion = Http11Version;
+            else
+                throw new FormatException("Invalid HTTP version in status line");
 
-            httpVersion = versionSpan.ToString();
             var statusCodeSpan = statusSpan.Slice(firstSpace + 1);
             int secondSpace = statusCodeSpan.IndexOf(' ');
             if (secondSpace >= 0)
@@ -586,6 +677,39 @@ namespace TurboHTTP.Transport.Http1
 
             if (!TryParseStatusCode(statusCodeSpan, out statusCode))
                 throw new FormatException($"Invalid HTTP status code: {statusCodeSpan.ToString()}");
+        }
+
+        /// <summary>
+        /// Parses one response header field line (RFC 9112 Section 5). Unlike the lenient trailer
+        /// path, malformed lines are rejected: obs-fold or a whitespace-led line (Section 5.2,
+        /// Section 2.2), whitespace between name and colon (Section 5.1), a missing colon, or a
+        /// field name that is not a token (RFC 9110 Section 5.1). Messages never echo the line.
+        /// </summary>
+        private static void ParseResponseHeaderLine(string line, out string name, out string value)
+        {
+            var lineSpan = line.AsSpan();
+            if (lineSpan[0] == ' ' || lineSpan[0] == '\t')
+                throw new FormatException("Obsolete line folding (obs-fold) in response headers is not supported");
+
+            int colonIndex = lineSpan.IndexOf(':');
+            if (colonIndex < 0)
+                throw new FormatException("Response header line has no ':' separator");
+            if (colonIndex == 0)
+                throw new FormatException("Response header field name is empty");
+
+            var nameSpan = lineSpan.Slice(0, colonIndex);
+            char last = nameSpan[nameSpan.Length - 1];
+            if (last == ' ' || last == '\t')
+                throw new FormatException("Whitespace between response header field name and colon");
+
+            for (int i = 0; i < nameSpan.Length; i++)
+            {
+                if (!EncodingHelper.IsRfc9110TChar(nameSpan[i]))
+                    throw new FormatException("Response header field name is not a valid token");
+            }
+
+            name = nameSpan.ToString();
+            value = TrimWhitespace(lineSpan.Slice(colonIndex + 1)).ToString();
         }
 
         private static bool TryParseHeaderLine(string line, out string name, out string value)
@@ -656,26 +780,6 @@ namespace TurboHTTP.Transport.Http1
                 return ReadOnlySpan<char>.Empty;
 
             return value.Slice(start, end - start + 1);
-        }
-
-        private static bool EndsWithTransferCodingToken(string transferEncoding, string token)
-        {
-            if (string.IsNullOrEmpty(transferEncoding))
-                return false;
-
-            var trimmed = TrimWhitespace(transferEncoding.AsSpan());
-            if (trimmed.Length < token.Length)
-                return false;
-
-            var suffix = trimmed.Slice(trimmed.Length - token.Length);
-            if (!suffix.Equals(token.AsSpan(), StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            if (trimmed.Length == token.Length)
-                return true;
-
-            var preceding = trimmed[trimmed.Length - token.Length - 1];
-            return preceding == ',' || char.IsWhiteSpace(preceding);
         }
 
         private static long ParseChunkSizeToken(ReadOnlySpan<char> sizeSpan)
@@ -823,7 +927,13 @@ namespace TurboHTTP.Transport.Http1
             while (true)
             {
                 var line = await reader.ReadLineAsync(ct, MaxHeaderLineLength).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(line))
+                if (line == null)
+                {
+                    // RFC 9112 Sections 7.1, 8: the trailer section ends with an empty line.
+                    throw new IOException("Unexpected end of stream in HTTP response trailers");
+                }
+
+                if (line.Length == 0)
                     break;
 
                 totalTrailerBytes += line.Length;
@@ -957,6 +1067,11 @@ namespace TurboHTTP.Transport.Http1
                 ArrayPool<byte>.Shared.Return(_buffer);
             }
 
+            /// <summary>
+            /// Reads one CRLF- (or bare LF-) terminated line without the terminator.
+            /// Returns <c>""</c> for an empty line, <c>null</c> when the stream ended before any
+            /// byte of the line, and throws <see cref="IOException"/> when it ended mid-line.
+            /// </summary>
             public async Task<string> ReadLineAsync(CancellationToken ct, int maxLength)
             {
                 if (maxLength <= 0)
@@ -1007,10 +1122,12 @@ namespace TurboHTTP.Transport.Http1
                         int read = await FillBufferAsync(ct).ConfigureAwait(false);
                         if (read == 0)
                         {
+                            // EOF is never an empty line: null when no byte of the line was
+                            // read, and a partial (unterminated) line is an incomplete message.
                             if (accumulatorCount == 0)
-                                return string.Empty;
+                                return null;
 
-                            return DecodeLineFromBuffer(accumulator, 0, accumulatorCount, maxLength);
+                            throw new IOException("Unexpected end of stream inside an HTTP line");
                         }
                     }
                 }
