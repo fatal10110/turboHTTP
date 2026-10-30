@@ -607,6 +607,7 @@ namespace TurboHTTP.WebSocket
                     if (Volatile.Read(ref _receiveParked) != 0)
                     {
                         // The application is applying backpressure; a pong could not be read anyway.
+                        Interlocked.Increment(ref _keepAliveBackpressureSkips);
                         await Task.Delay(_options.PingInterval, ct).ConfigureAwait(false);
                         continue;
                     }
@@ -665,8 +666,15 @@ namespace TurboHTTP.WebSocket
 
                     bool gotPong = await WaitForPongAfterAsync(pingTimestamp, _options.PongTimeout, ct)
                         .ConfigureAwait(false);
-                    if (!gotPong && !ReceiveLoopParkedSince(pingTimestamp))
+                    if (!gotPong)
                     {
+                        if (ReceiveLoopParkedSince(pingTimestamp))
+                        {
+                            // The pong may sit unread behind backpressured data: not evidence of a dead peer.
+                            Interlocked.Increment(ref _keepAliveBackpressureSkips);
+                            continue;
+                        }
+
                         var timeoutEx = new WebSocketException(
                             WebSocketError.PongTimeout,
                             "Pong timeout elapsed.");

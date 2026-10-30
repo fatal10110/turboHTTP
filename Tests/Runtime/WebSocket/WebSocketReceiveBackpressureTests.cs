@@ -196,8 +196,16 @@ namespace TurboHTTP.Tests.WebSocket
                     // the socket, so pongs to the keep-alive pings stay unread.
                     await peer.SendManyTextAsync(5).ConfigureAwait(false);
 
-                    // Negative assertion: several PongTimeout periods pass without a false 1006.
-                    await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+                    // Deterministic signal: the keep-alive loop records every iteration it skips (or every pong
+                    // timeout it forgives) because the read loop is parked. Eight skips are at least seven
+                    // PingIntervals (175 ms), more than one PongTimeout window, so a false 1006 would already have
+                    // ended the keep-alive loop and the counter would stop short of the target.
+                    const long targetSkips = 8;
+                    await WaitUntilAsync(
+                        () => connection.KeepAliveBackpressureSkips >= targetSkips ||
+                            connection.State != WebSocketState.Open,
+                        TimeSpan.FromSeconds(5),
+                        "Keep-alive loop never observed the parked read loop.").ConfigureAwait(false);
 
                     Assert.AreEqual(WebSocketState.Open, connection.State,
                         "Local backpressure was treated as a dead peer: " + connection.TerminalError?.Message);
@@ -240,6 +248,19 @@ namespace TurboHTTP.Tests.WebSocket
                 Assert.Fail(message);
 
             await task.ConfigureAwait(false);
+        }
+
+        private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout, string message)
+        {
+            var deadline = System.Diagnostics.Stopwatch.StartNew();
+            while (!predicate())
+            {
+                if (deadline.Elapsed > timeout)
+                    Assert.Fail(message);
+
+                // Polling a state predicate under a deadline, not a sleep used as synchronization.
+                await Task.Delay(5).ConfigureAwait(false);
+            }
         }
 
         private static async Task<InMemoryWebSocketPeer.ReceivedFrame> ReadUntilAsync(
