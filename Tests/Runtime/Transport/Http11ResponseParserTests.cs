@@ -479,15 +479,13 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void Parse_TransferEncodingGzipChunked_ReturnsRawCompressedChunks()
+        public void Parse_TransferEncodingGzipChunked_ThrowsNotSupportedException()
         {
-            Task.Run(async () =>
-            {
-                var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n" +
-                               "3\r\nabc\r\n0\r\n\r\n";
-                var parsed = await ParseAsync(response);
-                Assert.AreEqual("abc", Encoding.ASCII.GetString(parsed.Body.Span));
-            }).GetAwaiter().GetResult();
+            // Transfer codings other than chunked are never decoded; returning the still-gzipped
+            // bytes as the body would be silently wrong (#40).
+            var response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n" +
+                           "3\r\nabc\r\n0\r\n\r\n";
+            AssertAsync.ThrowsAsync<NotSupportedException>(async () => await ParseAsync(response));
         }
 
         [Test]

@@ -423,7 +423,13 @@ namespace TurboHTTP.Transport.Http1
                         ct,
                         Http11ResponseParser.MaxHeaderLineLength)
                     .ConfigureAwait(false);
-                if (string.IsNullOrEmpty(line))
+                if (line == null)
+                {
+                    // RFC 9112 Sections 7.1, 8: the trailer section ends with an empty line.
+                    throw new IOException("Unexpected end of stream in HTTP response trailers");
+                }
+
+                if (line.Length == 0)
                     break;
 
                 totalTrailerBytes += line.Length;
