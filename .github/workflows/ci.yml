@@ -48,8 +48,9 @@ jobs:
           path: ~/.nuget/packages
           key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
 
-      - name: Install actionlint
+      - name: Install actionlint and ripgrep
         run: |
+          sudo apt-get install -y --no-install-recommends ripgrep
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
