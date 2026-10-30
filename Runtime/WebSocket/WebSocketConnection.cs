@@ -64,6 +64,15 @@ namespace TurboHTTP.WebSocket
         private long _lastPingTimestamp;
         private long _pingCounter;
         private long _lastPongCounter;
+
+        // Receive-loop backpressure (#78): 1 while the read loop waits for space in _receiveQueue,
+        // plus the Stopwatch timestamp of the last time such a wait ended. Interlocked/Volatile owned.
+        private int _receiveParked;
+        private long _receiveUnparkedTimestamp;
+
+        // Keep-alive iterations that skipped a ping or forgave a pong timeout because of local backpressure.
+        // Interlocked owned; diagnostics and tests only.
+        private long _keepAliveBackpressureSkips;
         private TaskCompletionSource<long> _pongWaiter;
         private WebSocketMetricsCollector _metrics;
         private WebSocketHealthMonitor _healthMonitor;
@@ -98,6 +107,12 @@ namespace TurboHTTP.WebSocket
         }
 
         public Exception TerminalError => _terminalError;
+
+        /// <summary>
+        /// Number of keep-alive iterations that skipped a ping or forgave a pong timeout because the read
+        /// loop was parked on the full receive queue (#78).
+        /// </summary>
+        internal long KeepAliveBackpressureSkips => Interlocked.Read(ref _keepAliveBackpressureSkips);
 
         public WebSocketCloseStatus? CloseStatus => _hasCloseStatus ? _closeStatus : (WebSocketCloseStatus?)null;
 

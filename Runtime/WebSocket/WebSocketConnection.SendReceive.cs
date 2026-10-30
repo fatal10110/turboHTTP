@@ -223,7 +223,8 @@ namespace TurboHTTP.WebSocket
 
                         try
                         {
-                            await _receiveQueue.EnqueueAsync(wsMessage, ct).ConfigureAwait(false);
+                            if (!_receiveQueue.TryEnqueue(wsMessage))
+                                await EnqueueWhileParkedAsync(wsMessage, ct).ConfigureAwait(false);
                         }
                         catch
                         {
@@ -482,7 +483,11 @@ namespace TurboHTTP.WebSocket
                 throw new InvalidOperationException("Data frames can only be sent while connection is Open.");
             }
 
+            // The caller token may cancel the wait for the send lock and anything before the first byte.
+            // Once bytes are on the wire a partial frame or message cannot be recovered (RFC 6455 5.2, 5.4),
+            // so any failure from that point aborts the connection instead of leaving it Open (#79).
             await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+            bool writeStarted = false;
             try
             {
                 state = State;
@@ -502,6 +507,8 @@ namespace TurboHTTP.WebSocket
                     throw new WebSocketException(WebSocketError.ConnectionClosed, "WebSocket stream is unavailable.");
                 }
 
+                ct.ThrowIfCancellationRequested();
+                writeStarted = true;
                 await send(stream, ct).ConfigureAwait(false);
                 TouchActivity(applicationMessage);
             }
@@ -524,10 +531,63 @@ namespace TurboHTTP.WebSocket
                 FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), ex);
                 throw;
             }
+            catch (OperationCanceledException ex) when (writeStarted)
+            {
+                var wsEx = new WebSocketException(
+                    WebSocketError.SendFailed,
+                    "Send was cancelled after the frame was started; the connection was aborted.",
+                    ex);
+                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
+
+                // Control-frame callers (close handshake timeout, keep-alive shutdown) handle cancellation.
+                if (!applicationMessage)
+                    throw;
+
+                throw wsEx;
+            }
+            catch (Exception ex) when (
+                writeStarted &&
+                !(ex is WebSocketException) &&
+                !(ex is ArgumentException))
+            {
+                // ArgumentException is argument validation before any byte is written; other
+                // WebSocketException kinds keep their existing handling.
+                var wsEx = new WebSocketException(
+                    WebSocketError.SendFailed,
+                    "Unexpected error while sending frame; the connection was aborted.",
+                    ex);
+                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
+                throw wsEx;
+            }
             finally
             {
                 _sendLock.Release();
             }
+        }
+
+        /// <summary>
+        /// Waits for space in the delivery queue when the application is not draining it. The socket is
+        /// not read meanwhile (TCP backpressure), so the keep-alive loop must not treat the missing pong
+        /// as a dead peer; it checks <c>_receiveParked</c> and <c>_receiveUnparkedTimestamp</c>.
+        /// </summary>
+        private async ValueTask EnqueueWhileParkedAsync(WebSocketMessage message, CancellationToken ct)
+        {
+            Interlocked.Exchange(ref _receiveParked, 1);
+            try
+            {
+                await _receiveQueue.EnqueueAsync(message, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _receiveUnparkedTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
+                Interlocked.Exchange(ref _receiveParked, 0);
+            }
+        }
+
+        private bool ReceiveLoopParkedSince(long timestamp)
+        {
+            return Volatile.Read(ref _receiveParked) != 0 ||
+                Volatile.Read(ref _receiveUnparkedTimestamp) >= timestamp;
         }
 
         private async Task RunKeepAliveLoopAsync(CancellationToken ct)
@@ -543,6 +603,14 @@ namespace TurboHTTP.WebSocket
 
                     if (State != WebSocketState.Open)
                         break;
+
+                    if (Volatile.Read(ref _receiveParked) != 0)
+                    {
+                        // The application is applying backpressure; a pong could not be read anyway.
+                        Interlocked.Increment(ref _keepAliveBackpressureSkips);
+                        await Task.Delay(_options.PingInterval, ct).ConfigureAwait(false);
+                        continue;
+                    }
 
                     if (_options.IdleTimeout > TimeSpan.Zero)
                     {
@@ -600,6 +668,13 @@ namespace TurboHTTP.WebSocket
                         .ConfigureAwait(false);
                     if (!gotPong)
                     {
+                        if (ReceiveLoopParkedSince(pingTimestamp))
+                        {
+                            // The pong may sit unread behind backpressured data: not evidence of a dead peer.
+                            Interlocked.Increment(ref _keepAliveBackpressureSkips);
+                            continue;
+                        }
+
                         var timeoutEx = new WebSocketException(
                             WebSocketError.PongTimeout,
                             "Pong timeout elapsed.");

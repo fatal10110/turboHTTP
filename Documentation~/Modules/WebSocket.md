@@ -52,6 +52,31 @@ while (ws.State == WebSocketState.Open)
 }
 ```
 
+### Events vs. `ReceiveAsync`
+
+`WebSocketClient` and `ResilientWebSocketClient` deliver messages through the `OnMessage` event, the
+pull API (`ReceiveAsync` / `ReceiveAllAsync`), or both:
+
+- **Event-only** (handlers on `OnMessage`, no pulling): every message is raised through the event and
+  receiving never waits on the pull queue, so the client keeps reading the socket and answering
+  ping/pong/close frames no matter how many messages arrive. `UnityWebSocketClient` and
+  `UnityWebSocketBridge` work this way.
+- **Pull-only** (no `OnMessage` handler): messages are queued losslessly, up to
+  `WebSocketConnectionOptions.ReceiveQueueCapacity` (default 100). When the queue is full, reading
+  from the socket pauses until you call `ReceiveAsync` again (TCP backpressure). The keep-alive pong
+  timeout is not charged while reading is paused.
+- **Mixed** (handlers subscribed and `ReceiveAsync` used): every message is raised through the event,
+  and the pull queue keeps only the most recent `ReceiveQueueCapacity` messages; older unread messages
+  are discarded. Each handler gets its own copy of the message.
+
+### Cancelling a send
+
+The `CancellationToken` passed to a send can cancel the send before its first byte is written (for
+example while it waits for another send to finish); the connection stays open. Once a frame is on the
+wire, a partial message cannot be recovered (RFC 6455 sections 5.2 and 5.4), so cancelling or failing
+the send from that point aborts the connection (local close code 1006) and throws a
+`WebSocketException` with `WebSocketError.SendFailed`.
+
 ## Reconnection & Resilience
 
 The client supports automatic reconnections with exponential backoff.

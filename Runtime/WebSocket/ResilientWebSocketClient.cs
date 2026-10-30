@@ -375,34 +375,31 @@ namespace TurboHTTP.WebSocket
                 {
                     var message = await client.ReceiveAsync(ct).ConfigureAwait(false);
 
-                    try
-                    {
-                        await _incomingQueue.EnqueueAsync(message, ct).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        message.Dispose();
-                        throw;
-                    }
-
                     // A successfully received application message marks the connection as healthy again.
                     Interlocked.Exchange(ref _nextReconnectAttempt, 1);
 
                     var messageHandler = OnMessage;
-                    if (messageHandler != null)
+                    if (messageHandler == null)
                     {
+                        // Pull-only consumer: lossless, the puller drives backpressure.
                         try
                         {
-                            messageHandler(WebSocketMessage.CreateDetachedCopy(message));
+                            await _incomingQueue.EnqueueAsync(message, ct).ConfigureAwait(false);
                         }
-                        catch (Exception ex)
+                        catch
                         {
-                            RaiseError(new WebSocketException(
-                                WebSocketError.ReceiveFailed,
-                                "WebSocket OnMessage callback failed.",
-                                ex));
+                            message.Dispose();
+                            throw;
                         }
+
+                        continue;
                     }
+
+                    // Handlers subscribed: never wait on the pull queue, or an event-only consumer stalls
+                    // this pump and the inner connection's read loop (#78). The copy is taken before the
+                    // original is published to a puller that may dispose it.
+                    var detachedCopy = WebSocketClient.PublishDroppingOldest(_incomingQueue, message);
+                    RaiseMessage(messageHandler, detachedCopy);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -434,6 +431,21 @@ namespace TurboHTTP.WebSocket
 
             if (terminalError != null && !ct.IsCancellationRequested)
                 await HandleUnexpectedDisconnectAsync(client, terminalError, ct).ConfigureAwait(false);
+        }
+
+        private void RaiseMessage(Action<WebSocketMessage> messageHandler, WebSocketMessage detachedCopy)
+        {
+            try
+            {
+                messageHandler(detachedCopy);
+            }
+            catch (Exception ex)
+            {
+                RaiseError(new WebSocketException(
+                    WebSocketError.ReceiveFailed,
+                    "WebSocket OnMessage callback failed.",
+                    ex));
+            }
         }
 
         private async Task HandleUnexpectedDisconnectAsync(
