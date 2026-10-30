@@ -14,6 +14,11 @@ namespace TurboHTTP.Transport.Tls
         public readonly bool IsSystemAlpnExpected;
         public readonly bool IsBouncyCastleAvailable;
         public readonly bool IsSystemTlsKnownBroken;
+
+        /// <summary>
+        /// <see cref="TlsBackend.SslStream"/> when system TLS is usable, otherwise
+        /// <see cref="TlsBackend.Auto"/>. Never a provider without full certificate chain validation.
+        /// </summary>
         public readonly TlsBackend RecommendedBackend;
 
         internal TlsPlatformCapabilitySummary(
@@ -92,8 +97,7 @@ namespace TurboHTTP.Transport.Tls
 
             var recommendedBackend = SelectRecommendedBackend(
                 isSystemTlsAvailable,
-                isSystemTlsKnownBroken,
-                isBouncyCastleAvailable);
+                isSystemTlsKnownBroken);
 
             return new TlsPlatformCapabilitySummary(
                 isSystemTlsAvailable,
@@ -149,17 +153,14 @@ namespace TurboHTTP.Transport.Tls
 
         private static TlsBackend SelectRecommendedBackend(
             bool systemTlsAvailable,
-            bool systemTlsKnownBroken,
-            bool bouncyCastleAvailable)
+            bool systemTlsKnownBroken)
         {
             if (systemTlsAvailable && !systemTlsKnownBroken)
                 return TlsBackend.SslStream;
 
-            if (bouncyCastleAvailable)
-                return TlsBackend.BouncyCastle;
-
-            // No viable backend confirmed. Return Auto so any attempt will probe and fail
-            // with PlatformNotSupportedException rather than silently returning a broken provider.
+            // No validated backend confirmed. Never recommend a provider without full certificate
+            // chain validation (BouncyCastle today): return Auto, which fails closed with a
+            // PlatformNotSupportedException instead of silently using an unvalidated provider.
             return TlsBackend.Auto;
         }
     }
