@@ -24,12 +24,12 @@ jobs:
       matrix:
         language: [csharp, actions]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       # build-mode none: CodeQL extracts C# without compiling, so no Unity install is needed.
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: none
@@ -38,6 +38,6 @@ jobs:
             paths-ignore:
               - Runtime/Transport/BouncyCastle/Lib
 
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with:
           category: /language:${{ matrix.language }}
