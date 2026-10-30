@@ -16,11 +16,40 @@ namespace TurboHTTP.Transport.Tls
     /// On IL2CPP with aggressive stripping, preserve SslStream ALPN types (e.g., via
     /// link.xml or [Preserve]) to keep HTTP/2 ALPN negotiation available. Without that
     /// preservation, TLS still works but ALPN may be unavailable (HTTP/1.1 fallback).
+    /// ALPN is a negotiation (RFC 7301): when the caller also offers "http/1.1", a runtime
+    /// without ALPN performs a plain handshake and reports no negotiated protocol (HTTP/1.1).
+    /// Only a request that cannot fall back to HTTP/1.1 (e.g. "h2" alone) fails without ALPN.
+    /// The protocol version is OS-negotiated (<see cref="HandshakeProtocols"/>) and anything
+    /// below TLS 1.2 is rejected after the handshake.
     /// </summary>
     internal sealed class SslStreamTlsProvider : ITlsProvider
     {
+        private const string Http11Protocol = "http/1.1";
+
+        /// <summary>
+        /// Protocol versions passed to the handshake: <see cref="SslProtocols.None"/> lets the OS
+        /// pick its best supported version (TLS 1.3 where available) without enabling flag bits
+        /// an older runtime may not recognize. The TLS 1.2 floor is enforced after the handshake
+        /// by <see cref="EnsureMinimumTlsVersion"/>.
+        /// </summary>
+        internal const SslProtocols HandshakeProtocols = SslProtocols.None;
+
         private static readonly string[] EmptyAlpnProtocols = Array.Empty<string>();
         public static readonly SslStreamTlsProvider Instance = new();
+
+        // Test seam: a provider that behaves as if the runtime had no ALPN APIs.
+        private readonly bool _alpnDisabled;
+
+        private SslStreamTlsProvider() { }
+
+        /// <summary>
+        /// Test-only constructor. <paramref name="simulateNoAlpn"/> makes this instance behave as
+        /// if the runtime exposed no SslStream ALPN APIs.
+        /// </summary>
+        internal SslStreamTlsProvider(bool simulateNoAlpn)
+        {
+            _alpnDisabled = simulateNoAlpn;
+        }
 
         // Cached static delegate — eliminates per-WrapAsync delegate allocation since
         // ValidateServerCertificate has no instance state.
@@ -45,12 +74,6 @@ namespace TurboHTTP.Transport.Tls
         private static readonly object _http11ProtocolValue;
         private static readonly ConstructorInfo _optionsCtor;
         private static readonly Func<object> _createOptionsInstance;
-
-#pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
-        // TLS 1.3 bitmask used where the enum member may be unavailable at compile time
-        // on older Unity/Mono profiles, but is accepted by runtime TLS stacks.
-        private const SslProtocols Tls13Protocol = (SslProtocols)0x3000;
-#pragma warning restore SYSLIB0039
 
         static SslStreamTlsProvider()
         {
@@ -126,7 +149,7 @@ namespace TurboHTTP.Transport.Tls
             }
         }
 
-        public bool IsAlpnSupported() => _alpnSupported;
+        public bool IsAlpnSupported() => _alpnSupported && !_alpnDisabled;
 
         public async Task<TlsResult> WrapAsync(
             Stream innerStream,
@@ -142,13 +165,9 @@ namespace TurboHTTP.Transport.Tls
             ct.ThrowIfCancellationRequested();
 
             alpnProtocols ??= EmptyAlpnProtocols;
-            bool requiresHttp2Alpn = RequiresProtocol(alpnProtocols, "h2");
-            if (requiresHttp2Alpn && !_alpnSupported)
-            {
-                throw new PlatformNotSupportedException(
-                    "SslStream ALPN APIs are unavailable on this runtime. " +
-                    "HTTP/2 requires an ALPN-capable TLS provider.");
-            }
+            bool alpnSupported = IsAlpnSupported();
+            bool http11Offered = OffersProtocol(alpnProtocols, Http11Protocol);
+            bool useAlpn = ShouldNegotiateAlpn(alpnProtocols, alpnSupported);
 
             var sslStream = new SslStream(
                 innerStream,
@@ -160,7 +179,7 @@ namespace TurboHTTP.Transport.Tls
                 bool alpnAttempted = false;
 
                 // Authenticate as client
-                if (_alpnSupported && alpnProtocols.Length > 0)
+                if (useAlpn)
                 {
                     try
                     {
@@ -183,14 +202,15 @@ namespace TurboHTTP.Transport.Tls
                         // Only catch reflection-related exceptions here. Security exceptions
                         // (AuthenticationException, IOException) must propagate — they indicate
                         // real TLS errors (bad cert, network down), not platform limitations.
-                        if (requiresHttp2Alpn)
+                        if (!http11Offered)
                         {
                             throw new PlatformNotSupportedException(
-                                "SslStream ALPN negotiation failed on this runtime. " +
-                                "Use an ALPN-capable TLS provider for HTTP/2.", ex);
+                                "SslStream ALPN negotiation failed on this runtime and the caller " +
+                                "did not offer http/1.1, so the requested protocol cannot be negotiated.", ex);
                         }
 
-                        // ALPN was optional (e.g. only http/1.1 requested). Continue with non-ALPN auth.
+                        // ALPN is optional when http/1.1 is offered (RFC 7301 section 3.1):
+                        // continue with a plain handshake, which yields HTTP/1.1.
                         alpnAttempted = false;
                     }
                 }
@@ -207,13 +227,11 @@ namespace TurboHTTP.Transport.Tls
                     // OCSP/CRL revocation checks are unreliable on mobile networks (servers
                     // frequently unreachable) and add 50–200 ms per fresh handshake. The
                     // BCL default for SslClientAuthenticationOptions is also false.
-#pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
                     var authTask = sslStream.AuthenticateAsClientAsync(
                         host,
                         clientCertificates: null,
-                        enabledSslProtocols: SslProtocols.Tls12 | Tls13Protocol,
+                        enabledSslProtocols: HandshakeProtocols,
                         checkCertificateRevocation: false);
-#pragma warning restore SYSLIB0039
 
                     var cancelTask = Task.Delay(Timeout.Infinite, ct);
                     var completed = await Task.WhenAny(authTask, cancelTask).ConfigureAwait(false);
@@ -227,9 +245,14 @@ namespace TurboHTTP.Transport.Tls
                     await authTask.ConfigureAwait(false);
                 }
 
+                // TLS 1.2 floor: the handshake let the OS choose the version, so verify it here.
+                // Throws inside the try so the catch below disposes the SslStream.
+                var negotiatedProtocol = sslStream.SslProtocol;
+                EnsureMinimumTlsVersion(negotiatedProtocol);
+
                 // Extract ALPN result
                 string negotiatedAlpn = null;
-                if (alpnAttempted && _alpnSupported)
+                if (alpnAttempted)
                 {
                     negotiatedAlpn = ExtractAlpnResult(sslStream);
                 }
@@ -237,7 +260,7 @@ namespace TurboHTTP.Transport.Tls
                 return new TlsResult(
                     secureStream: sslStream,
                     negotiatedAlpn: negotiatedAlpn,
-                    tlsVersion: FormatTlsVersion(sslStream.SslProtocol),
+                    tlsVersion: FormatTlsVersion(negotiatedProtocol),
                     cipherSuite: null, // SslStream doesn't expose this easily
                     providerName: ProviderName);
             }
@@ -270,10 +293,7 @@ namespace TurboHTTP.Transport.Tls
 
             if (_enabledProtocolsProp != null)
             {
-#pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
-                _enabledProtocolsProp.SetValue(
-                    options, SslProtocols.Tls12 | Tls13Protocol);
-#pragma warning restore SYSLIB0039
+                _enabledProtocolsProp.SetValue(options, HandshakeProtocols);
             }
 
             // Set ApplicationProtocols (List<SslApplicationProtocol>)
@@ -334,7 +354,42 @@ namespace TurboHTTP.Transport.Tls
             }
         }
 
-        private static bool RequiresProtocol(string[] protocols, string target)
+        /// <summary>
+        /// Decides whether the handshake should carry the ALPN extension. Returns false for a
+        /// plain handshake. A runtime without ALPN still serves any request that offers
+        /// "http/1.1" (no ALPN result means HTTP/1.1); a request that cannot fall back to
+        /// HTTP/1.1 throws <see cref="PlatformNotSupportedException"/>.
+        /// </summary>
+        internal static bool ShouldNegotiateAlpn(string[] alpnProtocols, bool alpnSupported)
+        {
+            if (alpnProtocols == null || alpnProtocols.Length == 0)
+                return false;
+
+            if (alpnSupported)
+                return true;
+
+            if (OffersProtocol(alpnProtocols, Http11Protocol))
+                return false;
+
+            throw new PlatformNotSupportedException(
+                "SslStream ALPN APIs are unavailable on this runtime and the caller did not offer " +
+                "http/1.1, so the requested protocol (e.g. h2) cannot be negotiated.");
+        }
+
+        /// <summary>
+        /// Rejects a negotiated protocol version below TLS 1.2 (RFC 8996 deprecates TLS 1.0/1.1).
+        /// </summary>
+        internal static void EnsureMinimumTlsVersion(SslProtocols negotiated)
+        {
+            if ((int)negotiated < (int)SslProtocols.Tls12)
+            {
+                throw new AuthenticationException(
+                    "TLS handshake negotiated " + negotiated +
+                    "; TurboHTTP requires TLS 1.2 or newer.");
+            }
+        }
+
+        private static bool OffersProtocol(string[] protocols, string target)
         {
             if (protocols == null || protocols.Length == 0 || string.IsNullOrEmpty(target))
                 return false;
@@ -363,15 +418,15 @@ namespace TurboHTTP.Transport.Tls
             return sslPolicyErrors == SslPolicyErrors.None;
         }
 
-#pragma warning disable SYSLIB0039 // SslProtocols is obsolete in .NET 7+
-        private string FormatTlsVersion(SslProtocols protocol)
+        internal static string FormatTlsVersion(SslProtocols protocol)
         {
             if (protocol == SslProtocols.Tls12)
                 return "1.2";
-            if (protocol == Tls13Protocol)
+            // TLS 1.3 (RFC 8446) is the only version above 1.2. Compare numerically because
+            // the SslProtocols.Tls13 member is missing from older target profiles.
+            if ((int)protocol > (int)SslProtocols.Tls12)
                 return "1.3";
             return protocol.ToString();
         }
-#pragma warning restore SYSLIB0039
     }
 }

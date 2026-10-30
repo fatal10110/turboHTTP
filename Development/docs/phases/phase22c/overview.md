@@ -28,7 +28,11 @@ Phase 22c enables HTTP/2 ALPN negotiation through CONNECT tunnels, adds protocol
 3. **Fast Path Before CONNECT** — `DispatchViaProxyAsync` checks `_h2Manager.GetIfExists(host, port, proxyHost, proxyPort)` before establishing any tunnel. Subsequent requests to the same origin through the same proxy skip DNS, TCP, CONNECT, and TLS entirely.
 4. **Preserve 22b.2 Lease-Based HTTP/1.1 Semantics** — The tunneled HTTP/1.1 fallback must stay on the existing prepared-lease path so early-dispose, stale-retry, and tunnel pool-key reuse behavior do not regress.
 5. **Connection Lease Transfer** — The proxy connection lease's `TransferOwnership()` releases the per-proxy semaphore permit and hands the TCP connection to `Http2Connection` for its entire multiplexed lifetime. Same model as direct connections.
-6. **BouncyCastle — Pre-Handshake Provider Selection Only** — BouncyCastle is used only when SslStream is genuinely unavailable (stripped from the IL2CPP build). `TlsProviderSelector.GetProvider` returns the correct provider before the TLS handshake begins. TLS failures through the tunnel propagate as-is; there is no runtime catch-and-retry that switches providers mid-request.
+6. **TLS provider selection — pre-handshake only, fail closed**
+
+   > **TLS fallback rule (#34, #110):** Auto mode picks the TLS provider before the handshake and never picks one without full certificate chain validation; a failed handshake (certificate, authentication, network or platform capability) propagates to the caller with no runtime catch-and-retry on another provider.
+
+   BouncyCastle has no full chain validation until #33 lands, so today Auto always uses SslStream (and throws `PlatformNotSupportedException` when SslStream is unavailable); BouncyCastle runs only when `TlsBackend.BouncyCastle` is selected explicitly.
 
 ## Sub-Phase Index
 
@@ -60,7 +64,7 @@ Phase 22a + 22b.2 (done)
 | File | Change |
 |------|--------|
 | `Runtime/Transport/Http2/Http2ConnectionManager.cs` | Add proxy-tunneled overloads for `GetIfExists`, `GetOrCreateAsync`, `Remove`, `HasConnection`; add `BuildTunnelKey` private static helper |
-| `Runtime/Transport/RawSocketTransport.cs` | Change `s_connectTunnelAlpnProtocols` to include `h2`; add BouncyCastle catch block in `EstablishConnectTunnelAsync`; restructure `DispatchViaProxyAsync` with HTTP/2 fast path, prepared-lease protocol routing, BouncyCastle inline retry, and `DispatchPreparedTunneledRequestAsync` helper |
+| `Runtime/Transport/RawSocketTransport.cs` | Change `s_connectTunnelAlpnProtocols` to include `h2`; restructure `DispatchViaProxyAsync` with HTTP/2 fast path, prepared-lease protocol routing (no BouncyCastle retry, see principle 6), and `DispatchPreparedTunneledRequestAsync` helper |
 
 ### Files NOT Changed
 
@@ -77,7 +81,7 @@ Phase 22a + 22b.2 (done)
 |----------|-----------|
 | `\|via\|` separator in compound key | `\|` is not valid in RFC 952 hostnames — collision-free without struct key or extra allocation |
 | Overloads instead of unified key type | Direct-connection methods are the hot path; adding a key builder on every direct request adds overhead for no benefit |
-| BouncyCastle inline retry (not throw-and-delegate) | Users behind corporate proxies cannot easily retry manually; one-time cost before all subsequent connections use BouncyCastle |
+| No BouncyCastle runtime retry (fail closed, principle 6) | A provider switch after a failed handshake would route traffic to a provider without full chain validation (#33, #34) |
 | HTTP/1.1 stale retry through proxy out of scope | Existing gap unrelated to 22c; separate concern — 22c focuses on HTTP/2 only |
 | No tunnel-establishment lock per origin×proxy | `Http2ConnectionManager._initLocks` already serializes creation; wasted CONNECT on the rare race is acceptable vs added complexity |
 

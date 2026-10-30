@@ -51,13 +51,10 @@ This is the only ALPN change needed. The static array is already passed to
 
 ## Step 2: Add `MarkSslStreamViable()` and Remove the Runtime Fallback
 
-**BouncyCastle policy:** BouncyCastle is used only when the platform TLS implementation (SslStream)
-is genuinely unavailable — i.e., it was stripped from the IL2CPP build. It is **not** a runtime
-fallback for TLS handshake failures. A TLS failure through a CONNECT tunnel (cert error, ALPN
-mismatch, connection reset) must propagate as-is; it must not trigger a BouncyCastle switch.
-`TlsProviderSelector.GetProvider(_tlsBackend)` already returns the correct provider before the
-handshake begins — if SslStream is stripped, BouncyCastle is returned automatically without any
-catch-and-retry.
+> **TLS fallback rule (#34, #110):** Auto mode picks the TLS provider before the handshake and never picks one without full certificate chain validation; a failed handshake (certificate, authentication, network or platform capability) propagates to the caller with no runtime catch-and-retry on another provider.
+
+BouncyCastle has no full chain validation until #33 lands, so today Auto always uses SslStream (and throws `PlatformNotSupportedException` when SslStream is unavailable); BouncyCastle runs only when `TlsBackend.BouncyCastle` is selected explicitly. A TLS failure through a CONNECT tunnel (cert error, ALPN
+mismatch, connection reset) propagates as-is and never triggers a BouncyCastle switch.
 
 The only change in this step is to add `MarkSslStreamViable()` after a successful SslStream
 handshake through the tunnel, mirroring the direct-connection path in `TcpConnectionPool`.
@@ -96,8 +93,8 @@ if (response.StatusCode == 200)
 ```
 
 **No catch block.** TLS failures propagate to the caller unchanged. `TlsProviderSelector.GetProvider`
-selects the right provider before the handshake — if the platform's SslStream is stripped, it
-returns BouncyCastle directly, and no retry is needed.
+selects the provider before the handshake and never returns one without full chain validation
+(TLS fallback rule), so no retry exists.
 
 **Note on `MarkSslStreamViable()`:** The current code returns `tlsResult` directly without the
 `MarkSslStreamViable()` call. This step adds parity with the direct-connection path in

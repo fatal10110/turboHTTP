@@ -129,9 +129,13 @@ Added in 22c.1. Verify via tests:
 
 ## Step 6: BouncyCastle ALPN Through Tunnel (Unit + IL2CPP)
 
+> **TLS fallback rule (#34, #110):** Auto mode picks the TLS provider before the handshake and never picks one without full certificate chain validation; a failed handshake (certificate, authentication, network or platform capability) propagates to the caller with no runtime catch-and-retry on another provider.
+
+BouncyCastle has no full chain validation until #33 lands, so today Auto always uses SslStream (and throws `PlatformNotSupportedException` when SslStream is unavailable); BouncyCastle runs only when `TlsBackend.BouncyCastle` is selected explicitly.
+
 **Unit test:** Use a mock `ITlsProvider` (BouncyCastle stand-in) that returns `NegotiatedAlpn = "h2"`. Verify the full flow:
-1. SslStream provider throws `PlatformNotSupportedException` → `MarkSslStreamBroken()` called
-2. BouncyCastle retry with fresh lease → mock BC provider returns `NegotiatedAlpn = "h2"`
+1. An SslStream platform exception (`PlatformNotSupportedException`) through the tunnel propagates to the caller; no fresh lease, no provider switch
+2. With `TlsBackend.BouncyCastle` selected explicitly → mock BC provider returns `NegotiatedAlpn = "h2"`
 3. `Http2ConnectionManager.GetOrCreateAsync(proxy overload)` called
 4. Request dispatched over HTTP/2
 
@@ -143,7 +147,8 @@ Added in 22c.1. Verify via tests:
 5. Record result in the implementation journal
 
 **Completion criteria:**
-- [ ] Unit test: BouncyCastle retry through tunnel produces HTTP/2 connection
+- [ ] Unit test: platform TLS failure through tunnel propagates without a provider switch
+- [ ] Unit test: explicitly selected BouncyCastle (mock) through tunnel produces HTTP/2 connection
 - [ ] IL2CPP: BouncyCastle ALPN `h2` negotiated through CONNECT tunnel on physical device (iOS or Android)
 
 ---

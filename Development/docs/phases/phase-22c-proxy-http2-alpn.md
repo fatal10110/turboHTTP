@@ -525,74 +525,15 @@ if (_tlsBackend == TlsBackend.Auto && tlsResult.ProviderName == "SslStream")
 
 The same guard must be applied in `EstablishConnectTunnelAsync` after the tunnel TLS handshake. A successful SslStream handshake through a tunnel is equally valid evidence that SslStream works on this platform. The guard is already present in the proposed design above.
 
-### BouncyCastle Fallback Through Tunnel
+### TLS Failures Through the Tunnel (no provider fallback)
 
-The current `TcpConnectionPool.CreateConnectionAsync` has a BouncyCastle fallback path when SslStream fails with a platform TLS exception. The tunnel TLS handshake in `EstablishConnectTunnelAsync` needs the same fallback:
+> **TLS fallback rule (#34, #110):** Auto mode picks the TLS provider before the handshake and never picks one without full certificate chain validation; a failed handshake (certificate, authentication, network or platform capability) propagates to the caller with no runtime catch-and-retry on another provider.
 
-```csharp
-if (response.StatusCode == 200)
-{
-    var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
-    try
-    {
-        var tlsResult = await tlsProvider.WrapAsync(
-            proxyStream, targetHost, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
-
-        if (_tlsBackend == TlsBackend.Auto && tlsResult.ProviderName == "SslStream")
-            TlsProviderSelector.MarkSslStreamViable();
-
-        return new TunnelResult(tlsResult.SecureStream, tlsResult.NegotiatedAlpn,
-            tlsResult.TlsVersion, tlsResult.ProviderName);
-    }
-    catch (Exception ex) when (
-        _tlsBackend == TlsBackend.Auto
-        && TlsProviderSelector.IsPlatformTlsException(ex)
-        && TlsProviderSelector.IsBouncyCastleAvailable())
-    {
-        TlsProviderSelector.MarkSslStreamBroken();
-
-        // The failed SslStream handshake corrupted the tunnel stream.
-        // Unlike direct connections, we cannot reconnect — the CONNECT tunnel
-        // is established on this specific stream. The entire tunnel must be
-        // re-established on a fresh proxy connection.
-        //
-        // Throw and let the caller retry with a new proxy lease.
-        // The retry will use BouncyCastle because SslStream is now marked broken.
-        throw new UHttpException(new UHttpError(
-            UHttpErrorType.TlsError,
-            "SslStream TLS handshake failed through CONNECT tunnel. " +
-            "BouncyCastle fallback requires a new tunnel connection.", ex));
-    }
-}
-```
-
-**Key difference from direct connections:** For direct connections, the BouncyCastle fallback can create a new socket and retry immediately. For CONNECT tunnels, the proxy stream is corrupted after a failed SslStream handshake. A new CONNECT tunnel must be established on a fresh proxy connection. The simplest approach is to throw and let the caller's retry logic (or the user) re-issue the request — by then, `MarkSslStreamBroken()` ensures all subsequent attempts use BouncyCastle.
-
-**Alternative — inline retry:** Instead of throwing, `DispatchViaProxyAsync` could catch the TLS error, acquire a new proxy lease, establish a new CONNECT tunnel, and retry the TLS handshake with BouncyCastle. This is more user-friendly but adds complexity. **Decision: implement inline retry** because users behind corporate proxies cannot easily retry manually, and the BouncyCastle fallback is a one-time cost (all subsequent connections use BouncyCastle after `MarkSslStreamBroken`).
-
-```csharp
-// In DispatchViaProxyAsync, after EstablishConnectTunnelAsync fails:
-catch (UHttpException ex) when (ex.Error.Type == UHttpErrorType.TlsError
-    && TlsProviderSelector.IsBouncyCastleAvailable())
-{
-    // SslStream broken through tunnel — retry with fresh tunnel + BouncyCastle
-    lease.Dispose(); // discard corrupted proxy connection
-    context.RecordEvent("TransportProxyTlsFallbackRetry");
-
-    using var freshLease = await _pool.GetConnectionAsync(proxyHost, proxyPort, false, ct)
-        .ConfigureAwait(false);
-    var freshStream = freshLease.Connection.Stream;
-
-    context.RecordEvent("TransportProxyConnect");
-    var freshTunnelResult = await EstablishConnectTunnelAsync(
-        freshStream, host, port, proxy, ct).ConfigureAwait(false);
-
-    // Now SslStream is marked broken, so BouncyCastle was used.
-    // Continue with protocol routing...
-    if (freshTunnelResult.NegotiatedAlpn == "h2") { ... }
-    else { ... }
-}
-```
+BouncyCastle has no full chain validation until #33 lands, so today Auto always uses SslStream (and throws `PlatformNotSupportedException` when SslStream is unavailable); BouncyCastle runs only when `TlsBackend.BouncyCastle` is selected explicitly. `EstablishConnectTunnelAsync` therefore has no catch block for TLS errors: a failed tunnel
+handshake disposes the tunnel stream and the exception propagates; `DispatchViaProxyAsync` does not
+re-acquire a tunnel for another provider. (An earlier revision of this plan proposed a
+`MarkSslStreamBroken()` + BouncyCastle inline retry; it was dropped because it silently routed
+traffic to a provider without full chain validation.)
 
 ### HTTP/1.1 Stale-Retry Through Proxy
 
@@ -647,7 +588,7 @@ These parallel the existing direct-connection events (`TransportH2Reuse`, `Trans
 | File | Change |
 |------|--------|
 | `Runtime/Transport/Http2/Http2ConnectionManager.cs` | Add proxy-tunneled overloads for `GetIfExists`, `GetOrCreateAsync`, `Remove`, `HasConnection`; add `BuildTunnelKey` helper |
-| `Runtime/Transport/RawSocketTransport.cs` | Restructure `DispatchViaProxyAsync` with HTTP/2 fast path, protocol routing after tunnel TLS, stale-retry logic; add `TunnelResult` struct; add BouncyCastle fallback inline retry |
+| `Runtime/Transport/RawSocketTransport.cs` | Restructure `DispatchViaProxyAsync` with HTTP/2 fast path, protocol routing after tunnel TLS, stale-retry logic; add `TunnelResult` struct (no BouncyCastle retry: TLS fallback rule) |
 | `Runtime/Transport/RawSocketTransport.cs` | `EstablishConnectTunnelAsync` signature change: return `TunnelResult` instead of `Stream`; change ALPN from `{ "http/1.1" }` to `{ "h2", "http/1.1" }` |
 | `Runtime/Transport/RawSocketTransport.cs` | `HasHttp2Connection` internal method: add proxy-aware overload |
 | `Runtime/Transport/Tcp/TcpConnectionPool.cs` | No changes — pool semantics are unchanged; proxy connections are regular `(proxyHost, proxyPort, false)` entries |
@@ -700,18 +641,18 @@ Deliverables:
 3. Change ALPN list from `new[] { "http/1.1" }` to `new[] { "h2", "http/1.1" }`
 4. Populate `TunnelResult` with `NegotiatedAlpn`, `TlsVersion`, `TlsProviderName` from `tlsProvider.WrapAsync` result
 5. Add `MarkSslStreamViable()` guard for SslStream through tunnel (same condition as direct path)
-6. Add BouncyCastle fallback for tunnel TLS failures: throw `UHttpException(TlsError)` with `MarkSslStreamBroken()`, to be caught by the inline retry in 22c.3
+6. Tunnel TLS failures propagate unchanged (TLS fallback rule): no BouncyCastle catch block, no provider switch
 
 Completion criteria:
 
 - [ ] `EstablishConnectTunnelAsync` returns `TunnelResult` with all TLS metadata
 - [ ] ALPN negotiation offers both `h2` and `http/1.1`
 - [ ] `MarkSslStreamViable()` called only when `Auto` backend and `SslStream` provider
-- [ ] BouncyCastle fallback marks SslStream broken and throws recoverable error
+- [ ] Tunnel TLS failure propagates; no provider switch (TLS fallback rule)
 - [ ] All existing callers updated to use `TunnelResult` in the prepared-lease proxy path (`AcquirePreparedProxyLeaseAsync` / `RebindConnectTunnelLease`)
 - [ ] Unit test: tunnel TLS with ALPN `h2` returns correct `NegotiatedAlpn`
 - [ ] Unit test: tunnel TLS with ALPN `http/1.1` returns correct `NegotiatedAlpn`
-- [ ] Unit test: tunnel TLS failure with BouncyCastle available calls `MarkSslStreamBroken()`
+- [ ] Unit test: tunnel TLS failure never switches provider (TLS fallback rule)
 
 ### 22c.3: Protocol Routing in `DispatchViaProxyAsync`
 
@@ -724,7 +665,7 @@ Deliverables:
 3. Add protocol routing after prepared tunnel acquisition: branch on `lease.Connection.NegotiatedAlpnProtocol` for `h2` vs `http/1.1`
 4. HTTP/2 path: `lease.TransferOwnership()` + `_h2Manager.GetOrCreateAsync(host, port, proxyHost, proxyPort, tlsStream)` + `h2Conn.DispatchAsync(tunneledRequest, ...)`
 5. HTTP/1.1 path: existing lease-based proxy/tunnel dispatch semantics remain unchanged
-6. Add BouncyCastle inline retry: catch TLS error from prepared tunnel acquisition, reacquire a fresh prepared tunnel, and retry after `MarkSslStreamBroken()` has forced BouncyCastle
+6. No BouncyCastle inline retry: a TLS error from prepared tunnel acquisition propagates after the failed lease is disposed (TLS fallback rule)
 7. Add all new `RecordEvent` calls: `TransportProxyH2Reuse`, `TransportProxyH2StaleRetry`, `TransportProxyH2Init`, `TransportProxyTlsFallbackRetry`, `TransportProxyH1Dispatch`
 
 Completion criteria:
@@ -737,14 +678,14 @@ Completion criteria:
 - [ ] Stale tunneled HTTP/2 connection: removed from manager, new tunnel established only when `CanRetryH2RequestAfterTransportFailure(...)` allows replay
 - [ ] Non-replayable request on stale tunneled HTTP/2: exception propagated (no retry)
 - [ ] ALPN negotiates `http/1.1`: falls back to the existing lease-based HTTP/1.1 proxy dispatch path
-- [ ] BouncyCastle fallback: failed SslStream → new tunnel with BouncyCastle → success
+- [ ] Failed SslStream tunnel handshake → error propagates, no new tunnel, no provider switch
 - [ ] `TransferOwnership()` correctly releases proxy semaphore permit
 - [ ] Timeline events recorded for all paths
 - [ ] Unit test: HTTP/2 fast path reuses existing tunneled connection
 - [ ] Unit test: stale HTTP/2 tunneled connection retry
 - [ ] Unit test: non-replayable stale failure propagation
 - [ ] Unit test: ALPN `http/1.1` fallback through tunnel
-- [ ] Unit test: BouncyCastle inline retry through tunnel
+- [ ] Unit test: no provider retry through tunnel (TLS fallback rule)
 - [ ] Unit test: concurrent requests to same origin through same proxy retain only one `Http2Connection`; a transient second CONNECT/TLS attempt is acceptable if disposed without leak
 - [ ] Unit test: concurrent requests to different origins through same proxy create separate tunnels
 - [ ] Integration test: full round-trip through mock CONNECT proxy with HTTP/2 ALPN
