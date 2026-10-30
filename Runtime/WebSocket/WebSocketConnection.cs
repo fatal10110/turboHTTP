@@ -64,6 +64,11 @@ namespace TurboHTTP.WebSocket
         private long _lastPingTimestamp;
         private long _pingCounter;
         private long _lastPongCounter;
+
+        // Receive-loop backpressure (#78): 1 while the read loop waits for space in _receiveQueue,
+        // plus the Stopwatch timestamp of the last time such a wait ended. Interlocked/Volatile owned.
+        private int _receiveParked;
+        private long _receiveUnparkedTimestamp;
         private TaskCompletionSource<long> _pongWaiter;
         private WebSocketMetricsCollector _metrics;
         private WebSocketHealthMonitor _healthMonitor;

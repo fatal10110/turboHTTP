@@ -57,6 +57,72 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <summary>
+        /// Enqueues without waiting. Returns false when the queue is full; throws
+        /// <see cref="AsyncQueueCompletedException"/> when the queue is completed.
+        /// </summary>
+        public bool TryEnqueue(T value)
+        {
+            if (!_spaces.Wait(0))
+            {
+                lock (_gate)
+                {
+                    if (_completed)
+                        throw new AsyncQueueCompletedException(_completionError);
+                }
+
+                return false;
+            }
+
+            try
+            {
+                lock (_gate)
+                {
+                    if (_completed)
+                        throw new AsyncQueueCompletedException(_completionError);
+
+                    _queue.Enqueue(value);
+                }
+
+                _items.Release();
+                return true;
+            }
+            catch
+            {
+                _spaces.Release();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Enqueues without waiting. When the queue is full the oldest item is removed and returned in
+        /// <paramref name="dropped"/> (the caller owns it). Intended for a single producer.
+        /// </summary>
+        public bool EnqueueDropOldest(T value, out T dropped)
+        {
+            lock (_gate)
+            {
+                if (_completed)
+                    throw new AsyncQueueCompletedException(_completionError);
+
+                if (_spaces.Wait(0))
+                {
+                    _queue.Enqueue(value);
+                    _items.Release();
+                    dropped = default;
+                    return false;
+                }
+
+                if (_queue.Count == 0)
+                    throw new InvalidOperationException("Queue has no free slot and no item to drop.");
+
+                // The replacement inherits the dropped item's space and item permits.
+                dropped = _queue.Dequeue();
+                _queue.Enqueue(value);
+                return true;
+            }
+        }
+
         public async ValueTask<T> DequeueAsync(CancellationToken ct)
         {
             while (true)
