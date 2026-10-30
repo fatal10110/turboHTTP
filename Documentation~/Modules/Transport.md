@@ -7,7 +7,7 @@ The `Transport` module is the low-level engine of TurboHTTP. It bypasses `UnityW
 By default, `UHttpClient` uses the `RawSocketTransport`. It handles:
 - **HTTP/1.1**: Keep-alive connection pooling, chunked transfer encoding.
 - **HTTP/2**: Multiplexed streams over a single connection, HPACK header compression.
-- **TLS/SSL**: Uses `SslStream` by default for best performance. Falls back to BouncyCastle only if platform TLS is unavailable.
+- **TLS/SSL**: `TlsBackend.Auto` (default) uses `SslStream` and never falls back to another provider: TLS failures are reported to the caller. Without SslStream ALPN support, connections use HTTP/1.1. BouncyCastle is used only when `TlsBackend.BouncyCastle` is selected explicitly.
 - **DNS**: Happy Eyeballs (RFC 8305) for fast IPv4/IPv6 fallback.
 
 ### HTTP/2 Multiplexing

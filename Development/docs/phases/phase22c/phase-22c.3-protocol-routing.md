@@ -24,7 +24,9 @@ With 22c.1 and 22c.2 complete, this sub-phase restructures `DispatchViaProxyAsyn
    (`Http2ConnectionManager`) or the existing lease-based HTTP/1.1 proxy dispatch path based on
    `lease.Connection.NegotiatedAlpnProtocol`
 
-Plus the BouncyCastle inline retry path when SslStream fails through the tunnel.
+There is no BouncyCastle retry path when SslStream fails through the tunnel:
+
+> **TLS fallback rule (#34, #110):** Auto mode picks the TLS provider before the handshake and never picks one without full certificate chain validation; a failed handshake (certificate, authentication, network or platform capability) propagates to the caller with no runtime catch-and-retry on another provider.
 
 ---
 
@@ -166,9 +168,7 @@ catch
 }
 ```
 
-**No BouncyCastle inline retry here.** The BouncyCastle policy is: BouncyCastle is used only when
-SslStream is genuinely unavailable (stripped from the build). `TlsProviderSelector.GetProvider`
-returns the correct provider before the TLS handshake begins. A TLS failure through the tunnel
+**No BouncyCastle inline retry here.** BouncyCastle has no full chain validation until #33 lands, so today Auto always uses SslStream (and throws `PlatformNotSupportedException` when SslStream is unavailable); BouncyCastle runs only when `TlsBackend.BouncyCastle` is selected explicitly. A TLS failure through the tunnel
 propagates to the caller unchanged — it is not an opportunity to switch providers.
 
 ---
@@ -301,7 +301,7 @@ After Steps 1–4, the full method body looks like:
     b. If alive: PrepareHttpsProxyTunnelRequest(request) → DispatchAsync → return
     c. On transport exception, Remove + check retryability → fall through
 3.  if (!secure): HTTP forward proxy dispatch via the existing helper and return
-4.  [Stage 2] Build tunnelPoolKey; acquire prepared proxy lease (BouncyCastle retry if TlsError)
+4.  [Stage 2] Build tunnelPoolKey; acquire prepared proxy lease (TLS errors propagate; no provider retry)
 5.  Build tunneledRequest = PrepareHttpsProxyTunnelRequest(request)  ← first use on new-tunnel path
 6.  Call DispatchPreparedTunneledRequestAsync(lease, ...)
 7.  lease = null                 ← MUST be set after the call returns on the HTTP/2 path;
@@ -352,7 +352,7 @@ can now negotiate either h2 or http/1.1.
 - [ ] Stage 3 HTTP/2 path: `lease.TransferOwnership()` called, `GetOrCreateAsync(origin, port, proxy, pport, stream, ct)` used, `h2Conn.DispatchAsync` invoked, `lease = null` set in caller after return
 - [ ] Stage 3 HTTP/1.1 path stays on the existing lease-based proxy/tunnel dispatch helper (no raw-stream fallback); caller sets `lease = null` after handoff
 - [ ] Outer `finally { lease?.Dispose(); }` present in `DispatchViaProxyAsync` as exception-path safety net; `lease` is null on all normal-exit paths after ownership transfer
-- [ ] No BouncyCastle inline retry in `DispatchViaProxyAsync` — TLS failures propagate; BouncyCastle is selected by `TlsProviderSelector.GetProvider` before the handshake if SslStream is unavailable
+- [ ] No BouncyCastle inline retry in `DispatchViaProxyAsync` — TLS failures propagate; Auto never selects a provider without full chain validation (TLS fallback rule)
 - [ ] HTTP forward proxy path (`!secure`): unchanged — still flows through the existing lease-based helper
 - [ ] All timeline events recorded on their respective paths (including `TransportProxyConnectTunnelEstablished` replacing `TransportProxyConnectHttp11Only`)
 - [ ] `TransportProxyConnectHttp11Only` removed from `AcquirePreparedProxyLeaseAsync`
@@ -370,7 +370,7 @@ Tests go in `Tests/Runtime/Transport/Http1/RawSocketTransportTests.cs` or `Http1
 - [ ] **Stale tunneled h2, replayable request:** `DispatchAsync` throws → `Remove(proxy overload)` → new tunnel established
 - [ ] **Stale tunneled h2, non-replayable request:** exception propagated, no retry
 - [ ] **ALPN negotiates http/1.1:** existing lease-based HTTP/1.1 proxy dispatch path is used, no `GetOrCreateAsync`, no `TransferOwnership`
-- [ ] **BouncyCastle inline retry:** First prepared-tunnel acquisition throws `TlsError` → failed lease already disposed by the helper → fresh prepared tunnel acquired → routing continues
+- [ ] **No provider retry:** First prepared-tunnel acquisition throws `TlsError` → failed lease already disposed by the helper → error propagates to the caller (no fresh tunnel, no provider switch)
 - [ ] **`TransferOwnership` releases proxy semaphore:** Verify permit count after Stage 3 HTTP/2 path
 - [ ] **Concurrent requests, same origin, same proxy:** exactly one `Http2Connection` retained under the tunnel key; a second transient CONNECT/TLS attempt is acceptable if its stream/lease are disposed without leak
 - [ ] **Concurrent requests, different origins, same proxy:** Two separate tunnels established independently

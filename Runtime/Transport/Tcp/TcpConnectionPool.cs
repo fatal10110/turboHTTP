@@ -276,6 +276,8 @@ namespace TurboHTTP.Transport.Tcp
         private readonly int _maxConnectionsPerHost;
         private readonly TimeSpan _connectionIdleTimeout;
         private readonly TlsBackend _tlsBackend;
+        // Test seam: replaces TlsProviderSelector.GetProvider when set (internal ctor only).
+        private readonly Func<TlsBackend, ITlsProvider> _tlsProviderResolver;
         private readonly int _dnsTimeoutMs;
         private readonly HappyEyeballsOptions _happyEyeballsOptions;
         private readonly SocketIoMode _socketIoMode;
@@ -332,6 +334,19 @@ namespace TurboHTTP.Transport.Tcp
             _scavengeTask = Task.Run(() => RunIdleScavengerAsync(_scavengeCts.Token));
 
             SaeaPlatformDetection.LogSelectedMode(_socketIoMode);
+        }
+
+        /// <summary>
+        /// Test-only constructor: resolves the TLS provider through
+        /// <paramref name="tlsProviderResolver"/> instead of <see cref="TlsProviderSelector"/>.
+        /// </summary>
+        internal TcpConnectionPool(
+            Func<TlsBackend, ITlsProvider> tlsProviderResolver,
+            TlsBackend tlsBackend = TlsBackend.Auto)
+            : this(tlsBackend: tlsBackend)
+        {
+            _tlsProviderResolver = tlsProviderResolver
+                ?? throw new ArgumentNullException(nameof(tlsProviderResolver));
         }
 
         /// <summary>
@@ -572,14 +587,13 @@ namespace TurboHTTP.Transport.Tcp
             {
                 try
                 {
-                    var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
+                    var tlsProvider = _tlsProviderResolver != null
+                        ? _tlsProviderResolver(_tlsBackend)
+                        : TlsProviderSelector.GetProvider(_tlsBackend);
                     var tlsResult = await tlsProvider.WrapAsync(
                         stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
 
                     // Only mark SslStream as viable when it was actually used.
-                    // In Auto mode after a probe-state transition, GetAutoProvider() may return
-                    // BouncyCastle; calling MarkSslStreamViable() with BC as the active provider
-                    // would be semantically incorrect (even though the CAS guards against promotion).
                     if (_tlsBackend == TlsBackend.Auto && tlsResult.ProviderName == "SslStream")
                         TlsProviderSelector.MarkSslStreamViable();
 
@@ -588,52 +602,13 @@ namespace TurboHTTP.Transport.Tcp
                     tlsVersion = tlsResult.TlsVersion;
                     tlsProviderName = tlsResult.ProviderName;
                 }
-                catch (Exception ex) when (
-                    _tlsBackend == TlsBackend.Auto
-                    && TlsProviderSelector.IsPlatformTlsException(ex)
-                    && TlsProviderSelector.IsBouncyCastleAvailable())
+                catch (Exception ex)
                 {
-                    // SslStream is fundamentally broken on this platform.
-                    // Cache the result so all future Auto calls skip SslStream entirely.
-                    TlsProviderSelector.MarkSslStreamBroken();
+                    // Fail closed: Auto never retries on another provider (no runtime
+                    // catch-and-retry). A platform-level failure is only recorded for diagnostics.
+                    if (_tlsBackend == TlsBackend.Auto && TlsProviderSelector.IsPlatformTlsException(ex))
+                        TlsProviderSelector.MarkSslStreamBroken(ex);
 
-                    // The failed SslStream handshake left the stream in an indeterminate state.
-                    // Dispose it and reconnect with a fresh socket for the BouncyCastle retry,
-                    // using the same SocketIoMode as the primary path for consistency.
-                    stream.Dispose();
-                    socket = await ConnectSocketAsync(addresses, port, ct).ConfigureAwait(false);
-                    switch (_socketIoMode)
-                    {
-                        case SocketIoMode.Saea:
-                            stream = new SaeaStream(new SaeaSocketChannel(socket));
-                            break;
-                        case SocketIoMode.PollSelect:
-                            stream = new PollSelectStream(new PollSelectSocketChannel(socket));
-                            break;
-                        default:
-                            stream = new NetworkStream(socket, ownsSocket: true);
-                            break;
-                    }
-
-                    try
-                    {
-                        var bcProvider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
-                        var tlsResult = await bcProvider.WrapAsync(
-                            stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
-
-                        stream = tlsResult.SecureStream;
-                        negotiatedAlpn = tlsResult.NegotiatedAlpn;
-                        tlsVersion = tlsResult.TlsVersion;
-                        tlsProviderName = tlsResult.ProviderName;
-                    }
-                    catch
-                    {
-                        stream.Dispose();
-                        throw;
-                    }
-                }
-                catch
-                {
                     stream.Dispose(); // Cascades to NetworkStream -> Socket
                     throw;
                 }
