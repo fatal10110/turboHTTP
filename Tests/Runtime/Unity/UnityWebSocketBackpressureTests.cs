@@ -23,7 +23,7 @@ namespace TurboHTTP.Tests.UnityModule
         [UnityTest]
         public IEnumerator UnityWebSocketBridge_RealClient_EventOnly_ReceivesFloodWithoutStalling()
         {
-            var _ = MainThreadDispatcher.Instance;
+            _ = MainThreadDispatcher.Instance;
 
             var peer = new InMemoryWebSocketPeer();
             var client = new WebSocketClient(peer);
