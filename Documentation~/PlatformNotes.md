@@ -80,13 +80,20 @@ Ensure the internet permission is in `AndroidManifest.xml`:
 TurboHTTP is AOT-safe, but aggressive code stripping (`Managed Stripping Level: High`) can sometimes remove necessary code.
 
 ### Link.xml
-If you encounter missing methods or types, add a `link.xml` to your project's `Assets` folder:
+UnityLinker does not read `link.xml` files inside packages, so TurboHTTP ships an
+`IUnityLinkerProcessor` (`TurboHttpLinkerProcessor`) that passes the package's own preserve rules
+to every player build. Each module's rules apply only when that module's assembly is in the build.
+
+If you still encounter missing methods or types, add a `link.xml` to your project's `Assets` folder.
+On Unity, `SslStream` and the other `System.Net.Security` types live in the `System` assembly:
 
 ```xml
 <linker>
     <assembly fullname="TurboHTTP.Core" preserve="all"/>
     <assembly fullname="TurboHTTP.Transport" preserve="all"/>
-    <assembly fullname="System.Net.Security" preserve="all"/>
+    <assembly fullname="System">
+        <type fullname="System.Net.Security.SslStream" preserve="all"/>
+    </assembly>
     <!-- Preserve your own DTO namespaces -->
     <assembly fullname="MyGame.Network.DTOs" preserve="all"/>
 </linker>

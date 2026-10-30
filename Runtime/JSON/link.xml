@@ -6,8 +6,13 @@
 
     Under IL2CPP managed stripping, this type/method can be removed because
     there is no direct static reference from TurboHTTP.Unity.
+
+    ProjectJsonBridge (TurboHTTP.Core) and RecordReplayTransport (TurboHTTP.Testing) resolve
+    TurboHTTP.JSON.JsonSerializer by name and invoke Serialize(object, Type) and
+    Deserialize(string, Type) through reflection.
   -->
   <assembly fullname="TurboHTTP.JSON">
     <type fullname="TurboHTTP.JSON.JsonExtensions" preserve="all" />
+    <type fullname="TurboHTTP.JSON.JsonSerializer" preserve="all" />
   </assembly>
 </linker>
