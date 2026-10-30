@@ -1,0 +1,374 @@
+[
+  {
+    "key": "MOD-01",
+    "title": "[Files] FileDownloader deletes partial/complete download on any non-206 response",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:files",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nWhen resuming, `FileDownloader` deletes the existing file for any status other than 206 — including 5xx/4xx error responses — before checking whether the response is successful.\n\n## Location\n- `Runtime/Files/FileDownloader.cs:163` — `if (existingSize > 0 && response.StatusCode != HttpStatusCode.PartialContent)` deletes `destinationPath` and resets `existingSize`\n- `Runtime/Files/FileDownloader.cs` — `ThrowIfNotSuccessful` only runs after this block\n\n## Problem\nWith `EnableResume` (default), a resume attempt that gets 503, 404, 401 or a captive-portal 200 wipes the partial file. A 5xx while re-downloading to a path that already holds a complete file also deletes the complete file. Transient server errors therefore cause data loss and force full re-downloads on mobile.\n\n## Spec reference\nRFC 9110 §15.3.7 (206 Partial Content), §14.2 (Range)\n\n## Suggested fix\n1. Check `IsSuccessStatusCode` (and 416) first; on error throw without touching the file.\n2. Only discard the partial file on a successful 200 (server ignored Range) or after a 416.\n3. Download into `<path>.part` and atomically rename on success so the final path never holds a truncated or deleted file (see also the resume-safety issue).\n\n## Acceptance criteria\n- [ ] Non-success responses on a resume attempt leave the existing partial/complete file untouched\n- [ ] 200 on a resume attempt restarts from scratch (expected)\n- [ ] Regression test: partial file + server 503 -> file still present with original length\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-02",
+    "title": "[Cache] Cache stores 206 partial responses and ignores Range/If-Range",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:cache",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`CacheInterceptor` treats any 2xx as storable, including 206, and does not look at `Range`/`If-Range`/`Content-Range` on lookup or store.\n\n## Location\n- `Runtime/Cache/CacheInterceptor.cs:768` — `ShouldConsiderForStorage` accepts 200–299\n- No `Range`/`Content-Range` handling anywhere in the Cache assembly\n\n## Problem\n`FileDownloader` sends `Range: bytes=N-`. A 206 with `Cache-Control: max-age` is stored as the full representation for that URL; a later plain GET is served the partial body with status 206. Conversely, a Range GET is answered from a cached full 200, so the downloader appends the whole file to its partial file.\n\n## Spec reference\nRFC 9111 §3 and §3.3 (storing incomplete responses), RFC 9110 §14 (Range requests)\n\n## Suggested fix\n1. Only store final responses whose status is cacheable by default (RFC 9111 §3 / RFC 9110 §15.1: 200, 203, 204, 300, 301, 308, 404, 405, 410, 414, 501) or explicitly allowed; never store 206 unless partial-content storage is implemented per RFC 9111 §3.3.\n2. Bypass the cache (no lookup, no store) when the request carries `Range` or `If-Range`.\n\n## Acceptance criteria\n- [ ] 206 responses are never stored\n- [ ] Requests with `Range`/`If-Range` bypass cache lookup\n- [ ] Regression tests for both directions (partial stored as full; Range answered from full)\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-03",
+    "title": "[Cache] Unsafe-method invalidation and revalidation force full buffering and break streaming",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:cache",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nCache invalidation (POST/PUT/DELETE) and revalidation paths collect the full response in memory and flip the shared streaming flag, defeating Phase 22a streaming whenever `CacheInterceptor` is in the pipeline.\n\n## Location\n- `Runtime/Cache/CacheInterceptor.cs:348` — `HandleUnsafeInvalidationAsync` uses `TransportDispatchHelper.CollectResponseAsync`\n- `Runtime/Cache/CacheInterceptor.cs:377` — `RevalidateAsync` same\n- `BufferedDispatchBridge` sets `context.SetState(StreamingResponseRequested, false)` on the shared context and never restores it; `Runtime/Transport/Http2/Http2Stream.cs:109` reads the flag live\n- `ReplayCollectedResponseAsync` copies again via `ToArray`\n\n## Problem\nA streamed POST (SSE, LLM chat streaming) becomes fully buffered as soon as `CacheInterceptor` is configured. A GET with a stale entry (e.g. a large download) is buffered entirely in memory, then copied — OOM risk on mobile.\n\n## Suggested fix\n1. Unsafe methods: pass the response straight through and perform invalidation in a handler wrapper on response start (status 2xx/3xx) without buffering.\n2. Revalidation: stream the response; only buffer when status is 304 (empty body) and merge; for 200 tee into the store using the existing streaming accumulator.\n3. Never mutate `StreamingResponseRequested` on the caller's context (or restore it in `finally`).\n\n## Acceptance criteria\n- [ ] Streaming POST through `CacheInterceptor` is delivered incrementally (first chunk before body completes)\n- [ ] Revalidation returning 200 with a large body does not allocate the full body before the consumer reads\n- [ ] `StreamingResponseRequested` is unchanged after a cache dispatch\n- [ ] Allocation-gate test covering both paths\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-04",
+    "title": "[Auth] OAuth refresh drops the refresh token when the server does not rotate it",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:auth",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`OAuthClient.RefreshTokenAsync` stores a token parsed only from the refresh response; if the response omits `refresh_token`, the stored refresh token becomes null.\n\n## Location\n- `Runtime/Auth/OAuthClient.cs:200-201` — `ParseTokenResponse(...)` then `_tokenStore.SetAsync(key, token, ct)`\n\n## Problem\nMost providers do not rotate refresh tokens. After the first refresh the store holds a token with `RefreshToken == null`; when the access token expires again `GetValidTokenAsync` cannot refresh and returns the expired token, so every request gets 401 until the user re-authenticates.\n\n## Spec reference\nRFC 6749 §6 (refresh token MAY be issued; client keeps the old one otherwise)\n\n## Suggested fix\nWhen the token response has no `refresh_token`, carry over the refresh token used for the request (`request.RefreshToken`) into the new `OAuthToken` before storing.\n\n## Acceptance criteria\n- [ ] Refresh response without `refresh_token` keeps the previous refresh token\n- [ ] Refresh response with a new `refresh_token` replaces it\n- [ ] Regression test: two consecutive expirations both refresh successfully\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-05",
+    "title": "[Retry] Retry-After is not capped by MaxDelay and can stall a call indefinitely",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:retry",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nA server-provided `Retry-After` overrides the computed backoff whenever it is larger, with no upper bound.\n\n## Location\n- `Runtime/Retry/RetryPolicy.cs:156-161` — `minimumDelayOverride` wins over the `MaxDelay`-capped delay\n- `RetryInterceptor` awaits `Task.Delay(delay, ct)`; request `Timeout` is per attempt and does not bound the wait\n\n## Problem\n`Retry-After: 86400` on a 503/429 stalls the call for a day (or until the caller cancels). A misconfigured or hostile server can pin client requests and their concurrency permits.\n\n## Spec reference\nRFC 9110 §10.2.3 (Retry-After)\n\n## Suggested fix\n1. Clamp the override to `MaxDelay` or a new `MaxRetryAfter` (default e.g. 60 s).\n2. If `Retry-After` exceeds the cap, fail fast (return the last response) instead of waiting.\n3. Consider an overall retry budget (total elapsed) on `RetryPolicy`.\n\n## Acceptance criteria\n- [ ] Retry-After greater than the cap never produces a delay above the cap (or returns immediately per policy)\n- [ ] Unit test with `Retry-After: 86400` completes within the cap\n- [ ] Docs describe the behavior\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-06",
+    "title": "[Core] Add pipeline ordering model / construction-time validation for interceptors",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:architecture",
+      "area:core",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nInterceptor order determines correctness and security, but it is only 'order added' with no documentation of a safe order and no enforcement.\n\n## Location\n- `Runtime/Core/Pipeline/InterceptorPipeline.cs` — chain built in list order\n- `Documentation~/Modules/Middleware.md` — only says 'order they are added' and refers to non-existent `UHttpClientOptions.Middlewares`\n\n## Problem\nConcrete failure modes:\n- Redirect outer + Auth inner: bearer token re-added on cross-origin hop (separate security issue).\n- Cache outer + Auth inner: cache never sees `Authorization`, bypassing `AllowCacheForAuthorizedRequests=false`; per-user `private` responses cached under a user-less key and served after an account switch.\n- Cookie outer + Redirect inner: Set-Cookie of redirect hops lost / stored under the wrong host (separate issue).\n- Concurrency outer + Retry inner: permit held during backoff sleeps up to `MaxDelay`.\n\n## Suggested fix\n1. Give first-party interceptors an `Order`/phase (e.g. Observability → Redirect → Cookie → Auth → Cache → Retry → Decompression → Concurrency) and sort, or\n2. Validate at `UHttpClient` construction and throw/warn on known-bad combinations.\n3. Document the canonical order and the reason for each constraint.\n\n## Acceptance criteria\n- [ ] Known-bad orderings are rejected or auto-corrected with a logged warning\n- [ ] Documented canonical order\n- [ ] Tests for each failure mode listed above\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-07",
+    "title": "[Auth] AuthInterceptor re-adds Authorization after cross-origin redirect",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:auth",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`RedirectInterceptor` strips `Authorization` on cross-origin hops, but when `AuthInterceptor` sits inside it, Auth unconditionally sets the header again on the redirected request, leaking the bearer token to the third-party host.\n\n## Location\n- `Runtime/Auth/AuthInterceptor.cs:32` — `WithHeader(\"Authorization\", ...)` for every request\n- `Runtime/Middleware/RedirectInterceptor.cs` — `BuildRedirectRequest` strips credentials on origin change\n\n## Problem\nAPI at `api.example.com` replies `302 Location: https://cdn.thirdparty.net/file`. With pipeline [Redirect, Auth], the redirected request passes through Auth again and carries `Authorization: Bearer <token>` to `cdn.thirdparty.net`.\n\n## Spec reference\nRFC 9110 §15.4 (redirection; user agents should not forward credentials cross-origin)\n\n## Suggested fix\n1. Bind auth to an origin: `AuthInterceptor` takes an allowed origin set (default: origin of the first request / configured base URI) and only injects for matching scheme+host+port.\n2. Have RedirectInterceptor mark derived cross-origin requests (metadata flag) and have Auth respect it.\n3. Never inject over plain http unless explicitly allowed.\n\n## Acceptance criteria\n- [ ] Cross-origin redirect never carries the token regardless of interceptor order\n- [ ] Same-origin redirect keeps auth\n- [ ] Regression test for both orders [Redirect, Auth] and [Auth, Redirect]\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-08",
+    "title": "[Middleware] Decompression fails on HEAD/204/304 responses that carry Content-Encoding",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:middleware",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`DecompressionHandler` tries to decode empty bodies of bodiless responses and throws 'GZIP payload is truncated'.\n\n## Location\n- `Runtime/Middleware/DecompressionHandler.cs:~75` and `:180` — no status/method check before decoding\n\n## Problem\nA HEAD request to a gzip-served resource, or a 304 that repeats `Content-Encoding: gzip`, fails with `OnResponseError(\"Response decompression failed\")` instead of returning headers. Breaks cache revalidation (304) for compressed resources when Decompression is in the chain.\n\n## Spec reference\nRFC 9110 §9.3.2 (HEAD), §15.4.5 (304), §8.4 (Content-Encoding)\n\n## Suggested fix\nSkip decompression when the request method is HEAD, the status is 1xx/204/304, or the body length is 0.\n\n## Acceptance criteria\n- [ ] HEAD and 304 with `Content-Encoding: gzip` succeed and keep headers intact\n- [ ] Regression tests for HEAD, 204, 304\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-09",
+    "title": "[Cookies] Cookies from redirect hops are stored under the original host",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:middleware",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`CookieInterceptor` pins the first request's URI in its handler, so cookies from later hops are attributed to the wrong host.\n\n## Location\n- `Runtime/Middleware/CookieInterceptor.cs:69` — `new CookieHandler(handler, _jar, requestForNext.Uri)`\n\n## Problem\nWith Cookie outer and Redirect inner, 3xx responses are consumed by RedirectHandler and their Set-Cookie never reaches the jar; the final response from host B is stored against host A. A host-only cookie from B is then sent to A — cross-host cookie injection/leak.\n\n## Spec reference\nRFC 6265 §5.3 (storage model, request-uri), §5.4\n\n## Suggested fix\n1. Resolve the cookie origin per hop from the request in `OnRequestStart(request)` / the response's request URI.\n2. Ensure redirect hops pass Set-Cookie through the jar (cookie handling inside each hop), or enforce Redirect-outer ordering via the ordering model.\n\n## Acceptance criteria\n- [ ] Set-Cookie on each redirect hop is stored for that hop's host\n- [ ] Final-hop cookies are stored for the final host\n- [ ] Regression test with A -> 302 -> B both setting host-only cookies\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-10",
+    "title": "[Cookies] CookieJar scoping weaknesses (public suffix, IP hosts, Secure overwrite, prefixes, size caps)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:middleware",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe cookie jar deviates from RFC 6265/6265bis in several ways that allow cross-site cookie setting and overwrite.\n\n## Location\n- `Runtime/Middleware/CookieJar.cs:23-90` — small hand-written public-suffix list\n- `Runtime/Middleware/CookieJar.cs:354-359` — domain matching\n- `GetCookieHeader` takes the write lock and scans all cookies on every request\n\n## Problem\n- Public suffixes like `github.io`, `blogspot.com`, `herokuapp.com`, `amazonaws.com`, `co.za`, `com.ua` are missing: a tenant can set `Domain=github.io` and affect all tenants.\n- IP hosts not special-cased: `Domain=168.1.5` accepted for `192.168.1.5`.\n- An http response can overwrite a `Secure` cookie (6265bis 'leave secure cookies alone').\n- `__Host-`/`__Secure-` prefixes not enforced.\n- No size caps on name/value/attributes (only count limits).\n- Write lock per request serializes all requests.\n\n## Spec reference\nRFC 6265 §5.3, §5.1.3; draft-ietf-httpbis-rfc6265bis §4.1.3 (prefixes), §5.7 (leave secure cookies alone)\n\n## Suggested fix\n1. Ship a compact PSL (or allow plugging one) and reject domain cookies on suffixes.\n2. IP-literal hosts: host-only cookies only, Domain must equal host.\n3. Implement 'leave secure cookies alone', prefix rules, and 4096-byte name+value cap.\n4. Use a reader/writer lock or copy-on-write snapshot for `GetCookieHeader`.\n\n## Acceptance criteria\n- [ ] Domain cookie on a public suffix is rejected\n- [ ] Domain attribute on IP host is rejected unless equal to host\n- [ ] Insecure response cannot overwrite a Secure cookie\n- [ ] `__Host-`/`__Secure-` prefix tests\n- [ ] Oversized cookies rejected\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-11",
+    "title": "[Cache] In-memory variant index grows without bound",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:cache",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nEvery stored response registers a `VariantBucket`; buckets are only removed on lookup miss or invalidation, and storage eviction does not notify the interceptor.\n\n## Location\n- `Runtime/Cache/CacheInterceptor.cs:909` — `RegisterStoredVariant`\n- `Runtime/Cache/CacheInterceptor.cs:978` — bucket removal paths\n- `MemoryCacheStorage` evicts silently (default 100 entries)\n\n## Problem\nAn app fetching many unique URLs (thumbnails, signed URLs) leaks one bucket per URL for the lifetime of the interceptor.\n\n## Suggested fix\nAdd an eviction callback to `ICacheStorage` (or have the interceptor bound the index with LRU matching storage capacity).\n\n## Acceptance criteria\n- [ ] Variant index size bounded by storage capacity\n- [ ] Test: store 10k unique URLs with capacity 100 -> index size <= 100 (+small slack)\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-12",
+    "title": "[Cache] Response headers instance shared between consumer and background cache store",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:cache",
+      "priority:P2",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe same `HttpHeaders` instance is passed to the inner handler (exposed as `UHttpResponse.Headers`) and queued for background storage.\n\n## Location\n- `Runtime/Cache/CacheStoringHandler.cs:68-110` — `capturedHeaders` passed to `_inner.OnResponseStartAsync` and to `QueueStoreResponse` (deferred via `Task.Yield`)\n\n## Problem\n`HttpHeaders` is a non-thread-safe Dictionary and is publicly mutable. A consumer calling `Set`/`Add` on response headers while the store thread calls `Clone()` throws InvalidOperationException or stores a corrupted entry.\n\n## Suggested fix\nClone headers synchronously before queueing the store (`capturedHeaders.Clone()`), so the store owns its copy.\n\n## Acceptance criteria\n- [ ] Store path never shares a mutable headers instance with the consumer\n- [ ] Stress test mutating response headers concurrently with storage\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "MOD-13",
+    "title": "[Core] Pooled UHttpRequest has no lease generation (ABA on stale references)",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:core",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`UHttpRequest` is pooled; `ThrowIfDisposed` only checks `_isLeased == 0 || _disposeRequested`, so a stale reference to a recycled request passes the check after it is re-leased.\n\n## Location\n- `Runtime/Core/UHttpRequest.cs` — `ThrowIfDisposed`, `ResetForPool`, lease flags\n- `SendBufferedAsync` auto-disposes the request\n\n## Problem\nUser code keeps a reference (e.g. retry loop) and calls `req.WithHeader(...)` or `SendBufferedAsync()` after the request was returned and re-leased by another task; the mutation/send lands on someone else's request (wrong headers, credentials crossing requests).\n\n## Suggested fix\nAdd a lease generation/token: builder methods capture the generation at lease time and throw `ObjectDisposedException` when it differs; or stop pooling the user-facing request object.\n\n## Acceptance criteria\n- [ ] Using a request after it was returned to the pool always throws, even if re-leased\n- [ ] Regression test: dispose, re-lease from another caller, mutate stale ref -> throws\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-14",
+    "title": "[Core] UHttpClient disposes interceptors it does not own",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:core",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`DisposeConfiguredInterceptors` disposes every `IDisposable` in `_options.Interceptors`; `UHttpClientOptions.Clone` shares instances.\n\n## Location\n- `Runtime/Core/UHttpClient.cs:483` — `DisposeConfiguredInterceptors`\n\n## Problem\nOne `CacheInterceptor`/`CookieInterceptor`/`ConcurrencyInterceptor` shared between two clients: disposing the first client makes the second throw `ObjectDisposedException` on every request.\n\n## Suggested fix\nAdd explicit ownership (`UHttpClientOptions.DisposeInterceptors` / `ownsInterceptors`, default false for caller-supplied instances) or reference-count shared interceptors.\n\n## Acceptance criteria\n- [ ] Disposing one client does not break another sharing an interceptor\n- [ ] Ownership semantics documented and tested\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-15",
+    "title": "[Core] FollowRedirects/MaxRedirects options are silent no-ops without RedirectInterceptor",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:core",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`UHttpClientOptions.FollowRedirects = true` and `MaxRedirects = 10` are defaults, but nothing follows redirects unless the Middleware module's `RedirectInterceptor` is added manually.\n\n## Location\n- `Runtime/Core/UHttpClientOptions.cs:98` — defaults\n- `Runtime/Core/UHttpClient.cs` — only copies the flags into request metadata\n\n## Problem\nUsers see `FollowRedirects = true` and receive raw 301/302 responses.\n\n## Suggested fix\nEither auto-wire `RedirectInterceptor` when the Middleware assembly is present (same reflection mechanism as the Monitor interceptor), or log a one-time warning when the option is true and no redirect interceptor is configured; document clearly.\n\n## Acceptance criteria\n- [ ] Default configuration either follows redirects or warns once\n- [ ] Test covering both module-present and module-absent cases\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-16",
+    "title": "[Observability] LoggingInterceptor logs full URLs (query tokens) and redacts too few headers",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:observability",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nLogging writes the full request URI including query string, and the default sensitive-header list misses common credential headers.\n\n## Location\n- `Runtime/Observability/LoggingInterceptor.cs:86` — URL logged unredacted\n- `Runtime/Observability/LoggingHandler.cs` — response logging\n- Default redaction list: Authorization, Cookie, Set-Cookie, Proxy-Authorization, WWW-Authenticate, X-Api-Key\n\n## Problem\n`?access_token=...`, OAuth `code=`, or pre-signed URLs (S3/GCS signatures) go into the log sink and device logs. Headers such as `X-Auth-Token`, `X-Amz-Security-Token`, `X-Goog-Api-Key`, `Api-Key`, `X-CSRF-Token`, `Proxy-Authenticate` are logged in clear.\n\n## Suggested fix\n1. Redact query values by default (keep names), with an opt-out.\n2. Extend the default header list and make it configurable (add/remove).\n3. Share one redaction policy with the Editor Monitor (see Unity/Editor issue).\n\n## Acceptance criteria\n- [ ] Query values are redacted by default in all log levels\n- [ ] Extended header list redacted by default\n- [ ] Tests for URL and header redaction\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-17",
+    "title": "[Files] FileDownloader resume is unsafe (no If-Range, partial at final path, unchecked Content-Range)",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:files",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nResume logic can splice different representations together and cannot distinguish partial from complete files.\n\n## Location\n- `Runtime/Files/FileDownloader.cs:111-125` — Range request built without `If-Range`\n- `Runtime/Files/FileDownloader.cs:171-184` — 206 with missing/unparseable `Content-Range` appended (`rangeStart` -1 passes)\n- `Runtime/Files/FileDownloader.cs:180` — partial written at the final path; checksum failure leaves corrupt file\n\n## Problem\n- Resource changed between attempts: new bytes appended to old partial file -> corrupt file (checksum optional).\n- Truncated download looks identical to a finished one.\n- 206 without Content-Range is trusted.\n- Range requests don't force `Accept-Encoding: identity`; with Decompression in the chain, a compressed range fails to decode and progress total is 0.\n\n## Spec reference\nRFC 9110 §13.1.5 (If-Range), §14.4 (Content-Range), §15.3.7\n\n## Suggested fix\n1. Persist ETag/Last-Modified with the partial (sidecar) and send `If-Range`.\n2. Write to `<path>.part`, rename on success.\n3. Require a valid `Content-Range` whose start equals the existing size; otherwise restart.\n4. Delete/quarantine on checksum failure.\n5. Send `Accept-Encoding: identity` on Range requests.\n\n## Acceptance criteria\n- [ ] Changed resource restarts download instead of splicing\n- [ ] Final path only exists after verified completion\n- [ ] 206 without valid Content-Range restarts\n- [ ] Tests for each case\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-18",
+    "title": "[Auth] OAuth token parsing depends on reflection into TurboHTTP.JSON that IL2CPP can strip",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:auth",
+      "area:json",
+      "priority:P2",
+      "platform:il2cpp",
+      "confidence:plausible",
+      "needs-device-validation",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`OAuthClient` reaches JSON through `ProjectJsonBridge` reflection; the reflected methods are not preserved and the Auth→JSON dependency is undeclared.\n\n## Location\n- `Runtime/Core/ProjectJsonBridge.cs` — `Type.GetType(\"TurboHTTP.JSON.JsonSerializer, TurboHTTP.JSON\")`, `GetMethod(\"Deserialize\"/\"Serialize\")` with `(string, Type)` / `(object, Type)`\n- `Runtime/JSON/link.xml` — preserves only `JsonExtensions`\n- Auth has no link.xml\n\n## Problem\nAt Medium/High managed stripping the two static overloads (no static callers) can be removed; OAuth token parsing then fails at runtime on device. If the JSON assembly is not referenced by the project at all, OAuth silently fails.\n\n## Suggested fix\n1. Preserve `JsonSerializer` and the reflected overloads (link.xml + `[Preserve]`), or\n2. Give Auth a tiny internal token-response parser (flat JSON object) and drop the reflection dependency.\n3. Fail with a clear error message if JSON is unavailable.\n\n## Acceptance criteria\n- [ ] OAuth refresh works in an IL2CPP build with High stripping\n- [ ] Clear error if the JSON module is missing\n- [ ] Device validation recorded\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "MOD-19",
+    "title": "[Cache] 304 merge overwrites representation metadata; Expires used without Date correction",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:cache",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nRevalidation merge copies every 304 header over the stored response and freshness uses the device clock without correction.\n\n## Location\n- `Runtime/Cache/CacheInterceptor.Parsing.cs` — `MergeNotModifiedEntry`\n- `Runtime/Cache/CacheInterceptor.Parsing.cs` — `ResolveExpiry`\n\n## Problem\n- 304 carrying `Content-Length: 0`, `Content-Encoding` or `Content-Type` corrupts the stored 200's metadata (body later truncated or mis-decoded).\n- Stale stored `Age` survives the merge, shortening freshness.\n- `Expires` evaluated against the device clock; mobile clock skew makes entries never fresh or fresh for hours.\n\n## Spec reference\nRFC 9111 §3.2 (updating stored headers), §4.2.1–4.2.3 (freshness, age calculation)\n\n## Suggested fix\n1. Exclude `Content-Length`, `Content-Encoding`, `Content-Range`, `Transfer-Encoding` (and hop-by-hop headers) from the merge; drop old `Age`.\n2. Compute freshness per RFC 9111 §4.2 using `Date` (apparent_age/corrected age) and `Expires - Date`.\n\n## Acceptance criteria\n- [ ] 304 merge never changes body-framing headers\n- [ ] Freshness correct with skewed device clock (unit test with injected clock)\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-20",
+    "title": "[Auth] OAuth refresh deadlocks when OAuthClient uses a client that carries the OAuth AuthInterceptor",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:auth",
+      "priority:P2",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nIf the `UHttpClient` given to `OAuthClient` also has `AuthInterceptor` with `OAuthTokenProvider`, the refresh request re-enters the token provider and waits on the per-key semaphore already held.\n\n## Location\n- `Runtime/Auth/OAuthClient.cs:154-205` — `RefreshTokenAsync` holds `gate`, sends via `_client`\n\n## Problem\nRefresh request -> AuthInterceptor -> `GetTokenAsync` -> `GetValidTokenAsync` -> `RefreshTokenAsync` -> waits on the same gate -> request hangs until timeout; all requests needing a token stall.\n\n## Suggested fix\nMark token-endpoint requests with metadata that `AuthInterceptor` skips, or require/construct a dedicated internal client for `OAuthClient`; document.\n\n## Acceptance criteria\n- [ ] Refresh through a client with the OAuth AuthInterceptor completes\n- [ ] Regression test\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "MOD-21",
+    "title": "[Core] Streaming responses stop/clear RequestContext at headers, breaking durations and late handlers",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:core",
+      "area:observability",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`SendStreamingAsync` runs `context.Stop()` and `context.Clear()` in `finally` when headers arrive, while handlers continue to run until the body completes.\n\n## Location\n- `Runtime/Core/UHttpClient.cs` — `SendBufferedAsync`/`SendStreamingAsync` `finally`\n\n## Problem\n`LoggingHandler` 'completed in Xms', metrics, and `ObservedResponseBodySource` read a stopped stopwatch and cleared state, so streaming durations and timeline data are wrong.\n\n## Suggested fix\nTie context stop/clear to body completion/dispose for streaming responses (e.g. on the response body source dispose).\n\n## Acceptance criteria\n- [ ] Streaming duration metrics include body transfer time\n- [ ] Test asserting duration >= body delivery delay\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-22",
+    "title": "[Cache] SegmentedBuffer leak and undisposed CTS when CacheInterceptor is disposed",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:cache",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nQueued background store mutations return early on cancellation before the `try/finally` that disposes the body.\n\n## Location\n- `Runtime/Cache/CacheInterceptor.cs:489` and `:865` — early `return`/`ThrowIfCancellationRequested` before body disposal\n- `_backgroundWorkCancellation` never disposed\n\n## Problem\nAfter `CacheInterceptor.Dispose`, pending stores leak pooled `SegmentedBuffer` segments (ArrayPool pressure) and the CTS.\n\n## Suggested fix\nMove the cancellation check inside the `try` (or dispose the body in every early-exit path); dispose `_backgroundWorkCancellation` in `Dispose`.\n\n## Acceptance criteria\n- [ ] Pool counters return to baseline after dispose with pending stores\n- [ ] Leak test using pool diagnostics\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-23",
+    "title": "[Cache] Cache key normalization aliases distinct URLs",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:cache",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nCache key normalization drops empty path segments and sorts query parameters.\n\n## Location\n- `Runtime/Cache/CacheInterceptor.UriNormalization.cs` — `NormalizePath`, `NormalizeQuery`\n\n## Problem\n`/a//b` and `/a/b`, or `?b=1&a=2` and `?a=2&b=1`, share one cache entry. Order-sensitive servers and signed URLs (signature over ordered query) can receive the wrong cached response.\n\n## Spec reference\nRFC 9111 §2 (cache key = target URI), RFC 3986 §6.2.2\n\n## Suggested fix\nKey on the URI as sent (scheme/host lower-cased, default port removed, percent-encoding normalized per RFC 3986 §6.2.2 only). Make aggressive normalization opt-in.\n\n## Acceptance criteria\n- [ ] Distinct paths/query orders produce distinct keys by default\n- [ ] Tests\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-24",
+    "title": "[RateLimit] ConcurrencyLimiter host-semaphore eviction race",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:ratelimit",
+      "priority:P3",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nIdle per-host semaphores are evicted while waiters may still hold references; a new semaphore is created for the same host.\n\n## Location\n- `Runtime/RateLimit/ConcurrencyLimiter.cs:197-231` — eviction above 1024 hosts\n\n## Problem\nAbove 1024 hosts: limit for a host doubles (old + new semaphore); `Release(host)` releases the new one, which was created with `maxCount == initial` -> `SemaphoreFullException` from the interceptor's `finally`. Also unverified: whether the permit is held until the end of a streamed body or released when headers arrive.\n\n## Suggested fix\nReference-count host entries (evict only when count is 0 under lock), and have `Release` use the semaphore instance captured at acquire. Verify/document permit lifetime for streaming responses.\n\n## Acceptance criteria\n- [ ] No SemaphoreFullException under host churn stress test\n- [ ] Per-host limit never exceeded\n- [ ] Permit lifetime for streaming documented and tested\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "MOD-25",
+    "title": "[Middleware] Decompression default limit (256 MB) and buffered ToArray copy risk OOM on mobile",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:middleware",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nDefault `DefaultMaxDecompressedBodySizeBytes` is 256 MB and the buffered path uses `MemoryStream` + `ToArray()` (~2x peak).\n\n## Location\n- `Runtime/Middleware/DecompressionInterceptor.cs:17` — default limit\n- `Runtime/Middleware/DecompressionHandler.cs` — buffered path\n\n## Problem\nA compression bomb or large legitimate response can allocate ~512 MB peak on a mobile device before the limit triggers.\n\n## Suggested fix\nLower the default (e.g. 32 MB, configurable), decode into pooled segmented buffers instead of MemoryStream+ToArray.\n\n## Acceptance criteria\n- [ ] Lower documented default\n- [ ] Buffered decompression peak allocation ~1x body size (allocation test)\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-26",
+    "title": "[JSON] LiteJson default serializer limitations (no POCOs, BOM, DateTime, lax parsing, no size limit)",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:json",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe default `LiteJsonSerializer` fails common usage and is lax in parsing.\n\n## Location\n- `Runtime/JSON/LiteJson/*` — `LiteJsonSerializer`, `JsonReader`\n\n## Problem\n- Cannot deserialize into POCOs: `AsJson<T>`, `GetJsonAsync<T>`, `PostJsonAsync` fail at runtime for user types out of the box.\n- UTF-8 BOM (U+FEFF) breaks parsing.\n- `DateTime.Parse` without `RoundtripKind` shifts `Z` timestamps to local time.\n- Accepts `1.`, unescaped control chars, Unicode whitespace (non RFC 8259).\n- No input size limit (depth limit 64 is fine).\n- Large decimals lose precision (long/ulong/double).\n\n## Spec reference\nRFC 8259\n\n## Suggested fix\n1. Either support POCO mapping (AOT-safe, e.g. generated/registered contracts) or fail at compile-time/with a clear message pointing to the System.Text.Json/Newtonsoft adapter; document prominently.\n2. Skip BOM; use `DateTimeStyles.RoundtripKind`; strict RFC 8259 number/string grammar; configurable max input size; decimal option.\n\n## Acceptance criteria\n- [ ] `AsJson<T>` for a POCO either works or throws a documented, actionable error\n- [ ] BOM, `Z` timestamp and strict-grammar tests\n- [ ] Input size limit test\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-27",
+    "title": "[Core] InternalsVisibleTo boundary breach; no public safe-copy primitive for third-party interceptors",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:architecture",
+      "area:core",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nCore grants `InternalsVisibleTo` to 10 modules, which then depend on internals, while third-party interceptors lack the primitives first-party ones use.\n\n## Location\n- `Runtime/Core/AssemblyInfo.cs` — IVT to Auth, Cache, Files, JSON, Middleware, Observability, Retry, Testing, Transport, WebSocket\n- Cache uses `Core.Internal.SegmentedBuffer`, `BufferedResponseBodySource`; Middleware/Retry use `ResponseBodyDiscardHelper`; several use `UHttpRequest.CopyWithSharedContent`/`CreateDerived`\n- Public `UHttpRequest.Clone()` throws for `StreamRequestBody`\n\n## Problem\nOptional modules cannot ship/version independently of Core (any internal change breaks them), and third-party interceptors cannot safely derive requests (e.g. for retries/redirects) or discard bodies the way first-party modules do — plug-and-play promise is weaker than advertised.\n\n## Suggested fix\nPromote the needed primitives to a small, documented public extension API (`IRequestDerivation`/`UHttpRequest.CreateDerived`, `ResponseBody.DiscardAsync`, pooled buffer access), then shrink IVT to Transport/Testing only.\n\n## Acceptance criteria\n- [ ] Public API covers request derivation and body discard\n- [ ] IVT list reduced; modules compile without internals (except Transport/Testing)\n- [ ] Sample third-party interceptor implementing retry with the public API\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "MOD-28",
+    "title": "[Core] Reduce Core surface: move feature types out and hide internal pools",
+    "milestone": "v1.2: Features & performance",
+    "labels": [
+      "type:architecture",
+      "area:core",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nCore carries feature-specific types and exposes internals publicly, against the 'Core extraction' goal.\n\n## Location\n- `Runtime/Core` — `AdaptiveInterceptor`, `BackgroundNetworkingInterceptor`, `NetworkQualityDetector`, `ProxySettings`\n- `Runtime/Core/Internal` — `ObjectPool<T>`, `ByteArrayPool` are `public`\n- `Runtime/Core/ProjectJsonBridge.cs` — public\n\n## Problem\nLarger mandatory footprint for every user, public API surface that must be versioned/supported, and hidden coupling (ProjectJsonBridge reflection).\n\n## Suggested fix\nMove adaptive/background/network-quality into an optional module (e.g. TurboHTTP.Mobile/Adaptive); make pool types internal (expose via IVT to Transport only); make `ProjectJsonBridge` internal or replace with an explicit registration API. `ProxySettings` may stay if transport config requires it — document why.\n\n## Acceptance criteria\n- [ ] Core public API listing reviewed and reduced\n- [ ] Moved types live in optional modules with no Core->module references\n- [ ] Breaking changes recorded in CHANGELOG\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (code path traced)."
+  }
+]

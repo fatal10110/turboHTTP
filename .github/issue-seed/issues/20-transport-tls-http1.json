@@ -1,0 +1,241 @@
+[
+  {
+    "key": "TLS-01",
+    "title": "[TLS] BouncyCastle provider performs no certificate chain validation and weak hostname matching",
+    "milestone": "v1.0-alpha: Release blockers",
+    "labels": [
+      "type:security",
+      "area:tls",
+      "priority:P0",
+      "platform:il2cpp",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`TurboTlsAuthentication.ValidateCertificateChain` is an empty TODO guarded by a `#warning`. The BouncyCastle TLS path accepts any certificate chain whose leaf has a matching hostname and valid dates, so any on-path attacker with a self-signed certificate can intercept traffic. Hostname matching is also non-compliant.\n\n## Location\n- `Runtime/Transport/BouncyCastle/TurboTlsAuthentication.cs:59-70` — `ValidateCertificateChain` only checks `chain.Length == 0`; `#warning \"Phase 3C: Certificate chain validation is NOT implemented\"`\n- `Runtime/Transport/BouncyCastle/TurboTlsAuthentication.cs:151-171` — hostname / wildcard matching\n\n## Problem\n- No signature verification, no trust-anchor check, no basic constraints / key usage / EKU checks, no revocation.\n- Wildcard handling lets `*.com` match `example.com`; CN is used even when a SAN extension is present; IP-address SANs are ignored.\n\nScenario: app runs with `TlsBackend.BouncyCastle` (or Auto falls back to it, see TLS-02). Attacker on Wi-Fi presents a self-signed cert for `api.example.com` with valid dates. Handshake succeeds; attacker reads/modifies all HTTPS traffic including `Authorization` headers.\n\n## Spec reference\nRFC 5280 §6 (certification path validation), RFC 6125 §6 (service identity: SAN-only when SAN present, wildcard only in left-most label, no partial/public-suffix wildcards), RFC 6066 §3.\n\n## Suggested fix\n1. Implement PKIX path validation (`PkixCertPathBuilder`/`PkixCertPathValidator` from the vendored BC lib) against platform roots (Android: system store via JNI or bundled Mozilla roots; iOS: bundled roots or SecTrust bridge), with EKU `serverAuth`, basic constraints, key usage.\n2. Rewrite hostname matching per RFC 6125: SAN dNSName/iPAddress only when SAN present, single left-most wildcard label, reject wildcards spanning public suffix / TLD.\n3. Add an optional user `ServerCertificateValidationCallback` hook consistent with the SslStream path.\n4. Remove the `#warning` once done; until done, BC must be unreachable without explicit insecure opt-in (TLS-02).\n\n## Acceptance criteria\n- [ ] Untrusted root, self-signed, expired, not-yet-valid, wrong-host, and `*.com` wildcard certs are rejected with `UHttpErrorType` certificate error\n- [ ] Valid public chain (e.g. Let's Encrypt) succeeds on iOS and Android IL2CPP devices\n- [ ] Negative TLS test suite runs against both SslStream and BouncyCastle providers\n- [ ] `#warning` removed from `TurboTlsAuthentication.cs`\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "TLS-02",
+    "title": "[TLS] Auto mode silently and permanently falls back to unvalidated BouncyCastle; SslStream treats h2 as required whenever offered",
+    "milestone": "v1.0-alpha: Release blockers",
+    "labels": [
+      "type:security",
+      "area:tls",
+      "priority:P0",
+      "platform:il2cpp",
+      "needs-device-validation",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nIn `TlsBackend.Auto`, a platform exception during the SslStream handshake calls `TlsProviderSelector.MarkSslStreamBroken()`, which switches the whole process to BouncyCastle for every later connection. Because the pool always offers `{\"h2\",\"http/1.1\"}` and `SslStreamTlsProvider` treats any presence of `h2` as *required*, a runtime without SslStream ALPN throws `PlatformNotSupportedException` and triggers that fallback. Combined with TLS-01, every HTTPS connection becomes MITM-able by default on such runtimes.\n\n## Location\n- `Runtime/Transport/Tls/SslStreamTlsProvider.cs:145-151` — `RequiresProtocol(alpnProtocols, \"h2\")` + `!_alpnSupported` → throws PNSE\n- `Runtime/Transport/Tls/SslStreamTlsProvider.cs:337` — `RequiresProtocol` returns true if `h2` is anywhere in the list\n- `Runtime/Transport/Tcp/TcpConnectionPool.cs:577` and `RawSocketTransport.cs:30` — always pass `{\"h2\",\"http/1.1\"}`\n- `Runtime/Transport/Tcp/TcpConnectionPool.cs:591-620` — Auto + `IsPlatformTlsException` (`NotSupportedException`, `TypeLoadException`, `FileNotFoundException`, PNSE) → `MarkSslStreamBroken()` and retry with BC\n- `Runtime/Transport/RawSocketTransport.cs:982` — CONNECT tunnels also follow the cached selection\n\n## Problem\nTrigger chain on an IL2CPP device where ALPN reflection members are unavailable/stripped:\n1. First HTTPS request → SslStream path → PNSE (h2 \"required\").\n2. Auto mode classifies PNSE as platform failure → `MarkSslStreamBroken()` (process-wide, never reset).\n3. All subsequent connections, including CONNECT tunnels, use BouncyCastle, which does no chain validation (TLS-01).\n\nAlso: with `TlsBackend.SslStream` or Auto without BC, every HTTPS request fails instead of negotiating HTTP/1.1, contradicting the class doc at `SslStreamTlsProvider.cs:16-18`.\n\n## Spec reference\nRFC 7301 (ALPN is a negotiation; absence must fall back to http/1.1).\n\n## Suggested fix\n1. Treat `h2` as optional whenever `http/1.1` is also offered: if ALPN unavailable, do a plain handshake and report negotiated protocol = http/1.1.\n2. Auto must fail closed: never fall back to a provider that does not perform full chain validation. Gate BC fallback behind TLS-01 being complete; until then require an explicit opt-in such as `TlsBackend.BouncyCastleInsecureForTesting`.\n3. Make the broken-state cache resettable and per-reason; log once via `TlsProviderSelector.DiagnosticLogger`.\n4. Document the selection matrix in platform docs.\n\n## Acceptance criteria\n- [ ] Runtime without ALPN + Auto: HTTPS succeeds over SslStream HTTP/1.1, no BC fallback, no PNSE\n- [ ] Auto never selects BouncyCastle while BC chain validation is unimplemented\n- [ ] Unit test: simulated `_alpnSupported=false` with `{h2,http/1.1}` → plain TLS handshake, no exception\n- [ ] Unit test: platform exception in Auto does not route to an unvalidated provider\n- [ ] Device check on iOS/Android IL2CPP recorded in Phase 9 matrix\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "TLS-03",
+    "title": "[TLS] link.xml preserves SslStream types under the wrong assembly name for Unity",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:tls",
+      "area:packaging",
+      "priority:P2",
+      "platform:il2cpp",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`Runtime/Transport/link.xml` preserves SslStream / ALPN types under assembly `System.Net.Security`, but on Unity Mono/IL2CPP these types live in `System.dll`. The rules are likely no-ops, so the reflection-based ALPN probe in `SslStreamTlsProvider` can be stripped at Medium/High managed stripping.\n\n## Location\n- `Runtime/Transport/link.xml` — `<assembly fullname=\"System.Net.Security\">` entries\n- `Runtime/Transport/Tls/SslStreamTlsProvider.cs` — reflection lookup of `SslClientAuthenticationOptions` / `SslApplicationProtocol` members\n\n## Problem\nWith stripping enabled, ALPN members are removed → `_alpnSupported=false` → (before TLS-02 is fixed) PNSE and BouncyCastle fallback; after TLS-02, HTTP/2 silently never negotiates.\n\n## Suggested fix\nPreserve the types under `System` (and keep `System.Net.Security` entry for newer Unity profiles), or ship an `IUnityLinkerProcessor` that emits the correct rules (see packaging link.xml issue). Verify with a stripped IL2CPP build log.\n\n## Acceptance criteria\n- [ ] IL2CPP build with High stripping keeps ALPN members (verified via linker output or runtime probe log)\n- [ ] HTTP/2 negotiates over SslStream on a device where the runtime supports ALPN\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible (needs IL2CPP build confirmation)."
+  },
+  {
+    "key": "TLS-04",
+    "title": "[TLS] BouncyCastle TlsStream serialises reads and writes, stalling HTTP/2 and Expect: 100-continue",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:tls",
+      "priority:P1",
+      "platform:il2cpp",
+      "needs-device-validation",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`BouncyCastleTlsProvider` returns the raw vendored `protocol.Stream`. Its async overrides forward to base `Stream.ReadAsync/WriteAsync(byte[])` → `BeginRead/BeginWrite`, which share a single semaphore in the BCL base implementation; a pending read blocks every write and occupies a thread-pool thread inside `ReadApplicationData`.\n\n## Location\n- `Runtime/Transport/BouncyCastle/BouncyCastleTlsProvider.cs:121-126` — returns `protocol.Stream` unwrapped\n- Vendored `TlsStream` — only `ReadAsync(Memory)`/`WriteAsync(ReadOnlyMemory)` overridden\n\n## Problem\n- HTTP/2: the read loop always has a read outstanding, so HEADERS/DATA/SETTINGS-ACK writes wait until the server sends something → requests stall until timeout.\n- HTTP/1.1 Expect: 100-continue timeout branch writes the body while `initialHeadTask` is reading → deadlock.\nBouncyCastle is the designated IL2CPP HTTP/2 path, so this hits exactly the platforms it exists for.\n\n## Suggested fix\nWrap the BC stream in a duplex adapter: independent read path (dedicated reader or overrides of `byte[]` async methods that bypass the base semaphore) and a lock-protected write path; or drive `TlsClientProtocol` in non-blocking mode with explicit socket I/O.\n\n## Acceptance criteria\n- [ ] Concurrent read+write test over BouncyCastle: write completes while a read is pending (timeout-bounded)\n- [ ] HTTP/2 over BouncyCastle: 50 concurrent requests complete against a real h2 server\n- [ ] Expect: 100-continue timeout path completes over BouncyCastle\n- [ ] Validated on iOS and Android IL2CPP devices\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible (traced; depends on BCL base-Stream semantics, needs device test)."
+  },
+  {
+    "key": "H1-01",
+    "title": "[HTTP/1.1] Expect: 100-continue early final response returns connection to pool with unsent body (request desync)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:http1",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nWhen a server answers an `Expect: 100-continue` request with a final status (401/413/417) before the declared body is sent, the head is returned with the server's keep-alive value and the connection goes back to the pool. The declared Content-Length/chunked body was never written, so a server that keeps reading the request body consumes the next pooled request as that body.\n\n## Location\n- `Runtime/Transport/RawSocketTransport.cs:1605-1612, 1688-1692` — early final response path keeps `KeepAlive`\n- `Runtime/Transport/Http1/Http11ResponseBodySource.cs:85-89, 683-686` — empty/HEAD body completes and calls `ReturnToPool()`\n- `Tests/.../RawSocketTransportTests.cs` — `RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_ReusesConnectionAfterDrain` asserts the buggy reuse (`AcceptCount == 1`)\n\n## Problem\nClient sends `POST /upload` with `Content-Length: 1000000` + `Expect: 100-continue`. Server replies `401` keep-alive and continues reading-and-discarding the declared body (allowed by RFC 9110 §10.1.1). Client returns the connection to the pool; next request `GET /me` + `Authorization: Bearer …` is consumed as body bytes of the first request. Responses then go to the wrong requests (desync) and credentials end up in the wrong request context.\n\n## Spec reference\nRFC 9110 §10.1.1 (server MAY keep reading and discarding content), RFC 9112 §9.6 / §9.3 (connection reuse requires complete message framing).\n\n## Suggested fix\nIf a final response arrives while `!requestWriteState.HasCommittedBodyBytes` and the request declared a non-zero body, force `KeepAlive = false` and close after the response (matches SocketsHttpHandler). Optionally: if the body is small and replayable, finish sending it instead of closing.\n\n## Acceptance criteria\n- [ ] Early final response with unsent declared body never returns the connection to the pool\n- [ ] Test `RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_ReusesConnectionAfterDrain` flipped to assert a new connection (`AcceptCount == 2`)\n- [ ] New test: server that reads-and-discards the declared body does not receive the next request as body\n- [ ] Content-Length: 0 requests remain reusable\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "TCP-01",
+    "title": "[Transport] PollSelect socket mode busy-spins on idle connections",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:transport",
+      "area:mobile",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nWith `SocketIoMode.PollSelect`, `TryServiceRecv`/`TryServiceSend` return before calling `Poll` when nothing is pending, so the poll thread loops on `Thread.Sleep(0)` — a tight spin for every pooled connection.\n\n## Location\n- `Runtime/Transport/Tcp/PollSelectSocketChannel.cs:156-168, 182, 250` — early returns before `Poll`\n- `Runtime/Transport/Tcp/PollSelectSocketChannel.cs:276-281` — send-retry loop starves receive servicing\n\n## Problem\nEach idle pooled HTTP/1.1 connection burns close to a full core for up to the 2-minute idle timeout, multiplied by `maxConnectionsPerHost` → battery drain and thermal throttling on mobile. The send-retry loop also stops receives being serviced, which can deadlock full-duplex HTTP/2 (peer blocked on its own send window).\n\n## Suggested fix\nBlock on a signal when nothing is pending (e.g. `SemaphoreSlim`/`ManualResetEventSlim` set by `ReceiveAsync`/`SendAsync`), and use a single `Socket.Select` over read+write interest, interleaving send-retry with receive servicing.\n\n## Acceptance criteria\n- [ ] Idle PollSelect connection consumes ~0% CPU (measured in a test or profiler capture)\n- [ ] Full-duplex test: large concurrent send and receive on one PollSelect channel completes without deadlock\n- [ ] Existing PollSelect tests still pass\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed (spin); deadlock Plausible."
+  },
+  {
+    "key": "H1-02",
+    "title": "[HTTP/1.1] EOF in the middle of response headers is accepted as a complete header block",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http1",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nAt EOF, `ReadLineAsync` returns the partial line or an empty string. The header loop treats `\"\"` as the blank line terminating headers, so a connection that closes mid-headers is accepted as a complete response.\n\n## Location\n- `Runtime/Transport/Http1/Http11ResponseParser.cs:264-276` — `string.IsNullOrEmpty(line)` → break\n- `Runtime/Transport/Http1/Http11ResponseParser.cs:1007-1014` — EOF handling in line reader\n- `Http11ResponseParser.cs:825-827`, `Http11ResponseBodySource.cs:421-427` — same issue for trailers\n\n## Problem\nServer/attacker sends `HTTP/1.1 200 OK\\r\\nContent-Le` then FIN. Client produces a successful 200 with no framing headers, reads body to close (empty), and the Cache interceptor may store the truncated response.\n\n## Spec reference\nRFC 9112 §2.1, §8 (incomplete messages must be treated as errors when framing is incomplete).\n\n## Suggested fix\nDistinguish EOF from an empty line: return `null` on EOF, and throw `IOException`/`UHttpException(NetworkError)` if EOF occurs before the CRLF CRLF terminator or mid-line. Apply the same rule to the trailer section.\n\n## Acceptance criteria\n- [ ] Truncated headers (EOF mid-line and EOF before blank line) raise a network error, not a response\n- [ ] Truncated trailers raise an error\n- [ ] Parser tests cover both cases for buffered and streaming paths\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H1-03",
+    "title": "[HTTP/1.1] Transfer-Encoding handling allows response smuggling and desync",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:http1",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nTransfer-Encoding processing has four defects that allow framing confusion on reused connections.\n\n## Location\n- `Runtime/Transport/Http1/Http11ResponseParser.cs:425-458` — TE / CL framing decision\n\n## Problem\n1. `headers.Get` reads only the first `Transfer-Encoding` field line: `TE: chunked` + `TE: gzip` is framed as chunked although the final coding is gzip.\n2. `gzip, chunked` returns gzip bytes undecoded and unlabelled.\n3. TE + Content-Length together is accepted and the connection is reused (only an event is recorded).\n4. TE in an HTTP/1.0 response is not treated as faulty framing.\n\nResult: response splitting / desync on reused connections behind misbehaving or malicious intermediaries.\n\n## Spec reference\nRFC 9112 §6.1 (final coding must be chunked; TE+CL → MUST close after response; TE in HTTP/1.0 → faulty framing), §6.3.\n\n## Suggested fix\nJoin all TE field values; require final coding == `chunked`, otherwise read to close; reject or surface unknown codings; when TE and CL both present ignore CL and set `KeepAlive = false`; treat TE in HTTP/1.0 responses as read-to-close with `KeepAlive = false`.\n\n## Acceptance criteria\n- [ ] Multi-line TE with non-chunked final coding is not parsed as chunked\n- [ ] TE+CL response closes the connection after the response\n- [ ] HTTP/1.0 + TE response is not reused\n- [ ] Parser tests for each case\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H1-04",
+    "title": "[HTTP/1.1] obs-fold lines and whitespace before colon accepted as new header fields",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:http1",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nHeader lines starting with SP/HTAB (obs-fold) and `Name : value` (whitespace before colon) are trimmed and accepted as independent fields. Field names are not validated as tokens on the main path (only trailers are).\n\n## Location\n- `Runtime/Transport/Http1/Http11ResponseParser.cs:282` — `TryParseHeaderLine` call\n- `Runtime/Transport/Http1/Http11ResponseParser.cs:591-605` — trimming / name parsing\n\n## Problem\n` Transfer-Encoding: chunked` or `Content-Length : 0` changes client framing in a way intermediaries would not → smuggling / response splitting surface.\n\n## Spec reference\nRFC 9112 §5.1 (no whitespace between field name and colon — MUST reject), §5.2 (obs-fold: replace with SP or reject), §2.2; RFC 9110 §5.1 (field-name = token).\n\n## Suggested fix\nReject whitespace before colon; either fold continuation lines into the previous value with SP or reject the response; validate names against tchar.\n\n## Acceptance criteria\n- [ ] `Name : value` rejected\n- [ ] Leading-whitespace line folded or rejected (decided + documented)\n- [ ] Non-token header names rejected\n- [ ] Tests for each\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H1-05",
+    "title": "[HTTP/1.1] Stale pooled connection retry ignores EOF before status line",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:http1",
+      "area:transport",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe stale-connection retry only fires for `IOException`/`SocketException`. The most common stale case — the server closed the idle connection (FIN/close_notify) between the `IsAlive` probe and the request — produces a 0-byte read and `FormatException(\"Empty HTTP status line\")`, which is not retried.\n\n## Location\n- `Runtime/Transport/RawSocketTransport.cs:353-357, 710-714` — retry filter\n- `Runtime/Transport/Http1/Http11ResponseParser.cs:265-266` — `FormatException(\"Empty HTTP status line\")`\n\n## Problem\nUser sees intermittent `Malformed HTTP response` errors after idle periods (server keep-alive timeout shorter than pool idle timeout).\n\n## Spec reference\nRFC 9112 §9.3.1 (retrying idempotent requests on closed persistent connections).\n\n## Suggested fix\nInclude the existing `IsConnectionClosedBeforeStatusLine(ex)` in the retry filter for reused connections, keeping the idempotency / unsent-body rules.\n\n## Acceptance criteria\n- [ ] Reused connection closed before status line → transparent retry for idempotent requests\n- [ ] Fresh connection with same failure still surfaces error\n- [ ] Test with server that closes idle connection\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H1-06",
+    "title": "[HTTP/1.1] 101 Switching Protocols response returns upgraded connection to the pool",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http1",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n101 is treated as a final response with an empty body; `Connection: upgrade` has no `close` token so `KeepAlive` stays true and the switched-protocol connection is returned to the pool. The serializer lets user `Upgrade`/`Connection` headers through.\n\n## Location\n- `Runtime/Transport/Http1/Http11ResponseParser.cs:243, 416-422` — 101 handling\n- `Runtime/Transport/Http1/Http11ResponseBodySource.cs:85-89` — empty body → `ReturnToPool()`\n- `Runtime/Transport/Http1/Http11RequestSerializer.cs:319-336` — user `Upgrade`/`Connection` pass-through\n\n## Problem\nA request with `Upgrade: websocket` or `h2c` gets 101; the next pooled HTTP request is written into a WebSocket/h2c stream → garbage responses or desync.\n\n## Spec reference\nRFC 9110 §15.2.2, §7.8 (after 101 the connection speaks the new protocol).\n\n## Suggested fix\nEither reject `Upgrade` requests on the HTTP transport (WebSocket has its own transport), or force `KeepAlive = false` and never pool a connection after 101.\n\n## Acceptance criteria\n- [ ] 101 response never returns connection to the pool\n- [ ] Decision (reject vs close) documented\n- [ ] Test covering 101 response\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H1-07",
+    "title": "[HTTP/1.1] CONNECT proxy reply line reader is unbounded; 2xx CONNECT body is drained",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:proxy",
+      "area:http1",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`ReadAsciiLineAsync` used for proxy CONNECT replies has no per-line cap; the 16 KB total is checked only after each line is complete, and the status line and chunk-size lines are not counted. A 2xx CONNECT reply's Content-Length/Transfer-Encoding is drained although they must be ignored.\n\n## Location\n- `Runtime/Transport/RawSocketTransport.cs:1312-1364` — `ReadAsciiLineAsync`\n- `Runtime/Transport/RawSocketTransport.cs:978, 1143-1169` — CONNECT reply handling / drain\n\n## Problem\n- Malicious proxy (or MITM on the plaintext proxy leg) streams bytes with no LF → pooled buffer keeps doubling → OOM before the request timeout fires.\n- Proxy returns `200` with non-zero `Content-Length` → client waits to drain bytes that never come → tunnel hangs.\n\n## Spec reference\nRFC 9110 §9.3.6 (client MUST ignore Content-Length/Transfer-Encoding in a 2xx CONNECT response).\n\n## Suggested fix\nEnforce a per-line cap (~8 KB) inside the read loop and count status line in the total; skip body drain for 2xx CONNECT responses.\n\n## Acceptance criteria\n- [ ] Line without LF beyond cap fails fast with bounded memory\n- [ ] 200 CONNECT with Content-Length establishes tunnel without draining\n- [ ] Tests for both\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H1-08",
+    "title": "[HTTP/1.1] Expect-continue cancellation returns read buffer to pool while a read is pending",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:http1",
+      "priority:P3",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nIn the expect-continue path, on caller cancellation `timeoutTask` wins and `ct.ThrowIfCancellationRequested()` throws; the `finally` returns the `BufferedStreamReader` buffer to the ArrayPool while `initialHeadTask` is still reading. The socket is only closed later by `lease.Dispose` in `DispatchCoreAsync`.\n\n## Location\n- `Runtime/Transport/RawSocketTransport.cs:1596-1668, 1729-1734`\n\n## Problem\nMono `NetworkStream`/`SslStream` do not honour the token mid-read, and PollSelect copies into the target after `Receive`. Late-arriving bytes are written into an array another renter now owns → memory corruption in an unrelated request.\n\n## Suggested fix\nOrder the teardown: dispose the lease/socket first, then observe `initialHeadTask` (await/ignore exception), then dispose the reader and return buffers.\n\n## Acceptance criteria\n- [ ] Buffer return happens only after the pending read has completed/faulted\n- [ ] Stress test: cancel during expect-continue wait with delayed server bytes, no cross-request corruption\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible."
+  },
+  {
+    "key": "TLS-05",
+    "title": "[TLS] Host header and SNI use Uri.Host instead of IdnHost; IP literals sent in SNI",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:tls",
+      "area:http1",
+      "priority:P3",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nHost header, SNI and authority use `Uri.Host` (Unicode form under IRI parsing) instead of `Uri.IdnHost`. BouncyCastle also sends IP literals (with IPv6 brackets) in SNI.\n\n## Location\n- `Runtime/Transport/Http1/Http11RequestSerializer.cs:290-316` — Host header\n- `Runtime/Transport/BouncyCastle/TurboTlsClient.cs:62-67` — SNI server name\n\n## Problem\n- CJK hosts throw `ArgumentException` from `GetLatin1Bytes`.\n- `münchen.de` sent as raw 0xFC byte in Host.\n- BC sends Unicode label as UTF-8 in SNI and sends IP literals in SNI → strict servers abort the handshake.\n\n## Spec reference\nRFC 6066 §3 (HostName is ASCII A-label; literal IPv4/IPv6 addresses are not permitted), RFC 9110 §7.2, RFC 3987 / IDNA 2008.\n\n## Suggested fix\nUse `Uri.IdnHost` for Host, `:authority`, SNI and certificate name matching; skip SNI for IP literals; strip brackets from the TLS target host.\n\n## Acceptance criteria\n- [ ] IDN host produces punycode Host and SNI\n- [ ] IP-literal hosts send no SNI on both providers\n- [ ] Tests for IDN and IPv4/IPv6 literals\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible."
+  },
+  {
+    "key": "TCP-02",
+    "title": "[Transport] No TCP keepalive and long idle timeout cause half-dead connection reuse on mobile",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:transport",
+      "area:mobile",
+      "priority:P3",
+      "confidence:plausible",
+      "needs-device-validation",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`SO_KEEPALIVE` is never set and pooled connections idle up to 2 minutes. Mobile NATs silently drop idle mappings; `IsAlive` still passes (no FIN), the write succeeds into the kernel buffer and the read hangs for the full request timeout.\n\n## Location\n- `Runtime/Transport/Tcp/TcpConnectionPool.cs:543-566` — socket setup / idle timeout\n- `Runtime/Transport/Connection/HappyEyeballsConnector.cs:353-356` — socket options\n\n## Problem\nAfter a few idle minutes on cellular, the first request reuses a dead connection and fails with Timeout (not retried by the stale-connection path).\n\n## Suggested fix\nEnable `SO_KEEPALIVE` (with platform keepalive intervals where available), shorten default idle timeout on mobile (e.g. 30–60 s), and/or add a short first-byte timeout for reused connections that triggers a transparent retry for idempotent requests.\n\n## Acceptance criteria\n- [ ] Keepalive enabled on pooled sockets\n- [ ] Mobile default idle timeout documented and reduced\n- [ ] Reused-connection first-byte timeout retries idempotent requests (test with blackholed server)\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible."
+  },
+  {
+    "key": "H1-09",
+    "title": "[HTTP/1.1] Bodiless non-idempotent request is auto-replayed after it was fully sent",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:http1",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`HasCommittedBodyBytes` is always false for requests with no body, so a bodiless POST/PATCH that was fully written on a reused connection and then hit an IOException (RST after the server processed it) is replayed automatically.\n\n## Location\n- `Runtime/Transport/RawSocketTransport.cs:159-168` — stale retry decision\n- `Runtime/Transport/Http1/Http11RequestSerializer.cs:177, 250` — commit tracking\n\n## Problem\nServer processes `POST /purchase` (no body), connection reset before response → client replays → duplicate side effect.\n\n## Spec reference\nRFC 9110 §9.2.2 (non-idempotent requests must not be automatically retried unless known not processed).\n\n## Suggested fix\nTrack a `RequestHeadFullyWritten` flag; do not auto-retry non-idempotent requests once the head has been fully written.\n\n## Acceptance criteria\n- [ ] Non-idempotent bodiless request is not replayed after full head write\n- [ ] Idempotent requests still retried\n- [ ] Test with server that resets after reading request\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H1-10",
+    "title": "[HTTP/1.1] Header and trailer values allow NUL and other control characters",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:security",
+      "area:http1",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nRequest header and trailer value validation rejects only CR and LF. NUL and other CTLs pass through; some servers/intermediaries truncate at NUL or treat CTLs differently.\n\n## Location\n- `Runtime/Transport/Http1/Http11RequestSerializer.cs:514-528`\n\n## Problem\nUser-influenced header value containing `\\0` is truncated differently by front-end and back-end → header confusion.\n\n## Spec reference\nRFC 9110 §5.5 (field values: VCHAR / obs-text / SP / HTAB; NUL MUST be rejected or replaced).\n\n## Suggested fix\nReject 0x00–0x08, 0x0A–0x1F and 0x7F in field values (HTAB allowed); share the validator with HTTP/2 request header validation.\n\n## Acceptance criteria\n- [ ] Values with NUL/CTL rejected with clear error\n- [ ] Shared validator used by HTTP/1.1 and HTTP/2\n- [ ] Tests\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  }
+]

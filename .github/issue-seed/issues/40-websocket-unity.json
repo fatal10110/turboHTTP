@@ -1,0 +1,285 @@
+[
+  {
+    "key": "WS-01",
+    "title": "[WebSocket] Event-only consumers stall after ~100 messages: listener awaits bounded receive queue before raising OnMessage",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:websocket",
+      "area:unity",
+      "priority:P0",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe client's background listener enqueues every message into a bounded queue (capacity 100) that is only drained by `ReceiveAsync`, and awaits that enqueue *before* raising `OnMessage`. Consumers that only subscribe to `OnMessage` (including `UnityWebSocketClient`) never drain it, so delivery stops after ~100 messages and the connection then dies.\n\n## Location\n- `Runtime/WebSocket/WebSocketClient.cs:381-398` — `await _messageQueue.EnqueueAsync(message, ct)` precedes `OnMessage` dispatch\n- `Runtime/WebSocket/ResilientWebSocketClient.cs:380-396` — same pattern\n- `Runtime/WebSocket/WebSocketConnection.SendReceive.cs:226` — connection receive loop blocks in its own `EnqueueAsync` once the inner queue is full\n- `Runtime/Unity.WebSocket/UnityWebSocketClient.cs:336` — Unity component consumes only `OnMessage`\n\n## Problem\n1. App subscribes to `OnMessage` only (the documented Unity usage).\n2. After `ReceiveQueueCapacity` (100) messages the listener blocks in `EnqueueAsync`; `OnMessage` stops firing.\n3. The connection-level queue fills (another 100), `ReceiveLoopAsync` blocks, and the socket is no longer read.\n4. Pong frames are never processed → `PongTimeout` / close 1006 after ~35 s → `ResilientWebSocketClient` reconnects and the cycle repeats forever.\n\nAny chat/game-state feed with >200 messages silently freezes.\n\n## Suggested fix\n- Do not buffer into the pull queue when nobody is pulling: dispatch-only mode when `OnMessage` has subscribers and `ReceiveAsync` is not in use, or make the second-level queue drop-oldest/overwrite instead of awaiting.\n- Never let consumer-side backpressure stop the connection read loop from processing control frames (ping/pong/close) — control frames must be handled independently of data-message backpressure.\n- Apply the same fix to `ResilientWebSocketClient`.\n\n## Acceptance criteria\n- [ ] Event-only consumer receives 500+ consecutive messages without stalling (regression test that fails today)\n- [ ] Pong/close frames are processed while the data queue is full\n- [ ] Mixed mode (`OnMessage` + `ReceiveAsync`) semantics are documented\n- [ ] Same coverage for `ResilientWebSocketClient` and `UnityWebSocketClient`\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "WS-02",
+    "title": "[WebSocket] Cancelling a send mid-message corrupts framing and leaves the connection Open",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:websocket",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe caller's `CancellationToken` is passed into every fragment's `WriteAsync`/`FlushAsync`. If it fires after the first fragment (or mid-frame), the server is left with a partial frame or unfinished fragmented message, but the connection is not closed and remains `Open`.\n\n## Location\n- `Runtime/WebSocket/WebSocketConnection.SendReceive.cs:466-531` — fragment loop uses caller `ct`; `OperationCanceledException` not caught, `FinalizeClose` not called\n- `Runtime/WebSocket/WebSocketFrameWriter.cs:221-237, 296-303` — header and payload written with caller token\n\n## Problem\nA message >64 KB is fragmented. Cancellation after fragment 1 leaves the peer expecting a CONTINUATION frame; the next `SendTextAsync` starts a new Text frame → peer closes with 1002 (protocol error). Cancellation inside a frame (header written, payload not) desynchronises framing entirely. `UnityWebSocketClient` links sends to component/lifecycle tokens, so disabling a GameObject mid-send triggers this.\n\n## Spec reference\nRFC 6455 §5.4 (fragmentation: fragments of one message must not be interleaved with other data frames), §5.2 (framing).\n\n## Suggested fix\n- Use the caller token only to acquire `_sendLock`.\n- Once the first byte of a message is written, either complete the whole message with the connection-lifetime token, or `Abort()` the connection (close 1006 locally) on any exception including cancellation.\n- Surface a `WebSocketException` with a clear state to the caller.\n\n## Acceptance criteria\n- [ ] Cancelling a large send mid-message either completes the message or aborts the connection; it never leaves an `Open` connection with a partial message\n- [ ] Regression test: cancel after first fragment, then send again — no 1002 from a strict peer\n- [ ] Regression test: cancel mid-frame transitions connection to Closed/Aborted\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "WS-03",
+    "title": "[WebSocket] MaxMessageSize not enforced for single-frame messages; 16 MB frame default and count-bounded queues allow OOM",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:websocket",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`MaxMessageSize` (4 MB default) is only checked for fragmented messages. An unfragmented FIN frame is bounded only by `MaxFrameSize`, whose default (16 MB) is larger than `MaxMessageSize`. Receive queues are bounded by message count, not bytes.\n\n## Location\n- `Runtime/WebSocket/MessageAssembler.cs:111-115` — single-frame fast path skips the size check\n- `Runtime/WebSocket/WebSocketFrameReader.cs:128` — only `MaxFrameSize` enforced\n- `Runtime/WebSocket/WebSocketConstants.cs:15-16` — defaults (16 MB frame, 4 MB message)\n\n## Problem\nA hostile or buggy server pushes 16 MB single-frame messages. With 100 + 100 queue slots, up to ~3.2 GB of large-object-heap allocations can be retained (ArrayPool does not pool arrays >1 MB) → OOM / process kill on mobile.\n\n## Spec reference\nRFC 6455 §7.4.1 (1009 Message Too Big), §10.4 (implementations should impose limits on frame/message size).\n\n## Suggested fix\n- Check `payloadLength > MaxMessageSize` in the frame reader before allocating, and in the assembler for single-frame messages; fail with close code 1009 (Message Too Big).\n- Default `MaxFrameSize` to `<= MaxMessageSize`.\n- Bound receive queues by total bytes in addition to count.\n\n## Acceptance criteria\n- [ ] Single-frame message larger than `MaxMessageSize` is rejected with close 1009 before the payload is buffered\n- [ ] Default `MaxFrameSize <= MaxMessageSize`, validated in options\n- [ ] Receive queues have a byte budget; test proves memory stays bounded under a flood of max-size frames\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "WS-04",
+    "title": "[WebSocket] Unrequested or rejected extensions in the handshake response are silently accepted",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:websocket",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nWhen `RequireNegotiatedExtensions` is false, a failed extension negotiation is downgraded to \"no extensions\" instead of failing the connection, and raw `options.Extensions` strings cause server-selected extensions to be adopted without validation.\n\n## Location\n- `Runtime/WebSocket/WebSocketConnection.cs:174-192` — negotiation failure path downgrades to no extensions\n- `Runtime/WebSocket/WebSocketConnection.cs:208-210` — raw extension strings accepted\n\n## Problem\nServer responds with `Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits=10` (or an extension the client never offered). The client proceeds without deflate, but the server believes deflate is active and sends RSV1 frames; the client then fails mid-session with 1002 instead of failing the handshake cleanly.\n\n## Spec reference\nRFC 6455 §4.1 (client MUST fail the connection if the response includes an extension not requested), §9.1.\n\n## Suggested fix\n- Always fail the handshake when the server selects an extension the client did not offer or with parameters the client cannot honour.\n- Remove (or reject) raw extension strings with no implementation behind them.\n\n## Acceptance criteria\n- [ ] Handshake fails with a clear error when the server selects an unoffered or unsupported extension\n- [ ] Tests for: unoffered extension, unsupported parameter, duplicate extension\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "WS-05",
+    "title": "[WebSocket] permessage-deflate accepts parameters it cannot honour; RSV1 on control frames not rejected",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:websocket",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe permessage-deflate implementation negotiates parameters it does not implement: it offers `client_max_window_bits` but always compresses with a 15-bit window, and it accepts server context takeover although the inbound inflater is recreated per message. Control frames with RSV1 set are not rejected.\n\n## Location\n- `Runtime/WebSocket/PerMessageDeflateExtension.cs:56-57, 98-116` — offer/accept of `client_max_window_bits`\n- `Runtime/WebSocket/PerMessageDeflateExtension.cs:272-297` — per-message inflater (no context retention)\n- `Runtime/WebSocket/WebSocketFrameReader.cs:76` and `HandleControlFrameAsync` — no RSV check for control frames\n\n## Problem\n1. Server replies `client_max_window_bits=10`; client still compresses with a 32 KB window → server cannot inflate, connection fails.\n2. With public option `ServerNoContextTakeover=false`, a server using context takeover is accepted; the second compressed message references the previous window and inflation fails with `InvalidDataException`.\n3. A control frame with RSV1 is processed instead of failing the connection.\n\n## Spec reference\nRFC 7692 §7.1.1.1 / §7.1.2.2 (window bits), §7.1.1.2 (context takeover), §6 (RSV1 only on first frame of data messages); RFC 6455 §5.2 (RSV bits).\n\n## Suggested fix\n- Do not offer `client_max_window_bits`; reject a server response that sets it (unless/until a windowed deflater exists).\n- Always offer and require `server_no_context_takeover` until inbound context retention is implemented; remove or hide the `ServerNoContextTakeover=false` option.\n- Fail the connection (1002) on any control frame with RSV bits set.\n\n## Acceptance criteria\n- [ ] Handshake with `client_max_window_bits=<15` in response is rejected\n- [ ] Handshake without `server_no_context_takeover` in response is rejected (until context takeover is implemented)\n- [ ] Control frame with RSV1 closes with 1002\n- [ ] Interop test against a reference server (e.g. Autobahn testsuite cases 12.x/13.x) passes\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "WS-06",
+    "title": "[WebSocket] Non-101 handshake response hangs until timeout and loses the status code; resilient client retries auth failures forever",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:websocket",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nOn a non-101 response, `ReadErrorBodyAsync` reads up to 4 KB or EOF, ignoring `Content-Length`/chunked framing. On a keep-alive 401/403 it blocks until `HandshakeTimeout`; the resulting cancellation is reported as `ConnectionClosed`, losing the HTTP status.\n\n## Location\n- `Runtime/WebSocket/WebSocketHandshakeValidator.cs:166, 180, 570-579` — error body read ignores framing\n- `Runtime/WebSocket/WebSocketConnection.cs:245-279` — timeout mapped to `ConnectionClosed`\n\n## Problem\nServer rejects the upgrade with `401 Unauthorized` + `Content-Length: 12` and keeps the connection open. The client waits 10 s, then reports \"operation was canceled\". `ResilientWebSocketClient` treats this as transient and reconnects in a loop, hammering the auth endpoint.\n\n## Spec reference\nRFC 6455 §4.1 (any status other than 101 means the handshake failed), RFC 9112 §6 (message body framing).\n\n## Suggested fix\n- Honour `Content-Length` / chunked framing (or skip the body entirely) when reading a non-101 response.\n- Surface the HTTP status code in the exception.\n- Treat 4xx handshake failures (except 408/429) as non-retryable in `ResilientWebSocketClient`.\n\n## Acceptance criteria\n- [ ] Non-101 response with keep-alive returns immediately with the status code in the error\n- [ ] Resilient client stops reconnecting on 401/403\n- [ ] Tests for Content-Length, chunked and close-delimited error bodies\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "WS-07",
+    "title": "[WebSocket] Close/dispose races surface NullReference/ObjectDisposed exceptions instead of WebSocketException",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:websocket",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`FinalizeClose` disposes and nulls `_frameWriter` and `_stream` without holding `_sendLock`, and `Dispose()` disposes `_sendLock` while a holder or waiter may still exist.\n\n## Location\n- `Runtime/WebSocket/WebSocketConnection.Lifecycle.cs:22, 135-139` — teardown without `_sendLock`\n- `Runtime/WebSocket/WebSocketConnection.SendReceive.cs:313, 449, 462, 529` — send paths dereference `_frameWriter` / release `_sendLock`\n\n## Problem\nConcurrent sends during a pong timeout or abort throw `NullReferenceException` (null `_frameWriter`), `ObjectDisposedException` from the disposed RNG in `NextMaskKey`, or `ObjectDisposedException`/`SemaphoreFullException` on `_sendLock.Release()`, instead of a typed `WebSocketException`. Callers' error handling (and reconnect logic keyed on exception type) misbehaves.\n\n## Suggested fix\n- Capture writer/stream references under `_sendLock`; null-check and throw `WebSocketException(InvalidState)` when closed.\n- Dispose the writer only after acquiring `_sendLock`; do not dispose the semaphore (or guard Release after dispose).\n\n## Acceptance criteria\n- [ ] Stress test: concurrent sends + abort/pong-timeout only ever surface `WebSocketException` / `OperationCanceledException`\n- [ ] No `NullReferenceException` or `ObjectDisposedException` escapes the public API\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "WS-08",
+    "title": "[WebSocket] Raw sockets bypass iOS ATS / Android cleartext policy; proxy Basic credentials sent over cleartext",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:security",
+      "area:websocket",
+      "area:proxy",
+      "area:mobile",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nBecause the transport uses raw sockets, neither iOS App Transport Security nor Android `cleartextTrafficPermitted` is consulted: `ws://` URLs and `http://` proxies work silently. Proxy Basic credentials are sent in cleartext (only a `Debug.WriteLine` warning) and are sent regardless of the 407 challenge scheme.\n\n## Location\n- `Runtime/WebSocket.Transport/RawSocketWebSocketTransport.cs:114-115` — no cleartext policy check\n- `Runtime/WebSocket.Transport/ProxyTunnelConnector.cs:37-42` — Basic credentials over plaintext proxy leg\n\n## Problem\nAn app whose platform policy forbids cleartext still opens `ws://` connections and leaks proxy credentials on an `http://` proxy hop, contrary to the developer's expectation that the OS policy is enforced. The 407 challenge may request a scheme other than Basic, but Basic credentials are sent anyway.\n\n## Spec reference\nRFC 7617 §4 (Basic over unencrypted channels), RFC 9110 §11.7.1 (Proxy-Authenticate).\n\n## Suggested fix\n- On Android, check `NetworkSecurityPolicy.isCleartextTrafficPermitted(host)`; on iOS honour `NSAllowsArbitraryLoads`/exceptions or require an explicit opt-in flag for cleartext.\n- Add an `AllowCleartext` option (default false on mobile) shared with the HTTP transport.\n- Only send proxy credentials when the 407 challenge advertises `Basic`, and refuse Basic over cleartext unless explicitly allowed.\n\n## Acceptance criteria\n- [ ] `ws://` and cleartext proxy usage require explicit opt-in on iOS/Android\n- [ ] Proxy credentials are only sent for a matching challenge scheme\n- [ ] Documented in platform notes\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "WS-09",
+    "title": "[WebSocket] Close-handshake semantics: echo received close code, let server close TCP first, cancelled CloseAsync, ping/pong head-of-line",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:websocket",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nSeveral close/control-frame behaviours deviate from RFC 6455: the client always echoes close code 1000 instead of the received code, closes TCP before the server, leaves the connection in `Closing` if `CloseAsync` is cancelled, and queues the pong reply behind large in-flight sends on `_sendLock`.\n\n## Location\n- `Runtime/WebSocket/WebSocketConnection.Lifecycle.cs` — close handshake / TCP shutdown order\n- `Runtime/WebSocket/WebSocketConnection.SendReceive.cs` — control-frame replies share `_sendLock` with data sends\n\n## Problem\n- Server sends close 4001 (app-defined); client replies 1000, so server-side logs/metrics misreport the close reason.\n- Client closes TCP first → client ends in TIME_WAIT (port exhaustion under reconnect storms on mobile).\n- Caller cancels `CloseAsync` → state stuck in `Closing`, no further transitions, resources held.\n- A multi-MB send holds `_sendLock`; a Ping arriving meanwhile waits; if the peer is also blocked writing, both sides can deadlock or the peer's ping timeout fires.\n\n## Spec reference\nRFC 6455 §5.5.1 (close echo), §7.1.1 (server should close TCP first), §5.4 (control frames may be injected between fragments).\n\n## Suggested fix\n- Echo the received status code in the close reply (RFC 6455 §5.5.1).\n- After sending the close reply, wait (bounded) for the server to close TCP before closing locally.\n- On `CloseAsync` cancellation, transition to Aborted and release resources.\n- Allow control frames to be interleaved between data fragments (send them with priority between fragments) instead of waiting for the whole message.\n\n## Acceptance criteria\n- [ ] Close reply echoes received code\n- [ ] Client waits for server FIN (bounded timeout) before closing TCP\n- [ ] Cancelled `CloseAsync` leaves the connection Aborted, not Closing\n- [ ] Pong is sent between fragments of a large in-flight message (test)\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "UNI-01",
+    "title": "[Mobile] iOS background bridge cancels foreground requests after 25 s (DBL_MAX backgroundTimeRemaining overflow)",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:mobile",
+      "area:unity",
+      "priority:P1",
+      "platform:il2cpp",
+      "needs-device-validation",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nIn the foreground, `UIApplication.backgroundTimeRemaining` is `DBL_MAX`, which passes the native `isfinite` check. `TimeSpan.FromSeconds(1.8e308)` throws `OverflowException`, which is caught and mapped to `TimeSpan.Zero`, so the monitor falls back to a 25 s expiry and cancels the request.\n\n## Location\n- `Plugins/iOS/TurboHttpBackgroundTaskBridge.mm:77-78` — returns `DBL_MAX` in foreground\n- `Runtime/Unity/Mobile/iOS/IosBackgroundTaskBindings.cs:56-59` — overflow caught → `TimeSpan.Zero`\n- `Runtime/Unity/Mobile/iOS/IosBackgroundTaskBridge.cs:94` — `MonitorExpirationAsync` fallback branch cancels after 25 s\n\n## Problem\nWith `BackgroundNetworkingPolicy.Enable` set, every foreground request that takes longer than 25 s (large downloads, long-poll) is cancelled or converted to `BackgroundRequestQueuedException`.\n\n## Suggested fix\n- Clamp in native code: treat values above ~1e6 s as \"unlimited/foreground\".\n- Only arm the expiry monitor while `applicationState == UIApplicationStateBackground`.\n- Never map a parse failure to `TimeSpan.Zero` (fail open to \"no expiry\" in foreground).\n\n## Acceptance criteria\n- [ ] Foreground request longer than 25 s completes with background networking enabled (device test)\n- [ ] Expiry only armed after the app enters background\n- [ ] Unit test for the `DBL_MAX` → unlimited conversion\n\n## Scheduling note\nBackground networking (Phase 14.3) is expected to ship gated/experimental for v1.0 — see roadmap issue [[PH-14.3]] (gate background networking as experimental). This fix is therefore scheduled for v1.1, but it must land before background networking is promoted out of experimental.\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "UNI-02",
+    "title": "[Mobile] Background task begin/end routed through MainThreadDispatcher, which stops ticking while the app is backgrounded",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:mobile",
+      "area:unity",
+      "priority:P1",
+      "platform:il2cpp",
+      "needs-device-validation",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe iOS and Android background bridges marshal `BeginBackgroundTask`/`EndBackgroundTask` and WorkManager enqueue through `MainThreadDispatcher`. While suspended/backgrounded the Unity player loop does not tick, so these calls do not run until resume.\n\n## Location\n- `Runtime/Unity/Mobile/iOS/IosBackgroundTaskBridge.cs:26, 68` — dispatch via `MainThreadDispatcher`\n- `Runtime/Core/BackgroundNetworkingInterceptor.cs:138` — `finally` awaits `EndBackgroundTask`\n- `Runtime/Unity/Mobile/Android/AndroidBackgroundWorkBridge.cs:90-94, 169-170, 184-188` — `TryEnqueueDeferredWork` blocks with `.GetAwaiter().GetResult()` on the dispatcher\n\n## Problem\n- iOS: the request completes in background but its response is not delivered until resume, because `EndBackgroundTask` is waiting on the main-thread queue; the task only ends via the expiration handler (risking watchdog termination).\n- Android: a thread-pool thread blocks until the app is resumed; under several queued requests the pool starves.\n\n## Suggested fix\n- iOS: the `.mm` already does `dispatch_sync` onto the main queue — call it directly from any thread, bypassing `MainThreadDispatcher`.\n- Android: call JNI from the worker thread (`AndroidJNI.AttachCurrentThread`) and never block on the dispatcher.\n\n## Acceptance criteria\n- [ ] Background begin/end works with the player loop paused (device test on iOS and Android)\n- [ ] No sync-over-async blocking on `MainThreadDispatcher` in the background bridges\n\n## Scheduling note\nBackground networking (Phase 14.3) is expected to ship gated/experimental for v1.0 — see roadmap issue [[PH-14.3]] (gate background networking as experimental). This fix is therefore scheduled for v1.1, but it must land before background networking is promoted out of experimental.\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "UNI-03",
+    "title": "[Mobile] Android Kotlin background plugin breaks every Android Gradle build (androidx.work dependency not declared)",
+    "milestone": "v1.0-alpha: Release blockers",
+    "labels": [
+      "type:bug",
+      "area:mobile",
+      "area:packaging",
+      "priority:P0",
+      "needs-device-validation",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`TurboHttpBackgroundWorker.kt` is enabled for Android and imports `androidx.work`, but the dependency is only declared in a `mainTemplate.gradle` inside the package. Unity only uses `Assets/Plugins/Android/mainTemplate.gradle`, and the loose `src/main/AndroidManifest.xml` is not inside an `.androidlib`, so neither is applied.\n\n## Location\n- `Plugins/Android/src/main/java/com/turbohttp/background/TurboHttpBackgroundWorker.kt:4-5` — `import androidx.work.*`\n- `Plugins/Android/mainTemplate.gradle` — package-local template (ignored by Unity)\n- `Plugins/Android/src/main/AndroidManifest.xml` — not packaged as `.androidlib`\n\n## Problem\nAny customer building for Android — even one who never enables background networking — gets a Gradle failure such as `Unresolved reference: work`. This blocks Android entirely.\n\n## Suggested fix\n- Package the plugin as an `.androidlib` with its own `build.gradle` declaring `androidx.work:work-runtime`, or declare the dependency via an EDM4U `Dependencies.xml`.\n- Alternatively disable the Kotlin plugin by default (platform import settings) and enable it only when background networking is opted in.\n- Add an Android IL2CPP build to CI.\n\n## Acceptance criteria\n- [ ] Clean Unity project + package builds an Android APK/AAB without manual Gradle edits\n- [ ] Background worker manifest entries are merged when the feature is enabled\n- [ ] CI job builds Android with the package installed\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "UNI-04",
+    "title": "[Unity] UnityWebSocketBridge drop detection never matches; lifecycle events can be lost under message flood",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:unity",
+      "area:websocket",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nWith the default backpressure policy `Reject`, the work queue throws \"...queue is full and **rejected**...\", but `IsDroppedDispatch` matches the substring \"dropped\". `OnMessageDropped` never fires and every overflow is logged via `Debug.LogException`. `OnClosed`/`OnError` share the same user queue and can be rejected too.\n\n## Location\n- `Runtime/Unity.WebSocket/UnityWebSocketBridge.cs:360-367` — string-based `IsDroppedDispatch`\n- `Runtime/Unity.WebSocket/UnityWebSocketBridge.cs:241-250` — lifecycle events use the user queue\n- `Runtime/Unity/MainThreadWorkQueue.cs:59-65, 345-348` — exception message text\n\n## Problem\nUnder a message flood the component never learns it was disconnected (`OnClosed` rejected), logs spam the console, and `OnMessageDropped` subscribers see nothing.\n\n## Suggested fix\n- Replace string matching with a typed exception (e.g. `WorkQueueRejectedException`) or a result code.\n- Dispatch lifecycle events (`OnOpen`, `OnClosed`, `OnError`) through the control lane (`ExecuteControlAsync`) so they cannot be dropped.\n\n## Acceptance criteria\n- [ ] `OnMessageDropped` fires under `Reject` and `DropOldest` policies (test)\n- [ ] `OnClosed` is delivered even when the message queue is saturated (test)\n- [ ] No `Debug.LogException` per dropped message\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "UNI-05",
+    "title": "[Unity] UnityWebSocketClient pause/resume race can dispose the freshly connected client",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:unity",
+      "area:websocket",
+      "area:mobile",
+      "priority:P2",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`DisconnectAsync`'s `finally` runs on the thread pool and nulls/disposes whatever `_client`/`_bridge` currently hold, while `ConnectCoreAsync` on resume replaces them on the main thread, with no generation check or lock.\n\n## Location\n- `Runtime/Unity.WebSocket/UnityWebSocketClient.cs:129-147` — pause/resume handling\n- `Runtime/Unity.WebSocket/UnityWebSocketClient.cs:181-230` — `ConnectCoreAsync`\n- `Runtime/Unity.WebSocket/UnityWebSocketClient.cs:262-309` — `DisconnectAsync` finally\n\n## Problem\niOS suspends the app mid-close. On resume the reconnect completes first; the old close then times out and its `finally` disposes the *new* client and bridge. The component is now silently disconnected and `OnDisconnected` is never raised.\n\n## Suggested fix\n- Capture the client/bridge instances at the start of `DisconnectAsync` and compare-exchange only those instances.\n- Add a connection generation counter; marshal field writes to the main thread.\n\n## Acceptance criteria\n- [ ] Test: overlapping disconnect (slow close) and connect never disposes the newer client\n- [ ] `OnDisconnected` raised exactly once per connection\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "UNI-06",
+    "title": "[Editor] HTTP Monitor captures Authorization/Cookie unredacted by default, captures with window closed, and retains unbounded memory",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:editor",
+      "area:observability",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nIn Play Mode every `UHttpClient` auto-adds `MonitorInterceptor` with `CaptureEnabled=true` even when the Monitor window is closed. `HeaderValueTransform` is null by default, so Authorization and Cookie values are stored raw; the UI mask defaults to off. This contradicts the AGENTS.md rule that redaction is on by default.\n\n## Location\n- `Runtime/Core/UHttpClient.cs:720-767` — auto-wiring of the monitor interceptor\n- `Runtime/Observability/MonitorInterceptor.cs:15-16, 29, 63-66` — capture enabled, `HeaderValueTransform` disabled by default\n- `Editor/Monitor/HttpMonitorWindow.cs:32, 61` — capacity/settings\n- `Editor/Monitor/HttpMonitorWindow.Panels.cs:86-90` — non-virtualized GUILayout list\n\n## Problem\n- Secrets: bearer tokens, cookies, URL query tokens and bodies are held in Editor memory and shown on screen (screenshots/screen-shares leak them); export masks headers but not query tokens or bodies.\n- Memory: 1000 events × 5 MB request + 5 MB response body ≈ 10 GB Editor memory.\n- Performance: up to 1000 GUILayout rows redrawn at 10 Hz under traffic.\n\n## Suggested fix\n- Redact at capture time by default (headers from the shared sensitive list, URL query values, optionally bodies) with an explicit opt-out.\n- Capture only while the Monitor window is open (or an explicit setting is on).\n- Add a total-bytes budget with eviction; truncate bodies.\n- Virtualize the request list.\n\n## Acceptance criteria\n- [ ] Default capture shows `Authorization`/`Cookie`/`Set-Cookie`/`Proxy-Authorization` as redacted\n- [ ] No capture overhead when the window is closed (unless opted in)\n- [ ] Total captured bytes bounded by a configurable budget (test)\n- [ ] List remains responsive with 1000 entries\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "UNI-07",
+    "title": "[Testing] RecordReplayTransport persists OAuth secrets (access_token, refresh_token, client_secret) to recording files",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:testing",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe default redacted JSON field list contains `token`/`accessToken` but not snake_case OAuth fields. Bodies are only redacted when the content type contains `application/json`, so `+json` and `application/x-www-form-urlencoded` (password grant) bodies are stored verbatim (base64). Sensitive match-header values are persisted in `RequestKey`.\n\n## Location\n- `Runtime/Testing/RecordReplayTransport.Redaction.cs:71-76` — default field list and content-type gate\n- `Runtime/Testing/RecordReplayTransport.cs:107-117` — recording write path\n- `Runtime/Testing/RecordReplayTransport.cs:548-567` — `RequestKey` includes raw match-header values\n\n## Problem\nDevelopers record a session against a real OAuth server and commit the recording to version control; it contains `refresh_token`, `client_secret` and user passwords. If `Authorization` is added to `MatchHeaderNames`, the raw bearer token is persisted inside the request key.\n\n## Suggested fix\n- Add `access_token`, `refresh_token`, `id_token`, `client_secret`, `password`, `code`, `code_verifier` to the default list (case/format-insensitive matching).\n- Redact `*+json` and form-urlencoded bodies.\n- Hash (HMAC with a per-recording salt) sensitive header values used in match keys.\n\n## Acceptance criteria\n- [ ] Recording an OAuth token exchange (JSON and form bodies) contains no secret values (test)\n- [ ] `RequestKey` never contains raw sensitive header values\n- [ ] Replay matching still works with hashed keys\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "UNI-08",
+    "title": "[Unity] Texture2D / AudioClip leaked when main-thread dispatch is cancelled",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:unity",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`GetSpriteAsync` drops the created `Texture2D` if the sprite dispatch is cancelled, and `MainThreadDispatcher.ExecuteQueuedAsync<T>` discards `func()`'s result when cancellation wins during execution (`TrySetResult` fails). Unity objects are not garbage-collected, so native GPU/audio memory leaks.\n\n## Location\n- `Runtime/Unity/Texture2DHandler.cs:205-211` — `GetSpriteAsync` cancellation path\n- `Runtime/Unity/MainThreadDispatcher.cs:509-525` — result discarded when `TrySetResult` fails\n- `Runtime/Unity/AudioClipHandler.cs:284-286, 445-454` — same pattern for clips\n\n## Problem\nScene transitions cancel in-flight image/audio loads; each cancellation that races with creation leaks a `Texture2D`/`AudioClip` until `Resources.UnloadUnusedAssets` (or forever if referenced from native). Repeated scene loads grow memory on mobile.\n\n## Suggested fix\n- In `ExecuteQueuedAsync<T>`, if `TrySetResult` fails and the result is a `UnityEngine.Object` (or `IDisposable`), destroy/dispose it.\n- Wrap `GetSpriteAsync` in try/catch that destroys the texture on failure/cancellation.\n\n## Acceptance criteria\n- [ ] Test: cancellation racing creation leaves zero live `Texture2D`/`AudioClip` instances\n- [ ] Same for sprite creation path\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  },
+  {
+    "key": "UNI-09",
+    "title": "[Unity] GetJsonCoroutine<T> uses Type.GetType + MakeGenericMethod — AOT/IL2CPP hazard",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:unity",
+      "area:json",
+      "priority:P2",
+      "platform:il2cpp",
+      "needs-device-validation",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`CoroutineWrapper.GetJsonCoroutine<T>` locates `GetJsonAsync<T>` via `Type.GetType` and calls `MakeGenericMethod`. Under IL2CPP this requires the target method to survive stripping and the generic instantiation to have been generated ahead of time; for value types and some reference-type shares it will not be.\n\n## Location\n- `Runtime/Unity/CoroutineWrapper.cs:287-336` — reflection + `MakeGenericMethod`\n\n## Problem\nOn an IL2CPP device `GetJsonCoroutine<MyDto>()` throws `ExecutionEngineException` (no AOT code for the instantiation) or fails with \"type not found\" after managed stripping, while it works in the Editor (Mono).\n\n## Suggested fix\n- Replace reflection with a delegate that the JSON assembly registers at startup (e.g. `CoroutineJsonBridge.Register(Func<...>)`), or move `GetJsonCoroutine<T>` into a small Unity+JSON glue assembly that references both directly.\n- Remove the dependency on link.xml for this path.\n\n## Acceptance criteria\n- [ ] No reflection/`MakeGenericMethod` in `CoroutineWrapper`\n- [ ] `GetJsonCoroutine<T>` works for class and struct `T` on an IL2CPP device build with High stripping\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "UNI-10",
+    "title": "[Unity] Streamed AudioClip points at a temp file that is deleted immediately after load",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:unity",
+      "priority:P3",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nWith `streamAudio=true` the clip streams from the downloaded temp file, but the `finally` block calls `ReleaseAndScheduleDelete` right after the clip is created.\n\n## Location\n- `Runtime/Unity/AudioClipHandler.cs:341-356` — temp file released in `finally`\n\n## Problem\nPlayback of large streamed clips later is silent or fails once the file is deleted; on Windows the delete fails/retries because the file is open.\n\n## Suggested fix\n- Tie the temp file lifetime to the clip (delete when the clip is destroyed / on an explicit release API), or copy into memory when streaming is not possible.\n\n## Acceptance criteria\n- [ ] Streamed clip plays fully after load (test with a clip larger than the decode buffer)\n- [ ] Temp file removed after the clip is destroyed\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "UNI-11",
+    "title": "[UniTask] Timeout()/AttachExternalCancellation abandon the request instead of cancelling it and leak the response",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:unity",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe UniTask helpers race the request against a timeout/external token but do not cancel the underlying request; when the request later completes, its `UHttpResponse` (with pooled body) is never disposed.\n\n## Location\n- `Runtime/UniTask/UniTaskCancellationExtensions.cs:141-153`\n\n## Problem\n`client.Get(url).SendBufferedAsync().AsUniTask().Timeout(5s)` returns after 5 s but the socket stays busy until the transport timeout, and the eventual response leaks pooled buffers.\n\n## Suggested fix\n- Link the timeout/external token into the request's `CancellationToken` instead of racing tasks.\n- If racing is unavoidable, attach a continuation that disposes the late response.\n\n## Acceptance criteria\n- [ ] Timeout cancels the in-flight request (connection released promptly)\n- [ ] Late responses are disposed (pool leak test)\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`), WebSocket/Unity reviewer. Confidence: Confirmed (code path traced)."
+  }
+]

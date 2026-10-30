@@ -1,0 +1,295 @@
+[
+  {
+    "key": "H2-01",
+    "title": "[HTTP/2] HPACK header blocks for closed/cancelled streams are dropped without decoding (dynamic table desync)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P0",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nHEADERS/CONTINUATION frames for a stream no longer in `_activeStreams` are discarded before HPACK decoding. The connection's HPACK decoder dynamic table then diverges from the server's encoder table.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:220-221` — `if (!_activeStreams.TryGetValue(...)) return;` in `HandleHeadersFrame`\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:278-279` — same early return in `HandleContinuationFrame`\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:~695` — `RejectPushPromiseAsync` path (EnablePush=true) also skips decode\n\n## Problem\n1. A request is cancelled; `HandleRequestCancellation` removes the stream and sends RST_STREAM(CANCEL).\n2. The server's response HEADERS (with incremental-indexing literals) are already in flight and are dropped undecoded.\n3. Later responses that reference dynamic index 62+ decode to the **wrong header** silently (wrong `content-type`, `content-encoding`, `set-cookie`) or fail with COMPRESSION_ERROR, killing the connection.\n\nOther triggers: response trailers after early body dispose, MaxResponseBodySize/BufferFull resets, GOAWAY-failed streams.\n\nSecondary bugs on the same path:\n- If the stream disappears between HEADERS (no END_HEADERS) and CONTINUATION, line 278 returns **before** resetting `_continuationStreamId`; the next non-CONTINUATION frame raises a connection PROTOCOL_ERROR.\n- If the unknown-stream HEADERS at line 221 lacks END_HEADERS, `_continuationStreamId` is never set, so the following CONTINUATION is rejected as \"Unexpected CONTINUATION\" (connection error).\n\n## Spec reference\nRFC 7541 §2.2 (header blocks must be processed in order to keep table state); RFC 9113 §4.3 (a receiver MUST decode every field block, including for streams it discards).\n\n## Suggested fix\n- Move header-block accumulation to a connection-level buffer owned by the read loop (keyed by stream id), independent of `_activeStreams` membership.\n- Always HPACK-decode on END_HEADERS; only afterwards route the decoded list to the stream or discard it.\n- Set/clear `_continuationStreamId` regardless of whether the stream is still active.\n\n## Acceptance criteria\n- [ ] Header blocks for unknown/closed/reset streams are always decoded\n- [ ] `_continuationStreamId` is set on HEADERS without END_HEADERS and cleared on END_HEADERS for any stream\n- [ ] Regression test: server indexes a response header on a stream the client cancels, then references that index on a later stream; client decodes the later response correctly\n- [ ] Regression test: HEADERS+CONTINUATION for a stream removed mid-block does not raise PROTOCOL_ERROR\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-02",
+    "title": "[HTTP/2] Request trailer block escapes the write lock: shared HPACK buffer reuse/use-after-return and encoder order desync",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:http2",
+      "priority:P0",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`PrepareRequestTrailerBlockAsync` returns a slice of the encoder's reusable `_outputBuffer` and releases `_writeLock`; the trailers are only written later by `SendTrailingHeadersAsync`. Concurrent encodes overwrite or free that buffer, and the encoder's dynamic table is mutated in encode order rather than wire order.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.Send.cs:364-389` — `PrepareRequestTrailerBlockAsync` returns `_hpackEncoder.Encode(...)` slice\n- `Runtime/Transport/Http2/Http2Connection.Send.cs:98-115`, `:236-258` — trailers sent later (after body upload / flow-control waits)\n- `Runtime/Transport/Http2/HpackEncoder.cs:45-89` — `Encode` writes into shared `PooledArrayBufferWriter _outputBuffer`\n- `Runtime/Transport/Http2/Http2Connection.Send.cs:346`, `:352` — `IsResponseCompleted` early exits skip sending the encoded trailers\n\n## Problem\n- Any concurrent `DispatchAsync` calls `Encode` between prepare and send and overwrites the buffer. If the buffer grows, `PooledArrayBufferWriter.EnsureCapacity` returns the old array to `ArrayPool.Shared` while the trailer slice still references it (**use-after-return**). That array can be re-rented (e.g. as another stream's DATA chunk), so the trailing HEADERS frame carries another request's header bytes — including `authorization` — or arbitrary response bytes.\n- Encoder table insertions for the trailer block happen at encode time; another stream's HEADERS can hit the wire first, and if trailers are never sent (early exit) the encoder and server decoder diverge permanently → every later request is mis-decoded by the server or gets COMPRESSION_ERROR.\n\n## Spec reference\nRFC 7541 §2.2 / §4 (encoder and decoder table state must evolve in wire order); RFC 9113 §4.3.\n\n## Suggested fix\n- Encode **and** write the trailer HEADERS/CONTINUATION frames under a single `_writeLock` hold.\n- Never return encoder output across a lock release; if pre-validation is needed, validate names/values only and defer `Encode` to the send step.\n- If trailers end up not being sent, no encoder state must have been mutated.\n\n## Acceptance criteria\n- [ ] Trailer block encoding and frame write happen inside one `_writeLock` critical section\n- [ ] No API returns `HpackEncoder` output memory past lock release\n- [ ] Regression test: concurrent requests with request trailers + large headers (forcing buffer growth) — server-side decoded trailers match exactly, no foreign header bytes\n- [ ] Regression test: trailers skipped due to early response completion do not desync subsequent requests\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-03",
+    "title": "[HTTP/2] Stream IDs can reach the wire out of order (allocation outside the write lock)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe stream id is allocated under `_streamCreateLock`, but the HEADERS frame is sent later after a separate `_writeLock.WaitAsync`. Two concurrent requests can open streams with decreasing ids.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.cs:266-305` — `AllocateNextStreamId()` under `_streamCreateLock`\n- `Runtime/Transport/Http2/Http2Connection.cs:328-371` — HEADERS encoded/sent after `await _writeLock.WaitAsync(ct)`\n\n## Problem\nThread A gets id 1, thread B gets id 3; B acquires `_writeLock` first and sends HEADERS for stream 3. When A sends stream 1 it is lower than an already-opened id. nginx, Go and others respond with connection PROTOCOL_ERROR, failing every in-flight stream. Likely under concurrent load with `ConfigureAwait(false)` thread-pool continuations.\n\n## Spec reference\nRFC 9113 §5.1.1 — new stream identifiers MUST be numerically greater than all previously opened/reserved ones; using a lower id is a connection error of type PROTOCOL_ERROR.\n\n## Suggested fix\nAllocate the stream id inside `_writeLock`, immediately before HPACK-encoding HEADERS. Perform the GOAWAY, connection-closed and MAX_CONCURRENT_STREAMS checks in the same critical section (or re-check there).\n\n## Acceptance criteria\n- [ ] Stream id allocation and HEADERS write are atomic w.r.t. other streams\n- [ ] Regression test: N≥200 concurrent dispatches against a strict server/mock asserting monotonic HEADERS stream ids\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-04",
+    "title": "[HTTP/2] Request cancellation mid-frame corrupts connection framing and leaks send window",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nFrame writes use the request's cancellation token. The 9-byte frame header and the payload are two separate awaited `WriteAsync` calls, and HEADERS+CONTINUATION is several frames. A cancel/timeout between writes leaves a partial frame or unterminated header block on the shared connection.\n\n## Location\n- `Runtime/Transport/Http2/Http2FrameCodec.cs:188-194` — header and payload written separately with caller `ct`\n- `Runtime/Transport/Http2/Http2Connection.Send.cs:54-61`, `:180-185` — DATA/HEADERS writes with request `ct`\n- `Runtime/Transport/Http2/Http2Connection.Send.cs:173-174` — `SendBufferedDataAsync` debits connection/stream windows before the write\n- `Runtime/Transport/Http2/Http2Connection.cs:370`, `:406` — `DispatchAsync` rethrows `OperationCanceledException` without marking the connection broken\n\n## Problem\n- Cancel after the frame header is written → the server reads the next frame's bytes as payload → framing desync / FRAME_SIZE_ERROR / PROTOCOL_ERROR; every other stream on the connection dies.\n- Cancel between HEADERS and CONTINUATION → server raises PROTOCOL_ERROR (§6.10), and the HPACK encoder already committed table insertions for a block the server never fully received.\n- Cancelled DATA write after window debit permanently leaks connection send window → eventual upload stall.\n\n## Spec reference\nRFC 9113 §4.1 (frame format), §6.10 (CONTINUATION sequence must not be interleaved/incomplete), §6.9 (flow control accounting).\n\n## Suggested fix\n- Once the first byte of a frame (or header block) is written, complete it using only the connection token (`_cts.Token`); the request token may only gate acquiring `_writeLock`.\n- Write frame header + payload as one buffer/write where possible.\n- Debit flow-control windows only after a successful write (or credit back on failure).\n- On any exception after a partial write, call `FailAllStreams` and mark the connection dead.\n\n## Acceptance criteria\n- [ ] Request cancellation never leaves a partially written frame or header block\n- [ ] Flow-control windows are consistent after cancelled DATA writes\n- [ ] Regression test: cancel requests at random points during large uploads/multi-CONTINUATION headers on a shared connection; remaining streams complete and the server sees no protocol error\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-05",
+    "title": "[HTTP/2] Stream-scoped errors on the H2 fast path dispose the shared connection (and may dispose a newer healthy one)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "area:transport",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nAny non-cancellation exception from `Http2Connection.DispatchAsync` causes `RawSocketTransport` to call `_h2Manager.Remove(host, port)`, which disposes the connection and fails all in-flight streams — even for errors that only concern one stream.\n\n## Location\n- `Runtime/Transport/RawSocketTransport.cs:302-312` — `catch (Exception) when (!ct.IsCancellationRequested)` → `_h2Manager.Remove`\n- `Runtime/Transport/RawSocketTransport.cs:563-576` — same pattern on the proxy/tunnel variant\n- `Runtime/Transport/Http2/Http2ConnectionManager.cs:242-251` — `Remove` matches by key, not instance (`RemoveExactAndDispose` exists but unused)\n- `Runtime/Transport/Http2/Http2Connection.cs:281-286` — MAX_CONCURRENT_STREAMS reached throws synchronously\n- `Runtime/Transport/Http2/Http2Connection.cs:429-433` — user handler exceptions rethrown from dispatch\n\n## Problem\n- Server advertises MAX_CONCURRENT_STREAMS=128; app fires 129 GETs. Request 129 throws, the connection is disposed and all 128 in-flight requests fail, including non-retryable POSTs.\n- Request-body read `IOException`, handler callback exceptions and mapped RST_STREAM errors have the same effect.\n- Because removal is key-based, if the failed connection was already replaced, the **new healthy** connection is disposed.\n- After a handler fault the request is replayed on another connection, so the handler receives a second `OnResponseStart`.\n\n## Spec reference\nRFC 9113 §5.4.2 (stream errors affect only that stream) vs §5.4.1 (connection errors).\n\n## Suggested fix\n- Classify exceptions: only connection-level failures (GOAWAY with no capacity, closed/broken connection, I/O on the socket, `!IsAlive`) evict the connection.\n- Use exact-instance removal (`RemoveExactAndDispose`).\n- Never retry after a handler fault or after the response has started; surface the original exception.\n\n## Acceptance criteria\n- [ ] Stream-scoped failures (stream limit, body source IOException, handler exception, RST_STREAM) leave other streams untouched\n- [ ] Connection eviction is instance-exact\n- [ ] No replay after `OnResponseStart` was invoked\n- [ ] Regression test: one failing request among 50 concurrent requests on one connection; the other 49 succeed\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-06",
+    "title": "[HTTP/2] Queue requests (or open another connection) when MAX_CONCURRENT_STREAMS is reached",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "area:transport",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nWhen `_activeStreams.Count >= MaxConcurrentStreams`, `DispatchAsync` throws a NetworkError instead of waiting for a stream slot. The H2 fast path bypasses the per-host pool semaphore, so nothing bounds concurrency upstream.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.cs:281-286` — throws `MAX_CONCURRENT_STREAMS limit reached`\n- `Runtime/Transport/RawSocketTransport.cs:~290-312` — H2 fast path has no admission control\n\n## Problem\nAsset bursts (nginx default 128, Go 250, some CDNs 100) produce hard failures for requests above the limit; combined with H2-05 they currently tear down the whole connection. The server may also lower the limit mid-connection via SETTINGS.\n\n## Spec reference\nRFC 9113 §5.1.2 (endpoint MUST NOT exceed peer's SETTINGS_MAX_CONCURRENT_STREAMS); §6.5.2; §8.7 (REFUSED_STREAM is safe to retry).\n\n## Suggested fix\n- Add a per-connection admission queue (counter + waiter queue, not `SemaphoreSlim`, so the limit can shrink when SETTINGS lowers it).\n- Optionally open an additional connection per origin when the queue exceeds a threshold (configurable max connections per origin).\n- Treat RST_STREAM(REFUSED_STREAM) as transparently retryable.\n- Respect request cancellation/timeout while queued.\n\n## Acceptance criteria\n- [ ] Requests beyond MAX_CONCURRENT_STREAMS wait for a slot instead of failing\n- [ ] Lowering MAX_CONCURRENT_STREAMS via SETTINGS is honored for new streams\n- [ ] REFUSED_STREAM is retried automatically (any method)\n- [ ] Regression test: 300 concurrent GETs against a server with limit 100 all succeed\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-07",
+    "title": "[HTTP/2] GOAWAY aborts in-flight streams instead of draining; unprocessed streams not marked retryable",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nAfter GOAWAY, `IsAlive` becomes false and the next manager lookup disposes the connection immediately, aborting streams with id ≤ last-stream-id that the server promised to complete. Streams above last-stream-id fail as a generic NetworkError.\n\n## Location\n- `Runtime/Transport/Http2/Http2ConnectionManager.cs:43-50`, `:185-197` — `GetIfExists`/`GetOrCreateSlowAsync` dispose non-alive connection\n- `Runtime/Transport/Http2/Http2Connection.cs:112-116` — `IsAlive` conflates \"accepting new streams\" with \"alive\"\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:590-600` — streams > last-stream-id failed as plain NetworkError\n\n## Problem\nnginx sends GOAWAY after `keepalive_requests` (default 1000). Under concurrent traffic, in-flight responses (including POSTs) fail roughly every 1000 requests. Non-idempotent requests above last-stream-id are not retried although the server guarantees it did not process them.\n\n## Spec reference\nRFC 9113 §6.8 (graceful shutdown; streams ≤ last-stream-id may complete; streams > last-stream-id were not processed and can be safely retried); §8.7.\n\n## Suggested fix\n- Split state into `AcceptsNewStreams` and `IsAlive`.\n- On GOAWAY: evict from the manager without disposing; dispose once `_activeStreams` is empty (or on hard error/timeout).\n- Fail streams > last-stream-id with an error flagged as \"not processed / transparently retryable\" and retry them on a new connection regardless of method idempotency.\n\n## Acceptance criteria\n- [ ] In-flight streams ≤ last-stream-id complete after GOAWAY(NO_ERROR)\n- [ ] Streams > last-stream-id are retried transparently, including POST\n- [ ] Regression test: server sends GOAWAY mid-burst with in-flight POSTs; all requests succeed\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-08",
+    "title": "[HTTP/2] Lost wake-ups in flow-control send waiting (shared SemaphoreSlim) hang uploads",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nAll blocked senders share one `SemaphoreSlim(0)` window waiter, released once per WINDOW_UPDATE. Wake-ups are lost or delivered to the wrong stream, and several events that should wake senders never do.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.cs:68` — shared window waiter\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:640`, `:651` — single `Release()` per WINDOW_UPDATE\n- `Runtime/Transport/Http2/Http2Connection.Send.cs:146-150`, `:163-168`, `:435-441` — waiters\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:473-487` — SETTINGS_INITIAL_WINDOW_SIZE increase does not release waiters\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:687-692` — RST_STREAM does not wake a blocked uploader\n\n## Problem\n- Two uploads blocked; WINDOW_UPDATE for stream 1 wakes stream 3's sender, which sees zero window and waits again; stream 1 hangs until request timeout.\n- A connection-level WINDOW_UPDATE wakes only one of N senders.\n- Server replies 413 + RST_STREAM(NO_ERROR) mid-upload: uploader blocked on zero window is never woken → request reports Timeout instead of 413.\n- Releases accumulate in the semaphore count when nobody waits → spurious spinning later.\n\n## Spec reference\nRFC 9113 §6.9, §6.9.2 (SETTINGS_INITIAL_WINDOW_SIZE changes apply to all streams), §8.1 (server may respond before the request body is complete).\n\n## Suggested fix\n- Per-stream waiter (resettable `IValueTaskSource`/TCS) plus a broadcast mechanism for connection-window changes.\n- Signal on WINDOW_UPDATE (stream or connection), positive SETTINGS window delta, stream fail/reset/completion, connection failure.\n- Waiters re-check state after wake and exit on reset/abort.\n\n## Acceptance criteria\n- [ ] Every window-increasing event wakes all affected senders\n- [ ] Stream reset/completion/failure unblocks its uploader immediately with the right outcome\n- [ ] Regression test: two concurrent uploads with tiny windows and interleaved WINDOW_UPDATEs complete\n- [ ] Regression test: early 413 + RST_STREAM during blocked upload returns the 413 response promptly\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-09",
+    "title": "[HTTP/2] Request upload stops silently when response headers arrive (no END_STREAM/RST, unbounded hang)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nUploads stop when `stream.IsResponseCompleted` is true, which becomes true as soon as `OnResponseStartAsync` returns — for streaming responses that is immediately on response HEADERS. The client then sends neither the rest of the body, END_STREAM, nor RST_STREAM.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.Send.cs:137`, `:216`, `:266`, `:317`, `:346` — `IsResponseCompleted` checks in upload loops\n- `Runtime/Transport/Http2/Http2Stream.cs:98-106`, `:431` — flag set when response start handler returns\n- `Runtime/Transport/Http2/Http2Stream.cs:251-255` — `TryStartResponse` disposes the cancellation registration for streaming\n- `Runtime/Transport/Http2/Http2Connection.cs:393` — `requestEndStreamSent = true` set anyway\n\n## Problem\nFull-duplex/streaming endpoints send 200 headers before consuming the whole request body. The upload stops, the server waits forever for the remainder; because the cancellation registration was already disposed, the request timeout no longer fires → unbounded hang and a leaked server stream slot.\n\n## Spec reference\nRFC 9113 §8.1 (a server can send a complete response before the request is complete; the client continues unless told to stop via RST_STREAM(NO_ERROR)); §5.1 stream states.\n\n## Suggested fix\n- Stop uploading only on peer RST_STREAM or local abort, not on response start/completion.\n- When the client abandons a body, send RST_STREAM(CANCEL) (or NO_ERROR if appropriate) so the stream closes.\n- Keep request timeout/cancellation active until both directions are closed.\n\n## Acceptance criteria\n- [ ] Upload continues after response headers until body end or peer RST\n- [ ] Abandoned uploads always terminate the stream with END_STREAM or RST_STREAM\n- [ ] Regression test: server echoes headers immediately then reads the full body; client completes the upload and the request finishes\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-10",
+    "title": "[HTTP/2] Unbounded header block accumulation / CONTINUATION flood (CVE-2024-27316 class)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:http2",
+      "priority:P1",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nHeader fragments across HEADERS + CONTINUATION are accumulated without a size or frame-count limit; `MaxDecodedHeaderBytes` and `MaxHeaderListSize` are only checked after END_HEADERS.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:251`, `:281` — `stream.AppendHeaderBlock(...)` unbounded\n- `Runtime/Transport/Http2/Http2Stream.cs:200-203` — `MemoryStream` header block accumulator\n- `Runtime/Transport/Http2/Http2StreamPool` — 128 static pooled streams retain grown buffers\n\n## Problem\nA malicious server or MITM streams CONTINUATION frames without END_HEADERS; the `MemoryStream` grows until OOM on mobile. Zero-length CONTINUATION frames spin the CPU indefinitely. One large block permanently pins memory in pooled streams.\n\n## Spec reference\nRFC 9113 §6.10, §10.5 (denial-of-service considerations; limit header block size), §6.5.2 SETTINGS_MAX_HEADER_LIST_SIZE.\n\n## Suggested fix\n- Cap accumulated encoded header block size (e.g. min(MaxHeaderListSize, 256 KB)) and CONTINUATION frame count; on violation fail the connection with ENHANCE_YOUR_CALM or PROTOCOL_ERROR.\n- Treat empty CONTINUATION frames as counted toward the limit.\n- On `PrepareForPool`, drop/shrink header buffers above a threshold.\n\n## Acceptance criteria\n- [ ] Header block accumulation is bounded by bytes and frame count\n- [ ] Pooled streams do not retain oversized buffers\n- [ ] Regression test: CONTINUATION flood (no END_HEADERS, and zero-length variant) terminates the connection with bounded memory\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-11",
+    "title": "[HTTP/2] Read loop uses stream objects that cancellation may concurrently return to the static pool",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P1",
+      "confidence:plausible",
+      "needs-device-validation",
+      "platform:il2cpp",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe read loop obtains a `stream` from `_activeStreams` and uses it without holding a lifetime reference. Concurrently, cancellation can remove the stream and the dispatch `finally` can call `ReleaseDispatchLifetime`, returning it to the static `Http2StreamPool` shared by all connections.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:116`, `:220`, `:278` — lookup then use\n- `Runtime/Transport/Http2/Http2Stream.cs:238`, `:313-315`, `:521-525` — `TryStartResponse` / `TryAppendResponseData` / lifetime release\n- `Runtime/Transport/Http2/Http2StreamPool` — static, cross-connection\n\n## Problem\nEither `ObjectDisposedException`/`InvalidOperationException` escapes `ReadLoopAsync` → generic catch → `FailAllStreams` (connection killed), or, if the object was already re-rented by another connection's request, this stream's HEADERS/DATA are delivered to an **unrelated request's handler** (cross-request data leak).\n\n## Spec reference\nN/A (concurrency/lifetime).\n\n## Suggested fix\n- Read loop takes/releases a lifetime ref around per-frame stream handling, or\n- Validate a generation token / (connection, streamId) pair after lookup and before every mutation.\n- Pool return must never reset an object the read loop may still touch.\n\n## Acceptance criteria\n- [ ] Stream objects cannot be returned to the pool while the read loop holds them\n- [ ] Regression stress test: high-rate cancellations during response delivery across multiple connections; no cross-request delivery, no connection failure\n- [ ] Validated on an IL2CPP ARM64 device build\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "H2-12",
+    "title": "[HTTP/2] No PING liveness timeout; unconditional keep-alive PINGs (half-dead mobile connections, too_many_pings)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "area:mobile",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nKeep-alive PINGs are sent every 30 s but PING ACKs are ignored (stale comment \"We don't send PINGs proactively\"). There is no liveness timeout.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.Lifecycle.cs:85-117` — periodic PING sender\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:538-539` — PING ACK ignored\n\n## Problem\n- Wi-Fi→LTE switch or NAT drop leaves a half-dead socket; writes succeed into the kernel buffer and `IsAlive` stays true, so new requests are dispatched onto the dead connection and wait for the full request timeout (TCP retransmission gives up after minutes).\n- Unconditional idle PINGs cost battery; gRPC servers answer with GOAWAY ENHANCE_YOUR_CALM (\"too_many_pings\").\n\n## Spec reference\nRFC 9113 §6.7 (PING), §10.5 (excessive PINGs may be treated as abuse).\n\n## Suggested fix\n- Track outstanding PING payloads; fail the connection if no ACK within a configurable timeout (e.g. 10 s).\n- Send PINGs only while streams are active, or after a longer idle period; optionally probe with PING before reusing a connection idle > N seconds.\n\n## Acceptance criteria\n- [ ] Dead connections are detected within the configured PING timeout and new requests go to a fresh connection\n- [ ] No PINGs while idle with zero streams (or configurable)\n- [ ] Regression test: peer stops responding (no FIN) → connection marked dead within timeout\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-13",
+    "title": "[HTTP/2] Negative stream window after SETTINGS_INITIAL_WINDOW_SIZE decrease treated as FLOW_CONTROL_ERROR",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nWhen INITIAL_WINDOW_SIZE changes, `newWindow < 0` is rejected with a connection FLOW_CONTROL_ERROR. The RFC explicitly allows stream send windows to become negative. A snapshot race also lets new streams start with a stale window.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:478-486` — negative window rejected\n- `Runtime/Transport/Http2/Http2Connection.cs:301` — `_remoteSettings.InitialWindowSize` snapshot under `_streamCreateLock`; SETTINGS handler iterates `_activeStreams` without that lock\n\n## Problem\n- Server lowers INITIAL_WINDOW_SIZE mid-connection while an upload has consumed part of its window → whole connection torn down.\n- A stream created concurrently with the SETTINGS update keeps the old window and can overrun the server's window → server FLOW_CONTROL_ERROR.\n\n## Spec reference\nRFC 9113 §6.9.2 (a change can cause the window to become negative; sender MUST track it and wait).\n\n## Suggested fix\n- Allow negative windows (senders already treat `available <= 0` as wait).\n- Serialize initial-window snapshot for new streams and adjustment of existing streams under one lock.\n- Wake waiters when the delta is positive (see H2-08).\n\n## Acceptance criteria\n- [ ] Decreasing INITIAL_WINDOW_SIZE mid-upload does not error; sender waits until window positive\n- [ ] New streams created during SETTINGS processing get the correct initial window\n- [ ] Regression test: server lowers INITIAL_WINDOW_SIZE mid-upload; upload completes\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-14",
+    "title": "[HTTP/2] WINDOW_UPDATE sent before local receive window is adjusted (self-inflicted FLOW_CONTROL_ERROR race)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`OnStreamChunkConsumedAsync` sends the stream WINDOW_UPDATE first and only then calls `stream.AdjustRecvWindowSize(+n)`. The peer can send DATA using the new credit before the adjust runs.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.Lifecycle.cs:259-260` — send then adjust\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:143` — receive-window check throws connection FLOW_CONTROL_ERROR\n\n## Problem\nUnder thread-pool starvation (mobile) or low-RTT links, the read loop receives DATA consuming the new credit before the consumer thread adjusts the local window → connection FLOW_CONTROL_ERROR, all streams fail.\n\n## Spec reference\nRFC 9113 §6.9.1.\n\n## Suggested fix\nAdjust the local receive window before sending WINDOW_UPDATE; roll back if the send fails.\n\n## Acceptance criteria\n- [ ] Local receive window is credited before WINDOW_UPDATE is written\n- [ ] Regression test: consumer-thread delay injected between send and adjust no longer produces FLOW_CONTROL_ERROR\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-15",
+    "title": "[HTTP/2] content-length vs received DATA length never validated (truncated bodies delivered as success)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nOn END_STREAM the sum of DATA payload bytes is never compared with the response `content-length`. Truncated or over-long bodies are delivered as successful responses and can be stored by the Cache module.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:204-211`, `:427-439` — END_STREAM completion\n- `Runtime/Transport/Http2/Http2ResponseBodySource.cs:336-352` — body completion\n\n## Problem\nA proxy/server bug or truncation yields a 200 with half the body; the client reports success and the Cache stores the corrupted entry.\n\n## Spec reference\nRFC 9113 §8.1.1 (a request or response with content-length not equal to the sum of DATA payload lengths is malformed).\n\n## Suggested fix\nTrack `ResponseBodyLength`; at END_STREAM (and on overflow during DATA) compare to `content-length` except for HEAD, 204, 304. On mismatch fault the body source and send RST_STREAM(PROTOCOL_ERROR).\n\n## Acceptance criteria\n- [ ] Mismatched content-length faults the response body (buffered and streaming paths)\n- [ ] Malformed responses are not cached\n- [ ] Regression tests: short body and long body vs content-length; HEAD/204/304 exempt\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-16",
+    "title": "[HTTP/2] Request header names/values not validated before HPACK encoding (header injection / h2→h1 desync)",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:security",
+      "area:http2",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nRequest headers go to HPACK with only lowercasing applied. `HttpHeaders` does not reject CR/LF/NUL either. Request trailers are validated (`Send.cs:419-433`), so the paths are inconsistent.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.cs:337-360` — header list construction\n- `Runtime/Transport/Http2/Http2Connection.Send.cs:419-433` — `ValidateTrailerHeader` used only for trailers\n\n## Problem\nHeader values containing CR/LF/NUL (e.g. from user input) are sent verbatim; h2→h1 downgrading intermediaries can be tricked into request smuggling/header injection (h2 desync attack class). User-supplied names starting with `:` inject pseudo-headers.\n\n## Spec reference\nRFC 9113 §8.2.1 (field validity: no uppercase in names, no NUL/CR/LF in values, no leading/trailing whitespace), §8.3 (pseudo-headers only defined ones, generated by the client).\n\n## Suggested fix\nApply `TrailerFieldValidator`-style validation to all request headers; reject names starting with `:` or containing uppercase/non-token chars, and values with NUL/CR/LF or leading/trailing whitespace. Fail the request before any frame is written.\n\n## Acceptance criteria\n- [ ] Invalid request header names/values are rejected with a clear error before sending\n- [ ] Same validator shared with HTTP/1.1 serializer and trailers\n- [ ] Regression tests: CRLF, NUL, uppercase, `:`-prefixed names\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-17",
+    "title": "[HTTP/2] HPACK encoder table size update races with Encode and loses minimum-size signaling",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nThe read-loop thread calls `_hpackEncoder.SetMaxDynamicTableSize` without `_writeLock` while `Encode` may run under the lock on another thread. Only the final size is emitted.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:491-496` — SETTINGS_HEADER_TABLE_SIZE handling\n- `Runtime/Transport/Http2/HpackEncoder.cs:94-98` — `SetMaxDynamicTableSize` mutates table/`_pendingSizeUpdate`\n\n## Problem\nConcurrent mutation of the `LinkedList` table → corruption or `InvalidOperationException`; the block being encoded can reference entries evicted mid-encode → server decodes wrong headers or COMPRESSION_ERROR. A decrease then increase between blocks must signal the minimum first; currently it doesn't. Only matters when the server changes HEADER_TABLE_SIZE mid-connection.\n\n## Spec reference\nRFC 7541 §4.2 (maximum table size changes; smallest size since last block must be signaled), §6.3.\n\n## Suggested fix\nRecord pending size changes lock-free (or under `_writeLock`); apply at the start of the next `Encode`, tracking the minimum seen since the last emitted block and emitting min then final.\n\n## Acceptance criteria\n- [ ] Table size changes are applied only inside Encode under the write lock\n- [ ] Min-then-final size updates emitted per RFC 7541 §4.2\n- [ ] Regression test: server lowers then raises HEADER_TABLE_SIZE while requests are encoding; server decoder stays in sync\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-18",
+    "title": "[HTTP/2] Early final response / 1xx edge cases: stream never closed client-side; 1xx with END_STREAM hangs; malformed responses not reset",
+    "milestone": "v1.0-beta: Protocol & correctness hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P2",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nSeveral response-path edge cases leave streams open on the server or hang the client.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.cs:~385-400` — early final response with `Expect: 100-continue` sets `sendRequestBody=false`; no END_STREAM/RST_STREAM sent\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:~393-401` — 1xx HEADERS branch\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:311-317`, `:341-372` — malformed response handling (oversized header list, bad `:status`, unexpected pseudo-headers)\n\n## Problem\n- Expect-continue early final response (e.g. 417/401): client never closes its side → stream stays half-closed(remote) on the server and counts against its concurrent-stream limit.\n- 1xx HEADERS carrying END_STREAM is silently ignored → stream hangs until timeout instead of failing as malformed.\n- Malformed responses fail locally but no RST_STREAM(PROTOCOL_ERROR) is sent; the server keeps streaming DATA, answered with per-frame STREAM_CLOSED.\n\n## Spec reference\nRFC 9113 §8.1 (1xx with END_STREAM is malformed; client may abort request body with RST_STREAM(NO_ERROR) after complete response), §8.1.1 (malformed → stream error PROTOCOL_ERROR); RFC 9110 §10.1.1 (Expect).\n\n## Suggested fix\n- After an early final response, send RST_STREAM(NO_ERROR) (or END_STREAM with empty DATA if the body is abandoned cleanly).\n- Treat 1xx + END_STREAM as malformed → stream error PROTOCOL_ERROR.\n- Send RST_STREAM(PROTOCOL_ERROR) whenever a response is rejected as malformed.\n\n## Acceptance criteria\n- [ ] No server-side half-open streams after early final responses\n- [ ] 1xx with END_STREAM fails the request promptly\n- [ ] Malformed responses trigger RST_STREAM(PROTOCOL_ERROR)\n- [ ] Regression tests for each case\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-19",
+    "title": "[HTTP/2] Response handler chain runs synchronously on the read-loop thread",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P3",
+      "confidence:plausible",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\n`_ = InvokeResponseStartAsync(...)` runs the whole handler chain (Decompression, Cache, Redirect, user handlers) synchronously on the read-loop thread up to its first real await.\n\n## Location\n- `Runtime/Transport/Http2/Http2Stream.cs:257`, `:420-431`\n\n## Problem\nAny synchronous work (cache disk I/O, decompressor setup, user code) stalls frame processing — including WINDOW_UPDATE, PING and other streams' DATA — for every stream on the connection.\n\n## Spec reference\nN/A (head-of-line blocking within one connection).\n\n## Suggested fix\nDispatch response start onto the thread pool (or a per-stream serial scheduler), or document and enforce that handlers must not block before their first await.\n\n## Acceptance criteria\n- [ ] Slow handler on one stream does not delay frame processing for other streams\n- [ ] Regression test: handler blocks 2 s in OnResponseStart; concurrent stream on same connection completes unaffected\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Plausible (needs device/runtime confirmation)."
+  },
+  {
+    "key": "H2-20",
+    "title": "[HTTP/2] Error-scope and stream-state conformance gaps (stream WINDOW_UPDATE overflow, idle-stream frames, first frame SETTINGS)",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nSeveral error classifications deviate from RFC 9113.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:646-649` — stream-level WINDOW_UPDATE overflow treated as connection error\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs` — HEADERS/RST_STREAM/DATA on idle stream ids (even, or > `_nextStreamId`) ignored or answered with STREAM_CLOSED\n- `Runtime/Transport/Http2/Http2Connection.Lifecycle.cs` — server's first frame not verified to be SETTINGS\n\n## Problem\n- A single misbehaving stream window overflow kills the whole connection instead of one stream.\n- Frames on idle streams are tolerated rather than treated as connection PROTOCOL_ERROR, masking peer bugs/attacks.\n- A non-SETTINGS first frame from the server is not rejected.\n\n## Spec reference\nRFC 9113 §6.9.1 (stream window overflow → RST_STREAM FLOW_CONTROL_ERROR), §5.1 (frames on idle streams → connection PROTOCOL_ERROR), §3.4 (server preface MUST be SETTINGS).\n\n## Suggested fix\n- Stream-level overflow → RST_STREAM(FLOW_CONTROL_ERROR) on that stream.\n- Track highest opened stream id; frames on idle ids → connection PROTOCOL_ERROR.\n- Validate the first received frame is SETTINGS (non-ACK).\n\n## Acceptance criteria\n- [ ] Each case produces the RFC-mandated error type and scope\n- [ ] Unit tests per case using the frame-level mock server\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-21",
+    "title": "[HTTP/2] Response header field validation missing (uppercase names, connection-specific headers)",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nDecoded response headers are not validated for uppercase names or connection-specific fields.\n\n## Location\n- `Runtime/Transport/Http2/Http2Connection.ReadLoop.cs:341-372` — response header processing\n\n## Problem\nResponses containing uppercase field names or `connection`, `keep-alive`, `transfer-encoding`, `upgrade`, `proxy-connection` are accepted instead of treated as malformed, allowing inconsistent framing semantics to leak into upper layers (e.g. a `transfer-encoding` header reaching Cache/Decompression).\n\n## Spec reference\nRFC 9113 §8.2.1 (uppercase names malformed), §8.2.2 (connection-specific fields → malformed).\n\n## Suggested fix\nValidate decoded response headers and trailers; treat violations as malformed → stream error PROTOCOL_ERROR (+ RST_STREAM, see H2-18).\n\n## Acceptance criteria\n- [ ] Uppercase and connection-specific response fields cause a stream error\n- [ ] Regression tests for each forbidden field\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  },
+  {
+    "key": "H2-22",
+    "title": "[HTTP/2] HPACK Huffman decoder accepts invalid EOS padding",
+    "milestone": "v1.1: Post-release hardening",
+    "labels": [
+      "type:bug",
+      "area:http2",
+      "priority:P3",
+      "source:review-2026-10"
+    ],
+    "projects": [],
+    "body": "## Summary\nEnd-of-string padding validation only counts trailing 1-bits (`paddingBits > 7`). A partial code containing a 0 bit (e.g. trailing `10`) resets `paddingBits` to 0 and is accepted.\n\n## Location\n- `Runtime/Transport/Http2/HpackHuffman.cs:446-453`\n\n## Problem\nMalformed Huffman strings decode successfully instead of raising COMPRESSION_ERROR; low impact but a conformance and fuzz-surface issue.\n\n## Spec reference\nRFC 7541 §5.2 (padding strictly longer than 7 bits, or not corresponding to the EOS prefix, MUST be treated as a decoding error).\n\n## Suggested fix\nTrack bits consumed since the last emitted symbol; at end require they are all 1s and fewer than 8.\n\n## Acceptance criteria\n- [ ] Invalid padding (non-1 bits, ≥8 bits) raises COMPRESSION_ERROR\n- [ ] Unit tests with crafted padding vectors (RFC 7541 Appendix C vectors still pass)\n\n## Context\nSource: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed."
+  }
+]
