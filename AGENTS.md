@@ -118,6 +118,50 @@ Before considering transport, core, networking, pooling, middleware, or platform
 - Preserve `UNITY_INCLUDE_TESTS` constraints and `nunit.framework.dll` references in test asmdefs.
 - Favor tests that cover parser/serializer correctness, connection reuse, pool safety, cancellation, disposal, concurrency, and platform-sensitive behavior.
 
+## Local Gates And CI
+
+Install and configuration for every environment: `Development/docs/agents/tooling.md`.
+
+- `'./Tools~/ci/check.sh'` before every push: repo invariants (`.meta` files, asmdef module rules,
+  JSON), `dotnet format whitespace`, and a shadow `dotnet build` of every asmdef with analyzers and
+  banned APIs (`Tools~/ci/BannedSymbols.txt`), ratcheted by `Tools~/ci/analyzer-baseline.txt`.
+  `--full` adds the iOS/Android define sets and actionlint/shellcheck/tool tests; `--fix` formats.
+- `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter '<regex>'` for scoped Unity
+  tests (needs `UNITY_PATH`; exit 3 means Unity is not installed and PR CI runs them). Never run the
+  whole Unity suite locally.
+- New files/folders under Unity-imported paths need a `.meta`: `python3 'Tools~/ci/gen_meta.py' <path>`.
+- `main` is protected: PRs only, required check `ci` (lint + Unity tests), CodeQL, branch up to date.
+- Dev tooling lives in `Tools~/` and `.github/` so Unity neither imports nor ships it.
+
+## Agent Workflow
+
+GitHub issues (#1–#139, seeded from `.github/issue-seed/`) are the work queue; milestones order
+them (v1.0-alpha → v1.0-beta → v1.0 GA → v1.1 → v1.2 → v2.0) and three projects group them
+(v1.0 Release, Protocol & Security, Post-1.0 Roadmap). Skills in `.claude/skills/` (plain
+markdown, usable by any agent):
+
+- `turbohttp-issue` — implement one issue end to end: worktree, failing regression test first,
+  fix, gates, both specialist rubrics, journal entry, PR that closes the issue.
+- `turbohttp-pr-review` — first-pass review of a PR against its issue's acceptance criteria, the
+  RFCs, IL2CPP/thread-safety/ownership rules and both rubrics; inline comments with severities.
+- `turbohttp-pr-review-comments` — address review comments: verify each, fix confirmed ones,
+  reply with evidence.
+- `turbohttp-waves` — multi-PR fan-out: lanes (one PR each) grouped into waves and tracks, with
+  long-lived implementation and review agents per lane, a serial merge agent and helper brokers,
+  coordinated through `Tools~/agent-tools/wave_mail.py`.
+
+Agent tools (`Tools~/agent-tools/`): `look.py` (batched C# declaration/range/rg lookups),
+`issue_slice.py`, `issue_search.py`, `pr_search.py`, `wave_mail.py`.
+
+Rules for every agent:
+
+- Work in a worktree under `../turboHTTP-worktrees/`, never in the primary checkout.
+- One issue (or one lane of related issues) per PR; "Closes #N" only for fully delivered criteria;
+  anything left becomes a follow-up issue before the PR is opened.
+- Every PR body follows `.github/pull_request_template.md` and records which local gates ran.
+- Lanes add their own journal file and do not edit `AGENTS.md`/`CLAUDE.md`; status updates to
+  those files happen in a separate PR after a wave.
+
 ## Repository Conventions
 
 - Keep the UPM layout canonical: `Runtime/`, `Editor/`, `Tests/`, `Samples~/`, `Documentation~/`.

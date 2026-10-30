@@ -171,6 +171,17 @@ Both use `defineConstraints: ["UNITY_INCLUDE_TESTS"]` and `precompiledReferences
 - Assembly definitions use GUID-less string references (e.g., `"TurboHTTP.Core"`)
 - Optional modules must remain independently includable — never add cross-module references
 
+## Tooling, Gates And Agent Workflow
+
+`AGENTS.md` ("Local Gates And CI", "Agent Workflow") is the source of truth; install steps are in
+`Development/docs/agents/tooling.md`. In short:
+
+- Run `'./Tools~/ci/check.sh'` before every push (`--full` before a PR); scoped Unity tests via
+  `'./Tools~/unity/run-tests.sh'`. `main` is protected (PR + required `ci` check + CodeQL).
+- Work comes from GitHub issues/milestones. Use the skills `turbohttp-issue` (one issue),
+  `turbohttp-pr-review`, `turbohttp-pr-review-comments`, and `turbohttp-waves` (multi-PR fan-out
+  with the `wave-*` agent types in `.claude/agents/`).
+
 ## Post-Implementation Review
 
 After completing each implementation step (phase task, new type, transport change, middleware, etc.), invoke both specialist agents for review before marking the step as done:

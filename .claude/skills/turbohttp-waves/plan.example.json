@@ -1,0 +1,36 @@
+{
+  "tracks": ["A", "B"],
+  "exclusions": "tracking issues #134-#139 (never close or edit them); owner-decision issues #3 (package metadata), #4 (license), #5 (third-party notices), #6 (distribution format), #10 (roadmap re-baseline); CLAUDE.md and AGENTS.md (no lane edits them)",
+  "waves": [
+    {
+      "name": "1",
+      "lanes": [
+        {"slug": "tls-validation", "track": "A", "issues": [33, 34, 113], "milestone": "v1.0-alpha: Release blockers",
+         "note": "#33 BouncyCastle chain validation + RFC 6125 hostname matching, #34 Auto mode must fail closed (no silent permanent fallback to unvalidated BouncyCastle; h2 optional when http/1.1 is offered), and the negative TLS tests of #113 that cover them. One PR in Runtime/Transport/Tls and Runtime/Transport/BouncyCastle (never Lib/).",
+         "hot": ["tls"]},
+        {"slug": "h2-hpack", "track": "A", "issues": [11, 12, 27], "milestone": "v1.0-beta: Protocol & correctness hardening",
+         "note": "HPACK state integrity: always decode header blocks of closed/cancelled streams (#11), encode+write request trailers under one _writeLock hold (#12), apply SETTINGS_HEADER_TABLE_SIZE changes under the encoder's lock with minimum-size signaling (#27).",
+         "hot": ["http2-conn"]},
+        {"slug": "h1-framing", "track": "B", "issues": [39, 40, 41], "milestone": "v1.0-beta: Protocol & correctness hardening",
+         "note": "Http11ResponseParser strictness: EOF inside headers is an error (#39), Transfer-Encoding final-coding/TE+CL/HTTP-1.0 rules (#40), obs-fold and whitespace-before-colon (#41). RFC 9112 sections 2.2, 5.1, 5.2, 6.1, 6.3.",
+         "hot": ["http1-parser"]},
+        {"slug": "module-fixes", "track": "B", "issues": [50, 53, 54], "milestone": "v1.0-beta: Protocol & correctness hardening",
+         "note": "Three independent module bugs in one PR: FileDownloader deletes on non-206 (#50), OAuth refresh keeps the old refresh_token (#53), Retry-After capped by MaxDelay (#54)."}
+      ]
+    },
+    {
+      "name": "2",
+      "lanes": [
+        {"slug": "h2-write-path", "track": "A", "issues": [13, 14], "milestone": "v1.0-beta: Protocol & correctness hardening",
+         "note": "Allocate stream ids inside _writeLock right before HEADERS (#13); frame writes use the connection token once a frame starts, header+payload as one write, fail the connection on a partial write (#14).",
+         "hot": ["http2-conn"], "deps": ["h2-hpack"]},
+        {"slug": "h1-expect-continue", "track": "B", "issues": [37], "milestone": "v1.0-beta: Protocol & correctness hardening",
+         "note": "Expect: 100-continue early final response must not return the connection to the pool when the declared body was not sent (#37); flip RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_ReusesConnectionAfterDrain. Part of #109 (plan doc fix stays out of this lane).",
+         "hot": ["raw-socket-transport"]},
+        {"slug": "ws-receive", "track": "B", "issues": [78, 79], "milestone": "v1.0-beta: Protocol & correctness hardening",
+         "note": "WebSocket: event-only consumers must not stall on the bounded pull queue (#78); a cancelled send mid-message aborts the connection instead of leaving partial framing (#79).",
+         "hot": ["websocket"]}
+      ]
+    }
+  ]
+}
