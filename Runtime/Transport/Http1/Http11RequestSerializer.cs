@@ -24,7 +24,10 @@ namespace TurboHTTP.Transport.Http1
         /// <summary>
         /// True once the last byte of the request message (the head for a bodiless request,
         /// otherwise the body) was handed to the stream without a write failure. From then on
-        /// the server may have received and processed the complete request.
+        /// the server may have received and processed the complete request. Only the one-shot
+        /// <c>SerializeAsync</c> path sets it; the Expect: 100-continue split path
+        /// (<c>SerializeHeadersAsync</c>/<c>SerializeBodyAsync</c>) does not, and relies on
+        /// <see cref="HasCommittedBodyBytes"/> to block a replay instead.
         /// </summary>
         internal bool HasWrittenCompleteMessage => Volatile.Read(ref _messageWritten) != 0;
 

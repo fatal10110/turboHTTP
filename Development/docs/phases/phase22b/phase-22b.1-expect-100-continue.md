@@ -335,7 +335,10 @@ If the server sends RST_STREAM while the client is waiting for 100-continue, the
 
 RFC 9110 sec 10.1.1 says a client that receives 417 SHOULD repeat the request without the
 expectation. TurboHTTP does **not** retry automatically: the 417 response is returned to the caller
-(whose body was not consumed, so a replayable body can be re-sent with `WithExpectContinue(false)`).
+(whose body was not consumed, so a replayable body can be re-sent). Note that `WithExpectContinue(false)`
+alone does not suppress the header for known-length bodies above `AutoExpectContinueThresholdBytes`:
+`ShouldAutoInjectExpectContinue` adds it back, so a manual re-send also needs the auto-injection
+threshold raised or set to `null`. The opt-in retry in #214 owns a proper suppression switch.
 Covered by `RawSocketTransportConnectionReuseTests.ExpectContinue_Expect417_ReplayableBody_ReturnedToCallerWithoutRetry`.
 An opt-in automatic retry is tracked in #214.
 
@@ -419,8 +422,8 @@ An opt-in automatic retry is tracked in #214.
 
 | Path | Status | Evidence |
 | --- | --- | --- |
-| HTTP/1.1 plain TCP, Editor (Mono) | PASS (CI) | `RawSocketTransportTests.RawSocketTransport_ExpectContinue_*`, `RawSocketTransportConnectionReuseTests.ExpectContinue_*` |
-| HTTP/1.1 over BouncyCastle TLS (concurrent read/write, #36 closed) | PASS (CI) | `Tests/Runtime/Transport/Tls/BouncyCastleDuplexStreamTests.cs:152` `ExpectContinue_TimeoutPath_SendsBodyOverBouncyCastle` |
+| HTTP/1.1 plain TCP, Editor (Mono) | PASS (ad-hoc .NET 8 NUnit run at 7768ba0; Unity: host editor (periodic)) | `RawSocketTransportTests.RawSocketTransport_ExpectContinue_*`, `RawSocketTransportConnectionReuseTests.ExpectContinue_*` |
+| HTTP/1.1 over BouncyCastle TLS (concurrent read/write, #36 closed) | pending host-editor run (PR CI does not run Unity tests, #188) | `Tests/Runtime/Transport/Tls/BouncyCastleDuplexStreamTests.cs:152` `ExpectContinue_TimeoutPath_SendsBodyOverBouncyCastle` |
 | HTTP/1.1 over SslStream, physical iOS / Android | needs-device-validation (#99) | none from the Editor |
 
 ## Performance Notes
