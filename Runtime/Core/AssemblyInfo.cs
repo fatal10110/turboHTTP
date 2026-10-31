@@ -10,4 +10,5 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("TurboHTTP.Observability")]
 [assembly: InternalsVisibleTo("TurboHTTP.Retry")]
 [assembly: InternalsVisibleTo("TurboHTTP.WebSocket")]
+[assembly: InternalsVisibleTo("TurboHTTP.Complete")]
 [assembly: InternalsVisibleTo("TurboHTTP.Tests.Runtime")]

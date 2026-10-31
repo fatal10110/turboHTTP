@@ -6,8 +6,9 @@ namespace TurboHTTP.Core
     /// <summary>
     /// Thread-safe factory for HTTP transport instances.
     /// Uses Lazy&lt;T&gt; for lock-free singleton reads after initialization.
-    /// Register a factory via <see cref="Register"/> (typically called by
-    /// RawSocketTransport's [ModuleInitializer] in the Transport assembly).
+    /// Register a factory via <see cref="Register"/>. The default raw-socket transport is
+    /// registered by TurboHTTP's startup bootstrap (a RuntimeInitializeOnLoadMethod in the
+    /// TurboHTTP.Complete assembly) through <c>RawSocketTransport.EnsureRegistered()</c>.
     /// </summary>
     public static class HttpTransportFactory
     {
@@ -84,9 +85,9 @@ namespace TurboHTTP.Core
                 if (lazy == null)
                     throw new InvalidOperationException(
                         "No default transport configured. " +
-                        "Ensure TurboHTTP.Transport is included in your project. " +
-                        "If using IL2CPP and the module initializer did not fire, " +
-                        "call RawSocketTransport.EnsureRegistered() at startup.");
+                        "Ensure TurboHTTP.Transport and TurboHTTP.Complete are included in the build " +
+                        "(the platform must not be WebGL), or call " +
+                        "RawSocketTransport.EnsureRegistered() at startup.");
                 return lazy.Value;
             }
         }
@@ -156,6 +157,31 @@ namespace TurboHTTP.Core
             lock (_lock)
             {
                 _lazy = new Lazy<IHttpTransport>(() => transport, LazyThreadSafetyMode.ExecutionAndPublication);
+            }
+        }
+
+        /// <summary>
+        /// Detaches the default transport singleton if <see cref="Default"/> has already created
+        /// it and returns it so the caller can dispose it; returns null when nothing was created.
+        /// The registered factories stay in place, so the next <see cref="Default"/> read creates
+        /// a fresh singleton. The startup bootstrap uses this so that Enter Play Mode without a
+        /// domain reload disposes the previous session's transport (sockets, HTTP/2 read loops)
+        /// instead of leaking it when it registers the defaults again.
+        /// </summary>
+        internal static IHttpTransport DetachCreatedDefault()
+        {
+            lock (_lock)
+            {
+                var lazy = _lazy;
+                if (lazy == null || !lazy.IsValueCreated)
+                    return null;
+
+                var created = lazy.Value;
+                var factory = _factory;
+                _lazy = factory != null
+                    ? new Lazy<IHttpTransport>(factory, LazyThreadSafetyMode.ExecutionAndPublication)
+                    : null;
+                return created;
             }
         }
 

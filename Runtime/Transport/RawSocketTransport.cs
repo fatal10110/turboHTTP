@@ -75,8 +75,9 @@ namespace TurboHTTP.Transport
 
         /// <summary>
         /// Explicitly register this transport with <see cref="HttpTransportFactory"/>.
-        /// Not needed in normal usage (module initializer handles it).
-        /// Useful for tests that call <see cref="HttpTransportFactory.Reset"/>.
+        /// Not needed in normal usage: TurboHTTP's startup bootstrap (TurboHTTP.Complete) calls it
+        /// at <c>RuntimeInitializeLoadType.SubsystemRegistration</c>. Call it at startup when that
+        /// assembly is excluded from the build, or after <see cref="HttpTransportFactory.Reset"/>.
         /// </summary>
         public static void EnsureRegistered()
         {
@@ -163,8 +164,24 @@ namespace TurboHTTP.Transport
             if (request.Content.Replayability == RequestBodyReplayability.NonReplayable)
                 return false;
 
-            return request.Method.IsIdempotent() ||
-                (writeState != null && !writeState.HasCommittedBodyBytes);
+            if (request.Method.IsIdempotent())
+                return true;
+
+            // RFC 9110 sec 9.2.2: a non-idempotent request is replayed only while the server
+            // cannot have received it completely: no body byte committed and, for a bodiless
+            // request, the head not fully written.
+            return writeState != null &&
+                !writeState.HasCommittedBodyBytes &&
+                !writeState.HasWrittenCompleteMessage;
+        }
+
+        private static bool IsStaleReusedConnectionFailure(Exception ex)
+        {
+            // RFC 9112 sec 9.3.1: a persistent connection the server closed while idle shows up
+            // as a write/read fault or as EOF before the first status-line byte.
+            return ex is IOException ||
+                ex is SocketException ||
+                IsConnectionClosedBeforeStatusLine(ex);
         }
 
         private static bool ShouldSurfaceCommittedNonReplayableBodyFailure(
@@ -353,7 +370,7 @@ namespace TurboHTTP.Transport
                     catch (Exception ex) when (
                         lease != null &&
                         lease.Connection.IsReused &&
-                        (ex is IOException || ex is SocketException) &&
+                        IsStaleReusedConnectionFailure(ex) &&
                         CanRetryHttp11RequestAfterTransportFailure(request, requestWriteState))
                     {
                         lease.Dispose();
@@ -710,7 +727,7 @@ namespace TurboHTTP.Transport
                 catch (Exception ex) when (
                     lease != null &&
                     lease.Connection.IsReused &&
-                    (ex is IOException || ex is SocketException) &&
+                    IsStaleReusedConnectionFailure(ex) &&
                     CanRetryHttp11RequestAfterTransportFailure(originalRequest, writeState))
                 {
                     lease.Dispose();
@@ -1581,6 +1598,7 @@ namespace TurboHTTP.Transport
             var reader = new Http11ResponseParser.BufferedStreamReader(stream);
             bool readerOwned = true;
             int interim1xxCount = 0;
+            Task pendingHeadRead = null;
             try
             {
                 await Http11RequestSerializer.SerializeHeadersAsync(request, stream, ct)
@@ -1600,6 +1618,7 @@ namespace TurboHTTP.Transport
                         request.Method,
                         ct,
                         context);
+                    pendingHeadRead = initialHeadTask;
 
                     var winner = await Task.WhenAny(timeoutTask, initialHeadTask).ConfigureAwait(false);
                     if (winner == initialHeadTask)
@@ -1607,9 +1626,14 @@ namespace TurboHTTP.Transport
                         var initialHead = await initialHeadTask.ConfigureAwait(false);
                         if (ShouldReturnExpectContinueHead(initialHead.StatusCode))
                         {
+                            // Early final response: no body byte was sent.
                             timeoutCts.Cancel();
                             readerOwned = false;
-                            return Http11ResponseParser.CreateParsedResponseHead(reader, initialHead);
+                            return CompleteExpectContinueHead(
+                                Http11ResponseParser.CreateParsedResponseHead(reader, initialHead),
+                                bodyComplete: false,
+                                bodySendException: null,
+                                context);
                         }
 
                         interim1xxCount = IncrementExpectContinueInterimCount(interim1xxCount);
@@ -1630,41 +1654,25 @@ namespace TurboHTTP.Transport
                                 ct)
                             .ConfigureAwait(false);
 
-                        try
-                        {
-                            var finalHead = await Http11ResponseParser.ParseHeadAsync(
-                                    reader,
-                                    request.Method,
-                                    ct,
-                                    context,
-                                    initialInterim1xxCount: interim1xxCount)
-                                .ConfigureAwait(false);
-                            if (bodySendException != null)
-                            {
-                                using (finalHead)
-                                {
-                                    ThrowCapturedBodySendException(
-                                        bodySendException,
-                                        context,
-                                        responseStatusCode: finalHead.StatusCode);
-                                }
-                            }
-
-                            readerOwned = false;
-                            return finalHead;
-                        }
-                        catch (Exception responseReadException) when (bodySendException != null)
-                        {
-                            ThrowCapturedBodySendException(
-                                bodySendException,
+                        var continuedHead = await ReadExpectContinueFinalHeadAsync(
+                                reader,
+                                request,
                                 context,
-                                responseReadException);
-                            throw;
-                        }
+                                interim1xxCount,
+                                bodySendException,
+                                ct)
+                            .ConfigureAwait(false);
+
+                        // A throw inside the helper disposes the head and its reader; the finally block's
+                        // reader.Dispose is then a no-op (Dispose is idempotent).
+                        readerOwned = false;
+                        return continuedHead;
                     }
 
                     // This is the caller's request-scoped cancellation token, not timeoutCts.Token.
                     // The expect-continue timeout already expired if we reached this branch.
+                    // A cancellation here leaves initialHeadTask pending; the finally block closes
+                    // the connection and waits for that read before the reader buffer is returned.
                     ct.ThrowIfCancellationRequested();
 
                     var timeoutBodySendException = await TrySendRequestBodyAsync(
@@ -1688,51 +1696,147 @@ namespace TurboHTTP.Transport
                     if (ShouldReturnExpectContinueHead(timedHead.StatusCode))
                     {
                         readerOwned = false;
-                        return Http11ResponseParser.CreateParsedResponseHead(reader, timedHead);
+                        return CompleteExpectContinueHead(
+                            Http11ResponseParser.CreateParsedResponseHead(reader, timedHead),
+                            bodyComplete: timeoutBodySendException == null,
+                            timeoutBodySendException,
+                            context);
                     }
 
                     interim1xxCount = IncrementExpectContinueInterimCount(interim1xxCount);
 
-                    try
-                    {
-                        var finalHead = await Http11ResponseParser.ParseHeadAsync(
-                                reader,
-                                request.Method,
-                                ct,
-                                context,
-                                initialInterim1xxCount: interim1xxCount)
-                            .ConfigureAwait(false);
-                        if (timeoutBodySendException != null)
-                        {
-                            using (finalHead)
-                            {
-                                ThrowCapturedBodySendException(
-                                    timeoutBodySendException,
-                                    context,
-                                    responseStatusCode: finalHead.StatusCode);
-                            }
-                        }
-
-                        readerOwned = false;
-                        return finalHead;
-                    }
-                    catch (Exception responseReadException) when (timeoutBodySendException != null)
-                    {
-                        ThrowCapturedBodySendException(
-                            timeoutBodySendException,
+                    var finalHead = await ReadExpectContinueFinalHeadAsync(
+                            reader,
+                            request,
                             context,
-                            responseReadException);
-                        throw;
-                    }
+                            interim1xxCount,
+                            timeoutBodySendException,
+                            ct)
+                        .ConfigureAwait(false);
+
+                    // A throw inside the helper disposes the head and its reader; the finally block's
+                    // reader.Dispose is then a no-op (Dispose is idempotent).
+                    readerOwned = false;
+                    return finalHead;
                 }
             }
             finally
             {
                 RecordRequestBodyBytesSent(context, requestWriteState);
+                if (readerOwned && pendingHeadRead != null && !pendingHeadRead.IsCompleted)
+                {
+                    // A head read is still in flight (caller cancellation during the
+                    // expect-continue wait; some platform streams ignore the token once a read
+                    // started). Close the connection so the read faults, and return the pooled
+                    // buffer only after the read stopped writing into it. A read that outlives
+                    // the bounded wait keeps its buffer: it is abandoned to the GC, never pooled.
+                    lease.Dispose();
+                    readerOwned = await WaitForAbortedReadAsync(pendingHeadRead).ConfigureAwait(false);
+                }
+
                 if (readerOwned)
                     reader.Dispose();
             }
         }
+
+        private static async Task<bool> WaitForAbortedReadAsync(Task read)
+        {
+            using var delayCts = new CancellationTokenSource();
+            var winner = await Task.WhenAny(read, Task.Delay(AbortedReadDrainTimeout, delayCts.Token))
+                .ConfigureAwait(false);
+            delayCts.Cancel();
+            if (winner == read)
+            {
+                _ = read.Exception;
+                return true;
+            }
+
+            _ = read.ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return false;
+        }
+
+        private static async Task<ParsedResponseHead> ReadExpectContinueFinalHeadAsync(
+            Http11ResponseParser.BufferedStreamReader reader,
+            UHttpRequest request,
+            RequestContext context,
+            int interim1xxCount,
+            Exception bodySendException,
+            CancellationToken ct)
+        {
+            ParsedResponseHead finalHead;
+            try
+            {
+                finalHead = await Http11ResponseParser.ParseHeadAsync(
+                        reader,
+                        request.Method,
+                        ct,
+                        context,
+                        initialInterim1xxCount: interim1xxCount)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception responseReadException) when (bodySendException != null)
+            {
+                ThrowCapturedBodySendException(
+                    bodySendException,
+                    context,
+                    responseReadException);
+                throw;
+            }
+
+            return CompleteExpectContinueHead(
+                finalHead,
+                bodyComplete: bodySendException == null,
+                bodySendException,
+                context);
+        }
+
+        /// <summary>
+        /// Applies the single "send failure vs early final response" rule of the expect-continue
+        /// path (phase 22b.1). A request whose body was not completely sent never leaves its
+        /// connection reusable: the server may still read and discard the declared body
+        /// (RFC 9110 sec 10.1.1), so the next request would be consumed as body (RFC 9112 sec 9.3,
+        /// 9.6). A non-2xx final response is the server declining the request and is returned to the
+        /// caller (RFC 9112 sec 9.5); a 1xx/2xx head cannot vouch for a request whose body failed
+        /// to send, so the send failure surfaces instead.
+        /// </summary>
+        private static ParsedResponseHead CompleteExpectContinueHead(
+            ParsedResponseHead head,
+            bool bodyComplete,
+            Exception bodySendException,
+            RequestContext context)
+        {
+            if (bodyComplete)
+                return head;
+
+            head.KeepAlive = false;
+            if (bodySendException == null)
+                return head;
+
+            if ((int)head.StatusCode < 300)
+            {
+                using (head)
+                {
+                    ThrowCapturedBodySendException(
+                        bodySendException,
+                        context,
+                        responseStatusCode: head.StatusCode);
+                }
+            }
+
+            RecordExpectContinueBodySendFailure(
+                bodySendException,
+                context,
+                responseReadException: null,
+                responseStatusCode: head.StatusCode);
+            return head;
+        }
+
+        // Upper bound on waiting for a read the transport aborted by closing its connection.
+        private static readonly TimeSpan AbortedReadDrainTimeout = TimeSpan.FromSeconds(2);
 
         private static bool ShouldReturnExpectContinueHead(HttpStatusCode statusCode)
         {
@@ -1758,6 +1862,20 @@ namespace TurboHTTP.Transport
             if (bodySendException == null)
                 return;
 
+            RecordExpectContinueBodySendFailure(
+                bodySendException,
+                context,
+                responseReadException,
+                responseStatusCode);
+            ExceptionDispatchInfo.Capture(bodySendException).Throw();
+        }
+
+        private static void RecordExpectContinueBodySendFailure(
+            Exception bodySendException,
+            RequestContext context,
+            Exception responseReadException,
+            HttpStatusCode? responseStatusCode)
+        {
             if (responseReadException != null)
             {
                 bodySendException.Data["TurboHTTP.ExpectContinue.ResponseReadFailureType"] =
@@ -1787,8 +1905,6 @@ namespace TurboHTTP.Transport
 
                 context.RecordEvent("TransportExpectContinueBodySendFailed", eventData);
             }
-
-            ExceptionDispatchInfo.Capture(bodySendException).Throw();
         }
 
         private async Task<Exception> TrySendRequestBodyAsync(
