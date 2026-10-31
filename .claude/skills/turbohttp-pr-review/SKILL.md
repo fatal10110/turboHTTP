@@ -38,9 +38,12 @@ gh api repos/fatal10110/turboHTTP/pulls/<N>/comments --paginate      # existing 
   pass on what earlier reviews never questioned, then diff since the last reviewed head.
 - Code-scanning threads (CodeQL alerts posted by `github-advanced-security`) are not "raised" by
   anyone who will act on them: triage every unresolved one. A real defect becomes a finding of
-  yours; noise gets a one-line reason and is resolved
-  (`python3 'Tools~/agent-tools/wave_mail.py' threads --pr <N>` lists them, `resolve-thread --id
-  <id> --reply '<text>'` answers one). Wait for the head's `analyze (csharp)` check first.
+  yours; noise gets a one-line reason, is resolved and its alert dismissed. List them with
+  `python3 'Tools~/agent-tools/wave_mail.py' threads --pr <N> --head <sha> --wait 570` (re-run
+  while `code_scanning` is `pending` or `settling`); answer one with `resolve-thread --id <id>
+  --reply '<text>'`, adding one of `--dismiss 'false positive'`, `--dismiss "won't fix"` or
+  `--dismiss 'used in tests'` for an alert on lines the PR changes. Resolving threads and
+  dismissing alerts is the one exception to "do not modify anything on the PR" in section 7.
 - Linked issues: every `Closes/Fixes/Resolves #X`, cross-checked with `closingIssuesReferences`.
   For each, `'Tools~/agent-tools/issue_slice.py' <X>` and copy its **Acceptance criteria** into
   your checklist before reading the diff. Read its entry in
@@ -109,7 +112,7 @@ cd <review-root> && './Tools~/ci/check.sh'
 cd <review-root> && './Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter '<the PR tests>'
 ```
 
-(Unity runs need `UNITY_PATH`; exit 3 means CI only — record it.) Record exactly what ran.
+(Unity runs need `UNITY_PATH`; exit 3 means not run — record it; PR CI does not run Unity tests, #188.) Record exactly what ran.
 
 ## 5. Specialist rubrics
 
@@ -155,7 +158,7 @@ Do not modify, commit, push, merge or close anything on the PR.
    ## Protocol, security, concurrency
    RFC sections checked; threads touching changed state and what serializes them; hostile inputs
    considered and the bound that stops each.
-   Checks run: <check.sh result; Unity filters run or "CI only">.
+   Checks run: <check.sh result; Unity filters run or "Unity not run">.
 
    ## Acceptance criteria (#<issue>)
    - [x]/[ ] <criterion> — <evidence hunk/test, or "unmet: …", or "already on main: …">
@@ -182,5 +185,5 @@ Verdict: <verdict>
 Action required: <YES — N items | NO>
 1. [tag] path:line — what to do
 Optional: <items or "none">   Follow-ups: <items or "none">
-Checks: <check.sh pass; EditMode --filter X pass | Unity CI only>
+Checks: <check.sh pass; EditMode --filter X pass | Unity not run>
 ```
