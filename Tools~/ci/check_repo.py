@@ -134,7 +134,8 @@ UNITY_NUNIT_MISSING = [
     (re.compile(r"\bAssert\.Multiple\b"), "Assert.Multiple"),
 ]
 ASYNC_TASK_METHOD = re.compile(
-    r"(?:(?:public|internal|private|protected|static|virtual|override|new)\s+)*async\s+Task(?:<[^>]*>)?\s+\w+\s*\(")
+    # Task, Task<T> (nested generics included) and ValueTask returns.
+    r"(?:(?:public|internal|private|protected|static|virtual|override|new)\s+)*async\s+(?:Value)?Task(?:<[\w\s,.<>\[\]?]*>)?\s+\w+\s*\(")
 TEST_ATTRIBUTE = re.compile(r"\[(?:[^\]]*[,\s(])?(?:Test|TestCase|TestCaseSource)(?:Attribute)?\b")
 
 

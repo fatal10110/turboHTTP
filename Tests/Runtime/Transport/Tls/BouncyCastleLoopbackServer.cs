@@ -47,7 +47,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         /// <summary>First exception a handler threw (null if none).</summary>
         public Exception HandlerError => Volatile.Read(ref _handlerError);
 
-        /// <summary>TLS server; null when the runtime cannot create a self-signed certificate.</summary>
+        /// <summary>TLS server; null when the runtime cannot load the committed test certificate.</summary>
         public static BouncyCastleLoopbackServer TryStartTls(Action<Stream> handler)
         {
             var certificate = LocalTlsTestServer.TryCreateLocalhostCertificate();

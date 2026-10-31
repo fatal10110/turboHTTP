@@ -264,5 +264,97 @@ class WaveMailTest(unittest.TestCase):
         self.assertEqual(wave_mail.code_scanning_state([{"id": 5, "name": "ci", "status": "completed"}])[0], "absent")
 
 
+    FAKE_GH = r"""#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_GH_LOG"], "a") as f:
+    f.write(json.dumps(args) + "\n")
+fields = {a.split("=", 1)[0]: a.split("=", 1)[1] for a in args if "=" in a}
+q = fields.get("query", "")
+fail = os.environ.get("FAKE_GH_FAIL", "")
+def page(nodes, nxt, cur):
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": nxt, "endCursor": cur}, "nodes": nodes}}}}}
+def node(i):
+    return {"id": i, "isResolved": False, "isOutdated": False, "path": "a.cs", "line": None,
+            "comments": {"totalCount": 1, "nodes": [{"author": {"login": "github-advanced-security"},
+                         "body": "## CodeQL / X\n[more](https://github.com/o/r/security/code-scanning/772)"}]}}
+if "reviewThreads" in q:
+    print(json.dumps(page([node("T2")], False, None) if fields.get("c") == "CUR1" else page([node("T1")], True, "CUR1")))
+elif "addPullRequestReviewThreadReply" in q:
+    if fail == "reply": sys.exit(1)
+    print(json.dumps({"data": {"addPullRequestReviewThreadReply": {"comment": {"url": "https://x/r1"}}}}))
+elif "resolveReviewThread" in q:
+    if fail == "resolve": sys.exit(1)
+    print(json.dumps({"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}}))
+elif "node(id" in q:
+    print(json.dumps({"data": {"node": {"comments": {"nodes": [node("x")["comments"]["nodes"][0]]}}}}))
+elif "-X" in args and "PATCH" in args:
+    print("{}")
+else:
+    sys.exit(2)
+"""
+
+    def fake_gh(self, fail=""):
+        gh = Path(self.tmp.name) / "fakegh"
+        gh.write_text(self.FAKE_GH)
+        gh.chmod(0o755)
+        log = Path(self.tmp.name) / "gh.log"
+        log.write_text("")
+        self.env.update(WAVES_GH=str(gh), FAKE_GH_LOG=str(log), FAKE_GH_FAIL=fail)
+        return log
+
+    @staticmethod
+    def calls(log):
+        return [json.loads(line) for line in log.read_text().splitlines()]
+
+    def test_threads_paginate_from_a_null_cursor_with_typed_arguments(self):
+        log = self.fake_gh()
+        r = self.run_cli("threads", "--pr", "7")
+        self.assertEqual([t["id"] for t in r["threads"]], ["T1", "T2"])
+        first, second = self.calls(log)
+        self.assertIn("n=7", first[first.index("-F") + 1:])  # the PR number goes as an int (-F)
+        self.assertFalse(any(a.startswith("c=") for a in first))  # no cursor on the first page
+        self.assertEqual(second[second.index("c=CUR1") - 1], "-f")
+        self.assertEqual((r["threads"][0]["where"], r["threads"][0]["alert"]), ("a.cs", 772))  # null line: no ":None"
+
+    def test_resolve_thread_never_resolves_after_a_failed_reply(self):
+        log = self.fake_gh(fail="reply")
+        r = self.run_cli("resolve-thread", "--id", "T1", "--reply", "x")
+        self.assertIn("error", r)
+        self.assertFalse(any("resolveReviewThread" in " ".join(c) for c in self.calls(log)))
+
+    def test_resolve_thread_keep_open_only_replies(self):
+        log = self.fake_gh()
+        r = self.run_cli("resolve-thread", "--id", "T1", "--reply", "x", "--keep-open")
+        self.assertEqual(r["reply_url"], "https://x/r1")
+        self.assertNotIn("resolved", r)
+        self.assertFalse(any("resolveReviewThread" in " ".join(c) for c in self.calls(log)))
+
+    def test_resolve_thread_keeps_reply_url_when_the_resolve_fails(self):
+        self.fake_gh(fail="resolve")
+        r = self.run_cli("resolve-thread", "--id", "T1", "--reply", "x")
+        self.assertEqual(r["reply_url"], "https://x/r1")
+        self.assertIn("error", r)
+
+    def test_resolve_thread_dismiss_dismisses_the_linked_alert(self):
+        log = self.fake_gh()
+        r = self.run_cli("resolve-thread", "--id", "T1", "--reply", "intended", "--dismiss", "used in tests")
+        self.assertEqual((r["resolved"], r["dismissed_alert"]), (True, 772))
+        patch = [c for c in self.calls(log) if "PATCH" in c][0]
+        self.assertIn("repos/fatal10110/turboHTTP/code-scanning/alerts/772", patch)
+        self.assertIn("dismissed_reason=used in tests", patch)
+
+    def test_scanning_wait_state_never_reports_done_inside_the_grace(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        import wave_mail
+        done = [{"id": 1, "name": "analyze (csharp)", "status": "completed", "completed_at": "2026-10-30T22:19:22Z"}]
+        t = 1793398762.0  # 2026-10-30T22:19:22Z
+        self.assertEqual(wave_mail.scanning_wait_state(done, t + 5, grace=60), "settling")
+        self.assertEqual(wave_mail.scanning_wait_state(done, t + 61, grace=60), "done")
+        self.assertEqual(wave_mail.scanning_wait_state([], t), "pending")  # right after a push
+        self.assertEqual(wave_mail.scanning_wait_state([{"id": 2, "name": "lint", "status": "completed"}], t), "absent")
+
+
 if __name__ == "__main__":
     unittest.main()
