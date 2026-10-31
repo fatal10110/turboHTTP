@@ -2,22 +2,30 @@ using System;
 using System.Collections.Generic;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.CryptoPro;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.GM;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Misc;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Rosstandart;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.TeleTrust;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.UA;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Collections;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.X509;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
 {
+    /// <summary>
+    /// Factory for <see cref="IDigest"/> instances and convenience helpers for one-shot hash computation.
+    /// </summary>
     /// <remarks>
-    ///  Utility class for creating IDigest objects from their names/Oids
+    /// Digests can be looked up by canonical name (e.g. <c>"SHA-256"</c>, <c>"SHA3-512"</c>) or by ASN.1 OID.
+    /// Names are matched case-insensitively and a number of common aliases are recognised.
     /// </remarks>
     public static class DigestUtilities
     {
@@ -26,6 +34,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             BLAKE2S_128, BLAKE2S_160, BLAKE2S_224, BLAKE2S_256,
             BLAKE3_256,
             DSTU7564_256, DSTU7564_384, DSTU7564_512,
+            GOST3411,
+            GOST3411_2012_256, GOST3411_2012_512,
             KECCAK_224, KECCAK_256, KECCAK_288, KECCAK_384, KECCAK_512,
             MD2, MD4, MD5,
             NONE,
@@ -35,6 +45,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             SHA3_224, SHA3_256, SHA3_384, SHA3_512,
             SHAKE128_256, SHAKE256_512,
             SM3,
+            TIGER,
             WHIRLPOOL,
         };
 
@@ -93,6 +104,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AlgorithmMap["RIPEMD-320"] = "RIPEMD320";
             //AlgorithmOidMap[TeleTrusTObjectIdentifiers.RipeMD320] = "RIPEMD320";
 
+            AlgorithmOidMap[CryptoProObjectIdentifiers.GostR3411] = "GOST3411";
+
             AlgorithmMap["KECCAK224"] = "KECCAK-224";
             AlgorithmMap["KECCAK256"] = "KECCAK-256";
             AlgorithmMap["KECCAK288"] = "KECCAK-288";
@@ -126,6 +139,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AlgorithmOidMap[MiscObjectIdentifiers.id_blake2s256] = "BLAKE2S-256";
             AlgorithmOidMap[MiscObjectIdentifiers.blake3_256] = "BLAKE3-256";
 
+            AlgorithmOidMap[RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256] = "GOST3411-2012-256";
+            AlgorithmOidMap[RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512] = "GOST3411-2012-512";
+
             AlgorithmOidMap[UAObjectIdentifiers.dstu7564digest_256] = "DSTU7564-256";
             AlgorithmOidMap[UAObjectIdentifiers.dstu7564digest_384] = "DSTU7564-384";
             AlgorithmOidMap[UAObjectIdentifiers.dstu7564digest_512] = "DSTU7564-512";
@@ -149,6 +165,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             Oids["RIPEMD128"] = TeleTrusTObjectIdentifiers.RipeMD128;
             Oids["RIPEMD160"] = TeleTrusTObjectIdentifiers.RipeMD160;
             Oids["RIPEMD256"] = TeleTrusTObjectIdentifiers.RipeMD256;
+            Oids["GOST3411"] = CryptoProObjectIdentifiers.GostR3411;
             Oids["SM3"] = GMObjectIdentifiers.sm3;
             Oids["BLAKE2B-160"] = MiscObjectIdentifiers.id_blake2b160;
             Oids["BLAKE2B-256"] = MiscObjectIdentifiers.id_blake2b256;
@@ -159,6 +176,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             Oids["BLAKE2S-224"] = MiscObjectIdentifiers.id_blake2s224;
             Oids["BLAKE2S-256"] = MiscObjectIdentifiers.id_blake2s256;
             Oids["BLAKE3-256"] = MiscObjectIdentifiers.blake3_256;
+            Oids["GOST3411-2012-256"] = RosstandartObjectIdentifiers.id_tc26_gost_3411_12_256;
+            Oids["GOST3411-2012-512"] = RosstandartObjectIdentifiers.id_tc26_gost_3411_12_512;
             Oids["DSTU7564-256"] = UAObjectIdentifiers.dstu7564digest_256;
             Oids["DSTU7564-384"] = UAObjectIdentifiers.dstu7564digest_384;
             Oids["DSTU7564-512"] = UAObjectIdentifiers.dstu7564digest_512;
@@ -189,18 +208,49 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
 #endif
         }
 
-        // TODO[api] Change parameter name to 'oid'
-        public static byte[] CalculateDigest(DerObjectIdentifier id, byte[] input)
+        /// <summary>One-shot digest of <paramref name="buf"/>, using the algorithm identified by
+        /// <paramref name="algID"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="algID"/> is not recognised.</exception>
+        public static byte[] CalculateDigest(AlgorithmIdentifier algID, byte[] buf)
         {
-            return CalculateDigest(id.Id, input);
+            IDigest digest = GetDigest(algID);
+            return DoFinal(digest, buf);
         }
 
+        /// <summary>One-shot digest of <paramref name="len"/> bytes from <paramref name="buf"/>, starting at offset
+        /// <paramref name="off"/>, using the algorithm identified by <paramref name="algID"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="algID"/> is not recognised.</exception>
+        public static byte[] CalculateDigest(AlgorithmIdentifier algID, byte[] buf, int off, int len)
+        {
+            IDigest digest = GetDigest(algID);
+            return DoFinal(digest, buf, off, len);
+        }
+
+        /// <summary>One-shot digest of <paramref name="input"/>, using the algorithm identified by
+        /// <paramref name="id"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="id"/> is not recognised.</exception>
+        // TODO[api] Change parameter name to 'oid'
+        public static byte[] CalculateDigest(DerObjectIdentifier id, byte[] input) =>
+            CalculateDigest(id.GetID(), input);
+
+        /// <summary>One-shot digest of <paramref name="len"/> bytes from <paramref name="buf"/>, starting at
+        /// offset <paramref name="off"/>, using the algorithm identified by <paramref name="oid"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="oid"/> is not recognised.</exception>
+        public static byte[] CalculateDigest(DerObjectIdentifier oid, byte[] buf, int off, int len) =>
+            CalculateDigest(oid.GetID(), buf, off, len);
+
+        /// <summary>One-shot digest of <paramref name="input"/>, using the algorithm identified by
+        /// <paramref name="algorithm"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="algorithm"/> is not recognised.</exception>
         public static byte[] CalculateDigest(string algorithm, byte[] input)
         {
             IDigest digest = GetDigest(algorithm);
             return DoFinal(digest, input);
         }
 
+        /// <summary>One-shot digest of <paramref name="len"/> bytes from <paramref name="buf"/>, starting at
+        /// offset <paramref name="off"/>, using the algorithm identified by <paramref name="algorithm"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="algorithm"/> is not recognised.</exception>
         public static byte[] CalculateDigest(string algorithm, byte[] buf, int off, int len)
         {
             IDigest digest = GetDigest(algorithm);
@@ -208,9 +258,24 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        /// <summary>One-shot digest of <paramref name="buffer"/>, using the algorithm identified by
+        /// <paramref name="algID"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="algID"/> is not recognised.</exception>
+        public static byte[] CalculateDigest(AlgorithmIdentifier algID, ReadOnlySpan<byte> buffer)
+        {
+            IDigest digest = GetDigest(algID);
+            return DoFinal(digest, buffer);
+        }
+
+        /// <summary>One-shot digest of <paramref name="buffer"/>, using the algorithm identified by
+        /// <paramref name="oid"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="oid"/> is not recognised.</exception>
         public static byte[] CalculateDigest(DerObjectIdentifier oid, ReadOnlySpan<byte> buffer) =>
             CalculateDigest(oid.GetID(), buffer);
 
+        /// <summary>One-shot digest of <paramref name="buffer"/>, using the algorithm identified by
+        /// <paramref name="algorithm"/>.</summary>
+        /// <exception cref="SecurityUtilityException">If <paramref name="algorithm"/> is not recognised.</exception>
         public static byte[] CalculateDigest(string algorithm, ReadOnlySpan<byte> buffer)
         {
             IDigest digest = GetDigest(algorithm);
@@ -218,6 +283,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
         }
 #endif
 
+        /// <summary>Finalises <paramref name="digest"/> and returns the resulting hash as a fresh array.</summary>
         public static byte[] DoFinal(IDigest digest)
         {
             byte[] b = new byte[digest.GetDigestSize()];
@@ -225,12 +291,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             return b;
         }
 
+        /// <summary>Feeds <paramref name="input"/> into <paramref name="digest"/>, then finalises and returns the
+        /// hash.</summary>
         public static byte[] DoFinal(IDigest digest, byte[] input)
         {
             digest.BlockUpdate(input, 0, input.Length);
             return DoFinal(digest);
         }
 
+        /// <summary>Feeds <paramref name="len"/> bytes from <paramref name="buf"/> at offset
+        /// <paramref name="off"/> into <paramref name="digest"/>, then finalises and returns the hash.</summary>
         public static byte[] DoFinal(IDigest digest, byte[] buf, int off, int len)
         {
             digest.BlockUpdate(buf, off, len);
@@ -238,6 +308,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        /// <summary>Feeds <paramref name="buffer"/> into <paramref name="digest"/>, then finalises and returns
+        /// the hash.</summary>
         public static byte[] DoFinal(IDigest digest, ReadOnlySpan<byte> buffer)
         {
             digest.BlockUpdate(buffer);
@@ -245,11 +317,36 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
         }
 #endif
 
+        /// <summary>
+        /// Returns the canonical algorithm name registered for the given ASN.1 OID, or <c>null</c> if the OID
+        /// is not mapped to a known digest.
+        /// </summary>
         public static string GetAlgorithmName(DerObjectIdentifier oid)
         {
             return CollectionUtilities.GetValueOrNull(AlgorithmOidMap, oid);
         }
 
+        /// <summary>
+        /// Resolve and instantiate an <see cref="IDigest"/> for the given ASN.1 algorithm.
+        /// </summary>
+        /// <exception cref="ArgumentNullException">If <paramref name="algID"/> is <c>null</c>.</exception>
+        /// <exception cref="SecurityUtilityException">
+        /// If <paramref name="algID"/> does not map to a known digest.
+        /// </exception>
+        public static IDigest GetDigest(AlgorithmIdentifier algID)
+        {
+            if (algID == null)
+                throw new ArgumentNullException(nameof(algID));
+            if (!X509Utilities.HasAbsentParameters(algID))
+                throw new SecurityUtilityException("Digest algorithm not recognised.");
+            return GetDigest(algID.Algorithm);
+        }
+
+        /// <summary>
+        /// Resolve and instantiate an <see cref="IDigest"/> for the given ASN.1 algorithm OID.
+        /// </summary>
+        /// <exception cref="ArgumentNullException">If <paramref name="id"/> is <c>null</c>.</exception>
+        /// <exception cref="SecurityUtilityException">If the OID does not map to a known digest.</exception>
         // TODO[api] Change parameter name to 'oid'
         public static IDigest GetDigest(DerObjectIdentifier id)
         {
@@ -266,6 +363,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             throw new SecurityUtilityException("Digest OID not recognised.");
         }
 
+        /// <summary>
+        /// Resolve and instantiate an <see cref="IDigest"/> by name (or alias).
+        /// </summary>
+        /// <param name="algorithm">A digest name (e.g. <c>"SHA-256"</c>, <c>"SHA3-512"</c>,
+        /// <c>"BLAKE2B-512"</c>).</param>
+        /// <exception cref="ArgumentNullException">If <paramref name="algorithm"/> is <c>null</c>.</exception>
+        /// <exception cref="SecurityUtilityException">If the digest name is not recognised.</exception>
         public static IDigest GetDigest(string algorithm)
         {
             if (algorithm == null)
@@ -296,9 +400,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             case DigestAlgorithm.BLAKE2S_224: return new Blake2sDigest(224);
             case DigestAlgorithm.BLAKE2S_256: return new Blake2sDigest(256);
             case DigestAlgorithm.BLAKE3_256: return new Blake3Digest(256);
-            case DigestAlgorithm.DSTU7564_256: return new Dstu7564Digest(256);
-            case DigestAlgorithm.DSTU7564_384: return new Dstu7564Digest(384);
-            case DigestAlgorithm.DSTU7564_512: return new Dstu7564Digest(512);
+            // turbo-strip: E11 DSTU7564/GOST3411/GOST3411-2012 digests denied; GetDigest reports them not recognised
+            case DigestAlgorithm.DSTU7564_256:
+            case DigestAlgorithm.DSTU7564_384:
+            case DigestAlgorithm.DSTU7564_512:
+            case DigestAlgorithm.GOST3411:
+            case DigestAlgorithm.GOST3411_2012_256:
+            case DigestAlgorithm.GOST3411_2012_512:
+                return null;
             case DigestAlgorithm.KECCAK_224: return new KeccakDigest(224);
             case DigestAlgorithm.KECCAK_256: return new KeccakDigest(256);
             case DigestAlgorithm.KECCAK_288: return new KeccakDigest(288);
@@ -326,6 +435,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             case DigestAlgorithm.SHAKE128_256: return new ShakeDigest(128);
             case DigestAlgorithm.SHAKE256_512: return new ShakeDigest(256);
             case DigestAlgorithm.SM3: return new SM3Digest();
+            case DigestAlgorithm.TIGER: return new TigerDigest();
             case DigestAlgorithm.WHIRLPOOL: return new WhirlpoolDigest();
             default:
                 throw new NotImplementedException();
@@ -347,10 +457,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
         }
 
         /// <summary>
-        /// Returns an ObjectIdentifier for a given digest mechanism.
+        /// Returns the ASN.1 OID associated with the named digest mechanism, or <c>null</c> when none is
+        /// registered.
         /// </summary>
-        /// <param name="mechanism">A string representation of the digest meanism.</param>
-        /// <returns>A DerObjectIdentifier, null if the Oid is not available.</returns>
+        /// <param name="mechanism">A digest name or alias (e.g. <c>"SHA-256"</c>).</param>
+        /// <exception cref="ArgumentNullException">If <paramref name="mechanism"/> is <c>null</c>.</exception>
         public static DerObjectIdentifier GetObjectIdentifier(string mechanism)
         {
             if (mechanism == null)

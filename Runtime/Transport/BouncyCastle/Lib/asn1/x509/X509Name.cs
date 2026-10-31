@@ -6,7 +6,9 @@ using System.Text;
 using System.Threading;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Collections;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Encoders;
 
@@ -135,7 +137,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         /**
          * ISIS-MTT NameAtBirth - DirectoryString(SIZE(1..64)
          */
-        public static readonly DerObjectIdentifier NameAtBirth =  new DerObjectIdentifier("1.3.36.8.3.14");
+        public static readonly DerObjectIdentifier NameAtBirth = new DerObjectIdentifier("1.3.36.8.3.14");
 
         /**
          * RFC 3039 PostalAddress - SEQUENCE SIZE (1..6) OF
@@ -319,6 +321,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
             DefaultLookupInternal.Add("cn", CN);
             DefaultLookupInternal.Add("l", L);
             DefaultLookupInternal.Add("st", ST);
+            // Microsoft CertNameToStr emits "S" for stateOrProvinceName (2.5.4.8),
+            // differing from the RFC 2253/4514 short form "ST"; accept it on parse.
+            DefaultLookupInternal.Add("s", ST);
             DefaultLookupInternal.Add("sn", Surname);
             DefaultLookupInternal.Add("serialnumber", SerialNumber);
             DefaultLookupInternal.Add("street", Street);
@@ -336,6 +341,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
             DefaultLookupInternal.Add("unstructuredname", UnstructuredName);
             DefaultLookupInternal.Add("uniqueidentifier", UniqueIdentifier);
             DefaultLookupInternal.Add("dn", DnQualifier);
+            DefaultLookupInternal.Add("dnq", DnQualifier);
+            DefaultLookupInternal.Add("dnqualifier", DnQualifier);
             DefaultLookupInternal.Add("pseudonym", Pseudonym);
             DefaultLookupInternal.Add("postaladdress", PostalAddress);
             DefaultLookupInternal.Add("nameatbirth", NameAtBirth);
@@ -387,9 +394,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         private readonly List<DerObjectIdentifier> m_ordering = new List<DerObjectIdentifier>();
         private readonly X509NameEntryConverter converter;
 
-        private List<string> m_values = new List<string>();
-        private List<bool> m_added = new List<bool>();
-        private Asn1Sequence seq;
+        private readonly List<string> m_values = new List<string>();
+        private readonly List<bool> m_added = new List<bool>();
+        private Asn1Sequence m_seq;
 
         protected X509Name()
         {
@@ -402,33 +409,34 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         */
         protected X509Name(Asn1Sequence seq)
         {
-            // RDNSequence ::= SEQUENCE OF RelativeDistinguishedName
-            this.seq = seq;
+            if (seq == null)
+                throw new ArgumentNullException(nameof(seq));
 
-            foreach (Asn1Encodable asn1Obj in seq)
+            // RDNSequence ::= SEQUENCE OF RelativeDistinguishedName
+            m_seq = seq;
+
+            foreach (Asn1Encodable rdn in seq)
             {
                 // RelativeDistinguishedName ::= SET SIZE(1..MAX) OF AttributeTypeAndValue
-                Asn1Set rdn = Asn1Set.GetInstance(asn1Obj);
+                Asn1Set attrs = Asn1Set.GetInstance(rdn);
 
                 // TODO Apply this check? (Currently "breaks" CertificateTest.CheckDudCertificate)
-                //if (rdn.Count < 1)
+                //if (attrs.Count < 1)
                 //    throw new ArgumentException("badly sized RelativeDistinguishedName");
 
-                for (int i = 0; i < rdn.Count; ++i)
+                for (int i = 0; i < attrs.Count; ++i)
                 {
-                    Asn1Sequence attributeTypeAndValue = Asn1Sequence.GetInstance(rdn[i]);
-                    if (attributeTypeAndValue.Count != 2)
-                        throw new ArgumentException("badly sized AttributeTypeAndValue");
+                    var attr = AttributeTypeAndValue.GetInstance(attrs[i]);
 
-                    var type = attributeTypeAndValue[0].ToAsn1Object();
-                    var value = attributeTypeAndValue[1].ToAsn1Object();
+                    var attrType = attr.Type;
+                    var attrValue = attr.Value;
 
-                    m_ordering.Add(DerObjectIdentifier.GetInstance(type));
+                    m_ordering.Add(DerObjectIdentifier.GetInstance(attrType));
 
-                    if (value is IAsn1String asn1String && !(value is DerUniversalString))
+                    if (attrValue is IAsn1String asn1String && !(attrValue is DerUniversalString))
                     {
                         string v = asn1String.GetString();
-                        if (v.StartsWith("#"))
+                        if (v.Length > 0 && v[0] == '#')
                         {
                             v = "\\" + v;
                         }
@@ -437,7 +445,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
                     }
                     else
                     {
-                        m_values.Add("#" + Hex.ToHexString(value.GetEncoded()));
+                        m_values.Add("#" + Hex.ToHexString(attrValue.GetEncoded(Asn1Encodable.Der)));
                     }
 
                     m_added.Add(i != 0);
@@ -479,6 +487,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
                 if (!attributes.TryGetValue(oid, out var attribute))
                     throw new ArgumentException("No attribute for object id - " + oid + " - passed to distinguished name");
 
+                // TODO Migrate towards bc-java style builders and styles
+                // Inefficient but forces validation at a similar point to bc-java (X500Name)
+                converter.GetConvertedValue(oid, attribute);
+
                 m_ordering.Add(oid);
                 m_values.Add(attribute);
                 m_added.Add(false);
@@ -508,6 +520,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
 
             for (int i = 0; i < oids.Count; i++)
             {
+                // TODO Migrate towards bc-java style builders and styles
+                // Inefficient but forces validation at a similar point to bc-java (X500Name)
+                converter.GetConvertedValue(oids[i], values[i]);
+
                 m_ordering.Add(oids[i]);
                 m_values.Add(values[i]);
                 m_added.Add(false);
@@ -575,20 +591,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         {
         }
 
-        private DerObjectIdentifier DecodeOid(string name, IDictionary<string, DerObjectIdentifier> lookup)
-        {
-            if (name.StartsWith("OID.", StringComparison.OrdinalIgnoreCase))
-                return new DerObjectIdentifier(name.Substring("OID.".Length));
-
-            if (DerObjectIdentifier.TryFromID(name, out var oid) ||
-                lookup.TryGetValue(name, out oid))
-            {
-                return oid;
-            }
-
-            throw new ArgumentException("Unknown object id - " + name + " - passed to distinguished name");
-        }
-
         /**
         * Takes an X509 dir name as a string of the format "C=AU, ST=Victoria", or
         * some such, converting it into an ordered set of name attributes. lookUp
@@ -615,11 +617,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
 
                 X509NameTokenizer rdnTokenizer = new X509NameTokenizer(rdn, '+');
 
-                AddAttribute(lookup, NextToken(rdnTokenizer), false);
+                AddAttribute(lookup, NextToken(rdnTokenizer), false, converter);
 
                 while (rdnTokenizer.HasMoreTokens())
                 {
-                    AddAttribute(lookup, NextToken(rdnTokenizer), true);
+                    AddAttribute(lookup, NextToken(rdnTokenizer), true, converter);
                 }
             }
 
@@ -679,39 +681,48 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
             return v;
         }
 
+        public bool IsEmpty => m_seq != null ? m_seq.Count < 1 : m_ordering.Count < 1;
+
         public override Asn1Object ToAsn1Object()
         {
-            if (seq == null)
+            if (m_seq == null)
             {
-                Asn1EncodableVector vec = new Asn1EncodableVector();
-                Asn1EncodableVector sVec = new Asn1EncodableVector();
-                DerObjectIdentifier oid = null;
-
-                for (int i = 0; i != m_ordering.Count; i++)
+                if (m_ordering.Count < 1)
                 {
-                    if (oid != null && !m_added[i])
+                    m_seq = DerSequence.Empty;
+                }
+                else
+                {
+                    Asn1EncodableVector atvVec = new Asn1EncodableVector();
+                    Asn1EncodableVector rdnVec = new Asn1EncodableVector();
+
+                    for (int i = 0; i < m_ordering.Count; ++i)
                     {
-                        vec.Add(DerSet.FromVector(sVec));
-                        sVec = new Asn1EncodableVector();
+                        if (i != 0 && !m_added[i])
+                        {
+                            rdnVec.Add(DerSet.FromVector(atvVec));
+                            atvVec = new Asn1EncodableVector();
+                        }
+
+                        var oid = m_ordering[i];
+                        var convertedValue = converter.GetConvertedValue(oid, m_values[i]);
+
+                        atvVec.Add(DerSequence.FromElements(oid, convertedValue));
                     }
 
-                    oid = m_ordering[i];
-                    var convertedValue = converter.GetConvertedValue(oid, m_values[i]);
-                    sVec.Add(new DerSequence(oid, convertedValue));
+                    rdnVec.Add(DerSet.FromVector(atvVec));
+
+                    m_seq = DerSequence.FromVector(rdnVec);
                 }
-
-                vec.Add(DerSet.FromVector(sVec));
-
-                this.seq = new DerSequence(vec);
             }
 
-            return seq;
+            return m_seq;
         }
 
         /// <param name="other">The X509Name object to test equivalency against.</param>
         /// <param name="inOrder">If true, the order of elements must be the same,
         /// as well as the values associated with each element.</param>
-        public bool Equivalent(X509Name	other, bool inOrder)
+        public bool Equivalent(X509Name other, bool inOrder)
         {
             if (!inOrder)
                 return this.Equivalent(other);
@@ -831,12 +842,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
                 if (m_added[i])
                 {
                     ava.Append('+');
-                    AppendValue(ava, oidSymbols, m_ordering[i], m_values[i]);
+                    AppendTypeAndValue(ava, m_ordering[i], m_values[i], oidSymbols);
                 }
                 else
                 {
                     ava = new StringBuilder();
-                    AppendValue(ava, oidSymbols, m_ordering[i], m_values[i]);
+                    AppendTypeAndValue(ava, m_ordering[i], m_values[i], oidSymbols);
                     components.Add(ava);
                 }
             }
@@ -850,12 +861,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
 
             if (components.Count > 0)
             {
-                buf.Append(components[0].ToString());
+                buf.Append(components[0]);
 
                 for (int i = 1; i < components.Count; ++i)
                 {
                     buf.Append(',');
-                    buf.Append(components[i].ToString());
+                    buf.Append(components[i]);
                 }
             }
 
@@ -864,49 +875,104 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
 
         public override string ToString() => ToString(DefaultReverse, DefaultSymbols);
 
-        private void AddAttribute(IDictionary<string, DerObjectIdentifier> lookup, string token, bool added)
+        private void AddAttribute(IDictionary<string, DerObjectIdentifier> lookup,
+            string token, bool added, X509NameEntryConverter converter)
         {
             X509NameTokenizer tokenizer = new X509NameTokenizer(token, '=');
 
-            string typeToken = NextToken(tokenizer, true);
-            string valueToken = NextToken(tokenizer, false);
+            string typeToken = tokenizer.NextToken();
+            if (typeToken == null || !tokenizer.HasMoreTokens())
+                throw new ArgumentException("badly formatted directory string");
+
+            string valueToken = CollectValueToken(tokenizer);
 
             DerObjectIdentifier oid = DecodeOid(typeToken.Trim(), lookup);
             string value = IetfUtilities.Unescape(valueToken);
+
+            // TODO Migrate towards bc-java style builders and styles
+            // Inefficient but forces validation at a similar point to bc-java (X500Name)
+            converter.GetConvertedValue(oid, value);
 
             m_ordering.Add(oid);
             m_values.Add(value);
             m_added.Add(added);
         }
 
-        // TODO Refactor common code between this and IetfUtilities.ValueToString
-        private static void AppendValue(StringBuilder buf, IDictionary<DerObjectIdentifier, string> oidSymbols,
-            DerObjectIdentifier oid, string val)
+        /// <summary>Consume the remaining input from an '='-separated tokenizer as the attributeValue.</summary>
+        /// <remarks>
+        /// RFC 4514 sec. 3 allows unescaped '=' in stringchar, so only the FIRST '=' separates the attributeType from
+        /// the attributeValue.
+        /// </remarks>
+        private static string CollectValueToken(X509NameTokenizer tokenizer) => tokenizer.Remaining();
+
+        /// <summary>
+        /// Does the same thing as <c>IetfUtilities.AppendTypeAndValue</c> except that the string <c>attrValue</c> is
+        /// already in <c>string</c> form.
+        /// </summary>
+        private static void AppendTypeAndValue(StringBuilder buf, DerObjectIdentifier attrType, string attrValue,
+            IDictionary<DerObjectIdentifier, string> oidSymbols)
         {
-            if (oidSymbols.TryGetValue(oid, out var sym))
+            if (oidSymbols.TryGetValue(attrType, out var sym))
             {
                 buf.Append(sym);
             }
             else
             {
-                buf.Append(oid.Id);
+                buf.Append(attrType.GetID());
             }
 
             buf.Append('=');
-            int start = buf.Length;
 
-            buf.Append(val);
-            int end = buf.Length;
+            AppendValue(buf, attrValue);
+        }
 
-            int index = start;
-            if (index + 1 < end && buf[index] == '\\' && buf[index + 1] == '#')
+        /// <summary>
+        /// Does the same thing as <c>IetfUtilities.AppendValue</c> except that the string <c>attrValue</c> is already
+        /// in <c>string</c> form.
+        /// </summary>
+        private static void AppendValue(StringBuilder buf, string attrValue)
+        {
+            // Escape in a single linear pass into a fresh builder. The previous implementation escaped by
+            // inserting a backslash into the buffer it was scanning (O(n) per insert), so a value of n
+            // RFC 4514 special characters - or n leading/trailing spaces - cost ~n^2/2 character moves: a
+            // CPU-exhaustion vector for an attacker-supplied large RDN. Output is unchanged.
+
+            int len = attrValue.Length;
+
+            // A leading "\#" (produced above when the value begins with '#') is emitted verbatim and the
+            // leading-space escaping is suppressed, matching the original phase ordering.
+            bool hashPrefix = len >= 2 && attrValue[0] == '\\' && attrValue[1] == '#';
+
+            int firstNonSpace = 0;
+            while (firstNonSpace < len && attrValue[firstNonSpace] == ' ')
             {
-                index += 2;
+                firstNonSpace++;
+            }
+            int lastNonSpace;
+            if (firstNonSpace < len)
+            {
+                lastNonSpace = len;
+                while (attrValue[--lastNonSpace] == ' ')
+                {
+                }
+            }
+            else
+            {
+                lastNonSpace = -1;
             }
 
-            while (index != end)
+            int index = 0;
+            if (hashPrefix)
             {
-                switch (buf[index])
+                buf.Append("\\#");
+                index = 2;
+            }
+
+            for (; index < len; index++)
+            {
+                char c = attrValue[index];
+                bool escape;
+                switch (c)
                 {
                 case ',':
                 case '"':
@@ -916,34 +982,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
                 case '<':
                 case '>':
                 case ';':
-                {
-                    buf.Insert(index, "\\");
-                    index += 2;
-                    ++end;
+                    escape = true;
                     break;
-                }
+                case ' ':
+                    // leading spaces escaped only without a "\#" prefix; trailing spaces always escaped.
+                    escape = (!hashPrefix && index < firstNonSpace) || index > lastNonSpace;
+                    break;
                 default:
-                {
-                    ++index;
+                    escape = false;
                     break;
                 }
+                if (escape)
+                {
+                    buf.Append('\\');
                 }
-            }
-
-            Debug.Assert(end == buf.Length);
-
-            while (start < end && buf[start] == ' ')
-            {
-                buf.Insert(start, '\\');
-                start += 2;
-                ++end;
-            }
-
-            Debug.Assert(end == buf.Length);
-
-            while (--end > start && buf[end] == ' ')
-            {
-                buf.Insert(end, '\\');
+                buf.Append(c);
             }
         }
 
@@ -971,8 +1024,22 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
             }
             catch (IOException e)
             {
-                throw new InvalidOperationException("unknown encoding in name: " + e.Message, e);
+                throw new InvalidOperationException("unknown encoding in name", e);
             }
+        }
+
+        private static DerObjectIdentifier DecodeOid(string name, IDictionary<string, DerObjectIdentifier> lookup)
+        {
+            if (name.StartsWith("OID.", StringComparison.OrdinalIgnoreCase))
+                return new DerObjectIdentifier(name.Substring("OID.".Length));
+
+            if (DerObjectIdentifier.TryFromID(name, out var oid) ||
+                lookup.TryGetValue(name, out oid))
+            {
+                return oid;
+            }
+
+            throw new ArgumentException("Unknown object id - " + name + " - passed to distinguished name");
         }
 
         private static bool EquivalentStrings(string s1, string s2)
@@ -1000,33 +1067,23 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
             return tokenizer.NextToken() ?? throw new ArgumentException("badly formatted directory string");
         }
 
-        private static string NextToken(X509NameTokenizer tokenizer, bool expectMoreTokens)
-        {
-            string token = tokenizer.NextToken();
-            if (token == null || tokenizer.HasMoreTokens() != expectMoreTokens)
-                throw new ArgumentException("badly formatted directory string");
-
-            return token;
-        }
-
         private static string StripInternalSpaces(string str)
         {
-            StringBuilder res = new StringBuilder();
+            int first = Platform.IndexOf(str, "  ");
+            if (first < 0)
+                return str;
 
-            if (str.Length != 0)
+            StringBuilder res = new StringBuilder(str, 0, first + 1, str.Length - 1);
+
+            bool b1 = false;
+            for (int i = first + 2; i < str.Length; ++i)
             {
-                char c1 = str[0];
-
-                res.Append(c1);
-
-                for (int k = 1; k < str.Length; k++)
+                char c2 = str[i];
+                bool b2 = c2 != ' ';
+                if (b1 | b2)
                 {
-                    char c2 = str[k];
-                    if (!(c1 == ' ' && c2 == ' '))
-                    {
-                        res.Append(c2);
-                    }
-                    c1 = c2;
+                    res.Append(c2);
+                    b1 = b2;
                 }
             }
 

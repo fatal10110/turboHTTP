@@ -17,6 +17,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
 
         private const int MaxIterations = 1000;
 
+        // Hexadecimal value of the product of the 131 smallest odd primes from 3 to 743
+        private static readonly BigInteger SmallPrimesProduct = new BigInteger(
+             "8138e8a0fcf3a4e84a771d40fd305d7f4aa59306d7251de54d98af8fe95729a1f"
+            + "73d893fa424cd2edc8636a6c3285e022b0e3866a565ae8108eed8591cd4fe8d2"
+            + "ce86165a978d719ebf647f362d33fca29cd179fb42401cbaf3df0c614056f9c8"
+            + "f3cfd51e474afb6bc6974f78db8aba8e9e517fded658591ab7502bd41849462f",
+            16);
+
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         [CLSCompliant(false)]
         public static void AsUint32ArrayLittleEndian(BigInteger n, Span<uint> buf)
@@ -121,16 +129,22 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         }
 #endif
 
+        internal static BigInteger CreateBlindedExponent(BigInteger exponent, BigInteger groupOrder,
+            SecureRandom random)
+        {
+            int randomBits = 7;
+            BigInteger blind = CreateRandomBigInteger(randomBits, random).SetBit(randomBits);
+            return exponent.Add(blind.Multiply(groupOrder));
+        }
+
         /// <summary>
         /// Creates a Random BigInteger from the secure random of a given bit length.
         /// </summary>
         /// <param name="bitLength"></param>
         /// <param name="secureRandom"></param>
         /// <returns></returns>
-        public static BigInteger CreateRandomBigInteger(int bitLength, SecureRandom secureRandom)
-        {
-            return new BigInteger(bitLength, secureRandom);
-        }
+        public static BigInteger CreateRandomBigInteger(int bitLength, SecureRandom secureRandom) =>
+            new BigInteger(bitLength, secureRandom);
 
         /**
         * Return a random BigInteger not less than 'min' and not greater than 'max'
@@ -165,6 +179,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             return new BigInteger(max.Subtract(min).BitLength - 1, random).Add(min);
         }
 
+        public static BigInteger CreateRandomPrime(int bitLength, int certainty, SecureRandom random) =>
+            new BigInteger(bitLength, certainty, random);
+
         public static BigInteger FromUnsignedByteArray(byte[] buf)
         {
             return new BigInteger(1, buf);
@@ -183,6 +200,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         public static int GetUnsignedByteLength(BigInteger n)
         {
             return n.GetLengthofByteArrayUnsigned();
+        }
+
+        public static bool HasAnySmallFactors(BigInteger x)
+        {
+            if (!x.TestBit(0))
+                return true;
+
+            BigInteger y = SmallPrimesProduct;
+            if (x.BitLength < SmallPrimesProduct.BitLength)
+            {
+                y = x;
+                x = SmallPrimesProduct;
+            }
+
+            return !ModOddIsCoprimeVar(x, y);
         }
 
         public static BigInteger ModOddInverse(BigInteger M, BigInteger X)

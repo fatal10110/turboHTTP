@@ -4,6 +4,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Sec;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X9;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
+// turbo-strip: E10 (Crypto.Utilities using dropped: ECGost3410Utilities only)
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Multiplier;
@@ -34,6 +35,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators
 
         public void Init(KeyGenerationParameters parameters)
         {
+            // turbo-strip: E10 ECGost3410Utilities branch removed (GOST denied)
             if (parameters is ECKeyGenerationParameters ecP)
             {
                 m_parameters = ecP.DomainParameters;

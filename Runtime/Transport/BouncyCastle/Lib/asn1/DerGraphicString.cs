@@ -48,11 +48,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct graphic string from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct graphic string from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), "obj");
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
         /**
@@ -94,7 +94,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         internal DerGraphicString(byte[] contents, bool clone)
         {
             if (null == contents)
-                throw new ArgumentNullException("contents");
+                throw new ArgumentNullException(nameof(contents));
 
             this.m_contents = clone ? Arrays.Clone(contents) : contents;
         }
@@ -130,11 +130,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         }
 
         protected override int Asn1GetHashCode()
-		{
+        {
             return Arrays.GetHashCode(m_contents);
         }
 
-		protected override bool Asn1Equals(Asn1Object asn1Object)
+        protected override bool Asn1Equals(Asn1Object asn1Object)
         {
             DerGraphicString that = asn1Object as DerGraphicString;
             return null != that

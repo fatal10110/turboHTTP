@@ -50,7 +50,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct set from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct set from byte[]", nameof(obj), e);
                 }
             }
 
@@ -116,7 +116,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         protected internal Asn1Set(Asn1Encodable[] elements, bool doSort)
         {
             if (Arrays.IsNullOrContainsNull(elements))
-                throw new NullReferenceException("'elements' cannot be null, or contain null");
+                throw new ArgumentNullException(nameof(elements), "cannot be null, or contain null");
 
             Asn1Encodable[] _elements = Asn1EncodableVector.CloneElements(elements);
             DerEncoding[] sortedDerEncodings = null;
