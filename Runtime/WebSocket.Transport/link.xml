@@ -1,7 +1,9 @@
 <linker>
   <!--
-    WebSocket transport registration: WebSocketTransportModuleInitializer calls
-    RawSocketWebSocketTransport.EnsureRegistered and nothing else references either type statically.
+    WebSocket transport registration: the TurboHttpBootstrap RuntimeInitializeOnLoadMethod
+    (TurboHTTP.Complete, [Preserve]) calls RawSocketWebSocketTransport.EnsureRegistered statically.
+    WebSocketTransportModuleInitializer is the secondary path for runtimes that run module
+    initializers; nothing references it statically.
   -->
   <assembly fullname="TurboHTTP.WebSocket.Transport">
     <type fullname="TurboHTTP.WebSocket.Transport.WebSocketTransportModuleInitializer" preserve="all"/>

@@ -29,6 +29,9 @@ namespace TurboHTTP.WebSocket.Transport
 
         /// <summary>
         /// Explicitly registers this transport as the default WebSocket transport factory.
+        /// Not needed in normal usage: TurboHTTP's startup bootstrap (TurboHTTP.Complete) calls it
+        /// at <c>RuntimeInitializeLoadType.SubsystemRegistration</c>. Call it at startup when that
+        /// assembly is excluded from the build.
         /// </summary>
         public static void EnsureRegistered()
         {

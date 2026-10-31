@@ -31,8 +31,9 @@
   <!--
     22a.1 HTTP/2 receive-queue primitive used by the streaming design.
     Preserve the generic channel template so IL2CPP keeps its async-waiter methods.
-    Transport registration: TransportModuleInitializer calls RawSocketTransport.EnsureRegistered
-    and nothing else references either type statically.
+    Transport registration: the TurboHttpBootstrap RuntimeInitializeOnLoadMethod (TurboHTTP.Complete,
+    [Preserve]) calls RawSocketTransport.EnsureRegistered statically. TransportModuleInitializer is
+    the secondary path for runtimes that run module initializers; nothing references it statically.
   -->
   <assembly fullname="TurboHTTP.Transport">
     <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1" preserve="all"/>

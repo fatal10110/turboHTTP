@@ -79,6 +79,17 @@ public class Example : MonoBehaviour
 }
 ```
 
+## Platform Support
+
+*   **Supported:** Editor, Windows, macOS, Linux, iOS and Android (Mono and IL2CPP). See [Platform Notes](Documentation~/PlatformNotes.md).
+*   **WebGL: unsupported in v1.0.** Browsers provide no raw sockets, so a WebGL player build fails at build time with an explanatory error.
+
+The default HTTP and WebSocket transports register themselves at startup; no initialization code is needed.
+
+## Assembly References
+
+Scripts without an assembly definition (`Assembly-CSharp`) see every user-facing TurboHTTP module (Core, Transport, JSON, Retry, Auth, Cache, Middleware, RateLimit, Observability, Files, Unity, WebSocket). Code inside your own `.asmdef` must list the modules it uses (for example `TurboHTTP.Core`, `TurboHTTP.JSON`) in its references. `TurboHTTP.Testing`, `TurboHTTP.UniTask` and `TurboHTTP.Transport.BouncyCastle` are always referenced explicitly.
+
 ## Documentation
 
 Comprehensive documentation is available in the `Documentation~` folder (visible in IDEs or via file explorer, hidden in Unity Editor project view).

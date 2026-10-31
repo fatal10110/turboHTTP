@@ -6,6 +6,8 @@ Get started with TurboHTTP in under 5 minutes.
 
 *   **Unity Version**: 2021.3 LTS or higher.
 *   **Scripting Backend**: .NET Standard 2.1 (Project Settings -> Player -> Other Settings -> Api Compatibility Level).
+*   **Platforms**: Editor, Standalone, iOS and Android. WebGL is unsupported in v1.0 (WebGL builds fail with an explanatory error).
+*   **Assembly references**: scripts without an `.asmdef` see the TurboHTTP modules automatically; an `.asmdef` of your own must reference the modules it uses (for example `TurboHTTP.Core`, `TurboHTTP.JSON`).
 
 ## Installation
 
