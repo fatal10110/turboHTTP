@@ -571,7 +571,7 @@ namespace TurboHTTP.Tests.Transport.Http1
             {
                 var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
                 if (!provider.IsAlpnSupported())
-                    Assert.Ignore("SslStream ALPN is unavailable in this runtime.");
+                    TestRequirements.IgnoreEnvironment("SslStream ALPN is unavailable in this runtime.");
 
                 using var transport = new RawSocketTransport(tlsBackend: TlsBackend.SslStream);
                 var stream = new ConnectThenFailTlsStream();
@@ -621,7 +621,7 @@ namespace TurboHTTP.Tests.Transport.Http1
             {
                 var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
                 if (!provider.IsAlpnSupported())
-                    Assert.Ignore("SslStream ALPN is unavailable in this runtime.");
+                    TestRequirements.IgnoreEnvironment("SslStream ALPN is unavailable in this runtime.");
 
                 using var transport = new RawSocketTransport(tlsBackend: TlsBackend.SslStream);
                 var stream = new ConnectAuthChallengeThenFailTlsStream();
@@ -833,12 +833,11 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.Ignore("TurboHTTP.Transport.BouncyCastle is required for local CONNECT tunnel TLS tests.");
+                TestRequirements.RequireBouncyCastle();
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
                 string firstRequestLine = null;
                 string secondRequestLine = null;
 
@@ -904,12 +903,11 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.Ignore("TurboHTTP.Transport.BouncyCastle is required for local CONNECT tunnel TLS tests.");
+                TestRequirements.RequireBouncyCastle();
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 using var originServerA = new HttpsOriginServer(certificate, async (stream, _) =>
                 {
@@ -959,12 +957,11 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.Ignore("TurboHTTP.Transport.BouncyCastle is required for local CONNECT tunnel TLS tests.");
+                TestRequirements.RequireBouncyCastle();
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 string sameTunnelFollowUp = null;
                 var largeBody = new byte[(64 * 1024) + 2];
@@ -1041,12 +1038,11 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.Ignore("TurboHTTP.Transport.BouncyCastle is required for local CONNECT tunnel TLS tests.");
+                TestRequirements.RequireBouncyCastle();
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 string requestLine = null;
 

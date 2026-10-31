@@ -98,7 +98,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             using var server = LocalTlsTestServer.TryStart();
             if (server == null)
             {
-                Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
                 return;
             }
 

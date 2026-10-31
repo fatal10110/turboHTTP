@@ -8,8 +8,8 @@ namespace TurboHTTP.Tests.Transport.Tls
     public class TlsHostnameValidationTests
     {
         private const string AuthTypeName = "TurboHTTP.Transport.BouncyCastle.TurboTlsAuthentication, TurboHTTP.Transport.BouncyCastle";
-        private const string BcTlsCryptoTypeName = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC.BcTlsCrypto, TurboHTTP.Transport.BouncyCastle";
-        private const string CertificateTypeName = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.CertificateType, TurboHTTP.Transport.BouncyCastle";
+        private const string BcTlsCryptoTypeName = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC.BcTlsCrypto, TurboHTTP.SecureProtocol";
+        private const string CertificateTypeName = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.CertificateType, TurboHTTP.SecureProtocol";
 
         // Pre-generated DER certificates to avoid PlatformNotSupportedException on macOS batch mode.
         // Generated via Python cryptography library; valid for 10 years from 2026-02-13.
@@ -30,9 +30,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void ValidateHostname_ExactMatch_Succeeds()
         {
             var auth = CreateAuth("example.com");
-            if (auth == null) return;
             var cert = CreateTlsCertificateFromDer(CERT_EXAMPLE_COM);
-            if (cert == null) return;
 
             Assert.DoesNotThrow(() => InvokePrivate(auth, "ValidateHostname", cert, "example.com"));
         }
@@ -41,9 +39,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void ValidateHostname_WildcardMatch_Succeeds()
         {
             var auth = CreateAuth("api.example.com");
-            if (auth == null) return;
             var cert = CreateTlsCertificateFromDer(CERT_WILDCARD_EXAMPLE_COM);
-            if (cert == null) return;
 
             Assert.DoesNotThrow(() => InvokePrivate(auth, "ValidateHostname", cert, "api.example.com"));
         }
@@ -52,9 +48,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void ValidateHostname_WildcardMismatch_Throws()
         {
             var auth = CreateAuth("example.com");
-            if (auth == null) return;
             var cert = CreateTlsCertificateFromDer(CERT_WILDCARD_EXAMPLE_COM);
-            if (cert == null) return;
 
             AssertTlsFatalAlert(() => InvokePrivate(auth, "ValidateHostname", cert, "example.com"));
         }
@@ -63,9 +57,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void ValidateHostname_MismatchedHost_Throws()
         {
             var auth = CreateAuth("attacker.com");
-            if (auth == null) return;
             var cert = CreateTlsCertificateFromDer(CERT_EXAMPLE_COM);
-            if (cert == null) return;
 
             AssertTlsFatalAlert(() => InvokePrivate(auth, "ValidateHostname", cert, "attacker.com"));
         }
@@ -74,21 +66,14 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void ValidateValidity_ExpiredCert_Throws()
         {
             var auth = CreateAuth("example.com");
-            if (auth == null) return;
             var cert = CreateTlsCertificateFromDer(CERT_EXPIRED);
-            if (cert == null) return;
 
             AssertTlsFatalAlert(() => InvokePrivate(auth, "ValidateValidity", cert));
         }
 
         private static object CreateAuth(string host)
         {
-            var authType = Type.GetType(AuthTypeName, throwOnError: false);
-            if (authType == null)
-            {
-                Assert.Ignore("TurboHTTP.Transport.BouncyCastle is not available");
-                return null;
-            }
+            var authType = TestRequirements.RequireBouncyCastleType(AuthTypeName);
 
             try
             {
@@ -101,45 +86,27 @@ namespace TurboHTTP.Tests.Transport.Tls
             }
             catch (Exception ex)
             {
-                Assert.Ignore($"Failed to create TurboTlsAuthentication via reflection: {ex.Message}");
-                return null;
+                throw TestRequirements.BouncyCastleMissing(
+                    $"cannot create TurboTlsAuthentication via reflection: {ex.Message}", ex);
             }
         }
 
         private static object CreateTlsCertificateFromDer(byte[] der)
         {
-            var bcTlsCryptoType = Type.GetType(BcTlsCryptoTypeName, throwOnError: false);
-            if (bcTlsCryptoType == null)
-            {
-                Assert.Ignore("BcTlsCrypto type not found");
-                return null;
-            }
+            var bcTlsCryptoType = TestRequirements.RequireBouncyCastleType(BcTlsCryptoTypeName);
+            var certType = TestRequirements.RequireBouncyCastleType(CertificateTypeName);
 
-            var certType = Type.GetType(CertificateTypeName, throwOnError: false);
-            if (certType == null)
-            {
-                Assert.Ignore("CertificateType type not found");
-                return null;
-            }
-
-            var x509Field = certType.GetField("X509", BindingFlags.Public | BindingFlags.Static);
-            if (x509Field == null)
-            {
-                Assert.Ignore("CertificateType.X509 field not found");
-                return null;
-            }
+            var x509Field = certType.GetField("X509", BindingFlags.Public | BindingFlags.Static)
+                ?? throw TestRequirements.BouncyCastleMissing("CertificateType.X509 field not found");
 
             short x509Type = Convert.ToInt16(x509Field.GetValue(null));
 
             var crypto = Activator.CreateInstance(bcTlsCryptoType);
-            var createCert = bcTlsCryptoType.GetMethod("CreateCertificate", new[] { typeof(short), typeof(byte[]) });
-            if (createCert == null)
-            {
-                Assert.Ignore("BcTlsCrypto.CreateCertificate method not found");
-                return null;
-            }
+            var createCert = bcTlsCryptoType.GetMethod("CreateCertificate", new[] { typeof(short), typeof(byte[]) })
+                ?? throw TestRequirements.BouncyCastleMissing("BcTlsCrypto.CreateCertificate(short, byte[]) not found");
 
-            return createCert.Invoke(crypto, new object[] { x509Type, der });
+            return createCert.Invoke(crypto, new object[] { x509Type, der })
+                ?? throw TestRequirements.BouncyCastleMissing("BcTlsCrypto.CreateCertificate returned null");
         }
 
         private static object InvokePrivate(object instance, string methodName, params object[] args)

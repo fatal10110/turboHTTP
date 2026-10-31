@@ -771,7 +771,7 @@ namespace TurboHTTP.Tests.Transport
                     }
                     catch (Exception ex) when (IsNetworkEnvironmentIssue(ex))
                     {
-                        Assert.Ignore($"TLS integration endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
+                        TestRequirements.IgnoreEnvironment($"TLS integration endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
                         return;
                     }
 
@@ -806,7 +806,7 @@ namespace TurboHTTP.Tests.Transport
                     }
                     catch (Exception ex) when (IsNetworkEnvironmentIssue(ex))
                     {
-                        Assert.Ignore($"TLS integration endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
+                        TestRequirements.IgnoreEnvironment($"TLS integration endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
                         return;
                     }
 
@@ -815,7 +815,7 @@ namespace TurboHTTP.Tests.Transport
                     var completed = await Task.WhenAny(wrapTask, Task.Delay(TimeSpan.FromSeconds(20), CancellationToken.None));
                     if (completed != wrapTask)
                     {
-                        Assert.Ignore("TLS handshake exceeded timeout in this environment.");
+                        TestRequirements.IgnoreEnvironment("TLS handshake exceeded timeout in this environment.");
                         return;
                     }
 
@@ -852,7 +852,7 @@ namespace TurboHTTP.Tests.Transport
                     }
                     catch (Exception ex) when (IsNetworkEnvironmentIssue(ex))
                     {
-                        Assert.Ignore($"Legacy TLS test endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
+                        TestRequirements.IgnoreEnvironment($"Legacy TLS test endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
                         return;
                     }
 
