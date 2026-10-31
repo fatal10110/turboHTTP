@@ -128,10 +128,14 @@ namespace TurboHTTP.Testing
             }
             catch (Exception ex)
             {
-                return RedactUnparseableBody("JSON", ex);
+                return RedactUnparseableBody("JSON", ex.GetType().Name);
             }
 
-            if (parsedBody == null || !TryRedactParsedJson(parsedBody))
+            var changed = false;
+            if (!TryRedactJsonNode(parsedBody, ref changed))
+                return RedactUnparseableBody("JSON", "unsupported JSON node type");
+
+            if (!changed)
                 return ToExactByteArray(body);
 
             try
@@ -140,7 +144,7 @@ namespace TurboHTTP.Testing
             }
             catch (Exception ex)
             {
-                return RedactUnparseableBody("JSON", ex);
+                return RedactUnparseableBody("JSON", ex.GetType().Name);
             }
         }
 
@@ -155,7 +159,7 @@ namespace TurboHTTP.Testing
             }
             catch (Exception ex)
             {
-                return RedactUnparseableBody("form", ex);
+                return RedactUnparseableBody("form", ex.GetType().Name);
             }
 
             var pairs = text.Split('&');
@@ -172,7 +176,7 @@ namespace TurboHTTP.Testing
                 }
                 catch (Exception ex)
                 {
-                    return RedactUnparseableBody("form", ex);
+                    return RedactUnparseableBody("form", ex.GetType().Name);
                 }
 
                 if (equals < 0 || !_redactionPolicy.ShouldRedactFormField(name))
@@ -187,9 +191,9 @@ namespace TurboHTTP.Testing
                 : ToExactByteArray(body);
         }
 
-        private byte[] RedactUnparseableBody(string kind, Exception ex)
+        private byte[] RedactUnparseableBody(string kind, string reason)
         {
-            Log($"RecordReplay redaction: {kind} body could not be parsed ({ex.GetType().Name}); " +
+            Log($"RecordReplay redaction: {kind} body could not be parsed ({reason}); " +
                 "it is recorded as the redaction placeholder.");
             return Utf8.GetBytes(_redactionPolicy.RedactedValue);
         }
@@ -232,42 +236,59 @@ namespace TurboHTTP.Testing
             return body.ToArray();
         }
 
-        private bool TryRedactParsedJson(object node)
+        // Walks the tree the JSON bridge returned. Returns false for any node type it does not know
+        // (for example a JObject from a custom IJsonSerializer set through JsonSerializer.SetDefault):
+        // the caller then records the placeholder instead of the raw body, so redaction fails closed.
+        private bool TryRedactJsonNode(object node, ref bool changed)
         {
-            if (node is Dictionary<string, object> objectDict)
+            switch (node)
             {
-                var changed = false;
-                var keys = objectDict.Keys.ToArray();
-                for (int i = 0; i < keys.Length; i++)
-                {
-                    var key = keys[i];
-                    if (_redactionPolicy.ShouldRedactJsonField(key))
+                case null:
+                case string _:
+                case bool _:
+                    return true;
+
+                case Dictionary<string, object> objectDict:
                     {
-                        objectDict[key] = _redactionPolicy.RedactedValue;
-                        changed = true;
-                        continue;
+                        var keys = objectDict.Keys.ToArray();
+                        for (int i = 0; i < keys.Length; i++)
+                        {
+                            var key = keys[i];
+                            if (_redactionPolicy.ShouldRedactJsonField(key))
+                            {
+                                objectDict[key] = _redactionPolicy.RedactedValue;
+                                changed = true;
+                                continue;
+                            }
+
+                            if (!TryRedactJsonNode(objectDict[key], ref changed))
+                                return false;
+                        }
+
+                        return true;
                     }
 
-                    var value = objectDict[key];
-                    if (value != null && TryRedactParsedJson(value))
-                        changed = true;
-                }
-                return changed;
-            }
+                case List<object> objectList:
+                    {
+                        for (int i = 0; i < objectList.Count; i++)
+                        {
+                            if (!TryRedactJsonNode(objectList[i], ref changed))
+                                return false;
+                        }
 
-            if (node is List<object> objectList)
-            {
-                var changed = false;
-                for (int i = 0; i < objectList.Count; i++)
-                {
-                    var value = objectList[i];
-                    if (value != null && TryRedactParsedJson(value))
-                        changed = true;
-                }
-                return changed;
-            }
+                        return true;
+                    }
 
-            return false;
+                default:
+                    return IsJsonNumber(node);
+            }
+        }
+
+        private static bool IsJsonNumber(object node)
+        {
+            return node is double || node is long || node is int || node is float || node is decimal ||
+                   node is ulong || node is uint || node is short || node is ushort || node is byte ||
+                   node is sbyte;
         }
     }
 }

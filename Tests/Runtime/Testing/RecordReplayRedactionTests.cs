@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -9,6 +10,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
+using TurboHTTP.JSON.Lite;
 using TurboHTTP.Testing;
 
 namespace TurboHTTP.Tests.Testing
@@ -45,6 +47,7 @@ namespace TurboHTTP.Tests.Testing
         [TearDown]
         public void TearDown()
         {
+            JsonSerializer.ResetToDefault();
             if (File.Exists(_path))
                 File.Delete(_path);
         }
@@ -97,6 +100,20 @@ namespace TurboHTTP.Tests.Testing
             RecordTokenExchange("application/json", "{}", "application/json", body);
 
             AssertRecordingHasNoSecrets(AccessSecret);
+        }
+
+        [TestCase(false, TestName = "UnknownJsonNode_AtRoot_IsNotRecordedRaw")]
+        [TestCase(true, TestName = "UnknownJsonNode_Nested_IsNotRecordedRaw")]
+        public void UnknownJsonNodeFromCustomSerializer_IsNotRecordedRaw(bool nested)
+        {
+            // A custom IJsonSerializer (e.g. Newtonsoft returning JObject) yields a tree the walker
+            // cannot inspect; the body must be recorded as the placeholder, never raw.
+            JsonSerializer.SetDefault(new OpaqueTreeSerializer(nested));
+
+            RecordTokenExchange("application/json", "{}", "application/json");
+
+            AssertRecordingHasNoSecrets(AccessSecret, RefreshSecret, IdTokenSecret);
+            StringAssert.Contains("[REDACTED]", DecodedRecording());
         }
 
         [Test]
@@ -230,6 +247,37 @@ namespace TurboHTTP.Tests.Testing
             var decoded = DecodedRecording();
             foreach (var secret in secrets)
                 Assert.That(decoded, Does.Not.Contain(secret), "recording contains " + secret);
+        }
+
+        private sealed class OpaqueNode
+        {
+        }
+
+        // Delegates to LiteJson except for untyped bodies, which come back as a node type the
+        // redaction walker does not know (at the root, or nested in an otherwise known object).
+        private sealed class OpaqueTreeSerializer : IJsonSerializer
+        {
+            private readonly bool _nested;
+
+            public OpaqueTreeSerializer(bool nested) => _nested = nested;
+
+            private static IJsonSerializer Inner => LiteJsonSerializer.Instance;
+
+            public string Serialize<T>(T value) => Inner.Serialize(value);
+            public string Serialize(object value, Type type) => Inner.Serialize(value, type);
+            public T Deserialize<T>(string json) => Inner.Deserialize<T>(json);
+
+            public object Deserialize(string json, Type type)
+            {
+                if (type != typeof(object))
+                    return Inner.Deserialize(json, type);
+                return _nested
+                    ? new Dictionary<string, object> { ["data"] = new OpaqueNode() }
+                    : new OpaqueNode();
+            }
+
+            public void Serialize<T>(T value, IBufferWriter<byte> output) => Inner.Serialize(value, output);
+            public T Deserialize<T>(ReadOnlySequence<byte> input) => Inner.Deserialize<T>(input);
         }
 
         private static string ExtractAuthorizationHash(string text)

@@ -86,25 +86,28 @@ namespace TurboHTTP.Editor
                 {
                     // Virtualized: only rows inside the viewport are drawn; spacers stand in for the rest,
                     // so a full history (thousands of entries) costs O(visible rows) per repaint.
-                    var count = _filteredCache.Count;
-                    var first = Mathf.Clamp(Mathf.FloorToInt(_requestListScroll.y / RequestRowHeight), 0, count);
-                    var visible = Mathf.CeilToInt(Mathf.Max(position.height, RequestRowHeight) / RequestRowHeight) + 2;
-                    var last = Mathf.Min(count, first + visible);
-
-                    if (first > 0)
+                    // The row window is computed on the Layout pass only and reused by the events after it:
+                    // a scrollbar drag moves the scroll position inside MouseDrag, and a recomputed window
+                    // would emit a different number of layout entries than Layout created. Both spacers are
+                    // always emitted (height 0 allowed) for the same reason.
+                    if (Event.current.type == EventType.Layout)
                     {
-                        GUILayout.Space(first * RequestRowHeight);
+                        _requestListCount = _filteredCache.Count;
+                        _requestListFirst = Mathf.Clamp(
+                            Mathf.FloorToInt(_requestListScroll.y / RequestRowHeight), 0, _requestListCount);
+                        var visible = Mathf.CeilToInt(Mathf.Max(position.height, RequestRowHeight) / RequestRowHeight) + 2;
+                        _requestListLast = Mathf.Min(_requestListCount, _requestListFirst + visible);
                     }
 
-                    for (int i = first; i < last; i++)
+                    GUILayout.Space(_requestListFirst * RequestRowHeight);
+
+                    for (int i = _requestListFirst; i < _requestListLast; i++)
                     {
-                        DrawRequestRow(_filteredCache[i]);
+                        // The cache may shrink between Layout and Repaint; a null row keeps the entry count.
+                        DrawRequestRow(i < _filteredCache.Count ? _filteredCache[i] : null);
                     }
 
-                    if (last < count)
-                    {
-                        GUILayout.Space((count - last) * RequestRowHeight);
-                    }
+                    GUILayout.Space((_requestListCount - _requestListLast) * RequestRowHeight);
                 }
                 EditorGUILayout.EndScrollView();
             }

@@ -26,6 +26,11 @@ namespace TurboHTTP.Editor
         private readonly string[] _tabNames = { "Request", "Response", "Timeline", "Raw" };
 
         private Vector2 _requestListScroll;
+
+        // Visible row window of the request list, computed on the Layout pass only (see DrawRequestList).
+        private int _requestListFirst;
+        private int _requestListLast;
+        private int _requestListCount;
         private Vector2 _detailsScroll;
         private HttpMonitorEvent _selectedEvent;
         private string _filterUrl = string.Empty;

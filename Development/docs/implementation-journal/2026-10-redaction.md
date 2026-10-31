@@ -74,3 +74,14 @@ TurboHTTP.Tests.Editor from compiling.
 - Not run: Unity EditMode/PlayMode (left to the periodic host-editor run), IL2CPP, devices. The Editor window
   (virtualized list responsiveness with 1000 entries, viewer attach on open/close) cannot be checked headless and needs
   a manual look in the host editor.
+
+## Review round 1
+
+- RecordReplay JSON redaction now fails closed on node types the walker does not know (anything but
+  dictionary, list, string, bool, number, null), e.g. a `JObject` from a custom `IJsonSerializer` set with
+  `JsonSerializer.SetDefault`: the body is recorded as the placeholder. Tests
+  `UnknownJsonNode_AtRoot_IsNotRecordedRaw` / `UnknownJsonNode_Nested_IsNotRecordedRaw` (both fail on the
+  previous head).
+- Monitor request list: the virtualized row window is computed on `EventType.Layout` only and cached, and both
+  spacers are always emitted, so a scrollbar drag cannot change the layout entry count between passes.
+  Not verifiable headless (no Unity here); host editor run pending.
