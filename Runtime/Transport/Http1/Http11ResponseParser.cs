@@ -312,6 +312,11 @@ namespace TurboHTTP.Transport.Http1
                 if (bodyKind == Http11ResponseBodyKind.ReadToEnd || faultyFraming)
                     keepAlive = false;
 
+                // RFC 9110 sec 15.2.2 / sec 7.8: after a 101 the connection speaks the protocol
+                // named in Upgrade, so it can never carry another HTTP/1.1 request.
+                if (statusCode == 101)
+                    keepAlive = false;
+
                 return new ParsedResponseHeadData(
                     (HttpStatusCode)statusCode,
                     headers,
