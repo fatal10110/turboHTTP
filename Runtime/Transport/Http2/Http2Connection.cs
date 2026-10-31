@@ -85,8 +85,21 @@ namespace TurboHTTP.Transport.Http2
         private static readonly TimeSpan KeepAlivePingInterval = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan SettingsAckTimeout = TimeSpan.FromSeconds(5);
 
-        // CONTINUATION tracking
+        // Field-block reception (RFC 9113 Section 4.3, 6.10). Owned by the single ReadLoopAsync task:
+        // HEADERS/PUSH_PROMISE + CONTINUATION frames are contiguous on the wire, so at most one block
+        // is open per connection. It accumulates here, independent of _activeStreams, so a block for a
+        // closed, cancelled or reset stream is still HPACK-decoded and the dynamic table stays in sync.
+        // _continuationStreamId is the stream of the open block (0 = none).
         private int _continuationStreamId;
+        private byte[] _headerBlockBuffer; // rented per multi-frame block, returned at END_HEADERS or loop exit
+        private int _headerBlockLength;
+        private int _headerBlockContinuationCount;
+        private bool _headerBlockEndStream;
+        private bool _headerBlockIsPushPromise;
+
+        // CONTINUATION flood bounds (RFC 9113 Section 10.5.1). Exceeding either is ENHANCE_YOUR_CALM.
+        internal const int MaxHeaderBlockBytesCeiling = 256 * 1024;
+        internal const int MaxContinuationFramesPerHeaderBlock = 128;
 
         // Initialization handshake
         private readonly ResettableValueTaskSource<bool> _settingsAckSource;
