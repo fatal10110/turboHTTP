@@ -182,7 +182,7 @@ namespace TurboHTTP.Transport.Http2
 
                 if (available <= 0)
                 {
-                    await WaitForWindowUpdateAsync(ct);
+                    await WaitForSendWindowAsync(stream, ct).ConfigureAwait(false);
                     continue;
                 }
 
@@ -191,6 +191,11 @@ namespace TurboHTTP.Transport.Http2
                 int bytesSent = 0;
                 try
                 {
+                    // Re-checked under _writeLock: the read loop fails a stream before it writes that
+                    // stream's RST_STREAM (also under _writeLock), so no DATA follows our own reset.
+                    if (stream.IsResponseCompleted)
+                        break;
+
                     int connWindow = Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0);
                     int streamWindow = stream.SendWindowSize;
                     int actualAvailable = Math.Min(connWindow, streamWindow);
@@ -201,7 +206,7 @@ namespace TurboHTTP.Transport.Http2
                     {
                         _writeLock.Release();
                         lockHeld = false;
-                        await WaitForWindowUpdateAsync(ct);
+                        await WaitForSendWindowAsync(stream, ct).ConfigureAwait(false);
                         continue;
                     }
 
@@ -452,12 +457,64 @@ namespace TurboHTTP.Transport.Http2
                 throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
         }
 
-        private async Task WaitForWindowUpdateAsync(CancellationToken ct)
+        private static readonly Action<object> s_wakeSendWindowWaiters =
+            static state => ((Http2Connection)state).WakeSendWindowWaiters();
+
+        /// <summary>
+        /// Waits until the send window of <paramref name="stream"/> may have changed: a stream or
+        /// connection WINDOW_UPDATE, an INITIAL_WINDOW_SIZE increase, the stream's response completing
+        /// or failing, connection failure, or <paramref name="ct"/>. Returns at once when the window is
+        /// already positive or the response is complete; callers re-check and loop. A window may be
+        /// negative after an INITIAL_WINDOW_SIZE decrease (RFC 9113 Section 6.9.2): that is a wait too.
+        /// </summary>
+        private async ValueTask WaitForSendWindowAsync(Http2Stream stream, CancellationToken ct)
         {
-            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token))
+            // Take the signal BEFORE re-reading the state. Every waker publishes its state change first
+            // and then swaps the signal out, so a change after this point completes this very signal.
+            var signal = Volatile.Read(ref _sendWindowSignal);
+            if (signal == null)
             {
-                await _windowWaiter.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+                var created = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                signal = Interlocked.CompareExchange(ref _sendWindowSignal, created, null) ?? created;
             }
+
+            ct.ThrowIfCancellationRequested();
+            ThrowIfConnectionClosedForSend();
+            if (stream.IsResponseCompleted ||
+                Math.Min(Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0), stream.SendWindowSize) > 0)
+            {
+                return;
+            }
+
+            // A non-cancelable token registers nothing; a cancelled one wakes every waiter once, and
+            // the others simply re-check and wait again.
+            using (ct.Register(s_wakeSendWindowWaiters, this))
+            {
+                await signal.Task.ConfigureAwait(false);
+            }
+
+            ct.ThrowIfCancellationRequested();
+            ThrowIfConnectionClosedForSend();
+        }
+
+        private void ThrowIfConnectionClosedForSend()
+        {
+            // Not _cts.Token: the token source may already be disposed. DispatchAsync maps this
+            // exception to a network error because the connection token is cancelled.
+            if (_cts.IsCancellationRequested)
+                throw new OperationCanceledException("HTTP/2 connection closed while waiting for send window");
+        }
+
+        /// <summary>
+        /// Wakes every sender blocked in <see cref="WaitForSendWindowAsync"/>. Call after the state
+        /// change is published. Cheap when nobody waits; never runs sender code inline.
+        /// </summary>
+        internal void WakeSendWindowWaiters()
+        {
+            if (Volatile.Read(ref _sendWindowSignal) == null)
+                return;
+
+            Interlocked.Exchange(ref _sendWindowSignal, null)?.TrySetResult(true);
         }
 
         private static string BuildAuthorityValue(Uri uri)
