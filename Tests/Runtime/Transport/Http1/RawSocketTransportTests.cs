@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Transport;
+using TurboHTTP.Transport.Http1;
 using TurboHTTP.Transport.Tcp;
 
 namespace TurboHTTP.Tests.Transport.Http1
@@ -2305,15 +2306,14 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var stream = new MemoryStream(responseBytes, writable: false);
 
-                var firstResponse = await ReadProxyConnectResponseForTestAsync(stream);
-                Assert.AreEqual(407, GetProxyConnectStatusCode(firstResponse));
+                var firstResponse = await ConnectReplyReader.ReadAsync(stream, CancellationToken.None);
+                Assert.AreEqual(407, firstResponse.StatusCode);
 
-                await DrainProxyConnectBodyForTestAsync(
-                    stream,
-                    GetProxyConnectHeaders(firstResponse));
+                await ConnectReplyReader.DrainBodyAsync(stream, firstResponse, CancellationToken.None);
 
-                var secondResponse = await ReadProxyConnectResponseForTestAsync(stream);
-                Assert.AreEqual(200, GetProxyConnectStatusCode(secondResponse));
+                var secondResponse = await ConnectReplyReader.ReadAsync(stream, CancellationToken.None);
+                Assert.AreEqual(200, secondResponse.StatusCode);
+                Assert.AreEqual(stream.Length, stream.Position);
             });
         }
 
@@ -2382,45 +2382,6 @@ namespace TurboHTTP.Tests.Transport.Http1
                 AssertAsync.ThrowsAsync<OperationCanceledException>(async () =>
                     await client.Get("https://origin.example.com/secure").SendBufferedAsync(cts.Token));
             });
-        }
-
-        private static async Task<object> ReadProxyConnectResponseForTestAsync(Stream stream)
-        {
-            var method = typeof(RawSocketTransport).GetMethod(
-                "ReadProxyConnectResponseAsync",
-                BindingFlags.NonPublic | BindingFlags.Static);
-            Assert.IsNotNull(method);
-
-            var task = (Task)method.Invoke(null, new object[] { stream, CancellationToken.None });
-            await task.ConfigureAwait(false);
-            return task.GetType().GetProperty("Result").GetValue(task, null);
-        }
-
-        private static async Task DrainProxyConnectBodyForTestAsync(Stream stream, HttpHeaders headers)
-        {
-            var method = typeof(RawSocketTransport).GetMethod(
-                "DrainProxyConnectBodyAsync",
-                BindingFlags.NonPublic | BindingFlags.Static);
-            Assert.IsNotNull(method);
-
-            var task = (Task)method.Invoke(null, new object[] { stream, headers, CancellationToken.None });
-            await task.ConfigureAwait(false);
-        }
-
-        private static int GetProxyConnectStatusCode(object response)
-        {
-            Assert.IsNotNull(response);
-            var property = response.GetType().GetProperty("StatusCode", BindingFlags.Instance | BindingFlags.Public);
-            Assert.IsNotNull(property);
-            return (int)property.GetValue(response, null);
-        }
-
-        private static HttpHeaders GetProxyConnectHeaders(object response)
-        {
-            Assert.IsNotNull(response);
-            var property = response.GetType().GetProperty("Headers", BindingFlags.Instance | BindingFlags.Public);
-            Assert.IsNotNull(property);
-            return (HttpHeaders)property.GetValue(response, null);
         }
 
 #if TURBOHTTP_INTEGRATION_TESTS
