@@ -25,11 +25,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         [Category("Performance")]
         public void Benchmark_BouncyCastle_HandshakeTime()        {
-            if (!TlsProviderSelector.IsBouncyCastleAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             Task.Run(async () =>
             {

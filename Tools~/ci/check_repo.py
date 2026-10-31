@@ -26,7 +26,8 @@ META_EXEMPT_TOP = {"Development"}
 # reference only TurboHTTP.Core. Expanding an entry needs a documented architecture decision.
 ALLOWED_REFS = {
     "TurboHTTP.Core": set(),
-    "TurboHTTP.Transport.BouncyCastle": {"TurboHTTP.Core", "TurboHTTP.Transport"},
+    "TurboHTTP.Transport.BouncyCastle": {"TurboHTTP.Core", "TurboHTTP.Transport", "TurboHTTP.SecureProtocol"},
+    "TurboHTTP.SecureProtocol": set(),  # vendored BouncyCastle (Runtime/Transport/BouncyCastle/Lib), self-contained
     "TurboHTTP.WebSocket.Transport": {"TurboHTTP.Core", "TurboHTTP.WebSocket", "TurboHTTP.Transport"},
     "TurboHTTP.Unity.WebSocket": {"TurboHTTP.Core", "TurboHTTP.WebSocket", "TurboHTTP.Unity"},
     "TurboHTTP.UniTask": {"TurboHTTP.Core", "TurboHTTP.WebSocket", "UniTask"},
@@ -36,7 +37,7 @@ ALLOWED_REFS = {
     "TurboHTTP.Tests.Editor": None,
 }
 UNSAFE_ALLOWED = {"TurboHTTP.Transport"}
-ENGINE_FREE = {"TurboHTTP.Transport", "TurboHTTP.JSON", "TurboHTTP.WebSocket", "TurboHTTP.WebSocket.Transport"}
+ENGINE_FREE = {"TurboHTTP.Transport", "TurboHTTP.SecureProtocol", "TurboHTTP.JSON", "TurboHTTP.WebSocket", "TurboHTTP.WebSocket.Transport"}
 
 
 def tracked():
@@ -134,8 +135,8 @@ UNITY_NUNIT_MISSING = [
     (re.compile(r"\bAssert\.Multiple\b"), "Assert.Multiple"),
 ]
 ASYNC_TASK_METHOD = re.compile(
-    # Task, Task<T> (nested generics included) and ValueTask returns.
-    r"(?:(?:public|internal|private|protected|static|virtual|override|new)\s+)*async\s+(?:Value)?Task(?:<[\w\s,.<>\[\]?]*>)?\s+\w+\s*\(")
+    # Task, Task<T> (nested generics and tuples included) and ValueTask returns; generic methods too.
+    r"(?:(?:public|internal|private|protected|static|virtual|override|new)\s+)*async\s+(?:Value)?Task(?:<[\w\s,.<>\[\]?()]*>)?\s+\w+\s*(?:<[^>(]*>)?\s*\(")
 TEST_ATTRIBUTE = re.compile(r"\[(?:[^\]]*[,\s(])?(?:Test|TestCase|TestCaseSource)(?:Attribute)?\b")
 
 

@@ -60,12 +60,10 @@ namespace TurboHTTP.Tests.Transport.Tls
             return new BouncyCastleLoopbackServer(null, handler);
         }
 
-        /// <summary>Skips the test unless the BouncyCastle assembly is part of the build.</summary>
-        public static ITlsProvider GetProviderOrIgnore()
+        /// <summary>Fails the test unless the BouncyCastle assembly is part of the build (#140).</summary>
+        public static ITlsProvider GetProviderOrFail()
         {
-            if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                NUnit.Framework.Assert.Ignore("BouncyCastle TLS provider assembly is not included.");
-            return TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
+            return TestRequirements.RequireBouncyCastleProvider();
         }
 
         /// <summary>

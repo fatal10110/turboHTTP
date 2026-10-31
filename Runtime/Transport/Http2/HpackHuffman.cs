@@ -386,47 +386,29 @@ namespace TurboHTTP.Transport.Http2
             using (var output = new PooledArrayBufferWriter(Math.Max(16, length)))
             {
                 var node = s_root;
-                int paddingBits = 0; // Count consecutive 1-bits at end
+                // RFC 7541 Section 5.2: the bits after the last complete symbol are padding and must
+                // be a strict prefix of EOS (all 1-bits) shorter than 8 bits.
+                int bitsSinceSymbol = 0;
+                bool allOnesSinceSymbol = true;
 
                 for (int i = offset; i < offset + length; i++)
                 {
                     byte b = data[i];
-                    bool isLastByte = (i == offset + length - 1);
 
                     for (int bit = 7; bit >= 0; bit--)
                     {
                         int bitVal = (b >> bit) & 1;
                         var next = bitVal == 0 ? node.Zero : node.One;
 
+                        // The HPACK code is complete, so this is unreachable for a well-formed tree;
+                        // kept as a guard against walking off it.
                         if (next == null)
-                        {
-                            // Only valid if we're in the final byte's padding region (all 1s)
-                            if (!isLastByte || bitVal != 1)
-                                throw new HpackDecodingException("Invalid Huffman code sequence");
-
-                            // Verify remaining bits in this byte are also 1s.
-                            for (int pb = bit - 1; pb >= 0; pb--)
-                            {
-                                if (((b >> pb) & 1) != 1)
-                                    throw new HpackDecodingException(
-                                        "Invalid Huffman padding (must be all 1-bits)");
-                            }
-
-                            // RFC 7541 Section 5.2: padding MUST be fewer than 8 bits.
-                            // Total padding = bits accumulated from previous bytes (paddingBits)
-                            // + the current bit (1) + remaining bits in this byte (bit).
-                            int totalPaddingBits = paddingBits + 1 + bit;
-                            if (totalPaddingBits > 7)
-                                throw new HpackDecodingException(
-                                    "Invalid Huffman padding (more than 7 bits)");
-
-                            return output.WrittenMemory.ToArray();
-                        }
+                            throw new HpackDecodingException("Invalid Huffman code sequence");
 
                         node = next;
-
-                        // Track consecutive 1-bits for padding validation
-                        paddingBits = (bitVal == 1) ? paddingBits + 1 : 0;
+                        bitsSinceSymbol++;
+                        if (bitVal == 0)
+                            allOnesSinceSymbol = false;
 
                         if (node.Symbol >= 0)
                         {
@@ -437,18 +419,17 @@ namespace TurboHTTP.Transport.Http2
                             destination[0] = (byte)node.Symbol;
                             output.Advance(1);
                             node = s_root;
-                            paddingBits = 0;
+                            bitsSinceSymbol = 0;
+                            allOnesSinceSymbol = true;
                         }
                     }
                 }
 
-                // Validate padding: remaining partial code must be all 1s and <= 7 bits
                 if (node != s_root)
                 {
-                    // We're mid-sequence after all input. This is padding territory.
-                    // The partial bits should all be 1s (EOS prefix). Since we didn't
-                    // hit a null node, the path exists, but verify it was all 1s.
-                    if (paddingBits > 7)
+                    if (!allOnesSinceSymbol)
+                        throw new HpackDecodingException("Invalid Huffman padding (must be all 1-bits)");
+                    if (bitsSinceSymbol > 7)
                         throw new HpackDecodingException("Invalid Huffman padding (more than 7 bits)");
                 }
 

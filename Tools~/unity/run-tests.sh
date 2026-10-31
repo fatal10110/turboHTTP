@@ -48,7 +48,13 @@ topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi;
 
 if [ "$win" = 1 ]; then
   # set -e must not turn a failed probe into exit 1 ("test failures"): every failure here is exit 2.
-  localappdata="$( (cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%') 2>/dev/null | tr -d '\r' || true)"
+  # WSL interop occasionally fails to start cmd.exe; try a few times before giving up.
+  localappdata=""
+  for _ in 1 2 3; do
+    localappdata="$( (cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%') 2>/dev/null | tr -d '\r' || true)"
+    [ -n "$localappdata" ] && break
+    sleep 1
+  done
   wincache="$( [ -n "$localappdata" ] && wslpath -u "$localappdata" 2>/dev/null || true)"
   [ -n "$wincache" ] || { echo "run-tests: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
   cache="$wincache/turbohttp"
