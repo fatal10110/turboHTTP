@@ -59,7 +59,7 @@ namespace TurboHTTP.Tests.Transport
             using var server = LocalTlsTestServer.TryStart();
             if (server == null)
             {
-                Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
                 return;
             }
 

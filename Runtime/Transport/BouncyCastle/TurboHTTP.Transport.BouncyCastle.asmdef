@@ -3,7 +3,8 @@
     "rootNamespace": "TurboHTTP.Transport.BouncyCastle",
     "references": [
         "TurboHTTP.Core",
-        "TurboHTTP.Transport"
+        "TurboHTTP.Transport",
+        "TurboHTTP.SecureProtocol"
     ],
     "includePlatforms": [],
     "excludePlatforms": [

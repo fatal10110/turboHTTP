@@ -63,7 +63,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void WriteCompletes_WhileReadIsPending()
         {
-            var provider = BouncyCastleLoopbackServer.GetProviderOrIgnore();
+            var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
 
             // The server answers only after it received the client's bytes, so the client's read
             // stays pending until its write has gone through.
@@ -78,7 +78,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             });
             if (server == null)
             {
-                Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
                 return;
             }
 
@@ -106,12 +106,12 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void Http2_FiftyConcurrentRequests_Complete()
         {
             const int requestCount = 50;
-            var provider = BouncyCastleLoopbackServer.GetProviderOrIgnore();
+            var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
             using var server = BouncyCastleLoopbackServer.TryStartTls(stream =>
                 ServeHttp2Async(stream).GetAwaiter().GetResult());
             if (server == null)
             {
-                Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
                 return;
             }
 
@@ -151,7 +151,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void ExpectContinue_TimeoutPath_SendsBodyOverBouncyCastle()
         {
-            BouncyCastleLoopbackServer.GetProviderOrIgnore();
+            BouncyCastleLoopbackServer.GetProviderOrFail();
             const string payload = "bc-expect-continue-body";
             string receivedBody = null;
 
@@ -172,7 +172,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             });
             if (server == null)
             {
-                Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
                 return;
             }
 

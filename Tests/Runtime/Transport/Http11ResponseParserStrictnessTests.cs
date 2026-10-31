@@ -351,13 +351,18 @@ namespace TurboHTTP.Tests.Transport
                 new SemaphoreSlim(0, 1),
                 new PooledConnection(socket, stream, "example.test", 80, false));
 
-            var source = new Http11ResponseBodySource(
-                head,
-                lease,
-                CancellationToken.None,
-                TimeSpan.FromSeconds(30));
-            head.Dispose();
-            return source;
+            try
+            {
+                return new Http11ResponseBodySource(
+                    head,
+                    lease,
+                    CancellationToken.None,
+                    TimeSpan.FromSeconds(30));
+            }
+            finally
+            {
+                head.Dispose();
+            }
         }
     }
 }

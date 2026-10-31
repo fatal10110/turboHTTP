@@ -19,6 +19,7 @@ namespace TurboHTTP.Tests.Editor
     public class TurboHttpLinkerProcessorTests
     {
         private const string BouncyCastleAssembly = "TurboHTTP.Transport.BouncyCastle";
+        private const string BouncyCastleLibAssembly = "TurboHTTP.SecureProtocol";
         private const string IgnoreIfMissing = "ignoreIfMissing";
 
         private string _packageRoot;
@@ -175,6 +176,11 @@ namespace TurboHTTP.Tests.Editor
             var assembly = XDocument.Load(bouncyCastleLinkXml).Descendants("assembly")
                 .Single(a => (string)a.Attribute("fullname") == BouncyCastleAssembly);
             Assert.That((string)assembly.Attribute("preserve"), Is.EqualTo("all"));
+            // The vendored library is its own assembly (#143) and is preserved by the same rule file,
+            // which stays owned by the glue asmdef so it merges only when BouncyCastle ships.
+            var libAssembly = XDocument.Load(bouncyCastleLinkXml).Descendants("assembly")
+                .Single(a => (string)a.Attribute("fullname") == BouncyCastleLibAssembly);
+            Assert.That((string)libAssembly.Attribute("preserve"), Is.EqualTo("all"));
             Assert.That(TurboHttpLinkerProcessor.FindOwningAssembly(bouncyCastleLinkXml, _packageRoot),
                 Is.EqualTo(BouncyCastleAssembly));
             Assert.That(TurboHttpLinkerProcessor.FindOwningAssembly(transportLinkXml, _packageRoot),
@@ -186,11 +192,13 @@ namespace TurboHTTP.Tests.Editor
         {
             var withAll = TurboHttpLinkerProcessor.BuildMergedLinkXml(_packageRoot, _ => true);
             Assert.That(AssemblyNames(withAll), Does.Contain(BouncyCastleAssembly));
+            Assert.That(AssemblyNames(withAll), Does.Contain(BouncyCastleLibAssembly));
 
             var withoutOptional = TurboHttpLinkerProcessor.BuildMergedLinkXml(
                 _packageRoot, name => name != BouncyCastleAssembly && name != "TurboHTTP.JSON");
             var names = AssemblyNames(withoutOptional);
             Assert.That(names, Does.Not.Contain(BouncyCastleAssembly));
+            Assert.That(names, Does.Not.Contain(BouncyCastleLibAssembly));
             Assert.That(names, Does.Not.Contain("TurboHTTP.JSON"));
             AssertPreservesAll(withoutOptional, "TurboHTTP.Transport", "TurboHTTP.Transport.RawSocketTransport");
             AssertPreservesAll(withoutOptional, "System", "System.Net.Security.SslStream");
