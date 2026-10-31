@@ -83,3 +83,14 @@
 - **Not run:** Unity EditMode/PlayMode (no Unity license/editor on this host; PR CI only), IL2CPP, devices.
   `File.Replace` with a null backup path is used for the atomic replace; its behavior on Mono/IL2CPP mobile
   file systems is covered by CI EditMode only, not by a device run.
+
+## Review round 1 (PR #205)
+
+- The old validator is deleted before the truncating `FileMode.Create` open; the new representation's
+  validator is written only after the `.part` is open. A failed open (locked file, permissions) or a
+  crash can no longer pair validator B with bytes of representation A.
+- A resumed 206 needs `Content-Range: bytes a-b/c` with a known `c` and `b == c - 1` (else restart),
+  and the finished `.part` must be exactly `c` bytes or it is deleted and `UHttpException` is thrown.
+- Tests: `Restart200_PartLockedWhileTruncating_NeverPairsNewValidatorWithOldBytes`,
+  `Resume_206NotEndingAtCompleteLength_Restarts` (2 cases), `Resume_206BodyShorterThanContentRange_IsNotCommitted`.
+  Scratch net8.0 NUnit harness: 80/80 pass. `check.sh` passes. Unity tests: CI.
