@@ -19,7 +19,8 @@ recorded in the journal and in this table.
 | --- | --- | --- |
 | `TurboHTTP.Core` | — | `autoReferenced`; client API, request/response, pipeline, `Core.Internal` pooling/buffers |
 | `TurboHTTP.Transport` | Core | only assembly with `allowUnsafeCode`; `noEngineReferences`; excludes WebGL |
-| `TurboHTTP.Transport.BouncyCastle` | Core, Transport | TLS fallback provider; `Lib/` is vendored |
+| `TurboHTTP.Transport.BouncyCastle` | Core, Transport, SecureProtocol | TLS fallback provider glue |
+| `TurboHTTP.SecureProtocol` | — | vendored BouncyCastle in `Transport/BouncyCastle/Lib/` (never edited); `noEngineReferences`; excludes WebGL; asmdef sits at the `Lib/` root so the re-vendor sync keeps it (#143) |
 | `TurboHTTP.JSON` | Core | `noEngineReferences`; `LiteJsonSerializer` default, `TURBOHTTP_USE_SYSTEM_TEXT_JSON` optional |
 | `TurboHTTP.Middleware`, `.Auth`, `.Retry`, `.Cache`, `.RateLimit`, `.Observability`, `.Files`, `.Testing`, `.Unity` | Core | independently includable feature modules |
 | `TurboHTTP.WebSocket` | Core | `noEngineReferences` |

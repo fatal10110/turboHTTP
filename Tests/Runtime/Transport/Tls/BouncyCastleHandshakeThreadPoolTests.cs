@@ -82,7 +82,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void ConcurrentHandshakes_OverSaea_WithClampedThreadPool_CompleteWithoutBlockingIo()
         {
-            var provider = BouncyCastleLoopbackServer.GetProviderOrIgnore();
+            var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
 
             // Echo one byte so each connection also proves post-handshake I/O.
             using var server = BouncyCastleLoopbackServer.TryStartTls(stream =>
@@ -95,7 +95,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             });
             if (server == null)
             {
-                Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
                 return;
             }
 

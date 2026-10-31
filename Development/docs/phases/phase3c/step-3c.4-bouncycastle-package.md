@@ -60,6 +60,11 @@ crypto/src/utilities/    # Helper classes
 
 ### 2. Namespace Repackaging Script
 
+> **Superseded (#143, 2026-10):** `Editor/RepackageBouncyCastle.cs` was deleted. The vendored source is
+> re-namespaced by the bc-csharp `strip.sh` sync (#141), which is the only sync path. The library now
+> compiles as its own assembly, `TurboHTTP.SecureProtocol` (`Runtime/Transport/BouncyCastle/Lib/TurboHTTP.SecureProtocol.asmdef`),
+> referenced by `TurboHTTP.Transport.BouncyCastle`; see section 3 below for the original single-assembly plan.
+
 **File:** `Editor/RepackageBouncyCastle.cs` (run once)
 
 ```csharp

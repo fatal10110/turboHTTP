@@ -60,7 +60,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [TestCase(BadCertificate, "bad_certificate")]
         public void ReceivedNonTransientAlert_ThrowsAuthenticationException(int description, string name)
         {
-            var provider = BouncyCastleLoopbackServer.GetProviderOrIgnore();
+            var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
             using var server = StartAlertServer((byte)description);
 
             var ex = AssertAsync.ThrowsAsync<AuthenticationException>(
@@ -73,7 +73,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void ReceivedInternalError_StaysNetworkError()
         {
-            var provider = BouncyCastleLoopbackServer.GetProviderOrIgnore();
+            var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
             using var server = StartAlertServer(InternalError);
 
             Exception failure = null;
@@ -97,7 +97,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void RetryInterceptor_RetriesOnlyTransientAlerts(
             int description, UHttpErrorType expectedType, int expectedConnections)
         {
-            BouncyCastleLoopbackServer.GetProviderOrIgnore();
+            BouncyCastleLoopbackServer.GetProviderOrFail();
             using var server = StartAlertServer((byte)description);
 
             var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>

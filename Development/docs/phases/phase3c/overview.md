@@ -73,7 +73,7 @@ Runtime/Transport/BouncyCastle/
                 Utilities/
 
 Editor/
-    RepackageBouncyCastle.cs     — Step 3C.4 (one-time setup script)
+    RepackageBouncyCastle.cs     — Step 3C.4 (one-time setup script; deleted in #143, superseded by the strip.sh sync)
 ```
 
 ## Modified Files

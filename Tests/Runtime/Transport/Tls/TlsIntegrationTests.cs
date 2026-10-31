@@ -49,11 +49,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         [Category("Integration")]
         public void HttpClient_WithBouncyCastle_CanFetchGoogle()        {
-            if (!TlsProviderSelector.IsBouncyCastleAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             Task.Run(async () =>
             {

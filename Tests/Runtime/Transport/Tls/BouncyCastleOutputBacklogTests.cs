@@ -23,7 +23,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void Read_Fails_WhenQueuedOutputExceedsBound_WhileWriterIsStalled()
         {
-            var provider = BouncyCastleLoopbackServer.GetProviderOrIgnore();
+            var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
             using var sendCloseNotify = new ManualResetEventSlim(false);
 
             // The SslStream server cannot emit hello_request, so the trigger is its close_notify:
@@ -39,7 +39,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             });
             if (server == null)
             {
-                Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
                 return;
             }
 
