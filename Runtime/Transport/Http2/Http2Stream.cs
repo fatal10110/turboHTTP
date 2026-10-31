@@ -457,6 +457,10 @@ namespace TurboHTTP.Transport.Http2
             if (Interlocked.Exchange(ref _completionSignaled, 1) != 0)
                 return;
 
+            // IsResponseCompleted just turned true: an uploader blocked on the send window stops now
+            // (RFC 9113 Section 8.1: e.g. an early 413 while the request body is still flowing).
+            _connection?.WakeSendWindowWaiters();
+
             try
             {
                 _completionSource.SetResult(default);
@@ -470,6 +474,8 @@ namespace TurboHTTP.Transport.Http2
         {
             if (Interlocked.Exchange(ref _completionSignaled, 1) != 0)
                 return;
+
+            _connection?.WakeSendWindowWaiters();
 
             try
             {

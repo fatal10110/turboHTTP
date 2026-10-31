@@ -253,21 +253,28 @@ namespace TurboHTTP.Transport.Http2
             if (stream == null || flowControlledLength <= 0 || IsStreamClosedForReceive(stream.StreamId))
                 return;
 
+            // Credit the local receive window BEFORE the WINDOW_UPDATE is written (RFC 9113 Section 6.9).
+            // The read loop runs concurrently with this consumer: once the frame is on the wire the peer
+            // may send DATA using the new credit, and the read loop must already count it. Withdrawn
+            // again when the frame was not sent.
+            stream.AdjustRecvWindowSize(flowControlledLength);
             try
             {
                 await SendWindowUpdateAsync(stream.StreamId, flowControlledLength, ct).ConfigureAwait(false);
-                stream.AdjustRecvWindowSize(flowControlledLength);
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
             {
-                // Connection is shutting down.
+                // Connection is shutting down, or the consumer gave up before the frame was written.
+                stream.AdjustRecvWindowSize(-flowControlledLength);
             }
             catch (ObjectDisposedException)
             {
                 // Connection is shutting down.
+                stream.AdjustRecvWindowSize(-flowControlledLength);
             }
             catch (Exception ex)
             {
+                stream.AdjustRecvWindowSize(-flowControlledLength);
                 FailAllStreams(ex);
             }
         }
@@ -472,6 +479,9 @@ namespace TurboHTTP.Transport.Http2
                     stream.Fail(ex);
                 }
             }
+
+            // After _cts.Cancel(): blocked senders re-check and leave with a network error.
+            WakeSendWindowWaiters();
         }
 
         public void Dispose()
@@ -541,7 +551,6 @@ namespace TurboHTTP.Transport.Http2
             }
 
             _cts?.Dispose();
-            _windowWaiter?.Dispose();
             _connectionRecvWindowUpdateLock?.Dispose();
             _writeLock?.Dispose();
             DisposeStreamOnce();
