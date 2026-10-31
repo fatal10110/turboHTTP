@@ -129,14 +129,14 @@ The split must not introduce measurable overhead for the non-100-continue path. 
 1. Start a timer: `Task.Delay(ExpectContinueTimeoutMs, ct)`
 2. Attempt to read a response from the server using the `BufferedStreamReader`:
    - **`100 Continue` received:** Proceed to Stage 3 (body send). Discard the 100 response.
-   - **Final response (2xx-5xx) received:** Abort body send. Dispose `RequestBodyReadSession` without reading. Return/surface the response with its body source normally.
+   - **Final response (2xx-5xx) received:** Abort body send. Dispose `RequestBodyReadSession` without reading. Return the response with its body source; the connection is closed after it, never pooled (see 6a, "Send failure vs early final response").
    - **Timeout with no response:** Proceed to Stage 3 (body send). Log at `Debug` level: `"100-continue timeout, proceeding with body send"`.
 3. Error handling: socket errors during the wait → normal connection failure (`UHttpException` path).
 
 **Stage 3 — Send body:**
 1. Open the `RequestBodyReadSession` and stream the body normally via `SerializeBodyAsync`
 2. After body send completes, read the final response (or continue reading if already received in Stage 2)
-3. If body production or socket write fails after the wait has committed to body transmission, surface that send failure even if a final response head also arrives. Partial uploads are treated as transport failures rather than silent success.
+3. A body-send failure (body production or socket write) is resolved by the single rule in 6a, "Send failure vs early final response".
 
 ### Implementation Detail — `Task.WhenAny`
 
@@ -267,9 +267,33 @@ This is the most implementation-complex piece of 22b.1 and must be carefully tes
 
 ## Step 6: Edge Cases
 
-### 6a. Server Sends 100 Then Final Error Before Body Completes
+### 6a. Send failure vs early final response
 
-The body send may have already started when the server sends 4xx/5xx. After body send completes, the response MUST be read before the connection is declared failed. If the server closes the connection before the client reads the response, the client may get a broken pipe error rather than the error response. The implementation must read the response promptly after body send, even if a write error occurred.
+This is the only rule for an HTTP/1.1 expect-continue request whose body was not completely sent
+(never started because a final response came first, failed, or stopped part-way). It replaces the
+earlier "surface the send failure even if a final response head also arrives" wording of Step 4 and
+journal decision 4 of `2026-03-phase22b.1-http2-expect-and-forward-proxy-streaming.md`.
+
+1. **The connection is never reused.** The server may keep reading and discarding the declared
+   body (RFC 9110 sec 10.1.1), so the next request on that connection would be consumed as body.
+   An incomplete request message leaves the connection unframeable (RFC 9112 sec 9.3, 9.6): the
+   response is delivered and the connection is closed after it (`KeepAlive = false`).
+2. **After a failed body send, the response head is still read** (the server may have answered
+   while the client was writing; RFC 9112 sec 9.5).
+   - A **non-2xx final response** (3xx, 4xx, 5xx, e.g. 413 after a partial upload) is the server
+     declining or redirecting the request and is **returned to the caller**. The send failure is
+     recorded as the `TransportExpectContinueBodySendFailed` event with the status code.
+   - A **1xx/2xx head, or no head at all** (EOF, read fault, cancellation) cannot vouch for a
+     request whose body failed to send: the **send failure is surfaced** (`UHttpException`), with
+     any response-read failure attached to it. A partial upload never becomes silent success.
+3. **No send failure, body not started** (final response before 100 or before the timeout): the
+   response is returned as is (rule 1 still closes the connection).
+4. Requests without a request body (including `Content-Length: 0`) never enter the expect-continue
+   wait and keep the normal keep-alive behaviour.
+
+The non-expect path does not read the response while writing, so a send failure there is always
+surfaced; the stale-connection replay rules (RFC 9110 sec 9.2.2) are in `RawSocketTransport`
+(`CanRetryHttp11RequestAfterTransportFailure`).
 
 ### 6b. Server Sends Multiple 100 Responses
 
@@ -287,9 +311,13 @@ Body source is disposed without reading. Caller receives the rejection response.
 
 On retry, the 100-continue flow repeats. The body is reopened via `OpenReadSessionAsync` (only if replayable).
 
-### 6f. Connection Reuse After 100-Continue Rejection
+### 6f. No Connection Reuse After 100-Continue Rejection
 
-When the server sends a final response (e.g., 403, 417) instead of 100, the body was NOT sent. The connection is clean from the client side. However, if the rejection response has a body (e.g., an error page), the client must drain the response body before returning the connection to the pool. Apply the standard drain-or-close policy (`BufferedDrainReuseThresholdBytes`).
+When the server sends a final response (e.g., 403, 417) instead of 100, the body was NOT sent, but
+the server may still read and discard the declared body (RFC 9110 sec 10.1.1). The connection is
+therefore closed after the rejection response, never returned to the pool (rule 1 of 6a). Finishing
+the body send to keep the connection is not implemented: the server rejected the body, and a server
+that closes instead of discarding would turn the extra upload into a broken pipe.
 
 ### 6g. Proxy Strips `Expect` Header
 
@@ -302,6 +330,14 @@ The `responseReadTask` may complete with a 100 response during body send. This i
 ### 6i. HTTP/2 RST_STREAM During 100-Continue Wait
 
 If the server sends RST_STREAM while the client is waiting for 100-continue, the 100-continue TCS on the `Http2Stream` must be faulted immediately. The existing `Http2Stream.Abort()` path should propagate to the 100-continue TCS, causing the wait to throw and the stream to be cleaned up normally.
+
+### 6j. 417 Expectation Failed
+
+RFC 9110 sec 10.1.1 says a client that receives 417 SHOULD repeat the request without the
+expectation. TurboHTTP does **not** retry automatically: the 417 response is returned to the caller
+(whose body was not consumed, so a replayable body can be re-sent with `WithExpectContinue(false)`).
+Covered by `RawSocketTransportConnectionReuseTests.ExpectContinue_Expect417_ReplayableBody_ReturnedToCallerWithoutRetry`.
+An opt-in automatic retry is tracked in #214.
 
 ---
 
@@ -334,7 +370,7 @@ If the server sends RST_STREAM while the client is waiting for 100-continue, the
 14. **`AutoExpectContinueThresholdBytes` + unknown-length** — verify unknown-length body does NOT trigger auto-injection
 15. **`AutoExpectContinueThresholdBytes` modified request consistency** — verify the auto-injected `Expect` header is visible to observability/logging layers (not just serialization)
 16. **MockTransport scenarios** — delayed 100, immediate rejection, timeout
-17. **Connection reuse after rejection** — server sends 403 with body, verify connection drained and returned to pool
+17. **No connection reuse after rejection** — server sends 417 keep-alive with body; the follow-up request opens a new connection (`RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_DoesNotReuseConnection`)
 18. **Timeout path sequencing** — verify `responseReadTask` is awaited after body send, no concurrent reader access
 
 ### Performance Test
@@ -371,13 +407,21 @@ If the server sends RST_STREAM while the client is waiting for 100-continue, the
 - [ ] Bodyless requests with `Expect: 100-continue` handled without error
 - [ ] Timeout path awaits `responseReadTask` after body send before final response read (no concurrent reader access)
 - [ ] Timer cleanup via dedicated `CancellationTokenSource` (no leaked timer registrations)
-- [ ] Connection drained and reused after server rejection with response body
+- [ ] Connection closed (never pooled) after an early final response or a failed body send (6a)
 - [ ] Auto-injected `Expect` header uses modified request copy consistently through entire dispatch path
 - [ ] HTTP/2 read loop distinguishes 1xx interim HEADERS from final response HEADERS
 - [ ] HTTP/2 RST_STREAM during 100-continue wait faults the stream correctly
 - [ ] SslStream concurrent read/write validated on physical iOS and Android devices
 - [ ] All unit and integration tests pass (19 tests)
 - [ ] No latency regression for requests without `Expect: 100-continue`
+
+## Validation matrix
+
+| Path | Status | Evidence |
+| --- | --- | --- |
+| HTTP/1.1 plain TCP, Editor (Mono) | PASS (CI) | `RawSocketTransportTests.RawSocketTransport_ExpectContinue_*`, `RawSocketTransportConnectionReuseTests.ExpectContinue_*` |
+| HTTP/1.1 over BouncyCastle TLS (concurrent read/write, #36 closed) | PASS (CI) | `Tests/Runtime/Transport/Tls/BouncyCastleDuplexStreamTests.cs:152` `ExpectContinue_TimeoutPath_SendsBodyOverBouncyCastle` |
+| HTTP/1.1 over SslStream, physical iOS / Android | needs-device-validation (#99) | none from the Editor |
 
 ## Performance Notes
 

@@ -15,10 +15,23 @@ namespace TurboHTTP.Transport.Http1
     internal sealed class Http11RequestWriteState
     {
         private int _bodyWriteStarted;
+        private int _messageWritten;
         private long _bodyBytesWritten;
 
         internal bool HasCommittedBodyBytes => Volatile.Read(ref _bodyWriteStarted) != 0;
         internal long BodyBytesWritten => Interlocked.Read(ref _bodyBytesWritten);
+
+        /// <summary>
+        /// True once the last byte of the request message (the head for a bodiless request,
+        /// otherwise the body) was handed to the stream without a write failure. From then on
+        /// the server may have received and processed the complete request.
+        /// </summary>
+        internal bool HasWrittenCompleteMessage => Volatile.Read(ref _messageWritten) != 0;
+
+        internal void MarkMessageWritten()
+        {
+            Interlocked.Exchange(ref _messageWritten, 1);
+        }
 
         internal void MarkBodyWriteStarted()
         {
@@ -77,6 +90,7 @@ namespace TurboHTTP.Transport.Http1
                     smallBufferedRequestThresholdBytes,
                     ct).ConfigureAwait(false))
             {
+                writeState?.MarkMessageWritten();
                 await stream.FlushAsync(ct).ConfigureAwait(false);
                 return;
             }
@@ -99,6 +113,7 @@ namespace TurboHTTP.Transport.Http1
                     .ConfigureAwait(false);
             }
 
+            writeState?.MarkMessageWritten();
             await stream.FlushAsync(ct).ConfigureAwait(false);
         }
 
