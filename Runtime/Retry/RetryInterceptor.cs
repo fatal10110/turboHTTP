@@ -39,7 +39,11 @@ namespace TurboHTTP.Retry
                 }
 
                 var attempt = 0;
-                var detector = new RetryDetectorHandler(handler, cancellationToken, ResponseDiscardTimeout);
+                var detector = new RetryDetectorHandler(
+                    handler,
+                    cancellationToken,
+                    ResponseDiscardTimeout,
+                    _policy.MaxDelay);
                 var terminalObserver = new RetryTerminalObserverHandler(handler);
 
                 while (true)
@@ -73,6 +77,19 @@ namespace TurboHTTP.Retry
 
                     if (detector.DeliveredError)
                         return;
+
+                    if (detector.RetryAfterExceededCap)
+                    {
+                        var retryAfterMs = detector.RetryAfterDelay.GetValueOrDefault().TotalMilliseconds;
+                        context.RecordEvent("RetryAfterExceedsMaxDelay", new Dictionary<string, object>
+                        {
+                            { "attempt", attempt },
+                            { "retryAfterMs", retryAfterMs },
+                            { "maxDelayMs", _policy.MaxDelay.TotalMilliseconds }
+                        });
+                        _log($"[RetryInterceptor] Attempt {attempt} failed with Retry-After {retryAfterMs / 1000d:F1}s above MaxDelay; returning the response without retrying.");
+                        return;
+                    }
 
                     if (!detector.WasRetryable)
                     {
