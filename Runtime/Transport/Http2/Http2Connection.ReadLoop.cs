@@ -182,8 +182,10 @@ namespace TurboHTTP.Transport.Http2
             }
             else if (flowControlledLength > 0 && !IsStreamClosedForReceive(frame.StreamId))
             {
-                await SendWindowUpdateAsync(frame.StreamId, flowControlledLength, ct).ConfigureAwait(false);
+                // Credit the window before advertising it (RFC 9113 Section 6.9). A failed write fails
+                // the connection, so the credit is never observed by a live stream.
                 stream.AdjustRecvWindowSize(flowControlledLength);
+                await SendWindowUpdateAsync(frame.StreamId, flowControlledLength, ct).ConfigureAwait(false);
             }
 
             await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
@@ -608,34 +610,47 @@ namespace TurboHTTP.Transport.Http2
             }
 
             var settings = Http2Settings.ParsePayload(frame.Payload, frame.Length);
-            int oldInitialWindowSize = _remoteSettings.InitialWindowSize;
+            int initialWindowDelta = 0;
 
-            foreach (var (id, value) in settings)
+            // RFC 9113 Section 6.9.2: applying INITIAL_WINDOW_SIZE and adjusting every open stream by the
+            // delta is one step with respect to stream creation. DispatchAsync snapshots the initial
+            // window and registers the stream under this same monitor, so a new stream gets either the
+            // old value plus the delta or the new value, never both or neither. No await in here.
+            lock (_streamCreateLock)
             {
-                _remoteSettings.Apply(id, value);
+                int oldInitialWindowSize = _remoteSettings.InitialWindowSize;
 
-                // RFC 7541 Section 4.2: every HEADER_TABLE_SIZE value counts toward the smallest size
-                // the encoder must signal before its next block. The encoder only records the change;
-                // it resizes its table inside Encode, under _writeLock.
-                if (id == Http2SettingId.HeaderTableSize)
-                    _hpackEncoder.SetMaxDynamicTableSize(_remoteSettings.HeaderTableSize);
-            }
-
-            // Adjust stream send windows if InitialWindowSize changed
-            int newInitialWindowSize = _remoteSettings.InitialWindowSize;
-            if (newInitialWindowSize != oldInitialWindowSize)
-            {
-                int delta = newInitialWindowSize - oldInitialWindowSize;
-                foreach (var kvp in _activeStreams)
+                foreach (var (id, value) in settings)
                 {
-                    var stream = kvp.Value;
-                    long newWindow = (long)stream.SendWindowSize + delta;
-                    if (newWindow > int.MaxValue || newWindow < 0)
-                        throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
-                            "INITIAL_WINDOW_SIZE change causes stream window overflow");
-                    stream.AdjustSendWindowSize(delta);
+                    _remoteSettings.Apply(id, value);
+
+                    // RFC 7541 Section 4.2: every HEADER_TABLE_SIZE value counts toward the smallest size
+                    // the encoder must signal before its next block. The encoder only records the change;
+                    // it resizes its table inside Encode, under _writeLock.
+                    if (id == Http2SettingId.HeaderTableSize)
+                        _hpackEncoder.SetMaxDynamicTableSize(_remoteSettings.HeaderTableSize);
+                }
+
+                int newInitialWindowSize = _remoteSettings.InitialWindowSize;
+                if (newInitialWindowSize != oldInitialWindowSize)
+                {
+                    initialWindowDelta = newInitialWindowSize - oldInitialWindowSize;
+                    foreach (var kvp in _activeStreams)
+                    {
+                        var stream = kvp.Value;
+                        // A decrease may leave a window negative; senders wait until it is positive
+                        // again. Only an overflow past 2^31-1 is a connection FLOW_CONTROL_ERROR.
+                        long newWindow = (long)stream.SendWindowSize + initialWindowDelta;
+                        if (newWindow > int.MaxValue)
+                            throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
+                                "INITIAL_WINDOW_SIZE change causes stream window overflow");
+                        stream.AdjustSendWindowSize(initialWindowDelta);
+                    }
                 }
             }
+
+            if (initialWindowDelta > 0)
+                WakeSendWindowWaiters();
 
             // Send SETTINGS ACK
             try
@@ -779,7 +794,7 @@ namespace TurboHTTP.Transport.Http2
                     throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
                         "Connection send window overflow");
                 Interlocked.Add(ref _connectionSendWindow, increment);
-                try { _windowWaiter.Release(); } catch (SemaphoreFullException) { }
+                WakeSendWindowWaiters();
             }
             else
             {
@@ -787,10 +802,23 @@ namespace TurboHTTP.Transport.Http2
                 {
                     long newWindow = (long)stream.SendWindowSize + increment;
                     if (newWindow > int.MaxValue)
-                        throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
-                            $"Stream {frame.StreamId} send window overflow");
+                    {
+                        // RFC 9113 Section 6.9.1: a stream window above 2^31-1 is a stream error of type
+                        // FLOW_CONTROL_ERROR; only the connection window overflow is a connection error.
+                        if (_activeStreams.TryRemove(frame.StreamId, out var overflowedStream))
+                        {
+                            overflowedStream.Fail(new Http2ProtocolException(Http2ErrorCode.FlowControlError,
+                                $"Stream {frame.StreamId} send window overflow"));
+                        }
+
+                        TrackRecentlyResetStream(frame.StreamId);
+                        await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.FlowControlError)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+
                     stream.AdjustSendWindowSize(increment);
-                    try { _windowWaiter.Release(); } catch (SemaphoreFullException) { }
+                    WakeSendWindowWaiters();
                 }
             }
         }

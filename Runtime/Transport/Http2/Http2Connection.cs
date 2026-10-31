@@ -65,7 +65,11 @@ namespace TurboHTTP.Transport.Http2
         // Flow control
         private int _connectionSendWindow = Http2Constants.DefaultInitialWindowSize;
         private int _connectionRecvWindow = Http2Constants.DefaultInitialWindowSize;
-        private readonly SemaphoreSlim _windowWaiter = new SemaphoreSlim(0);
+        // Send-window waiters (RFC 9113 Section 6.9, 6.9.2): one broadcast signal per connection, created
+        // lazily by the first sender that blocks. Every event that can let a blocked sender continue
+        // completes and clears it (WakeSendWindowWaiters); each waiter then re-checks its own windows,
+        // stream completion and cancellation. Accessed only through Volatile/Interlocked.
+        private TaskCompletionSource<bool> _sendWindowSignal;
         private readonly SemaphoreSlim _connectionRecvWindowUpdateLock = new SemaphoreSlim(1, 1);
         private long _connectionBufferedBytes;
         private int _connectionWindowUpdateScheduled;
