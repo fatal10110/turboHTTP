@@ -1,0 +1,47 @@
+using TurboHTTP.Transport;
+using TurboHTTP.WebSocket.Transport;
+using UnityEngine;
+using UnityEngine.Scripting;
+
+namespace TurboHTTP
+{
+    /// <summary>
+    /// Registers the default HTTP and WebSocket transports when the player (or Editor play mode)
+    /// starts, so <c>new UHttpClient()</c> and <c>WebSocketTransportFactory.Create()</c> work without
+    /// any startup code.
+    /// </summary>
+    /// <remarks>
+    /// Unity 2021.3 does not run <c>[ModuleInitializer]</c> methods reliably, and nothing else
+    /// references TurboHTTP.Transport or TurboHTTP.WebSocket.Transport statically, so the module
+    /// initializers in those assemblies are only a secondary path. This class lives in the
+    /// TurboHTTP.Complete assembly, the one TurboHTTP assembly that references UnityEngine and both
+    /// transport assemblies; Unity calls <see cref="RegisterDefaultTransports"/> at
+    /// <see cref="RuntimeInitializeLoadType.SubsystemRegistration"/>, before any scene loads or
+    /// <c>BeforeSceneLoad</c>/<c>Awake</c> code runs. <see cref="PreserveAttribute"/> keeps it under
+    /// every managed stripping level. A transport registered later (for example from
+    /// <c>BeforeSceneLoad</c>) replaces this default; projects that strip or exclude this assembly
+    /// call <c>RawSocketTransport.EnsureRegistered()</c> and
+    /// <c>RawSocketWebSocketTransport.EnsureRegistered()</c> at startup instead.
+    /// </remarks>
+    [Preserve]
+    internal static class TurboHttpBootstrap
+    {
+        /// <summary>
+        /// Registers <see cref="RawSocketTransport"/> and <see cref="RawSocketWebSocketTransport"/> as
+        /// the default transports. Runs once per player start and once per Editor play-mode entry
+        /// (also when domain reload is disabled), so each session starts from the default
+        /// registration. In the Editor it also runs after every domain reload, so editor tools and
+        /// EditMode code outside play mode get the same defaults.
+        /// </summary>
+        [Preserve]
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+#if UNITY_EDITOR
+        [UnityEditor.InitializeOnLoadMethod]
+#endif
+        internal static void RegisterDefaultTransports()
+        {
+            RawSocketTransport.EnsureRegistered();
+            RawSocketWebSocketTransport.EnsureRegistered();
+        }
+    }
+}

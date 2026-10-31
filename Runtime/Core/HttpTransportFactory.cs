@@ -6,8 +6,9 @@ namespace TurboHTTP.Core
     /// <summary>
     /// Thread-safe factory for HTTP transport instances.
     /// Uses Lazy&lt;T&gt; for lock-free singleton reads after initialization.
-    /// Register a factory via <see cref="Register"/> (typically called by
-    /// RawSocketTransport's [ModuleInitializer] in the Transport assembly).
+    /// Register a factory via <see cref="Register"/>. The default raw-socket transport is
+    /// registered by TurboHTTP's startup bootstrap (a RuntimeInitializeOnLoadMethod in the
+    /// TurboHTTP.Complete assembly) through <c>RawSocketTransport.EnsureRegistered()</c>.
     /// </summary>
     public static class HttpTransportFactory
     {
@@ -84,9 +85,9 @@ namespace TurboHTTP.Core
                 if (lazy == null)
                     throw new InvalidOperationException(
                         "No default transport configured. " +
-                        "Ensure TurboHTTP.Transport is included in your project. " +
-                        "If using IL2CPP and the module initializer did not fire, " +
-                        "call RawSocketTransport.EnsureRegistered() at startup.");
+                        "Ensure TurboHTTP.Transport and TurboHTTP.Complete are included in the build " +
+                        "(the platform must not be WebGL), or call " +
+                        "RawSocketTransport.EnsureRegistered() at startup.");
                 return lazy.Value;
             }
         }

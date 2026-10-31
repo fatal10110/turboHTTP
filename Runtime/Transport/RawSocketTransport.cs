@@ -75,8 +75,9 @@ namespace TurboHTTP.Transport
 
         /// <summary>
         /// Explicitly register this transport with <see cref="HttpTransportFactory"/>.
-        /// Not needed in normal usage (module initializer handles it).
-        /// Useful for tests that call <see cref="HttpTransportFactory.Reset"/>.
+        /// Not needed in normal usage: TurboHTTP's startup bootstrap (TurboHTTP.Complete) calls it
+        /// at <c>RuntimeInitializeLoadType.SubsystemRegistration</c>. Call it at startup when that
+        /// assembly is excluded from the build, or after <see cref="HttpTransportFactory.Reset"/>.
         /// </summary>
         public static void EnsureRegistered()
         {

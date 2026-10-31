@@ -491,7 +491,7 @@ A production-grade, modular HTTP client for Unity with advanced features designe
 KEY FEATURES:
 
 ✓ Modular Architecture - Use only the modules you need
-✓ Cross-Platform - Editor, Standalone, iOS, Android (WebGL in v1.x)
+✓ Cross-Platform - Editor, Standalone, iOS, Android (WebGL unsupported in v1.0: WebGL builds fail with an explanatory error)
 ✓ Advanced Retry Logic - Intelligent retries with idempotency awareness
 ✓ HTTP Caching - ETag-based caching for optimized bandwidth
 ✓ Timeline Tracing - Detailed observability for every request

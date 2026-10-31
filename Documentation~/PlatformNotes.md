@@ -11,7 +11,7 @@ TurboHTTP is designed to run reliably across major Unity platforms, supporting b
 | **Linux** | Mono / IL2CPP | ✅ Supported | Verified on Ubuntu 20.04+. |
 | **iOS** | IL2CPP | ✅ Supported | Requires AOT-safe configuration. |
 | **Android** | IL2CPP | ✅ Supported | ARM64/ARMv7. Restrictions on cleartext apply. |
-| **WebGL** | IL2CPP | ❌ Not Supported | Browser sandbox restrictions. Future implementation planned. |
+| **WebGL** | IL2CPP | ❌ Unsupported in v1.0 | Browsers provide no raw sockets. A WebGL player build fails at build time with an explanatory error instead of failing every request at runtime. Support is planned for a later release. |
 | **Console** | IL2CPP | ⚠️ Experimental | Socket implementation varies by platform SDK. |
 
 ## Platform Defaults
