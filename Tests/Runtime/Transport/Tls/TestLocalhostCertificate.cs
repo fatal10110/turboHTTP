@@ -12,8 +12,10 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// <remarks>
     /// Test material, not a secret: self-signed <c>CN=localhost</c> (SAN localhost, 127.0.0.1, ::1),
     /// RSA 2048, serverAuth, valid 2026-10-31 to 2126-10-07, PKCS#12 with SHA1/3DES so Mono can read
-    /// it. Nothing trusts it: tests that need a successful handshake accept it explicitly, and the
-    /// fail-closed tests expect it to be rejected. Regenerate with
+    /// it. Nothing trusts it: platform <c>SslStream</c> rejects it (the fail-closed tests rely on that),
+    /// and BouncyCastle loopback handshakes succeed only because the BC provider does no chain
+    /// validation yet (#33). When #33 lands, those tests need a test-only trust anchor for this
+    /// certificate. Regenerate with
     /// <c>openssl req -x509 -newkey rsa:2048 -nodes -days 36500 -subj /CN=localhost ...</c> and
     /// <c>openssl pkcs12 -export -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1</c>.
     /// </remarks>

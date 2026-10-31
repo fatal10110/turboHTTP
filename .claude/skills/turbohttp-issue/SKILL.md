@@ -90,8 +90,9 @@ Every change answers three questions in the PR body, from evidence:
    cd <worktree> && './Tools~/unity/run-tests.sh' --platform PlayMode --filter '<YourTests>'
    ```
 
-   The Unity runs need `UNITY_PATH`; exit 3 (`UNITY_UNAVAILABLE`) means they run on CI only — say
-   so. Never run the whole Unity suite locally; PR CI does. `check.sh` asking for Unity DLLs:
+   The Unity runs need `UNITY_PATH`; exit 3 (`UNITY_UNAVAILABLE`) means "Unity unavailable locally" —
+   say so. Never run the whole Unity suite; PR CI does not run it either (no license, #188),
+   the periodic host-editor run does (testing.md). `check.sh` asking for Unity DLLs:
    `'./Tools~/ci/fetch-unity-dlls.sh'` once.
 8. **Specialist rubrics.** Apply `.claude/agents/unity-infrastructure-architect.md` and
    `.claude/agents/unity-network-architect.md` to your diff (spawn them as subagents when you can;

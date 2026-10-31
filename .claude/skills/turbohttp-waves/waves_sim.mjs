@@ -126,6 +126,7 @@ function world(cap, scen) {
     if (kind === 'take') {
       const evs = scen.$take.shift()
       if (evs === 'FAKE_STOP') return { events: [], stop: true } // a poller that reports a stop it never saw
+      if (evs && evs.stopWith) return { events: evs.stopWith, stop: true } // an off-script poller: events and stop together
       return evs ? { events: evs, stop: false } : { events: [], stop: true }
     }
     if (kind === 'merge') return { status: 'merged', answered: !/lane "nope"/.test(prompt), notes: '' }
@@ -321,6 +322,10 @@ const count = (w, prefix) => w.labels.filter(l => l === prefix || l.startsWith(p
     $take: [[{ id: 'm1', type: 'merge', from: 'a/review' }], 'FAKE_STOP', [{ id: 'm2', type: 'merge', from: 'a/review' }]],
   })
   assert.deepEqual(fake.res.handled, ['a: merged', 'a: merged'])
+
+  // Events that arrive together with a stop are still served before the broker stops.
+  const both = await run({ run: 'sim', role: 'merger', plan }, { $take: [{ stopWith: [{ id: 'm3', type: 'merge', from: 'a/review' }] }] })
+  assert.deepEqual(both.res.handled, ['a: merged'])
 
   const miss = await run({ run: 'sim', role: 'helper', plan: { tracks: ['A'], waves: [] } }, {
     $missingTypes: true,

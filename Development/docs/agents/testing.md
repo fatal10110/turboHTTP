@@ -34,7 +34,7 @@ in `tooling.md`.
   - run async helpers through `Task.Run`; Unity's synchronization context does not pump in tests and
     deadlocks;
   - never call another test method from a test (it skips SetUp/TearDown).
-  - no `[NonParallelizable]`/`[Parallelizable]`, `Assert.Multiple` or `Assert.*Async`: they are
+  - no `[NonParallelizable]`, `Assert.Multiple` or `Assert.*Async`: they are
     missing from `com.unity.ext.nunit` 1.0.6 and break compilation of the whole test assembly
     (`check_repo.py unitynunit` enforces this, since PR CI cannot compile Unity tests without a
     license).

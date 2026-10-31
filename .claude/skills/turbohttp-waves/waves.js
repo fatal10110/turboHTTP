@@ -407,7 +407,7 @@ function helperPrompt(ev) {
   const body = {
     'cs-scout': `Locate the C# code the question asks about, in the worktree it names (read-only): rg -n -w with -g '*.cs' bounded to Runtime/, Tests/ or Editor/ (never Runtime/Transport/BouncyCastle/Lib), and ${LOOK} --root <worktree> cs:PATH:Type.Member for declarations. Report file:line locations with one line each on what is there; no file dumps.`,
     'rfc-researcher': `Investigate the protocol or platform question as one batched report. Sources, in order: the RFC/spec text (fetch https://www.rfc-editor.org/rfc/rfcNNNN.txt with WebFetch, or the official spec page), the repo's phase docs under <worktree>/Development/docs/phases, ${REVIEW_DOC}, and the code the question names. Cite RFC section numbers and quote at most one sentence per rule; cite file:line for code. Say MUST/SHOULD/MAY precisely and what the client must do on violation (connection vs stream error, close code, retry rule).`,
-    'runner': `Run the commands the question lists, in the worktree it names: the local gate as ${GATE('<worktree>')}, and Unity tests only as ${UNITY('<worktree>')} with a --filter. Refuse a Unity run without --filter (answer that CI runs the full suite and ask for a filter). UNITY_UNAVAILABLE (exit 3) is a result, not an error: report it. Do not edit, commit or push anything. Report per command: pass/fail, the failing check or test names, and the first error lines with file:line (at most 60 lines in total).`,
+    'runner': `Run the commands the question lists, in the worktree it names: the local gate as ${GATE('<worktree>')}, and Unity tests only as ${UNITY('<worktree>')} with a --filter. Refuse a Unity run without --filter (answer that the full suite runs only in the periodic host-editor run and ask for a filter). UNITY_UNAVAILABLE (exit 3) is a result, not an error: report it. Do not edit, commit or push anything. Report per command: pass/fail, the failing check or test names, and the first error lines with file:line (at most 60 lines in total).`,
   }[ev.type]
   return `Helper request ${ev.id} from ${ev.from}. Read the request file ${file} with the Read tool; its "question" field is your task and its "worktree" field is the requester's worktree. ${body}
 Your final message is delivered verbatim to the requester: lead with the answer, cite file:line or RFC-section evidence, say what is confirmed versus inferred.`
@@ -425,7 +425,7 @@ function mergePrompt(ev, L) {
   const file = `${RUNDIR}/requests/taken/${ev.id}.json`
   const slug = L.slug
   const D = LANE_DIR(slug)
-  return `You are the CI and merge agent for lane "${slug}" (branch wf/${slug}, issues ${issuesText(L)}) in fatal10110/turboHTTP. Read the request file ${file} with the Read tool: its "question" field is a JSON object {"pr": <number>, "head": "<sha the reviewer approved>"}. The PR passed review with no action required, and the user explicitly authorized merging PRs that passed this review loop. Be mechanical: you never edit code, never resolve conflicts and never run tests locally (CI runs the full Unity suite and the gates).
+  return `You are the CI and merge agent for lane "${slug}" (branch wf/${slug}, issues ${issuesText(L)}) in fatal10110/turboHTTP. Read the request file ${file} with the Read tool: its "question" field is a JSON object {"pr": <number>, "head": "<sha the reviewer approved>"}. The PR passed review with no action required, and the user explicitly authorized merging PRs that passed this review loop. Be mechanical: you never edit code, never resolve conflicts and never run tests locally (CI runs the gates; Unity suites run in the periodic host-editor run).
 Every Bash call to ${MB} uses timeout 600000. You answer exactly once, at the end, with:
   ${MB} answer --run ${RUN} --id ${ev.id} --text '<json object>'
 where the object is {"status":"merged|conflict|ci_failed|head_moved|threads_open|merge_blocked|retry","merge_sha":"","file":"","head":"","notes":""} (no single quotes inside).
@@ -720,7 +720,8 @@ async function mergerMain() {
     let t = await agentAs('coord', takePrompt('merge', !requeued), { label: 'take', phase: 'Merge', model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
     if (!t) continue
     requeued = true // only a take that actually ran has re-served the orphans
-    if (t.stop && !(t = await confirmStop('merge', 'Merge'))) break
+    // Events are served even when stop is set (a real take never prints both); the next take re-reports a real stop.
+    if (t.stop && !(t.events || []).length && !(t = await confirmStop('merge', 'Merge'))) break
     for (const ev of (t.events || [])) {
       const slug = String(ev.from).split('/')[0]
       const L = LANE_BY[slug] || { slug, issues: [] }
@@ -760,7 +761,8 @@ async function helperMain() {
     let t = await agentAs('coord', takePrompt('helper', !requeued), { label: 'take', phase: 'Helpers', model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
     if (!t) continue
     requeued = true // only a take that actually ran has re-served the orphans
-    if (t.stop && !(t = await confirmStop('helper', 'Helpers'))) break
+    // Events are served even when stop is set (a real take never prints both); the next take re-reports a real stop.
+    if (t.stop && !(t.events || []).length && !(t = await confirmStop('helper', 'Helpers'))) break
     for (const ev of (t.events || [])) {
       const lane = String(ev.from).split('/')[0]
       if (ev.type === 'rfc-researcher') {

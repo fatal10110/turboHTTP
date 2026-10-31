@@ -128,11 +128,32 @@ def check_json(files):
 
 # APIs missing from Unity 2021.3's NUnit (checked against com.unity.ext.nunit 1.0.6's nunit.framework.dll).
 UNITY_NUNIT_MISSING = [
-    (re.compile(r"\[\s*(?:[\w.]+\.)?NonParallelizable\b"), "[NonParallelizable] (Unity runs tests serially; drop it)"),
+    # Any position in an attribute list: [NonParallelizable], [TestFixture, NonParallelizable], [...Attribute].
+    (re.compile(r"\[[^\]]*?\b(?:[\w.]+\.)?NonParallelizable(?:Attribute)?\b"), "[NonParallelizable] (Unity runs tests serially; drop it)"),
     (re.compile(r"\bAssert\.(?:ThrowsAsync|CatchAsync|ThatAsync)\b"), "Assert.*Async (use AssertAsync.ThrowsAsync)"),
     (re.compile(r"\bAssert\.Multiple\b"), "Assert.Multiple"),
 ]
-ASYNC_TASK_TEST = re.compile(r"\[\s*(?:Test|TestCase\b[^\]]*|TestCaseSource\b[^\]]*)\s*\]\s*(?:\[[^\]]*\]\s*)*public\s+async\s+Task\b")
+ASYNC_TASK_METHOD = re.compile(
+    r"(?:(?:public|internal|private|protected|static|virtual|override|new)\s+)*async\s+Task(?:<[^>]*>)?\s+\w+\s*\(")
+TEST_ATTRIBUTE = re.compile(r"\[(?:[^\]]*[,\s(])?(?:Test|TestCase|TestCaseSource)(?:Attribute)?\b")
+
+
+def _async_task_tests(text):
+    """Offsets of async Task methods carrying a test attribute: the attributes are the text between the
+    previous member boundary (';', '{' or '}' outside the attribute brackets) and the signature."""
+    for m in ASYNC_TASK_METHOD.finditer(text):
+        i, depth = m.start() - 1, 0
+        while i >= 0:
+            ch = text[i]
+            if ch == "]":
+                depth += 1
+            elif ch == "[":
+                depth -= 1
+            elif ch in ";{}" and depth <= 0:
+                break
+            i -= 1
+        if TEST_ATTRIBUTE.search(text[i + 1:m.start()]):
+            yield m.start()
 
 
 def check_unity_nunit(files):
@@ -141,11 +162,12 @@ def check_unity_nunit(files):
         if not (f.startswith("Tests/") and f.endswith(".cs")):
             continue
         text = open(os.path.join(ROOT, f), encoding="utf-8-sig").read()
+        line = lambda pos: text.count("\n", 0, pos) + 1
         for pattern, what in UNITY_NUNIT_MISSING:
             for m in pattern.finditer(text):
-                errors.append(f"unitynunit: {f}:{text.count(chr(10), 0, m.start()) + 1}: {what} does not exist in Unity's NUnit")
-        for m in ASYNC_TASK_TEST.finditer(text):
-            errors.append(f"unitynunit: {f}:{text.count(chr(10), 0, m.start()) + 1}: async Task test methods do not run in "
+                errors.append(f"unitynunit: {f}:{line(m.start())}: {what} does not exist in Unity's NUnit")
+        for pos in _async_task_tests(text):
+            errors.append(f"unitynunit: {f}:{line(pos)}: async Task test methods do not run in "
                           "Unity's NUnit; write a void test that wraps the body in AssertAsync.Run")
     return errors
 

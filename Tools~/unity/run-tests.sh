@@ -15,7 +15,7 @@
 # (testing.md, "Periodic host-editor runs"), never per change.
 #
 # Exit codes: 0 pass, 1 test failures, 2 usage/setup error, 3 Unity not installed (prints
-# UNITY_UNAVAILABLE; PR CI then runs the tests). Env: UNITY_TEST_PROJECT (default
+# UNITY_UNAVAILABLE; PR CI does not run Unity tests, the periodic host-editor run does). Env: UNITY_TEST_PROJECT (default
 # <cache>/testproj), UNITY_PACKAGE_COPY (default <cache>/package), where <cache> is
 # ~/.cache/turbohttp, or %LOCALAPPDATA%\turbohttp for a Windows editor driven from WSL.
 set -euo pipefail
@@ -34,7 +34,7 @@ case "$platform" in EditMode|PlayMode) ;; *) echo "run-tests: --platform EditMod
 
 unity="${UNITY_PATH:-}"
 if [ -z "$unity" ] || [ ! -x "$unity" ]; then
-  echo "UNITY_UNAVAILABLE: set UNITY_PATH to a Unity $(cat "$repo/Tools~/ci/unity-version") editor binary; PR CI runs the Unity tests"
+  echo "UNITY_UNAVAILABLE: set UNITY_PATH to a Unity $(cat "$repo/Tools~/ci/unity-version") editor binary; PR CI does not run Unity tests (no license, #188)"
   exit 3
 fi
 
@@ -47,9 +47,11 @@ esac
 topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
 
 if [ "$win" = 1 ]; then
-  localappdata="$(cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')"
-  [ -n "$localappdata" ] || { echo "run-tests: cannot read %LOCALAPPDATA% from Windows" >&2; exit 2; }
-  cache="$(wslpath -u "$localappdata")/turbohttp"
+  # set -e must not turn a failed probe into exit 1 ("test failures"): every failure here is exit 2.
+  localappdata="$( (cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%') 2>/dev/null | tr -d '\r' || true)"
+  wincache="$( [ -n "$localappdata" ] && wslpath -u "$localappdata" 2>/dev/null || true)"
+  [ -n "$wincache" ] || { echo "run-tests: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
+  cache="$wincache/turbohttp"
 else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi

@@ -7,7 +7,6 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Authentication;
-using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
@@ -839,7 +838,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                    Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
                 string firstRequestLine = null;
                 string secondRequestLine = null;
 
@@ -910,7 +909,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                    Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 using var originServerA = new HttpsOriginServer(certificate, async (stream, _) =>
                 {
@@ -965,7 +964,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                    Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 string sameTunnelFollowUp = null;
                 var largeBody = new byte[(64 * 1024) + 2];
@@ -1047,7 +1046,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                    Assert.Ignore("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 string requestLine = null;
 
