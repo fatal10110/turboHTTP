@@ -39,6 +39,8 @@ var retry = new RetryMiddleware(new RetryPolicy {
 
 *Note: Request-level timeouts apply to each attempt independently, not as a total budget.*
 
+**`Retry-After`:** a retryable 5xx response with a `Retry-After` header (delta-seconds or HTTP-date) raises the next delay to the server's value, but never above `MaxDelay`. When `Retry-After` is greater than `MaxDelay`, the interceptor does not wait and does not retry: it returns that response (status, headers including `Retry-After`, and body) to the caller immediately and records a `RetryAfterExceedsMaxDelay` timeline event. A hostile or misconfigured server therefore cannot park a call for longer than `MaxDelay` per retry; raise `MaxDelay` if you want to honor longer server-requested pauses automatically.
+
 ### 2. LoggingMiddleware
 
 Logs HTTP requests and responses to `Debug.Log`. It is highly useful for debugging and tracing network calls. Sensitive headers (like `Authorization` or `Cookie`) are automatically redacted by default.

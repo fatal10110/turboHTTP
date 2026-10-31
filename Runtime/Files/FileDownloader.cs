@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography;
@@ -79,6 +80,13 @@ namespace TurboHTTP.Files
     public class FileDownloader
     {
         private const int DownloadBufferSize = 32 * 1024;
+        private const int MaxValidatorLength = 1024;
+
+        /// <summary>Suffix of the in-progress file written next to the destination.</summary>
+        internal const string PartFileSuffix = ".part";
+
+        /// <summary>Suffix of the sidecar holding the partial's strong validator (sent as If-Range).</summary>
+        internal const string ValidatorFileSuffix = ".part.validator";
 
         private readonly UHttpClient _client;
         private static readonly StringComparison PathComparison =
@@ -100,8 +108,17 @@ namespace TurboHTTP.Files
 
         /// <summary>
         /// Download a file to the specified path.
-        /// Supports resume if the server supports Range requests (HTTP 206).
-        /// Handles HTTP 416 (Range Not Satisfiable) by retrying from scratch.
+        /// <para>Bytes are written to <c>destinationPath + ".part"</c>; the destination is only
+        /// created (or atomically replaced) after the body completed and any checksum matched, so a
+        /// failed, cancelled or corrupt download never leaves a truncated file at the destination
+        /// and never touches an existing complete file there.</para>
+        /// <para>With <see cref="DownloadOptions.EnableResume"/>, the strong validator of the
+        /// response (strong <c>ETag</c>, or a strong <c>Last-Modified</c>) is kept in
+        /// <c>destinationPath + ".part.validator"</c>, and a later call resumes the partial with
+        /// <c>Range</c> + <c>If-Range</c> and <c>Accept-Encoding: identity</c>. A changed resource
+        /// (200), a 416, or a 206 whose <c>Content-Range</c> does not continue the partial restarts
+        /// the download from scratch. Error responses (4xx/5xx) throw and leave every file
+        /// untouched. Partials without a strong validator are not resumed.</para>
         /// </summary>
         /// <exception cref="UHttpException">HTTP request failed</exception>
         /// <exception cref="ChecksumMismatchException">Checksum verification failed</exception>
@@ -130,67 +147,77 @@ namespace TurboHTTP.Files
             }
 
             var startTime = DateTime.UtcNow;
+            var partPath = destinationPath + PartFileSuffix;
+            var validatorPath = destinationPath + ValidatorFileSuffix;
             long existingSize = 0;
+            string ifRange = null;
 
-            // Check for resumable partial file
-            if (options.EnableResume && File.Exists(destinationPath))
+            // Resume only a partial file whose strong validator was recorded when it was started
+            // (RFC 9110 section 13.1.5: If-Range needs a strong validator). The destination path
+            // itself always holds a complete file and is never appended to.
+            if (options.EnableResume && File.Exists(partPath))
             {
-                existingSize = new FileInfo(destinationPath).Length;
+                ifRange = TryReadValidator(validatorPath);
+                if (ifRange != null)
+                    existingSize = new FileInfo(partPath).Length;
+                if (existingSize <= 0)
+                {
+                    existingSize = 0;
+                    ifRange = null;
+                }
             }
 
-            // Build request with optional Range header
-            var requestBuilder = _client.Get(url);
-            if (existingSize > 0)
-            {
-                requestBuilder.WithHeader("Range", $"bytes={existingSize}-");
-            }
-
-            UHttpStreamingResponse response = await requestBuilder.SendStreamingAsync(cancellationToken).ConfigureAwait(false);
+            UHttpStreamingResponse response = await SendDownloadRequestAsync(
+                    url,
+                    existingSize,
+                    ifRange,
+                    options.EnableResume,
+                    cancellationToken)
+                .ConfigureAwait(false);
             try
             {
-                // Handle 416 Range Not Satisfiable: delete partial file and retry from scratch
-                if (existingSize > 0 && (int)response.StatusCode == 416)
+                if (existingSize > 0)
                 {
-                    existingSize = 0;
-                    if (File.Exists(destinationPath))
-                        File.Delete(destinationPath);
-
-                    await response.DisposeAsync().ConfigureAwait(false);
-                    response = await _client.Get(url).SendStreamingAsync(cancellationToken).ConfigureAwait(false);
-                }
-
-                // If server doesn't support resume (200 instead of 206), start from scratch
-                if (existingSize > 0 && response.StatusCode != HttpStatusCode.PartialContent)
-                {
-                    existingSize = 0;
-                    if (File.Exists(destinationPath))
-                        File.Delete(destinationPath);
-                }
-
-                // Validate Content-Range on 206 responses
-                if (existingSize > 0 && response.StatusCode == HttpStatusCode.PartialContent)
-                {
-                    var contentRange = response.Headers.Get("Content-Range");
-                    if (contentRange != null)
+                    // 416: the partial no longer fits the representation. A 206 whose Content-Range
+                    // does not continue exactly where the partial ends cannot be appended (RFC 9110
+                    // section 14.4). Both mean the partial is unusable: discard it and start over.
+                    bool restart = (int)response.StatusCode == 416 ||
+                                   (response.StatusCode == HttpStatusCode.PartialContent &&
+                                    !IsResumableContinuation(response.Headers, existingSize, ifRange));
+                    if (restart)
                     {
-                        // Expected format: "bytes <start>-<end>/<total>"
-                        var rangeStart = ParseContentRangeStart(contentRange);
-                        if (rangeStart >= 0 && rangeStart != existingSize)
-                        {
-                            // Server returned a different range than we requested — start fresh
-                            existingSize = 0;
-                            if (File.Exists(destinationPath))
-                                File.Delete(destinationPath);
-                        }
+                        existingSize = 0;
+                        DeletePartFiles(partPath, validatorPath);
+
+                        await response.DisposeAsync().ConfigureAwait(false);
+                        response = null;
+                        response = await SendDownloadRequestAsync(
+                                url,
+                                0,
+                                null,
+                                options.EnableResume,
+                                cancellationToken)
+                            .ConfigureAwait(false);
                     }
                 }
 
-                // Non-success and non-partial = error
-                if (((int)response.StatusCode < 200 || (int)response.StatusCode >= 300) &&
-                    response.StatusCode != HttpStatusCode.PartialContent)
+                // Errors throw before any file is touched: the partial and any complete file at
+                // the destination survive a 4xx/5xx (or a 416 on a non-range request).
+                ThrowIfNotSuccessful(response);
+
+                if (response.StatusCode == HttpStatusCode.PartialContent && existingSize == 0)
                 {
-                    ThrowIfNotSuccessful(response);
+                    // 206 is only valid as an answer to a Range request (RFC 9110 section 15.3.7).
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.HttpError,
+                        "Server sent 206 Partial Content to a request without Range.",
+                        statusCode: response.StatusCode));
                 }
+
+                // Any other 2xx on a resume attempt (200 when the server ignored Range or the
+                // If-Range validator no longer matches) carries the full representation: restart.
+                if (response.StatusCode != HttpStatusCode.PartialContent)
+                    existingSize = 0;
 
                 // Determine total size from Content-Length
                 long totalSize = 0;
@@ -207,64 +234,98 @@ namespace TurboHTTP.Files
                     Directory.CreateDirectory(dir);
                 }
 
-                using (var hashState = CreateHashState(options))
+                if (existingSize == 0)
                 {
-                    if (hashState.IsEnabled && existingSize > 0)
-                    {
-                        await SeedHashStateFromExistingFileAsync(
-                                destinationPath,
-                                hashState,
-                                cancellationToken)
-                            .ConfigureAwait(false);
-                    }
+                    // Record the new representation's strong validator before writing its bytes,
+                    // so an interrupted download can be resumed (and only resumed against the same
+                    // representation). No strong validator: the partial will not be resumed.
+                    WriteValidator(
+                        validatorPath,
+                        options.EnableResume ? SelectStrongValidator(response.Headers) : null);
+                }
 
-                    long downloadedThisSession = 0;
-                    var fileMode = existingSize > 0 ? FileMode.Append : FileMode.Create;
-                    using (var fileStream = new FileStream(
-                        destinationPath,
-                        fileMode,
-                        FileAccess.Write,
-                        FileShare.None,
-                        DownloadBufferSize,
-                        FileOptions.Asynchronous))
+                bool bodyComplete = false;
+                try
+                {
+                    using (var hashState = CreateHashState(options))
                     {
-                        byte[] buffer = ArrayPool<byte>.Shared.Rent(DownloadBufferSize);
+                        if (hashState.IsEnabled && existingSize > 0)
+                        {
+                            await SeedHashStateFromExistingFileAsync(
+                                    partPath,
+                                    hashState,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+
+                        long downloadedThisSession = 0;
+                        var fileMode = existingSize > 0 ? FileMode.Append : FileMode.Create;
+                        using (var fileStream = new FileStream(
+                            partPath,
+                            fileMode,
+                            FileAccess.Write,
+                            FileShare.None,
+                            DownloadBufferSize,
+                            FileOptions.Asynchronous))
+                        {
+                            byte[] buffer = ArrayPool<byte>.Shared.Rent(DownloadBufferSize);
+                            try
+                            {
+                                while (true)
+                                {
+                                    int bytesRead = await response.Body.ReadAsync(
+                                            buffer.AsMemory(0, buffer.Length),
+                                            cancellationToken)
+                                        .ConfigureAwait(false);
+                                    if (bytesRead == 0)
+                                        break;
+
+                                    await fileStream.WriteAsync(
+                                            new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
+                                            cancellationToken)
+                                        .ConfigureAwait(false);
+
+                                    downloadedThisSession += bytesRead;
+                                    hashState.Append(buffer, bytesRead);
+                                    ReportProgress(
+                                        options.Progress,
+                                        existingSize + downloadedThisSession,
+                                        downloadedThisSession,
+                                        totalSize,
+                                        startTime);
+                                }
+                            }
+                            finally
+                            {
+                                ArrayPool<byte>.Shared.Return(buffer);
+                            }
+
+                            await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                        }
+
+                        bodyComplete = true;
                         try
                         {
-                            while (true)
-                            {
-                                int bytesRead = await response.Body.ReadAsync(
-                                        buffer.AsMemory(0, buffer.Length),
-                                        cancellationToken)
-                                    .ConfigureAwait(false);
-                                if (bytesRead == 0)
-                                    break;
-
-                                await fileStream.WriteAsync(
-                                        new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
-                                        cancellationToken)
-                                    .ConfigureAwait(false);
-
-                                downloadedThisSession += bytesRead;
-                                hashState.Append(buffer, bytesRead);
-                                ReportProgress(
-                                    options.Progress,
-                                    existingSize + downloadedThisSession,
-                                    downloadedThisSession,
-                                    totalSize,
-                                    startTime);
-                            }
+                            VerifyHashes(options, hashState);
                         }
-                        finally
+                        catch (ChecksumMismatchException)
                         {
-                            ArrayPool<byte>.Shared.Return(buffer);
+                            // Corrupt bytes must not be resumed from or appended to later.
+                            DeletePartFiles(partPath, validatorPath);
+                            throw;
                         }
-
-                        await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
                     }
-
-                    VerifyHashes(options, hashState);
                 }
+                finally
+                {
+                    // Without resume an interrupted partial has no further use.
+                    if (!bodyComplete && !options.EnableResume)
+                        DeletePartFiles(partPath, validatorPath);
+                }
+
+                // The destination only ever receives a complete, verified file.
+                CommitPartFile(partPath, destinationPath);
+                DeleteFileIfExists(validatorPath);
 
                 return new DownloadResult
                 {
@@ -281,25 +342,225 @@ namespace TurboHTTP.Files
             }
         }
 
-        /// <summary>
-        /// Parse the start byte from a Content-Range header value.
-        /// Expected format: "bytes start-end/total" or "bytes start-end/*".
-        /// Returns -1 if parsing fails.
-        /// </summary>
-        private static long ParseContentRangeStart(string contentRange)
+        private async Task<UHttpStreamingResponse> SendDownloadRequestAsync(
+            string url,
+            long rangeStart,
+            string ifRange,
+            bool enableResume,
+            CancellationToken cancellationToken)
         {
-            // "bytes 500-999/1234"
-            var spaceIndex = contentRange.IndexOf(' ');
-            if (spaceIndex < 0) return -1;
+            var request = _client.Get(url);
+            if (enableResume)
+            {
+                // Byte offsets are only meaningful against one fixed coding of the representation,
+                // and a content-coded range cannot be decoded on its own: keep downloads identity.
+                request.WithHeader("Accept-Encoding", "identity");
+            }
 
-            var dashIndex = contentRange.IndexOf('-', spaceIndex + 1);
-            if (dashIndex < 0) return -1;
+            if (rangeStart > 0)
+            {
+                request.WithHeader("Range", "bytes=" + rangeStart.ToString(CultureInfo.InvariantCulture) + "-");
+                if (ifRange != null)
+                    request.WithHeader("If-Range", ifRange);
+            }
 
-            var startStr = contentRange.Substring(spaceIndex + 1, dashIndex - spaceIndex - 1).Trim();
-            if (long.TryParse(startStr, out var start))
-                return start;
+            return await request.SendStreamingAsync(cancellationToken).ConfigureAwait(false);
+        }
 
-            return -1;
+        /// <summary>
+        /// True when a 206 response continues the partial file exactly: a single
+        /// <c>Content-Range: bytes first-last/complete</c> whose first byte equals the partial's
+        /// length (RFC 9110 section 14.4), and, when the response carries an <c>ETag</c> and the
+        /// stored validator is an entity-tag, the same entity-tag.
+        /// </summary>
+        private static bool IsResumableContinuation(HttpHeaders headers, long existingSize, string storedValidator)
+        {
+            var contentRange = headers.Get("Content-Range");
+            if (contentRange == null ||
+                !TryParseContentRange(contentRange, out var first, out _) ||
+                first != existingSize)
+            {
+                return false;
+            }
+
+            if (storedValidator != null && storedValidator.Length > 0 && storedValidator[0] == '"')
+            {
+                var etag = headers.Get("ETag");
+                if (etag != null && !string.Equals(etag.Trim(), storedValidator, StringComparison.Ordinal))
+                    return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Parses <c>bytes first-last/complete-length</c> or <c>bytes first-last/*</c>
+        /// (RFC 9110 section 14.4). Returns false for any other unit or shape.
+        /// </summary>
+        internal static bool TryParseContentRange(string contentRange, out long first, out long last)
+        {
+            first = -1;
+            last = -1;
+            if (contentRange == null)
+                return false;
+
+            var value = contentRange.Trim();
+            const string unit = "bytes ";
+            if (!value.StartsWith(unit, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var dashIndex = value.IndexOf('-', unit.Length);
+            var slashIndex = dashIndex < 0 ? -1 : value.IndexOf('/', dashIndex + 1);
+            if (dashIndex < 0 || slashIndex < 0)
+                return false;
+
+            if (!long.TryParse(
+                    value.Substring(unit.Length, dashIndex - unit.Length),
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out first) ||
+                !long.TryParse(
+                    value.Substring(dashIndex + 1, slashIndex - dashIndex - 1),
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out last) ||
+                last < first)
+            {
+                first = -1;
+                last = -1;
+                return false;
+            }
+
+            var complete = value.Substring(slashIndex + 1);
+            if (complete == "*")
+                return true;
+
+            if (long.TryParse(complete, NumberStyles.None, CultureInfo.InvariantCulture, out var completeLength) &&
+                completeLength > last)
+            {
+                return true;
+            }
+
+            first = -1;
+            last = -1;
+            return false;
+        }
+
+        /// <summary>
+        /// Picks a strong validator usable in <c>If-Range</c> (RFC 9110 sections 8.8.1, 8.8.2.2
+        /// and 13.1.5): a strong <c>ETag</c>, else a <c>Last-Modified</c> at least one second
+        /// before the response <c>Date</c>. Weak entity-tags are never used.
+        /// </summary>
+        internal static string SelectStrongValidator(HttpHeaders headers)
+        {
+            var etag = headers.Get("ETag");
+            if (etag != null)
+            {
+                etag = etag.Trim();
+                if (etag.Length >= 2 && etag[0] == '"' && etag[etag.Length - 1] == '"' && IsSafeValidator(etag))
+                    return etag;
+
+                // A weak or malformed entity-tag: fall through to Last-Modified only when no
+                // entity-tag was sent at all (RFC 9110 section 13.1.5 prefers the entity-tag).
+                return null;
+            }
+
+            var lastModified = headers.Get("Last-Modified");
+            var date = headers.Get("Date");
+            if (lastModified == null || date == null)
+                return null;
+
+            lastModified = lastModified.Trim();
+            if (!TryParseHttpDate(lastModified, out var lastModifiedAt) ||
+                !TryParseHttpDate(date.Trim(), out var dateAt) ||
+                lastModifiedAt > dateAt.AddSeconds(-1) ||
+                !IsSafeValidator(lastModified))
+            {
+                return null;
+            }
+
+            return lastModified;
+        }
+
+        private static bool TryParseHttpDate(string value, out DateTimeOffset result)
+        {
+            return DateTimeOffset.TryParseExact(
+                value,
+                "r",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out result);
+        }
+
+        private static bool IsSafeValidator(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length > MaxValidatorLength)
+                return false;
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c < 0x20 || c > 0x7E)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static string TryReadValidator(string validatorPath)
+        {
+            try
+            {
+                var info = new FileInfo(validatorPath);
+                if (!info.Exists || info.Length == 0 || info.Length > MaxValidatorLength)
+                    return null;
+
+                var value = File.ReadAllText(validatorPath).Trim();
+                if (!IsSafeValidator(value))
+                    return null;
+
+                bool isEntityTag = value.Length >= 2 && value[0] == '"' && value[value.Length - 1] == '"';
+                return isEntityTag || TryParseHttpDate(value, out _) ? value : null;
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        private static void WriteValidator(string validatorPath, string validator)
+        {
+            if (validator == null)
+            {
+                DeleteFileIfExists(validatorPath);
+                return;
+            }
+
+            File.WriteAllText(validatorPath, validator);
+        }
+
+        private static void CommitPartFile(string partPath, string destinationPath)
+        {
+            if (File.Exists(destinationPath))
+                File.Replace(partPath, destinationPath, null);
+            else
+                File.Move(partPath, destinationPath);
+        }
+
+        private static void DeletePartFiles(string partPath, string validatorPath)
+        {
+            DeleteFileIfExists(partPath);
+            DeleteFileIfExists(validatorPath);
+        }
+
+        private static void DeleteFileIfExists(string path)
+        {
+            if (File.Exists(path))
+                File.Delete(path);
         }
 
         private static string EnsureTrailingDirectorySeparator(string path)

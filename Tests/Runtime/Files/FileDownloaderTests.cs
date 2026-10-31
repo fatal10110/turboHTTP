@@ -63,12 +63,14 @@ namespace TurboHTTP.Tests.Files
                 var part1 = new byte[] { 1, 2, 3, 4, 5 };
                 var part2 = new byte[] { 6, 7, 8, 9, 10 };
 
-                // Write initial partial file
-                File.WriteAllBytes(dest, part1);
+                // Write initial partial file and its strong validator
+                WritePartial(dest, part1, "\"v1\"");
 
                 // Mock server returns 206 with remaining bytes
                 var headers = new HttpHeaders();
                 headers.Set("Content-Length", part2.Length.ToString());
+                headers.Set("Content-Range", "bytes 5-9/10");
+                headers.Set("ETag", "\"v1\"");
                 var transport = new MockTransport(
                     HttpStatusCode.PartialContent, headers, part2);
                 var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
@@ -87,6 +89,9 @@ namespace TurboHTTP.Tests.Files
                 // Verify Range header was sent
                 var range = transport.LastRequest.Headers.Get("Range");
                 Assert.AreEqual("bytes=5-", range);
+                Assert.AreEqual("\"v1\"", transport.LastRequest.Headers.Get("If-Range"));
+                Assert.IsFalse(File.Exists(dest + ".part"));
+                Assert.IsFalse(File.Exists(dest + ".part.validator"));
             }).GetAwaiter().GetResult();
         }
 
@@ -97,7 +102,7 @@ namespace TurboHTTP.Tests.Files
             {
                 var dest = Path.Combine(_tempDir, "noresume.bin");
                 var partial = new byte[] { 1, 2, 3 };
-                File.WriteAllBytes(dest, partial);
+                WritePartial(dest, partial, "\"v1\"");
 
                 // Server returns 200 (not 206) — doesn't support resume
                 var fullContent = new byte[] { 10, 20, 30, 40, 50 };
@@ -331,7 +336,7 @@ namespace TurboHTTP.Tests.Files
             {
                 var dest = Path.Combine(_tempDir, "range416.bin");
                 var partial = new byte[] { 1, 2, 3 };
-                File.WriteAllBytes(dest, partial);
+                WritePartial(dest, partial, "\"v1\"");
 
                 var fullContent = new byte[] { 10, 20, 30, 40, 50 };
                 var callCount = 0;
@@ -370,15 +375,28 @@ namespace TurboHTTP.Tests.Files
             {
                 var dest = Path.Combine(_tempDir, "rangemismatch.bin");
                 var partial = new byte[] { 1, 2, 3, 4, 5 };
-                File.WriteAllBytes(dest, partial);
+                WritePartial(dest, partial, "\"v1\"");
 
-                // Server returns 206 but with Content-Range starting at 0 (not 5)
+                // Server answers the range request with 206 starting at 0 (not 5): the partial is
+                // discarded and the file is fetched again without Range.
                 var fullBody = new byte[] { 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 };
-                var headers = new HttpHeaders();
-                headers.Set("Content-Range", "bytes 0-9/10");
-                headers.Set("Content-Length", "10");
-                var transport = new MockTransport(
-                    HttpStatusCode.PartialContent, headers, fullBody);
+                var callCount = 0;
+                string secondRange = "unset";
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    callCount++;
+                    var headers = new HttpHeaders();
+                    if (callCount == 1)
+                    {
+                        headers.Set("Content-Range", "bytes 0-9/10");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.PartialContent, headers, fullBody, ctx.Elapsed, req));
+                    }
+
+                    secondRange = req.Headers.Get("Range");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK, headers, fullBody, ctx.Elapsed, req));
+                });
                 var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
                 var downloader = new FileDownloader(client);
 
@@ -386,9 +404,11 @@ namespace TurboHTTP.Tests.Files
                     "https://test.com/file.bin", dest,
                     new DownloadOptions { EnableResume = true });
 
-                // Should have detected mismatch and started fresh (Create mode)
                 Assert.IsFalse(result.WasResumed);
                 Assert.AreEqual(10, result.FileSize);
+                Assert.AreEqual(2, callCount);
+                Assert.IsNull(secondRange);
+                Assert.AreEqual(fullBody, File.ReadAllBytes(dest));
             }).GetAwaiter().GetResult();
         }
 
@@ -401,7 +421,7 @@ namespace TurboHTTP.Tests.Files
                 var prefix = Encoding.UTF8.GetBytes("hello ");
                 var suffix = Encoding.UTF8.GetBytes("world");
                 var full = Encoding.UTF8.GetBytes("hello world");
-                File.WriteAllBytes(dest, prefix);
+                WritePartial(dest, prefix, "\"v1\"");
 
                 var headers = new HttpHeaders();
                 headers.Set("Content-Length", suffix.Length.ToString());
@@ -490,6 +510,12 @@ namespace TurboHTTP.Tests.Files
         }
 
         // --- Helpers ---
+
+        private static void WritePartial(string destination, byte[] partial, string validator)
+        {
+            File.WriteAllBytes(destination + ".part", partial);
+            File.WriteAllText(destination + ".part.validator", validator);
+        }
 
         private static bool IsCaseInsensitiveFileSystem()
         {
