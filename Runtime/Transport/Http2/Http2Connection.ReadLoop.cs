@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -76,6 +77,10 @@ namespace TurboHTTP.Transport.Http2
             catch (Exception ex)
             {
                 FailAllStreams(ex);
+            }
+            finally
+            {
+                ReleaseHeaderBlockBuffer();
             }
         }
 
@@ -217,9 +222,6 @@ namespace TurboHTTP.Transport.Http2
                 throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                     "HEADERS frame on stream 0");
 
-            if (!_activeStreams.TryGetValue(frame.StreamId, out var stream))
-                return; // Stream already closed/cancelled
-
             int payloadStart = 0;
             int payloadLength = frame.Length;
 
@@ -247,22 +249,35 @@ namespace TurboHTTP.Transport.Http2
                 payloadLength -= 5;
             }
 
-            // Accumulate header block
-            stream.AppendHeaderBlock(frame.Payload, payloadStart, payloadLength);
+            BeginHeaderBlock(frame, payloadStart, payloadLength,
+                endStream: frame.HasFlag(Http2FrameFlags.EndStream), isPushPromise: false);
+        }
 
-            // Track END_STREAM for deferred completion (when headers span CONTINUATION)
-            if (frame.HasFlag(Http2FrameFlags.EndStream))
-                stream.PendingEndStream = true;
-
+        /// <summary>
+        /// Starts a field block carried by HEADERS or PUSH_PROMISE. The block is accumulated and
+        /// decoded whether or not its stream is still active (RFC 9113 Section 4.3): skipping it would
+        /// desynchronize the HPACK dynamic table for every later stream on the connection.
+        /// </summary>
+        private void BeginHeaderBlock(Http2Frame frame, int offset, int length, bool endStream, bool isPushPromise)
+        {
             if (frame.HasFlag(Http2FrameFlags.EndHeaders))
             {
-                DecodeAndSetHeaders(stream, isTrailingHeaders: stream.HeadersReceived, endStream: stream.PendingEndStream);
-                stream.PendingEndStream = false;
+                // Single-frame block: decode straight from the frame payload, no copy.
+                CompleteHeaderBlock(frame.StreamId, frame.Payload, offset, length, endStream, isPushPromise);
+                return;
             }
-            else
-            {
-                _continuationStreamId = frame.StreamId;
-            }
+
+            if (length > HeaderBlockByteLimit)
+                throw HeaderBlockTooLarge(length);
+
+            EnsureHeaderBlockCapacity(length);
+            if (length > 0)
+                Buffer.BlockCopy(frame.Payload, offset, _headerBlockBuffer, 0, length);
+            _headerBlockLength = length;
+            _headerBlockContinuationCount = 0;
+            _headerBlockEndStream = endStream;
+            _headerBlockIsPushPromise = isPushPromise;
+            _continuationStreamId = frame.StreamId;
         }
 
         private void HandleContinuationFrame(Http2Frame frame)
@@ -275,28 +290,97 @@ namespace TurboHTTP.Transport.Http2
                 throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                     $"CONTINUATION for wrong stream (expected {_continuationStreamId}, got {frame.StreamId})");
 
-            if (!_activeStreams.TryGetValue(frame.StreamId, out var stream))
-                return;
+            // RFC 9113 Section 10.5.1: bound the frame count (zero-length frames included) and the
+            // accumulated bytes before buffering anything.
+            if (++_headerBlockContinuationCount > MaxContinuationFramesPerHeaderBlock)
+                throw new Http2ProtocolException(Http2ErrorCode.EnhanceYourCalm,
+                    $"Header block exceeds {MaxContinuationFramesPerHeaderBlock} CONTINUATION frames");
 
-            stream.AppendHeaderBlock(frame.Payload, 0, frame.Length);
+            int newLength = _headerBlockLength + frame.Length;
+            if (newLength > HeaderBlockByteLimit)
+                throw HeaderBlockTooLarge(newLength);
+
+            EnsureHeaderBlockCapacity(newLength);
+            if (frame.Length > 0)
+                Buffer.BlockCopy(frame.Payload, 0, _headerBlockBuffer, _headerBlockLength, frame.Length);
+            _headerBlockLength = newLength;
 
             if (frame.HasFlag(Http2FrameFlags.EndHeaders))
             {
+                int streamId = _continuationStreamId;
                 _continuationStreamId = 0;
-                DecodeAndSetHeaders(stream, isTrailingHeaders: stream.HeadersReceived, endStream: stream.PendingEndStream);
-                stream.PendingEndStream = false;
+                try
+                {
+                    CompleteHeaderBlock(streamId, _headerBlockBuffer, 0, _headerBlockLength,
+                        _headerBlockEndStream, _headerBlockIsPushPromise);
+                }
+                finally
+                {
+                    ReleaseHeaderBlockBuffer();
+                }
             }
         }
 
-        private void DecodeAndSetHeaders(Http2Stream stream, bool isTrailingHeaders, bool endStream)
+        /// <summary>
+        /// Decodes a complete field block (always, to keep the HPACK table in order, RFC 7541
+        /// Section 2.2), then routes the field list to its stream if it is still active, or discards it.
+        /// PUSH_PROMISE blocks are always discarded: the promised stream is refused.
+        /// </summary>
+        private void CompleteHeaderBlock(int streamId, byte[] block, int offset, int count, bool endStream, bool isPushPromise)
         {
-            var headerBlock = stream.GetHeaderBlockSegment();
-            var headerBytes = headerBlock.Array ?? Array.Empty<byte>();
-            _hpackDecoder.Decode(
-                headerBytes,
-                headerBlock.Offset,
-                headerBlock.Count,
-                _decodedHeaderScratch);
+            _hpackDecoder.Decode(block ?? Array.Empty<byte>(), offset, count, _decodedHeaderScratch);
+
+            if (isPushPromise || !_activeStreams.TryGetValue(streamId, out var stream))
+            {
+                _decodedHeaderScratch.Clear();
+                return;
+            }
+
+            ApplyDecodedHeaders(stream, isTrailingHeaders: stream.HeadersReceived, endStream: endStream);
+        }
+
+        // Encoded block cap: the advertised header list size (bounded by 256 KB), never below one
+        // full frame so a single-frame block that is accepted is also accepted when split.
+        private int HeaderBlockByteLimit =>
+            Math.Max(_localSettings.MaxFrameSize, Math.Min(_localSettings.MaxHeaderListSize, MaxHeaderBlockBytesCeiling));
+
+        private Http2ProtocolException HeaderBlockTooLarge(int length)
+        {
+            return new Http2ProtocolException(Http2ErrorCode.EnhanceYourCalm,
+                $"Header block of {length} bytes exceeds limit {HeaderBlockByteLimit}");
+        }
+
+        private void EnsureHeaderBlockCapacity(int required)
+        {
+            var current = _headerBlockBuffer;
+            if (current != null && current.Length >= required)
+                return;
+
+            int grown = Math.Min(HeaderBlockByteLimit, Math.Max(4096, (current?.Length ?? 0) * 2));
+            var next = ArrayPool<byte>.Shared.Rent(Math.Max(required, grown));
+            if (current != null)
+            {
+                Buffer.BlockCopy(current, 0, next, 0, _headerBlockLength);
+                ArrayPool<byte>.Shared.Return(current);
+            }
+
+            _headerBlockBuffer = next;
+        }
+
+        private void ReleaseHeaderBlockBuffer()
+        {
+            var buffer = _headerBlockBuffer;
+            _headerBlockBuffer = null;
+            _headerBlockLength = 0;
+            _headerBlockContinuationCount = 0;
+            _headerBlockEndStream = false;
+            _headerBlockIsPushPromise = false;
+            if (buffer != null)
+                ArrayPool<byte>.Shared.Return(buffer);
+        }
+
+        private void ApplyDecodedHeaders(Http2Stream stream, bool isTrailingHeaders, bool endStream)
+        {
             var decoded = _decodedHeaderScratch;
             try
             {
@@ -344,8 +428,18 @@ namespace TurboHTTP.Transport.Http2
                             return;
                         }
                     }
-                    else if (!name.StartsWith(":"))
+                    else if (!name.StartsWith(":", StringComparison.Ordinal))
                     {
+                        // RFC 9113 Section 8.2.1 / 8.2.2: malformed fields are a stream error.
+                        var malformed = GetMalformedResponseFieldReason(name, value);
+                        if (malformed != null)
+                        {
+                            stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                                $"Malformed HTTP/2 response: {malformed}")));
+                            RemoveActiveStream(stream.StreamId);
+                            return;
+                        }
+
                         responseHeaders.Add(name, value);
                     }
                     else if (isTrailingHeaders)
@@ -396,7 +490,6 @@ namespace TurboHTTP.Transport.Http2
                         if (statusCode == 100)
                             stream.SignalExpectContinueContinue();
 
-                        stream.ClearHeaderBlock();
                         return;
                     }
 
@@ -415,12 +508,64 @@ namespace TurboHTTP.Transport.Http2
                             : Http2StreamState.HalfClosedRemote;
                     }
                 }
-
-                stream.ClearHeaderBlock();
             }
             finally
             {
                 decoded.Clear();
+            }
+        }
+
+        /// <summary>
+        /// RFC 9113 Section 8.2.1 and 8.2.2 checks for a decoded regular response field (headers or
+        /// trailers). Returns null when the field is valid, else a reason that never echoes the value.
+        /// </summary>
+        internal static string GetMalformedResponseFieldReason(string name, string value)
+        {
+            if (string.IsNullOrEmpty(name))
+                return "empty field name";
+
+            for (int i = 0; i < name.Length; i++)
+            {
+                char c = name[i];
+                if (c >= 'A' && c <= 'Z')
+                    return "uppercase character in field name";
+                if (c <= 0x20 || c >= 0x7F)
+                    return "invalid character in field name";
+            }
+
+            if (IsConnectionSpecificField(name))
+                return "connection-specific field '" + name + "'";
+
+            if (value != null && value.Length > 0)
+            {
+                for (int i = 0; i < value.Length; i++)
+                {
+                    char c = value[i];
+                    if (c == '\0' || c == '\r' || c == '\n')
+                        return "invalid character in value of field '" + name + "'";
+                }
+
+                char first = value[0];
+                char last = value[value.Length - 1];
+                if (first == ' ' || first == '\t' || last == ' ' || last == '\t')
+                    return "leading or trailing whitespace in value of field '" + name + "'";
+            }
+
+            return null;
+        }
+
+        private static bool IsConnectionSpecificField(string name)
+        {
+            switch (name)
+            {
+                case "connection":
+                case "keep-alive":
+                case "proxy-connection":
+                case "transfer-encoding":
+                case "upgrade":
+                    return true;
+                default:
+                    return false;
             }
         }
 
@@ -698,10 +843,33 @@ namespace TurboHTTP.Transport.Http2
                 throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                     "Received PUSH_PROMISE after advertising ENABLE_PUSH=0");
 
-            if (frame.Length < 4) return;
+            if (frame.StreamId == 0)
+                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    "PUSH_PROMISE frame on stream 0");
 
-            int promisedStreamId = ((frame.Payload[0] & 0x7F) << 24) | (frame.Payload[1] << 16) |
-                                   (frame.Payload[2] << 8) | frame.Payload[3];
+            int payloadStart = 0;
+            int payloadLength = frame.Length;
+            if (frame.HasFlag(Http2FrameFlags.Padded))
+            {
+                if (frame.Length < 1)
+                    throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                        "PUSH_PROMISE frame too short for padding");
+                payloadStart = 1;
+                payloadLength -= 1 + frame.Payload[0];
+            }
+
+            if (payloadLength < 4)
+                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    "PUSH_PROMISE frame too short for promised stream id");
+
+            int promisedStreamId = ((frame.Payload[payloadStart] & 0x7F) << 24) |
+                                   (frame.Payload[payloadStart + 1] << 16) |
+                                   (frame.Payload[payloadStart + 2] << 8) |
+                                   frame.Payload[payloadStart + 3];
+
+            // RFC 9113 Section 4.3: the promised request's field block must be decoded (and its
+            // CONTINUATION frames accepted) even though the push is refused, or the HPACK table desyncs.
+            BeginHeaderBlock(frame, payloadStart + 4, payloadLength - 4, endStream: false, isPushPromise: true);
 
             await SendRstStreamAsync(promisedStreamId, Http2ErrorCode.RefusedStream);
         }
