@@ -654,11 +654,12 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public void RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_ReusesConnectionAfterDrain()
+        public void RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_DoesNotReuseConnection()
         {
             AssertAsync.Run(async () =>
             {
                 string followUpRequestLine = null;
+                string rejectedConnectionFollowUp = null;
                 using var bodyStream = new TrackingNonSeekableReadStream(Encoding.UTF8.GetBytes("reject-me"));
 
                 using var server = new HttpServer(async (client, index) =>
@@ -674,8 +675,9 @@ namespace TurboHTTP.Tests.Transport.Http1
                             stream,
                             "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\nnope");
 
+                        // The body was never sent, so the connection must not carry another request.
                         var followUp = await TryReadRequestStartAndHeadersAsync(stream, TimeSpan.FromSeconds(2));
-                        followUpRequestLine = followUp?.RequestLine;
+                        rejectedConnectionFollowUp = followUp?.RequestLine;
                         if (followUp != null)
                         {
                             await WriteResponseAsync(
@@ -688,8 +690,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     }
 
                     var fallback = await ReadRequestStartAndHeadersAsync(stream);
-                    if (followUpRequestLine == null)
-                        followUpRequestLine = fallback.RequestLine;
+                    followUpRequestLine = fallback.RequestLine;
 
                     await WriteResponseAsync(
                         stream,
@@ -719,7 +720,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Assert.AreEqual("ok", followUpResponse.GetBodyAsString());
                 Assert.AreEqual(0, bodyStream.BytesRead);
                 Assert.AreEqual("GET /follow-up HTTP/1.1", followUpRequestLine);
-                Assert.AreEqual(1, server.AcceptCount);
+                Assert.IsNull(rejectedConnectionFollowUp);
+                Assert.AreEqual(2, server.AcceptCount);
             });
         }
 
