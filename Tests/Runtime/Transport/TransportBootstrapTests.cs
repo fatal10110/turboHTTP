@@ -1,5 +1,7 @@
 using System;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Transport;
@@ -32,6 +34,7 @@ namespace TurboHTTP.Tests.Transport
         public void TearDown()
         {
             // Leave the registration play-mode entry produced.
+            HttpTransportFactory.DetachCreatedDefault()?.Dispose();
             HttpTransportFactory.Reset();
             WebSocketTransportFactory.Reset();
             TurboHttpBootstrap.RegisterDefaultTransports();
@@ -48,6 +51,8 @@ namespace TurboHTTP.Tests.Transport
             Assert.That(Bootstrap.GetCustomAttribute<PreserveAttribute>(), Is.Not.Null, "[Preserve] on the method");
             Assert.That(typeof(TurboHttpBootstrap).GetCustomAttribute<PreserveAttribute>(), Is.Not.Null,
                 "[Preserve] on the type");
+            Assert.That(typeof(TurboHttpBootstrap).Assembly.GetCustomAttribute<AlwaysLinkAssemblyAttribute>(),
+                Is.Not.Null, "[assembly: AlwaysLinkAssembly] so UnityLinker processes the unreferenced assembly");
 #if UNITY_EDITOR
             Assert.That(Bootstrap.GetCustomAttribute<UnityEditor.InitializeOnLoadMethodAttribute>(), Is.Not.Null,
                 "[InitializeOnLoadMethod] so edit-mode code gets the defaults too");
@@ -70,6 +75,40 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void Bootstrap_DisposesThePreviousSessionsDefaultTransport()
+        {
+            // Enter Play Mode without a domain reload: the previous session registered a transport
+            // and Default created it; the bootstrap runs again at the next play-mode entry.
+            var previous = new DisposeCountingTransport();
+            HttpTransportFactory.Register(() => previous);
+            Assert.That(HttpTransportFactory.Default, Is.SameAs(previous), "precondition");
+
+            TurboHttpBootstrap.RegisterDefaultTransports();
+
+            Assert.That(previous.DisposeCount, Is.EqualTo(1), "previous session's transport disposed once");
+            Assert.That(HttpTransportFactory.Default, Is.InstanceOf<RawSocketTransport>());
+
+            TurboHttpBootstrap.RegisterDefaultTransports();
+            Assert.That(previous.DisposeCount, Is.EqualTo(1), "never disposed twice");
+        }
+
+        [Test]
+        public void Bootstrap_DoesNotCreateAnUnusedPreviousDefault()
+        {
+            var created = 0;
+            HttpTransportFactory.Register(() =>
+            {
+                created++;
+                return new DisposeCountingTransport();
+            });
+
+            TurboHttpBootstrap.RegisterDefaultTransports();
+
+            Assert.That(created, Is.Zero, "a default nobody read is not created just to be disposed");
+            Assert.That(HttpTransportFactory.Default, Is.InstanceOf<RawSocketTransport>());
+        }
+
+        [Test]
         public void Bootstrap_RegistersTheDefaultWebSocketTransport()
         {
             Assert.Throws<InvalidOperationException>(() => WebSocketTransportFactory.Create(),
@@ -85,6 +124,25 @@ namespace TurboHTTP.Tests.Transport
             finally
             {
                 transport.Dispose();
+            }
+        }
+
+        private sealed class DisposeCountingTransport : IHttpTransport
+        {
+            public int DisposeCount;
+
+            public Task DispatchAsync(
+                UHttpRequest request,
+                IHttpHandler handler,
+                RequestContext context,
+                CancellationToken cancellationToken = default)
+            {
+                throw new NotSupportedException("not dispatched in this test");
+            }
+
+            public void Dispose()
+            {
+                DisposeCount++;
             }
         }
     }

@@ -44,6 +44,13 @@ Lane `bootstrap` of waves run w1030 (v1.0-alpha release blockers).
 - **#9: build guard only.** No further `excludePlatforms: [WebGL]` on the modules: switching the
   editor to WebGL would then surface CS0246 errors in user code before the guard can explain. Core
   stays compiled on WebGL. There is no opt-out define; WebGL support is #130.
+- **Review round 1.** `[assembly: AlwaysLinkAssembly]` on TurboHTTP.Complete: nothing references
+  the assembly, so without it UnityLinker may skip it and the `[Preserve]` bootstrap never runs.
+  Enter Play Mode without domain reload re-runs the bootstrap; it now detaches the default
+  transport the previous session created (`HttpTransportFactory.DetachCreatedDefault()`, internal,
+  Core IVT to TurboHTTP.Complete), registers the defaults, then disposes the old transport
+  (architecture.md "Static state in Unity code"). An unread default is not created just to be
+  disposed. WebSocket transports are per-call and caller-owned, so nothing to dispose there.
 - Lanes leave `Development/docs/agents/*.md` alone; after this wave, `architecture.md` (Complete row
   "contains no scripts", Transport section on `[ModuleInitializer]`) and `platform.md:32-33` need
   the bootstrap wording.
@@ -54,7 +61,10 @@ Lane `bootstrap` of waves run w1030 (v1.0-alpha release blockers).
   (SubsystemRegistration, Preserve on type and method, InitializeOnLoadMethod in the Editor); after
   `Reset()` the bootstrap alone makes `HttpTransportFactory.Default`, `CreateWithBackend`,
   `new UHttpClient()` and `WebSocketTransportFactory.Create()` resolve raw-socket transports.
-  TearDown re-runs the bootstrap so later fixtures see play-mode-entry state.
+  TearDown re-runs the bootstrap so later fixtures see play-mode-entry state. Round 1 added the
+  `AlwaysLinkAssembly` assertion, a counting fake that `Default` created and a second bootstrap
+  run disposes exactly once (fails on the first head: never disposed), and a check that an unread
+  previous default is never created.
 - `Tests/Editor/WebGlBuildGuardTests.cs` (EditMode): WebGL throws `BuildFailedException` with the
   message; iOS, Android, Windows, macOS, Linux build normally.
 - `Tests/Editor/ModuleAutoReferenceTests.cs` (EditMode): user-facing asmdefs are autoReferenced,

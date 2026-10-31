@@ -161,6 +161,31 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Detaches the default transport singleton if <see cref="Default"/> has already created
+        /// it and returns it so the caller can dispose it; returns null when nothing was created.
+        /// The registered factories stay in place, so the next <see cref="Default"/> read creates
+        /// a fresh singleton. The startup bootstrap uses this so that Enter Play Mode without a
+        /// domain reload disposes the previous session's transport (sockets, HTTP/2 read loops)
+        /// instead of leaking it when it registers the defaults again.
+        /// </summary>
+        internal static IHttpTransport DetachCreatedDefault()
+        {
+            lock (_lock)
+            {
+                var lazy = _lazy;
+                if (lazy == null || !lazy.IsValueCreated)
+                    return null;
+
+                var created = lazy.Value;
+                var factory = _factory;
+                _lazy = factory != null
+                    ? new Lazy<IHttpTransport>(factory, LazyThreadSafetyMode.ExecutionAndPublication)
+                    : null;
+                return created;
+            }
+        }
+
+        /// <summary>
         /// Reset to initial state. For testing only.
         /// Clears both the factory and any created transport.
         /// </summary>
