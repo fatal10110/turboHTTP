@@ -7,8 +7,10 @@ Checks (all on git-tracked files):
   json      every .json/.asmdef parses; package.json has the required UPM fields
   unitynunit  tests use only what Unity 2021.3's NUnit (com.unity.ext.nunit 1.0.6) provides; PR CI
             cannot compile the Unity test assemblies without a license, so this is the only guard
+  reflect   no runtime code names a TurboHTTP type by assembly-qualified string (a by-name lookup
+            that managed stripping breaks); modules reach each other through registration APIs (#186)
 
-Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit ...]   (default: all)
+Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|reflect ...]   (default: all)
 """
 import json
 import os
@@ -174,10 +176,37 @@ def check_unity_nunit(files):
     return errors
 
 
+# "TurboHTTP.Some.Type, TurboHTTP.Assembly": the string Type.GetType needs to cross an assembly.
+_QUALIFIED_TURBO_TYPE = re.compile(r'"TurboHTTP\.[A-Za-z0-9_.+]+,\s*TurboHTTP[A-Za-z0-9_.]*')
+# Temporary: sites other issues remove. Delete an entry when its site is gone (#186).
+REFLECT_ALLOWLIST = {
+    "Runtime/Core/UHttpClient.cs",               # editor monitor lookup, redaction lane (#186 part 2)
+    "Runtime/Transport/Tls/TlsProviderSelector.cs",  # BouncyCastle provider lookup, TLS lanes (#34, #36)
+}
+
+
+def check_reflect(files):
+    errors = []
+    for f in files:
+        if not (f.startswith("Runtime/") and f.endswith(".cs")) or f.startswith("Runtime/Transport/BouncyCastle/Lib/"):
+            continue
+        if f in REFLECT_ALLOWLIST:
+            continue
+        path = os.path.join(ROOT, f)
+        if not os.path.exists(path):
+            continue
+        for n, line in enumerate(open(path, encoding="utf-8-sig"), 1):
+            if _QUALIFIED_TURBO_TYPE.search(line):
+                errors.append(f"reflect: {f}:{n} names a TurboHTTP type by assembly-qualified string; "
+                              "use a registration API instead (#186)")
+    return errors
+
+
 def main():
-    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit"]
+    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "reflect"]
     files = tracked()
-    checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit}
+    checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit,
+              "reflect": check_reflect}
     errors = []
     for w in wanted:
         errors += checks[w](files)
