@@ -343,7 +343,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 // The DATA frame is being written. The peer may return its credit as soon as it has
                 // the frame, so the read loop can see the WINDOW_UPDATE before the write call returns.
                 await WithWatchdog(payloadHeld, cts.Token);
-                processed = gate.WaitForReadStartedAfter(clientBytesRead += windowUpdateFrameSize);
+                processed = gate.WaitForReadStartedAfter(clientBytesRead + windowUpdateFrameSize);
                 await serverCodec.WriteFrameAsync(BuildWindowUpdateFrame(0, body.Length), cts.Token);
                 await WithWatchdog(processed, cts.Token);
 

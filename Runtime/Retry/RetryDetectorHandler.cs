@@ -12,13 +12,15 @@ namespace TurboHTTP.Retry
         private readonly IHttpHandler _inner;
         private readonly CancellationToken _dispatchCancellationToken;
         private readonly TimeSpan _responseDiscardTimeout;
+        private readonly TimeSpan _maxRetryAfter;
         private bool _committed;
         private bool _forwardRequestStart;
 
         internal RetryDetectorHandler(
             IHttpHandler inner,
             CancellationToken dispatchCancellationToken,
-            TimeSpan responseDiscardTimeout)
+            TimeSpan responseDiscardTimeout,
+            TimeSpan maxRetryAfter)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             _dispatchCancellationToken = dispatchCancellationToken;
@@ -26,6 +28,7 @@ namespace TurboHTTP.Retry
                 throw new ArgumentOutOfRangeException(nameof(responseDiscardTimeout));
 
             _responseDiscardTimeout = responseDiscardTimeout;
+            _maxRetryAfter = maxRetryAfter;
         }
 
         internal bool WasRetryable { get; private set; }
@@ -33,12 +36,19 @@ namespace TurboHTTP.Retry
         internal bool DeliveredError { get; private set; }
         internal TimeSpan? RetryAfterDelay { get; private set; }
 
+        /// <summary>
+        /// True when the last response was a retryable 5xx whose <c>Retry-After</c> exceeded the
+        /// policy's <c>MaxDelay</c>; the response was then delivered to the caller instead of retried.
+        /// </summary>
+        internal bool RetryAfterExceededCap { get; private set; }
+
         internal void Reset(bool forwardRequestStart)
         {
             WasRetryable = false;
             _committed = false;
             DeliveredError = false;
             RetryAfterDelay = null;
+            RetryAfterExceededCap = false;
             _forwardRequestStart = forwardRequestStart;
         }
 
@@ -59,9 +69,22 @@ namespace TurboHTTP.Retry
         {
             if (statusCode >= 500 && statusCode < 600)
             {
+                var retryAfter = ParseRetryAfter(headers);
+                if (retryAfter.HasValue && retryAfter.Value > _maxRetryAfter)
+                {
+                    // The server asked for a longer pause than the policy allows. Retrying earlier
+                    // than asked would ignore Retry-After; waiting would let the server park the call.
+                    // Deliver this response to the caller instead (fail fast, header intact).
+                    RetryAfterExceededCap = true;
+                    RetryAfterDelay = retryAfter;
+                    _committed = true;
+                    await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+                    return;
+                }
+
                 // Retryable 5xx responses are suppressed so the outer interceptor can re-dispatch.
                 WasRetryable = true;
-                RetryAfterDelay = ParseRetryAfter(headers);
+                RetryAfterDelay = retryAfter;
                 if (body != null)
                     await DiscardBodyAsync(body).ConfigureAwait(false);
                 return;

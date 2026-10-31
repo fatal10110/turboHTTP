@@ -1,5 +1,5 @@
 using System;
-using System.Threading;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -9,10 +9,6 @@ namespace TurboHTTP.WebSocket
     public sealed class WebSocketReconnectPolicy
     {
         private readonly Func<WebSocketCloseCode, bool> _reconnectOnCloseCode;
-        private static int _threadSeed = Environment.TickCount;
-
-        [ThreadStatic]
-        private static Random _threadJitterRng;
 
         public static readonly WebSocketReconnectPolicy None = new WebSocketReconnectPolicy(maxRetries: 0);
 
@@ -100,7 +96,7 @@ namespace TurboHTTP.WebSocket
             if (JitterFactor > 0d && rawDelayMs > 0d)
             {
                 double jitterRange = rawDelayMs * JitterFactor;
-                double jitter = (NextThreadJitter() * 2d - 1d) * jitterRange;
+                double jitter = (BackoffJitter.NextDouble() * 2d - 1d) * jitterRange;
 
                 rawDelayMs += jitter;
                 if (rawDelayMs < 0d)
@@ -135,19 +131,6 @@ namespace TurboHTTP.WebSocket
             return closeCode == WebSocketCloseCode.GoingAway ||
                    closeCode == WebSocketCloseCode.AbnormalClosure ||
                    closeCode == WebSocketCloseCode.InternalServerError;
-        }
-
-        private static double NextThreadJitter()
-        {
-            var rng = _threadJitterRng;
-            if (rng == null)
-            {
-                int seed = Interlocked.Increment(ref _threadSeed) ^ Environment.CurrentManagedThreadId;
-                rng = new Random(seed);
-                _threadJitterRng = rng;
-            }
-
-            return rng.NextDouble();
         }
     }
 }
