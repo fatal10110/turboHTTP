@@ -78,7 +78,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             });
             if (server == null)
             {
-                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
                 return;
             }
 
@@ -111,7 +111,7 @@ namespace TurboHTTP.Tests.Transport.Tls
                 ServeHttp2Async(stream).GetAwaiter().GetResult());
             if (server == null)
             {
-                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
                 return;
             }
 
@@ -172,7 +172,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             });
             if (server == null)
             {
-                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
+                TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
                 return;
             }
 

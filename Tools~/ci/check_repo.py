@@ -5,8 +5,10 @@ Checks (all on git-tracked files):
   meta      every asset Unity imports has a sibling .meta; no orphan .meta; GUIDs unique
   asmdef    assembly dependency graph follows the module rules in Development/docs/agents/architecture.md
   json      every .json/.asmdef parses; package.json has the required UPM fields
+  unitynunit  tests use only what Unity 2021.3's NUnit (com.unity.ext.nunit 1.0.6) provides; PR CI
+            cannot compile the Unity test assemblies without a license, so this is the only guard
 
-Usage: Tools~/ci/check_repo.py [meta|asmdef|json ...]   (default: all)
+Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit ...]   (default: all)
 """
 import json
 import os
@@ -125,10 +127,57 @@ def check_json(files):
     return errors
 
 
+# APIs missing from Unity 2021.3's NUnit (checked against com.unity.ext.nunit 1.0.6's nunit.framework.dll).
+UNITY_NUNIT_MISSING = [
+    # Any position in an attribute list: [NonParallelizable], [TestFixture, NonParallelizable], [...Attribute].
+    (re.compile(r"\[[^\]]*?\b(?:[\w.]+\.)?NonParallelizable(?:Attribute)?\b"), "[NonParallelizable] (Unity runs tests serially; drop it)"),
+    (re.compile(r"\bAssert\.(?:ThrowsAsync|CatchAsync|ThatAsync)\b"), "Assert.*Async (use AssertAsync.ThrowsAsync)"),
+    (re.compile(r"\bAssert\.Multiple\b"), "Assert.Multiple"),
+]
+ASYNC_TASK_METHOD = re.compile(
+    # Task, Task<T> (nested generics and tuples included) and ValueTask returns; generic methods too.
+    r"(?:(?:public|internal|private|protected|static|virtual|override|new)\s+)*async\s+(?:Value)?Task(?:<[\w\s,.<>\[\]?()]*>)?\s+\w+\s*(?:<[^>(]*>)?\s*\(")
+TEST_ATTRIBUTE = re.compile(r"\[(?:[^\]]*[,\s(])?(?:Test|TestCase|TestCaseSource)(?:Attribute)?\b")
+
+
+def _async_task_tests(text):
+    """Offsets of async Task methods carrying a test attribute: the attributes are the text between the
+    previous member boundary (';', '{' or '}' outside the attribute brackets) and the signature."""
+    for m in ASYNC_TASK_METHOD.finditer(text):
+        i, depth = m.start() - 1, 0
+        while i >= 0:
+            ch = text[i]
+            if ch == "]":
+                depth += 1
+            elif ch == "[":
+                depth -= 1
+            elif ch in ";{}" and depth <= 0:
+                break
+            i -= 1
+        if TEST_ATTRIBUTE.search(text[i + 1:m.start()]):
+            yield m.start()
+
+
+def check_unity_nunit(files):
+    errors = []
+    for f in files:
+        if not (f.startswith("Tests/") and f.endswith(".cs")):
+            continue
+        text = open(os.path.join(ROOT, f), encoding="utf-8-sig").read()
+        line = lambda pos: text.count("\n", 0, pos) + 1
+        for pattern, what in UNITY_NUNIT_MISSING:
+            for m in pattern.finditer(text):
+                errors.append(f"unitynunit: {f}:{line(m.start())}: {what} does not exist in Unity's NUnit")
+        for pos in _async_task_tests(text):
+            errors.append(f"unitynunit: {f}:{line(pos)}: async Task test methods do not run in "
+                          "Unity's NUnit; write a void test that wraps the body in AssertAsync.Run")
+    return errors
+
+
 def main():
-    wanted = sys.argv[1:] or ["meta", "asmdef", "json"]
+    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit"]
     files = tracked()
-    checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json}
+    checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit}
     errors = []
     for w in wanted:
         errors += checks[w](files)

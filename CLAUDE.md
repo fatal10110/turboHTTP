@@ -73,8 +73,9 @@ with an RFC, follow the RFC and record the conflict in the PR.
   `--full` before opening a PR. A new analyzer warning is fixed, not baselined.
 - Behavior changes get a deterministic NUnit test under `Tests/Runtime/<Area>/` that fails without
   the fix. No wall-clock sleeps as synchronization, no public network outside `[Category("ExternalNetwork")]`.
-- Unity tests locally only scoped: `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter <regex>`
-  (exit 3 = Unity not installed; PR CI runs the full suites). Never run the whole suite locally.
+- Unity tests per change only scoped: `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter <regex>`
+  (exit 3 = Unity not installed). PR CI does not run Unity tests (no license, #188): the full suites run
+  only in the periodic host-editor run (`testing.md`, after each waves run and before a milestone closes).
 - Device-only behavior (ALPN, ATS, NAT64, suspension) is marked `needs-device-validation`, never
   claimed as verified from the Editor.
 - Details: `testing.md`, `tooling.md`.
