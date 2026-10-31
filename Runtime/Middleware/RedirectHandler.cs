@@ -23,6 +23,7 @@ namespace TurboHTTP.Middleware
     internal sealed class RedirectHandler : IHttpHandler
     {
         internal const string ResponseObserversStateKey = "TurboHTTP.Middleware.RedirectResponseObservers";
+        internal const string ActiveScopeDepthStateKey = "TurboHTTP.Middleware.RedirectActiveDepth";
 
         private readonly IHttpHandler _inner;
         private readonly DispatchFunc _dispatch;
@@ -71,10 +72,15 @@ namespace TurboHTTP.Middleware
         /// <summary>
         /// Registers <paramref name="observer"/> for the redirect responses of every redirect
         /// interceptor that runs later on <paramref name="context"/>. Idempotent per observer.
+        /// A no-op while a redirect interceptor is active on the context: the caller then runs
+        /// inside it and sees every hop response itself.
         /// The array is copied on write; the hops of one request run sequentially.
         /// </summary>
         internal static void AddResponseObserver(RequestContext context, IRedirectResponseObserver observer)
         {
+            if (context.GetState(ActiveScopeDepthStateKey, 0) > 0)
+                return;
+
             var existing = context.GetState<IRedirectResponseObserver[]>(ResponseObserversStateKey);
             if (existing == null)
             {
@@ -92,6 +98,19 @@ namespace TurboHTTP.Middleware
             Array.Copy(existing, updated, existing.Length);
             updated[existing.Length] = observer;
             context.SetState(ResponseObserversStateKey, updated);
+        }
+
+        /// <summary>Marks a redirect interceptor as running on <paramref name="context"/>.</summary>
+        internal static void EnterRedirectScope(RequestContext context)
+        {
+            context.SetState(ActiveScopeDepthStateKey, context.GetState(ActiveScopeDepthStateKey, 0) + 1);
+        }
+
+        /// <summary>Ends the scope opened by <see cref="EnterRedirectScope"/>.</summary>
+        internal static void ExitRedirectScope(RequestContext context)
+        {
+            var depth = context.GetState(ActiveScopeDepthStateKey, 0);
+            context.SetState(ActiveScopeDepthStateKey, depth > 0 ? depth - 1 : 0);
         }
 
         internal Task Completion => _completion.Task;

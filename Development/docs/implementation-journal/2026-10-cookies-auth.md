@@ -26,7 +26,10 @@ Issues: #56, #58, #59, #53 (v1.0-beta), #69 (v1.1, same file as #53). Follow-up:
   every redirect response it consumes. Because of the snapshot, only interceptors outside the
   redirect interceptor are notified; interceptors inside it already see each hop, so nothing is
   stored twice. Registration is idempotent per instance, so a retry re-dispatch does not store
-  twice either.
+  twice either. Registration is also a no-op while a redirect interceptor is running on the
+  context (`RedirectInterceptor` opens a depth-counted scope in context state), so with
+  `[Retry, Redirect, Cookie]` the second dispatch's `RedirectHandler` does not snapshot the inner
+  Cookie interceptor and store each 3xx Set-Cookie twice (review round 1).
 - **#59 CookieJar.**
   - Private-PSL shared-hosting suffixes added (github.io, blogspot.com, herokuapp.com,
     amazonaws.com, appspot.com, ...). co.za and com.ua were already covered by the

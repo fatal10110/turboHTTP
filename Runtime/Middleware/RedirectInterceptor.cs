@@ -54,8 +54,19 @@ namespace TurboHTTP.Middleware
                     cancellationToken,
                     ResponseDiscardTimeout);
 
-                await next(request, redirectHandler, context, cancellationToken).ConfigureAwait(false);
-                await redirectHandler.Completion.ConfigureAwait(false);
+                // While this redirect interceptor runs, interceptors inside it see every hop
+                // themselves and must not register as redirect-response observers (a later dispatch
+                // on the same context, e.g. a retry, would otherwise snapshot them as outer ones).
+                RedirectHandler.EnterRedirectScope(context);
+                try
+                {
+                    await next(request, redirectHandler, context, cancellationToken).ConfigureAwait(false);
+                    await redirectHandler.Completion.ConfigureAwait(false);
+                }
+                finally
+                {
+                    RedirectHandler.ExitRedirectScope(context);
+                }
             };
         }
 

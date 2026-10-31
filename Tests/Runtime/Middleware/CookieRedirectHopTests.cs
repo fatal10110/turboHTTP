@@ -83,18 +83,51 @@ namespace TurboHTTP.Tests.Middleware
                 await pipeline.ExecuteAsync(request, context);
                 await pipeline.ExecuteAsync(request, context);
 
-                var stored = 0;
-                foreach (var e in context.Timeline)
-                {
-                    if (e.Name == "CookieStored")
-                        stored++;
-                }
-
-                Assert.AreEqual(4, stored, "two dispatches x (one 3xx hop + one final response)");
+                Assert.AreEqual(4, CountCookieStored(context), "two dispatches x (one 3xx hop + one final response)");
                 Assert.AreEqual("a_sid=1", Header(jar, "https://a.test/"));
                 Assert.AreEqual("b_sid=2", Header(jar, "https://b.test/"));
                 Assert.AreEqual(2, jar.Count);
             });
+        }
+
+        [Test]
+        public void RedirectOuter_SecondDispatchOnSameContext_StoresEachResponseOnce()
+        {
+            // [Redirect, Cookie] with a retry-style second dispatch on the same RequestContext: the
+            // inner Cookie interceptor must not be snapshotted as an outer redirect-response observer
+            // by the second redirect handler (each 3xx Set-Cookie would be stored twice).
+            AssertAsync.Run(async () =>
+            {
+                var jar = new CookieJar();
+                var transport = new MockTransport((req, ctx, ct) => Task.FromResult(Respond(req, ctx,
+                    req.Uri.Host == "a.test" ? "https://b.test/final" : null,
+                    req.Uri.Host == "a.test" ? "a_sid=1; Path=/" : "b_sid=2; Path=/")));
+
+                var pipeline = new TestInterceptorPipeline(
+                    new IHttpInterceptor[] { new RedirectInterceptor(), new CookieInterceptor(jar) }, transport);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://a.test/start"));
+                var context = new RequestContext(request);
+                await pipeline.ExecuteAsync(request, context);
+                await pipeline.ExecuteAsync(request, context);
+
+                Assert.AreEqual(4, CountCookieStored(context), "two dispatches x (one 3xx hop + one final response)");
+                Assert.AreEqual("a_sid=1", Header(jar, "https://a.test/"));
+                Assert.AreEqual("b_sid=2", Header(jar, "https://b.test/"));
+                Assert.AreEqual(2, jar.Count);
+            });
+        }
+
+        private static int CountCookieStored(RequestContext context)
+        {
+            var stored = 0;
+            foreach (var e in context.Timeline)
+            {
+                if (e.Name == "CookieStored")
+                    stored++;
+            }
+
+            return stored;
         }
 
         private static async Task RunChainAsync(
