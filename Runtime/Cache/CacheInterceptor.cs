@@ -261,7 +261,9 @@ namespace TurboHTTP.Cache
                     return;
                 }
 
-                if (!CanCacheMethod(request.Method) || !_policy.EnableCache)
+                // RFC 9111 section 3.3: this cache does not store partial content, so a Range/If-Range request
+                // is neither answered from a stored response nor allowed to store its (possibly 206) response.
+                if (!CanCacheMethod(request.Method) || !_policy.EnableCache || IsRangeRequest(request.Headers))
                 {
                     await next(request, handler, context, cancellationToken).ConfigureAwait(false);
                     return;
@@ -345,33 +347,22 @@ namespace TurboHTTP.Cache
             };
         }
 
-        private async Task HandleUnsafeInvalidationAsync(
+        private Task HandleUnsafeInvalidationAsync(
             UHttpRequest request,
             IHttpHandler handler,
             RequestContext context,
             DispatchFunc next,
             CancellationToken cancellationToken)
         {
-            using var response = await CollectBufferedResponseAsync(
-                next,
+            if (!_policy.InvalidateOnUnsafeMethods)
+                return next(request, handler, context, cancellationToken);
+
+            // The response streams through untouched; invalidation runs when the status is known.
+            return next(
                 request,
+                new UnsafeInvalidationHandler(this, handler, request.Uri, cancellationToken),
                 context,
-                cancellationToken).ConfigureAwait(false);
-
-            if (_policy.InvalidateOnUnsafeMethods && (int)response.StatusCode < 500)
-            {
-                var invalidationTargets = CollectInvalidationTargets(request.Uri, response.Headers);
-                for (int i = 0; i < invalidationTargets.Count; i++)
-                    await InvalidateUriAsync(invalidationTargets[i], cancellationToken).ConfigureAwait(false);
-
-                context.RecordEvent("CacheInvalidated", new Dictionary<string, object>
-                {
-                    { "uri", NormalizeUri(request.Uri) },
-                    { "count", invalidationTargets.Count }
-                });
-            }
-
-            await ReplayCollectedResponseAsync(handler, request, response, context).ConfigureAwait(false);
+                cancellationToken);
         }
 
         private async Task RevalidateAsync(
@@ -398,61 +389,14 @@ namespace TurboHTTP.Cache
                 .CopyWithSharedContent()
                 .WithHeaders(conditionalHeaders);
 
+            // The validation response is not buffered: RevalidationHandler sees the status first, serves the
+            // merged stored entry for 304 and streams any other response to the caller (teeing it into the
+            // store when storable). StreamingResponseRequested is left as the caller set it.
+            var revalidationHandler = new RevalidationHandler(this, handler, request, baseKey, lookup, cancellationToken);
             context.UpdateRequest(conditionalRequest);
             try
             {
-                using var response = await CollectBufferedResponseAsync(
-                    next,
-                    conditionalRequest,
-                    context,
-                    cancellationToken).ConfigureAwait(false);
-
-                context.UpdateRequest(request);
-                if (response.StatusCode != HttpStatusCode.NotModified)
-                {
-                    context.RecordEvent("CacheRevalidateModified");
-
-                    bool replacedCachedEntry = false;
-                    if (ShouldConsiderForStorage(request, response))
-                    {
-                        var prepared = PrepareEntryForStorage(request, response, baseKey);
-                        if (prepared.Entry != null)
-                        {
-                            await ReplaceStoredEntryAsync(
-                                baseKey,
-                                prepared,
-                                lookup.StorageKey,
-                                cancellationToken).ConfigureAwait(false);
-                            replacedCachedEntry = true;
-                        }
-                    }
-
-                    if (!replacedCachedEntry)
-                    {
-                        // The upstream response is authoritative and this cache entry is no longer valid.
-                        await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                    }
-
-                    await ReplayCollectedResponseAsync(handler, request, response, context).ConfigureAwait(false);
-                    return;
-                }
-
-                context.RecordEvent("CacheRevalidateNotModified");
-
-                var merged = MergeNotModifiedEntry(request, lookup.Entry, response, baseKey);
-                if (merged.Entry != null)
-                {
-                    if (!string.Equals(lookup.StorageKey, merged.Entry.Key, StringComparison.Ordinal))
-                        await ReplaceStoredEntryAsync(baseKey, merged, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                    else
-                        await StorePreparedEntryQueuedAsync(baseKey, merged, cancellationToken).ConfigureAwait(false);
-
-                    await ServeCachedEntryAsync(handler, merged.Entry, request, context, "REVALIDATED").ConfigureAwait(false);
-                    return;
-                }
-
-                await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "REVALIDATED").ConfigureAwait(false);
+                await next(conditionalRequest, revalidationHandler, context, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -494,7 +438,7 @@ namespace TurboHTTP.Cache
             {
                 await RevalidateAsync(
                     request,
-                    NullHttpHandler.Instance,
+                    new BackgroundRevalidationSink(MaxCacheableResponseBodyBytes, cancellationToken),
                     context,
                     next,
                     cancellationToken,
@@ -665,17 +609,17 @@ namespace TurboHTTP.Cache
         private PreparedCacheEntry MergeNotModifiedEntry(
             UHttpRequest request,
             CacheEntry existing,
-            UHttpResponse notModifiedResponse,
+            HttpHeaders notModifiedHeaders,
             string baseKey)
         {
             var mergedHeaders = existing.Headers.Clone();
-            foreach (var name in notModifiedResponse.Headers.Names)
+            foreach (var name in notModifiedHeaders.Names)
             {
-                if (!notModifiedResponse.Headers.Contains(name))
+                if (!notModifiedHeaders.Contains(name))
                     continue;
 
                 mergedHeaders.Remove(name);
-                var values = notModifiedResponse.Headers.GetValues(name);
+                var values = notModifiedHeaders.GetValues(name);
                 for (int j = 0; j < values.Count; j++)
                     mergedHeaders.Add(name, values[j]);
             }
@@ -759,18 +703,23 @@ namespace TurboHTTP.Cache
                 context).ConfigureAwait(false);
         }
 
-        private static bool ShouldConsiderForStorage(UHttpRequest request, UHttpResponse response)
-        {
-            return response != null
-                && ShouldConsiderForStorage(request.Method, response.StatusCode);
-        }
-
         private static bool ShouldConsiderForStorage(HttpMethod requestMethod, HttpStatusCode responseStatusCode)
         {
             var numericStatusCode = (int)responseStatusCode;
+
+            // RFC 9111 section 3.3: a cache that does not implement partial-content storage MUST NOT store
+            // a 206 response.
+            if (numericStatusCode == 206)
+                return false;
+
             return ((numericStatusCode >= 200 && numericStatusCode < 300)
                     || IsRfc9111CacheableByDefault(responseStatusCode))
                    && requestMethod != HttpMethod.OPTIONS;
+        }
+
+        private static bool IsRangeRequest(HttpHeaders headers)
+        {
+            return headers != null && (headers.Contains("Range") || headers.Contains("If-Range"));
         }
 
         private bool CanCacheMethod(HttpMethod method)
@@ -1149,32 +1098,6 @@ namespace TurboHTTP.Cache
                 TaskScheduler.Default);
         }
 
-        private static ValueTask ReplayCollectedResponseAsync(
-            IHttpHandler handler,
-            UHttpRequest request,
-            UHttpResponse response,
-            RequestContext context)
-        {
-            handler.OnRequestStart(request, context);
-            var body = response.Body.IsEmpty
-                ? ReadOnlyMemory<byte>.Empty
-                : new ReadOnlyMemory<byte>(response.Body.ToArray());
-            return handler.OnResponseStartAsync(
-                (int)response.StatusCode,
-                response.Headers,
-                new BufferedResponseBodySource(body, HttpHeaders.Empty),
-                context);
-        }
-
-        private static Task<UHttpResponse> CollectBufferedResponseAsync(
-            DispatchFunc dispatch,
-            UHttpRequest request,
-            RequestContext context,
-            CancellationToken cancellationToken)
-        {
-            return TransportDispatchHelper.CollectResponseAsync(dispatch, request, context, cancellationToken);
-        }
-
         internal long MaxCacheableResponseBodyBytes => _policy.MaxCacheableResponseBodyBytes;
 
         internal Func<IStreamingCacheAccumulator> StreamingAccumulatorFactory
@@ -1191,33 +1114,6 @@ namespace TurboHTTP.Cache
         internal static bool ShouldConsiderForStorage(HttpMethod requestMethod, int statusCode)
         {
             return statusCode > 0 && ShouldConsiderForStorage(requestMethod, (HttpStatusCode)statusCode);
-        }
-
-        private sealed class NullHttpHandler : IHttpHandler
-        {
-            internal static readonly NullHttpHandler Instance = new NullHttpHandler();
-
-            private NullHttpHandler()
-            {
-            }
-
-            public void OnRequestStart(UHttpRequest request, RequestContext context)
-            {
-            }
-
-            public ValueTask OnResponseStartAsync(
-                int statusCode,
-                HttpHeaders headers,
-                IResponseBodySource body,
-                RequestContext context)
-            {
-                body?.Abort();
-                return default;
-            }
-
-            public void OnResponseError(UHttpException error, RequestContext context)
-            {
-            }
         }
     }
 }
