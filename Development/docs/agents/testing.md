@@ -34,10 +34,6 @@ in `tooling.md`.
   - run async helpers through `Task.Run`; Unity's synchronization context does not pump in tests and
     deadlocks;
   - never call another test method from a test (it skips SetUp/TearDown).
-  - no `[NonParallelizable]`, `Assert.Multiple` or `Assert.*Async`: they are
-    missing from `com.unity.ext.nunit` 1.0.6 and break compilation of the whole test assembly
-    (`check_repo.py unitynunit` enforces this, since PR CI cannot compile Unity tests without a
-    license).
 - Code must compile against Unity's .NET Standard 2.1 profile, which lacks `Encoding.Latin1`,
   `ReadOnlySequence<T>.ToArray()`, span-based `Encoding.GetBytes`, `Environment.TickCount64`,
   `ValueTask.FromException<T>` (use `new ValueTask<T>(Task.FromException<T>(…))`),
@@ -71,38 +67,6 @@ in `tooling.md`.
 - Read the skipped count in the result XML: a skip is not a pass (CONNECT tunnel tests skip today, #151).
 - A journal or PR that says "Unity not run" or "isolated .NET harness only" is unverified. Record
   exactly which lane ran: EditMode, PlayMode, IL2CPP player, device.
-
-## Periodic host-editor runs
-
-PR CI cannot run Unity tests: the repo has no `UNITY_LICENSE` secret, so the `unity-tests` jobs
-log a warning and pass without running anything (#188). The real Unity check is a full run in a
-local Unity 2021.3 editor, done:
-
-- after every `turbohttp-waves` run (its Step 5), before ticking a milestone's tracking issue, and
-  before closing a milestone;
-- otherwise once in a while (about weekly while PRs are merging), and whenever a change touches
-  test infrastructure, asmdefs or `#if` platform guards.
-
-How (from a clean worktree of the commit under test, e.g. `origin/main`):
-
-```bash
-export UNITY_PATH=<Unity 2021.3.45f2 editor binary>   # WSL + Windows editor: /mnt/<drive>/.../Editor/Unity.exe
-'./Tools~/unity/run-tests.sh' --platform EditMode
-'./Tools~/unity/run-tests.sh' --platform PlayMode
-```
-
-From WSL the script detects `Unity.exe`, keeps its project under `%LOCALAPPDATA%\turbohttp` and passes
-Windows paths (Unity cannot open a project on `\\wsl$`). The Editor must be licensed on that machine
-(a Unity Personal license activated through the Hub is enough). Only this periodic run may omit
-`--filter`; agents working on one change never run the whole suite.
-
-Afterwards:
-
-- every failure, compile error or newly Ignored test becomes a fix or a `type:bug` issue in the
-  owning milestone (search for an existing one first);
-- record the run in one journal file, `implementation-journal/YYYY-MM-unity-host-run.md` (append a
-  dated section per run): commit, totals per platform (passed/failed/skipped/inconclusive) and
-  the issues filed. A milestone closes only after a green run on its final commit.
 
 ## Reviews of test changes
 

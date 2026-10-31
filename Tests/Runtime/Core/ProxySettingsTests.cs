@@ -34,13 +34,12 @@ namespace TurboHTTP.Tests.Core
 
             try
             {
-                // Windows environment names are case-insensitive: clear the lowercase name first.
-                Environment.SetEnvironmentVariable("https_proxy", null);
                 Environment.SetEnvironmentVariable("HTTPS_PROXY", "http://secure-proxy.example:8080");
-                Environment.SetEnvironmentVariable("http_proxy", null);
+                Environment.SetEnvironmentVariable("https_proxy", null);
                 Environment.SetEnvironmentVariable("HTTP_PROXY", "http://plain-proxy.example:8080");
-                Environment.SetEnvironmentVariable("no_proxy", null);
+                Environment.SetEnvironmentVariable("http_proxy", null);
                 Environment.SetEnvironmentVariable("NO_PROXY", "localhost,.internal.local");
+                Environment.SetEnvironmentVariable("no_proxy", null);
 
                 var httpsResult = ProxyEnvironmentResolver.Resolve(new Uri("https://api.example.com/resource"), null);
                 var httpResult = ProxyEnvironmentResolver.Resolve(new Uri("http://api.example.com/resource"), null);
@@ -75,11 +74,10 @@ namespace TurboHTTP.Tests.Core
 
             try
             {
-                // Windows environment names are case-insensitive: clear the lowercase name first.
-                Environment.SetEnvironmentVariable("https_proxy", null);
                 Environment.SetEnvironmentVariable("HTTPS_PROXY", null);
-                Environment.SetEnvironmentVariable("http_proxy", null);
+                Environment.SetEnvironmentVariable("https_proxy", null);
                 Environment.SetEnvironmentVariable("HTTP_PROXY", "http://plain-proxy.example:8080");
+                Environment.SetEnvironmentVariable("http_proxy", null);
 
                 var httpsResult = ProxyEnvironmentResolver.Resolve(
                     new Uri("https://api.example.com/resource"),
@@ -106,11 +104,10 @@ namespace TurboHTTP.Tests.Core
 
             try
             {
-                // Windows environment names are case-insensitive: clear the lowercase name first.
-                Environment.SetEnvironmentVariable("https_proxy", null);
                 Environment.SetEnvironmentVariable("HTTPS_PROXY", null);
-                Environment.SetEnvironmentVariable("http_proxy", null);
+                Environment.SetEnvironmentVariable("https_proxy", null);
                 Environment.SetEnvironmentVariable("HTTP_PROXY", "http://plain-proxy.example:8080");
+                Environment.SetEnvironmentVariable("http_proxy", null);
 
                 var configured = new ProxySettings
                 {

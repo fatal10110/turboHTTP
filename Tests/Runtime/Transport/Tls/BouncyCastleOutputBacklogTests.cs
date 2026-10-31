@@ -39,7 +39,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             });
             if (server == null)
             {
-                TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
                 return;
             }
 

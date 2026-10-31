@@ -99,13 +99,9 @@ called by absolute path, quoted because of the `~`):
   built on first use or with `--sync`), for follow-up dedupe.
 - `wave_mail.py worktree --lane S [--review] [--remove]` — creates, moves or removes lane worktrees
   with absolute paths.
-- `wave_mail.py threads --pr N [--head SHA]` and `resolve-thread --id ID [--reply TEXT]
-  [--keep-open] [--dismiss REASON]` — the PR's unresolved review threads, CodeQL alerts included
-  (with `--head`, after that head's code scanning finished and settled: re-run while
-  `code_scanning` is `pending` or `settling`), and reply, resolve and alert dismissal in one call.
-  Agents end every comment they post with `<!-- waves -->` (`resolve-thread` adds it), so
-  `threads` can tell agent, bot (CodeQL) and human threads apart; a lane never resolves a human
-  thread and waits for it before asking for the merge. The reviewer triages every thread before
+- `wave_mail.py threads --pr N [--head SHA]` and `resolve-thread --id ID [--reply TEXT]` — the
+  PR's unresolved review threads, CodeQL alerts included (with `--head`, after that head's code
+  scanning finished), and reply-and-resolve in one call. The reviewer triages every thread before
   each verdict; the merge agent answers `threads_open` instead of merging while any is open.
 - `wave_mail.py pr-state --pr N` and `ci-wait --head SHA` — compact PR state (with `behind_by`)
   and an in-process CI wait for the merge agent.
@@ -121,13 +117,12 @@ called by absolute path, quoted because of the `~`):
   JSON/seed validity), `dotnet format` on changed C# files, and a shadow `dotnet build` of every
   runtime asmdef with analyzers. Missing Unity managed DLLs: `'./Tools~/ci/fetch-unity-dlls.sh'`
   once (docker). `--full` only when the lane note asks.
-- Unity tests: no agent runs the full Unity suite. PR CI does not run them either (no Unity
-  license, #188); the full suites run in a host editor at Step 5 (testing.md, "Periodic host-editor
-  runs"). Locally only `--filter`ed runs of the affected tests, and only when Unity is installed:
-  `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter '<regex>'`. Exit 3 /
-  `UNITY_UNAVAILABLE`: agents say "Unity unavailable locally".
+- Unity tests: no agent runs the full Unity suite locally; PR CI (the aggregate `ci` check) runs
+  EditMode and PlayMode on every push. Locally only `--filter`ed runs of the affected tests, and
+  only when Unity is installed: `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode
+  --filter '<regex>'`. Exit 3 / `UNITY_UNAVAILABLE` means Unity tests run only on CI; agents say so.
 - Every behavior change carries a deterministic regression test that fails on the old code.
-- The PR body carries a "Local gates" section and the line "Unity tests: host editor (periodic)". The reviewer
+- The PR body carries a "Local gates" section and the line "Unity tests: CI". The reviewer
   reproduces the gate; a missing regression test or a failing gate is a [must-fix].
 - The merge agent never runs tests. The `runner` helper refuses an unfiltered Unity run.
 
@@ -293,9 +288,6 @@ When all workflows have returned:
   ticked for merged lanes (tick them), and that no `wf-<slug>` worktree remains for a merged lane.
 - If phase status changed, update `Development/docs/agents/project-status.md` in one follow-up
   commit/PR (lanes never edit them).
-- Run the full Unity suites in the host editor on the new `origin/main` (testing.md, "Periodic
-  host-editor runs"): PR CI skips Unity tests without a license, so this is the first time the
-  wave's Unity tests actually run. File or fix every failure before reporting the run done.
 
 ## Editing waves.js
 

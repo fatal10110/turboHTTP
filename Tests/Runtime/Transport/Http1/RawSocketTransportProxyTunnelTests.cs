@@ -7,6 +7,7 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
@@ -837,7 +838,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                    TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
                 string firstRequestLine = null;
                 string secondRequestLine = null;
 
@@ -907,7 +908,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                    TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
 
                 using var originServerA = new HttpsOriginServer(certificate, async (stream, _) =>
                 {
@@ -961,7 +962,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                    TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
 
                 string sameTunnelFollowUp = null;
                 var largeBody = new byte[(64 * 1024) + 2];
@@ -1042,7 +1043,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                    TestRequirements.IgnoreEnvironment("Local self-signed certificate generation is unavailable in this runtime.");
 
                 string requestLine = null;
 
@@ -1395,8 +1396,37 @@ namespace TurboHTTP.Tests.Transport.Http1
 
         private static X509Certificate2 TryCreateLocalhostCertificate()
         {
-            // Unity's Mono has no CertificateRequest; use the committed test identity (#151).
-            return global::TurboHTTP.Tests.Transport.Tls.TestLocalhostCertificate.TryLoad();
+            try
+            {
+                using var rsa = RSA.Create(2048);
+                var request = new CertificateRequest(
+                    "CN=localhost",
+                    rsa,
+                    HashAlgorithmName.SHA256,
+                    RSASignaturePadding.Pkcs1);
+
+                request.CertificateExtensions.Add(
+                    new X509BasicConstraintsExtension(false, false, 0, false));
+                request.CertificateExtensions.Add(
+                    new X509KeyUsageExtension(
+                        X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
+                        false));
+                request.CertificateExtensions.Add(
+                    new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+
+                var certificate = request.CreateSelfSigned(
+                    DateTimeOffset.UtcNow.AddDays(-1),
+                    DateTimeOffset.UtcNow.AddDays(7));
+                return new X509Certificate2(certificate.Export(X509ContentType.Pfx));
+            }
+            catch (CryptographicException)
+            {
+                return null;
+            }
+            catch (PlatformNotSupportedException)
+            {
+                return null;
+            }
         }
 
         private static async Task WriteResponseAsync(Stream stream, string response)

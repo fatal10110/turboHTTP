@@ -19,7 +19,7 @@ Closes #<!-- n; one line per fully resolved issue, "Part of #n" otherwise -->
 - Unity EditMode `--filter`: <!-- pass | Unity unavailable locally -->
 - Unity PlayMode `--filter`: <!-- pass | Unity unavailable locally -->
 
-Unity tests: host editor (periodic)
+Unity tests: CI
 
 ## Specialist rubrics
 Infrastructure: <!-- clean | findings fixed -->; Network: <!-- clean | findings fixed -->

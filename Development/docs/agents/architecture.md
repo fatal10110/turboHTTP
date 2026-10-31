@@ -45,9 +45,10 @@ recorded in the journal and in this table.
   `OnResponseEnd`/`OnResponseError`). `SendBufferedAsync` collects the body
   (`BufferedDispatchBridge`); `SendStreamingAsync` returns at headers with an `IResponseBodySource`
   (`StreamingDispatchBridge`). Handlers that replace the body own disposal of the one they replaced.
-- Ordering matters and is not enforced yet (#55). Known hazards: Auth inside Redirect re-adds
-  credentials after a cross-origin hop (#56); Cache outside Auth bypasses the authorized-request
-  guard; Cookie must see every redirect hop; Concurrency outside Retry holds permits during backoff.
+- Ordering matters and is not enforced yet (#55). Known hazards: Cache outside Auth bypasses the
+  authorized-request guard; Concurrency outside Retry holds permits during backoff. Auth binds its
+  token to the first request's origin and Cookie stores Set-Cookie per redirect hop in either order
+  (#56, #58), but Cookie outside Redirect attaches the Cookie header for the first hop only.
 - Module conveniences are extension methods in the owning module (`WithJsonBody` in JSON,
   `WithBearerToken` in Auth); Core's request API keeps raw HTTP primitives.
 - `UHttpClient.Dispose()` disposes `IDisposable` interceptors (ownership issue #63). Disposal is

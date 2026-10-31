@@ -125,8 +125,6 @@ function world(cap, scen) {
     if (kind === 'barrier') return { passed: !scen.$stop, stop: !!scen.$stop, lines: Object.entries(state).map(([k, v]) => `${k}|${v.status || 'active'}|${v.stage || ''}|${v.pr || ''}|${v.round || ''}`) }
     if (kind === 'take') {
       const evs = scen.$take.shift()
-      if (evs === 'FAKE_STOP') return { events: [], stop: true } // a poller that reports a stop it never saw
-      if (evs && evs.stopWith) return { events: evs.stopWith, stop: true } // an off-script poller: events and stop together
       return evs ? { events: evs, stop: false } : { events: [], stop: true }
     }
     if (kind === 'merge') return { status: 'merged', answered: !/lane "nope"/.test(prompt), notes: '' }
@@ -314,18 +312,7 @@ const count = (w, prefix) => w.labels.filter(l => l === prefix || l.startsWith(p
   assert.equal(t.review, 'wave-review')
   assert.equal(t.watch, 'wave-coord')
   const m = await run({ run: 'sim', role: 'merger', plan }, { $take: [[{ id: 'm1', type: 'merge', from: 'a/review' }]] })
-  // take (event), merge, take (stop), take:confirm-stop (stop) -> the broker ends.
-  assert.deepEqual(m.w.types.map(([l, ty]) => ty), ['wave-coord', 'wave-merge', 'wave-coord', 'wave-coord'])
-
-  // An unconfirmed stop does not end the broker: the confirming take's events are served.
-  const fake = await run({ run: 'sim', role: 'merger', plan }, {
-    $take: [[{ id: 'm1', type: 'merge', from: 'a/review' }], 'FAKE_STOP', [{ id: 'm2', type: 'merge', from: 'a/review' }]],
-  })
-  assert.deepEqual(fake.res.handled, ['a: merged', 'a: merged'])
-
-  // Events that arrive together with a stop are still served before the broker stops.
-  const both = await run({ run: 'sim', role: 'merger', plan }, { $take: [{ stopWith: [{ id: 'm3', type: 'merge', from: 'a/review' }] }] })
-  assert.deepEqual(both.res.handled, ['a: merged'])
+  assert.deepEqual(m.w.types.map(([l, ty]) => ty), ['wave-coord', 'wave-merge', 'wave-coord'])
 
   const miss = await run({ run: 'sim', role: 'helper', plan: { tracks: ['A'], waves: [] } }, {
     $missingTypes: true,

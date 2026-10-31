@@ -9,7 +9,14 @@ namespace TurboHTTP.Middleware
     /// <summary>
     /// Adds outbound Cookie headers and persists inbound Set-Cookie headers.
     /// </summary>
-    public sealed class CookieInterceptor : IHttpInterceptor, IDisposable
+    /// <remarks>
+    /// Set-Cookie is stored against the request-uri of the hop that returned it, in either order
+    /// relative to <see cref="RedirectInterceptor"/>: inside it the interceptor runs per hop; outside
+    /// it, the redirect interceptor hands each consumed 3xx response back to the jar and the final
+    /// response is attributed to the last hop's request. Outside the redirect interceptor the
+    /// Cookie header is computed once, for the first request only.
+    /// </remarks>
+    public sealed class CookieInterceptor : IHttpInterceptor, IDisposable, IRedirectResponseObserver
     {
         private readonly CookieJar _jar;
         private readonly bool _ownsJar;
@@ -60,6 +67,10 @@ namespace TurboHTTP.Middleware
                         context.RecordEvent("CookieAttached");
                     }
                 }
+
+                // Redirect interceptors that run after this one (inner) consume 3xx responses; let
+                // them hand those hop responses back so their Set-Cookie is stored per hop.
+                RedirectHandler.AddResponseObserver(context, this);
 
                 Task dispatchTask;
                 try
@@ -164,6 +175,22 @@ namespace TurboHTTP.Middleware
                 nameEnd--;
 
             return cookieHeader.Substring(start, nameEnd - start);
+        }
+
+        void IRedirectResponseObserver.OnRedirectResponse(Uri hopRequestUri, HttpHeaders headers, RequestContext context)
+        {
+            if (Volatile.Read(ref _disposed) != 0 || hopRequestUri == null || !hopRequestUri.IsAbsoluteUri)
+                return;
+
+            try
+            {
+                CookieHandler.StoreSetCookies(_jar, hopRequestUri, headers, context);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Interceptor or jar disposed while the request was in flight: drop the cookies
+                // rather than failing the redirect hop.
+            }
         }
 
         public void Dispose()

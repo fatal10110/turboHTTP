@@ -86,13 +86,44 @@ namespace TurboHTTP.Middleware
             "org.sg",
             "org.tr",
             "res.in",
-            "sch.uk"
+            "sch.uk",
+            // Shared-hosting suffixes from the private section of the Public Suffix List: every
+            // tenant gets a subdomain, so a Domain cookie on the suffix would reach all tenants.
+            "amazonaws.com",
+            "appspot.com",
+            "azurewebsites.net",
+            "azurestaticapps.net",
+            "blogspot.com",
+            "cloudapp.net",
+            "cloudfront.net",
+            "elasticbeanstalk.com",
+            "firebaseapp.com",
+            "fly.dev",
+            "github.io",
+            "githubusercontent.com",
+            "gitlab.io",
+            "glitch.me",
+            "herokuapp.com",
+            "netlify.app",
+            "ngrok.io",
+            "onrender.com",
+            "pages.dev",
+            "vercel.app",
+            "web.app",
+            "workers.dev"
         };
+
+        /// <summary>RFC 6265bis 5.6: a cookie whose name plus value exceeds this is ignored.</summary>
+        internal const int MaxNameValueLength = 4096;
+
+        /// <summary>RFC 6265bis 5.6: an attribute value longer than this is ignored.</summary>
+        internal const int MaxAttributeValueLength = 1024;
 
         private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
         private readonly Dictionary<string, CookieRecord> _cookies = new Dictionary<string, CookieRecord>(StringComparer.Ordinal);
         private readonly int _maxCookiesPerDomain;
         private readonly int _maxTotalCookies;
+        private readonly Func<string, bool> _isPublicSuffix;
         private int _disposed;
 
         private sealed class CookieRecord
@@ -107,10 +138,24 @@ namespace TurboHTTP.Middleware
             public bool HttpOnly;
             public CookieSameSite SameSite;
             public DateTime CreatedAtUtc;
-            public DateTime LastAccessedUtc;
+
+            // Written by concurrent readers of GetCookieHeader under the read lock: ticks updated
+            // with Interlocked so 32-bit IL2CPP never tears the 64-bit value.
+            public long LastAccessedTicks;
         }
 
-        public CookieJar(int maxCookiesPerDomain = 50, int maxTotalCookies = 3000)
+        /// <summary>Creates an empty, bounded cookie jar.</summary>
+        /// <param name="maxCookiesPerDomain">Per-domain cookie limit; least recently used cookies are evicted first.</param>
+        /// <param name="maxTotalCookies">Total cookie limit; least recently used cookies are evicted first.</param>
+        /// <param name="isPublicSuffix">
+        /// Optional predicate that reports whether a lower-case domain (no leading dot) is a public
+        /// suffix, for example backed by the full Public Suffix List. It is consulted in addition to
+        /// the built-in list: a <c>Domain</c> attribute naming a public suffix is rejected unless it
+        /// equals the request host, in which case the cookie becomes host-only (RFC 6265 section 5.3
+        /// step 5). Called under the jar's write lock; it must be fast, thread-safe and must not call
+        /// back into the jar.
+        /// </param>
+        public CookieJar(int maxCookiesPerDomain = 50, int maxTotalCookies = 3000, Func<string, bool> isPublicSuffix = null)
         {
             if (maxCookiesPerDomain <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxCookiesPerDomain), maxCookiesPerDomain, "Must be > 0.");
@@ -119,6 +164,7 @@ namespace TurboHTTP.Middleware
 
             _maxCookiesPerDomain = maxCookiesPerDomain;
             _maxTotalCookies = maxTotalCookies;
+            _isPublicSuffix = isPublicSuffix;
         }
 
         public int Count
@@ -176,6 +222,7 @@ namespace TurboHTTP.Middleware
                 return;
 
             var nowUtc = EnsureUtcNow(utcNowOverride);
+            bool isSecureOrigin = string.Equals(requestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
 
             _lock.EnterWriteLock();
             try
@@ -188,7 +235,12 @@ namespace TurboHTTP.Middleware
                     if (string.IsNullOrWhiteSpace(line))
                         continue;
 
-                    if (!TryParseSetCookie(requestUri, line, nowUtc, out var cookie, out var shouldDelete))
+                    if (!TryParseSetCookie(requestUri, line, nowUtc, _isPublicSuffix, out var cookie, out var shouldDelete))
+                        continue;
+
+                    // RFC 6265bis 5.7 ("leave secure cookies alone"): a non-secure origin can neither
+                    // create, overwrite nor delete a cookie that shadows an existing Secure cookie.
+                    if (!cookie.Secure && !isSecureOrigin && ShadowsSecureCookieUnsafe(cookie))
                         continue;
 
                     var key = BuildCookieKey(cookie.Name, cookie.Domain, cookie.Path);
@@ -221,8 +273,14 @@ namespace TurboHTTP.Middleware
                 throw new ArgumentNullException(nameof(requestUri));
 
             var nowUtc = EnsureUtcNow(utcNowOverride);
+            var nowTicks = nowUtc.Ticks;
+            bool sawExpired = false;
+            string header = null;
 
-            _lock.EnterWriteLock();
+            // Readers share the lock; the only writes are the per-cookie last-access stamp
+            // (Interlocked) and the expired-cookie sweep, which runs after the read section under
+            // the write lock.
+            _lock.EnterReadLock();
             try
             {
                 var host = NormalizeDomain(requestUri.Host);
@@ -230,16 +288,11 @@ namespace TurboHTTP.Middleware
                 bool isHttps = string.Equals(requestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
 
                 var matches = new List<CookieRecord>();
-                List<string> expiredKeys = null;
-                foreach (var pair in _cookies)
+                foreach (var cookie in _cookies.Values)
                 {
-                    var cookie = pair.Value;
                     if (cookie.ExpiresAtUtc.HasValue && cookie.ExpiresAtUtc.Value <= nowUtc)
                     {
-                        if (expiredKeys == null)
-                            expiredKeys = new List<string>();
-
-                        expiredKeys.Add(pair.Key);
+                        sawExpired = true;
                         continue;
                     }
 
@@ -255,38 +308,47 @@ namespace TurboHTTP.Middleware
                     if (!SameSiteAllows(cookie.SameSite, method, isCrossSiteRequest))
                         continue;
 
-                    cookie.LastAccessedUtc = nowUtc;
+                    Interlocked.Exchange(ref cookie.LastAccessedTicks, nowTicks);
                     matches.Add(cookie);
                 }
 
-                if (expiredKeys != null)
+                if (matches.Count > 0)
                 {
-                    for (int i = 0; i < expiredKeys.Count; i++)
-                        _cookies.Remove(expiredKeys[i]);
+                    matches.Sort((a, b) =>
+                    {
+                        int byPath = b.Path.Length.CompareTo(a.Path.Length);
+                        if (byPath != 0)
+                            return byPath;
+
+                        int byCreated = a.CreatedAtUtc.CompareTo(b.CreatedAtUtc);
+                        if (byCreated != 0)
+                            return byCreated;
+
+                        return string.CompareOrdinal(a.Name, b.Name);
+                    });
+
+                    header = BuildCookieHeader(matches);
                 }
-
-                if (matches.Count == 0)
-                    return null;
-
-                matches.Sort((a, b) =>
-                {
-                    int byPath = b.Path.Length.CompareTo(a.Path.Length);
-                    if (byPath != 0)
-                        return byPath;
-
-                    int byCreated = a.CreatedAtUtc.CompareTo(b.CreatedAtUtc);
-                    if (byCreated != 0)
-                        return byCreated;
-
-                    return string.CompareOrdinal(a.Name, b.Name);
-                });
-
-                return BuildCookieHeader(matches);
             }
             finally
             {
-                _lock.ExitWriteLock();
+                _lock.ExitReadLock();
             }
+
+            if (sawExpired)
+            {
+                _lock.EnterWriteLock();
+                try
+                {
+                    RemoveExpiredUnsafe(nowUtc);
+                }
+                finally
+                {
+                    _lock.ExitWriteLock();
+                }
+            }
+
+            return header;
         }
 
         public void Dispose()
@@ -301,6 +363,7 @@ namespace TurboHTTP.Middleware
             Uri requestUri,
             string line,
             DateTime nowUtc,
+            Func<string, bool> isPublicSuffix,
             out CookieRecord cookie,
             out bool shouldDelete)
         {
@@ -321,9 +384,16 @@ namespace TurboHTTP.Middleware
             if (name.Length == 0)
                 return false;
 
+            if (name.Length + value.Length > MaxNameValueLength)
+                return false;
+
             var host = NormalizeDomain(requestUri.Host);
+            bool isIpHost = requestUri.HostNameType == UriHostNameType.IPv4 ||
+                            requestUri.HostNameType == UriHostNameType.IPv6;
             string domain = host;
             bool hostOnly = true;
+            bool hasDomainAttribute = false;
+            bool hasPathAttribute = false;
             string path = DefaultPath(requestUri.AbsolutePath);
             DateTime? expiresUtc = null;
             DateTime? maxAgeExpiresUtc = null;
@@ -346,27 +416,58 @@ namespace TurboHTTP.Middleware
                     ? segment.Substring(attrEq + 1).Trim()
                     : string.Empty;
 
+                // RFC 6265bis 5.6: an oversized attribute value is ignored, not the cookie.
+                if (attrValue.Length > MaxAttributeValueLength)
+                    continue;
+
                 if (string.Equals(attrName, "Domain", StringComparison.OrdinalIgnoreCase))
                 {
                     if (string.IsNullOrWhiteSpace(attrValue))
                         return false;
 
                     var normalizedDomain = NormalizeDomain(attrValue.TrimStart('.'));
-                    if (IsRejectedPublicSuffix(normalizedDomain))
-                        return false;
+
+                    if (isIpHost)
+                    {
+                        // RFC 6265 5.1.3: an IP address only domain-matches the identical string,
+                        // so the cookie stays bound to exactly this host.
+                        if (!string.Equals(normalizedDomain.Trim('[', ']'), host.Trim('[', ']'), StringComparison.Ordinal))
+                            return false;
+
+                        domain = host;
+                        hostOnly = true;
+                        hasDomainAttribute = true;
+                        continue;
+                    }
+
+                    if (IsPublicSuffix(normalizedDomain, isPublicSuffix))
+                    {
+                        // RFC 6265 5.3 step 5: a public-suffix Domain equal to the request host
+                        // degrades to a host-only cookie; any other public suffix is rejected.
+                        if (!string.Equals(normalizedDomain, host, StringComparison.Ordinal))
+                            return false;
+
+                        domain = host;
+                        hostOnly = true;
+                        hasDomainAttribute = false;
+                        continue;
+                    }
 
                     if (!DomainMatches(host, normalizedDomain, hostOnly: false))
                         return false;
 
                     domain = normalizedDomain;
                     hostOnly = false;
+                    hasDomainAttribute = true;
                     continue;
                 }
 
                 if (string.Equals(attrName, "Path", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!string.IsNullOrEmpty(attrValue) && attrValue[0] == '/')
-                        path = attrValue;
+                    hasPathAttribute = true;
+                    path = !string.IsNullOrEmpty(attrValue) && attrValue[0] == '/'
+                        ? attrValue
+                        : DefaultPath(requestUri.AbsolutePath);
                     continue;
                 }
 
@@ -430,6 +531,16 @@ namespace TurboHTTP.Middleware
             if (secure && !string.Equals(requestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
                 return false;
 
+            // RFC 6265bis 4.1.3 / 5.7: cookie name prefixes (case-insensitive).
+            if (name.StartsWith("__Secure-", StringComparison.OrdinalIgnoreCase) && !secure)
+                return false;
+
+            if (name.StartsWith("__Host-", StringComparison.OrdinalIgnoreCase) &&
+                (!secure || hasDomainAttribute || !hostOnly || !hasPathAttribute || !string.Equals(path, "/", StringComparison.Ordinal)))
+            {
+                return false;
+            }
+
             cookie = new CookieRecord
             {
                 Name = name,
@@ -442,7 +553,7 @@ namespace TurboHTTP.Middleware
                 HttpOnly = httpOnly,
                 SameSite = sameSite,
                 CreatedAtUtc = nowUtc,
-                LastAccessedUtc = nowUtc
+                LastAccessedTicks = nowUtc.Ticks
             };
 
             return true;
@@ -511,9 +622,9 @@ namespace TurboHTTP.Middleware
                     continue;
 
                 if (oldest == null
-                    || candidate.LastAccessedUtc < oldest.LastAccessedUtc
-                    || (candidate.LastAccessedUtc == oldest.LastAccessedUtc && candidate.CreatedAtUtc < oldest.CreatedAtUtc)
-                    || (candidate.LastAccessedUtc == oldest.LastAccessedUtc
+                    || candidate.LastAccessedTicks < oldest.LastAccessedTicks
+                    || (candidate.LastAccessedTicks == oldest.LastAccessedTicks && candidate.CreatedAtUtc < oldest.CreatedAtUtc)
+                    || (candidate.LastAccessedTicks == oldest.LastAccessedTicks
                         && candidate.CreatedAtUtc == oldest.CreatedAtUtc
                         && string.CompareOrdinal(pair.Key, oldestKey) < 0))
                 {
@@ -682,6 +793,30 @@ namespace TurboHTTP.Middleware
                 return value.Substring(1, value.Length - 2);
 
             return value;
+        }
+
+        private bool ShadowsSecureCookieUnsafe(CookieRecord candidate)
+        {
+            foreach (var existing in _cookies.Values)
+            {
+                if (!existing.Secure || !string.Equals(existing.Name, candidate.Name, StringComparison.Ordinal))
+                    continue;
+
+                bool domainsOverlap = DomainMatches(existing.Domain, candidate.Domain, hostOnly: false)
+                                      || DomainMatches(candidate.Domain, existing.Domain, hostOnly: false);
+                if (domainsOverlap && PathMatches(candidate.Path, existing.Path))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsPublicSuffix(string normalizedDomain, Func<string, bool> isPublicSuffix)
+        {
+            if (IsRejectedPublicSuffix(normalizedDomain))
+                return true;
+
+            return isPublicSuffix != null && isPublicSuffix(normalizedDomain);
         }
 
         private static bool IsRejectedPublicSuffix(string normalizedDomain)
