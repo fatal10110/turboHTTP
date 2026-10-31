@@ -298,7 +298,7 @@ catch (UHttpException ex)
 ```csharp
 using TurboHTTP.Files;
 
-var downloader = new FileDownloader();
+var downloader = new FileDownloader(client);
 var options = new DownloadOptions
 {
     EnableResume = true,
@@ -309,6 +309,8 @@ var options = new DownloadOptions
 
 await downloader.DownloadFileAsync(url, savePath, options);
 ```
+
+Downloads are written to `savePath + ".part"` and moved to `savePath` only after the body completed and the checksum (if any) matched; an existing file at `savePath` is replaced atomically and is never touched by a failed download. With `EnableResume`, the response's strong validator (strong `ETag`, or a `Last-Modified` at least one second older than `Date`) is stored in `savePath + ".part.validator"`, and the next call resumes with `Range`, `If-Range` and `Accept-Encoding: identity`. A changed resource (200), a 416, or a 206 whose `Content-Range` does not continue the partial restarts from scratch; 4xx/5xx responses throw and leave the partial and the destination untouched. A checksum mismatch deletes the partial.
 
 ### Multipart Uploads
 
