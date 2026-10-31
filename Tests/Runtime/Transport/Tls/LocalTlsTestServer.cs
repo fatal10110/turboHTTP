@@ -34,7 +34,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         /// <summary>True when a further connection is waiting in the accept backlog.</summary>
         public bool HasPendingConnection => _listener.Pending();
 
-        /// <summary>Returns null when the runtime cannot create a self-signed certificate.</summary>
+        /// <summary>Returns null when the runtime cannot load the committed test certificate.</summary>
         public static LocalTlsTestServer TryStart()
         {
             var certificate = TryCreateLocalhostCertificate();

@@ -625,6 +625,11 @@ def cmd_pr_state(a):
 CODE_SCANNING_CHECKS = ("CodeQL", "analyze")
 CODE_SCANNING_GRACE = float(os.environ.get("WAVES_CODEQL_GRACE", "60"))
 BOT_AUTHORS = ("github-advanced-security",)
+ALERT_URL = re.compile(r"/security/code-scanning/(\d+)")
+DISMISS_REASONS = ("false positive", "won't fix", "used in tests")
+# Every comment a waves agent posts ends with this marker, so threads can tell agent, bot and human
+# threads apart (all agents post under the owner's account).
+AGENT_MARKER = "<!-- waves -->"
 
 THREADS_QUERY = """query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){
 reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated path line
@@ -643,6 +648,17 @@ def gh_graphql(query, **variables):
     return json.loads(r.stdout)
 
 
+def gh_api_patch(path, fields):
+    gh = os.environ.get("WAVES_GH", "gh")
+    args = [gh, "api", "-X", "PATCH", path]
+    for k, v in fields.items():
+        args += ["-f", f"{k}={v}"]
+    r = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[-300:])
+    return json.loads(r.stdout or "{}")
+
+
 def code_scanning_state(check_runs):
     """done | pending | absent for the code-scanning check runs of one head (newest run per name)."""
     latest = {}
@@ -658,6 +674,26 @@ def code_scanning_state(check_runs):
     return "done", max((r.get("completed_at") or "") for r in latest.values())
 
 
+def scanning_wait_state(check_runs, now_ts, grace=None):
+    """pending | settling | done | absent for one head, as the reviewer should read it.
+
+    pending: no check run exists yet (right after a push) or code scanning is still running.
+    settling: code scanning finished less than `grace` seconds ago; alerts may not be posted yet.
+    absent: the head has check runs but none for code scanning.
+    """
+    grace = CODE_SCANNING_GRACE if grace is None else grace
+    if not check_runs:
+        return "pending"
+    state, done_at = code_scanning_state(check_runs)
+    if state != "done":
+        return state
+    if done_at:
+        finished = datetime.datetime.strptime(done_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+        if now_ts - finished < grace:
+            return "settling"
+    return "done"
+
+
 def summarize_threads(nodes):
     """Unresolved review threads; unanswered = nobody replied after the opening comment."""
     threads = []
@@ -670,10 +706,18 @@ def summarize_threads(nodes):
         total = (t.get("comments") or {}).get("totalCount", len(comments))
         body = (first.get("body") or "").strip()
         title = next((ln.lstrip("#").strip() for ln in body.splitlines() if ln.strip()), "")
-        threads.append({"id": t.get("id"), "path": t.get("path"), "line": t.get("line"), "outdated": bool(t.get("isOutdated")),
-                        "author": author, "bot": author in BOT_AUTHORS, "replies": max(total - 1, 0),
+        alert = ALERT_URL.search(body)
+        line = t.get("line")  # null on outdated threads
+        bot = author in BOT_AUTHORS
+        agent = AGENT_MARKER in body
+        threads.append({"id": t.get("id"), "path": t.get("path"), "line": line,
+                        "where": f"{t.get('path')}:{line}" if line else str(t.get("path") or ""),
+                        "outdated": bool(t.get("isOutdated")), "author": author, "bot": bot, "agent": agent,
+                        "human": not bot and not agent,
+                        "alert": int(alert.group(1)) if alert else None, "replies": max(total - 1, 0),
                         "title": title[:160], "url": first.get("url", "")})
-    return {"unresolved": len(threads), "unanswered": sum(1 for t in threads if t["replies"] == 0), "threads": threads}
+    return {"unresolved": len(threads), "unanswered": sum(1 for t in threads if t["replies"] == 0),
+            "human": sum(1 for t in threads if t["human"]), "threads": threads}
 
 
 def pr_threads(pr):
@@ -698,13 +742,10 @@ def cmd_threads(a):
             deadline = now() + wait_secs(a.wait)
             while True:
                 runs = gh_api(f"repos/{GH_REPO}/commits/{a.head}/check-runs?per_page=100").get("check_runs", [])
-                state, done_at = code_scanning_state(runs)
-                if state == "done" and done_at:
-                    finished = datetime.datetime.strptime(done_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
-                    if time.time() - finished < CODE_SCANNING_GRACE and now() < deadline:
-                        time.sleep(min(POLL * 5, max(deadline - now(), 0)))
-                        continue
-                if state != "pending" or now() >= deadline:
+                state = scanning_wait_state(runs, time.time())
+                # Only "done" and "absent" are final; "pending"/"settling" at the deadline tell the
+                # caller to run the command again.
+                if state in ("done", "absent") or now() >= deadline:
                     break
                 time.sleep(min(POLL * 5, max(deadline - now(), 0)))
             res.update({"head": a.head, "code_scanning": state})
@@ -716,21 +757,41 @@ def cmd_threads(a):
 
 REPLY_MUTATION = """mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{url}}}"""
 RESOLVE_MUTATION = """mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}"""
+THREAD_BODY_QUERY = """query($t:ID!){node(id:$t){... on PullRequestReviewThread{comments(first:1){nodes{body}}}}}"""
 
 
 def cmd_resolve_thread(a):
-    """Reply on a review thread (optional) and resolve it: one call instead of two MCP round trips."""
+    """Reply on a review thread (optional), resolve it, and with --dismiss also dismiss the
+    code-scanning alert the thread was opened for: one call instead of several MCP round trips.
+
+    The alert is looked up before anything is posted, so a thread without one changes nothing. A
+    failed reply resolves nothing. A failure after the reply keeps reply_url: re-run without --reply
+    (resolving again is harmless) to finish the resolve or the dismissal without a second reply."""
+    res = {"id": a.id}
     try:
-        res = {"id": a.id}
+        alert = None
+        if a.dismiss:
+            d = gh_graphql(THREAD_BODY_QUERY, t=a.id)
+            nodes = ((d["data"]["node"] or {}).get("comments") or {}).get("nodes") or []
+            m = ALERT_URL.search(nodes[0].get("body", "") if nodes else "")
+            if not m:
+                raise ValueError("not a code-scanning thread (no alert link in its first comment); nothing was posted")
+            alert = m.group(1)
         if a.reply:
-            d = gh_graphql(REPLY_MUTATION, t=a.id, b=a.reply)
+            body = a.reply if AGENT_MARKER in a.reply else a.reply + "\n\n" + AGENT_MARKER
+            d = gh_graphql(REPLY_MUTATION, t=a.id, b=body)
             res["reply_url"] = d["data"]["addPullRequestReviewThreadReply"]["comment"]["url"]
         if not a.keep_open:
             d = gh_graphql(RESOLVE_MUTATION, t=a.id)
             res["resolved"] = bool(d["data"]["resolveReviewThread"]["thread"]["isResolved"])
+        if alert:
+            gh_api_patch(f"repos/{GH_REPO}/code-scanning/alerts/{alert}",
+                         {"state": "dismissed", "dismissed_reason": a.dismiss, "dismissed_comment": (a.reply or "")[:280]})
+            res["dismissed_alert"] = int(alert)
         out(res)
-    except (RuntimeError, KeyError, ValueError, TypeError) as e:
-        out({"error": str(e)})
+    except (RuntimeError, KeyError, ValueError, TypeError, IndexError) as e:
+        res["error"] = str(e)
+        out(res)
 
 
 def check_summary(head):
@@ -959,6 +1020,7 @@ def main(argv=None):
     s.add_argument("--id", required=True, help="review thread node id (PRRT_...) from the threads command")
     s.add_argument("--reply", help="reply body posted on the thread first")
     s.add_argument("--keep-open", action="store_true", help="reply only, do not resolve")
+    s.add_argument("--dismiss", choices=DISMISS_REASONS, help="also dismiss the thread's code-scanning alert with this reason")
 
     s = add("ci-wait", cmd_ci_wait)
     s.add_argument("--head", required=True)
