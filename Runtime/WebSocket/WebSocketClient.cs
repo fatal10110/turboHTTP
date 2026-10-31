@@ -140,7 +140,7 @@ namespace TurboHTTP.WebSocket
                 _listenerCts = null;
 
                 _options = options;
-                _messageQueue = new BoundedAsyncQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
+                _messageQueue = WebSocketMessageQueue.Create(options);
                 _listenerCts = new CancellationTokenSource();
                 _closeEventRaised = 0;
 
@@ -442,11 +442,10 @@ namespace TurboHTTP.WebSocket
             WebSocketMessage message)
         {
             WebSocketMessage detachedCopy;
-            WebSocketMessage dropped;
             try
             {
                 detachedCopy = WebSocketMessage.CreateDetachedCopy(message);
-                queue.EnqueueDropOldest(message, out dropped);
+                queue.EnqueueDropOldest(message, DisposeDroppedMessage);
             }
             catch
             {
@@ -454,8 +453,14 @@ namespace TurboHTTP.WebSocket
                 throw;
             }
 
-            dropped?.Dispose();
             return detachedCopy;
+        }
+
+        private static readonly Action<WebSocketMessage> DisposeDroppedMessage = DisposeDropped;
+
+        private static void DisposeDropped(WebSocketMessage dropped)
+        {
+            dropped?.Dispose();
         }
 
         private void RaiseMessage(Action<WebSocketMessage> messageHandler, WebSocketMessage detachedCopy)

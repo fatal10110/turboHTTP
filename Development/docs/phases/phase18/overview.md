@@ -118,13 +118,14 @@ IWebSocketTransport (transport abstraction — in TurboHTTP.WebSocket)
 
 | Setting | Default | Notes |
 |---------|---------|-------|
-| `MaxFrameSize` | 16 MB | Max bytes in a single frame |
-| `MaxMessageSize` | 4 MB | Max bytes in assembled message after defragmentation (enforced during reassembly, before allocation) |
+| `MaxFrameSize` | 4 MB | Max bytes in a single frame (was 16 MB; lowered to fit `MaxMessageSize`, #80) |
+| `MaxMessageSize` | 4 MB | Max bytes in a message: single-frame (checked from the frame header), reassembled, or decompressed (#80) |
 | `MaxFragmentCount` | 64 | Max fragments per message (bounds metadata overhead) |
 | `FragmentationThreshold` | 64 KB | When to fragment outgoing messages |
-| `ReceiveQueueCapacity` | 100 | Bounded `Channel<T>` capacity (at 64KB per message = ~6.4MB max retention) |
+| `ReceiveQueueCapacity` | 100 | Message count bound of each delivery queue (connection and client) |
+| `ReceiveQueueMaxBytes` | 8 MB | Byte bound of each delivery queue; an empty queue always admits one message (#80) |
 
-**Invariant:** `FragmentationThreshold <= MaxFrameSize`, `MaxMessageSize <= MaxFrameSize * MaxFragmentCount`.
+**Invariant:** `FragmentationThreshold <= MaxFrameSize <= MaxMessageSize`, `MaxMessageSize <= MaxFrameSize * MaxFragmentCount`.
 
 ## All Files (28 new, 4 modified planned)
 

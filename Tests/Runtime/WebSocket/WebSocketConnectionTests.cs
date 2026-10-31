@@ -145,8 +145,10 @@ namespace TurboHTTP.Tests.WebSocket
         }
 
         [Test]
-        public void ConnectAsync_OptionalExtensionNegotiationFailure_FallsBackToNoExtensions()
+        public void ConnectAsync_OptionalExtensionNegotiationFailure_FailsConnection()
         {
+            // #81: RFC 6455 section 4.1 requires failing the connection on an unoffered extension even
+            // when the configured extensions are optional; there is no silent fallback.
             AssertAsync.Run(async () =>
             {
                 using var server = new WebSocketTestServer(
@@ -159,19 +161,16 @@ namespace TurboHTTP.Tests.WebSocket
                 await using var connection = new WebSocketConnection();
 
                 var options = CreateOptions().WithCompression();
-                await connection.ConnectAsync(
-                    server.CreateUri("/optional-extension-fallback"),
-                    transport,
-                    options,
-                    CancellationToken.None).ConfigureAwait(false);
+                var ex = AssertAsync.ThrowsAsync<WebSocketException>(async () =>
+                    await connection.ConnectAsync(
+                        server.CreateUri("/optional-extension-unoffered"),
+                        transport,
+                        options,
+                        CancellationToken.None).ConfigureAwait(false));
 
-                Assert.AreEqual(WebSocketState.Open, connection.State);
-                Assert.AreEqual(0, connection.NegotiatedExtensions.Count);
-
-                await connection.CloseAsync(
-                    WebSocketCloseCode.NormalClosure,
-                    "done",
-                    CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(WebSocketError.ExtensionNegotiationFailed, ex.Error);
+                Assert.AreEqual(WebSocketCloseCode.ProtocolError, ex.CloseCode);
+                Assert.AreEqual(WebSocketState.Closed, connection.State);
             });
         }
 

@@ -214,29 +214,13 @@ namespace TurboHTTP.WebSocket
             return result;
         }
 
-        private static IReadOnlyList<string> BuildRequestedExtensions(
-            IReadOnlyList<string> rawExtensions,
-            WebSocketExtensionNegotiator negotiator)
+        private static IReadOnlyList<string> BuildRequestedExtensions(WebSocketExtensionNegotiator negotiator)
         {
             var result = new List<string>();
 
-            if (negotiator != null)
-            {
-                string structuredOffers = negotiator.BuildOffersHeader();
-                if (!string.IsNullOrWhiteSpace(structuredOffers))
-                    result.Add(structuredOffers);
-            }
-
-            if (rawExtensions != null)
-            {
-                for (int i = 0; i < rawExtensions.Count; i++)
-                {
-                    if (string.IsNullOrWhiteSpace(rawExtensions[i]))
-                        continue;
-
-                    result.Add(rawExtensions[i]);
-                }
-            }
+            string structuredOffers = negotiator.BuildOffersHeader();
+            if (!string.IsNullOrWhiteSpace(structuredOffers))
+                result.Add(structuredOffers);
 
             return result;
         }
