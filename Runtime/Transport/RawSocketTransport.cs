@@ -186,6 +186,38 @@ namespace TurboHTTP.Transport
                 !writeState.HasWrittenCompleteMessage;
         }
 
+        /// <summary>
+        /// Disposes the connection (stream and socket) when <paramref name="ct"/> fires. Mono and
+        /// IL2CPP <see cref="NetworkStream"/> ignore the token once a read is pending, so a peer that
+        /// accepts and never writes would otherwise hold the request, the lease and the per-host and
+        /// global permits past the request timeout (#162). The caller disposes the registration
+        /// before the connection is pooled or handed to a response body source.
+        /// </summary>
+        private static CancellationTokenRegistration RegisterDisposeOnCancel(
+            PooledConnection connection,
+            CancellationToken ct)
+        {
+            if (!ct.CanBeCanceled)
+                return default;
+
+            return ct.Register(static state =>
+            {
+                var pooled = (PooledConnection)state;
+                try { pooled.Dispose(); } catch { /* best effort */ }
+                try { pooled.Socket?.Dispose(); } catch { /* best effort */ }
+            }, connection);
+        }
+
+        /// <summary>
+        /// A read or write that fails after <see cref="RegisterDisposeOnCancel"/> tore the connection
+        /// down surfaces as ObjectDisposedException, IOException or a platform-specific error; it is
+        /// a cancellation, which the dispatch catch ladder maps to Timeout or OperationCanceled.
+        /// </summary>
+        private static bool IsFailureFromCancellation(Exception ex, CancellationToken ct)
+        {
+            return ct.IsCancellationRequested && !(ex is OperationCanceledException);
+        }
+
         private static bool IsStaleReusedConnectionFailure(Exception ex)
         {
             // RFC 9112 sec 9.3.1: a persistent connection the server closed while idle shows up
@@ -872,13 +904,31 @@ namespace TurboHTTP.Transport
 
                 context.RecordEvent("TransportProxyConnect");
                 context.RecordEvent("TransportProxyConnectTunnelEstablished");
-                var tlsResult = await EstablishConnectTunnelAsync(
-                        lease.Connection.Stream,
-                        targetHost,
-                        targetPort,
-                        proxy,
-                        ct)
-                    .ConfigureAwait(false);
+                TlsResult tlsResult;
+                using (RegisterDisposeOnCancel(lease.Connection, ct))
+                {
+                    try
+                    {
+                        tlsResult = await EstablishConnectTunnelAsync(
+                                lease.Connection.Stream,
+                                targetHost,
+                                targetPort,
+                                proxy,
+                                ct)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
+                    {
+                        throw new OperationCanceledException("Proxy CONNECT tunnel setup was cancelled.", ex, ct);
+                    }
+                }
+
+                if (ct.IsCancellationRequested)
+                {
+                    // The token fired after the handshake; the proxy socket may already be disposed.
+                    try { tlsResult.SecureStream?.Dispose(); } catch { /* best effort */ }
+                    ct.ThrowIfCancellationRequested();
+                }
                 RebindConnectTunnelLease(lease, targetHost, targetPort, poolKeyOverride, tlsResult);
                 return lease;
             }
@@ -1002,10 +1052,13 @@ namespace TurboHTTP.Transport
                 await proxyStream.WriteAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
                 await proxyStream.FlushAsync(ct).ConfigureAwait(false);
 
-                var response = await ReadProxyConnectResponseAsync(proxyStream, ct).ConfigureAwait(false);
-                await DrainProxyConnectBodyAsync(proxyStream, response.Headers, ct).ConfigureAwait(false);
+                // The reader stops at the end of the header block, so the tunnel's first bytes
+                // stay on the stream for the TLS handshake.
+                var response = await ConnectReplyReader.ReadAsync(proxyStream, ct).ConfigureAwait(false);
 
-                if (response.StatusCode == 200)
+                // RFC 9110 section 9.3.6: any 2xx switches to tunnel mode right after the header
+                // block; Content-Length / Transfer-Encoding in a 2xx reply are ignored (#44).
+                if (response.IsTunnelEstablished)
                 {
                     var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
                     var tlsResult = await tlsProvider.WrapAsync(
@@ -1023,6 +1076,8 @@ namespace TurboHTTP.Transport
                     proxy?.Credentials != null &&
                     proxy.AllowPlaintextProxyAuth)
                 {
+                    // Consume the 407 body so the retried CONNECT reads its own reply.
+                    await ConnectReplyReader.DrainBodyAsync(proxyStream, response, ct).ConfigureAwait(false);
                     attemptedAuth = true;
                     continue;
                 }
@@ -1089,306 +1144,6 @@ namespace TurboHTTP.Transport
             if (host.Contains(":") && !host.StartsWith("[", StringComparison.Ordinal))
                 return "[" + host + "]:" + port;
             return host + ":" + port;
-        }
-
-        private sealed class ProxyConnectResponse
-        {
-            public int StatusCode { get; set; }
-            public HttpHeaders Headers { get; } = new HttpHeaders();
-        }
-
-        private static async Task<ProxyConnectResponse> ReadProxyConnectResponseAsync(
-            Stream stream,
-            CancellationToken ct)
-        {
-            const int maxTotalHeaderBytes = 16 * 1024;
-            int totalBytes = 0;
-
-            var statusLine = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
-            totalBytes += statusLine.Length;
-
-            if (string.IsNullOrEmpty(statusLine))
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Proxy CONNECT response is missing status line."));
-
-            var firstSpace = statusLine.IndexOf(' ');
-            if (firstSpace <= 0 || firstSpace + 1 >= statusLine.Length)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Invalid proxy CONNECT status line."));
-            }
-
-            var secondSpace = statusLine.IndexOf(' ', firstSpace + 1);
-            var statusCodeStr = secondSpace > 0
-                ? statusLine.Substring(firstSpace + 1, secondSpace - firstSpace - 1)
-                : statusLine.Substring(firstSpace + 1);
-
-            if (!int.TryParse(statusCodeStr, out var statusCode))
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Invalid proxy CONNECT status code."));
-            }
-
-            var response = new ProxyConnectResponse { StatusCode = statusCode };
-
-            while (true)
-            {
-                var line = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
-                totalBytes += line.Length;
-                if (totalBytes > maxTotalHeaderBytes)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Proxy CONNECT response headers exceeded size limit."));
-                }
-
-                if (line.Length == 0)
-                    break;
-
-                var colon = line.IndexOf(':');
-                if (colon <= 0)
-                    continue;
-
-                var name = line.Substring(0, colon).Trim();
-                var value = line.Substring(colon + 1).Trim();
-                response.Headers.Add(name, value);
-            }
-
-            return response;
-        }
-
-        private static async Task DrainProxyConnectBodyAsync(
-            Stream stream,
-            HttpHeaders headers,
-            CancellationToken ct)
-        {
-            if (headers == null)
-                return;
-
-            var transferEncoding = headers.Get("Transfer-Encoding");
-            if (!string.IsNullOrWhiteSpace(transferEncoding))
-            {
-                if (EndsWithTransferCodingToken(transferEncoding, "chunked"))
-                {
-                    await DrainChunkedBodyAsync(stream, ct).ConfigureAwait(false);
-                    return;
-                }
-            }
-
-            var contentLength = headers.Get("Content-Length");
-            if (!string.IsNullOrWhiteSpace(contentLength))
-            {
-                if (!int.TryParse(contentLength, out var length) || length <= 0)
-                    return;
-
-                var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(4096, length));
-                try
-                {
-                    await DrainFixedLengthBodyAsync(stream, buffer, length, ct).ConfigureAwait(false);
-                    return;
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(buffer);
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(transferEncoding))
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Proxy CONNECT response used an unsupported Transfer-Encoding without a Content-Length. " +
-                    "The connection cannot be safely reused."));
-            }
-        }
-
-        private static async Task DrainFixedLengthBodyAsync(
-            Stream stream,
-            byte[] buffer,
-            int length,
-            CancellationToken ct)
-        {
-            var remaining = length;
-            while (remaining > 0)
-            {
-                var toRead = Math.Min(remaining, buffer.Length);
-                var read = await stream.ReadAsync(buffer, 0, toRead, ct).ConfigureAwait(false);
-                if (read <= 0)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Unexpected EOF while draining proxy CONNECT response body."));
-                }
-
-                remaining -= read;
-            }
-        }
-
-        private static async Task DrainChunkedBodyAsync(
-            Stream stream,
-            CancellationToken ct)
-        {
-            var buffer = ArrayPool<byte>.Shared.Rent(4096);
-            try
-            {
-                while (true)
-                {
-                    var sizeLine = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
-                    var chunkSize = Http11ResponseParser.ParseChunkSizeLine(sizeLine);
-                    if (chunkSize < 0 || chunkSize > int.MaxValue)
-                    {
-                        throw new UHttpException(new UHttpError(
-                            UHttpErrorType.NetworkError,
-                            "Proxy CONNECT chunked response body exceeded the supported drain size."));
-                    }
-
-                    if (chunkSize == 0)
-                    {
-                        await DrainHeaderSectionAsync(stream, ct).ConfigureAwait(false);
-                        return;
-                    }
-
-                    await DrainFixedLengthBodyAsync(stream, buffer, (int)chunkSize, ct).ConfigureAwait(false);
-                    await ReadExpectedCrlfAsync(stream, ct).ConfigureAwait(false);
-                }
-            }
-            catch (FormatException ex)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Invalid chunked proxy CONNECT response body.", ex));
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
-        }
-
-        private static async Task DrainHeaderSectionAsync(Stream stream, CancellationToken ct)
-        {
-            while (true)
-            {
-                var line = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
-                if (line.Length == 0)
-                    return;
-            }
-        }
-
-        private static bool EndsWithTransferCodingToken(string transferEncoding, string token)
-        {
-            if (string.IsNullOrEmpty(transferEncoding))
-                return false;
-
-            int start = 0;
-            int end = transferEncoding.Length - 1;
-            while (start <= end && char.IsWhiteSpace(transferEncoding[start]))
-                start++;
-            while (end >= start && char.IsWhiteSpace(transferEncoding[end]))
-                end--;
-
-            int trimmedLength = end - start + 1;
-            if (trimmedLength < token.Length)
-                return false;
-
-            var trimmed = transferEncoding.AsSpan(start, trimmedLength);
-            var suffix = trimmed.Slice(trimmedLength - token.Length);
-            if (!suffix.Equals(token.AsSpan(), StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            if (trimmedLength == token.Length)
-                return true;
-
-            var preceding = trimmed[trimmedLength - token.Length - 1];
-            return preceding == ',' || char.IsWhiteSpace(preceding);
-        }
-
-        private static async Task ReadExpectedCrlfAsync(Stream stream, CancellationToken ct)
-        {
-            var delimiter = ArrayPool<byte>.Shared.Rent(2);
-            try
-            {
-                int read = 0;
-                while (read < 2)
-                {
-                    var current = await stream.ReadAsync(delimiter, read, 2 - read, ct).ConfigureAwait(false);
-                    if (current <= 0)
-                    {
-                        throw new UHttpException(new UHttpError(
-                            UHttpErrorType.NetworkError,
-                            "Unexpected EOF while draining proxy CONNECT response body."));
-                    }
-
-                    read += current;
-                }
-
-                if (delimiter[0] != (byte)'\r' || delimiter[1] != (byte)'\n')
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Invalid chunked proxy CONNECT response body framing."));
-                }
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(delimiter);
-            }
-        }
-
-        private static async Task<string> ReadAsciiLineAsync(Stream stream, CancellationToken ct)
-        {
-            var single = ArrayPool<byte>.Shared.Rent(1);
-            var lineBytes = ArrayPool<byte>.Shared.Rent(128);
-            var count = 0;
-
-            try
-            {
-                while (true)
-                {
-                    var read = await stream.ReadAsync(single, 0, 1, ct).ConfigureAwait(false);
-                    if (read == 0)
-                    {
-                        if (count == 0)
-                            return string.Empty;
-                        break;
-                    }
-
-                    if (single[0] == (byte)'\n')
-                        break;
-                    if (single[0] == (byte)'\r')
-                        continue;
-
-                    if (count == lineBytes.Length)
-                    {
-                        var resized = ArrayPool<byte>.Shared.Rent(lineBytes.Length * 2);
-                        try
-                        {
-                            Buffer.BlockCopy(lineBytes, 0, resized, 0, count);
-                        }
-                        catch
-                        {
-                            ArrayPool<byte>.Shared.Return(resized);
-                            throw;
-                        }
-
-                        ArrayPool<byte>.Shared.Return(lineBytes);
-                        lineBytes = resized;
-                    }
-
-                    lineBytes[count++] = single[0];
-                }
-
-                return count == 0
-                    ? string.Empty
-                    : Encoding.ASCII.GetString(lineBytes, 0, count);
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(single);
-                ArrayPool<byte>.Shared.Return(lineBytes);
-            }
         }
 
         private static string BuildProxyAuthorizationHeaderValue(ProxySettings proxy)
@@ -1474,8 +1229,30 @@ namespace TurboHTTP.Transport
             Http11RequestWriteState requestWriteState,
             CancellationToken ct)
         {
-            using var head = await SendOnLeaseAsync(lease, request, context, requestWriteState, ct)
-                .ConfigureAwait(false);
+            ParsedResponseHead parsedHead;
+            using (RegisterDisposeOnCancel(lease.Connection, ct))
+            {
+                try
+                {
+                    parsedHead = await SendOnLeaseAsync(lease, request, context, requestWriteState, ct)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
+                {
+                    throw new OperationCanceledException("HTTP/1.1 response header read was cancelled.", ex, ct);
+                }
+            }
+
+            // Disposing the registration waits for a running callback; if the token fired after
+            // the head was parsed, the connection may already be gone, so it must not reach the
+            // body source or the pool.
+            if (ct.IsCancellationRequested)
+            {
+                parsedHead.Dispose();
+                ct.ThrowIfCancellationRequested();
+            }
+
+            using var head = parsedHead;
 
             var transportBodyReadToken = context.GetState(
                 TransportBehaviorFlags.StreamingResponseRequested,
