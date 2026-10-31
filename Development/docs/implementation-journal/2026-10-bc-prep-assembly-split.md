@@ -50,13 +50,13 @@
   - The glue types are `internal`, and a direct reference would need new `InternalsVisibleTo` entries.
   - BC ships in every non-WebGL test build, so failing on absence is correct.
 - **Environment skips stay skips** (issue step 2), with the greppable `[env] ` prefix. "Zero Ignored in TLS suites" therefore holds wherever the runtime can generate self-signed certificates.
-- **Device scope:** BC tests are scoped to Editor/Standalone. On IL2CPP, `preserve="all"` on both assemblies keeps every reflected member; the device run is tracked in #99.
+- **Device scope:** BC tests are scoped to Editor/Standalone. On IL2CPP, `preserve="all"` on both assemblies keeps every reflected member; the device run of the BC tests (#140) is a row in #99 (https://github.com/fatal10110/turboHTTP/issues/99#issuecomment-6540087450).
 
 ## Deferred
 
 - The CI gate that treats a non-`[env]` Ignored test as a failure, and compiling `Tests/` in the shadow build: amended into #100 (comment 6539958962). Unity tests currently never run in CI (#188).
 - "Editing Core does not recompile BC" holds by construction, because `TurboHTTP.SecureProtocol` has no references. It still needs confirmation in an Editor compile log.
-- IL2CPP player build with the split assemblies: #99 (device/CI).
+- IL2CPP player build with the split assemblies (#143) and the device IL2CPP run of the BC tests (#140): both added as rows under "Device confirmations owed to other issues" in #99 (https://github.com/fatal10110/turboHTTP/issues/99#issuecomment-6540087450).
 
 ## Verification
 

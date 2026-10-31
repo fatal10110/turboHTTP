@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using NUnit.Framework;
 using TurboHTTP.Transport.Tls;
 
@@ -42,12 +43,8 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             var glueType = TestRequirements.RequireBouncyCastleType(ProviderTypeName);
 
-            var referencesLib = false;
-            foreach (var reference in glueType.Assembly.GetReferencedAssemblies())
-            {
-                if (reference.Name == TestRequirements.BouncyCastleLibAssembly)
-                    referencesLib = true;
-            }
+            var referencesLib = glueType.Assembly.GetReferencedAssemblies()
+                .Any(r => r.Name == TestRequirements.BouncyCastleLibAssembly);
 
             Assert.IsTrue(referencesLib,
                 TestRequirements.BouncyCastleGlueAssembly + " must reference " + TestRequirements.BouncyCastleLibAssembly);
