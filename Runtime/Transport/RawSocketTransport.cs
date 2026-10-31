@@ -96,6 +96,17 @@ namespace TurboHTTP.Transport
                         tlsBackend: tlsBackend,
                         http2Options: http2Options,
                         streamingOptions: streamingOptions));
+            HttpTransportFactory.RegisterCapabilities(ProbeCapabilities);
+        }
+
+        // HTTP/2 needs ALPN: SslStream exposes it on this runtime, or the BouncyCastle provider is
+        // present. Read lazily (HttpTransportFactory.Capabilities), so registration at startup does
+        // not initialize the TLS providers.
+        private static TransportCapabilities ProbeCapabilities()
+        {
+            return SslStreamTlsProvider.Instance.IsAlpnSupported() || TlsProviderSelector.IsBouncyCastleAvailable()
+                ? TransportCapabilities.Http2
+                : TransportCapabilities.None;
         }
 
         public async Task DispatchAsync(

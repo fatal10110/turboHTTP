@@ -17,6 +17,7 @@ namespace TurboHTTP.Core
         private static volatile Func<TlsBackend, ConnectionPoolOptions, Http2Options, IHttpTransport> _advancedFactory;
         private static volatile Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport> _advancedFactoryWithStreaming;
         private static volatile Lazy<IHttpTransport> _lazy;
+        private static volatile Func<TransportCapabilities> _capabilities;
         private static readonly object _lock = new object();
 
         /// <summary>
@@ -50,6 +51,7 @@ namespace TurboHTTP.Core
                 _backendFactory = backendFactory;
                 _advancedFactory = advancedFactory;
                 _advancedFactoryWithStreaming = null;
+                _capabilities = null;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
             }
         }
@@ -69,7 +71,37 @@ namespace TurboHTTP.Core
                 _backendFactory = backendFactory;
                 _advancedFactory = null;
                 _advancedFactoryWithStreaming = advancedFactory;
+                _capabilities = null;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
+            }
+        }
+
+        /// <summary>
+        /// Registers how the current transport reports its <see cref="TransportCapabilities"/>.
+        /// Call it after <see cref="Register(Func{IHttpTransport}, Func{TlsBackend, IHttpTransport})"/>:
+        /// every <c>Register</c> overload and <see cref="Reset"/> clear it, because capabilities belong
+        /// to the registered transport. The probe runs on each <see cref="Capabilities"/> read, so it
+        /// must be cheap, thread-safe and must not throw; registering it does not run it.
+        /// </summary>
+        /// <param name="capabilities">Probe returning the transport's capabilities; null clears them.</param>
+        public static void RegisterCapabilities(Func<TransportCapabilities> capabilities)
+        {
+            lock (_lock)
+            {
+                _capabilities = capabilities;
+            }
+        }
+
+        /// <summary>
+        /// Capabilities the registered transport reports (see <see cref="RegisterCapabilities"/>);
+        /// <see cref="TransportCapabilities.None"/> when nothing is registered.
+        /// </summary>
+        public static TransportCapabilities Capabilities
+        {
+            get
+            {
+                var probe = _capabilities;
+                return probe == null ? TransportCapabilities.None : probe();
             }
         }
 
@@ -187,7 +219,7 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Reset to initial state. For testing only.
-        /// Clears both the factory and any created transport.
+        /// Clears the factories, the registered capabilities and any created transport.
         /// </summary>
         public static void Reset()
         {
@@ -197,6 +229,7 @@ namespace TurboHTTP.Core
                 _backendFactory = null;
                 _advancedFactory = null;
                 _advancedFactoryWithStreaming = null;
+                _capabilities = null;
                 _lazy = null;
             }
         }

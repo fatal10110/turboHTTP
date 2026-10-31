@@ -1,5 +1,6 @@
 using System;
 using TurboHTTP.Core;
+using TurboHTTP.JSON;
 using TurboHTTP.Transport;
 using TurboHTTP.WebSocket.Transport;
 using UnityEngine;
@@ -65,6 +66,23 @@ namespace TurboHTTP
                 Debug.LogWarning("TurboHTTP: disposing the previous session's default transport failed ("
                     + ex.GetType().Name + ").");
             }
+        }
+
+        /// <summary>
+        /// Registers TurboHTTP.JSON with <see cref="ProjectJsonBridge"/>, so OAuth token parsing, the
+        /// mocks, <c>GetJsonCoroutine&lt;T&gt;</c> and WebSocket JSON messages reach JSON through
+        /// registration instead of a by-name type lookup that managed stripping can break. Same hooks
+        /// as <see cref="RegisterDefaultTransports"/>; projects that exclude this assembly call
+        /// <see cref="JsonModuleRegistration.EnsureRegistered"/> at startup instead.
+        /// </summary>
+        [Preserve]
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+#if UNITY_EDITOR
+        [UnityEditor.InitializeOnLoadMethod]
+#endif
+        internal static void RegisterJsonBridge()
+        {
+            JsonModuleRegistration.EnsureRegistered();
         }
     }
 }

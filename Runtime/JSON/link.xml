@@ -1,15 +1,10 @@
 <linker>
   <!--
-    Unity coroutine JSON wrapper resolves JsonExtensions via reflection:
-    Type.GetType("TurboHTTP.JSON.JsonExtensions, TurboHTTP.JSON")
-    and then invokes GetJsonAsync<T>(...) dynamically.
-
-    Under IL2CPP managed stripping, this type/method can be removed because
-    there is no direct static reference from TurboHTTP.Unity.
-
-    ProjectJsonBridge (TurboHTTP.Core) and RecordReplayTransport (TurboHTTP.Testing) resolve
-    TurboHTTP.JSON.JsonSerializer by name and invoke Serialize(object, Type) and
-    Deserialize(string, Type) through reflection.
+    No TurboHTTP assembly looks these types up by name any more: TurboHTTP.JSON registers itself
+    with TurboHTTP.Core.ProjectJsonBridge (JsonModuleRegistration, called by the TurboHTTP.Complete
+    bootstrap), and Auth, Testing, Unity and WebSocket call it through that registration.
+    The public serializer API stays preserved so application code reached only through
+    reflection or serialized references keeps working under High stripping.
   -->
   <assembly fullname="TurboHTTP.JSON">
     <type fullname="TurboHTTP.JSON.JsonExtensions" preserve="all" />

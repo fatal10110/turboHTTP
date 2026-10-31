@@ -1,5 +1,4 @@
 using System;
-using System.Reflection;
 using UnityEngine;
 
 namespace TurboHTTP.Core
@@ -8,29 +7,37 @@ namespace TurboHTTP.Core
     /// Provides platform-specific configuration defaults and capability flags.
     /// Used to initialize <see cref="UHttpClientOptions"/> with safe, performant defaults.
     /// </summary>
+    /// <remarks>
+    /// The recommended values are compile-time constants of the build target (iOS and Android
+    /// players get the mobile values; the Editor and every other target the desktop values), so
+    /// reading them, and constructing <see cref="UHttpClientOptions"/> or
+    /// <see cref="ConnectionPoolOptions"/>, performs no reflection and no UnityEngine call and is
+    /// safe on any thread.
+    /// </remarks>
     public static class PlatformConfig
     {
-        private static readonly bool _bouncyCastleAvailable = Type.GetType(
-            "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
-            throwOnError: false) != null;
-
-        private static readonly bool _sslStreamAlpnApisAvailable = DetectSslStreamAlpnSupport();
-
-        /// <summary>
-        /// Recommended request timeout based on the current platform.
-        /// Mobile networks may require longer timeouts due to high latency/packet loss.
-        /// </summary>
-        public static TimeSpan RecommendedTimeout => PlatformInfo.IsMobile
-            ? TimeSpan.FromSeconds(45) // Mobile: Higher tolerance for poor connectivity
-            : TimeSpan.FromSeconds(30); // Desktop/Editor: Standard stable connection assumption
+#if (UNITY_IOS || UNITY_ANDROID) && !UNITY_EDITOR
+        // Mobile: higher tolerance for poor connectivity; conservative concurrency to preserve resources.
+        private const int RecommendedTimeoutSeconds = 45;
+        private const int RecommendedConcurrency = 8;
+#else
+        // Desktop/Editor: standard stable connection assumption; higher concurrency allowed.
+        private const int RecommendedTimeoutSeconds = 30;
+        private const int RecommendedConcurrency = 16;
+#endif
 
         /// <summary>
-        /// Recommended maximum concurrent requests.
-        /// Constrained on mobile to reduce thread/socket contention and battery usage.
+        /// Recommended request timeout for the build target: 45 s on iOS/Android players,
+        /// 30 s in the Editor and on desktop. Mobile networks may require longer timeouts due to
+        /// high latency/packet loss.
         /// </summary>
-        public static int RecommendedMaxConcurrency => PlatformInfo.IsMobile
-            ? 8  // Mobile: Conservative limit to preserve resources
-            : 16; // Desktop: Higher concurrency allowed
+        public static TimeSpan RecommendedTimeout => TimeSpan.FromSeconds(RecommendedTimeoutSeconds);
+
+        /// <summary>
+        /// Recommended maximum concurrent requests: 8 on iOS/Android players, 16 in the Editor and
+        /// on desktop. Constrained on mobile to reduce thread/socket contention and battery usage.
+        /// </summary>
+        public static int RecommendedMaxConcurrency => RecommendedConcurrency;
 
         /// <summary>
         /// Indicates if custom certificate validation is available through TurboHTTP public APIs.
@@ -39,50 +46,22 @@ namespace TurboHTTP.Core
         public static bool SupportsCustomCertValidation => false;
 
         /// <summary>
-        /// Indicates whether HTTP/2 negotiation support is available.
-        /// This reports capability based on bundled providers and exposed ALPN APIs.
+        /// Indicates whether the registered transport reports HTTP/2 negotiation support
+        /// (<see cref="TransportCapabilities.Http2"/> in <see cref="HttpTransportFactory.Capabilities"/>).
+        /// False when no transport is registered.
         /// </summary>
-        public static bool SupportsHttp2 => _bouncyCastleAvailable || _sslStreamAlpnApisAvailable;
+        public static bool SupportsHttp2 =>
+            (HttpTransportFactory.Capabilities & TransportCapabilities.Http2) != 0;
 
         /// <summary>
         /// Logs the detected platform and recommended configuration to the Unity console.
-        /// Intended to be called once at application startup.
+        /// Intended to be called once at application startup, from the main thread.
         /// </summary>
         public static void LogPlatformInfo()
         {
             Debug.Log($"[TurboHTTP] Initializing on {PlatformInfo.GetPlatformDescription()}\n" +
                       $"Defaults: Timeout={RecommendedTimeout.TotalSeconds}s, Concurrency={RecommendedMaxConcurrency}, " +
                       $"HTTP/2={SupportsHttp2}, CustomCertValidation={SupportsCustomCertValidation}");
-        }
-
-        private static bool DetectSslStreamAlpnSupport()
-        {
-            // Reuse Transport's SslStream ALPN capability detection to avoid
-            // duplicating reflection logic in Core.
-            var providerType = Type.GetType(
-                "TurboHTTP.Transport.Tls.SslStreamTlsProvider, TurboHTTP.Transport",
-                throwOnError: false);
-            if (providerType == null)
-                return false;
-
-            var instanceField = providerType.GetField(
-                "Instance",
-                BindingFlags.Public | BindingFlags.Static);
-            var isAlpnSupportedMethod = providerType.GetMethod(
-                "IsAlpnSupported",
-                BindingFlags.Public | BindingFlags.Instance);
-
-            if (instanceField == null || isAlpnSupportedMethod == null)
-                return false;
-
-            var instance = instanceField.GetValue(null);
-            if (instance == null)
-                return false;
-
-            if (isAlpnSupportedMethod.Invoke(instance, null) is bool supported)
-                return supported;
-
-            return false;
         }
     }
 }
