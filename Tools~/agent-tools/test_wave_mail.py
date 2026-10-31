@@ -288,8 +288,11 @@ elif "resolveReviewThread" in q:
     if fail == "resolve": sys.exit(1)
     print(json.dumps({"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}}))
 elif "node(id" in q:
-    print(json.dumps({"data": {"node": {"comments": {"nodes": [node("x")["comments"]["nodes"][0]]}}}}))
+    first = node("x")["comments"]["nodes"][0]
+    if fail == "noalert": first = {"body": "a human comment"}
+    print(json.dumps({"data": {"node": {"comments": {"nodes": [first]}}}}))
 elif "-X" in args and "PATCH" in args:
+    if fail == "patch": sys.exit(1)
     print("{}")
 else:
     sys.exit(2)
@@ -344,6 +347,39 @@ else:
         patch = [c for c in self.calls(log) if "PATCH" in c][0]
         self.assertIn("repos/fatal10110/turboHTTP/code-scanning/alerts/772", patch)
         self.assertIn("dismissed_reason=used in tests", patch)
+        self.assertIn("state=dismissed", patch)
+        self.assertIn("dismissed_comment=intended", patch)
+
+    def test_resolve_thread_dismiss_without_an_alert_posts_nothing(self):
+        log = self.fake_gh(fail="noalert")
+        r = self.run_cli("resolve-thread", "--id", "T1", "--reply", "x", "--dismiss", "false positive")
+        self.assertIn("nothing was posted", r["error"])
+        self.assertFalse(any("addPullRequestReviewThreadReply" in " ".join(c) or "resolveReviewThread" in " ".join(c)
+                             for c in self.calls(log)))
+
+    def test_failed_dismissal_is_retried_without_a_second_reply(self):
+        self.fake_gh(fail="patch")
+        r = self.run_cli("resolve-thread", "--id", "T1", "--reply", "x", "--dismiss", "won't fix")
+        self.assertEqual((r["reply_url"], r["resolved"]), ("https://x/r1", True))
+        self.assertIn("error", r)
+        log = self.fake_gh()
+        r = self.run_cli("resolve-thread", "--id", "T1", "--dismiss", "won't fix")
+        self.assertEqual(r["dismissed_alert"], 772)
+        self.assertFalse(any("addPullRequestReviewThreadReply" in " ".join(c) for c in self.calls(log)))
+
+    def test_replies_carry_the_agent_marker_and_threads_classify_authors(self):
+        log = self.fake_gh()
+        self.run_cli("resolve-thread", "--id", "T1", "--reply", "fixed")
+        reply = [c for c in self.calls(log) if "addPullRequestReviewThreadReply" in " ".join(c)][0]
+        self.assertIn("b=fixed\n\n<!-- waves -->", reply)
+        sys.path.insert(0, str(SCRIPT.parent))
+        import wave_mail
+        mk = lambda i, login, body: {"id": i, "isResolved": False, "comments": {"totalCount": 1, "nodes": [{"author": {"login": login}, "body": body}]}}
+        r = wave_mail.summarize_threads([mk("B", "github-advanced-security", "x"), mk("A", "fatal10110", "[nit] y\n<!-- waves -->"),
+                                         mk("H", "fatal10110", "please rename")])
+        self.assertEqual([(t["id"], t["bot"], t["agent"], t["human"]) for t in r["threads"]],
+                         [("B", True, False, False), ("A", False, True, False), ("H", False, False, True)])
+        self.assertEqual(r["human"], 1)
 
     def test_scanning_wait_state_never_reports_done_inside_the_grace(self):
         sys.path.insert(0, str(SCRIPT.parent))

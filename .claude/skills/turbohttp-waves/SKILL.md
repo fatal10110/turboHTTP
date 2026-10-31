@@ -102,7 +102,10 @@ called by absolute path, quoted because of the `~`):
 - `wave_mail.py threads --pr N [--head SHA]` and `resolve-thread --id ID [--reply TEXT]
   [--keep-open] [--dismiss REASON]` — the PR's unresolved review threads, CodeQL alerts included
   (with `--head`, after that head's code scanning finished and settled: re-run while
-  `code_scanning` is `pending` or `settling`), and reply, resolve and alert dismissal in one call. The reviewer triages every thread before
+  `code_scanning` is `pending` or `settling`), and reply, resolve and alert dismissal in one call.
+  Agents end every comment they post with `<!-- waves -->` (`resolve-thread` adds it), so
+  `threads` can tell agent, bot (CodeQL) and human threads apart; a lane never resolves a human
+  thread and waits for it before asking for the merge. The reviewer triages every thread before
   each verdict; the merge agent answers `threads_open` instead of merging while any is open.
 - `wave_mail.py pr-state --pr N` and `ci-wait --head SHA` — compact PR state (with `behind_by`)
   and an in-process CI wait for the merge agent.

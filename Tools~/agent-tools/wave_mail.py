@@ -627,6 +627,9 @@ CODE_SCANNING_GRACE = float(os.environ.get("WAVES_CODEQL_GRACE", "60"))
 BOT_AUTHORS = ("github-advanced-security",)
 ALERT_URL = re.compile(r"/security/code-scanning/(\d+)")
 DISMISS_REASONS = ("false positive", "won't fix", "used in tests")
+# Every comment a waves agent posts ends with this marker, so threads can tell agent, bot and human
+# threads apart (all agents post under the owner's account).
+AGENT_MARKER = "<!-- waves -->"
 
 THREADS_QUERY = """query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){
 reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated path line
@@ -705,12 +708,16 @@ def summarize_threads(nodes):
         title = next((ln.lstrip("#").strip() for ln in body.splitlines() if ln.strip()), "")
         alert = ALERT_URL.search(body)
         line = t.get("line")  # null on outdated threads
+        bot = author in BOT_AUTHORS
+        agent = AGENT_MARKER in body
         threads.append({"id": t.get("id"), "path": t.get("path"), "line": line,
                         "where": f"{t.get('path')}:{line}" if line else str(t.get("path") or ""),
-                        "outdated": bool(t.get("isOutdated")), "author": author, "bot": author in BOT_AUTHORS,
+                        "outdated": bool(t.get("isOutdated")), "author": author, "bot": bot, "agent": agent,
+                        "human": not bot and not agent,
                         "alert": int(alert.group(1)) if alert else None, "replies": max(total - 1, 0),
                         "title": title[:160], "url": first.get("url", "")})
-    return {"unresolved": len(threads), "unanswered": sum(1 for t in threads if t["replies"] == 0), "threads": threads}
+    return {"unresolved": len(threads), "unanswered": sum(1 for t in threads if t["replies"] == 0),
+            "human": sum(1 for t in threads if t["human"]), "threads": threads}
 
 
 def pr_threads(pr):
@@ -756,26 +763,31 @@ THREAD_BODY_QUERY = """query($t:ID!){node(id:$t){... on PullRequestReviewThread{
 def cmd_resolve_thread(a):
     """Reply on a review thread (optional), resolve it, and with --dismiss also dismiss the
     code-scanning alert the thread was opened for: one call instead of several MCP round trips.
-    A failed reply resolves nothing; a failure after the reply keeps reply_url so a retry can skip it."""
+
+    The alert is looked up before anything is posted, so a thread without one changes nothing. A
+    failed reply resolves nothing. A failure after the reply keeps reply_url: re-run without --reply
+    (resolving again is harmless) to finish the resolve or the dismissal without a second reply."""
     res = {"id": a.id}
     try:
-        if a.dismiss and not a.reply:
-            raise ValueError("--dismiss needs --reply (it becomes the dismissal comment)")
-        if a.reply:
-            d = gh_graphql(REPLY_MUTATION, t=a.id, b=a.reply)
-            res["reply_url"] = d["data"]["addPullRequestReviewThreadReply"]["comment"]["url"]
-        if not a.keep_open:
-            d = gh_graphql(RESOLVE_MUTATION, t=a.id)
-            res["resolved"] = bool(d["data"]["resolveReviewThread"]["thread"]["isResolved"])
+        alert = None
         if a.dismiss:
             d = gh_graphql(THREAD_BODY_QUERY, t=a.id)
             nodes = ((d["data"]["node"] or {}).get("comments") or {}).get("nodes") or []
             m = ALERT_URL.search(nodes[0].get("body", "") if nodes else "")
             if not m:
-                raise ValueError("not a code-scanning thread (no alert link in its first comment)")
-            gh_api_patch(f"repos/{GH_REPO}/code-scanning/alerts/{m.group(1)}",
-                         {"state": "dismissed", "dismissed_reason": a.dismiss, "dismissed_comment": a.reply[:280]})
-            res["dismissed_alert"] = int(m.group(1))
+                raise ValueError("not a code-scanning thread (no alert link in its first comment); nothing was posted")
+            alert = m.group(1)
+        if a.reply:
+            body = a.reply if AGENT_MARKER in a.reply else a.reply + "\n\n" + AGENT_MARKER
+            d = gh_graphql(REPLY_MUTATION, t=a.id, b=body)
+            res["reply_url"] = d["data"]["addPullRequestReviewThreadReply"]["comment"]["url"]
+        if not a.keep_open:
+            d = gh_graphql(RESOLVE_MUTATION, t=a.id)
+            res["resolved"] = bool(d["data"]["resolveReviewThread"]["thread"]["isResolved"])
+        if alert:
+            gh_api_patch(f"repos/{GH_REPO}/code-scanning/alerts/{alert}",
+                         {"state": "dismissed", "dismissed_reason": a.dismiss, "dismissed_comment": (a.reply or "")[:280]})
+            res["dismissed_alert"] = int(alert)
         out(res)
     except (RuntimeError, KeyError, ValueError, TypeError, IndexError) as e:
         res["error"] = str(e)

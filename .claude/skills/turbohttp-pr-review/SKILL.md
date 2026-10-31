@@ -41,7 +41,8 @@ gh api repos/fatal10110/turboHTTP/pulls/<N>/comments --paginate      # existing 
   yours; noise gets a one-line reason, is resolved and its alert dismissed. List them with
   `python3 'Tools~/agent-tools/wave_mail.py' threads --pr <N> --head <sha> --wait 570` (re-run
   while `code_scanning` is `pending` or `settling`); answer one with `resolve-thread --id <id>
-  --reply '<text>' --dismiss 'false positive'|"won't fix"|'used in tests'`. Resolving threads and
+  --reply '<text>'`, adding one of `--dismiss 'false positive'`, `--dismiss "won't fix"` or
+  `--dismiss 'used in tests'` for an alert on lines the PR changes. Resolving threads and
   dismissing alerts is the one exception to "do not modify anything on the PR" in section 7.
 - Linked issues: every `Closes/Fixes/Resolves #X`, cross-checked with `closingIssuesReferences`.
   For each, `'Tools~/agent-tools/issue_slice.py' <X>` and copy its **Acceptance criteria** into
