@@ -221,45 +221,5 @@ namespace TurboHTTP.Tests.Editor
                 }
             }
         }
-
-        private sealed class SuccessfulStubTransport : IHttpTransport
-        {
-            public ValueTask<UHttpResponse> SendAsync(
-                UHttpRequest request,
-                RequestContext context,
-                CancellationToken cancellationToken = default)
-            {
-                return new ValueTask<UHttpResponse>(new UHttpResponse(
-                    HttpStatusCode.OK,
-                    new HttpHeaders(),
-                    Array.Empty<byte>(),
-                    TimeSpan.Zero,
-                    request));
-            }
-
-            public async Task DispatchAsync(
-                UHttpRequest request,
-                IHttpHandler handler,
-                RequestContext context,
-                CancellationToken cancellationToken = default)
-            {
-                handler.OnRequestStart(request, context);
-                UHttpResponse response = null;
-                try
-                {
-                    response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
-                    handler.OnResponseStart((int)response.StatusCode, response.Headers, context);
-                    handler.OnResponseEnd(HttpHeaders.Empty, context);
-                }
-                finally
-                {
-                    response?.Dispose();
-                }
-            }
-
-            public void Dispose()
-            {
-            }
-        }
     }
 }

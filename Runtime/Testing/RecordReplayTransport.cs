@@ -72,9 +72,59 @@ namespace TurboHTTP.Testing
             return !string.IsNullOrWhiteSpace(queryKey) && QueryParameterNames.Contains(queryKey);
         }
 
+        /// <summary>
+        /// Whether a JSON body field is redacted. Matching ignores case and the separators
+        /// <c>_</c>, <c>-</c>, <c>.</c> and spaces, so <c>access_token</c>, <c>accessToken</c> and
+        /// <c>Access-Token</c> are the same name.
+        /// </summary>
         public bool ShouldRedactJsonField(string fieldName)
         {
-            return !string.IsNullOrWhiteSpace(fieldName) && JsonBodyFieldNames.Contains(fieldName);
+            return MatchesNormalized(JsonBodyFieldNames, fieldName);
+        }
+
+        /// <summary>
+        /// Whether an <c>application/x-www-form-urlencoded</c> body field is redacted: it matches
+        /// <see cref="JsonBodyFieldNames"/> or <see cref="QueryParameterNames"/> (format-insensitive,
+        /// as in <see cref="ShouldRedactJsonField"/>).
+        /// </summary>
+        public bool ShouldRedactFormField(string fieldName)
+        {
+            return MatchesNormalized(JsonBodyFieldNames, fieldName)
+                || MatchesNormalized(QueryParameterNames, fieldName);
+        }
+
+        private static bool MatchesNormalized(HashSet<string> names, string candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate) || names.Count == 0)
+                return false;
+            if (names.Contains(candidate))
+                return true;
+
+            var normalized = NormalizeFieldName(candidate);
+            foreach (var name in names)
+            {
+                if (string.Equals(NormalizeFieldName(name), normalized, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static string NormalizeFieldName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return string.Empty;
+
+            var builder = new StringBuilder(name.Length);
+            for (int i = 0; i < name.Length; i++)
+            {
+                var c = name[i];
+                if (c == '_' || c == '-' || c == '.' || c == ' ')
+                    continue;
+                builder.Append(char.ToLowerInvariant(c));
+            }
+
+            return builder.ToString();
         }
 
         private static readonly string[] DefaultSensitiveHeaders =
@@ -87,7 +137,11 @@ namespace TurboHTTP.Testing
             "X-Api-Key",
             "Api-Key",
             "X-Auth-Token",
-            "X-Amz-Security-Token"
+            "X-Amz-Security-Token",
+            "X-Goog-Api-Key",
+            "X-CSRF-Token",
+            "X-XSRF-Token",
+            "Proxy-Authenticate"
         };
 
         private static readonly string[] DefaultSensitiveQueryParameters =
@@ -98,18 +152,28 @@ namespace TurboHTTP.Testing
             "token",
             "access_token",
             "refresh_token",
+            "id_token",
+            "client_secret",
+            "code",
+            "code_verifier",
             "signature",
             "sig",
             "auth",
             "password"
         };
 
+        // OAuth 2.0 / OIDC names (RFC 6749 sections 4.1.3, 4.3.2, 5.1, 6; RFC 7636 section 4.5; OIDC
+        // id_token). Matching is format-insensitive, so "accessToken" also covers "access_token".
         private static readonly string[] DefaultSensitiveJsonFields =
         {
             "password",
             "token",
-            "accessToken",
-            "refreshToken",
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "client_secret",
+            "code",
+            "code_verifier",
             "authorization",
             "apiKey",
             "secret",
@@ -127,6 +191,13 @@ namespace TurboHTTP.Testing
         public Action<string> Logger { get; set; }
         public IEnumerable<string> MatchHeaderNames { get; set; }
         public IEnumerable<string> ExcludedMatchHeaderNames { get; set; }
+
+        /// <summary>
+        /// Largest response body recorded, in bytes (default 16 MB). A larger response fails the request
+        /// with a clear <see cref="UHttpException"/> instead of being truncated, and the recording is then
+        /// incomplete: <see cref="RecordReplayTransport.SaveRecordings"/> throws and writes no file.
+        /// </summary>
+        public long MaxRecordBytes { get; set; } = RecordReplayTransport.DefaultMaxRecordBytes;
     }
 
     /// <summary>
@@ -136,9 +207,15 @@ namespace TurboHTTP.Testing
     public sealed partial class RecordReplayTransport : IHttpTransport
     {
         private const int RecordingSchemaVersion = 1;
+        private const int KeySaltBytes = 32;
+        private const int DrainChunkBytes = 16 * 1024;
+
+        /// <summary>Default for <see cref="RecordReplayTransportOptions.MaxRecordBytes"/> (16 MB).</summary>
+        public const long DefaultMaxRecordBytes = 16L * 1024 * 1024;
         private const int LargeBodyThresholdBytes = 1024 * 1024;
         private const int BodyEdgeSliceBytes = 64 * 1024;
         private static readonly Encoding Utf8 = new UTF8Encoding(false);
+        private static readonly Encoding StrictUtf8 = new UTF8Encoding(false, throwOnInvalidBytes: true);
 
         private static readonly string[] DefaultMatchHeaders =
         {
@@ -174,6 +251,11 @@ namespace TurboHTTP.Testing
         private readonly Action<string> _logger;
         private readonly HashSet<string> _matchHeaders;
         private readonly HashSet<string> _excludedMatchHeaders;
+        private readonly long _maxRecordBytes;
+        // Per-recording salt for the HMAC of sensitive match-key header values and request body hashes.
+        // Generated in Record mode, read from the file in Replay mode (null for older files: raw keys).
+        private byte[] _keySalt;
+        private string _recordingFailure;
         private readonly ConcurrentQueue<RecordingEntryDto> _recordedEntries = new ConcurrentQueue<RecordingEntryDto>();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<ReplayNode>> _replayByRequestKey =
             new ConcurrentDictionary<string, ConcurrentQueue<ReplayNode>>(StringComparer.Ordinal);
@@ -218,6 +300,18 @@ namespace TurboHTTP.Testing
             _excludedMatchHeaders = new HashSet<string>(
                 DefaultExcludedMatchHeaders,
                 StringComparer.OrdinalIgnoreCase);
+            _maxRecordBytes = Math.Max(0L, options.MaxRecordBytes);
+
+            // A header the caller names in MatchHeaderNames is matched even if excluded by default
+            // (Authorization, Cookie, ...): its value enters the key only as a salted HMAC.
+            if (options.MatchHeaderNames != null)
+            {
+                foreach (var headerName in options.MatchHeaderNames)
+                {
+                    if (!string.IsNullOrWhiteSpace(headerName))
+                        _excludedMatchHeaders.Remove(headerName);
+                }
+            }
 
             if (options.ExcludedMatchHeaderNames != null)
             {
@@ -245,6 +339,14 @@ namespace TurboHTTP.Testing
             if (_mode == RecordReplayMode.Replay)
             {
                 LoadRecordings();
+            }
+            else
+            {
+                _keySalt = new byte[KeySaltBytes];
+                using (var rng = RandomNumberGenerator.Create())
+                {
+                    rng.GetBytes(_keySalt);
+                }
             }
         }
 
@@ -328,6 +430,13 @@ namespace TurboHTTP.Testing
             if (_mode != RecordReplayMode.Record)
                 return;
 
+            var failure = Volatile.Read(ref _recordingFailure);
+            if (failure != null)
+            {
+                throw new InvalidOperationException(
+                    "RecordReplayTransport: the recording is incomplete and was not written. " + failure);
+            }
+
             lock (_saveLock)
             {
                 var entries = _recordedEntries
@@ -338,6 +447,7 @@ namespace TurboHTTP.Testing
                 var recordingFile = new RecordingFileDto
                 {
                     Version = RecordingSchemaVersion,
+                    KeySalt = _keySalt != null ? Convert.ToBase64String(_keySalt) : null,
                     CreatedUtcTicks = _createdUtcTicks,
                     UpdatedUtcTicks = DateTime.UtcNow.Ticks,
                     Entries = entries
@@ -372,6 +482,7 @@ namespace TurboHTTP.Testing
             catch (Exception ex)
             {
                 disposeException = ex;
+                Log(ex.Message);
             }
 
             try
@@ -401,7 +512,7 @@ namespace TurboHTTP.Testing
             if (_innerTransport == null)
                 throw new InvalidOperationException("Record mode requires an inner transport.");
 
-            var recordingHandler = new RecordingHandler(this, request, handler);
+            var recordingHandler = new RecordingHandler(this, request, handler, cancellationToken);
 
             try
             {
@@ -507,6 +618,10 @@ namespace TurboHTTP.Testing
                     $"Expected {RecordingSchemaVersion}.");
             }
 
+            _keySalt = string.IsNullOrEmpty(recordingFile.KeySalt)
+                ? null
+                : Convert.FromBase64String(recordingFile.KeySalt);
+
             _createdUtcTicks = recordingFile.CreatedUtcTicks > 0
                 ? recordingFile.CreatedUtcTicks
                 : DateTime.UtcNow.Ticks;
@@ -544,7 +659,7 @@ namespace TurboHTTP.Testing
             var requestBody = request.Content.TryGetBufferedData(out var bufferedRequestBody)
                 ? bufferedRequestBody
                 : ReadOnlyMemory<byte>.Empty;
-            var requestHash = ComputeBodyHash(requestBody);
+            var requestHash = ComputeBodyHash(requestBody, _keySalt);
             var requestKey = BuildRequestKey(
                 request.Method.ToUpperString(),
                 NormalizeUriForKey(request.Uri),
@@ -552,13 +667,13 @@ namespace TurboHTTP.Testing
                 requestHash);
 
             var requestHeaders = ToDictionary(request.Headers, redact: true);
-            var redactedRequestBody = RedactJsonBodyIfNeeded(requestBody, request.Headers);
+            var redactedRequestBody = RedactBodyIfNeeded(requestBody, request.Headers);
 
             var recordedResponseHeaders = responseHeaders != null
                 ? ToDictionary(responseHeaders, redact: true)
                 : new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             var recordedResponseBody = !responseBody.IsEmpty
-                ? RedactJsonBodyIfNeeded(responseBody, responseHeaders)
+                ? RedactBodyIfNeeded(responseBody, responseHeaders)
                 : null;
 
             var entry = new RecordingEntryDto
@@ -618,6 +733,12 @@ namespace TurboHTTP.Testing
                 new BufferedResponseBodySource(body, HttpHeaders.Empty),
                 context);
         }
+        private void MarkRecordingFailed(string message)
+        {
+            Interlocked.CompareExchange(ref _recordingFailure, message, null);
+            Log(message);
+        }
+
         private void Log(string message)
         {
             _logger?.Invoke(message);
@@ -633,6 +754,7 @@ namespace TurboHTTP.Testing
         {
             private readonly RecordReplayTransport _owner;
             private readonly IHttpHandler _inner;
+            private readonly CancellationToken _cancellationToken;
             private SegmentedBuffer _responseBody;
             private UHttpRequest _request;
             private HttpHeaders _responseHeaders;
@@ -642,11 +764,13 @@ namespace TurboHTTP.Testing
             public RecordingHandler(
                 RecordReplayTransport owner,
                 UHttpRequest request,
-                IHttpHandler inner)
+                IHttpHandler inner,
+                CancellationToken cancellationToken)
             {
                 _owner = owner ?? throw new ArgumentNullException(nameof(owner));
                 _request = request ?? throw new ArgumentNullException(nameof(request));
                 _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                _cancellationToken = cancellationToken;
             }
 
             public bool TerminalCallbackSeen { get; private set; }
@@ -668,18 +792,86 @@ namespace TurboHTTP.Testing
                 _statusCode = statusCode;
                 _responseHeaders = headers?.Clone() ?? new HttpHeaders();
 
-                if (body != null && body.TryGetBufferedData(out var buffered) && !buffered.IsEmpty)
+                var bodyToForward = body;
+                if (body != null)
                 {
-                    if (_responseBody == null)
-                        _responseBody = new SegmentedBuffer();
+                    if (body.TryGetBufferedData(out var buffered))
+                    {
+                        if (buffered.Length > _owner._maxRecordBytes)
+                        {
+                            await DisposeSourceAsync(body, abort: true).ConfigureAwait(false);
+                            FailOversize(buffered.Length, context);
+                            return;
+                        }
 
-                    _responseBody.Write(buffered.Span);
+                        if (!buffered.IsEmpty)
+                        {
+                            if (_responseBody == null)
+                                _responseBody = new SegmentedBuffer();
+
+                            _responseBody.Write(buffered.Span);
+                        }
+                    }
+                    else
+                    {
+                        // Streaming source (for example HTTP/1.1 over RawSocketTransport): drain it here,
+                        // bounded by MaxRecordBytes, so the recording holds the whole body (#149), then
+                        // hand the downstream handler a buffered copy. This handler owns the original source
+                        // from here on and disposes it on every path.
+                        HttpHeaders trailers;
+                        try
+                        {
+                            var oversizeAt = await DrainIntoBufferAsync(body).ConfigureAwait(false);
+                            if (oversizeAt > 0)
+                            {
+                                await DisposeSourceAsync(body, abort: true).ConfigureAwait(false);
+                                FailOversize(oversizeAt, context);
+                                return;
+                            }
+
+                            trailers = await body.GetTrailersAsync(_cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            await DisposeSourceAsync(body, abort: true).ConfigureAwait(false);
+                            DisposeBufferedBody();
+                            throw;
+                        }
+                        catch (UHttpException ex)
+                        {
+                            await DisposeSourceAsync(body, abort: true).ConfigureAwait(false);
+                            OnResponseError(ex, context);
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            await DisposeSourceAsync(body, abort: true).ConfigureAwait(false);
+                            OnResponseError(
+                                new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)),
+                                context);
+                            return;
+                        }
+
+                        await DisposeSourceAsync(body, abort: false).ConfigureAwait(false);
+                        var copy = _responseBody != null
+                            ? _responseBody.AsSequence().ToArray()
+                            : Array.Empty<byte>();
+                        bodyToForward = new BufferedResponseBodySource(copy, trailers);
+                    }
                 }
 
-                EnsureRequestStarted(context);
                 TerminalCallbackSeen = true;
 
-                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+                try
+                {
+                    await _inner.OnResponseStartAsync(statusCode, headers, bodyToForward, context)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    DisposeBufferedBody();
+                    throw;
+                }
 
                 try
                 {
@@ -726,6 +918,72 @@ namespace TurboHTTP.Testing
                 _responseBody = null;
             }
 
+            // Returns 0 when the body ended within MaxRecordBytes, else the byte count that exceeded it.
+            private async ValueTask<long> DrainIntoBufferAsync(IResponseBodySource body)
+            {
+                var max = _owner._maxRecordBytes;
+                var chunk = ArrayPool<byte>.Shared.Rent(DrainChunkBytes);
+                try
+                {
+                    long total = 0;
+                    while (true)
+                    {
+                        var read = await body.ReadAsync(chunk.AsMemory(0, DrainChunkBytes), _cancellationToken)
+                            .ConfigureAwait(false);
+                        if (read <= 0)
+                            return 0;
+
+                        total += read;
+                        if (total > max)
+                            return total;
+
+                        if (_responseBody == null)
+                            _responseBody = new SegmentedBuffer();
+
+                        _responseBody.Write(chunk.AsSpan(0, read));
+                    }
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(chunk);
+                }
+            }
+
+            private void FailOversize(long observedBytes, RequestContext context)
+            {
+                DisposeBufferedBody();
+                TerminalCallbackSeen = true;
+
+                var message = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Response body of {0} {1} exceeds RecordReplayTransportOptions.MaxRecordBytes ({2} bytes; " +
+                    "at least {3} bytes received). Recordings are never truncated: raise MaxRecordBytes " +
+                    "or exclude this request from recording.",
+                    _request.Method.ToUpperString(),
+                    _owner.NormalizeUriForStorage(_request.Uri),
+                    _owner._maxRecordBytes,
+                    observedBytes);
+                _owner.MarkRecordingFailed(message);
+                _inner.OnResponseError(
+                    new UHttpException(new UHttpError(UHttpErrorType.Unknown, message)),
+                    context);
+            }
+
+            private static async ValueTask DisposeSourceAsync(IResponseBodySource body, bool abort)
+            {
+                try
+                {
+                    if (abort)
+                        body.Abort();
+                    await body.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[TurboHTTP] RecordReplayTransport body dispose failed: {ex.GetType().Name}");
+                }
+            }
+
             private void EnsureRequestStarted(RequestContext context)
             {
                 if (_requestStarted)
@@ -740,6 +998,7 @@ namespace TurboHTTP.Testing
         private sealed class RecordingFileDto
         {
             public int Version { get; set; }
+            public string KeySalt { get; set; }
             public long CreatedUtcTicks { get; set; }
             public long UpdatedUtcTicks { get; set; }
             public List<RecordingEntryDto> Entries { get; set; } = new List<RecordingEntryDto>();

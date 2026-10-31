@@ -17,17 +17,7 @@ namespace TurboHTTP.Editor
     {
         private const double MinRepaintIntervalSeconds = 0.1d;
 
-        private static readonly HashSet<string> ConfidentialHeaders = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase)
-        {
-            "Authorization",
-            "Proxy-Authorization",
-            "WWW-Authenticate",
-            "X-Auth-Token",
-            "X-Api-Key",
-            "Cookie",
-            "Set-Cookie"
-        };
+        private const float RequestRowHeight = 22f;
 
         public static bool DefaultMaskConfidentialHeaders { get; set; }
 
@@ -48,6 +38,7 @@ namespace TurboHTTP.Editor
         private int _pendingUiRefresh;
         private bool _deferredRepaintScheduled;
         private double _lastRepaintTime;
+        private IDisposable _captureViewer;
 
         [MenuItem("Window/TurboHTTP/HTTP Monitor")]
         public static void ShowWindow()
@@ -59,6 +50,9 @@ namespace TurboHTTP.Editor
         private void OnEnable()
         {
             _maskConfidentialHeaders = DefaultMaskConfidentialHeaders;
+            // Capture runs only while a Monitor window is open (unless "Capture While Closed" is set).
+            _captureViewer?.Dispose();
+            _captureViewer = MonitorInterceptor.AttachViewer();
             MonitorInterceptor.OnRequestCaptured += OnRequestCaptured;
             _historyDirty = true;
             _filterDirty = true;
@@ -68,6 +62,8 @@ namespace TurboHTTP.Editor
         private void OnDisable()
         {
             MonitorInterceptor.OnRequestCaptured -= OnRequestCaptured;
+            _captureViewer?.Dispose();
+            _captureViewer = null;
             EditorApplication.update -= DeferredRepaint;
             _deferredRepaintScheduled = false;
             Interlocked.Exchange(ref _pendingUiRefresh, 0);

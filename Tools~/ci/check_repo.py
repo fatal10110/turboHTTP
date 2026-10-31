@@ -180,7 +180,6 @@ def check_unity_nunit(files):
 _QUALIFIED_TURBO_TYPE = re.compile(r'"TurboHTTP\.[A-Za-z0-9_.+]+,\s*TurboHTTP[A-Za-z0-9_.]*')
 # Temporary: sites other issues remove. Delete an entry when its site is gone (#186).
 REFLECT_ALLOWLIST = {
-    "Runtime/Core/UHttpClient.cs",               # editor monitor lookup, redaction lane (#186 part 2)
     "Runtime/Transport/Tls/TlsProviderSelector.cs",  # BouncyCastle provider lookup, TLS lanes (#34, #36)
 }
 

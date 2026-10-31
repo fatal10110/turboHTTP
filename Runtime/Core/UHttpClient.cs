@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,7 +13,6 @@ namespace TurboHTTP.Core
     /// </summary>
     public class UHttpClient : IDisposable
     {
-        private const string MonitorInterceptorTypeName = "TurboHTTP.Observability.MonitorInterceptor, TurboHTTP.Observability";
         private readonly UHttpClientOptions _options;
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
@@ -679,27 +677,6 @@ namespace TurboHTTP.Core
             return false;
         }
 
-        private static bool ContainsPipelineComponent(
-            IReadOnlyList<IHttpInterceptor> interceptors,
-            Type componentType)
-        {
-            if (interceptors == null || componentType == null)
-                return false;
-
-            for (int i = 0; i < interceptors.Count; i++)
-            {
-                var interceptor = interceptors[i];
-                if (interceptor == null)
-                    continue;
-
-                if (componentType.IsInstanceOfType(interceptor))
-                    return true;
-
-            }
-
-            return false;
-        }
-
 #if UNITY_EDITOR
         private static void TryAppendEditorMonitorInterceptor(List<IHttpInterceptor> interceptors)
         {
@@ -719,46 +696,9 @@ namespace TurboHTTP.Core
             if (!isPlaying)
                 return;
 
-            try
-            {
-                TryAppendEditorMonitorInterceptor(interceptors, MonitorInterceptorTypeName);
-            }
-            catch
-            {
-                // Monitor auto-wiring is optional and must never break client construction.
-            }
-        }
-
-        private static bool TryAppendEditorMonitorInterceptor(
-            List<IHttpInterceptor> interceptors,
-            string typeName)
-        {
-            var monitorType = Type.GetType(typeName, throwOnError: false);
-            if (monitorType == null || !typeof(IHttpInterceptor).IsAssignableFrom(monitorType))
-                return false;
-
-            if (!IsMonitorCaptureEnabled(monitorType) ||
-                ContainsPipelineComponent(interceptors, monitorType))
-            {
-                return true;
-            }
-
-            if (Activator.CreateInstance(monitorType) is IHttpInterceptor monitorInterceptor)
-                interceptors.Add(monitorInterceptor);
-
-            return true;
-        }
-
-        private static bool IsMonitorCaptureEnabled(Type monitorType)
-        {
-            var captureEnabledProperty = monitorType.GetProperty(
-                "CaptureEnabled",
-                BindingFlags.Public | BindingFlags.Static);
-            if (captureEnabledProperty == null || captureEnabledProperty.PropertyType != typeof(bool))
-                return false;
-
-            var value = captureEnabledProperty.GetValue(null, null);
-            return value is bool enabled && enabled;
+            // Observability registers the monitor through EditorMonitorHook (no reflection, #186);
+            // without that module this is a no-op.
+            EditorMonitorHook.TryAppend(interceptors);
         }
 #endif
     }

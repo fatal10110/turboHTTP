@@ -84,9 +84,26 @@ namespace TurboHTTP.Editor
 
                 _requestListScroll = EditorGUILayout.BeginScrollView(_requestListScroll);
                 {
-                    for (int i = 0; i < _filteredCache.Count; i++)
+                    // Virtualized: only rows inside the viewport are drawn; spacers stand in for the rest,
+                    // so a full history (thousands of entries) costs O(visible rows) per repaint.
+                    var count = _filteredCache.Count;
+                    var first = Mathf.Clamp(Mathf.FloorToInt(_requestListScroll.y / RequestRowHeight), 0, count);
+                    var visible = Mathf.CeilToInt(Mathf.Max(position.height, RequestRowHeight) / RequestRowHeight) + 2;
+                    var last = Mathf.Min(count, first + visible);
+
+                    if (first > 0)
+                    {
+                        GUILayout.Space(first * RequestRowHeight);
+                    }
+
+                    for (int i = first; i < last; i++)
                     {
                         DrawRequestRow(_filteredCache[i]);
+                    }
+
+                    if (last < count)
+                    {
+                        GUILayout.Space((count - last) * RequestRowHeight);
                     }
                 }
                 EditorGUILayout.EndScrollView();
@@ -96,6 +113,8 @@ namespace TurboHTTP.Editor
 
         private void DrawRequestRow(HttpMonitorEvent evt)
         {
+            // Fixed-height rect (no style margins) so the virtualized row stride is exact.
+            var rowRect = GUILayoutUtility.GetRect(0f, RequestRowHeight, GUILayout.ExpandWidth(true));
             if (evt == null)
             {
                 return;
@@ -103,41 +122,45 @@ namespace TurboHTTP.Editor
 
             var isSelected = _selectedEvent != null
                 && string.Equals(_selectedEvent.Id, evt.Id, StringComparison.Ordinal);
-            var selectedColor = new Color(0.25f, 0.45f, 0.75f, 0.45f);
             var originalBg = GUI.backgroundColor;
             if (isSelected)
             {
-                GUI.backgroundColor = selectedColor;
+                GUI.backgroundColor = new Color(0.25f, 0.45f, 0.75f, 0.45f);
             }
 
-            EditorGUILayout.BeginHorizontal("box", GUILayout.Height(22f));
-            {
-                GUI.backgroundColor = originalBg;
+            GUI.Box(rowRect, GUIContent.none);
+            GUI.backgroundColor = originalBg;
 
-                var originalColor = GUI.color;
-                GUI.color = GetMethodColor(evt.Method);
-                GUILayout.Label(evt.Method ?? string.Empty, GUILayout.Width(62f));
-                GUI.color = originalColor;
+            const float methodWidth = 62f;
+            const float statusWidth = 48f;
+            const float timeWidth = 54f;
+            var x = rowRect.x + 4f;
+            var urlWidth = Mathf.Max(0f, rowRect.width - methodWidth - statusWidth - timeWidth - 8f);
 
-                var url = evt.Url ?? string.Empty;
-                var urlLabel = url.Length > 72 ? url.Substring(0, 69) + "..." : url;
-                GUILayout.Label(urlLabel, GUILayout.ExpandWidth(true));
+            var originalColor = GUI.color;
+            GUI.color = GetMethodColor(evt.Method);
+            GUI.Label(new Rect(x, rowRect.y, methodWidth, rowRect.height), evt.Method ?? string.Empty);
+            GUI.color = originalColor;
+            x += methodWidth;
 
-                GUI.color = GetStatusColor(evt.StatusCode);
-                GUILayout.Label(
-                    evt.StatusCode > 0
-                        ? evt.StatusCode.ToString(CultureInfo.InvariantCulture)
-                        : "-",
-                    GUILayout.Width(48f));
-                GUI.color = originalColor;
+            var url = evt.Url ?? string.Empty;
+            var urlLabel = url.Length > 72 ? url.Substring(0, 69) + "..." : url;
+            GUI.Label(new Rect(x, rowRect.y, urlWidth, rowRect.height), urlLabel);
+            x += urlWidth;
 
-                GUILayout.Label(
-                    $"{evt.ElapsedTime.TotalMilliseconds:F0}ms",
-                    GUILayout.Width(54f));
-            }
-            EditorGUILayout.EndHorizontal();
+            GUI.color = GetStatusColor(evt.StatusCode);
+            GUI.Label(
+                new Rect(x, rowRect.y, statusWidth, rowRect.height),
+                evt.StatusCode > 0
+                    ? evt.StatusCode.ToString(CultureInfo.InvariantCulture)
+                    : "-");
+            GUI.color = originalColor;
+            x += statusWidth;
 
-            var rowRect = GUILayoutUtility.GetLastRect();
+            GUI.Label(
+                new Rect(x, rowRect.y, timeWidth, rowRect.height),
+                $"{evt.ElapsedTime.TotalMilliseconds:F0}ms");
+
             if (Event.current.type == EventType.MouseDown && rowRect.Contains(Event.current.mousePosition))
             {
                 _selectedEvent = evt;
@@ -424,9 +447,9 @@ namespace TurboHTTP.Editor
 
         private string FormatHeaderValue(string key, string value)
         {
-            if (_maskConfidentialHeaders && !string.IsNullOrEmpty(key) && ConfidentialHeaders.Contains(key))
+            if (_maskConfidentialHeaders && RedactionPolicy.Default.IsSensitiveHeader(key))
             {
-                return "********";
+                return RedactionPolicy.RedactedValue;
             }
 
             return value ?? string.Empty;

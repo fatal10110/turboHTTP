@@ -13,7 +13,7 @@ namespace TurboHTTP.Testing
         {
             var normalizedUrl = NormalizeUriForKey(request.Uri);
             var bodyHash = request.Content.TryGetBufferedData(out var bufferedBody)
-                ? ComputeBodyHash(bufferedBody)
+                ? ComputeBodyHash(bufferedBody, _keySalt)
                 : "sha256:empty";
             return BuildRequestKey(request.Method.ToUpperString(), normalizedUrl, request.Headers, bodyHash);
         }
@@ -76,7 +76,11 @@ namespace TurboHTTP.Testing
 
                 builder.Append(name.ToLowerInvariant());
                 builder.Append('=');
-                var sortedValues = values.OrderBy(v => v ?? string.Empty, StringComparer.Ordinal).ToArray();
+                var protect = _keySalt != null && _redactionPolicy.ShouldRedactHeader(name);
+                var sortedValues = values
+                    .Select(v => protect ? ComputeKeyedValueHash(v ?? string.Empty, _keySalt) : v)
+                    .OrderBy(v => v ?? string.Empty, StringComparer.Ordinal)
+                    .ToArray();
                 for (int i = 0; i < sortedValues.Length; i++)
                 {
                     if (i > 0) builder.Append(',');

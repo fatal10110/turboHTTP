@@ -30,7 +30,6 @@ CS1998|Runtime/Unity/Mobile/iOS/IosBackgroundTaskBridge.cs|public async ValueTas
 RS0030|Runtime/Core/IL2CPPCompatibility.cs|var result = Task.Run(async () =>
 RS0030|Runtime/Core/Pipeline/BufferedDispatchBridge.cs|task.GetAwaiter().GetResult();
 RS0030|Runtime/Core/Pipeline/StreamingDispatchBridge.cs|task.GetAwaiter().GetResult();
-RS0030|Runtime/Core/UHttpClient.cs|if (Activator.CreateInstance(monitorType) is IHttpInterceptor monitorInterceptor)
 RS0030|Runtime/Core/UHttpStreamingResponse.cs|disposeTask.AsTask().GetAwaiter().GetResult();
 RS0030|Runtime/Transport/Http2/Http2Connection.Lifecycle.cs|shutdownTasks?.GetAwaiter().GetResult();
 RS0030|Runtime/Transport/Tcp/PollSelectStream.cs|=> ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
