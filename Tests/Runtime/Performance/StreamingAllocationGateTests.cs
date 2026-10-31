@@ -5,9 +5,11 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TurboHTTP.Cache;
 using TurboHTTP.Core;
 using TurboHTTP.Middleware;
 using TurboHTTP.Testing;
@@ -33,6 +35,8 @@ namespace TurboHTTP.Tests.Performance
         private static readonly byte[] s_http2Chunk = CreatePatternBytes(Http2ChunkBytes);
         private static readonly byte[] s_decompressedPayload = CreatePatternBytes(512 * 1024);
         private static readonly byte[] s_compressedPayload = CompressGzip(s_decompressedPayload);
+        private const int CacheStreamingBodyBytes = 2 * 1024 * 1024;
+        private static readonly byte[] s_cacheStreamingPayload = CreatePatternBytes(CacheStreamingBodyBytes);
 
         [Test]
         public void Http11StreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
@@ -62,6 +66,152 @@ namespace TurboHTTP.Tests.Performance
                 measurement,
                 preciseCounterBudgetBytesPerRead: 384,
                 fallbackCounterBudgetBytesPerRead: 768);
+        }
+
+        // #52: the cache must not collect the whole response before the caller can read it. These gates
+        // measure managed bytes allocated from SendStreamingAsync until the response headers are delivered;
+        // the old buffered path allocated at least the full body (collection plus replay copy) there.
+        [Test]
+        public void CacheUnsafePostStreaming_ResponseStart_DoesNotAllocateFullBody()
+        {
+            var transport = CreateCacheStreamingTransport(primeNext: null);
+            using var client = CreateCacheClient(transport, maxCacheableBytes: 64 * 1024);
+
+            var delta = MeasureResponseStartBytes(() => client.Post("https://phase22a.local/cache-post"));
+            AssertResponseStartBelowBody("cache_unsafe_post_response_start", delta);
+        }
+
+        [Test]
+        public void CacheRevalidation200Streaming_ResponseStart_DoesNotAllocateFullBody()
+        {
+            var primeNext = new StrongBox<bool>(false);
+            var transport = CreateCacheStreamingTransport(primeNext);
+            using var client = CreateCacheClient(transport, maxCacheableBytes: 64 * 1024);
+            const string url = "https://phase22a.local/cache-revalidate";
+
+            // Each measured request revalidates a small stored entry (ETag + no-cache) and the origin answers
+            // 200 with a large streamed body that exceeds the cacheable size, so nothing large is stored.
+            var delta = MeasureResponseStartBytes(() =>
+            {
+                primeNext.Value = true;
+                using (client.Get(url).SendBufferedAsync().GetAwaiter().GetResult())
+                {
+                }
+
+                return client.Get(url);
+            });
+            AssertResponseStartBelowBody("cache_revalidation_200_response_start", delta);
+        }
+
+        private static long MeasureResponseStartBytes(Func<UHttpRequest> createRequest)
+        {
+            // Warm-up: JIT, pools and the cache's per-key state.
+            SendStreamingAndDrain(createRequest());
+
+            var request = createRequest();
+            PrepareForMeasurement();
+            var before = s_managedBytesCounter.Read();
+            var response = request.SendStreamingAsync().GetAwaiter().GetResult();
+            try
+            {
+                var after = s_managedBytesCounter.Read();
+                return Math.Max(0L, after - before);
+            }
+            finally
+            {
+                DrainAndDispose(response);
+            }
+        }
+
+        private static void SendStreamingAndDrain(UHttpRequest request)
+        {
+            DrainAndDispose(request.SendStreamingAsync().GetAwaiter().GetResult());
+        }
+
+        private static void DrainAndDispose(UHttpStreamingResponse response)
+        {
+            try
+            {
+                var body = ExtractBodySource(response);
+                var buffer = new byte[16 * 1024];
+                while (body.ReadAsync(buffer, CancellationToken.None).GetAwaiter().GetResult() != 0)
+                {
+                }
+            }
+            finally
+            {
+                response.DisposeAsync().GetAwaiter().GetResult();
+            }
+        }
+
+        private static void AssertResponseStartBelowBody(string name, long allocatedBytes)
+        {
+            TestContext.Progress.WriteLine(
+                "[Cache][Allocation] " + name +
+                " counter=" + s_managedBytesCounter.Name +
+                " bytesBeforeFirstRead=" + allocatedBytes +
+                " body=" + CacheStreamingBodyBytes);
+
+            Assert.Less(
+                allocatedBytes,
+                CacheStreamingBodyBytes / 4,
+                "Scenario '" + name + "' allocated " + allocatedBytes + " bytes before the caller read the body " +
+                "(body is " + CacheStreamingBodyBytes + " bytes): the cache buffered the response.");
+        }
+
+        private static UHttpClient CreateCacheClient(IHttpTransport transport, long maxCacheableBytes)
+        {
+            return new UHttpClient(new UHttpClientOptions
+            {
+                Transport = transport,
+                DisposeTransport = true,
+                Interceptors = new List<IHttpInterceptor>
+                {
+                    new CacheInterceptor(new CachePolicy
+                    {
+                        Storage = new MemoryCacheStorage(),
+                        MaxCacheableResponseBodyBytes = maxCacheableBytes
+                    })
+                }
+            });
+        }
+
+        private static CallbackTransport CreateCacheStreamingTransport(StrongBox<bool> primeNext)
+        {
+            return new CallbackTransport(
+                (request, handler, context, cancellationToken) =>
+                {
+                    handler.OnRequestStart(request, context);
+                    var headers = new HttpHeaders();
+                    if (primeNext != null && primeNext.Value)
+                    {
+                        primeNext.Value = false;
+                        headers.Set("Cache-Control", "no-cache");
+                        headers.Set("ETag", "\"v1\"");
+                        return handler.OnResponseStartAsync(
+                                (int)HttpStatusCode.OK,
+                                headers,
+                                new MockResponseBodySource(
+                                    new[] { new ReadOnlyMemory<byte>(s_cacheStreamingPayload, 0, 16) },
+                                    length: 16,
+                                    trailers: HttpHeaders.Empty),
+                                context)
+                            .AsTask();
+                    }
+
+                    headers.Set("Cache-Control", "no-cache");
+                    headers.Set("ETag", "\"v2\"");
+                    return handler.OnResponseStartAsync(
+                            (int)HttpStatusCode.OK,
+                            headers,
+                            new MockResponseBodySource(
+                                ChunkPayload(s_cacheStreamingPayload, 16 * 1024),
+                                length: null,
+                                trailers: HttpHeaders.Empty,
+                                exposeBufferedData: false),
+                            context)
+                        .AsTask();
+                });
         }
 
         private static AllocationMeasurement MeasureScenario(Func<MeasuredReadTarget> factory)
