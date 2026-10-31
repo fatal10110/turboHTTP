@@ -108,7 +108,7 @@ namespace TurboHTTP.WebSocket
 
                 _uri = uri;
                 _options = options;
-                _incomingQueue = new BoundedAsyncQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
+                _incomingQueue = WebSocketMessageQueue.Create(options);
                 _lifecycleCts?.Dispose();
                 _lifecycleCts = new CancellationTokenSource();
                 _closedEventRaised = 0;

@@ -62,12 +62,23 @@ pull API (`ReceiveAsync` / `ReceiveAllAsync`), or both:
   ping/pong/close frames no matter how many messages arrive. `UnityWebSocketClient` and
   `UnityWebSocketBridge` work this way.
 - **Pull-only** (no `OnMessage` handler): messages are queued losslessly, up to
-  `WebSocketConnectionOptions.ReceiveQueueCapacity` (default 100). When the queue is full, reading
+  `WebSocketConnectionOptions.ReceiveQueueCapacity` messages (default 100) and
+  `ReceiveQueueMaxBytes` payload bytes (default 8 MB). When either budget is reached, reading
   from the socket pauses until you call `ReceiveAsync` again (TCP backpressure). The keep-alive pong
-  timeout is not charged while reading is paused.
+  timeout is not charged while reading is paused. An empty queue always accepts one message, so a
+  message up to `MaxMessageSize` is delivered even when it is larger than `ReceiveQueueMaxBytes`.
 - **Mixed** (handlers subscribed and `ReceiveAsync` used): every message is raised through the event,
-  and the pull queue keeps only the most recent `ReceiveQueueCapacity` messages; older unread messages
-  are discarded. Each handler gets its own copy of the message.
+  and the pull queue keeps only the most recent messages that fit `ReceiveQueueCapacity` and
+  `ReceiveQueueMaxBytes`; older unread messages are discarded. Each handler gets its own copy of the
+  message.
+
+### Message size limits
+
+`MaxMessageSize` (default 4 MB) bounds every received message: single-frame, reassembled from
+fragments, and after decompression. `MaxFrameSize` (default 4 MB) bounds one frame and must not be
+larger than `MaxMessageSize` (`Validate` throws otherwise). A frame or message over its limit is
+rejected from its header, before the payload is read, and the connection closes with code 1009
+(Message Too Big).
 
 ### Cancelling a send
 
@@ -95,10 +106,22 @@ ws.OnDisconnected += (code, reason) => Debug.Log($"Lost connection: {reason}");
 
 ## Extensions & Compression
 
-Per-Message Deflate (`permessage-deflate`) extension is supported out of the box, reducing bandwidth usage.
+Per-Message Deflate (`permessage-deflate`, RFC 7692) is opt-in:
 
 ```csharp
-var options = new WebSocketOptions {
-    EnableCompression = true // Default is true
-};
+var options = new WebSocketConnectionOptions().WithCompression();          // optional
+var strict = new WebSocketConnectionOptions().WithRequiredCompression();   // close 1010 if declined
 ```
+
+The client offers `server_no_context_takeover` and requires it in the server's response, because
+incoming messages are inflated without keeping context between messages. It never offers
+`client_max_window_bits` (outgoing compression always uses a 15-bit window), so a response that sets
+it is rejected. `PerMessageDeflateOptions` therefore only accepts `serverNoContextTakeover: true` and
+`clientMaxWindowBits: 15`.
+
+The handshake fails (`WebSocketError.ExtensionNegotiationFailed`, close code 1002) whenever the server
+selects an extension the client did not offer, selects one twice, or uses parameters the client
+cannot honour, whether compression is optional or required (RFC 6455 section 4.1). Raw extension
+strings in `WebSocketConnectionOptions.Extensions` are not supported and fail `Validate`; register
+extensions with `WithExtension` instead. Control frames with any RSV bit set close the connection
+with 1002.

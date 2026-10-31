@@ -110,6 +110,15 @@ namespace TurboHTTP.WebSocket
 
             if (frame.IsFinal)
             {
+                if (frame.PayloadLength > _maxMessageSize)
+                {
+                    frameLease.Dispose();
+                    throw new WebSocketProtocolException(
+                        WebSocketError.MessageTooLarge,
+                        "Message payload exceeds configured max message size.",
+                        WebSocketCloseCode.MessageTooBig);
+                }
+
                 message = CreateMessageFromLease(frameLease, frame.Opcode);
                 return true;
             }

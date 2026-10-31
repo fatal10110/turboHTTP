@@ -47,14 +47,17 @@ namespace TurboHTTP.WebSocket
 
             var parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            if (_options.ServerNoContextTakeover)
-                parameters["server_no_context_takeover"] = null;
+            // The inbound inflater is created per message, so server context takeover cannot be
+            // honoured: always ask for server_no_context_takeover (RFC 7692 section 7.1.1.1, #82).
+            parameters["server_no_context_takeover"] = null;
 
             if (_options.ClientNoContextTakeover)
                 parameters["client_no_context_takeover"] = null;
 
-            parameters["server_max_window_bits"] = _options.ServerMaxWindowBits.ToString();
-            parameters["client_max_window_bits"] = _options.ClientMaxWindowBits.ToString();
+            // client_max_window_bits is never offered: DeflateStream always compresses with a 15-bit
+            // window, so a smaller client window could not be honoured (RFC 7692 section 7.1.2.2).
+            parameters["server_max_window_bits"] = _options.ServerMaxWindowBits.ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
 
             return new[] { new WebSocketExtensionOffer(Name, parameters) };
         }
@@ -71,7 +74,6 @@ namespace TurboHTTP.WebSocket
 
             bool serverNoContextTakeover = false;
             int serverMaxWindowBits = _options.ServerMaxWindowBits;
-            int clientMaxWindowBits = _options.ClientMaxWindowBits;
 
             foreach (var parameter in serverParams.Parameters)
             {
@@ -96,23 +98,22 @@ namespace TurboHTTP.WebSocket
                         break;
 
                     case "client_max_window_bits":
-                        if (!TryParseWindowBits(parameter.Value, out clientMaxWindowBits))
-                            return false;
-                        break;
+                        // Not offered, so the response must not contain it (RFC 7692 section 7.1.2.2).
+                        return false;
 
                     default:
                         return false;
                 }
             }
 
-            // v1 requires no context takeover for inbound decompression safety.
-            if (_options.ServerNoContextTakeover && !serverNoContextTakeover)
+            // Inbound context takeover is not implemented (a fresh inflater per message), so the server
+            // must agree to reset its context after every message (RFC 7692 section 7.1.1.1).
+            if (!serverNoContextTakeover)
                 return false;
 
+            // Any window up to 15 bits inflates with the 15-bit inflater; only a value above the offer
+            // violates RFC 7692 section 7.1.2.1.
             if (serverMaxWindowBits > _options.ServerMaxWindowBits)
-                return false;
-
-            if (clientMaxWindowBits > _options.ClientMaxWindowBits)
                 return false;
 
             _isNegotiated = true;

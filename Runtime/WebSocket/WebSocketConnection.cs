@@ -114,6 +114,13 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         internal long KeepAliveBackpressureSkips => Interlocked.Read(ref _keepAliveBackpressureSkips);
 
+        // Diagnostics and tests only (#80): receive-loop parking and the delivery queue's byte budget.
+        internal bool IsReceiveLoopParked => Volatile.Read(ref _receiveParked) != 0;
+
+        internal int ReceiveQueueCount => _receiveQueue?.Count ?? 0;
+
+        internal long ReceiveQueueBytes => _receiveQueue?.QueuedBytes ?? 0;
+
         public WebSocketCloseStatus? CloseStatus => _hasCloseStatus ? _closeStatus : (WebSocketCloseStatus?)null;
 
         public WebSocketMetrics Metrics => _metrics?.GetSnapshot() ?? default;
@@ -146,7 +153,7 @@ namespace TurboHTTP.WebSocket
             _options = options;
             _frameWriter = new WebSocketFrameWriter(options.FragmentationThreshold);
             _messageAssembler = new MessageAssembler(options.MaxMessageSize, options.MaxFragmentCount);
-            _receiveQueue = new BoundedAsyncQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
+            _receiveQueue = WebSocketMessageQueue.Create(options);
             _lifecycleCts = new CancellationTokenSource();
 
             List<IWebSocketExtension> configuredExtensions = null;
@@ -160,11 +167,12 @@ namespace TurboHTTP.WebSocket
                 _stream = await transport.ConnectAsync(uri, options, handshakeToken).ConfigureAwait(false);
 
                 configuredExtensions = CreateConnectionExtensions(options);
-                var extensionNegotiator = configuredExtensions.Count > 0
-                    ? new WebSocketExtensionNegotiator(configuredExtensions)
-                    : null;
 
-                var requestedExtensions = BuildRequestedExtensions(options.Extensions, extensionNegotiator);
+                // Built even without configured extensions: a server that selects any extension the
+                // client did not offer must fail the connection (RFC 6455 section 4.1, #81).
+                var extensionNegotiator = new WebSocketExtensionNegotiator(configuredExtensions);
+
+                var requestedExtensions = BuildRequestedExtensions(extensionNegotiator);
 
                 var handshakeRequest = WebSocketHandshake.BuildRequest(
                     uri,
@@ -186,43 +194,39 @@ namespace TurboHTTP.WebSocket
                 string serverExtensionsHeader = JoinHeaderValues(
                     handshakeResult.ResponseHeaders.GetValues("Sec-WebSocket-Extensions"));
 
-                var extensionNegotiationResult = extensionNegotiator != null
-                    ? extensionNegotiator.ProcessNegotiation(serverExtensionsHeader)
-                    : WebSocketExtensionNegotiationResult.Success(Array.Empty<IWebSocketExtension>(), 0);
+                var extensionNegotiationResult = extensionNegotiator.ProcessNegotiation(serverExtensionsHeader);
 
-                if (extensionNegotiator != null && !extensionNegotiationResult.IsSuccess)
+                // An unoffered, duplicate or unhonourable extension in the response always fails the
+                // connection, whether or not extensions are required (RFC 6455 sections 4.1 and 9.1).
+                if (!extensionNegotiationResult.IsSuccess)
                 {
-                    if (options.RequireNegotiatedExtensions)
-                    {
-                        await TrySendMandatoryExtensionCloseAsync(
-                            extensionNegotiationResult.ErrorMessage,
-                            handshakeToken).ConfigureAwait(false);
+                    string message = "Server extension response rejected: " + extensionNegotiationResult.ErrorMessage;
 
-                        throw CreateMandatoryExtensionException(extensionNegotiationResult.ErrorMessage);
-                    }
+                    await TrySendExtensionFailureCloseAsync(
+                        WebSocketCloseCode.ProtocolError,
+                        message,
+                        handshakeToken).ConfigureAwait(false);
 
-                    extensionNegotiationResult = WebSocketExtensionNegotiationResult.Success(
-                        Array.Empty<IWebSocketExtension>(),
-                        allowedRsvMask: 0);
+                    throw CreateExtensionNegotiationException(WebSocketCloseCode.ProtocolError, message);
                 }
 
-                if (extensionNegotiator != null &&
-                    options.RequireNegotiatedExtensions &&
+                if (options.RequireNegotiatedExtensions &&
                     extensionNegotiationResult.ActiveExtensions.Count == 0)
                 {
                     const string message =
                         "Server did not negotiate any required WebSocket extension.";
 
-                    await TrySendMandatoryExtensionCloseAsync(message, handshakeToken).ConfigureAwait(false);
-                    throw CreateMandatoryExtensionException(message);
+                    await TrySendExtensionFailureCloseAsync(
+                        WebSocketCloseCode.MandatoryExtension,
+                        message,
+                        handshakeToken).ConfigureAwait(false);
+                    throw CreateExtensionNegotiationException(WebSocketCloseCode.MandatoryExtension, message);
                 }
 
                 _remoteUri = uri;
                 _subProtocol = handshakeResult.NegotiatedSubProtocol;
                 _activeExtensions = extensionNegotiationResult.ActiveExtensions;
-                _negotiatedExtensions = extensionNegotiator != null
-                    ? BuildNegotiatedExtensionNames(_activeExtensions)
-                    : handshakeResult.NegotiatedExtensions;
+                _negotiatedExtensions = BuildNegotiatedExtensionNames(_activeExtensions);
                 DisposeUnselectedExtensions(configuredExtensions, _activeExtensions);
                 configuredExtensions = null;
                 _allowedRsvMask = extensionNegotiationResult.AllowedRsvMask;
@@ -233,7 +237,10 @@ namespace TurboHTTP.WebSocket
                 if (_healthMonitor != null)
                     _healthMonitor.OnQualityChanged += HandleHealthQualityChanged;
                 _connectedAtUtc = DateTimeOffset.UtcNow;
-                _frameReader = new WebSocketFrameReader(options.MaxFrameSize, _allowedRsvMask);
+                _frameReader = new WebSocketFrameReader(
+                    options.MaxFrameSize,
+                    _allowedRsvMask,
+                    maxMessageSize: options.MaxMessageSize);
 
                 if (handshakeResult.PrefetchedBytes.Length > 0)
                 {
@@ -295,7 +302,10 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private async Task TrySendMandatoryExtensionCloseAsync(string reason, CancellationToken ct)
+        private async Task TrySendExtensionFailureCloseAsync(
+            WebSocketCloseCode closeCode,
+            string reason,
+            CancellationToken ct)
         {
             var stream = _stream;
             var frameWriter = _frameWriter;
@@ -306,7 +316,7 @@ namespace TurboHTTP.WebSocket
             {
                 await frameWriter.WriteCloseAsync(
                     stream,
-                    WebSocketCloseCode.MandatoryExtension,
+                    closeCode,
                     reason ?? string.Empty,
                     ct).ConfigureAwait(false);
             }
@@ -316,16 +326,18 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private static WebSocketException CreateMandatoryExtensionException(string message)
+        private static WebSocketException CreateExtensionNegotiationException(
+            WebSocketCloseCode closeCode,
+            string message)
         {
             var effectiveMessage = string.IsNullOrWhiteSpace(message)
-                ? "Required WebSocket extension negotiation failed."
+                ? "WebSocket extension negotiation failed."
                 : message;
 
             return new WebSocketException(
                 WebSocketError.ExtensionNegotiationFailed,
                 effectiveMessage,
-                closeCode: WebSocketCloseCode.MandatoryExtension,
+                closeCode: closeCode,
                 closeReason: effectiveMessage);
         }
 

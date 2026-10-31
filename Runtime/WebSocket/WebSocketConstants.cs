@@ -12,11 +12,20 @@ namespace TurboHTTP.WebSocket
         public const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-5AB53DC52D51";
         public const int SupportedVersion = 13;
 
-        public const int DefaultMaxFrameSize = 16 * 1024 * 1024;
         public const int DefaultMaxMessageSize = 4 * 1024 * 1024;
+
+        /// <summary>
+        /// Default largest received frame; equal to <see cref="DefaultMaxMessageSize"/> because a frame
+        /// cannot exceed a message.
+        /// </summary>
+        public const int DefaultMaxFrameSize = DefaultMaxMessageSize;
+
         public const int DefaultMaxFragmentCount = 64;
         public const int DefaultFragmentationThreshold = 64 * 1024;
         public const int DefaultReceiveQueueCapacity = 100;
+
+        /// <summary>Default byte budget of each receive delivery queue: two default-size messages.</summary>
+        public const int DefaultReceiveQueueMaxBytes = 2 * DefaultMaxMessageSize;
 
         public static readonly TimeSpan DefaultCloseHandshakeTimeout = TimeSpan.FromSeconds(5);
         public static readonly TimeSpan DefaultHandshakeTimeout = TimeSpan.FromSeconds(10);

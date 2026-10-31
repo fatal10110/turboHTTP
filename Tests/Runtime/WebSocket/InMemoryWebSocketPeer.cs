@@ -40,6 +40,9 @@ namespace TurboHTTP.Tests.WebSocket
         /// <summary>Number of RFC 6455 section 5.4 framing violations seen from the client.</summary>
         public int FramingViolations => Volatile.Read(ref _violations);
 
+        /// <summary>Optional Sec-WebSocket-Extensions value sent in the handshake response.</summary>
+        public string HandshakeExtensionsHeader { get; set; }
+
         /// <summary>Completes when the server stops reading (client EOF, close or error).</summary>
         public Task ReaderCompleted => _readerDone.Task;
 
@@ -81,6 +84,12 @@ namespace TurboHTTP.Tests.WebSocket
                 Interlocked.Exchange(ref _serverCloseSent, 1);
 
             await WriteRawAsync(buffer.ToArray()).ConfigureAwait(false);
+        }
+
+        /// <summary>Writes raw bytes to the client (hand-built frames, e.g. RSV bits or header-only frames).</summary>
+        public Task SendRawAsync(byte[] bytes)
+        {
+            return WriteRawAsync(bytes);
         }
 
         /// <summary>Returns the next recorded client frame (pings are answered, not recorded).</summary>
@@ -208,7 +217,11 @@ namespace TurboHTTP.Tests.WebSocket
             string response = "HTTP/1.1 101 Switching Protocols\r\n" +
                 "Upgrade: websocket\r\n" +
                 "Connection: Upgrade\r\n" +
-                "Sec-WebSocket-Accept: " + WebSocketConstants.ComputeAcceptKey(clientKey) + "\r\n\r\n";
+                "Sec-WebSocket-Accept: " + WebSocketConstants.ComputeAcceptKey(clientKey) + "\r\n" +
+                (string.IsNullOrEmpty(HandshakeExtensionsHeader)
+                    ? string.Empty
+                    : "Sec-WebSocket-Extensions: " + HandshakeExtensionsHeader + "\r\n") +
+                "\r\n";
 
             await WriteRawAsync(Encoding.ASCII.GetBytes(response)).ConfigureAwait(false);
         }
