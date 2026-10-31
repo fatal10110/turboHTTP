@@ -130,7 +130,7 @@ Every change answers three questions in the PR body, from evidence:
       - `'./Tools~/ci/check.sh'` at <sha>: pass
       - Unity EditMode --filter '<regex>': <pass | Unity unavailable locally>
       - Unity PlayMode --filter '<regex>': <pass | Unity unavailable locally>
-      Unity tests: CI
+      Unity tests: host editor (periodic)
 
       ## Specialist rubrics
       Infrastructure: <clean | findings fixed: ...>; Network: <clean | findings fixed: ...>
