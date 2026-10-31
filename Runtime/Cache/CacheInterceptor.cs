@@ -618,6 +618,14 @@ namespace TurboHTTP.Cache
                 if (!notModifiedHeaders.Contains(name))
                     continue;
 
+                // RFC 9111 section 3.2: Content-Length is never updated (the stored content is unchanged), and a
+                // cache that stores processed content may keep the fields describing that processing. The stored
+                // body is whatever the inner pipeline produced (e.g. decoded by Decompression), so a 304 repeating
+                // Content-Encoding must not relabel it.
+                if (string.Equals(name, "Content-Length", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(name, "Content-Encoding", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 mergedHeaders.Remove(name);
                 var values = notModifiedHeaders.GetValues(name);
                 for (int j = 0; j < values.Count; j++)

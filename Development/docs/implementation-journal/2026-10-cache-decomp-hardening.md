@@ -43,6 +43,11 @@
   layer is gzip.
 - Revalidation non-304: remove first, then store after body EOF. This replaces the old store-then-remove step.
   Both are serialized per base key, and a miss between them is safe.
+- Review round 1: `MergeNotModifiedEntry` no longer copies a 304's `Content-Length` or `Content-Encoding`
+  into the stored entry (RFC 9111 section 3.2: Content-Length is excepted; a cache storing processed content may
+  keep the fields describing it). With [Cache, Decompression] the stored body is decoded, and a 304 repeating
+  `Content-Encoding: gzip` (passed through since #57) would otherwise relabel it. Test:
+  `CacheInterceptorTests.DecodedRevalidation.cs`.
 
 ## Deferred
 - #219 (v1.0-beta): `deflate` should be zlib (RFC 9110 section 8.4.1.2), and a multi-member gzip body fails
