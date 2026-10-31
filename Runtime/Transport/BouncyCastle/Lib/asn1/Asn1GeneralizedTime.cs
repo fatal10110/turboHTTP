@@ -15,7 +15,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         {
             internal static readonly Asn1UniversalType Instance = new Meta();
 
-            private Meta() : base(typeof(Asn1GeneralizedTime), Asn1Tags.GeneralizedTime) { }
+            private Meta() : base(typeof(Asn1GeneralizedTime), Asn1Tags.GeneralizedTime) {}
 
             internal override Asn1Object FromImplicitPrimitive(DerOctetString octetString)
             {
@@ -44,7 +44,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct generalized time from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct generalized time from byte[]", nameof(obj), e);
                 }
             }
 
@@ -87,7 +87,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
             catch (FormatException e)
             {
-                throw new ArgumentException("invalid date string: " + e.Message);
+                throw new ArgumentException("invalid GeneralizedTime format", nameof(timeString), e);
             }
         }
 
@@ -109,10 +109,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         public string TimeString => m_timeString;
 
-        public DateTime ToDateTime()
-        {
-            return m_dateTime;
-        }
+        public DateTime ToDateTime() => m_dateTime;
 
         internal byte[] GetContents(int encoding)
         {

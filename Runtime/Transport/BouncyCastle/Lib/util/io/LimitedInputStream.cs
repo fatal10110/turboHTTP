@@ -7,25 +7,31 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO
         : BaseInputStream
     {
         private readonly Stream m_stream;
-        private long m_limit;
+        private readonly bool m_leaveOpen;
+        private long m_currentLimit;
 
-        internal LimitedInputStream(Stream stream, long limit)
+        internal LimitedInputStream(long limit, Stream stream, bool leaveOpen = false)
         {
-            this.m_stream = stream;
-            this.m_limit = limit;
+            m_stream = stream;
+            m_leaveOpen = leaveOpen;
+            m_currentLimit = limit;
         }
 
-        internal long CurrentLimit => m_limit;
+        internal long CurrentLimit => m_currentLimit;
 
         public override int Read(byte[] buffer, int offset, int count)
         {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            return Read(buffer.AsSpan(offset, count));
+#else
             int numRead = m_stream.Read(buffer, offset, count);
             if (numRead > 0)
             {
-                if ((m_limit -= numRead) < 0)
+                if ((m_currentLimit -= numRead) < 0)
                     throw new StreamOverflowException("Data Overflow");
             }
             return numRead;
+#endif
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
@@ -34,7 +40,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO
             int numRead = m_stream.Read(buffer);
             if (numRead > 0)
             {
-                if ((m_limit -= numRead) < 0)
+                if ((m_currentLimit -= numRead) < 0)
                     throw new StreamOverflowException("Data Overflow");
             }
             return numRead;
@@ -46,10 +52,23 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO
             int b = m_stream.ReadByte();
             if (b >= 0)
             {
-                if (--m_limit < 0)
+                if (--m_currentLimit < 0)
                     throw new StreamOverflowException("Data Overflow");
             }
             return b;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (!m_leaveOpen)
+                {
+                    m_stream.Dispose();
+                }
+            }
+
+            base.Dispose(disposing);
         }
     }
 }

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -19,7 +20,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
             internal override Asn1Object FromImplicitPrimitive(DerOctetString octetString)
             {
-                return CreatePrimitive(octetString.GetOctets(), false);
+                return CreatePrimitive(octetString.GetOctets(), clone: false);
             }
         }
 
@@ -33,13 +34,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         private const int MaxContentsLength = 4096;
         private const int MaxIdentifierLength = MaxContentsLength * 4 - 1;
 
-        public static Asn1RelativeOid FromContents(byte[] contents)
-        {
-            if (contents == null)
-                throw new ArgumentNullException(nameof(contents));
-
-            return CreatePrimitive(contents, true);
-        }
+        public static Asn1RelativeOid FromContents(byte[] contents) =>
+            CreatePrimitive(contents ?? throw new ArgumentNullException(nameof(contents)), clone: true);
 
         public static Asn1RelativeOid GetInstance(object obj)
         {
@@ -62,11 +58,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct relative OID from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct relative OID from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), "obj");
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
         public static Asn1RelativeOid GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
@@ -204,10 +200,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return new PrimitiveDerEncoding(tagClass, tagNo, m_contents);
         }
 
-        internal static void CheckContentsLength(int contentsLength)
+        private static int CheckContentsLength(int contentsLength)
         {
             if (contentsLength > MaxContentsLength)
                 throw new ArgumentException("exceeded relative OID contents length limit");
+            return contentsLength;
         }
 
         internal static void CheckIdentifier(string identifier)
@@ -220,11 +217,33 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 throw new FormatException("string " + identifier + " not a valid relative OID");
         }
 
-        internal static Asn1RelativeOid CreatePrimitive(byte[] contents, bool clone)
-        {
-            CheckContentsLength(contents.Length);
+        private static bool ContentsEquals(byte[] a, byte[] b, int bLen) => Arrays.AreEqual(a, 0, a.Length, b, 0, bLen);
 
-            uint index = (uint)Arrays.GetHashCode(contents);
+        internal static Asn1RelativeOid CreatePrimitive(DefiniteLengthInputStream defIn, byte[] tmp)
+        {
+            int contentsLength = CheckContentsLength(defIn.Remaining);
+
+            bool useTmp = contentsLength <= tmp.Length;
+            if (useTmp)
+            {
+                defIn.ReadAllIntoByteArray(tmp);
+            }
+            else
+            {
+                tmp = defIn.ToArray();
+            }
+
+            return CreatePrimitive(contents: tmp, contentsLength, clone: useTmp);
+        }
+
+        private static Asn1RelativeOid CreatePrimitive(byte[] contents, bool clone) =>
+            CreatePrimitive(contents, CheckContentsLength(contents.Length), clone);
+
+        private static Asn1RelativeOid CreatePrimitive(byte[] contents, int contentsLength, bool clone)
+        {
+            Debug.Assert(clone || contents.Length == contentsLength);
+
+            uint index = (uint)Arrays.GetHashCode(contents, 0, contentsLength);
 
             index ^= index >> 24;
             index ^= index >> 12;
@@ -232,31 +251,32 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             index &= 63;
 
             var originalEntry = Volatile.Read(ref Cache[index]);
-            if (originalEntry != null && Arrays.AreEqual(contents, originalEntry.m_contents))
+            if (originalEntry != null && ContentsEquals(originalEntry.m_contents, contents, contentsLength))
                 return originalEntry;
 
-            if (!IsValidContents(contents))
+            if (!IsValidContents(contents, contentsLength))
                 throw new ArgumentException("invalid relative OID contents", nameof(contents));
 
-            var newEntry = new Asn1RelativeOid(clone ? Arrays.Clone(contents) : contents, identifier: null);
+            var newContents = clone ? Arrays.CopySegment(contents, 0, contentsLength) : contents;
+            var newEntry = new Asn1RelativeOid(newContents, identifier: null);
 
             var exchangedEntry = Interlocked.CompareExchange(ref Cache[index], newEntry, originalEntry);
             if (exchangedEntry != originalEntry)
             {
-                if (exchangedEntry != null && Arrays.AreEqual(contents, exchangedEntry.m_contents))
+                if (exchangedEntry != null && ContentsEquals(exchangedEntry.m_contents, contents, contentsLength))
                     return exchangedEntry;
             }
 
             return newEntry;
         }
 
-        internal static bool IsValidContents(byte[] contents)
+        internal static bool IsValidContents(byte[] contents, int contentsLength)
         {
-            if (contents.Length < 1)
+            if (contentsLength < 1)
                 return false;
 
             bool subIDStart = true;
-            for (int i = 0; i < contents.Length; ++i)
+            for (int i = 0; i < contentsLength; ++i)
             {
                 if (subIDStart && contents[i] == 0x80)
                     return false;
@@ -364,75 +384,132 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return objId.ToString();
         }
 
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         internal static byte[] ParseIdentifier(string identifier)
         {
-            MemoryStream bOut = new MemoryStream();
-            OidTokenizer tok = new OidTokenizer(identifier);
-            while (tok.HasMoreTokens)
+            int contentsLimit = (identifier.Length + 1) / 2;
+            Span<byte> buf = contentsLimit <= 1024
+                ? stackalloc byte[contentsLimit]
+                : new byte[contentsLimit];
+
+            int i = 0, j = 0, off = 0;
+            while (++j < identifier.Length)
             {
-                string token = tok.NextToken();
-                if (token.Length <= 18)
+                if (identifier[j] == '.')
                 {
-                    WriteField(bOut, long.Parse(token));
-                }
-                else
-                {
-                    WriteField(bOut, new BigInteger(token));
+                    WriteField(buf, ref off, identifier, i, j);
+                    i = j + 1;
+                    j = i;
                 }
             }
-            return bOut.ToArray();
+            WriteField(buf, ref off, identifier, i, j);
+
+            return buf[..off].ToArray();
         }
 
-        internal static void WriteField(Stream outputStream, long fieldValue)
+        internal static void WriteField(Span<byte> buf, ref int off, string identifier, int from, int to)
         {
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            Span<byte> result = stackalloc byte[9];
+            int length = to - from;
+            if (length <= 19)
+            {
+                var fieldValue = ulong.Parse(identifier.AsSpan(from, length));
+                WriteField(buf, ref off, fieldValue);
+            }
+            else
+            {
+                var fieldValue = new BigInteger(identifier.Substring(from, length));
+                WriteField(buf, ref off, fieldValue);
+            }
+        }
+
+        internal static void WriteField(Span<byte> buf, ref int off, ulong fieldValue)
+        {
+            int bitLength = Longs.BitLength(fieldValue | 1UL);
+            //int byteCount = (bitLength + 6) / 7;
+            int byteCount = ((bitLength + 6) * 9363) >> 16;
+            int pos = byteCount - 1;
+            buf[off + pos] = (byte)((int)fieldValue & 0x7F);
+            while (--pos >= 0)
+            {
+                fieldValue >>= 7;
+                buf[off + pos] = (byte)((int)fieldValue | 0x80);
+            }
+            off += byteCount;
+        }
+
+        internal static void WriteField(Span<byte> buf, ref int off, BigInteger fieldValue)
+        {
+            Debug.Assert(fieldValue.SignValue > 0);
+            int byteCount = (fieldValue.BitLength + 6) / 7;
+            int pos = byteCount - 1;
+            buf[off + pos] = (byte)(fieldValue.IntValue & 0x7F);
+            while (--pos >= 0)
+            {
+                fieldValue = fieldValue.ShiftRight(7);
+                buf[off + pos] = (byte)(fieldValue.IntValue | 0x80);
+            }
+            off += byteCount;
+        }
 #else
-            byte[] result = new byte[9];
-#endif
-            int pos = 8;
+        internal static byte[] ParseIdentifier(string identifier)
+        {
+            int contentsLimit = (identifier.Length + 1) / 2;
+            MemoryStream buf = new MemoryStream(capacity: contentsLimit);
+
+            int i = 0, j = 0;
+            while (++j < identifier.Length)
+            {
+                if (identifier[j] == '.')
+                {
+                    WriteField(buf, identifier, i, j);
+                    i = j + 1;
+                    j = i;
+                }
+            }
+            WriteField(buf, identifier, i, j);
+
+            return buf.ToArray();
+        }
+ 
+        internal static void WriteField(MemoryStream buf, string identifier, int from, int to)
+        {
+            string token = identifier.Substring(from, to - from);
+            if (token.Length <= 19)
+            {
+                WriteField(buf, ulong.Parse(token));
+            }
+            else
+            {
+                WriteField(buf, new BigInteger(token));
+            }
+        }
+
+        internal static void WriteField(MemoryStream buf, ulong fieldValue)
+        {
+            byte[] result = new byte[10];
+            int pos = result.Length - 1;
             result[pos] = (byte)((int)fieldValue & 0x7F);
             while (fieldValue >= (1L << 7))
             {
                 fieldValue >>= 7;
                 result[--pos] = (byte)((int)fieldValue | 0x80);
             }
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            outputStream.Write(result[pos..]);
-#else
-            outputStream.Write(result, pos, 9 - pos);
-#endif
+            buf.Write(result, pos, result.Length - pos);
         }
 
-        internal static void WriteField(Stream outputStream, BigInteger fieldValue)
+        internal static void WriteField(MemoryStream buf, BigInteger fieldValue)
         {
+            Debug.Assert(fieldValue.SignValue > 0);
             int byteCount = (fieldValue.BitLength + 6) / 7;
-            if (byteCount == 0)
+            byte[] tmp = new byte[byteCount];
+            for (int i = byteCount - 1; i >= 0; i--)
             {
-                outputStream.WriteByte(0);
+                tmp[i] = (byte)(fieldValue.IntValue | 0x80);
+                fieldValue = fieldValue.ShiftRight(7);
             }
-            else
-            {
-                BigInteger tmpValue = fieldValue;
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                Span<byte> tmp = byteCount <= 16
-                    ? stackalloc byte[byteCount]
-                    : new byte[byteCount];
-#else
-                byte[] tmp = new byte[byteCount];
-#endif
-                for (int i = byteCount - 1; i >= 0; i--)
-                {
-                    tmp[i] = (byte)(tmpValue.IntValue | 0x80);
-                    tmpValue = tmpValue.ShiftRight(7);
-                }
-                tmp[byteCount - 1] &= 0x7F;
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-                outputStream.Write(tmp);
-#else
-                outputStream.Write(tmp, 0, tmp.Length);
-#endif
-            }
+            tmp[byteCount - 1] &= 0x7F;
+            buf.Write(tmp, 0, tmp.Length);
         }
+#endif
     }
 }

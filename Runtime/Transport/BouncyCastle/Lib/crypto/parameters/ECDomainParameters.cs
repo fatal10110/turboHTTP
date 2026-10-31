@@ -112,7 +112,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 
         protected virtual bool Equals(ECDomainParameters other)
         {
-            return m_curve.Equals(other.m_curve)
+            if (this == other)
+                return true;
+
+            return other != null
+                && m_curve.Equals(other.m_curve)
                 && m_g.Equals(other.m_g)
                 && m_n.Equals(other.m_n);
         }
@@ -120,11 +124,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
         public override int GetHashCode()
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            HashCode hc = default;
-            hc.Add(m_curve);
-            hc.Add(m_g);
-            hc.Add(m_n);
-            return hc.ToHashCode();
+            return HashCode.Combine(m_curve, m_g, m_n);
 #else
             int hc = 4;
             hc *= 257;

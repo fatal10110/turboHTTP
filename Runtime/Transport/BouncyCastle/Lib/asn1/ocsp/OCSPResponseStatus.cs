@@ -1,7 +1,3 @@
-using System;
-
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
-
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Ocsp
 {
     public class OcspResponseStatus
@@ -14,7 +10,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Ocsp
         public const int SignatureRequired = 5;
         public const int Unauthorized = 6;
 
-		/**
+        /**
          * The OcspResponseStatus enumeration.
          * <pre>
          * OcspResponseStatus ::= Enumerated {
@@ -29,12 +25,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Ocsp
          * </pre>
          */
         public OcspResponseStatus(int value)
-			: base(value)
+#pragma warning disable CS0618 // Type or member is obsolete
+            : base(value)
+#pragma warning restore CS0618 // Type or member is obsolete
         {
         }
 
-		public OcspResponseStatus(DerEnumerated value)
+        public OcspResponseStatus(DerEnumerated value)
+#pragma warning disable CS0618 // Type or member is obsolete
             : base(value.IntValueExact)
+#pragma warning restore CS0618 // Type or member is obsolete
         {
         }
     }

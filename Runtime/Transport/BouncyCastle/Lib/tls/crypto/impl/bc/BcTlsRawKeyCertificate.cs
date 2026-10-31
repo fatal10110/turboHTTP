@@ -8,8 +8,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Engines;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Turbo; // turbo-strip: E5 TurboKeyFactory; Asn1.Cmp, Security and Utilities usings dropped
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
 {
@@ -22,7 +21,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
 
         protected DHPublicKeyParameters m_pubKeyDH = null;
         protected ECPublicKeyParameters m_pubKeyEC = null;
-        protected Ed25519PublicKeyParameters m_pubKeyEd25519 = null;
+        // turbo-strip: E5 Ed25519/Ed448 key fields cut (decision E)
+        protected RsaKeyParameters m_pubKeyRsa = null;
 
         /// <exception cref="IOException"/>
         public BcTlsRawKeyCertificate(BcTlsCrypto crypto, byte[] encoding)
@@ -41,27 +41,37 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
         /// <exception cref="IOException"/>
         public virtual TlsEncryptor CreateEncryptor(int tlsCertificateRole)
         {
-            throw new TlsFatalAlert(AlertDescription.internal_error,
-                "RSA key exchange is not supported in this stripped build.");
+            ValidateKeyUsage(KeyUsage.KeyEncipherment);
+
+            switch (tlsCertificateRole)
+            {
+            case TlsCertificateRole.RsaEncryption:
+            {
+                this.m_pubKeyRsa = GetPubKeyRsa();
+                return new BcTlsRsaEncryptor(m_crypto, m_pubKeyRsa);
+            }
+            // TODO[gmssl]
+            //case TlsCertificateRole.Sm2Encryption:
+            //{
+            //    this.m_pubKeyEC = GetPubKeyEC();
+            //    return new BcTlsSM2Encryptor(m_crypto, m_pubKeyEC);
+            //}
+            }
+
+            throw new TlsFatalAlert(AlertDescription.internal_error);
         }
 
         /// <exception cref="IOException"/>
         public virtual TlsVerifier CreateVerifier(short signatureAlgorithm)
         {
-            switch (signatureAlgorithm)
-            {
-            case SignatureAlgorithm.ed25519:
-            {
-                int signatureScheme = SignatureScheme.From(HashAlgorithm.Intrinsic, signatureAlgorithm);
-                Tls13Verifier tls13Verifier = CreateVerifier(signatureScheme);
-                return new LegacyTls13Verifier(signatureScheme, tls13Verifier);
-            }
-            }
+            // turbo-strip: E5 Ed25519/Ed448 legacy verifier cut (decision E)
 
             ValidateKeyUsage(KeyUsage.DigitalSignature);
 
             switch (signatureAlgorithm)
             {
+            // turbo-strip: E5 DSA verifier cut
+
             case SignatureAlgorithm.ecdsa:
                 return new BcTlsECDsaVerifier(m_crypto, GetPubKeyEC());
 
@@ -89,6 +99,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
                 return new BcTlsRsaPssVerifier(m_crypto, GetPubKeyRsa(), signatureScheme);
             }
 
+            // TODO[RFC 9189]
+            case SignatureAlgorithm.gostr34102012_256:
+            case SignatureAlgorithm.gostr34102012_512:
+
             default:
                 throw new TlsFatalAlert(AlertDescription.internal_error);
             }
@@ -107,24 +121,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
             case SignatureScheme.ecdsa_secp256r1_sha256:
             case SignatureScheme.ecdsa_secp384r1_sha384:
             case SignatureScheme.ecdsa_secp521r1_sha512:
+            case SignatureScheme.ecdsa_sha1:
             {
                 int cryptoHashAlgorithm = SignatureScheme.GetCryptoHashAlgorithm(signatureScheme);
                 IDigest digest = m_crypto.CreateDigest(cryptoHashAlgorithm);
 
+                // turbo-strip: E5 RFC 8446 4.2.3: an ecdsa_secp* scheme binds the key's curve
+                ECPublicKeyParameters publicKey = GetPubKeyEC();
+                int namedGroup = SignatureScheme.GetNamedGroup(signatureScheme);
+                if (namedGroup >= 0 && !publicKey.Parameters.Equals(BcTlsECDomain.GetDomainParameters(namedGroup)))
+                    throw new TlsFatalAlert(AlertDescription.illegal_parameter, "Scheme does not match key's curve");
+
                 ISigner verifier = new DsaDigestSigner(new ECDsaSigner(), digest);
-                verifier.Init(false, GetPubKeyEC());
+                verifier.Init(false, publicKey);
 
                 return new BcTls13Verifier(verifier);
             }
 
-            case SignatureScheme.ed25519:
-            {
-                Ed25519Signer verifier = new Ed25519Signer();
-                verifier.Init(false, GetPubKeyEd25519());
+            // turbo-strip: E5 ed25519/ed448 verifiers cut (decision E)
 
-                return new BcTls13Verifier(verifier);
-            }
-
+            case SignatureScheme.rsa_pkcs1_sha1:
             case SignatureScheme.rsa_pkcs1_sha256:
             case SignatureScheme.rsa_pkcs1_sha384:
             case SignatureScheme.rsa_pkcs1_sha512:
@@ -171,17 +187,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
                 return new BcTls13Verifier(verifier);
             }
 
-            // TODO[RFC 8998]
-            //case SignatureScheme.sm2sig_sm3:
-            //{
-            //    ParametersWithID parametersWithID = new ParametersWithID(GetPubKeyEC(),
-            //        Strings.ToByteArray("TLSv1.3+GM+Cipher+Suite"));
-    
-            //    SM2Signer verifier = new SM2Signer();
-            //    verifier.Init(false, parametersWithID);
-
-            //    return new BcTls13Verifier(verifier);
-            //}
+            // turbo-strip: E5 sm2sig_sm3, ML-DSA and SLH-DSA verifiers cut
 
             default:
                 throw new TlsFatalAlert(AlertDescription.internal_error);
@@ -228,6 +234,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
             if (publicKey is RsaKeyParameters)
                 return SignatureAlgorithm.rsa;
 
+            // turbo-strip: E5 DSA public key mapping cut
+
             /*
              * ECDSA-capable public key; the certificate MUST allow the key to be used for signing
              * with the hash algorithm that will be employed in the certificate verify message; the
@@ -255,6 +263,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
             }
         }
 
+        // turbo-strip: E5 GetPubKeyDss cut
+
         /// <exception cref="IOException"/>
         public virtual ECPublicKeyParameters GetPubKeyEC()
         {
@@ -268,18 +278,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
             }
         }
 
-        /// <exception cref="IOException"/>
-        public virtual Ed25519PublicKeyParameters GetPubKeyEd25519()
-        {
-            try
-            {
-                return (Ed25519PublicKeyParameters)GetPublicKey();
-            }
-            catch (InvalidCastException e)
-            {
-                throw new TlsFatalAlert(AlertDescription.certificate_unknown, "Public key not Ed25519", e);
-            }
-        }
+        // turbo-strip: E5 GetPubKeyEd25519/GetPubKeyEd448/GetPubKeyMLDsa cut
 
         /// <exception cref="IOException"/>
         public virtual RsaKeyParameters GetPubKeyRsa()
@@ -293,6 +292,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
                 throw new TlsFatalAlert(AlertDescription.certificate_unknown, "Public key not RSA", e);
             }
         }
+
+        // turbo-strip: E5 GetPubKeySlhDsa cut
 
         /// <exception cref="IOException"/>
         public virtual bool SupportsSignatureAlgorithm(short signatureAlgorithm)
@@ -333,7 +334,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
         {
             try
             {
-                return PublicKeyFactory.CreateKey(m_keyInfo);
+                return TurboKeyFactory.CreateKey(m_keyInfo); // turbo-strip: E5 whitelisting key factory
             }
             catch (Exception e)
             {
@@ -346,6 +347,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
         {
             return true;
         }
+
+        // turbo-strip: E5 SupportsMLDsa cut
 
         protected virtual bool SupportsRsa_Pkcs1()
         {
@@ -365,6 +368,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
             return RsaUtilities.SupportsPss_Rsae(pubKeyAlgID);
         }
 
+        // turbo-strip: E5 SupportsSlhDsa cut
+
         /// <exception cref="IOException"/>
         protected virtual bool SupportsSignatureAlgorithm(short signatureAlgorithm, int keyUsage)
         {
@@ -379,14 +384,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
                 return SupportsRsa_Pkcs1()
                     && publicKey is RsaKeyParameters;
 
+            // turbo-strip: E5 dsa cut
+
             case SignatureAlgorithm.ecdsa:
             case SignatureAlgorithm.ecdsa_brainpoolP256r1tls13_sha256:
             case SignatureAlgorithm.ecdsa_brainpoolP384r1tls13_sha384:
             case SignatureAlgorithm.ecdsa_brainpoolP512r1tls13_sha512:
                 return publicKey is ECPublicKeyParameters;
 
-            case SignatureAlgorithm.ed25519:
-                return publicKey is Ed25519PublicKeyParameters;
+            // turbo-strip: E5 ed25519/ed448 cut (decision E)
 
             case SignatureAlgorithm.rsa_pss_rsae_sha256:
             case SignatureAlgorithm.rsa_pss_rsae_sha384:
@@ -399,6 +405,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
             case SignatureAlgorithm.rsa_pss_pss_sha512:
                 return SupportsRsa_Pss_Pss(signatureAlgorithm)
                     && publicKey is RsaKeyParameters;
+
+            // TODO[RFC 9189]
+            case SignatureAlgorithm.gostr34102012_256:
+            case SignatureAlgorithm.gostr34102012_512:
 
             default:
                 return false;
@@ -428,6 +438,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
             }
         }
 
+        // turbo-strip: E5 ValidateMLDsa cut
+
         /// <exception cref="IOException"/>
         protected virtual void ValidateRsa_Pkcs1()
         {
@@ -452,5 +464,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
                     "No support for rsa_pss_rsae signature schemes");
         }
 
+        // turbo-strip: E5 ValidateSlhDsa cut
     }
 }

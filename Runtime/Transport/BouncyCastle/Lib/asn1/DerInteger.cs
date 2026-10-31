@@ -21,9 +21,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
         }
 
+        [Obsolete("Use 'Properties.Asn1AllowUnsafeInteger' instead")]
         public const string AllowUnsafeProperty = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.AllowUnsafeInteger";
 
-        private static readonly DerInteger[] SmallConstants = new DerInteger[17];
+        private static readonly DerInteger[] SmallConstants = new DerInteger[64];
 
         public static readonly DerInteger Zero;
         public static readonly DerInteger One;
@@ -32,23 +33,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         public static readonly DerInteger Four;
         public static readonly DerInteger Five;
 
-        internal static bool AllowUnsafe()
-        {
-            string allowUnsafeValue = Platform.GetEnvironmentVariable(AllowUnsafeProperty);
-            return allowUnsafeValue != null && Platform.EqualsIgnoreCase("true", allowUnsafeValue);
-        }
+        internal static bool AllowUnsafe() => Properties.GetBoolean(Properties.Asn1AllowUnsafeInteger, false);
 
         internal const int SignExtSigned = -1;
         internal const int SignExtUnsigned = 0xFF;
 
-        private readonly byte[] bytes;
-        private readonly int start;
-
-        /**
-         * return an integer from the passed in object
-         *
-         * @exception ArgumentException if the object cannot be converted.
-         */
         public static DerInteger GetInstance(object obj)
         {
             if (obj == null)
@@ -70,20 +59,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct integer from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct integer from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj));
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
-        /**
-         * return an Integer from a tagged object.
-         *
-         * @param taggedObject the tagged object holding the object we want
-         * @param declaredExplicit true if the object is meant to be explicitly tagged false otherwise.
-         * @exception ArgumentException if the tagged object cannot  be converted.
-         */
         public static DerInteger GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
         {
             return (DerInteger)Meta.Instance.GetContextTagged(taggedObject, declaredExplicit);
@@ -105,19 +87,33 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return (DerInteger)Meta.Instance.GetTagged(taggedObject, declaredExplicit);
         }
 
+        public static DerInteger ValueOf(int value)
+        {
+            if (value >= 0L && value < SmallConstants.Length)
+                return SmallConstants[value];
+
+#pragma warning disable CS0618 // Type or member is obsolete
+            return new DerInteger(value);
+#pragma warning restore CS0618 // Type or member is obsolete
+        }
+
         public static DerInteger ValueOf(long value)
         {
             if (value >= 0L && value < SmallConstants.Length)
                 return SmallConstants[(int)value];
 
+#pragma warning disable CS0618 // Type or member is obsolete
             return new DerInteger(value);
+#pragma warning restore CS0618 // Type or member is obsolete
         }
 
         static DerInteger()
         {
-            for (long i = 0; i < SmallConstants.Length; ++i)
+            for (int i = 0; i < SmallConstants.Length; ++i)
             {
+#pragma warning disable CS0618 // Type or member is obsolete
                 SmallConstants[i] = new DerInteger(i);
+#pragma warning restore CS0618 // Type or member is obsolete
             }
 
             Zero = SmallConstants[0];
@@ -128,200 +124,205 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             Five = SmallConstants[5];
         }
 
-        // TODO[api] Obsolete in favour of ValueOf
+        private readonly byte[] m_contents;
+        private readonly int m_start;
+
+        [Obsolete("Use ValueOf instead.")]
         public DerInteger(int value)
         {
-            this.bytes = BigInteger.ValueOf(value).ToByteArray();
-            this.start = 0;
+            m_contents = BigInteger.ValueOf(value).ToByteArray();
+            m_start = 0;
         }
 
-        // TODO[api] Obsolete in favour of ValueOf
+        [Obsolete("Use ValueOf instead.")]
         public DerInteger(long value)
         {
-            this.bytes = BigInteger.ValueOf(value).ToByteArray();
-            this.start = 0;
+            m_contents = BigInteger.ValueOf(value).ToByteArray();
+            m_start = 0;
         }
 
-		public DerInteger(BigInteger value)
+        public DerInteger(BigInteger value)
         {
             if (value == null)
-                throw new ArgumentNullException("value");
+                throw new ArgumentNullException(nameof(value));
 
-			this.bytes = value.ToByteArray();
-            this.start = 0;
+            m_contents = value.ToByteArray();
+            m_start = 0;
         }
 
+        // TODO[api] Rename parameter to contents
         public DerInteger(byte[] bytes)
-            : this(bytes, true)
+            : this(bytes, clone: true)
         {
         }
 
-        internal DerInteger(byte[] bytes, bool clone)
+        internal DerInteger(byte[] contents, bool clone)
         {
-            if (IsMalformed(bytes))
-                throw new ArgumentException("malformed integer", "bytes");
+            if (IsMalformed(contents))
+                throw new ArgumentException("malformed integer", nameof(contents));
 
-            this.bytes = clone ? Arrays.Clone(bytes) : bytes;
-            this.start = SignBytesToSkip(bytes);
+            m_contents = clone ? Arrays.Clone(contents) : contents;
+            m_start = SignBytesToSkip(m_contents);
         }
 
-        /**
-         * in some cases positive values Get crammed into a space,
-         * that's not quite big enough...
-         */
-        public BigInteger PositiveValue
-        {
-            get { return new BigInteger(1, bytes); }
-        }
+        /// <summary>Force the ASN.1 INTEGER encoding to be interpreted as unsigned.</summary>
+        /// <remarks>
+        /// In some cases positive values get crammed into a space that's not quite big enough...
+        /// NB: The BigInteger constructor tolerates any redundant sign bytes (per 'AllowUnsafe').
+        /// </remarks>
+        public BigInteger PositiveValue => new BigInteger(1, m_contents);
 
-        public BigInteger Value
-        {
-            get { return new BigInteger(bytes); }
-        }
+        // NB: The BigInteger constructor tolerates any redundant sign bytes (per 'AllowUnsafe')
+        public BigInteger Value => new BigInteger(m_contents);
 
         public bool HasValue(int x)
         {
-            return (bytes.Length - start) <= 4
-                && IntValue(bytes, start, SignExtSigned) == x;
+            return (m_contents.Length - m_start) <= 4
+                && IntValue(m_contents, m_start, SignExtSigned) == x;
         }
 
         public bool HasValue(long x)
         {
-            return (bytes.Length - start) <= 8
-                && LongValue(bytes, start, SignExtSigned) == x;
+            return (m_contents.Length - m_start) <= 8
+                && LongValue(m_contents, m_start, SignExtSigned) == x;
         }
 
         public bool HasValue(BigInteger x)
         {
             return null != x
                 // Fast check to avoid allocation
-                && IntValue(bytes, start, SignExtSigned) == x.IntValue
+                && IntValue(m_contents, m_start, SignExtSigned) == x.IntValue
                 && Value.Equals(x);
         }
 
-        public int IntPositiveValueExact
-        {
-            get
-            {
-                int count = bytes.Length - start;
-                if (count > 4 || (count == 4 && 0 != (bytes[start] & 0x80)))
-                    throw new ArithmeticException("ASN.1 Integer out of positive int range");
+        /// <summary>Force the ASN.1 INTEGER encoding to be interpreted as unsigned.</summary>
+        /// <remarks>
+        /// In some cases positive values get crammed into a space that's not quite big enough...
+        /// </remarks>
+        public int IntPositiveValueExact => TryGetIntPositiveValueExact(out int result) ? result
+            : throw new ArithmeticException("ASN.1 Integer out of positive int range");
 
-                return IntValue(bytes, start, SignExtUnsigned);
-            }
-        }
+        public int IntValueExact => TryGetIntValueExact(out int result) ? result
+            : throw new ArithmeticException("ASN.1 Integer out of int range");
 
-        public int IntValueExact
-        {
-            get
-            {
-                int count = bytes.Length - start;
-                if (count > 4)
-                    throw new ArithmeticException("ASN.1 Integer out of int range");
+        /// <summary>Force the ASN.1 INTEGER encoding to be interpreted as unsigned.</summary>
+        /// <remarks>
+        /// In some cases positive values get crammed into a space that's not quite big enough...
+        /// </remarks>
+        public long LongPositiveValueExact => TryGetLongPositiveValueExact(out long result) ? result
+            : throw new ArithmeticException("ASN.1 Integer out of positive long range");
 
-                return IntValue(bytes, start, SignExtSigned);
-            }
-        }
+        public long LongValueExact => TryGetLongValueExact(out long result) ? result
+            : throw new ArithmeticException("ASN.1 Integer out of long range");
 
-        public long LongValueExact
-        {
-            get
-            {
-                int count = bytes.Length - start;
-                if (count > 8)
-                    throw new ArithmeticException("ASN.1 Integer out of long range");
-
-                return LongValue(bytes, start, SignExtSigned);
-            }
-        }
-
+        /// <summary>Force the ASN.1 INTEGER encoding to be interpreted as unsigned.</summary>
+        /// <remarks>
+        /// In some cases positive values get crammed into a space that's not quite big enough...
+        /// </remarks>
         public bool TryGetIntPositiveValueExact(out int value)
         {
-            int count = bytes.Length - start;
-            if (count > 4 || (count == 4 && 0 != (bytes[start] & 0x80)))
+            int count = m_contents.Length - m_start;
+            if (count > 4 || (count == 4 && IsNegative))
             {
                 value = default;
                 return false;
             }
 
-            value = IntValue(bytes, start, SignExtUnsigned);
+            value = IntValue(m_contents, m_start, SignExtUnsigned);
             return true;
         }
 
         public bool TryGetIntValueExact(out int value)
         {
-            int count = bytes.Length - start;
+            int count = m_contents.Length - m_start;
             if (count > 4)
             {
                 value = default;
                 return false;
             }
 
-            value = IntValue(bytes, start, SignExtSigned);
+            value = IntValue(m_contents, m_start, SignExtSigned);
+            return true;
+        }
+
+        /// <summary>Force the ASN.1 INTEGER encoding to be interpreted as unsigned.</summary>
+        /// <remarks>
+        /// In some cases positive values get crammed into a space that's not quite big enough...
+        /// </remarks>
+        public bool TryGetLongPositiveValueExact(out long value)
+        {
+            int count = m_contents.Length - m_start;
+            if (count > 8 || (count == 8 && IsNegative))
+            {
+                value = default;
+                return false;
+            }
+
+            value = LongValue(m_contents, m_start, SignExtSigned);
             return true;
         }
 
         public bool TryGetLongValueExact(out long value)
         {
-            int count = bytes.Length - start;
+            int count = m_contents.Length - m_start;
             if (count > 8)
             {
                 value = default;
                 return false;
             }
 
-            value = LongValue(bytes, start, SignExtSigned);
+            value = LongValue(m_contents, m_start, SignExtSigned);
             return true;
         }
 
-        internal override IAsn1Encoding GetEncoding(int encoding)
+        public bool IsNegative => (m_contents[m_start] & 0x80) != 0;
+
+        internal override IAsn1Encoding GetEncoding(int encoding) =>
+            new PrimitiveEncoding(Asn1Tags.Universal, Asn1Tags.Integer, m_contents);
+
+        internal override IAsn1Encoding GetEncodingImplicit(int encoding, int tagClass, int tagNo) =>
+            new PrimitiveEncoding(tagClass, tagNo, m_contents);
+
+        internal sealed override DerEncoding GetEncodingDer() =>
+            new PrimitiveDerEncoding(Asn1Tags.Universal, Asn1Tags.Integer, m_contents);
+
+        internal sealed override DerEncoding GetEncodingDerImplicit(int tagClass, int tagNo) =>
+            new PrimitiveDerEncoding(tagClass, tagNo, m_contents);
+
+        protected override bool Asn1Equals(Asn1Object asn1Object)
         {
-            return new PrimitiveEncoding(Asn1Tags.Universal, Asn1Tags.Integer, bytes);
+            return asn1Object is DerInteger that
+                && Arrays.AreEqual(this.m_contents, that.m_contents);
         }
 
-        internal override IAsn1Encoding GetEncodingImplicit(int encoding, int tagClass, int tagNo)
-        {
-            return new PrimitiveEncoding(tagClass, tagNo, bytes);
-        }
+        protected override int Asn1GetHashCode() => Arrays.GetHashCode(m_contents);
 
-        internal sealed override DerEncoding GetEncodingDer()
-        {
-            return new PrimitiveDerEncoding(Asn1Tags.Universal, Asn1Tags.Integer, bytes);
-        }
-
-        internal sealed override DerEncoding GetEncodingDerImplicit(int tagClass, int tagNo)
-        {
-            return new PrimitiveDerEncoding(tagClass, tagNo, bytes);
-        }
-
-        protected override int Asn1GetHashCode()
-		{
-			return Arrays.GetHashCode(bytes);
-        }
-
-		protected override bool Asn1Equals(Asn1Object asn1Object)
-		{
-			DerInteger other = asn1Object as DerInteger;
-			if (other == null)
-				return false;
-
-            return Arrays.AreEqual(this.bytes, other.bytes);
-        }
-
-		public override string ToString()
-		{
-			return Value.ToString();
-		}
+        public override string ToString() => Value.ToString();
 
         internal static DerInteger CreatePrimitive(byte[] contents)
         {
-            return new DerInteger(contents, false);
+            if (contents.Length == 1 && contents[0] < SmallConstants.Length)
+                return SmallConstants[contents[0]];
+
+            return new DerInteger(contents, clone: false);
         }
 
-        internal static int GetEncodingLength(BigInteger x)
+        internal static DerInteger CreatePrimitive(DefiniteLengthInputStream defIn)
         {
-            return Asn1OutputStream.GetLengthOfEncodingDL(Asn1Tags.Integer, BigIntegers.GetByteLength(x));
+            if (defIn.Remaining == 1)
+            {
+                int value = defIn.ReadByte();
+                if (value < SmallConstants.Length)
+                    return SmallConstants[value];
+
+                return new DerInteger(new byte[1] { (byte)value }, clone: false);
+            }
+
+            return new DerInteger(defIn.ToArray(), clone: false);
         }
+
+        internal static int GetEncodingLength(BigInteger x) =>
+            Asn1OutputStream.GetLengthOfEncodingDL(Asn1Tags.Integer, BigIntegers.GetByteLength(x));
 
         internal static int IntValue(byte[] bytes, int start, int signExt)
         {
@@ -349,30 +350,29 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return val;
         }
 
-        /**
-         * Apply the correct validation for an INTEGER primitive following the BER rules.
-         *
-         * @param bytes The raw encoding of the integer.
-         * @return true if the (in)put fails this validation.
-         */
-        internal static bool IsMalformed(byte[] bytes)
+        /// <summary>
+        /// Apply the correct validation for an INTEGER primitive following the BER rules.
+        /// </summary>
+        /// <param name="contents">The contents octets of the integer.</param>
+        /// <returns><c>true</c> if the contents octets fail validation.</returns>
+        internal static bool IsMalformed(byte[] contents)
         {
-            switch (bytes.Length)
+            switch (contents.Length)
             {
             case 0:
                 return true;
             case 1:
                 return false;
             default:
-                return (sbyte)bytes[0] == ((sbyte)bytes[1] >> 7) && !AllowUnsafe();
+                return (sbyte)contents[0] == ((sbyte)contents[1] >> 7) && !AllowUnsafe();
             }
         }
 
-        internal static int SignBytesToSkip(byte[] bytes)
+        internal static int SignBytesToSkip(byte[] contents)
         {
-            int pos = 0, last = bytes.Length - 1;
+            int pos = 0, last = contents.Length - 1;
             while (pos < last
-                && (sbyte)bytes[pos] == ((sbyte)bytes[pos + 1] >> 7))
+                && (sbyte)contents[pos] == ((sbyte)contents[pos + 1] >> 7))
             {
                 ++pos;
             }

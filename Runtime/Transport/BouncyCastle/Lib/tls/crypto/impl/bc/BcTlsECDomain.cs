@@ -5,9 +5,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Agreement;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Generators;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC;
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
 {
@@ -21,16 +19,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC
         public static BcTlsSecret CalculateECDHAgreement(BcTlsCrypto crypto, ECPrivateKeyParameters privateKey,
             ECPublicKeyParameters publicKey)
         {
-            ECDHBasicAgreement basicAgreement = new ECDHBasicAgreement();
-            basicAgreement.Init(privateKey);
-            BigInteger agreementValue = basicAgreement.CalculateAgreement(publicKey);
-
             /*
              * RFC 4492 5.10. Note that this octet string (Z in IEEE 1363 terminology) as output by
              * FE2OSP, the Field Element to Octet String Conversion Primitive, has constant length for
              * any given field; leading zeros found in this octet string MUST NOT be truncated.
              */
-            byte[] secret = BigIntegers.AsUnsignedByteArray(basicAgreement.GetFieldSize(), agreementValue);
+            var agreement = new ECDHRawAgreement();
+            agreement.Init(privateKey);
+            byte[] secret = new byte[agreement.AgreementSize];
+            agreement.CalculateAgreement(publicKey, secret, 0);
             return crypto.AdoptLocalSecret(secret);
         }
 

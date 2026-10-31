@@ -88,7 +88,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 catch (IOException e)
                 {
                     var choiceName = Platform.GetTypeName(typeof(TChoice));
-                    throw new ArgumentException($"failed to construct {choiceName} from byte[]: " + e.Message);
+                    throw new ArgumentException($"failed to construct {choiceName} from byte[]", nameof(obj), e);
                 }
             }
 
@@ -760,6 +760,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         #region Sequence cursor
 
+        public static TResult Read<TResult>(Asn1Sequence sequence, ref int sequencePosition,
+            Func<Asn1Encodable, TResult> constructor)
+            where TResult : class
+        {
+            var element = RequireElement(sequence, ref sequencePosition);
+            return constructor(element);
+        }
+
         public static TResult ReadContextTagged<TState, TResult>(Asn1Sequence sequence, ref int sequencePosition,
             int tagNo, TState state, Func<Asn1TaggedObject, TState, TResult> constructor)
         {
@@ -769,13 +777,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         public static TResult ReadTagged<TState, TResult>(Asn1Sequence sequence, ref int sequencePosition, int tagClass,
             int tagNo, TState state, Func<Asn1TaggedObject, TState, TResult> constructor)
         {
-            /*
-             * TODO We might want to check the position and throw a better exception, but current ASN.1 types aren't
-             * doing that, so leave it until it can be consistent.
-             */
-            var tagged = Asn1TaggedObject.GetInstance(sequence[sequencePosition++], tagClass, tagNo);
-
-            return constructor(tagged, state);
+            var element = RequireElement(sequence, ref sequencePosition);
+            var taggedObject = Asn1TaggedObject.GetInstance(element, tagClass, tagNo);
+            return constructor(taggedObject, state);
         }
 
         public static TResult ReadOptional<TResult>(Asn1Sequence sequence, ref int sequencePosition,
@@ -838,6 +842,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
             result = default;
             return false;
+        }
+
+        private static Asn1Encodable RequireElement(Asn1Sequence sequence, ref int sequencePosition)
+        {
+            if (sequencePosition < 0)
+                throw new ArgumentOutOfRangeException(nameof(sequencePosition));
+            if (sequencePosition >= sequence.Count)
+                throw new ArgumentException("Premature end of sequence", nameof(sequence));
+
+            return sequence[sequencePosition++];
         }
 
         #endregion

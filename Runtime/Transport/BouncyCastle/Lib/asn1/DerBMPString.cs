@@ -1,18 +1,17 @@
 using System;
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-using System.Buffers;
+using System.Buffers.Binary;
 #endif
 using System.IO;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 {
-    /**
-     * Der BMPString object.
-     */
+    /// <summary>DER BMPString object.</summary>
     public class DerBmpString
-		: DerStringBase
+        : DerStringBase
     {
         internal class Meta : Asn1UniversalType
         {
@@ -26,12 +25,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
         }
 
-		/**
-         * return a BMP string from the given object.
-         *
-         * @param obj the object we want converted.
-         * @exception ArgumentException if the object cannot be converted.
-         */
         public static DerBmpString GetInstance(object obj)
         {
             if (obj == null)
@@ -53,20 +46,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct BMP string from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct BMP string from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj));
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
-        /**
-         * return a BMP string from a tagged object.
-         *
-         * @param taggedObject the tagged object holding the object we want
-         * @param declaredExplicit true if the object is meant to be explicitly tagged false otherwise.
-         * @exception ArgumentException if the tagged object cannot be converted.
-         */
         public static DerBmpString GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
         {
             return (DerBmpString)Meta.Instance.GetContextTagged(taggedObject, declaredExplicit);
@@ -92,12 +78,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         internal DerBmpString(byte[] contents)
         {
-			if (null == contents)
-				throw new ArgumentNullException("contents");
+            if (null == contents)
+                throw new ArgumentNullException(nameof(contents));
 
             int byteLen = contents.Length;
             if (0 != (byteLen & 1))
-                throw new ArgumentException("malformed BMPString encoding encountered", "contents");
+                throw new ArgumentException("malformed BMPString encoding encountered", nameof(contents));
 
             int charLen = byteLen / 2;
 
@@ -124,28 +110,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 #if !(NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER)
         internal DerBmpString(char[] str)
         {
-            if (str == null)
-                throw new ArgumentNullException("str");
-
-            m_str = new string(str);
+            m_str = new string(str ?? throw new ArgumentNullException(nameof(str)));
         }
 #endif
 
-        /**
-         * basic constructor
-         */
         public DerBmpString(string str)
         {
-			if (str == null)
-				throw new ArgumentNullException("str");
-
-            m_str = str;
+            m_str = str ?? throw new ArgumentNullException(nameof(str));
         }
 
-        public override string GetString()
-        {
-            return m_str;
-        }
+        public override string GetString() => m_str;
 
         protected override bool Asn1Equals(Asn1Object asn1Object)
         {
@@ -193,22 +167,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return b;
         }
 
-        internal static DerBmpString CreatePrimitive(byte[] contents)
+        internal static DerBmpString CreatePrimitive(DefiniteLengthInputStream defIn)
         {
-            return new DerBmpString(contents);
+            if (0 != (defIn.Remaining & 1))
+                throw new IOException("malformed BMPString encoding encountered");
+
+            // NOTE: read through ToArray, which grows its buffer as bytes actually arrive, so a crafted (invalid) small
+            // header can't cause a large allocation (GBs) before any content is actually read.
+            return CreatePrimitive(defIn.ToArray());
         }
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        internal static DerBmpString CreatePrimitive<TState>(int length, TState state, SpanAction<char, TState> action)
-        {
-            return new DerBmpString(string.Create(length, state, action));
-        }
-#else
-        internal static DerBmpString CreatePrimitive(char[] str)
-        {
-            // TODO[asn1] Asn1InputStream has a validator/converter that should be unified in this class somehow
-            return new DerBmpString(str);
-        }
-#endif
+        private static DerBmpString CreatePrimitive(byte[] contents) => new DerBmpString(contents);
     }
 }

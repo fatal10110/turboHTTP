@@ -11,7 +11,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
      * rules (as with sequences).
      */
     public abstract class Asn1TaggedObject
-		: Asn1Object, Asn1TaggedObjectParser
+        : Asn1Object, Asn1TaggedObjectParser
     {
         private const int DeclaredExplicit = 1;
         private const int DeclaredImplicit = 2;
@@ -19,8 +19,30 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         private const int ParsedExplicit = 3;
         private const int ParsedImplicit = 4;
 
+        public static Asn1TaggedObject GetContextInstance(object obj) =>
+            Asn1Utilities.CheckContextTagClass(CheckInstance(obj));
+
+        public static Asn1TaggedObject GetContextInstance(object obj, int tagNo) =>
+            Asn1Utilities.CheckContextTag(CheckInstance(obj), tagNo);
+
+        public static Asn1TaggedObject GetContextOptional(Asn1Encodable element)
+        {
+            var taggedObject = GetOptional(element);
+            if (taggedObject != null && taggedObject.HasContextTag())
+                return taggedObject;
+            return null;
+        }
+
+        public static Asn1TaggedObject GetContextOptional(Asn1Encodable element, int tagNo)
+        {
+            var taggedObject = GetOptional(element);
+            if (taggedObject != null && taggedObject.HasContextTag(tagNo))
+                return taggedObject;
+            return null;
+        }
+
         public static Asn1TaggedObject GetInstance(object obj)
-		{
+        {
             if (obj == null)
                 return null;
 
@@ -45,22 +67,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
 
             throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
-		}
-
-        public static Asn1TaggedObject GetInstance(object obj, int tagClass)
-        {
-            return Asn1Utilities.CheckTagClass(CheckInstance(obj), tagClass);
         }
 
-        public static Asn1TaggedObject GetInstance(object obj, int tagClass, int tagNo)
-        {
-            return Asn1Utilities.CheckTag(CheckInstance(obj), tagClass, tagNo);
-        }
+        public static Asn1TaggedObject GetInstance(object obj, int tagClass) =>
+            Asn1Utilities.CheckTagClass(CheckInstance(obj), tagClass);
 
-        public static Asn1TaggedObject GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
-        {
-            return Asn1Utilities.GetExplicitContextBaseTagged(CheckInstance(taggedObject, declaredExplicit));
-        }
+        public static Asn1TaggedObject GetInstance(object obj, int tagClass, int tagNo) =>
+            Asn1Utilities.CheckTag(CheckInstance(obj), tagClass, tagNo);
+
+        public static Asn1TaggedObject GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit) =>
+            Asn1Utilities.GetExplicitContextBaseTagged(CheckInstance(taggedObject, declaredExplicit));
 
         public static Asn1TaggedObject GetInstance(Asn1TaggedObject taggedObject, int tagClass, bool declaredExplicit)
         {
@@ -121,7 +137,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         internal readonly int m_tagNo;
         internal readonly Asn1Encodable m_object;
 
-		/**
+        /**
          * @param explicitly true if the object is explicitly tagged.
          * @param tagNo the tag number for this object.
          * @param obj the tagged object.
@@ -187,10 +203,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
 
             return p1.CallAsn1Equals(p2);
-		}
+        }
 
-		protected override int Asn1GetHashCode()
-		{
+        protected override int Asn1GetHashCode()
+        {
             return (m_tagClass * 7919) ^ m_tagNo ^ (IsExplicit() ? 0x0F : 0xF0) ^ m_object.ToAsn1Object().CallAsn1GetHashCode();
         }
 
@@ -216,6 +232,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         public bool HasTagClass(int tagClass)
         {
             return m_tagClass == tagClass;
+        }
+
+        public bool HasTagNo(int tagNo)
+        {
+            return m_tagNo == tagNo;
         }
 
         /**
@@ -295,7 +316,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             if (!IsExplicit())
                 throw new InvalidOperationException("object implicit - explicit expected.");
 
-            return CheckedCast(m_object.ToAsn1Object());
+            return FromExplicit(m_object.ToAsn1Object());
         }
 
         public Asn1TaggedObject GetImplicitBaseTagged(int baseTagClass, int baseTagNo)
@@ -310,7 +331,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
             case DeclaredImplicit:
             {
-                Asn1TaggedObject declared = CheckedCast(m_object.ToAsn1Object());
+                Asn1TaggedObject declared = FromExplicit(m_object.ToAsn1Object());
                 return Asn1Utilities.CheckTag(declared, baseTagClass, baseTagNo);
             }
 
@@ -335,7 +356,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 if (!IsExplicit())
                     throw new InvalidOperationException("object implicit - explicit expected.");
 
-                return universalType.CheckedCast(m_object.ToAsn1Object());
+                return universalType.FromExplicit(m_object.ToAsn1Object());
             }
 
             if (DeclaredExplicit == m_explicitness)
@@ -354,7 +375,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 return universalType.FromImplicitPrimitive((DerOctetString)baseObject);
             }
             default:
-                return universalType.CheckedCast(baseObject);
+                return universalType.FromExplicit(baseObject);
             }
         }
 
@@ -392,10 +413,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return GetImplicitBaseTagged(baseTagClass, baseTagNo);
         }
 
-		public override string ToString()
-		{
+        public override string ToString()
+        {
             return Asn1Utilities.GetTagText(m_tagClass, m_tagNo) + m_object;
-		}
+        }
 
         internal abstract Asn1Sequence RebuildConstructed(Asn1Object asn1Object);
 
@@ -425,13 +446,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return new DLTaggedObject(ParsedImplicit, tagClass, tagNo, DerOctetString.WithContents(contentsOctets));
         }
 
-        private static Asn1TaggedObject CheckedCast(Asn1Object asn1Object)
-        {
-            Asn1TaggedObject taggedObject = asn1Object as Asn1TaggedObject;
-            if (null != taggedObject)
-                return taggedObject;
+        private static Asn1TaggedObject CheckedCast(Asn1Object asn1Object) => asn1Object as Asn1TaggedObject
+            ?? throw new ArgumentException("unexpected object: " + Platform.GetTypeName(asn1Object));
 
-            throw new InvalidOperationException("unexpected object: " + Platform.GetTypeName(asn1Object));
-        }
+        private static Asn1TaggedObject FromExplicit(Asn1Object asn1Object) => asn1Object as Asn1TaggedObject
+            ?? throw new InvalidOperationException("unexpected explicit encoding");
     }
 }

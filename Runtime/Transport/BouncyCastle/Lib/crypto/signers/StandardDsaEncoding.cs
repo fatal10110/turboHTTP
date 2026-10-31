@@ -6,6 +6,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Signers
 {
+    // TODO[api] Make sealed (no need for protected virtual methods)
     public class StandardDsaEncoding
         : IDsaEncoding
     {

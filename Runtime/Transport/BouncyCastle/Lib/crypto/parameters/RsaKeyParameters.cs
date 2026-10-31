@@ -1,110 +1,108 @@
 using System;
 
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 {
-	public class RsaKeyParameters
-		: AsymmetricKeyParameter
+    /// <summary>Base class for RSA key parameters.</summary>
+    public class RsaKeyParameters
+        : AsymmetricKeyParameter
     {
-        // Hexadecimal value of the product of the 131 smallest odd primes from 3 to 743
-        private static readonly BigInteger SmallPrimesProduct = new BigInteger(
-                  "8138e8a0fcf3a4e84a771d40fd305d7f4aa59306d7251de54d98af8fe95729a1f"
-                + "73d893fa424cd2edc8636a6c3285e022b0e3866a565ae8108eed8591cd4fe8d2"
-                + "ce86165a978d719ebf647f362d33fca29cd179fb42401cbaf3df0c614056f9c8"
-                + "f3cfd51e474afb6bc6974f78db8aba8e9e517fded658591ab7502bd41849462f",
-            16);
+        public static BigInteger ValidateModulus(BigInteger modulus) => Validate(modulus, isInternal: false);
 
-        private static bool HasAnySmallFactors(BigInteger modulus)
+        private readonly BigInteger m_modulus;
+        private readonly BigInteger m_exponent;
+
+        /// <summary>Initializes a new instance of <see cref="RsaKeyParameters"/>.</summary>
+        /// <param name="isPrivate">Whether the key is private or not.</param>
+        /// <param name="modulus">The RSA modulus.</param>
+        /// <param name="exponent">The RSA exponent (public exponent for public keys, private exponent for private keys).</param>
+        public RsaKeyParameters(bool isPrivate, BigInteger modulus, BigInteger exponent)
+            : this(isPrivate, modulus, exponent, isInternal: false)
         {
-            BigInteger M = modulus, X = SmallPrimesProduct;
-            if (modulus.BitLength < SmallPrimesProduct.BitLength)
+        }
+
+        internal RsaKeyParameters(bool isPrivate, BigInteger modulus, BigInteger exponent, bool isInternal)
+            : base(isPrivate)
+        {
+            if (modulus == null)
+                throw new ArgumentNullException(nameof(modulus));
+            if (exponent == null)
+                throw new ArgumentNullException(nameof(exponent));
+            if (modulus.SignValue <= 0)
+                throw new ArgumentException("Not a valid RSA modulus", nameof(modulus));
+            if (exponent.SignValue <= 0)
+                throw new ArgumentException("Not a valid RSA exponent", nameof(exponent));
+            if (!isPrivate && (exponent.IntValue & 1) == 0)
+                throw new ArgumentException("RSA publicExponent is even", nameof(exponent));
+
+            m_modulus = Validate(modulus, isInternal);
+            m_exponent = exponent;
+        }
+
+        /// <summary>Gets the RSA modulus.</summary>
+        public BigInteger Modulus => m_modulus;
+
+        /// <summary>Gets the RSA exponent.</summary>
+        public BigInteger Exponent => m_exponent;
+
+        public override bool Equals(object obj)
+        {
+            return obj is RsaKeyParameters that
+                && this.IsPrivate == that.IsPrivate
+                && this.Modulus.Equals(that.Modulus)
+                && this.Exponent.Equals(that.Exponent);
+        }
+
+        public override int GetHashCode() => IsPrivate.GetHashCode() ^ Modulus.GetHashCode() ^ Exponent.GetHashCode();
+
+        private static int GetMRIterations(int bits)
+        {
+            int iterations = bits >= 1536 ? 3
+                : bits >= 1024 ? 4
+                : bits >= 512 ? 7
+                : 50;
+            return iterations;
+        }
+
+        private static BigInteger Validate(BigInteger modulus, bool isInternal)
+        {
+            // TODO Add m_validated cache
+            //if (m_validated.Contains(modulus))
+            //    return modulus;
+
+            if (!isInternal)
             {
-                M = SmallPrimesProduct;
-                X = modulus;
+                if (!modulus.TestBit(0))
+                    throw new ArgumentException("RSA modulus is even", nameof(modulus));
+
+                // If you need to set this you need to have a serious word to whoever is generating your keys.
+                if (Properties.GetBoolean(Properties.RsaAllowUnsafeModulus, false))
+                    return modulus;
+
+                // turbo-strip: E7 default RSA modulus cap 8192 bits (upstream 16384); the property still overrides
+                int maxBitLength = Properties.GetInt32(Properties.RsaMaxSize, 8192);
+                if (modulus.BitLength > maxBitLength)
+                    throw new ArgumentException("RSA modulus out of range", nameof(modulus));
+
+                if (BigIntegers.HasAnySmallFactors(modulus))
+                    throw new ArgumentException("RSA modulus has a small prime factor", nameof(modulus));
+
+                // turbo-strip: E7 no Miller-Rabin on peer moduli by default (upstream 8ee52127 costs ~1 s at 8192
+                // bits per key); GetMRIterations is kept unused for rebase surface; the property still overrides
+                int iterations = Properties.GetInt32(Properties.RsaMaxMRTests, 0);
+                if (iterations > 0)
+                {
+                    Primes.MROutput mr = Primes.EnhancedMRProbablePrimeTest(modulus,
+                        CryptoServicesRegistrar.GetSecureRandom(), iterations);
+                    if (!mr.IsProvablyComposite)
+                        throw new ArgumentException("RSA modulus is not composite", nameof(modulus));
+                }
             }
 
-            return !BigIntegers.ModOddIsCoprimeVar(M, X);
-        }
-
-        private static BigInteger Validate(BigInteger modulus)
-        {
-            if ((modulus.IntValue & 1) == 0)
-                throw new ArgumentException("RSA modulus is even", nameof(modulus));
-
-            int maxBitLength = ImplGetInteger("TurboHTTP.SecureProtocol.Org.BouncyCastle.Rsa.MaxSize", 16384);
-            if (modulus.BitLength > maxBitLength)
-                throw new ArgumentException("RSA modulus out of range", nameof(modulus));
-
-            if (HasAnySmallFactors(modulus))
-                throw new ArgumentException("RSA modulus has a small prime factor", nameof(modulus));
-
-            // TODO: add additional primePower/Composite test - expensive!!
-
+            //m_validated.Add(modulus);
             return modulus;
-        }
-
-        private readonly BigInteger modulus;
-        private readonly BigInteger exponent;
-
-		public RsaKeyParameters(
-            bool		isPrivate,
-            BigInteger	modulus,
-            BigInteger	exponent)
-			: base(isPrivate)
-        {
-			if (modulus == null)
-				throw new ArgumentNullException("modulus");
-			if (exponent == null)
-				throw new ArgumentNullException("exponent");
-			if (modulus.SignValue <= 0)
-				throw new ArgumentException("Not a valid RSA modulus", "modulus");
-			if (exponent.SignValue <= 0)
-				throw new ArgumentException("Not a valid RSA exponent", "exponent");
-            if (!isPrivate && (exponent.IntValue & 1) == 0)
-                throw new ArgumentException("RSA publicExponent is even", "exponent");
-
-            this.modulus = Validate(modulus);
-			this.exponent = exponent;
-        }
-
-		public BigInteger Modulus
-        {
-            get { return modulus; }
-        }
-
-		public BigInteger Exponent
-        {
-            get { return exponent; }
-        }
-
-		public override bool Equals(
-			object obj)
-        {
-            RsaKeyParameters kp = obj as RsaKeyParameters;
-
-			if (kp == null)
-			{
-				return false;
-			}
-
-			return kp.IsPrivate == this.IsPrivate
-				&& kp.Modulus.Equals(this.modulus)
-				&& kp.Exponent.Equals(this.exponent);
-        }
-
-		public override int GetHashCode()
-        {
-            return modulus.GetHashCode() ^ exponent.GetHashCode() ^ IsPrivate.GetHashCode();
-        }
-
-        private static int ImplGetInteger(string envVariable, int defaultValue)
-        {
-            string property = Platform.GetEnvironmentVariable(envVariable);
-
-            return int.TryParse(property, out int value) ? value : defaultValue;
         }
     }
 }

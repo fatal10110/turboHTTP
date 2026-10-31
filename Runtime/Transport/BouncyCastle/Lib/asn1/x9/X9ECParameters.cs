@@ -65,15 +65,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X9
         [Obsolete("Use 'GetInstance' instead")]
         public X9ECParameters(Asn1Sequence seq)
         {
+            if (seq == null)
+                throw new ArgumentNullException(nameof(seq));
+
             int count = seq.Count, pos = 0;
             if (count < 5 || count > 6)
                 throw new ArgumentException("Bad sequence size: " + count, nameof(seq));
 
-            DerInteger version = DerInteger.GetInstance(seq[pos++]);
-            m_fieldID = X9FieldID.GetInstance(seq[pos++]);
-            var x9CurveSequence = Asn1Sequence.GetInstance(seq[pos++]);
-            var p = seq[pos++];
-            m_n = DerInteger.GetInstance(seq[pos++]).Value;
+            DerInteger version = Asn1Utilities.Read(seq, ref pos, DerInteger.GetInstance);
+            m_fieldID = Asn1Utilities.Read(seq, ref pos, X9FieldID.GetInstance);
+            var x9CurveSequence = Asn1Utilities.Read(seq, ref pos, Asn1Sequence.GetInstance);
+            // TODO[asn1] Asn1Utilities helper method for this type of situation
+            var p = Asn1Utilities.Read(seq, ref pos, element => element);
+            m_n = Asn1Utilities.Read(seq, ref pos, DerInteger.GetInstance).Value;
             m_h = Asn1Utilities.ReadOptional(seq, ref pos, DerInteger.GetOptional)?.Value;
 
             if (pos != count)

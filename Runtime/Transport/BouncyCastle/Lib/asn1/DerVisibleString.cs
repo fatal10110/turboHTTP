@@ -49,11 +49,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct visible string from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct visible string from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj));
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
         /**
@@ -88,10 +88,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         public DerVisibleString(string str)
         {
-			if (str == null)
-				throw new ArgumentNullException("str");
+            if (str == null)
+                throw new ArgumentNullException("str");
 
-			m_contents = Strings.ToAsciiByteArray(str);
+            m_contents = Strings.ToAsciiByteArray(str);
         }
 
         public DerVisibleString(byte[] contents)
@@ -102,7 +102,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         internal DerVisibleString(byte[] contents, bool clone)
         {
             if (null == contents)
-                throw new ArgumentNullException("contents");
+                throw new ArgumentNullException(nameof(contents));
 
             m_contents = clone ? Arrays.Clone(contents) : contents;
         }
@@ -112,7 +112,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return Strings.FromAsciiByteArray(m_contents);
         }
 
-		public byte[] GetOctets()
+        public byte[] GetOctets()
         {
             return Arrays.Clone(m_contents);
         }

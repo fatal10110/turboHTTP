@@ -3,6 +3,7 @@ using System.Collections.Generic;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Cms;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.CryptoPro;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Kisa;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Misc;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
@@ -12,15 +13,27 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Collections;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
 {
+    /// <summary>
+    /// Helpers for building <see cref="ICipherParameters"/> values: creating algorithm-appropriate
+    /// <see cref="KeyParameter"/> instances, decoding ASN.1 algorithm parameters into IV-bearing
+    /// <see cref="ICipherParameters"/>, generating random IV/parameter blocks, and wrapping/unwrapping
+    /// <see cref="ParametersWithRandom"/> / <see cref="ParametersWithContext"/> envelopes.
+    /// </summary>
+    /// <remarks>
+    /// Algorithm names are resolved through <see cref="GetCanonicalAlgorithmName"/> and matched
+    /// case-insensitively. DES, DES-EDE and RC2 receive their dedicated parameter subclasses with parity
+    /// enforcement; other algorithms get a plain <see cref="KeyParameter"/>.
+    /// </remarks>
     public static class ParameterUtilities
     {
-        private static readonly IDictionary<string, string> Algorithms =
+        private static readonly Dictionary<string, string> Algorithms =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        private static readonly IDictionary<string, int> BasicIVSizes =
+        private static readonly Dictionary<string, int> BasicIVSizes =
             new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         static ParameterUtilities()
@@ -109,11 +122,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AddAlgorithm("CAMELLIA256",
                 NttObjectIdentifiers.IdCamellia256Cbc,
                 NttObjectIdentifiers.IdCamellia256Wrap);
+            AddAlgorithm("CAST5",
+                MiscObjectIdentifiers.cast5CBC);
+            AddAlgorithm("CAST6");
             AddAlgorithm("CHACHA");
             AddAlgorithm("CHACHA7539",
                 "CHACHA20",
                 "CHACHA20-POLY1305",
                 PkcsObjectIdentifiers.IdAlgAeadChaCha20Poly1305);
+            AddAlgorithm("XCHACHA20",
+                "XCHACHA20-POLY1305");
             AddAlgorithm("DES",
                 OiwObjectIdentifiers.DesCbc,
                 OiwObjectIdentifiers.DesCfb,
@@ -126,6 +144,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
                 PkcsObjectIdentifiers.IdAlgCms3DesWrap);
             AddAlgorithm("DESEDE3",
                 PkcsObjectIdentifiers.DesEde3Cbc);
+            AddAlgorithm("GOST28147",
+                "GOST",
+                "GOST-28147",
+                CryptoProObjectIdentifiers.GostR28147Gcfb);
             AddAlgorithm("HC128");
             AddAlgorithm("HC256");
             AddAlgorithm("IDEA",
@@ -150,6 +172,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AddAlgorithm("SKIPJACK");
             AddAlgorithm("SM4");
             AddAlgorithm("TEA");
+            AddAlgorithm("THREEFISH-256");
+            AddAlgorithm("THREEFISH-512");
+            AddAlgorithm("THREEFISH-1024");
             AddAlgorithm("TNEPRES");
             AddAlgorithm("TWOFISH");
             AddAlgorithm("VMPC");
@@ -160,6 +185,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             AddBasicIVSizeEntries(12, "CHACHA7539");
             AddBasicIVSizeEntries(16, "AES", "AES128", "AES192", "AES256", "ARIA", "ARIA128", "ARIA192", "ARIA256",
                 "CAMELLIA", "CAMELLIA128", "CAMELLIA192", "CAMELLIA256", "NOEKEON", "SEED", "SM4");
+            AddBasicIVSizeEntries(24, "XCHACHA20");
 
             // TODO These algorithms support an IV
             // but JCE doesn't seem to provide an AlgorithmParametersGenerator for them
@@ -184,35 +210,44 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             }
         }
 
+        /// <summary>
+        /// Returns the canonical algorithm name for the given alias or OID string, or <c>null</c> if the
+        /// algorithm is not recognised.
+        /// </summary>
         public static string GetCanonicalAlgorithmName(string algorithm)
         {
             return CollectionUtilities.GetValueOrNull(Algorithms, algorithm);
         }
 
+        /// <summary>
+        /// Build a <see cref="KeyParameter"/> for the algorithm identified by <paramref name="algOid"/>.
+        /// </summary>
         public static KeyParameter CreateKeyParameter(DerObjectIdentifier algOid, byte[] keyBytes)
         {
             return CreateKeyParameter(algOid.Id, keyBytes, 0, keyBytes.Length);
         }
 
+        /// <summary>Build a <see cref="KeyParameter"/> for the named algorithm.</summary>
         public static KeyParameter CreateKeyParameter(string algorithm, byte[] keyBytes)
         {
             return CreateKeyParameter(algorithm, keyBytes, 0, keyBytes.Length);
         }
 
-        public static KeyParameter CreateKeyParameter(
-            DerObjectIdentifier algOid,
-            byte[]				keyBytes,
-            int					offset,
-            int					length)
+        /// <summary>Build a <see cref="KeyParameter"/> from a slice of <paramref name="keyBytes"/>.</summary>
+        public static KeyParameter CreateKeyParameter(DerObjectIdentifier algOid, byte[] keyBytes, int offset,
+            int length)
         {
             return CreateKeyParameter(algOid.Id, keyBytes, offset, length);
         }
 
-        public static KeyParameter CreateKeyParameter(
-            string	algorithm,
-            byte[]	keyBytes,
-            int		offset,
-            int		length)
+        /// <summary>
+        /// Build a <see cref="KeyParameter"/> from a slice of <paramref name="keyBytes"/>. DES / DES-EDE / RC2
+        /// keys are returned as their dedicated parameter subclasses; all other algorithms get a plain
+        /// <see cref="KeyParameter"/>.
+        /// </summary>
+        /// <exception cref="ArgumentNullException">If <paramref name="algorithm"/> is <c>null</c>.</exception>
+        /// <exception cref="SecurityUtilityException">If the algorithm is not recognised.</exception>
+        public static KeyParameter CreateKeyParameter(string algorithm, byte[] keyBytes, int offset, int length)
         {
             if (algorithm == null)
                 throw new ArgumentNullException(nameof(algorithm));
@@ -225,7 +260,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             if (canonical == "DES")
                 return new DesParameters(keyBytes, offset, length);
 
-            if (canonical == "DESEDE" || canonical =="DESEDE3")
+            if (canonical == "DESEDE" || canonical == "DESEDE3")
                 return new DesEdeParameters(keyBytes, offset, length);
 
             if (canonical == "RC2")
@@ -234,44 +269,58 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             return new KeyParameter(keyBytes, offset, length);
         }
 
-        public static ICipherParameters GetCipherParameters(
-            DerObjectIdentifier	algOid,
-            ICipherParameters	key,
-            Asn1Object			asn1Params)
+        /// <summary>
+        /// Combine a key with ASN.1-encoded algorithm parameters, returning the appropriate
+        /// <see cref="ICipherParameters"/> envelope (e.g. <see cref="ParametersWithIV"/> or
+        /// <see cref="AeadParameters"/> for AES-GCM/CCM).
+        /// </summary>
+        public static ICipherParameters GetCipherParameters(DerObjectIdentifier algOid, ICipherParameters key,
+            Asn1Object asn1Params)
         {
             return GetCipherParameters(algOid.Id, key, asn1Params);
         }
 
-        public static ICipherParameters GetCipherParameters(
-            string				algorithm,
-            ICipherParameters	key,
-            Asn1Object			asn1Params)
+        /// <summary>
+        /// Combine a key with ASN.1-encoded algorithm parameters for the named algorithm. See the OID
+        /// overload.
+        /// </summary>
+        /// <exception cref="ArgumentException">If <paramref name="key"/> cannot supply the data required by
+        /// an AEAD mode, or the parameters block cannot be parsed.</exception>
+        /// <exception cref="SecurityUtilityException">If the algorithm is not recognised.</exception>
+        public static ICipherParameters GetCipherParameters(string algorithm, ICipherParameters key,
+            Asn1Object asn1Params)
         {
             if (algorithm == null)
-                throw new ArgumentNullException("algorithm");
+                throw new ArgumentNullException(nameof(algorithm));
 
-            if (NistObjectIdentifiers.IdAes128Gcm.Id.Equals(algorithm) ||
-                NistObjectIdentifiers.IdAes192Gcm.Id.Equals(algorithm) ||
-                NistObjectIdentifiers.IdAes256Gcm.Id.Equals(algorithm))
+            if (DerObjectIdentifier.TryFromID(algorithm, out var algOid))
             {
-                if (!(key is KeyParameter keyParameter))
-                    throw new ArgumentException("key data must be accessible for GCM operation");
+                if (algOid.On(NistObjectIdentifiers.Aes))
+                {
+                    if (NistObjectIdentifiers.IdAes128Gcm.Equals(algOid) ||
+                        NistObjectIdentifiers.IdAes192Gcm.Equals(algOid) ||
+                        NistObjectIdentifiers.IdAes256Gcm.Equals(algOid))
+                    {
+                        if (!(key is KeyParameter keyParameter))
+                            throw new ArgumentException("key data must be accessible for GCM operation");
 
-                var gcmParameters = GcmParameters.GetInstance(asn1Params);
+                        var gcmParameters = GcmParameters.GetInstance(asn1Params);
 
-                return new AeadParameters(keyParameter, gcmParameters.IcvLen * 8, gcmParameters.GetNonce());
-            }
+                        return new AeadParameters(keyParameter, gcmParameters.IcvLen * 8, gcmParameters.GetNonce());
+                    }
+ 
+                    if (NistObjectIdentifiers.IdAes128Ccm.Equals(algOid) ||
+                        NistObjectIdentifiers.IdAes192Ccm.Equals(algOid) ||
+                        NistObjectIdentifiers.IdAes256Ccm.Equals(algOid))
+                    {
+                        if (!(key is KeyParameter keyParameter))
+                            throw new ArgumentException("key data must be accessible for CCM operation");
 
-            if (NistObjectIdentifiers.IdAes128Ccm.Id.Equals(algorithm) ||
-                NistObjectIdentifiers.IdAes192Ccm.Id.Equals(algorithm) ||
-                NistObjectIdentifiers.IdAes256Ccm.Id.Equals(algorithm))
-            {
-                if (!(key is KeyParameter keyParameter))
-                    throw new ArgumentException("key data must be accessible for CCM operation");
+                        var ccmParameters = CcmParameters.GetInstance(asn1Params);
 
-                var ccmParameters = CcmParameters.GetInstance(asn1Params);
-
-                return new AeadParameters(keyParameter, ccmParameters.IcvLen * 8, ccmParameters.GetNonce());
+                        return new AeadParameters(keyParameter, ccmParameters.IcvLen * 8, ccmParameters.GetNonce());
+                    }
+                }
             }
 
             string canonical = GetCanonicalAlgorithmName(algorithm);
@@ -292,6 +341,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
                     || canonical == "RIJNDAEL" || canonical == "SKIPJACK" || canonical == "TWOFISH")
                 {
                     iv = Asn1OctetString.GetInstance(asn1Params);
+                }
+                else if (canonical == "CAST5")
+                {
+                    iv = Cast5CbcParameters.GetInstance(asn1Params).IV;
                 }
                 else if (canonical == "IDEA")
                 {
@@ -315,16 +368,24 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             throw new SecurityUtilityException("Algorithm " + algorithm + " not recognised.");
         }
 
-        public static Asn1Encodable GenerateParameters(
-            DerObjectIdentifier algID,
-            SecureRandom		random)
+        /// <summary>
+        /// Generate a fresh ASN.1-encoded algorithm parameters block (typically a random IV) for the
+        /// algorithm identified by <paramref name="algID"/>.
+        /// </summary>
+        public static Asn1Encodable GenerateParameters(DerObjectIdentifier algID, SecureRandom random)
         {
             return GenerateParameters(algID.Id, random);
         }
 
-        public static Asn1Encodable GenerateParameters(
-            string			algorithm,
-            SecureRandom	random)
+        /// <summary>
+        /// Generate a fresh ASN.1-encoded algorithm parameters block for the named algorithm. CAST5, IDEA and
+        /// RC2 receive their dedicated parameter structures; other IV-based algorithms get a plain
+        /// <see cref="Asn1OctetString"/> containing the IV.
+        /// </summary>
+        /// <exception cref="ArgumentNullException">If <paramref name="algorithm"/> is <c>null</c>.</exception>
+        /// <exception cref="SecurityUtilityException">If the algorithm is not recognised or has no
+        /// parameter generator.</exception>
+        public static Asn1Encodable GenerateParameters(string algorithm, SecureRandom random)
         {
             if (algorithm == null)
                 throw new ArgumentNullException("algorithm");
@@ -342,6 +403,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             if (basicIVKeySize != -1)
                 return CreateIVOctetString(random, basicIVKeySize);
 
+            if (canonical == "CAST5")
+                return new Cast5CbcParameters(CreateIV(random, 8), 128);
+
             if (canonical == "IDEA")
                 return new IdeaCbcPar(CreateIV(random, 8));
 
@@ -351,6 +415,17 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             throw new SecurityUtilityException("Algorithm " + algorithm + " not recognised.");
         }
 
+        /// <summary>
+        /// Unwrap a <see cref="ParametersWithContext"/> envelope, returning the inner parameters and copying the
+        /// context bytes out via <paramref name="context"/>. If the envelope is absent, <paramref name="context"/>
+        /// is set to <c>null</c> and the input is returned unchanged.
+        /// </summary>
+        /// <param name="cipherParameters">Parameters to inspect.</param>
+        /// <param name="minLen">Minimum permitted context length, inclusive.</param>
+        /// <param name="maxLen">Maximum permitted context length, inclusive.</param>
+        /// <param name="context">Receives the context bytes, or <c>null</c> if no envelope is present.</param>
+        /// <exception cref="ArgumentOutOfRangeException">If the context length falls outside
+        /// [<paramref name="minLen"/>, <paramref name="maxLen"/>].</exception>
         public static ICipherParameters GetContext(ICipherParameters cipherParameters, int minLen, int maxLen,
             out byte[] context)
         {
@@ -371,6 +446,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             return cipherParameters;
         }
 
+        /// <summary>
+        /// Unwrap a <see cref="ParametersWithRandom"/> envelope, returning the inner parameters and exposing the
+        /// attached <see cref="SecureRandom"/> via <paramref name="random"/>. If the envelope is absent,
+        /// <paramref name="random"/> is set to <c>null</c> and the input is returned unchanged.
+        /// </summary>
         public static ICipherParameters GetRandom(ICipherParameters cipherParameters, out SecureRandom random)
         {
             if (cipherParameters is ParametersWithRandom withRandom)
@@ -383,6 +463,29 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             return cipherParameters;
         }
 
+        /// <summary>
+        /// Unwrap a <see cref="ParametersWithUkm"/> envelope, returning the inner parameters and copying the
+        /// UKM bytes out via <paramref name="ukm"/>. If the envelope is absent, <paramref name="ukm"/>
+        /// is set to <c>null</c> and the input is returned unchanged.
+        /// </summary>
+        /// <param name="cipherParameters">Parameters to inspect.</param>
+        /// <param name="ukm">Receives the UKM bytes, or <c>null</c> if no envelope is present.</param>
+        public static ICipherParameters GetUkm(ICipherParameters cipherParameters, out byte[] ukm)
+        {
+            if (cipherParameters is ParametersWithUkm withUkm)
+            {
+                ukm = withUkm.GetUkm();
+                return withUkm.Parameters;
+            }
+
+            ukm = null;
+            return cipherParameters;
+        }
+
+        /// <summary>
+        /// Strip any <see cref="ParametersWithRandom"/> envelope and return the inner parameters; otherwise return
+        /// the input unchanged.
+        /// </summary>
         public static ICipherParameters IgnoreRandom(ICipherParameters cipherParameters)
         {
             if (cipherParameters is ParametersWithRandom withRandom)
@@ -391,6 +494,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             return cipherParameters;
         }
 
+        /// <summary>
+        /// Wrap <paramref name="cp"/> in a <see cref="ParametersWithContext"/> envelope when <paramref name="context"/>
+        /// is non-<c>null</c>; otherwise return <paramref name="cp"/> unchanged.
+        /// </summary>
         public static ICipherParameters WithContext(ICipherParameters cp, byte[] context)
         {
             if (context != null)
@@ -400,11 +507,28 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             return cp;
         }
 
+        /// <summary>
+        /// Wrap <paramref name="cp"/> in a <see cref="ParametersWithRandom"/> envelope when <paramref name="random"/>
+        /// is non-<c>null</c>; otherwise return <paramref name="cp"/> unchanged.
+        /// </summary>
         public static ICipherParameters WithRandom(ICipherParameters cp, SecureRandom random)
         {
             if (random != null)
             {
                 cp = new ParametersWithRandom(cp, random);
+            }
+            return cp;
+        }
+
+        /// <summary>
+        /// Wrap <paramref name="cp"/> in a <see cref="ParametersWithUkm"/> envelope when <paramref name="ukm"/>
+        /// is non-<c>null</c>; otherwise return <paramref name="cp"/> unchanged.
+        /// </summary>
+        public static ICipherParameters WithUkm(ICipherParameters cp, byte[] ukm)
+        {
+            if (ukm != null)
+            {
+                cp = new ParametersWithUkm(cp, ukm);
             }
             return cp;
         }

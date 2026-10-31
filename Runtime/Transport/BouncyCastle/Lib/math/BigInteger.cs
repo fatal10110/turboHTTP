@@ -493,27 +493,31 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
         }
 
         public BigInteger(byte[] bytes)
+            : this(bytes, bigEndian: true)
         {
-            this.magnitude = InitBE(bytes, 0, bytes.Length, out this.sign);
         }
 
         public BigInteger(byte[] bytes, bool bigEndian)
         {
+            Arrays.ValidateBuffer(bytes);
+
+            if (bytes.Length < 1)
+                throw new FormatException("Zero length BigInteger");
+
             this.magnitude = bigEndian
                 ? InitBE(bytes, 0, bytes.Length, out this.sign)
                 : InitLE(bytes, 0, bytes.Length, out this.sign);
         }
 
         public BigInteger(byte[] bytes, int offset, int length)
+            : this(bytes, offset, length, bigEndian: true)
         {
-            if (length == 0)
-                throw new FormatException("Zero length BigInteger");
-
-            this.magnitude = InitBE(bytes, offset, length, out this.sign);
         }
 
         public BigInteger(byte[] bytes, int offset, int length, bool bigEndian)
         {
+            Arrays.ValidateSegment(bytes, offset, length);
+
             if (length <= 0)
                 throw new FormatException("Zero length BigInteger");
 
@@ -544,6 +548,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
 
             if (iBval >= end)
                 return One.magnitude;
+
+            if (bytes[iBval] == byte.MinValue)
+            {
+                --iBval;
+            }
 
             int numBytes = end - iBval;
 
@@ -595,6 +604,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
 
             if (last < 0)
                 return One.magnitude;
+
+            if (bytes[offset + last] == byte.MinValue)
+            {
+                ++last;
+            }
 
             int numBytes = last + 1;
 
@@ -759,27 +773,52 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
 #endif
 
         public BigInteger(int sign, byte[] bytes)
-            : this(sign, bytes, 0, bytes.Length, true)
+            : this(sign, bytes, bigEndian: true)
         {
         }
 
         public BigInteger(int sign, byte[] bytes, bool bigEndian)
-            : this(sign, bytes, 0, bytes.Length, bigEndian)
         {
-        }
+            Arrays.ValidateBuffer(bytes);
 
-        public BigInteger(int sign, byte[] bytes, int offset, int length)
-            : this(sign, bytes, offset, length, true)
-        {
-        }
-
-        public BigInteger(int sign, byte[] bytes, int offset, int length, bool bigEndian)
-        {
             if (sign < -1 || sign > 1)
                 throw new FormatException("Invalid sign value");
 
             if (sign == 0)
             {
+                if (!Arrays.AreAllZeroes(bytes, 0, bytes.Length))
+                    throw new FormatException("sign/bytes mismatch");
+
+                this.magnitude = ZeroMagnitude;
+                this.sign = 0;
+            }
+            else
+            {
+                // copy bytes
+                this.magnitude = bigEndian
+                    ? MakeMagnitudeBE(bytes, 0, bytes.Length)
+                    : MakeMagnitudeLE(bytes, 0, bytes.Length);
+                this.sign = this.magnitude.Length < 1 ? 0 : sign;
+            }
+        }
+
+        public BigInteger(int sign, byte[] bytes, int offset, int length)
+            : this(sign, bytes, offset, length, bigEndian: true)
+        {
+        }
+
+        public BigInteger(int sign, byte[] bytes, int offset, int length, bool bigEndian)
+        {
+            Arrays.ValidateSegment(bytes, offset, length);
+
+            if (sign < -1 || sign > 1)
+                throw new FormatException("Invalid sign value");
+
+            if (sign == 0)
+            {
+                if (!Arrays.AreAllZeroes(bytes, offset, length))
+                    throw new FormatException("sign/bytes mismatch");
+
                 this.sign = 0;
                 this.magnitude = ZeroMagnitude;
             }
@@ -1138,7 +1177,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
         private static int BitLen(byte b)
         {
 #if NETCOREAPP3_0_OR_GREATER
-            return 32 - BitOperations.LeadingZeroCount((uint)b);
+            return Integers.BitLength(b);
 #else
             return BitLengthTable[b];
 #endif
@@ -1147,7 +1186,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
         private static int BitLen(uint v)
         {
 #if NETCOREAPP3_0_OR_GREATER
-            return 32 - BitOperations.LeadingZeroCount(v);
+            return Integers.BitLength(v);
 #else
             uint t = v >> 24;
             if (t != 0)
@@ -1473,7 +1512,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
 
         public override int GetHashCode()
         {
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(MemoryMarshal.AsBytes(magnitude.AsSpan()));
             hc.Add(sign);
@@ -3726,11 +3765,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math
             return GetLowestSetBitMaskFirst(uint.MaxValue);
         }
 
-        private int GetLowestSetBitMaskFirst(uint firstWordMaskX)
+        private int GetLowestSetBitMaskFirst(uint firstWordMask)
         {
             int w = magnitude.Length, offset = 0;
 
-            uint word = magnitude[--w] & firstWordMaskX;
+            uint word = magnitude[--w] & firstWordMask;
             Debug.Assert(magnitude[0] != 0U);
 
             while (word == 0)
