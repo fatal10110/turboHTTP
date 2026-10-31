@@ -4,13 +4,12 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
     /// <summary>
     /// Main HTTP client for TurboHTTP.
-    /// Provides fluent verb helpers and pooled request creation.
+    /// Provides fluent verb helpers and client-bound request creation.
     /// Thread-safe for concurrent use.
     /// </summary>
     public class UHttpClient : IDisposable
@@ -20,7 +19,6 @@ namespace TurboHTTP.Core
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
         private readonly IReadOnlyList<IHttpInterceptor> _baseInterceptors;
-        private readonly ObjectPool<UHttpRequest> _requestPool;
 
         private volatile DispatchFunc _pipeline;
 
@@ -123,18 +121,13 @@ namespace TurboHTTP.Core
 
             _baseInterceptors = BuildInterceptors(_options);
             _pipeline = new InterceptorPipeline(_baseInterceptors, _transport).Pipeline;
-
-            var poolCapacity = Math.Max(
-                16,
-                (_options.ConnectionPool?.MaxConnectionsPerHost ?? PlatformConfig.RecommendedMaxConcurrency) * 4);
-            _requestPool = new ObjectPool<UHttpRequest>(
-                () => new UHttpRequest(this),
-                poolCapacity);
         }
 
         /// <summary>
-        /// Rent a mutable request object from the pool.
-        /// Dispose the returned request to return it to the pool.
+        /// Creates a new mutable request bound to this client.
+        /// The request is single-use: dispose it, or send it with <see cref="UHttpRequest.SendBufferedAsync"/> /
+        /// <see cref="UHttpRequest.SendStreamingAsync"/> (which dispose it), to end its lease. A request is never
+        /// reused after its lease ends, so a stale reference throws <see cref="ObjectDisposedException"/>.
         /// </summary>
         public UHttpRequest CreateRequest(HttpMethod method, string url)
         {
@@ -144,10 +137,11 @@ namespace TurboHTTP.Core
             ThrowIfDisposed();
 
             var uri = ResolveUri(url);
-            var request = _requestPool.Rent();
+            // Not pooled: a recycled instance would let a stale reference mutate or send another caller's
+            // request (#62). Each lease gets its own object, which is never handed out again.
+            var request = new UHttpRequest(this, method, uri, _options.DefaultTimeout);
             try
             {
-                request.ActivateLease(method, uri, _options.DefaultTimeout);
                 request.ApplyDefaultHeaders(_options.DefaultHeaders);
                 ApplyDefaultMetadata(request, uri);
                 return request;
@@ -344,10 +338,10 @@ namespace TurboHTTP.Core
 
             ThrowIfDisposed();
 
-            if (request.IsPooled && !request.IsOwnedBy(this))
+            if (request.IsClientOwned && !request.IsOwnedBy(this))
             {
                 throw new InvalidOperationException(
-                    "Cannot send a pooled request through a different client than the one that created it. " +
+                    "Cannot send a client-created request through a different client than the one that created it. " +
                     "Use the client that created this request, or create a new request from this client.");
             }
 
@@ -408,10 +402,10 @@ namespace TurboHTTP.Core
 
             ThrowIfDisposed();
 
-            if (request.IsPooled && !request.IsOwnedBy(this))
+            if (request.IsClientOwned && !request.IsOwnedBy(this))
             {
                 throw new InvalidOperationException(
-                    "Cannot send a pooled request through a different client than the one that created it. " +
+                    "Cannot send a client-created request through a different client than the one that created it. " +
                     "Use the client that created this request, or create a new request from this client.");
             }
 
@@ -525,17 +519,6 @@ namespace TurboHTTP.Core
                 plugin.State = PluginLifecycleState.Faulted;
                 Debug.WriteLine($"[TurboHTTP] Plugin dispose failed ({plugin.Name}): {ex}");
             }
-        }
-
-        internal void ReturnRequestToPool(UHttpRequest request)
-        {
-            if (request == null)
-                return;
-
-            if (Volatile.Read(ref _disposed) != 0)
-                return;
-
-            _requestPool.Return(request);
         }
 
         private void ThrowIfDisposed()

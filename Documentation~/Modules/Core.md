@@ -30,7 +30,7 @@ myClient.Dispose();
 
 ## UHttpRequest
 
-`UHttpClient` exposes fluent methods (`Get`, `Post`, `Put`, `Delete`, etc.) that return a mutable `UHttpRequest` rented from a pool. This allows you to construct requests in a chained manner.
+`UHttpClient` exposes fluent methods (`Get`, `Post`, `Put`, `Delete`, etc.) that return a new mutable, single-use `UHttpRequest` bound to that client. This allows you to construct requests in a chained manner.
 
 ```csharp
 var response = await client.Post("/users")

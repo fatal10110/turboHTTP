@@ -68,7 +68,7 @@ var client = new UHttpClient(options);
 
 ### UHttpRequest
 
-Fluent mutable request rented from the pool. Must be awaited via `SendAsync()` or disposed to be returned to the pool.
+Fluent mutable request bound to the client that created it. It is single-use: sending it with `SendBufferedAsync()`/`SendStreamingAsync()` or calling `Dispose()` ends its lease, after which any further use throws `ObjectDisposedException`.
 
 **Methods:**
 
