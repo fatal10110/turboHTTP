@@ -351,20 +351,122 @@ namespace TurboHTTP.Tests.Files
             });
         }
 
-        [TestCase("bytes 5-9/10", true, 5L, 9L)]
-        [TestCase("bytes 5-9/*", true, 5L, 9L)]
-        [TestCase("BYTES 0-0/1", true, 0L, 0L)]
-        [TestCase("bytes 5-9/9", false, -1L, -1L)]
-        [TestCase("bytes 9-5/10", false, -1L, -1L)]
-        [TestCase("bytes */10", false, -1L, -1L)]
-        [TestCase("items 5-9/10", false, -1L, -1L)]
-        [TestCase("bytes -5-9/10", false, -1L, -1L)]
-        [TestCase("bytes 5-9", false, -1L, -1L)]
-        public void TryParseContentRange_FollowsRfc9110(string value, bool expected, long first, long last)
+        [TestCase("bytes 5-9/10", true, 5L, 9L, 10L)]
+        [TestCase("bytes 5-9/1000", true, 5L, 9L, 1000L)]
+        [TestCase("bytes 5-9/*", true, 5L, 9L, -1L)]
+        [TestCase("BYTES 0-0/1", true, 0L, 0L, 1L)]
+        [TestCase("bytes 5-9/9", false, -1L, -1L, -1L)]
+        [TestCase("bytes 9-5/10", false, -1L, -1L, -1L)]
+        [TestCase("bytes */10", false, -1L, -1L, -1L)]
+        [TestCase("items 5-9/10", false, -1L, -1L, -1L)]
+        [TestCase("bytes -5-9/10", false, -1L, -1L, -1L)]
+        [TestCase("bytes 5-9", false, -1L, -1L, -1L)]
+        public void TryParseContentRange_FollowsRfc9110(
+            string value, bool expected, long first, long last, long completeLength)
         {
-            Assert.AreEqual(expected, FileDownloader.TryParseContentRange(value, out var parsedFirst, out var parsedLast));
+            Assert.AreEqual(expected, FileDownloader.TryParseContentRange(
+                value, out var parsedFirst, out var parsedLast, out var parsedComplete));
             Assert.AreEqual(first, parsedFirst);
             Assert.AreEqual(last, parsedLast);
+            Assert.AreEqual(completeLength, parsedComplete);
+        }
+
+        [Test]
+        public void Restart200_PartLockedWhileTruncating_NeverPairsNewValidatorWithOldBytes()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var dest = Path.Combine(_tempDir, "restart-locked.bin");
+                var oldBytes = new byte[] { 1, 2, 3 };
+                WritePartial(dest, oldBytes, "\"v1\"");
+                var headers = new HttpHeaders();
+                headers.Set("ETag", "\"v2\"");
+                var transport = new MockTransport(HttpStatusCode.OK, headers, new byte[] { 9, 9, 9, 9, 9 });
+                var downloader = CreateDownloader(transport);
+
+                using (new FileStream(dest + ".part", FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    AssertAsync.ThrowsAsync<IOException>(() => downloader.DownloadFileAsync(
+                        "https://test.com/file.bin", dest, new DownloadOptions { EnableResume = true }));
+                }
+
+                // The old bytes survive but no validator (least of all v2) is paired with them.
+                Assert.AreEqual(oldBytes, File.ReadAllBytes(dest + ".part"));
+                Assert.IsFalse(File.Exists(dest + ".part.validator"));
+                Assert.IsFalse(File.Exists(dest));
+
+                // So the next attempt does not resume them with If-Range: "v2".
+                var next = new RangeServer(new byte[] { 9, 9, 9, 9, 9 }, "\"v2\"");
+                var result = await CreateDownloader(next.Transport).DownloadFileAsync(
+                    "https://test.com/file.bin", dest, new DownloadOptions { EnableResume = true });
+
+                Assert.IsNull(next.LastRange);
+                Assert.IsNull(next.LastIfRange);
+                Assert.IsFalse(result.WasResumed);
+                Assert.AreEqual(new byte[] { 9, 9, 9, 9, 9 }, File.ReadAllBytes(dest));
+            });
+        }
+
+        [TestCase("bytes 5-9/1000")]
+        [TestCase("bytes 5-9/*")]
+        public void Resume_206NotEndingAtCompleteLength_Restarts(string contentRange)
+        {
+            AssertAsync.Run(async () =>
+            {
+                var dest = Path.Combine(_tempDir, "resume-short-range.bin");
+                WritePartial(dest, new byte[] { 1, 2, 3, 4, 5 }, "\"v1\"");
+                var full = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+                int callCount = 0;
+                string secondRange = "unset";
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    int call = Interlocked.Increment(ref callCount);
+                    var headers = new HttpHeaders();
+                    headers.Set("ETag", "\"v1\"");
+                    if (call == 1)
+                    {
+                        headers.Set("Content-Range", contentRange);
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.PartialContent, headers, new byte[] { 6, 7, 8, 9, 10 }, ctx.Elapsed, req));
+                    }
+
+                    secondRange = req.Headers.Get("Range");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK, headers, full, ctx.Elapsed, req));
+                });
+                var downloader = CreateDownloader(transport);
+
+                var result = await downloader.DownloadFileAsync(
+                    "https://test.com/file.bin", dest, new DownloadOptions { EnableResume = true });
+
+                Assert.AreEqual(2, callCount);
+                Assert.IsNull(secondRange);
+                Assert.IsFalse(result.WasResumed);
+                Assert.AreEqual(full, File.ReadAllBytes(dest));
+            });
+        }
+
+        [Test]
+        public void Resume_206BodyShorterThanContentRange_IsNotCommitted()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var dest = Path.Combine(_tempDir, "resume-short-body.bin");
+                WritePartial(dest, new byte[] { 1, 2, 3, 4, 5 }, "\"v1\"");
+                var headers = new HttpHeaders();
+                headers.Set("ETag", "\"v1\"");
+                headers.Set("Content-Range", "bytes 5-9/10");
+                var transport = new MockTransport(HttpStatusCode.PartialContent, headers, new byte[] { 6, 7, 8 });
+                var downloader = CreateDownloader(transport);
+
+                AssertAsync.ThrowsAsync<UHttpException>(() => downloader.DownloadFileAsync(
+                    "https://test.com/file.bin", dest, new DownloadOptions { EnableResume = true }));
+
+                Assert.IsFalse(File.Exists(dest));
+                Assert.IsFalse(File.Exists(dest + ".part"));
+                Assert.IsFalse(File.Exists(dest + ".part.validator"));
+                await Task.CompletedTask;
+            });
         }
 
         [Test]

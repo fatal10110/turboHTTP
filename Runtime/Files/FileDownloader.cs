@@ -219,6 +219,17 @@ namespace TurboHTTP.Files
                 if (response.StatusCode != HttpStatusCode.PartialContent)
                     existingSize = 0;
 
+                // A resumed 206 must end with exactly the complete length it announced.
+                long expectedCompleteLength = -1;
+                if (existingSize > 0)
+                {
+                    TryParseContentRange(
+                        response.Headers.Get("Content-Range"),
+                        out _,
+                        out _,
+                        out expectedCompleteLength);
+                }
+
                 // Determine total size from Content-Length
                 long totalSize = 0;
                 var contentLengthHeader = response.Headers.Get("Content-Length");
@@ -236,12 +247,10 @@ namespace TurboHTTP.Files
 
                 if (existingSize == 0)
                 {
-                    // Record the new representation's strong validator before writing its bytes,
-                    // so an interrupted download can be resumed (and only resumed against the same
-                    // representation). No strong validator: the partial will not be resumed.
-                    WriteValidator(
-                        validatorPath,
-                        options.EnableResume ? SelectStrongValidator(response.Headers) : null);
+                    // Unpair the old partial from its validator before anything else: if the
+                    // truncating open below fails (file locked, no permission) or the process dies,
+                    // the old bytes are left without a validator and are never resumed.
+                    DeleteFileIfExists(validatorPath);
                 }
 
                 bool bodyComplete = false;
@@ -268,6 +277,17 @@ namespace TurboHTTP.Files
                             DownloadBufferSize,
                             FileOptions.Asynchronous))
                         {
+                            if (existingSize == 0)
+                            {
+                                // The partial is now truncated and belongs to the new
+                                // representation: record its strong validator before writing its
+                                // bytes, so an interrupted download resumes only against the same
+                                // representation. No strong validator: it will not be resumed.
+                                WriteValidator(
+                                    validatorPath,
+                                    options.EnableResume ? SelectStrongValidator(response.Headers) : null);
+                            }
+
                             byte[] buffer = ArrayPool<byte>.Shared.Rent(DownloadBufferSize);
                             try
                             {
@@ -301,6 +321,18 @@ namespace TurboHTTP.Files
                             }
 
                             await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                        }
+
+                        if (expectedCompleteLength >= 0 &&
+                            new FileInfo(partPath).Length != expectedCompleteLength)
+                        {
+                            // The 206 body did not fill the representation its Content-Range
+                            // described: the partial cannot be trusted or committed.
+                            DeletePartFiles(partPath, validatorPath);
+                            throw new UHttpException(new UHttpError(
+                                UHttpErrorType.HttpError,
+                                "Partial Content body length does not match its Content-Range.",
+                                statusCode: response.StatusCode));
                         }
 
                         bodyComplete = true;
@@ -368,17 +400,20 @@ namespace TurboHTTP.Files
         }
 
         /// <summary>
-        /// True when a 206 response continues the partial file exactly: a single
-        /// <c>Content-Range: bytes first-last/complete</c> whose first byte equals the partial's
-        /// length (RFC 9110 section 14.4), and, when the response carries an <c>ETag</c> and the
-        /// stored validator is an entity-tag, the same entity-tag.
+        /// True when a 206 response continues the partial file exactly up to the end of the
+        /// representation: a single <c>Content-Range: bytes first-last/complete</c> with a known
+        /// complete length, whose first byte equals the partial's length and whose last byte is
+        /// the representation's last byte (RFC 9110 section 14.4), and, when the response carries
+        /// an <c>ETag</c> and the stored validator is an entity-tag, the same entity-tag.
         /// </summary>
         private static bool IsResumableContinuation(HttpHeaders headers, long existingSize, string storedValidator)
         {
             var contentRange = headers.Get("Content-Range");
             if (contentRange == null ||
-                !TryParseContentRange(contentRange, out var first, out _) ||
-                first != existingSize)
+                !TryParseContentRange(contentRange, out var first, out var last, out var completeLength) ||
+                first != existingSize ||
+                completeLength < 0 ||
+                last != completeLength - 1)
             {
                 return false;
             }
@@ -396,11 +431,17 @@ namespace TurboHTTP.Files
         /// <summary>
         /// Parses <c>bytes first-last/complete-length</c> or <c>bytes first-last/*</c>
         /// (RFC 9110 section 14.4). Returns false for any other unit or shape.
+        /// <paramref name="completeLength"/> is -1 when the complete length is unknown (<c>*</c>).
         /// </summary>
-        internal static bool TryParseContentRange(string contentRange, out long first, out long last)
+        internal static bool TryParseContentRange(
+            string contentRange,
+            out long first,
+            out long last,
+            out long completeLength)
         {
             first = -1;
             last = -1;
+            completeLength = -1;
             if (contentRange == null)
                 return false;
 
@@ -435,9 +476,10 @@ namespace TurboHTTP.Files
             if (complete == "*")
                 return true;
 
-            if (long.TryParse(complete, NumberStyles.None, CultureInfo.InvariantCulture, out var completeLength) &&
-                completeLength > last)
+            if (long.TryParse(complete, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedComplete) &&
+                parsedComplete > last)
             {
+                completeLength = parsedComplete;
                 return true;
             }
 
