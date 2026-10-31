@@ -4,7 +4,6 @@ CA1310|Runtime/Core/ProxySettings.cs|if (hostPart.StartsWith("*."))
 CA1310|Runtime/Core/ProxySettings.cs|if (hostPart.StartsWith("."))
 CA1310|Runtime/Core/UHttpClient.cs|var baseUri = new Uri(baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/");
 CA1310|Runtime/Transport/BouncyCastle/TurboTlsAuthentication.cs|if (pattern.StartsWith("*."))
-CA1310|Runtime/Transport/Http2/Http2Connection.ReadLoop.cs|else if (!name.StartsWith(":"))
 CA2012|Runtime/Core/ResponseBodyStream.cs|return ReadCoreAsync(new Memory<byte>(buffer, offset, count), CancellationToken.None)
 CA2012|Runtime/Middleware/DecompressionHandler.cs|return _inner.ReadAsync(
 CA2012|Runtime/Middleware/DecompressionHandler.cs|var read = _inner.ReadAsync(

@@ -4,15 +4,14 @@ using TurboHTTP.Core.Internal;
 namespace TurboHTTP.Transport.Http2
 {
     /// <summary>
-    /// Bounded pool of <see cref="Http2Stream"/> instances. Each pooled stream holds a
-    /// pre-allocated <see cref="System.IO.MemoryStream"/> (<see cref="Http2Stream.HeaderBlockBuffer"/>)
-    /// that is reused across requests to eliminate the per-request MemoryStream allocation.
+    /// Bounded pool of <see cref="Http2Stream"/> instances. Pooled streams hold no header-block
+    /// buffer: encoded field blocks accumulate in a connection-level buffer owned by the read loop
+    /// (rented per block and returned at END_HEADERS), so an idle slot never retains a grown buffer.
     /// </summary>
     /// <remarks>
     /// Pool capacity (128) provides headroom above the HTTP/2 default
     /// <c>SETTINGS_MAX_CONCURRENT_STREAMS</c> limit (100). Memory per idle slot is
-    /// minimal: one <see cref="System.IO.MemoryStream"/> with its initial 256-byte backing
-    /// buffer plus the stream object fields (~200 bytes total).
+    /// minimal: the stream object fields (~200 bytes).
     /// </remarks>
     internal static class Http2StreamPool
     {

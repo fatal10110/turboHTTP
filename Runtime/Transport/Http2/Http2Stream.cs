@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
@@ -49,7 +48,6 @@ namespace TurboHTTP.Transport.Http2
 
         internal Http2Stream()
         {
-            HeaderBlockBuffer = new MemoryStream();
             _handler = TurboHTTP.Transport.NullHandler.Instance;
             _completionSource = new ManualResetValueTaskSourceCore<VoidResult>
             {
@@ -85,14 +83,7 @@ namespace TurboHTTP.Transport.Http2
         public long ResponseBodyLength => Interlocked.Read(ref _responseBodyLength);
         public int ResponseBodyCapacity => ResponseBodySource?.BufferCapacity ?? 0;
 
-        /// <summary>
-        /// Buffer for accumulating HEADERS + CONTINUATION header blocks.
-        /// Allocated once and reused across pool rentals.
-        /// </summary>
-        public MemoryStream HeaderBlockBuffer { get; }
-
         public bool HeadersReceived { get; set; }
-        public bool PendingEndStream { get; set; }
         public bool ResponseStarted => Volatile.Read(ref _responseStarted) != 0;
         public bool HasHandlerFault => Volatile.Read(ref _handlerFaulted) != 0;
         public bool IsResponseCompleted
@@ -151,10 +142,8 @@ namespace TurboHTTP.Transport.Http2
             _responseContentLength = null;
             ResponseBodySource = null;
             HeadersReceived = false;
-            PendingEndStream = false;
             State = Http2StreamState.Idle;
             _requestCancellationToken = default;
-            HeaderBlockBuffer.SetLength(0);
             _sendWindowSize = initialSendWindowSize;
             _recvWindowSize = initialRecvWindowSize;
             _expectContinueSource = null;
@@ -172,7 +161,6 @@ namespace TurboHTTP.Transport.Http2
             Volatile.Write(ref _disposed, 1);
             CancellationRegistration.Dispose();
             CancellationRegistration = default;
-            HeaderBlockBuffer.SetLength(0);
             _streamId = 0;
             _request = null;
             _context = null;
@@ -183,7 +171,6 @@ namespace TurboHTTP.Transport.Http2
             _responseContentLength = null;
             ResponseBodySource = null;
             HeadersReceived = false;
-            PendingEndStream = false;
             State = Http2StreamState.Idle;
             _requestCancellationToken = default;
             _sendWindowSize = 0;
@@ -195,30 +182,6 @@ namespace TurboHTTP.Transport.Http2
             Interlocked.Exchange(ref _lifetimeRefCount, 0);
             Interlocked.Exchange(ref _responseBodyLength, 0);
             _completionSource.Reset();
-        }
-
-        public void AppendHeaderBlock(byte[] data, int offset, int length)
-        {
-            HeaderBlockBuffer.Write(data, offset, length);
-        }
-
-        public ArraySegment<byte> GetHeaderBlockSegment()
-        {
-            if (HeaderBlockBuffer.TryGetBuffer(out var segment))
-            {
-                return new ArraySegment<byte>(
-                    segment.Array,
-                    segment.Offset,
-                    (int)HeaderBlockBuffer.Length);
-            }
-
-            var copy = HeaderBlockBuffer.ToArray();
-            return new ArraySegment<byte>(copy, 0, copy.Length);
-        }
-
-        public void ClearHeaderBlock()
-        {
-            HeaderBlockBuffer.SetLength(0);
         }
 
         public void AddResponseBodyBytes(int count)
@@ -403,7 +366,6 @@ namespace TurboHTTP.Transport.Http2
             _responseContentLength = null;
             ResponseBodySource = null;
             TryCancelExpectContinueWait();
-            HeaderBlockBuffer.Dispose();
         }
 
         void IValueTaskSource.GetResult(short token) => _completionSource.GetResult(token);
