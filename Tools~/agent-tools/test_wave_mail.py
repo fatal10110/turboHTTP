@@ -231,6 +231,38 @@ class WaveMailTest(unittest.TestCase):
                            capture_output=True, text=True, env=self.env)
         self.assertNotEqual(r.returncode, 0)
 
+    def test_threads_counts_unresolved_and_unanswered_including_bots(self):
+        nodes = [
+            {"id": "T1", "isResolved": False, "isOutdated": False, "path": "a.cs", "line": 3,
+             "comments": {"totalCount": 1, "nodes": [{"author": {"login": "github-advanced-security"},
+                                                      "body": "## CodeQL / Generic catch clause\n\nmore", "url": "u1"}]}},
+            {"id": "T2", "isResolved": False, "isOutdated": True, "path": "b.cs", "line": None,
+             "comments": {"totalCount": 2, "nodes": [{"author": {"login": "fatal10110"}, "body": "[must-fix] x"},
+                                                     {"author": {"login": "fatal10110"}, "body": "Fixed in abc"}]}},
+            {"id": "T3", "isResolved": True, "comments": {"totalCount": 1, "nodes": []}},
+        ]
+        fake = Path(self.tmp.name) / "gh"
+        fake.write_text("#!/usr/bin/env python3\nimport json\nprint(json.dumps({'data': {'repository': {'pullRequest': "
+                        "{'reviewThreads': {'pageInfo': {'hasNextPage': False, 'endCursor': None}, 'nodes': %r}}}}}))\n" % nodes)
+        fake.chmod(0o755)
+        self.env["WAVES_GH"] = str(fake)
+        r = self.run_cli("threads", "--pr", "7")
+        self.assertEqual((r["unresolved"], r["unanswered"]), (2, 1))
+        bot = r["threads"][0]
+        self.assertEqual((bot["id"], bot["bot"], bot["replies"], bot["title"]), ("T1", True, 0, "CodeQL / Generic catch clause"))
+        self.assertEqual((r["threads"][1]["bot"], r["threads"][1]["outdated"], r["threads"][1]["replies"]), (False, True, 1))
+
+    def test_code_scanning_state_uses_newest_run_per_name(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        import wave_mail
+        runs = [{"id": 1, "name": "analyze (csharp)", "status": "completed", "completed_at": "2026-10-30T22:19:22Z"},
+                {"id": 2, "name": "CodeQL", "status": "completed", "completed_at": "2026-10-30T22:17:35Z"},
+                {"id": 3, "name": "ci", "status": "in_progress"}]
+        self.assertEqual(wave_mail.code_scanning_state(runs), ("done", "2026-10-30T22:19:22Z"))
+        runs.append({"id": 4, "name": "analyze (csharp)", "status": "in_progress"})
+        self.assertEqual(wave_mail.code_scanning_state(runs)[0], "pending")
+        self.assertEqual(wave_mail.code_scanning_state([{"id": 5, "name": "ci", "status": "completed"}])[0], "absent")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -99,6 +99,10 @@ called by absolute path, quoted because of the `~`):
   built on first use or with `--sync`), for follow-up dedupe.
 - `wave_mail.py worktree --lane S [--review] [--remove]` — creates, moves or removes lane worktrees
   with absolute paths.
+- `wave_mail.py threads --pr N [--head SHA]` and `resolve-thread --id ID [--reply TEXT]` — the
+  PR's unresolved review threads, CodeQL alerts included (with `--head`, after that head's code
+  scanning finished), and reply-and-resolve in one call. The reviewer triages every thread before
+  each verdict; the merge agent answers `threads_open` instead of merging while any is open.
 - `wave_mail.py pr-state --pr N` and `ci-wait --head SHA` — compact PR state (with `behind_by`)
   and an in-process CI wait for the merge agent.
 - STOP reaches agents through commands they run anyway: every `wave_mail.py` output of a stopping

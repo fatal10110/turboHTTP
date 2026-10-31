@@ -193,7 +193,7 @@ const WAIT_SCHEMA = {
 const MERGE_SCHEMA = {
   type: 'object',
   properties: {
-    status: { type: 'string', enum: ['merged', 'conflict', 'ci_failed', 'head_moved', 'merge_blocked', 'retry'] },
+    status: { type: 'string', enum: ['merged', 'conflict', 'ci_failed', 'head_moved', 'threads_open', 'merge_blocked', 'retry'] },
     answered: { type: 'boolean', description: 'true once the answer file was written' },
     merge_sha: { type: 'string' },
     notes: { type: 'string' },
@@ -246,7 +246,7 @@ MAILBOX (each command in its own Bash call, timeout 600000):
   * ready {"reason":"initial|review-fix|ci-fix|conflict","pr":<n>,"head":"<pushed sha>","semantic":<bool>} after every push that should move on; add --set stage=review --set pr=<n> --set head=<sha>.
   * no_change {"summary":"..."} with --set status=no_change, or blocked {"reason":"..."} with --set status=blocked (after commenting the blocker on the issue): only before a PR exists; then return at once.
 - Wait for the review agent: ${MB} recv --run ${RUN} --lane ${L.slug} --box impl --wait 570 ; run it again while it prints "timeout": true. Before working on a review, ci or conflict message, run git -C ${W} pull --no-rebase origin wf/${L.slug} : the merge agent may have pushed a branch-update merge commit, and your push must stay a fast-forward (not for final: a merged branch is already deleted). Messages:
-  * review {"round":N,"file":"..."}: read the file (and the PR's unresolved threads), then follow ${skillRef('turbohttp-pr-review-comments')}: verify each item against the code, the RFC and the phase doc, fix every confirmed in-scope finding with tests, reply on every thread with evidence (fixed-in SHA, or rebuttal with code/RFC evidence), resolve fixed threads, file follow-ups for valid out-of-scope items, run the local gate, push (never force-push), send ready reason review-fix. You already know the code: re-read only what the findings point at.
+  * review {"round":N,"file":"..."}: read the file (and the PR's unresolved threads), then follow ${skillRef('turbohttp-pr-review-comments')}: verify each item against the code, the RFC and the phase doc, fix every confirmed in-scope finding with tests, reply on every thread with evidence (fixed-in SHA, or rebuttal with code/RFC evidence), resolve fixed threads, file follow-ups for valid out-of-scope items, run the local gate, push (never force-push), send ready reason review-fix. Items that carry a thread id (often CodeQL alerts by github-advanced-security that the reviewer triaged into the list) are findings like any other: after the push, ${MB} resolve-thread --id <id> --reply 'Fixed in <sha>: <one line>' ; for a rebuttal add --keep-open (the reviewer accepts or rejects it). Never skip a listed thread because a bot opened it, and never leave one without a reply. You already know the code: re-read only what the findings point at.
   * ci {"file":"...","head":"..."}: CI failed for a real reason; read the file, fix, verify with the local gate (and the failing Unity tests scoped with --filter when Unity is available), push, send ready reason ci-fix.
   * conflict {"notes":"..."}: the branch cannot be updated automatically. git fetch origin; merge origin/main into your branch (never rebase, never force-push); resolve (journal files never conflict: keep both); run the local gate; push; send ready reason conflict with "semantic": true when the resolution changed the PR's logic, else false.
   * final {"reason":"merged|unresolved|stalled|merge_blocked|failed|stopped"}: if merged, run ${MB} worktree --run ${RUN} --lane ${L.slug} --remove (worktree and local branch); otherwise keep both. Update the worklog and return your result with status = the final reason.
@@ -288,6 +288,19 @@ You have no GitHub MCP tools and no ToolSearch: the gh commands in the steps abo
 ${ENV}`
 }
 
+// Code-scanning (CodeQL) alerts arrive as review threads by github-advanced-security a few minutes
+// after each push. The reviewer owns every unresolved thread: none may be left unanswered at merge.
+const THREAD_TRIAGE = (pr, head) => `THREAD TRIAGE (every round, before you write the verdict; you own every unresolved thread on the PR, including the CodeQL alerts that github-advanced-security posts as threads):
+- List them, waiting for this head's code scanning first: ${MB} threads --pr ${pr} --head ${head} --wait 570 (Bash timeout 600000; run it again while "code_scanning" is "pending", at most 3 times). Output: unresolved, unanswered, threads [{id, path, line, outdated, author, bot, replies, title, url}].
+- Decide each thread, then act on it (one Bash call per thread: ${MB} resolve-thread --id <id> --reply '<text>' replies and resolves):
+  * A real defect (a null dereference that can happen, a resource leak or missing Dispose on a reachable path, a catch-all that swallows errors in Runtime/ code without a stated reason, Path.Combine with a later argument that can be rooted, a race): an action item in r<N>.md with its tag and the thread id, e.g. "[should-fix] path:line — what to do (thread PRRT_...)". Leave the thread open; the implementation agent fixes, replies and resolves it.
+  * A cheap quality note on lines this PR adds (missed using, useless assignment, missed Where/Select, missed readonly): a non-optional [nit] action item with the thread id when the fix is a one-line mechanical change; otherwise resolve-thread with a one-line reason.
+  * Intended or a false positive (a test teardown or a peer loop that must swallow every exception, a value CodeQL thinks can be null but cannot, with the file:line that proves it): resolve-thread with that evidence.
+  * On lines this PR did not touch: resolve-thread --reply 'Pre-existing code outside this PR's diff.'
+  * An implementation agent's rebuttal (replies > 0, still open): accept it with resolve-thread, or keep the item in the action list and say why the evidence does not hold. An outdated thread whose item is fixed: resolve it.
+- A round is clean only when the action list is empty AND a final ${MB} threads --pr ${pr} prints "unresolved": 0. Never ask for the merge with an open thread.
+`
+
 function reviewerPrompt(L, resume, roundLimit) {
   const D = LANE_DIR(L.slug)
   const RW = `${WT}/review-${L.slug}`
@@ -303,15 +316,15 @@ MAILBOX (each command in its own Bash call, timeout 600000):
 - To the implementation agent: ${MB} send --run ${RUN} --lane ${L.slug} --box impl --kind <review|ci|conflict|final> --data '<json object>' [--set key=value ...]
 - Merge requests go to the merge agent (cheap model) through the merger broker:
   ${MB} ask --run ${RUN} --from ${L.slug}/review --type merge --question '{"pr":<n>,"head":"<sha>"}' --wait 570
-  The merge takes a while (CI): while it prints "pending": true, run ${MB} answer-wait --run ${RUN} --id <id> --wait 570 again, always with the same id (a pending request is still being served; never ask again while one is pending). The answer is a JSON object {"status":"merged|conflict|ci_failed|head_moved|merge_blocked|retry","merge_sha","file","head","notes"}. "stop": true: return status stopped. An "error" (the merge broker is not running): ${MB} pause --secs 300, then ask again; after 6 such errors, send final {"reason":"failed"} --set status=failed and return status failed.
+  The merge takes a while (CI): while it prints "pending": true, run ${MB} answer-wait --run ${RUN} --id <id> --wait 570 again, always with the same id (a pending request is still being served; never ask again while one is pending). The answer is a JSON object {"status":"merged|conflict|ci_failed|head_moved|threads_open|merge_blocked|retry","merge_sha","file","head","notes"}. "stop": true: return status stopped. An "error" (the merge broker is not running): ${MB} pause --secs 300, then ask again; after 6 such errors, send final {"reason":"failed"} --set status=failed and return status failed.
 
 LOOP:
 1. Round 1 (the first ready): load ${skillRef('turbohttp-pr-review')} and follow it end to end: review against the acceptance criteria of every issue the PR closes or is part of, the RFC sections and phase docs they name, and both specialist rubrics; run the local gate in the review worktree (${GATE(RW)}) and, when Unity is available, the PR's new/changed tests scoped with --filter; submit one GitHub review with inline comments; decide the Bottom line. Only [blocker]/[must-fix]/[should-fix]/non-optional [nit] items count as action required.
    Test coverage is part of every round: every behavior change needs a deterministic regression test that would fail on the old code, and the PR body's "Local gates" section must match what you can reproduce. A missing regression test, a failing local gate, or a test that depends on wall-clock sleeps or the external network is a [must-fix]. Never run the full Unity suite: CI does.
-2. Every round N: write ${D}/reviews/r<N>.md (verdict, the numbered action list '[tag] path:line — what to do' or "none", and for N > 1 the status of each earlier item), then ${MB} state --run ${RUN} --lane ${L.slug} --set round=<N> .
+2. Every round N: run the THREAD TRIAGE below for the head you reviewed, then write ${D}/reviews/r<N>.md (verdict, the numbered action list '[tag] path:line — what to do (thread id when there is one)' or "none", the thread triage outcome (counts: listed as items, resolved with a reason), and for N > 1 the status of each earlier item), then ${MB} state --run ${RUN} --lane ${L.slug} --set round=<N> .
    - Action required and N < ${roundLimit}: send review {"round":N,"file":"${D}/reviews/r<N>.md"} --set stage=fix, then wait.
    - Action required and N >= ${roundLimit}: send final {"reason":"unresolved"} --set status=unresolved and return status unresolved.
-   - Clean: go to step 4.
+   - Clean (no action item and "unresolved": 0): go to step 4.
 3. On ready (round N+1), by reason:
    - review-fix${REVIEW_CI_FIXES ? ', ci-fix' : ''}, or conflict with "semantic": true: a DELTA re-review. Diff your last reviewed head to the new head in the review worktree; verify each earlier item is fixed; review the delta in full and other code only where the delta reaches. Read the author's thread replies; do not re-raise a finding rebutted with concrete code/RFC evidence unless you can show the rebuttal wrong with better evidence, and do not add nits you could have raised earlier unless they are real defects. Submit the re-review on GitHub, then step 2.
    - ${REVIEW_CI_FIXES ? '' : 'ci-fix, or '}conflict with "semantic": false: no review; go to step 4.
@@ -320,10 +333,12 @@ LOOP:
    - ci_failed: send ci {"file":"<file>","head":"<head>"} --set stage=ci-fix; wait (step 3).
    - conflict: send conflict {"notes":"<notes>"} --set stage=conflict; wait (step 3).
    - head_moved: the branch changed without a ready (an unexpected push). Fetch it and do a delta re-review of the new head as the next round (step 3 rules, then step 2).
+   - threads_open: review threads appeared or stayed open after your verdict (CodeQL alerts on the newest push, a human reviewer). Treat it as the next round on the same head: THREAD TRIAGE, then step 2.
    - merge_blocked: send final {"reason":"merge_blocked"} --set status=merge_blocked; return status merge_blocked.
    - retry: ask again; after 6 merge requests in total, send final {"reason":"failed"} --set status=failed and return status failed.
 - If recv times out for ${MAX_IDLE_MIN} consecutive minutes (since the last message you received): send final {"reason":"stalled"} --set status=stalled; return status stalled.
 - recv or answer-wait printing "stop": true: return status stopped (no final message).
+${THREAD_TRIAGE('<pr>', '<head>')}
 ${HELPERS(L.slug, 'review')}
 ${ENV}
 ${resume ? '\nRESUME: ' + resume : ''}
@@ -401,7 +416,7 @@ function mergePrompt(ev, L) {
   return `You are the CI and merge agent for lane "${slug}" (branch wf/${slug}, issues ${issuesText(L)}) in fatal10110/turboHTTP. Read the request file ${file} with the Read tool: its "question" field is a JSON object {"pr": <number>, "head": "<sha the reviewer approved>"}. The PR passed review with no action required, and the user explicitly authorized merging PRs that passed this review loop. Be mechanical: you never edit code, never resolve conflicts and never run tests locally (CI runs the full Unity suite and the gates).
 Every Bash call to ${MB} uses timeout 600000. You answer exactly once, at the end, with:
   ${MB} answer --run ${RUN} --id ${ev.id} --text '<json object>'
-where the object is {"status":"merged|conflict|ci_failed|head_moved|merge_blocked|retry","merge_sha":"","file":"","head":"","notes":""} (no single quotes inside).
+where the object is {"status":"merged|conflict|ci_failed|head_moved|threads_open|merge_blocked|retry","merge_sha":"","file":"","head":"","notes":""} (no single quotes inside).
 PR state and CI come from two compact commands (use them instead of pull_request_read polling):
   ${MB} pr-state --pr <n>   -> {state, merged, merge_sha, draft, head, mergeable_state, behind_by}
   ${MB} ci-wait --run ${RUN} --broker merge --head <sha> --wait 570   -> waits in-process; {state: success|failure|pending|error, failed: [{name, conclusion, run_id, job_id}], pending, missing}
@@ -410,6 +425,7 @@ PR state and CI come from two compact commands (use them instead of pull_request
 3. CI: ${MB} ci-wait --run ${RUN} --broker merge --head <head> --wait 570 ; while it prints state pending, run it again (at most 10 runs, about 90 minutes; longer: answer retry). It returns success only when every check run on the head finished green and the aggregate "ci" check is present (CodeQL alone is not enough). state error: run it once more, then fall back to pull_request_read get_check_runs.
    On a failure: list the failing jobs and read their logs (gh run view <run-id> --log-failed | tail -n 200). It is a flake only if the failing test has an open flaky-test issue (search_issues "repo:fatal10110/turboHTTP Flaky <TestName>") or it fails the same way on the latest main CI run; then rerun the failed jobs once (gh run rerun <run-id> --failed), comment the test name on that issue (or file one in "v1.1: Post-release hardening" with labels type:test, area:testing, priority:P2), and go back to waiting. A Unity license or activation error is infrastructure, not a code failure: answer retry with notes "unity license". Otherwise write ${D}/ci/c<next number>.md (create the directory if needed) with the head sha, each failing check, the failing test names and about 40 log lines per failure, and answer ci_failed with file = that path and head = the sha.
    Checks that never start or fail for GitHub Actions infrastructure reasons (cancelled, queued > 30 min, runner errors) twice in a row: answer retry with notes "ci outage".
+3b. Threads: ${MB} threads --pr <n> --head <head verified green> --wait 570 (it waits for code scanning on that head). "unresolved" > 0: do not merge; answer threads_open with head = that head and notes = the open threads as "id path:line title", at most 10. "error": run it once more, then answer retry.
 4. Merge: never edit the PR title or body (its Closes/Part of lines are the implementation agent's decision). If the PR is a draft, mark it ready (update_pull_request draft=false). mcp__github__merge_pull_request (merge_method squash, expectedHeadSha = the head verified green). "Head is not up to date" or "head changed": back to step 2 (at most 3 times). If the permission system or a repository ruleset denies the merge, do not try another route: answer merge_blocked.
 5. After the merge: git -C ${REPO} push origin --delete wf/${slug}; confirm every "Closes" issue is closed (close any that did not auto-close, commenting the merge SHA); ${MB} state --run ${RUN} --lane ${slug} --set status=merged --set merge_sha=<sha> ; answer merged with merge_sha.
 GitHub: use the mcp__github__* tools (load with ToolSearch "select:mcp__github__pull_request_read,mcp__github__update_pull_request_branch,mcp__github__merge_pull_request,mcp__github__update_pull_request,mcp__github__issue_read,mcp__github__issue_write,mcp__github__add_issue_comment,mcp__github__search_issues"); gh only for the run logs and reruns above, with a 300000 ms timeout.
