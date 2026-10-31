@@ -16,8 +16,8 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// Over <see cref="SaeaStream"/> a synchronous Read/Write is sync-over-async that needs a
     /// second pool thread to complete; with the pool clamped, blocking handshakes stall.
     /// </summary>
+    // ThreadPool limits are process-global; Unity's runner executes tests serially.
     [TestFixture]
-    [NonParallelizable] // ThreadPool limits are process-global.
     public class BouncyCastleHandshakeThreadPoolTests
     {
         /// <summary>Forwards to the inner stream and counts synchronous I/O calls.</summary>

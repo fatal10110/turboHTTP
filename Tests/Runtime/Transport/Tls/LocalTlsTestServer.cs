@@ -70,39 +70,8 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         internal static X509Certificate2 TryCreateLocalhostCertificate()
         {
-            try
-            {
-                using var rsa = RSA.Create(2048);
-                var request = new CertificateRequest(
-                    "CN=localhost",
-                    rsa,
-                    HashAlgorithmName.SHA256,
-                    RSASignaturePadding.Pkcs1);
-                request.CertificateExtensions.Add(
-                    new X509BasicConstraintsExtension(false, false, 0, false));
-                request.CertificateExtensions.Add(
-                    new X509KeyUsageExtension(
-                        X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
-                        false));
-
-                using var certificate = request.CreateSelfSigned(
-                    DateTimeOffset.UtcNow.AddDays(-1),
-                    DateTimeOffset.UtcNow.AddDays(7));
-                return new X509Certificate2(certificate.Export(X509ContentType.Pfx));
-            }
-            catch (CryptographicException)
-            {
-                return null;
-            }
-            catch (NotSupportedException)
-            {
-                // Also covers PlatformNotSupportedException.
-                return null;
-            }
-            catch (NotImplementedException)
-            {
-                return null;
-            }
+            // Unity's Mono has no CertificateRequest; use the committed test identity (#151).
+            return TestLocalhostCertificate.TryLoad();
         }
     }
 }

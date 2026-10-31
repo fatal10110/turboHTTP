@@ -288,6 +288,9 @@ When all workflows have returned:
   ticked for merged lanes (tick them), and that no `wf-<slug>` worktree remains for a merged lane.
 - If phase status changed, update `Development/docs/agents/project-status.md` in one follow-up
   commit/PR (lanes never edit them).
+- Run the full Unity suites in the host editor on the new `origin/main` (testing.md, "Periodic
+  host-editor runs"): PR CI skips Unity tests without a license, so this is the first time the
+  wave's Unity tests actually run. File or fix every failure before reporting the run done.
 
 ## Editing waves.js
 

@@ -5,9 +5,19 @@
 #   UNITY_PATH=/Applications/Unity/Hub/Editor/2021.3.45f2/Unity.app/Contents/MacOS/Unity \
 #     Tools~/unity/run-tests.sh --platform EditMode|PlayMode [--filter <regex>] [--category <name>]
 #
+# WSL with a Windows editor: point UNITY_PATH at Unity.exe under /mnt/<drive>/... The package copy,
+# test project, results and log then live under %LOCALAPPDATA%\turbohttp (Unity cannot run a project
+# from a \\wsl$ path) and every path handed to Unity is converted with wslpath -m.
+#
+#   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe Tools~/unity/run-tests.sh --platform EditMode
+#
+# Without --filter/--category the whole suite runs; do that only for the periodic host-editor run
+# (testing.md, "Periodic host-editor runs"), never per change.
+#
 # Exit codes: 0 pass, 1 test failures, 2 usage/setup error, 3 Unity not installed (prints
 # UNITY_UNAVAILABLE; PR CI then runs the tests). Env: UNITY_TEST_PROJECT (default
-# ~/.cache/turbohttp/testproj), UNITY_PACKAGE_COPY (default ~/.cache/turbohttp/package).
+# <cache>/testproj), UNITY_PACKAGE_COPY (default <cache>/package), where <cache> is
+# ~/.cache/turbohttp, or %LOCALAPPDATA%\turbohttp for a Windows editor driven from WSL.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -28,18 +38,33 @@ if [ -z "$unity" ] || [ ! -x "$unity" ]; then
   exit 3
 fi
 
-cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
+# A Windows Unity.exe driven from WSL needs Windows paths and a cache on a Windows drive.
+win=0
+case "$unity" in
+  *.exe|*.EXE)
+    if command -v wslpath >/dev/null 2>&1; then win=1; fi ;;
+esac
+topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
+
+if [ "$win" = 1 ]; then
+  localappdata="$(cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r')"
+  [ -n "$localappdata" ] || { echo "run-tests: cannot read %LOCALAPPDATA% from Windows" >&2; exit 2; }
+  cache="$(wslpath -u "$localappdata")/turbohttp"
+else
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
+fi
 proj="${UNITY_TEST_PROJECT:-$cache/testproj}"
 pkg="${UNITY_PACKAGE_COPY:-$cache/package}"
 mkdir -p "$cache"
 
 rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --exclude='Library/' \
-  --exclude='Temp/' --exclude='Logs/' --exclude='.DS_Store' "$repo/" "$pkg/"
+  --exclude='Temp/' --exclude='Logs/' --exclude='.DS_Store' --exclude='.claude/' --exclude='Tools~/' \
+  "$repo/" "$pkg/"
 
 if [ ! -d "$proj/ProjectSettings" ]; then
-  "$unity" -batchmode -nographics -quit -createProject "$proj" -logFile "$cache/create.log"
+  "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$cache/create.log")"
 fi
-python3 - "$proj/Packages/manifest.json" "$pkg" <<'PY'
+python3 - "$proj/Packages/manifest.json" "$(topath "$pkg")" <<'PY'
 import json, sys
 path, pkg = sys.argv[1], sys.argv[2]
 m = json.load(open(path))
@@ -51,7 +76,8 @@ PY
 
 ts="$(date +%Y%m%d-%H%M%S)"
 xml="$cache/results-$platform-$ts.xml"; log="$cache/unity-$platform-$ts.log"
-args=(-batchmode -projectPath "$proj" -runTests -testPlatform "$platform" -testResults "$xml" -logFile "$log")
+args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform "$platform"
+      -testResults "$(topath "$xml")" -logFile "$(topath "$log")")
 # Editor-window tests need graphics in EditMode.
 [ "$platform" = PlayMode ] && args+=(-nographics)
 [ -n "$filter" ] && args+=(-testFilter "$filter")

@@ -5,8 +5,10 @@ Checks (all on git-tracked files):
   meta      every asset Unity imports has a sibling .meta; no orphan .meta; GUIDs unique
   asmdef    assembly dependency graph follows the module rules in Development/docs/agents/architecture.md
   json      every .json/.asmdef parses; package.json has the required UPM fields
+  unitynunit  tests use only what Unity 2021.3's NUnit (com.unity.ext.nunit 1.0.6) provides; PR CI
+            cannot compile the Unity test assemblies without a license, so this is the only guard
 
-Usage: Tools~/ci/check_repo.py [meta|asmdef|json ...]   (default: all)
+Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit ...]   (default: all)
 """
 import json
 import os
@@ -124,10 +126,34 @@ def check_json(files):
     return errors
 
 
+# APIs missing from Unity 2021.3's NUnit (checked against com.unity.ext.nunit 1.0.6's nunit.framework.dll).
+UNITY_NUNIT_MISSING = [
+    (re.compile(r"\[\s*(?:[\w.]+\.)?NonParallelizable\b"), "[NonParallelizable] (Unity runs tests serially; drop it)"),
+    (re.compile(r"\bAssert\.(?:ThrowsAsync|CatchAsync|ThatAsync)\b"), "Assert.*Async (use AssertAsync.ThrowsAsync)"),
+    (re.compile(r"\bAssert\.Multiple\b"), "Assert.Multiple"),
+]
+ASYNC_TASK_TEST = re.compile(r"\[\s*(?:Test|TestCase\b[^\]]*|TestCaseSource\b[^\]]*)\s*\]\s*(?:\[[^\]]*\]\s*)*public\s+async\s+Task\b")
+
+
+def check_unity_nunit(files):
+    errors = []
+    for f in files:
+        if not (f.startswith("Tests/") and f.endswith(".cs")):
+            continue
+        text = open(os.path.join(ROOT, f), encoding="utf-8-sig").read()
+        for pattern, what in UNITY_NUNIT_MISSING:
+            for m in pattern.finditer(text):
+                errors.append(f"unitynunit: {f}:{text.count(chr(10), 0, m.start()) + 1}: {what} does not exist in Unity's NUnit")
+        for m in ASYNC_TASK_TEST.finditer(text):
+            errors.append(f"unitynunit: {f}:{text.count(chr(10), 0, m.start()) + 1}: async Task test methods do not run in "
+                          "Unity's NUnit; write a void test that wraps the body in AssertAsync.Run")
+    return errors
+
+
 def main():
-    wanted = sys.argv[1:] or ["meta", "asmdef", "json"]
+    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit"]
     files = tracked()
-    checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json}
+    checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit}
     errors = []
     for w in wanted:
         errors += checks[w](files)
