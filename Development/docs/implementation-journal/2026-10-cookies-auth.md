@@ -73,13 +73,13 @@ Docs: hazard line in `Development/docs/agents/architecture.md`.
 ## Verification
 
 - `'./Tools~/ci/check.sh'`: pass (invariants, format, shadow build with analyzers).
-- Unity EditMode/PlayMode: not run (Unity unavailable from WSL). The PR CI `unity-tests` job also
-  skips without `UNITY_LICENSE` (#188).
-- Because of that, I compiled the touched modules (Core with a stub for the three UnityEngine
-  members it uses, JSON, Auth, Middleware, Testing) and ran these test files under the .NET 8
-  NUnit runner in a scratch harness outside the repo: the 4 new files plus
-  `AuthInterceptorTests`, `OAuthClientTests`, `CookieInterceptorTests`, `RedirectInterceptorTests`.
-  105/105 passed.
+- Unity 2021.3.45f2 host editor (`run-tests.sh` from WSL, Windows `Unity.exe`), PlayMode
+  `--filter 'AuthRedirectOrderTests|OAuthRefreshTokenTests|OAuthClientTests|AuthInterceptorTests|CookieRedirectHopTests|CookieJarScopingTests|CookieInterceptorTests|RedirectInterceptorTests'`:
+  105/105 passed. EditMode with the same filter selects 0 tests: these fixtures live in
+  `TurboHTTP.Tests.Runtime`, which runs under PlayMode.
+- The same files also pass (105/105) under the .NET 8 NUnit runner in a scratch harness outside
+  the repo. The harness compiles Core (with a stub for the three UnityEngine members it uses),
+  JSON, Auth, Middleware and Testing.
 - With `Runtime/Auth` and `Runtime/Middleware` reverted to `origin/main`, 27 of the new cases
   fail (the #69 case fails through its 10 s cancellation bound instead of hanging). The cases that
   already held on main pass: Auth outside Redirect, same-origin redirects, and co.za/com.ua.
