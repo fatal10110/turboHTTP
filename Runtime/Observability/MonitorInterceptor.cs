@@ -10,17 +10,31 @@ namespace TurboHTTP.Observability
     /// <summary>
     /// Interceptor that captures request/response snapshots for the Editor monitor.
     /// </summary>
+    /// <remarks>
+    /// Capture is off unless <see cref="CaptureEnabled"/> is set and either a viewer is attached
+    /// (<see cref="AttachViewer"/>, done by the HTTP Monitor window while it is open) or
+    /// <see cref="CaptureWithoutViewer"/> is set. Captured data is redacted at capture time with
+    /// <see cref="RedactionPolicy"/> and history is bounded by <see cref="HistoryCapacity"/> entries
+    /// and <see cref="MaxTotalCaptureBytes"/> bytes.
+    /// </remarks>
     public sealed class MonitorInterceptor : IHttpInterceptor
     {
         private const int DefaultHistoryCapacity = 1000;
         private const int DefaultMaxCaptureSizeBytes = 5 * 1024 * 1024; // 5 MB
         private const int DefaultBinaryPreviewBytes = 64 * 1024; // 64 KB
+        private const long DefaultMaxTotalCaptureBytes = 32L * 1024 * 1024; // 32 MB
         private const int BinaryDetectionSampleBytes = 512;
         private static readonly TimeSpan CaptureErrorLogCooldown = TimeSpan.FromSeconds(30);
 
         private static readonly object HistoryLock = new object();
         private static readonly object CaptureErrorLogLock = new object();
         private static HttpMonitorEvent[] _historyBuffer = new HttpMonitorEvent[DefaultHistoryCapacity];
+        private static long[] _historySizes = new long[DefaultHistoryCapacity];
+        private static long _historyBytes;
+        private static long _maxTotalCaptureBytes = DefaultMaxTotalCaptureBytes;
+        private static int _viewerCount;
+        private static int _captureWithoutViewer;
+        private static RedactionPolicy _redactionPolicy = RedactionPolicy.Default;
         private static int _historyStart;
         private static int _historyCount;
         private static int _historyCapacity = DefaultHistoryCapacity;
@@ -83,10 +97,85 @@ namespace TurboHTTP.Observability
             set => Volatile.Write(ref _diagnosticLogger, value);
         }
 
+        /// <summary>
+        /// Master switch (the "Enable HTTP Monitor" preference). Capture also needs an attached viewer
+        /// or <see cref="CaptureWithoutViewer"/>; see <see cref="IsCapturing"/>.
+        /// </summary>
         public static bool CaptureEnabled
         {
             get => Volatile.Read(ref _captureEnabled) == 1;
             set => Volatile.Write(ref _captureEnabled, value ? 1 : 0);
+        }
+
+        /// <summary>
+        /// Opt-in: capture while no viewer is attached (no HTTP Monitor window open). Default <c>false</c>.
+        /// </summary>
+        public static bool CaptureWithoutViewer
+        {
+            get => Volatile.Read(ref _captureWithoutViewer) == 1;
+            set => Volatile.Write(ref _captureWithoutViewer, value ? 1 : 0);
+        }
+
+        /// <summary>Number of attached viewers (open HTTP Monitor windows).</summary>
+        public static int ViewerCount => Volatile.Read(ref _viewerCount);
+
+        /// <summary>
+        /// Whether requests are captured now: <see cref="CaptureEnabled"/> and (a viewer is attached
+        /// or <see cref="CaptureWithoutViewer"/>). When <c>false</c> the interceptor adds no per-request work.
+        /// </summary>
+        public static bool IsCapturing =>
+            CaptureEnabled && (Volatile.Read(ref _viewerCount) > 0 || CaptureWithoutViewer);
+
+        /// <summary>
+        /// Registers a viewer (for example the HTTP Monitor window in <c>OnEnable</c>). Capture runs while
+        /// at least one viewer is attached. Dispose the returned handle to detach; disposing twice is a no-op.
+        /// </summary>
+        public static IDisposable AttachViewer()
+        {
+            Interlocked.Increment(ref _viewerCount);
+            return new ViewerHandle();
+        }
+
+        /// <summary>
+        /// Redaction applied at capture time to URLs (query values, user-info) and header values.
+        /// Default <see cref="Observability.RedactionPolicy.Default"/>; setting <c>null</c> restores it.
+        /// Opt out explicitly with <see cref="Observability.RedactionPolicy.None"/>.
+        /// </summary>
+        public static RedactionPolicy RedactionPolicy
+        {
+            get => Volatile.Read(ref _redactionPolicy);
+            set => Volatile.Write(ref _redactionPolicy, value ?? RedactionPolicy.Default);
+        }
+
+        /// <summary>
+        /// Budget for the bytes held by the capture history (bodies plus an estimate of URL and header
+        /// strings). Oldest entries are evicted to stay within it, each captured body is truncated to a
+        /// quarter of it, and an event that still exceeds it (huge headers) is not stored. Minimum 1 KB; default 32 MB.
+        /// </summary>
+        public static long MaxTotalCaptureBytes
+        {
+            get => Interlocked.Read(ref _maxTotalCaptureBytes);
+            set
+            {
+                // Interlocked: a 64-bit field must not tear on 32-bit IL2CPP targets.
+                Interlocked.Exchange(ref _maxTotalCaptureBytes, Math.Max(1024L, value));
+                lock (HistoryLock)
+                {
+                    EvictToBudgetLocked(0);
+                }
+            }
+        }
+
+        /// <summary>Bytes currently held by the capture history (see <see cref="MaxTotalCaptureBytes"/>).</summary>
+        public static long TotalCapturedBytes
+        {
+            get
+            {
+                lock (HistoryLock)
+                {
+                    return _historyBytes;
+                }
+            }
         }
 
         public static int HistoryCount
@@ -164,8 +253,10 @@ namespace TurboHTTP.Observability
             lock (HistoryLock)
             {
                 Array.Clear(_historyBuffer, 0, _historyBuffer.Length);
+                Array.Clear(_historySizes, 0, _historySizes.Length);
                 _historyStart = 0;
                 _historyCount = 0;
+                _historyBytes = 0;
             }
 
             ResetCaptureFailureThrottle();
@@ -180,7 +271,7 @@ namespace TurboHTTP.Observability
 
             return (request, handler, context, cancellationToken) =>
             {
-                if (!CaptureEnabled)
+                if (!IsCapturing)
                     return next(request, handler, context, cancellationToken);
 
                 return next(
@@ -234,8 +325,8 @@ namespace TurboHTTP.Observability
                     responseBodyWasTruncated,
                     context,
                     exception);
-                StoreEvent(monitorEvent);
-                PublishEvent(monitorEvent);
+                if (StoreEvent(monitorEvent))
+                    PublishEvent(monitorEvent);
             }
             catch (Exception captureEx)
             {
@@ -253,7 +344,8 @@ namespace TurboHTTP.Observability
             RequestContext context,
             Exception exception)
         {
-            var requestHeaders = CopyHeaders(request?.Headers);
+            var redactionPolicy = RedactionPolicy;
+            var requestHeaders = CopyHeaders(request?.Headers, redactionPolicy);
             ReadOnlyMemory<byte> requestBody = ReadOnlyMemory<byte>.Empty;
             var requestBodyCaptured = request != null && request.TryGetBufferedContent(out requestBody);
             var requestSnapshot = CreateBodySnapshot(
@@ -265,7 +357,7 @@ namespace TurboHTTP.Observability
                 ? string.Empty
                 : BuildRequestBodyCaptureNote(request?.Content);
 
-            var copiedResponseHeaders = CopyHeaders(responseHeaders);
+            var copiedResponseHeaders = CopyHeaders(responseHeaders, redactionPolicy);
             var responseSnapshot = CreateBodySnapshot(
                 responseBody,
                 copiedResponseHeaders,
@@ -281,7 +373,7 @@ namespace TurboHTTP.Observability
                 id: Guid.NewGuid().ToString("N"),
                 timestamp: DateTime.UtcNow,
                 method: request?.Method.ToString(),
-                url: request?.Uri?.ToString(),
+                url: redactionPolicy.RedactUrl(request?.Uri),
                 requestHeaders: requestHeaders,
                 requestBody: requestSnapshot.Body,
                 requestBodyCaptureNote: requestBodyCaptureNote,
@@ -314,7 +406,9 @@ namespace TurboHTTP.Observability
             return $"<Streaming request body unavailable without buffering; length={length}; replayability={content.Replayability}>";
         }
 
-        private static IReadOnlyDictionary<string, string> CopyHeaders(HttpHeaders headers)
+        private static IReadOnlyDictionary<string, string> CopyHeaders(
+            HttpHeaders headers,
+            RedactionPolicy redactionPolicy)
         {
             var copy = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (headers == null)
@@ -346,6 +440,9 @@ namespace TurboHTTP.Observability
                         ? "; " : ", ";
                     value = string.Join(separator, values);
                 }
+
+                // Policy first: a throwing transform below then leaves the redacted value in place.
+                value = redactionPolicy.RedactHeaderValue(headerKey, value);
 
                 if (transform != null)
                 {
@@ -401,7 +498,7 @@ namespace TurboHTTP.Observability
 
             var originalSize = Math.Max(originalSizeHint, body.Length);
             var isBinary = HttpMonitorEvent.IsLikelyBinaryPayload(body, headers);
-            var limit = isBinary ? BinaryPreviewBytes : MaxCaptureSizeBytes;
+            var limit = GetBodyCaptureLimit(isBinary);
             var captureSize = Math.Min(body.Length, Math.Max(0, limit));
             var isTruncated = wasTruncatedBeforeSnapshot || captureSize < originalSize;
 
@@ -454,7 +551,7 @@ namespace TurboHTTP.Observability
                 ? CopyPrefix(body, sampleLength)
                 : Array.Empty<byte>();
             var isBinary = HttpMonitorEvent.IsLikelyBinaryPayload(sample, headers);
-            var limit = isBinary ? BinaryPreviewBytes : MaxCaptureSizeBytes;
+            var limit = GetBodyCaptureLimit(isBinary);
             var captureSize = (int)Math.Min(body.Length, Math.Max(0L, limit));
             var isTruncated = wasTruncatedBeforeSnapshot || captureSize < originalSize;
 
@@ -487,7 +584,22 @@ namespace TurboHTTP.Observability
             var liveCaptureLimit = HasClearlyBinaryContentType(headers)
                 ? BinaryPreviewBytes
                 : Math.Max(MaxCaptureSizeBytes, BinaryPreviewBytes);
+            liveCaptureLimit = Math.Min(liveCaptureLimit, GetBudgetBodyLimit());
             return Math.Max(liveCaptureLimit, BinaryDetectionSampleBytes);
+        }
+
+        private static int GetBodyCaptureLimit(bool isBinary)
+        {
+            var limit = isBinary ? BinaryPreviewBytes : MaxCaptureSizeBytes;
+            return Math.Min(limit, GetBudgetBodyLimit());
+        }
+
+        // Each body may use at most a quarter of the total budget, so one event cannot take the whole
+        // history and its two bodies plus URL/headers normally fit the budget.
+        private static int GetBudgetBodyLimit()
+        {
+            var quarter = MaxTotalCaptureBytes / 4;
+            return quarter > int.MaxValue ? int.MaxValue : (int)quarter;
         }
 
         private static bool HasClearlyBinaryContentType(HttpHeaders headers)
@@ -632,45 +744,105 @@ namespace TurboHTTP.Observability
             return snapshot;
         }
 
-        private static void StoreEvent(HttpMonitorEvent monitorEvent)
+        private static bool StoreEvent(HttpMonitorEvent monitorEvent)
         {
+            var size = EstimateEventSize(monitorEvent);
             lock (HistoryLock)
             {
+                if (size > Interlocked.Read(ref _maxTotalCaptureBytes))
+                    return false;
+
                 if (_historyBuffer.Length != _historyCapacity)
                 {
                     ResizeBufferLocked(_historyCapacity);
                 }
 
-                if (_historyCount < _historyBuffer.Length)
+                EvictToBudgetLocked(size);
+
+                if (_historyCount == _historyBuffer.Length)
                 {
-                    var insertIndex = (_historyStart + _historyCount) % _historyBuffer.Length;
-                    _historyBuffer[insertIndex] = monitorEvent;
-                    _historyCount++;
-                    return;
+                    RemoveOldestLocked();
                 }
 
-                _historyBuffer[_historyStart] = monitorEvent;
-                _historyStart = (_historyStart + 1) % _historyBuffer.Length;
+                var insertIndex = (_historyStart + _historyCount) % _historyBuffer.Length;
+                _historyBuffer[insertIndex] = monitorEvent;
+                _historySizes[insertIndex] = size;
+                _historyCount++;
+                _historyBytes += size;
+                return true;
             }
+        }
+
+        private static void EvictToBudgetLocked(long incomingSize)
+        {
+            var budget = Interlocked.Read(ref _maxTotalCaptureBytes);
+            while (_historyCount > 0 && _historyBytes + incomingSize > budget)
+            {
+                RemoveOldestLocked();
+            }
+        }
+
+        private static void RemoveOldestLocked()
+        {
+            _historyBytes -= _historySizes[_historyStart];
+            _historyBuffer[_historyStart] = null;
+            _historySizes[_historyStart] = 0;
+            _historyStart = (_historyStart + 1) % _historyBuffer.Length;
+            _historyCount--;
+        }
+
+        internal static long EstimateEventSize(HttpMonitorEvent monitorEvent)
+        {
+            if (monitorEvent == null)
+                return 0;
+
+            // Bodies are byte arrays; strings are UTF-16 (2 bytes per char) plus a fixed object overhead.
+            const long ObjectOverhead = 256;
+            long size = ObjectOverhead + monitorEvent.RequestBody.Length + monitorEvent.ResponseBody.Length;
+            size += 2L * ((monitorEvent.Url?.Length ?? 0) + (monitorEvent.Error?.Length ?? 0)
+                + (monitorEvent.RequestBodyCaptureNote?.Length ?? 0));
+            size += EstimateHeadersSize(monitorEvent.RequestHeaders);
+            size += EstimateHeadersSize(monitorEvent.ResponseHeaders);
+            return size;
+        }
+
+        private static long EstimateHeadersSize(IReadOnlyDictionary<string, string> headers)
+        {
+            if (headers == null)
+                return 0;
+
+            long size = 0;
+            foreach (var pair in headers)
+            {
+                size += 2L * ((pair.Key?.Length ?? 0) + (pair.Value?.Length ?? 0)) + 32;
+            }
+
+            return size;
         }
 
         private static void ResizeBufferLocked(int newCapacity)
         {
             var capacity = Math.Max(1, newCapacity);
             var newBuffer = new HttpMonitorEvent[capacity];
+            var newSizes = new long[capacity];
 
             var itemsToCopy = Math.Min(_historyCount, capacity);
             var skipCount = _historyCount - itemsToCopy;
+            long bytes = 0;
 
             for (int i = 0; i < itemsToCopy; i++)
             {
                 var sourceIndex = (_historyStart + skipCount + i) % _historyBuffer.Length;
                 newBuffer[i] = _historyBuffer[sourceIndex];
+                newSizes[i] = _historySizes[sourceIndex];
+                bytes += newSizes[i];
             }
 
             _historyBuffer = newBuffer;
+            _historySizes = newSizes;
             _historyStart = 0;
             _historyCount = itemsToCopy;
+            _historyBytes = bytes;
         }
 
         private static void PublishEvent(HttpMonitorEvent monitorEvent)
@@ -754,6 +926,17 @@ namespace TurboHTTP.Observability
             {
                 _nextCaptureErrorLogUtcTicks = DateTime.MinValue.Ticks;
                 _suppressedCaptureErrorCount = 0;
+            }
+        }
+
+        private sealed class ViewerHandle : IDisposable
+        {
+            private int _disposed;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                    Interlocked.Decrement(ref _viewerCount);
             }
         }
     }

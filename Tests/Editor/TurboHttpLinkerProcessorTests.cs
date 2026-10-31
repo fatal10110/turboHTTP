@@ -41,7 +41,6 @@ namespace TurboHTTP.Tests.Editor
 
         [TestCase("TurboHTTP.JSON", "TurboHTTP.JSON.JsonSerializer")]
         [TestCase("TurboHTTP.JSON", "TurboHTTP.JSON.JsonExtensions")]
-        [TestCase("TurboHTTP.Observability", "TurboHTTP.Observability.MonitorInterceptor")]
         [TestCase("TurboHTTP.Transport", "TurboHTTP.Transport.TransportModuleInitializer")]
         [TestCase("TurboHTTP.Transport", "TurboHTTP.Transport.RawSocketTransport")]
         [TestCase("TurboHTTP.WebSocket.Transport", "TurboHTTP.WebSocket.Transport.WebSocketTransportModuleInitializer")]

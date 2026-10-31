@@ -97,6 +97,7 @@ namespace TurboHTTP.Editor
 
             var headers = new HttpHeaders();
             bool skippedTransportHeaders = false;
+            bool skippedRedactedHeaders = false;
             if (evt.RequestHeaders != null)
             {
                 foreach (var pair in evt.RequestHeaders)
@@ -112,6 +113,13 @@ namespace TurboHTTP.Editor
                         continue;
                     }
 
+                    // Captured with redaction: never send the placeholder as a credential.
+                    if (string.Equals(pair.Value, RedactionPolicy.RedactedValue, StringComparison.Ordinal))
+                    {
+                        skippedRedactedHeaders = true;
+                        continue;
+                    }
+
                     headers.Set(pair.Key, pair.Value ?? string.Empty);
                 }
             }
@@ -119,16 +127,31 @@ namespace TurboHTTP.Editor
             var body = evt.RequestBody.IsEmpty ? null : evt.RequestBody.ToArray();
             request = new UHttpRequest(method, uri, headers, body);
 
-            warning = BuildReplayWarning(evt, skippedTransportHeaders, body == null || body.Length == 0);
+            warning = BuildReplayWarning(
+                evt,
+                skippedTransportHeaders,
+                skippedRedactedHeaders,
+                body == null || body.Length == 0);
             return true;
         }
 
         private static string BuildReplayWarning(
             HttpMonitorEvent evt,
             bool skippedTransportHeaders,
+            bool skippedRedactedHeaders,
             bool bodyIsEmpty)
         {
             var warning = new StringBuilder();
+
+            if (skippedRedactedHeaders
+                || (evt.Url != null && evt.Url.IndexOf(RedactionPolicy.RedactedValue, StringComparison.Ordinal) >= 0))
+            {
+                AppendReplayWarning(
+                    warning,
+                    "This request was captured with redaction: redacted header values are omitted and redacted " +
+                    "URL values are sent as the placeholder. Turn off \"Redact Captured Secrets\" in " +
+                    "Preferences > TurboHTTP to capture replayable requests.");
+            }
 
             if (evt.Method == "POST" || evt.Method == "PATCH" || evt.Method == "DELETE")
             {

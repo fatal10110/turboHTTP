@@ -16,13 +16,18 @@ namespace TurboHTTP.Testing
                 entries.Add(ToSerializableDictionary(file.Entries[i]));
             }
 
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 ["Version"] = file.Version,
                 ["CreatedUtcTicks"] = file.CreatedUtcTicks,
                 ["UpdatedUtcTicks"] = file.UpdatedUtcTicks,
                 ["Entries"] = entries
             };
+
+            if (!string.IsNullOrEmpty(file.KeySalt))
+                result["KeySalt"] = file.KeySalt;
+
+            return result;
         }
 
         private static Dictionary<string, object> ToSerializableDictionary(RecordingEntryDto entry)
@@ -91,6 +96,7 @@ namespace TurboHTTP.Testing
             var file = new RecordingFileDto
             {
                 Version = ReadInt(dict, "Version"),
+                KeySalt = ReadString(dict, "KeySalt"),
                 CreatedUtcTicks = ReadLong(dict, "CreatedUtcTicks"),
                 UpdatedUtcTicks = ReadLong(dict, "UpdatedUtcTicks"),
                 Entries = new List<RecordingEntryDto>()

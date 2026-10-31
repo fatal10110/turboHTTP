@@ -17,17 +17,7 @@ namespace TurboHTTP.Editor
     {
         private const double MinRepaintIntervalSeconds = 0.1d;
 
-        private static readonly HashSet<string> ConfidentialHeaders = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase)
-        {
-            "Authorization",
-            "Proxy-Authorization",
-            "WWW-Authenticate",
-            "X-Auth-Token",
-            "X-Api-Key",
-            "Cookie",
-            "Set-Cookie"
-        };
+        private const float RequestRowHeight = 22f;
 
         public static bool DefaultMaskConfidentialHeaders { get; set; }
 
@@ -36,6 +26,11 @@ namespace TurboHTTP.Editor
         private readonly string[] _tabNames = { "Request", "Response", "Timeline", "Raw" };
 
         private Vector2 _requestListScroll;
+
+        // Visible row window of the request list, computed on the Layout pass only (see DrawRequestList).
+        private int _requestListFirst;
+        private int _requestListLast;
+        private int _requestListCount;
         private Vector2 _detailsScroll;
         private HttpMonitorEvent _selectedEvent;
         private string _filterUrl = string.Empty;
@@ -48,6 +43,7 @@ namespace TurboHTTP.Editor
         private int _pendingUiRefresh;
         private bool _deferredRepaintScheduled;
         private double _lastRepaintTime;
+        private IDisposable _captureViewer;
 
         [MenuItem("Window/TurboHTTP/HTTP Monitor")]
         public static void ShowWindow()
@@ -59,6 +55,9 @@ namespace TurboHTTP.Editor
         private void OnEnable()
         {
             _maskConfidentialHeaders = DefaultMaskConfidentialHeaders;
+            // Capture runs only while a Monitor window is open (unless "Capture While Closed" is set).
+            _captureViewer?.Dispose();
+            _captureViewer = MonitorInterceptor.AttachViewer();
             MonitorInterceptor.OnRequestCaptured += OnRequestCaptured;
             _historyDirty = true;
             _filterDirty = true;
@@ -68,6 +67,8 @@ namespace TurboHTTP.Editor
         private void OnDisable()
         {
             MonitorInterceptor.OnRequestCaptured -= OnRequestCaptured;
+            _captureViewer?.Dispose();
+            _captureViewer = null;
             EditorApplication.update -= DeferredRepaint;
             _deferredRepaintScheduled = false;
             Interlocked.Exchange(ref _pendingUiRefresh, 0);

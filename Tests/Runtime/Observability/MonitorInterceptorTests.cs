@@ -324,6 +324,8 @@ namespace TurboHTTP.Tests.Observability
         {
             AssertAsync.Run(async () =>
             {
+                // Checks raw multi-value joining, so capture-time redaction (default on) is turned off.
+                MonitorInterceptor.RedactionPolicy = RedactionPolicy.None;
                 var responseHeaders = new HttpHeaders();
                 responseHeaders.Add("Set-Cookie", "session=abc123; Path=/");
                 responseHeaders.Add("Set-Cookie", "prefs=dark; Path=/settings");
@@ -503,6 +505,10 @@ namespace TurboHTTP.Tests.Observability
         private static void ResetMonitor()
         {
             MonitorInterceptor.CaptureEnabled = true;
+            // These tests exercise capture itself; the viewer gate is covered by MonitorRedactionTests.
+            MonitorInterceptor.CaptureWithoutViewer = true;
+            MonitorInterceptor.RedactionPolicy = null;
+            MonitorInterceptor.MaxTotalCaptureBytes = 32L * 1024 * 1024;
             MonitorInterceptor.HeaderValueTransform = null;
             MonitorInterceptor.DiagnosticLogger = null;
             MonitorInterceptor.HistoryCapacity = 1000;

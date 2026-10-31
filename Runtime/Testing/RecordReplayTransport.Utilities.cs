@@ -58,7 +58,17 @@ namespace TurboHTTP.Testing
             return false;
         }
 
-        private static string ComputeBodyHash(ReadOnlyMemory<byte> body)
+        // Sensitive header values in match keys are stored only as HMAC-SHA256 under the per-recording
+        // salt, so the recording file never holds the raw credential (#93).
+        private static string ComputeKeyedValueHash(string value, byte[] key)
+        {
+            using var hmac = new HMACSHA256(key);
+            return "hmac-sha256:" + ToLowerHex(hmac.ComputeHash(Utf8.GetBytes(value ?? string.Empty)));
+        }
+
+        // Without a salt (recordings written before #93) the request body hash is plain SHA-256; with one
+        // it is HMAC-SHA256, so a low-entropy body (a form with a password) cannot be guessed from it.
+        private static string ComputeBodyHash(ReadOnlyMemory<byte> body, byte[] key)
         {
             if (body.IsEmpty)
                 return "sha256:empty";
@@ -80,8 +90,8 @@ namespace TurboHTTP.Testing
 
             try
             {
-                using var sha = SHA256.Create();
-                if (sha == null)
+                using HashAlgorithm algorithm = key != null ? new HMACSHA256(key) : SHA256.Create();
+                if (algorithm == null)
                 {
                     throw new InvalidOperationException(
                         "SHA-256 provider is unavailable. Preserve SHA256 types from stripping " +
@@ -93,25 +103,25 @@ namespace TurboHTTP.Testing
                 {
                     var firstLength = Math.Min(BodyEdgeSliceBytes, bodyLength);
                     var lastLength = Math.Min(BodyEdgeSliceBytes, bodyLength - firstLength);
-                    sha.TransformBlock(bodyBytes, bodyOffset, firstLength, null, 0);
+                    algorithm.TransformBlock(bodyBytes, bodyOffset, firstLength, null, 0);
                     if (lastLength > 0)
                     {
                         var lastOffset = bodyOffset + bodyLength - lastLength;
-                        sha.TransformBlock(bodyBytes, lastOffset, lastLength, null, 0);
+                        algorithm.TransformBlock(bodyBytes, lastOffset, lastLength, null, 0);
                     }
 
                     var lengthBytes = BitConverter.GetBytes((long)bodyLength);
                     if (!BitConverter.IsLittleEndian)
                         Array.Reverse(lengthBytes);
-                    sha.TransformFinalBlock(lengthBytes, 0, lengthBytes.Length);
-                    hash = sha.Hash;
+                    algorithm.TransformFinalBlock(lengthBytes, 0, lengthBytes.Length);
+                    hash = algorithm.Hash;
                 }
                 else
                 {
-                    hash = sha.ComputeHash(bodyBytes, bodyOffset, bodyLength);
+                    hash = algorithm.ComputeHash(bodyBytes, bodyOffset, bodyLength);
                 }
 
-                return "sha256:" + ToLowerHex(hash);
+                return (key != null ? "hmac-sha256:" : "sha256:") + ToLowerHex(hash);
             }
             catch (Exception ex)
             {

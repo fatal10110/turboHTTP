@@ -61,94 +61,141 @@ namespace TurboHTTP.Testing
             return result;
         }
 
-        private byte[] RedactJsonBodyIfNeeded(ReadOnlySequence<byte> body, HttpHeaders headers)
+        private enum RedactableBodyKind
         {
-            if (body.IsEmpty)
-                return null;
-            if (_redactionPolicy.JsonBodyFieldNames.Count == 0)
-                return ToExactByteArray(body);
-
-            var contentType = headers?.Get("Content-Type");
-            if (string.IsNullOrEmpty(contentType) ||
-                contentType.IndexOf("application/json", StringComparison.OrdinalIgnoreCase) < 0)
-            {
-                return ToExactByteArray(body);
-            }
-
-            object parsedBody;
-            try
-            {
-                var json = body.IsSingleSegment
-                    ? Utf8.GetString(body.FirstSpan)
-                    : Utf8.GetString(body.ToArray());
-                parsedBody = DeserializeJson(json, typeof(object));
-            }
-            catch
-            {
-                return ToExactByteArray(body);
-            }
-
-            if (parsedBody == null)
-                return ToExactByteArray(body);
-
-            if (!TryRedactParsedJson(parsedBody))
-                return ToExactByteArray(body);
-
-            string redactedJson;
-            try
-            {
-                redactedJson = SerializeJson(parsedBody, typeof(object));
-            }
-            catch
-            {
-                return ToExactByteArray(body);
-            }
-
-            return Utf8.GetBytes(redactedJson);
+            None,
+            Json,
+            FormUrlEncoded
         }
 
-        private byte[] RedactJsonBodyIfNeeded(ReadOnlyMemory<byte> body, HttpHeaders headers)
+        private byte[] RedactBodyIfNeeded(ReadOnlySequence<byte> body, HttpHeaders headers)
         {
             if (body.IsEmpty)
                 return null;
+
+            return RedactBodyIfNeeded(new ReadOnlyMemory<byte>(ToExactByteArray(body)), headers);
+        }
+
+        // Fails closed: a JSON or form body that cannot be parsed, or whose redacted form cannot be
+        // serialized, is replaced by the placeholder instead of being stored raw (#93).
+        private byte[] RedactBodyIfNeeded(ReadOnlyMemory<byte> body, HttpHeaders headers)
+        {
+            if (body.IsEmpty)
+                return null;
+
+            switch (ClassifyBody(headers?.Get("Content-Type")))
+            {
+                case RedactableBodyKind.Json:
+                    return RedactJsonBody(body);
+                case RedactableBodyKind.FormUrlEncoded:
+                    return RedactFormBody(body);
+                default:
+                    return ToExactByteArray(body);
+            }
+        }
+
+        // RFC 6839 section 3.1: any media type with the "+json" structured syntax suffix is JSON.
+        private static RedactableBodyKind ClassifyBody(string contentType)
+        {
+            if (string.IsNullOrWhiteSpace(contentType))
+                return RedactableBodyKind.None;
+
+            var separator = contentType.IndexOf(';');
+            var mediaType = (separator >= 0 ? contentType.Substring(0, separator) : contentType).Trim();
+
+            if (mediaType.Equals("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
+                return RedactableBodyKind.FormUrlEncoded;
+
+            if (mediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase) ||
+                mediaType.Equals("text/json", StringComparison.OrdinalIgnoreCase) ||
+                mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase))
+            {
+                return RedactableBodyKind.Json;
+            }
+
+            return RedactableBodyKind.None;
+        }
+
+        private byte[] RedactJsonBody(ReadOnlyMemory<byte> body)
+        {
             if (_redactionPolicy.JsonBodyFieldNames.Count == 0)
                 return ToExactByteArray(body);
-
-            var contentType = headers?.Get("Content-Type");
-            if (string.IsNullOrEmpty(contentType) ||
-                contentType.IndexOf("application/json", StringComparison.OrdinalIgnoreCase) < 0)
-            {
-                return ToExactByteArray(body);
-            }
 
             object parsedBody;
             try
             {
-                var json = Utf8.GetString(body.Span);
-                parsedBody = DeserializeJson(json, typeof(object));
+                parsedBody = DeserializeJson(Utf8.GetString(body.Span), typeof(object));
             }
-            catch
+            catch (Exception ex)
             {
-                return ToExactByteArray(body);
+                return RedactUnparseableBody("JSON", ex.GetType().Name);
             }
 
-            if (parsedBody == null)
+            var changed = false;
+            if (!TryRedactJsonNode(parsedBody, ref changed))
+                return RedactUnparseableBody("JSON", "unsupported JSON node type");
+
+            if (!changed)
                 return ToExactByteArray(body);
 
-            if (!TryRedactParsedJson(parsedBody))
-                return ToExactByteArray(body);
-
-            string redactedJson;
             try
             {
-                redactedJson = SerializeJson(parsedBody, typeof(object));
+                return Utf8.GetBytes(SerializeJson(parsedBody, typeof(object)));
             }
-            catch
+            catch (Exception ex)
             {
-                return ToExactByteArray(body);
+                return RedactUnparseableBody("JSON", ex.GetType().Name);
+            }
+        }
+
+        // application/x-www-form-urlencoded: names are percent- and '+'-decoded before matching; the
+        // value of a sensitive field is replaced and every other byte is kept as recorded.
+        private byte[] RedactFormBody(ReadOnlyMemory<byte> body)
+        {
+            string text;
+            try
+            {
+                text = StrictUtf8.GetString(body.Span);
+            }
+            catch (Exception ex)
+            {
+                return RedactUnparseableBody("form", ex.GetType().Name);
             }
 
-            return Utf8.GetBytes(redactedJson);
+            var pairs = text.Split('&');
+            var changed = false;
+            for (int i = 0; i < pairs.Length; i++)
+            {
+                var pair = pairs[i];
+                var equals = pair.IndexOf('=');
+                var rawName = equals >= 0 ? pair.Substring(0, equals) : pair;
+                string name;
+                try
+                {
+                    name = Uri.UnescapeDataString(rawName.Replace('+', ' '));
+                }
+                catch (Exception ex)
+                {
+                    return RedactUnparseableBody("form", ex.GetType().Name);
+                }
+
+                if (equals < 0 || !_redactionPolicy.ShouldRedactFormField(name))
+                    continue;
+
+                pairs[i] = rawName + "=" + Uri.EscapeDataString(_redactionPolicy.RedactedValue);
+                changed = true;
+            }
+
+            return changed
+                ? Utf8.GetBytes(string.Join("&", pairs))
+                : ToExactByteArray(body);
+        }
+
+        private byte[] RedactUnparseableBody(string kind, string reason)
+        {
+            Log($"RecordReplay redaction: {kind} body could not be parsed ({reason}); " +
+                "it is recorded as the redaction placeholder.");
+            return Utf8.GetBytes(_redactionPolicy.RedactedValue);
         }
 
         private static byte[] ToExactByteArray(ReadOnlyMemory<byte> body)
@@ -189,42 +236,59 @@ namespace TurboHTTP.Testing
             return body.ToArray();
         }
 
-        private bool TryRedactParsedJson(object node)
+        // Walks the tree the JSON bridge returned. Returns false for any node type it does not know
+        // (for example a JObject from a custom IJsonSerializer set through JsonSerializer.SetDefault):
+        // the caller then records the placeholder instead of the raw body, so redaction fails closed.
+        private bool TryRedactJsonNode(object node, ref bool changed)
         {
-            if (node is Dictionary<string, object> objectDict)
+            switch (node)
             {
-                var changed = false;
-                var keys = objectDict.Keys.ToArray();
-                for (int i = 0; i < keys.Length; i++)
-                {
-                    var key = keys[i];
-                    if (_redactionPolicy.ShouldRedactJsonField(key))
+                case null:
+                case string _:
+                case bool _:
+                    return true;
+
+                case Dictionary<string, object> objectDict:
                     {
-                        objectDict[key] = _redactionPolicy.RedactedValue;
-                        changed = true;
-                        continue;
+                        var keys = objectDict.Keys.ToArray();
+                        for (int i = 0; i < keys.Length; i++)
+                        {
+                            var key = keys[i];
+                            if (_redactionPolicy.ShouldRedactJsonField(key))
+                            {
+                                objectDict[key] = _redactionPolicy.RedactedValue;
+                                changed = true;
+                                continue;
+                            }
+
+                            if (!TryRedactJsonNode(objectDict[key], ref changed))
+                                return false;
+                        }
+
+                        return true;
                     }
 
-                    var value = objectDict[key];
-                    if (value != null && TryRedactParsedJson(value))
-                        changed = true;
-                }
-                return changed;
-            }
+                case List<object> objectList:
+                    {
+                        for (int i = 0; i < objectList.Count; i++)
+                        {
+                            if (!TryRedactJsonNode(objectList[i], ref changed))
+                                return false;
+                        }
 
-            if (node is List<object> objectList)
-            {
-                var changed = false;
-                for (int i = 0; i < objectList.Count; i++)
-                {
-                    var value = objectList[i];
-                    if (value != null && TryRedactParsedJson(value))
-                        changed = true;
-                }
-                return changed;
-            }
+                        return true;
+                    }
 
-            return false;
+                default:
+                    return IsJsonNumber(node);
+            }
+        }
+
+        private static bool IsJsonNumber(object node)
+        {
+            return node is double || node is long || node is int || node is float || node is decimal ||
+                   node is ulong || node is uint || node is short || node is ushort || node is byte ||
+                   node is sbyte;
         }
     }
 }

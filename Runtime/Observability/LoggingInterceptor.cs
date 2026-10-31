@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Text;
 using TurboHTTP.Core;
 
@@ -7,8 +6,9 @@ namespace TurboHTTP.Observability
 {
     /// <summary>
     /// Interceptor that logs HTTP requests and responses.
-    /// Sensitive headers (Authorization, Cookie, etc.) are automatically redacted
-    /// unless explicitly disabled via <see cref="redactSensitiveHeaders"/>.
+    /// Redaction is on by default at every log level: URL query values and user-info, and the
+    /// values of the sensitive headers of the <see cref="RedactionPolicy"/> (Authorization, Cookie,
+    /// API-key and token headers, ...) are replaced by <see cref="RedactionPolicy.RedactedValue"/>.
     /// </summary>
     public sealed class LoggingInterceptor : IHttpInterceptor
     {
@@ -18,16 +18,7 @@ namespace TurboHTTP.Observability
         private readonly bool _logBody;
         private readonly bool _redactSensitiveHeaders;
 
-        private static readonly HashSet<string> DefaultSensitiveHeaders =
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "Authorization",
-                "Cookie",
-                "Set-Cookie",
-                "Proxy-Authorization",
-                "WWW-Authenticate",
-                "X-Api-Key"
-            };
+        private readonly RedactionPolicy _redactionPolicy;
 
         public enum LogLevel
         {
@@ -37,18 +28,37 @@ namespace TurboHTTP.Observability
             Detailed   // Log everything including headers and body
         }
 
+        /// <summary>
+        /// Creates a logging interceptor.
+        /// </summary>
+        /// <param name="log">Log sink; <c>null</c> discards messages.</param>
+        /// <param name="logLevel">Verbosity.</param>
+        /// <param name="logHeaders">Log headers at <see cref="LogLevel.Detailed"/>.</param>
+        /// <param name="logBody">Log a body preview at <see cref="LogLevel.Detailed"/> (bodies are not redacted).</param>
+        /// <param name="redactSensitiveHeaders">
+        /// Redact the values of the policy's sensitive headers (default <c>true</c>). URL redaction is
+        /// controlled by <see cref="RedactionPolicy.RedactQueryValues"/>.
+        /// </param>
+        /// <param name="redactionPolicy">
+        /// Shared redaction policy; <c>null</c> uses <see cref="RedactionPolicy.Default"/>. Add or remove
+        /// sensitive headers with <see cref="RedactionPolicy.WithSensitiveHeaders"/> /
+        /// <see cref="RedactionPolicy.WithoutSensitiveHeaders"/>; keep raw URLs with
+        /// <see cref="RedactionPolicy.WithQueryValueRedaction"/>(false).
+        /// </param>
         public LoggingInterceptor(
             Action<string> log = null,
             LogLevel logLevel = LogLevel.Standard,
             bool logHeaders = false,
             bool logBody = false,
-            bool redactSensitiveHeaders = true)
+            bool redactSensitiveHeaders = true,
+            RedactionPolicy redactionPolicy = null)
         {
             _log = log ?? (_ => { });
             _logLevel = logLevel;
             _logHeaders = logHeaders;
             _logBody = logBody;
             _redactSensitiveHeaders = redactSensitiveHeaders;
+            _redactionPolicy = redactionPolicy ?? RedactionPolicy.Default;
         }
 
         public DispatchFunc Wrap(DispatchFunc next)
@@ -61,7 +71,8 @@ namespace TurboHTTP.Observability
                 if (_logLevel == LogLevel.None)
                     return next(request, handler, context, cancellationToken);
 
-                LogRequest(request);
+                var displayUrl = _redactionPolicy.RedactUrl(request.Uri);
+                LogRequest(request, displayUrl);
 
                 return next(
                     request,
@@ -69,28 +80,29 @@ namespace TurboHTTP.Observability
                         handler,
                         _log,
                         request,
+                        displayUrl,
                         _logLevel,
                         _logHeaders,
                         _logBody,
                         _redactSensitiveHeaders,
-                        DefaultSensitiveHeaders,
+                        _redactionPolicy,
                         context.Elapsed),
                     context,
                     cancellationToken);
             };
         }
 
-        private void LogRequest(UHttpRequest request)
+        private void LogRequest(UHttpRequest request, string displayUrl)
         {
             var messageBuilder = new StringBuilder();
-            messageBuilder.Append("-> ").Append(request.Method).Append(' ').Append(request.Uri);
+            messageBuilder.Append("-> ").Append(request.Method).Append(' ').Append(displayUrl);
 
             if (_logLevel >= LogLevel.Detailed && _logHeaders && request.Headers.Count > 0)
             {
                 messageBuilder.Append("\n  Headers:");
                 foreach (var header in request.Headers)
                 {
-                    var value = ShouldRedact(header.Key) ? "****" : header.Value;
+                    var value = ShouldRedact(header.Key) ? RedactionPolicy.RedactedValue : header.Value;
                     messageBuilder.Append("\n    ").Append(header.Key).Append(": ").Append(value);
                 }
             }
@@ -126,7 +138,7 @@ namespace TurboHTTP.Observability
         internal static string FormatResponseHeaders(
             HttpHeaders headers,
             bool redactSensitiveHeaders,
-            HashSet<string> sensitiveHeaders)
+            RedactionPolicy redactionPolicy)
         {
             if (headers == null || headers.Count == 0)
                 return string.Empty;
@@ -135,8 +147,8 @@ namespace TurboHTTP.Observability
             builder.Append("\n  Headers:");
             foreach (var header in headers)
             {
-                var value = redactSensitiveHeaders && sensitiveHeaders.Contains(header.Key)
-                    ? "****"
+                var value = redactSensitiveHeaders && redactionPolicy.IsSensitiveHeader(header.Key)
+                    ? RedactionPolicy.RedactedValue
                     : header.Value;
                 builder.Append("\n    ").Append(header.Key).Append(": ").Append(value);
             }
@@ -155,7 +167,7 @@ namespace TurboHTTP.Observability
 
         private bool ShouldRedact(string headerName)
         {
-            return _redactSensitiveHeaders && DefaultSensitiveHeaders.Contains(headerName);
+            return _redactSensitiveHeaders && _redactionPolicy.IsSensitiveHeader(headerName);
         }
     }
 }
