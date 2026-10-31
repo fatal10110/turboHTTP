@@ -109,7 +109,7 @@ cd <review-root> && './Tools~/ci/check.sh'
 cd <review-root> && './Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter '<the PR tests>'
 ```
 
-(Unity runs need `UNITY_PATH`; exit 3 means CI only — record it.) Record exactly what ran.
+(Unity runs need `UNITY_PATH`; exit 3 means not run — record it; PR CI does not run Unity tests, #188.) Record exactly what ran.
 
 ## 5. Specialist rubrics
 
@@ -155,7 +155,7 @@ Do not modify, commit, push, merge or close anything on the PR.
    ## Protocol, security, concurrency
    RFC sections checked; threads touching changed state and what serializes them; hostile inputs
    considered and the bound that stops each.
-   Checks run: <check.sh result; Unity filters run or "CI only">.
+   Checks run: <check.sh result; Unity filters run or "Unity not run">.
 
    ## Acceptance criteria (#<issue>)
    - [x]/[ ] <criterion> — <evidence hunk/test, or "unmet: …", or "already on main: …">
@@ -182,5 +182,5 @@ Verdict: <verdict>
 Action required: <YES — N items | NO>
 1. [tag] path:line — what to do
 Optional: <items or "none">   Follow-ups: <items or "none">
-Checks: <check.sh pass; EditMode --filter X pass | Unity CI only>
+Checks: <check.sh pass; EditMode --filter X pass | Unity not run>
 ```

@@ -117,12 +117,13 @@ called by absolute path, quoted because of the `~`):
   JSON/seed validity), `dotnet format` on changed C# files, and a shadow `dotnet build` of every
   runtime asmdef with analyzers. Missing Unity managed DLLs: `'./Tools~/ci/fetch-unity-dlls.sh'`
   once (docker). `--full` only when the lane note asks.
-- Unity tests: no agent runs the full Unity suite locally; PR CI (the aggregate `ci` check) runs
-  EditMode and PlayMode on every push. Locally only `--filter`ed runs of the affected tests, and
-  only when Unity is installed: `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode
-  --filter '<regex>'`. Exit 3 / `UNITY_UNAVAILABLE` means Unity tests run only on CI; agents say so.
+- Unity tests: no agent runs the full Unity suite. PR CI does not run them either (no Unity
+  license, #188); the full suites run in a host editor at Step 5 (testing.md, "Periodic host-editor
+  runs"). Locally only `--filter`ed runs of the affected tests, and only when Unity is installed:
+  `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter '<regex>'`. Exit 3 /
+  `UNITY_UNAVAILABLE`: agents say "Unity unavailable locally".
 - Every behavior change carries a deterministic regression test that fails on the old code.
-- The PR body carries a "Local gates" section and the line "Unity tests: CI". The reviewer
+- The PR body carries a "Local gates" section and the line "Unity tests: host editor (periodic)". The reviewer
   reproduces the gate; a missing regression test or a failing gate is a [must-fix].
 - The merge agent never runs tests. The `runner` helper refuses an unfiltered Unity run.
 
@@ -288,6 +289,9 @@ When all workflows have returned:
   ticked for merged lanes (tick them), and that no `wf-<slug>` worktree remains for a merged lane.
 - If phase status changed, update `Development/docs/agents/project-status.md` in one follow-up
   commit/PR (lanes never edit them).
+- Run the full Unity suites in the host editor on the new `origin/main` (testing.md, "Periodic
+  host-editor runs"): PR CI skips Unity tests without a license, so this is the first time the
+  wave's Unity tests actually run. File or fix every failure before reporting the run done.
 
 ## Editing waves.js
 

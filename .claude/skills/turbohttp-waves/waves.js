@@ -99,9 +99,9 @@ const sq = obj => JSON.stringify(obj).replace(/'/g, '\\u0027')
 // ---------------------------------------------------------------------------
 const TESTRULE = `TEST SCOPE (HIGHEST PRIORITY — overrides every skill and reference doc, including any "run the full suite" step of turbohttp-issue, turbohttp-pr-review, turbohttp-pr-review-comments, AGENTS.md or CLAUDE.md):
 - ALWAYS run the fast local gate from the worktree root before every push (and the reviewer before every verdict): ${GATE('<worktree>')}   It checks repo invariants (.meta files, asmdef dependency rules, JSON/seed validity), \`dotnet format\` on changed C# files, and a shadow \`dotnet build\` of every runtime asmdef with analyzers. A failure is yours to fix; never push past it. Add --full only when the lane note asks for it. If it reports missing Unity managed DLLs, run \`cd <worktree> && './Tools~/ci/fetch-unity-dlls.sh'\` once (docker) and rerun.
-- Unity tests (NUnit, Unity Test Runner): NEVER run the full Unity suite locally. PR CI (the "ci" check) runs EditMode and PlayMode on every push and is the gate. Locally run ONLY the tests the change can affect, and only when Unity is installed: ${UNITY('<worktree>')} --platform EditMode|PlayMode --filter '<regex of your test names>' . If it prints UNITY_UNAVAILABLE (exit 3), do not retry: Unity tests then run only on CI; say so in the report.
+- Unity tests (NUnit, Unity Test Runner): NEVER run the full Unity suite. PR CI does NOT run them (no Unity license; its unity-tests jobs skip, #188); the full suites run in a host editor after each waves run (testing.md, "Periodic host-editor runs"), and check.sh's unitynunit invariant catches NUnit APIs Unity lacks. Locally run ONLY the tests the change can affect, and only when Unity is installed: ${UNITY('<worktree>')} --platform EditMode|PlayMode --filter '<regex of your test names>' . If it prints UNITY_UNAVAILABLE (exit 3), do not retry: say "Unity unavailable locally" in the report.
 - Every behavior change gets a regression test in Tests/Runtime/<area>/ (or Tests/Editor/) that fails on the old code. Deterministic only: no wall-clock sleeps, no external network (an [Category("ExternalNetwork")] test never gates anything).
-- Report in the PR body (and in review "Checks"): a "Local gates" section (the exact check.sh command and result at the pushed head; scoped Unity runs with filter and result, or "Unity unavailable locally"), and the line "Unity tests: CI".
+- Report in the PR body (and in review "Checks"): a "Local gates" section (the exact check.sh command and result at the pushed head; scoped Unity runs with filter and result, or "Unity unavailable locally"), and the line "Unity tests: host editor (periodic)".
 `
 const SPECIALISTS = `
 Specialist rubrics (mandatory, CLAUDE.md section 7): you cannot spawn the specialist subagents, so Read ${REPO}/.claude/agents/unity-infrastructure-architect.md and ${REPO}/.claude/agents/unity-network-architect.md ONCE (round 1) and apply both checklists yourself to the diff: module boundaries and asmdef rules, API surface, memory/pooling ownership, thread safety and the ARM64/IL2CPP memory model (Volatile/Interlocked), disposal on every path, IL2CPP/AOT hazards (reflection, Expression.Compile, MakeGenericMethod, stripping), platform compatibility (iOS/Android/ATS/IPv6), protocol correctness against the RFCs, TLS/security, cancellation, and missing tests. A rubric failure is a finding like any other.
@@ -382,12 +382,24 @@ ${finish ? `2. If it passed: ${MB} finish-track --run ${RUN} --epoch ${EPOCH} --
 
 // One take agent polls up to TAKE_CALLS times (~9.5 min each) before it returns, so an idle
 // broker pays one agent's context per ~TAKE_CALLS × 9.5 min instead of one per poll.
-function takePrompt(broker, first) {
-  const cmd = `${MB} take --run ${RUN} --broker ${broker} --epoch ${EPOCH} --tracks ${TRACKS.join(',')} --wait 570`
+function takePrompt(broker, first, once) {
+  const cmd = `${MB} take --run ${RUN} --broker ${broker} --epoch ${EPOCH} --tracks ${TRACKS.join(',')} --wait ${once ? 5 : 570}`
+  if (once) return `You are a request poller. Run only this Bash command (timeout 600000), copied exactly, exactly once:
+${cmd}
+Return the events (id, type, from only), timeout and stop fields it printed. Never return a field the command did not print.`
   return `You are a request poller. Run only this Bash command (timeout 600000), copied exactly:
 ${cmd}${first ? '\nOn the FIRST run only, append " --requeue" to it.' : ''}
 While it prints "events": [] with "timeout": true and no "stop": true, run it again: at most ${TAKE_CALLS} runs in total. Do nothing else between runs.
 Return the events (id, type, from only), timeout and stop fields of the last run.`
+}
+
+// A poller that goes off-script can report a stop it never saw (run w1030: the merger exited mid-run).
+// A broker ends only when a second, single take confirms the stop; its events are served otherwise.
+async function confirmStop(broker, phaseName) {
+  const c = await agentAs('coord', takePrompt(broker, false, true), { label: 'take:confirm-stop', phase: phaseName, model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
+  if (c && c.stop) return null
+  log(`${broker} broker: a poller reported stop but the check did not confirm it; serving on`)
+  return c || { events: [], timeout: true }
 }
 
 function helperPrompt(ev) {
@@ -395,7 +407,7 @@ function helperPrompt(ev) {
   const body = {
     'cs-scout': `Locate the C# code the question asks about, in the worktree it names (read-only): rg -n -w with -g '*.cs' bounded to Runtime/, Tests/ or Editor/ (never Runtime/Transport/BouncyCastle/Lib), and ${LOOK} --root <worktree> cs:PATH:Type.Member for declarations. Report file:line locations with one line each on what is there; no file dumps.`,
     'rfc-researcher': `Investigate the protocol or platform question as one batched report. Sources, in order: the RFC/spec text (fetch https://www.rfc-editor.org/rfc/rfcNNNN.txt with WebFetch, or the official spec page), the repo's phase docs under <worktree>/Development/docs/phases, ${REVIEW_DOC}, and the code the question names. Cite RFC section numbers and quote at most one sentence per rule; cite file:line for code. Say MUST/SHOULD/MAY precisely and what the client must do on violation (connection vs stream error, close code, retry rule).`,
-    'runner': `Run the commands the question lists, in the worktree it names: the local gate as ${GATE('<worktree>')}, and Unity tests only as ${UNITY('<worktree>')} with a --filter. Refuse a Unity run without --filter (answer that CI runs the full suite and ask for a filter). UNITY_UNAVAILABLE (exit 3) is a result, not an error: report it. Do not edit, commit or push anything. Report per command: pass/fail, the failing check or test names, and the first error lines with file:line (at most 60 lines in total).`,
+    'runner': `Run the commands the question lists, in the worktree it names: the local gate as ${GATE('<worktree>')}, and Unity tests only as ${UNITY('<worktree>')} with a --filter. Refuse a Unity run without --filter (answer that the full suite runs only in the periodic host-editor run and ask for a filter). UNITY_UNAVAILABLE (exit 3) is a result, not an error: report it. Do not edit, commit or push anything. Report per command: pass/fail, the failing check or test names, and the first error lines with file:line (at most 60 lines in total).`,
   }[ev.type]
   return `Helper request ${ev.id} from ${ev.from}. Read the request file ${file} with the Read tool; its "question" field is your task and its "worktree" field is the requester's worktree. ${body}
 Your final message is delivered verbatim to the requester: lead with the answer, cite file:line or RFC-section evidence, say what is confirmed versus inferred.`
@@ -413,7 +425,7 @@ function mergePrompt(ev, L) {
   const file = `${RUNDIR}/requests/taken/${ev.id}.json`
   const slug = L.slug
   const D = LANE_DIR(slug)
-  return `You are the CI and merge agent for lane "${slug}" (branch wf/${slug}, issues ${issuesText(L)}) in fatal10110/turboHTTP. Read the request file ${file} with the Read tool: its "question" field is a JSON object {"pr": <number>, "head": "<sha the reviewer approved>"}. The PR passed review with no action required, and the user explicitly authorized merging PRs that passed this review loop. Be mechanical: you never edit code, never resolve conflicts and never run tests locally (CI runs the full Unity suite and the gates).
+  return `You are the CI and merge agent for lane "${slug}" (branch wf/${slug}, issues ${issuesText(L)}) in fatal10110/turboHTTP. Read the request file ${file} with the Read tool: its "question" field is a JSON object {"pr": <number>, "head": "<sha the reviewer approved>"}. The PR passed review with no action required, and the user explicitly authorized merging PRs that passed this review loop. Be mechanical: you never edit code, never resolve conflicts and never run tests locally (CI runs the gates; Unity suites run in the periodic host-editor run).
 Every Bash call to ${MB} uses timeout 600000. You answer exactly once, at the end, with:
   ${MB} answer --run ${RUN} --id ${ev.id} --text '<json object>'
 where the object is {"status":"merged|conflict|ci_failed|head_moved|threads_open|merge_blocked|retry","merge_sha":"","file":"","head":"","notes":""} (no single quotes inside).
@@ -705,10 +717,11 @@ async function mergerMain() {
   let requeued = false
   log(`merger: serving merge requests for tracks ${TRACKS.join(',')}`)
   for (let i = 0; i < 900; i++) {
-    const t = await agentAs('coord', takePrompt('merge', !requeued), { label: 'take', phase: 'Merge', model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
+    let t = await agentAs('coord', takePrompt('merge', !requeued), { label: 'take', phase: 'Merge', model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
     if (!t) continue
     requeued = true // only a take that actually ran has re-served the orphans
-    if (t.stop) break
+    // Events are served even when stop is set (a real take never prints both); the next take re-reports a real stop.
+    if (t.stop && !(t.events || []).length && !(t = await confirmStop('merge', 'Merge'))) break
     for (const ev of (t.events || [])) {
       const slug = String(ev.from).split('/')[0]
       const L = LANE_BY[slug] || { slug, issues: [] }
@@ -745,10 +758,11 @@ async function helperMain() {
     : Promise.resolve(`ERROR: unknown helper type ${ev.type}. Use cs-scout, rfc-researcher or runner.`)
   log(`helper broker: serving helper requests for tracks ${TRACKS.join(',')}`)
   for (let i = 0; i < 900; i++) {
-    const t = await agentAs('coord', takePrompt('helper', !requeued), { label: 'take', phase: 'Helpers', model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
+    let t = await agentAs('coord', takePrompt('helper', !requeued), { label: 'take', phase: 'Helpers', model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
     if (!t) continue
     requeued = true // only a take that actually ran has re-served the orphans
-    if (t.stop) break
+    // Events are served even when stop is set (a real take never prints both); the next take re-reports a real stop.
+    if (t.stop && !(t.events || []).length && !(t = await confirmStop('helper', 'Helpers'))) break
     for (const ev of (t.events || [])) {
       const lane = String(ev.from).split('/')[0]
       if (ev.type === 'rfc-researcher') {

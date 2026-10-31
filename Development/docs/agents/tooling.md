@@ -40,7 +40,7 @@ test-framework package); they compile in the `unity-tests` job.
 | actionlint | 1.7+ | `check.sh --full` |
 | shellcheck | 0.9+ | `check.sh --full` |
 | Node.js | 18+ | `turbohttp-waves` simulation (`waves_sim.mjs`) |
-| Unity | 2021.3.45f2 (optional locally) | `run-tests.sh`; without it Unity tests run on PR CI only |
+| Unity | 2021.3.45f2 (optional locally) | `run-tests.sh`; PR CI does not run Unity tests (no license, #188), they run in a host editor (testing.md, "Periodic host-editor runs") |
 
 ### macOS (Homebrew)
 
