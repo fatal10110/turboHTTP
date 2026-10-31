@@ -1,4 +1,7 @@
 using System;
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+using System.Security.Cryptography;
+#endif
 using System.Threading;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
@@ -12,12 +15,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
     {
         private static long counter = DateTime.UtcNow.Ticks;
 
-        private static long NextCounterValue()
-        {
-            return Interlocked.Increment(ref counter);
-        }
+        private static long NextCounterValue() => Interlocked.Increment(ref counter);
 
+#if !(NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER)
         private static readonly SecureRandom MasterRandom = new SecureRandom(new CryptoApiRandomGenerator());
+#endif
         internal static readonly SecureRandom ArbitraryRandom = new SecureRandom(new VmpcRandomGenerator(), 16);
 
         private static DigestRandomGenerator CreatePrng(string digestName, bool autoSeed)
@@ -33,6 +35,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             return prng;
         }
 
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        // System.Buffers.SpanAction<byte, in SecureRandom>
+        public static void Fill(Span<byte> buffer, SecureRandom secureRandom) => secureRandom.NextBytes(buffer);
+#endif
+
         public static byte[] GetNextBytes(SecureRandom secureRandom, int length)
         {
             byte[] result = new byte[length];
@@ -45,10 +52,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
         /// </summary>
         /// <remarks>Equivalent to GetInstance(algorithm, true)</remarks>
         /// <param name="algorithm">e.g. "SHA256PRNG"</param>
-        public static SecureRandom GetInstance(string algorithm)
-        {
-            return GetInstance(algorithm, true);
-        }
+        public static SecureRandom GetInstance(string algorithm) => GetInstance(algorithm, autoSeed: true);
 
         /// <summary>
         /// Create an instance based on the given algorithm, with optional auto-seeding
@@ -75,7 +79,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
         protected readonly IRandomGenerator generator;
 
         public SecureRandom()
-            : this(CreatePrng("SHA256", true))
+            : this(CreatePrng("SHA256", autoSeed: true))
         {
         }
 
@@ -103,37 +107,28 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
 
         public virtual byte[] GenerateSeed(int length)
         {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            byte[] result = new byte[length];
+            GenerateSeed(result.AsSpan());
+            return result;
+#else
             return GetNextBytes(MasterRandom, length);
+#endif
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        public virtual void GenerateSeed(Span<byte> seed)
-        {
-            MasterRandom.NextBytes(seed);
-        }
+        public virtual void GenerateSeed(Span<byte> seed) => RandomNumberGenerator.Fill(seed);
 #endif
 
-        public virtual void SetSeed(byte[] seed)
-        {
-            generator.AddSeedMaterial(seed);
-        }
+        public virtual void SetSeed(byte[] seed) => generator.AddSeedMaterial(seed);
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        public virtual void SetSeed(Span<byte> seed)
-        {
-            generator.AddSeedMaterial(seed);
-        }
+        public virtual void SetSeed(Span<byte> seed) => generator.AddSeedMaterial(seed);
 #endif
 
-        public virtual void SetSeed(long seed)
-        {
-            generator.AddSeedMaterial(seed);
-        }
+        public virtual void SetSeed(long seed) => generator.AddSeedMaterial(seed);
 
-        public override int Next()
-        {
-            return NextInt() & int.MaxValue;
-        }
+        public override int Next() => NextInt() & int.MaxValue;
 
         public override int Next(int maxValue)
         {
@@ -188,15 +183,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             }
         }
 
-        public override void NextBytes(byte[] buf)
-        {
-            generator.NextBytes(buf);
-        }
+        public override void NextBytes(byte[] buf) => generator.NextBytes(buf);
 
-        public virtual void NextBytes(byte[] buf, int off, int len)
-        {
-            generator.NextBytes(buf, off, len);
-        }
+        public virtual void NextBytes(byte[] buf, int off, int len) => generator.NextBytes(buf, off, len);
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public override void NextBytes(Span<byte> buffer)
@@ -253,10 +242,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Security
             Span<byte> seed = seedLength <= 128
                 ? stackalloc byte[seedLength]
                 : new byte[seedLength];
+            RandomNumberGenerator.Fill(seed);
 #else
             byte[] seed = new byte[seedLength];
-#endif
             MasterRandom.NextBytes(seed);
+#endif
             generator.AddSeedMaterial(seed);
         }
     }

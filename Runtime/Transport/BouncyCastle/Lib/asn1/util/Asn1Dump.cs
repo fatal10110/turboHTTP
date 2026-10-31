@@ -1,4 +1,3 @@
-using System;
 using System.IO;
 using System.Text;
 
@@ -229,7 +228,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Utilities
         /// <summary>Parse ASN.1 objects from input <see cref="Stream"/>, and write them to the output.</summary>
         public static void Dump(Stream input, TextWriter output)
         {
-            using (var asn1In = new Asn1InputStream(input, int.MaxValue, leaveOpen: true))
+            using (var asn1In = new Asn1InputStream(input, leaveOpen: true))
             {
                 Asn1Object asn1Object;
                 while ((asn1Object = asn1In.ReadObject()) != null)
@@ -239,16 +238,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Utilities
             }
         }
 
+        public static void AppendAsString(StringBuilder buf, Asn1Encodable obj) =>
+            AppendAsString(buf, obj, verbose: false);
+
+        public static void AppendAsString(StringBuilder buf, Asn1Encodable obj, bool verbose) =>
+            AsString("", verbose, obj.ToAsn1Object(), buf);
+
         /**
          * dump out a DER object as a formatted string, in non-verbose mode
          *
          * @param obj the Asn1Encodable to be dumped out.
          * @return  the resulting string.
          */
-        public static string DumpAsString(Asn1Encodable obj)
-        {
-            return DumpAsString(obj, false);
-        }
+        public static string DumpAsString(Asn1Encodable obj) => DumpAsString(obj, verbose: false);
 
         /**
          * Dump out the object as a string
@@ -260,7 +262,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Utilities
         public static string DumpAsString(Asn1Encodable obj, bool verbose)
         {
             StringBuilder buf = new StringBuilder();
-            AsString("", verbose, obj.ToAsn1Object(), buf);
+            AppendAsString(buf, obj, verbose);
             return buf.ToString();
         }
 

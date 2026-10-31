@@ -84,6 +84,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             return ImplCheckResult(ImplShamirsTrickWNaf(P, a, Q, b));
         }
 
+        public static ECPoint SumOfTwoMultipliesSecret(ECPoint P, BigInteger a, ECPoint Q, BigInteger b)
+        {
+            // TODO[ec] Placeholder for constant-time implementation of Straus ladder
+            return SumOfTwoMultiplies(P, a, Q, b);
+        }
+
         /*
         * "Shamir's Trick", originally due to E. G. Straus
         * (Addition chains of vectors. American Mathematical Monthly,
@@ -194,6 +200,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
                 }
             }
             return k.SignValue < 0 ? q.Negate() : q;
+        }
+
+        public static ECPoint Multiply(ECPoint p, BigInteger k) => p.Multiply(k);
+
+        public static ECPoint MultiplySecret(ECPoint p, BigInteger k)
+        {
+            // TODO[ec] Placeholder for constant-time implementation of scalar multiplication
+            return Multiply(p, k);
         }
 
         public static ECPoint ValidatePoint(ECPoint p)

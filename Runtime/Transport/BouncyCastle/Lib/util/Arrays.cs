@@ -1,10 +1,8 @@
 using System;
-
+using System.Runtime.CompilerServices;
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-#else
-using System.Runtime.CompilerServices;
 #endif
 using System.Text;
 
@@ -15,8 +13,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
     /// <summary> General array utilities.</summary>
     public static class Arrays
     {
-        public static readonly byte[] EmptyBytes = new byte[0];
-        public static readonly int[] EmptyInts = new int[0];
+        public static readonly byte[] EmptyBytes = Array.Empty<byte>();
+        public static readonly int[] EmptyInts = Array.Empty<int>();
 
         public static bool AreAllZeroes(byte[] buf, int off, int len)
         {
@@ -40,9 +38,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         }
 #endif
 
-        public static bool AreEqual(
-            bool[]  a,
-            bool[]  b)
+        public static bool AreEqual(bool[] a, bool[] b)
         {
             if (a == b)
                 return true;
@@ -53,9 +49,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             return HaveSameContents(a, b);
         }
 
-        public static bool AreEqual(
-            char[] a,
-            char[] b)
+        public static bool AreEqual(char[] a, char[] b)
         {
             if (a == b)
                 return true;
@@ -173,23 +167,28 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
 
         public static bool FixedTimeEquals(int len, byte[] a, int aOff, byte[] b, int bOff)
         {
-            if (null == a)
-                throw new ArgumentNullException("a");
-            if (null == b)
-                throw new ArgumentNullException("b");
             if (len < 0)
-                throw new ArgumentException("cannot be negative", "len");
-            if (aOff > (a.Length - len))
-                throw new IndexOutOfRangeException("'aOff' value invalid for specified length");
-            if (bOff > (b.Length - len))
-                throw new IndexOutOfRangeException("'bOff' value invalid for specified length");
+                throw new ArgumentOutOfRangeException(nameof(len), "cannot be negative");
+
+            ValidateSegment(a, aOff, len);
+            ValidateSegment(b, bOff, len);
 
             return InternalFixedTimeEquals(len, a, aOff, b, bOff);
         }
 
-        public static bool AreEqual(
-            int[]	a,
-            int[]	b)
+        [CLSCompliant(false)]
+        public static bool FixedTimeEquals(int len, ulong[] a, int aOff, ulong[] b, int bOff)
+        {
+            if (len < 0)
+                throw new ArgumentOutOfRangeException(nameof(len), "cannot be negative");
+
+            ValidateSegment(a, aOff, len);
+            ValidateSegment(b, bOff, len);
+
+            return InternalFixedTimeEquals(len, a, aOff, b, bOff);
+        }
+
+        public static bool AreEqual(int[] a, int[] b)
         {
             if (a == b)
                 return true;
@@ -235,9 +234,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             return HaveSameContents(a, b);
         }
 
-        private static bool HaveSameContents(
-            bool[] a,
-            bool[] b)
+        private static bool HaveSameContents(bool[] a, bool[] b)
         {
             int i = a.Length;
             if (i != b.Length)
@@ -251,9 +248,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             return true;
         }
 
-        private static bool HaveSameContents(
-            char[] a,
-            char[] b)
+        private static bool HaveSameContents(char[] a, char[] b)
         {
             int i = a.Length;
             if (i != b.Length)
@@ -267,9 +262,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             return true;
         }
 
-        private static bool HaveSameContents(
-            byte[]	a,
-            byte[]	b)
+        private static bool HaveSameContents(byte[] a, byte[] b)
         {
             int i = a.Length;
             if (i != b.Length)
@@ -283,9 +276,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             return true;
         }
 
-        private static bool HaveSameContents(
-            int[]	a,
-            int[]	b)
+        private static bool HaveSameContents(int[] a, int[] b)
         {
             int i = a.Length;
             if (i != b.Length)
@@ -341,8 +332,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             return true;
         }
 
-        public static string ToString(
-            object[] a)
+        public static string ToString(object[] a)
         {
             StringBuilder sb = new StringBuilder("[");
             if (a.Length > 0)
@@ -362,7 +352,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(data);
             return hc.ToHashCode();
@@ -385,7 +375,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(data.AsSpan(off, len));
             return hc.ToHashCode();
@@ -408,7 +398,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(MemoryMarshal.AsBytes(data.AsSpan()));
             return hc.ToHashCode();
@@ -432,7 +422,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(MemoryMarshal.AsBytes(data.AsSpan()));
             return hc.ToHashCode();
@@ -455,7 +445,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(MemoryMarshal.AsBytes(data.AsSpan(off, len)));
             return hc.ToHashCode();
@@ -479,7 +469,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(MemoryMarshal.AsBytes(data.AsSpan()));
             return hc.ToHashCode();
@@ -503,7 +493,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(MemoryMarshal.AsBytes(data.AsSpan(off, len)));
             return hc.ToHashCode();
@@ -527,7 +517,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(MemoryMarshal.AsBytes(data.AsSpan()));
             return hc.ToHashCode();
@@ -554,7 +544,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             if (data == null)
                 return 0;
 
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+#if NET6_0_OR_GREATER
             HashCode hc = default;
             hc.AddBytes(MemoryMarshal.AsBytes(data.AsSpan(off, len)));
             return hc.ToHashCode();
@@ -625,45 +615,117 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
 
         public static bool[] Clone(bool[] data)
         {
-            return data == null ? null : (bool[])data.Clone();
+            if (data == null)
+                return null;
+
+#if NET5_0_OR_GREATER
+            bool[] result = GC.AllocateUninitializedArray<bool>(data.Length);
+#else
+            bool[] result = new bool[data.Length];
+#endif
+            Buffer.BlockCopy(data, 0, result, 0, data.Length * sizeof(bool));
+            return result;
         }
 
         public static byte[] Clone(byte[] data)
         {
-            return data == null ? null : (byte[])data.Clone();
+            if (data == null)
+                return null;
+
+#if NET5_0_OR_GREATER
+            byte[] result = GC.AllocateUninitializedArray<byte>(data.Length);
+#else
+            byte[] result = new byte[data.Length];
+#endif
+            Buffer.BlockCopy(data, 0, result, 0, data.Length);
+            return result;
         }
 
         public static short[] Clone(short[] data)
         {
-            return data == null ? null : (short[])data.Clone();
+            if (data == null)
+                return null;
+
+#if NET5_0_OR_GREATER
+            short[] result = GC.AllocateUninitializedArray<short>(data.Length);
+#else
+            short[] result = new short[data.Length];
+#endif
+            Buffer.BlockCopy(data, 0, result, 0, data.Length * sizeof(short));
+            return result;
         }
 
         [CLSCompliant(false)]
         public static ushort[] Clone(ushort[] data)
         {
-            return data == null ? null : (ushort[])data.Clone();
+            if (data == null)
+                return null;
+
+#if NET5_0_OR_GREATER
+            ushort[] result = GC.AllocateUninitializedArray<ushort>(data.Length);
+#else
+            ushort[] result = new ushort[data.Length];
+#endif
+            Buffer.BlockCopy(data, 0, result, 0, data.Length * sizeof(ushort));
+            return result;
         }
 
         public static int[] Clone(int[] data)
         {
-            return data == null ? null : (int[])data.Clone();
+            if (data == null)
+                return null;
+
+#if NET5_0_OR_GREATER
+            int[] result = GC.AllocateUninitializedArray<int>(data.Length);
+#else
+            int[] result = new int[data.Length];
+#endif
+            Buffer.BlockCopy(data, 0, result, 0, data.Length * sizeof(int));
+            return result;
         }
 
         [CLSCompliant(false)]
         public static uint[] Clone(uint[] data)
         {
-            return data == null ? null : (uint[])data.Clone();
+            if (data == null)
+                return null;
+
+#if NET5_0_OR_GREATER
+            uint[] result = GC.AllocateUninitializedArray<uint>(data.Length);
+#else
+            uint[] result = new uint[data.Length];
+#endif
+            Buffer.BlockCopy(data, 0, result, 0, data.Length * sizeof(uint));
+            return result;
         }
 
         public static long[] Clone(long[] data)
         {
-            return data == null ? null : (long[])data.Clone();
+            if (data == null)
+                return null;
+
+#if NET5_0_OR_GREATER
+            long[] result = GC.AllocateUninitializedArray<long>(data.Length);
+#else
+            long[] result = new long[data.Length];
+#endif
+            Buffer.BlockCopy(data, 0, result, 0, data.Length * sizeof(long));
+            return result;
         }
 
         [CLSCompliant(false)]
         public static ulong[] Clone(ulong[] data)
         {
-            return data == null ? null : (ulong[])data.Clone();
+            if (data == null)
+                return null;
+
+#if NET5_0_OR_GREATER
+            ulong[] result = GC.AllocateUninitializedArray<ulong>(data.Length);
+#else
+            ulong[] result = new ulong[data.Length];
+#endif
+            Buffer.BlockCopy(data, 0, result, 0, data.Length * sizeof(ulong));
+            return result;
         }
 
         public static byte[] Clone(byte[] data, byte[] existing)
@@ -718,23 +780,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         }
 
         // TODO[api] Redundant with generic version
-        public static void Fill(byte[] buf, byte b)
-        {
-            Fill<byte>(buf, b);
-        }
+        public static void Fill(byte[] buf, byte b) => Fill<byte>(buf, b);
 
         // TODO[api] Redundant with generic version
         [CLSCompliant(false)]
-        public static void Fill(ulong[] buf, ulong b)
-        {
-            Fill<ulong>(buf, b);
-        }
+        public static void Fill(ulong[] buf, ulong b) => Fill<ulong>(buf, b);
 
         // TODO[api] Redundant with generic version
-        public static void Fill(byte[] buf, int from, int to, byte b)
-        {
-            Fill<byte>(buf, from, to, b);
-        }
+        public static void Fill(byte[] buf, int from, int to, byte b) => Fill<byte>(buf, from, to, b);
 
         public static void Fill<T>(T[] ts, T t)
         {
@@ -1014,7 +1067,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         public static T[] Prepend<T>(T[] a, T b)
         {
             if (a == null)
-                return new T[1]{ b };
+                return new T[1] { b };
 
             T[] result = new T[1 + a.Length];
             result[0] = b;
@@ -1142,7 +1195,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
             return new T[len];
         }
 
-        internal static T[] InternalCopyBuffer<T>(T[] buf) => (T[])buf.Clone();
+        internal static T[] InternalCopyBuffer<T>(T[] buf)
+        {
+#if NET5_0_OR_GREATER
+            T[] result = GC.AllocateUninitializedArray<T>(buf.Length);
+#else
+            T[] result = new T[buf.Length];
+#endif
+            Array.Copy(buf, 0, result, 0, buf.Length);
+            return result;
+        }
 
         internal static void InternalCopyBufferToSegment<T>(T[] srcBuf, T[] dstBuf, int dstOff, int dstLen)
         {
@@ -1163,6 +1225,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
 #endif
         }
 
+#if NET6_0_OR_GREATER
+        public static int MaxLength => Array.MaxLength;
+#else
+        public static int MaxLength => 0X7FFFFFC7;
+#endif
+
         public static bool SegmentsOverlap(int aOff, int aLen, int bOff, int bLen)
         {
             return aLen > 0
@@ -1171,37 +1239,47 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
                 && bOff - aOff < aLen;
         }
 
+#if NETSTANDARD1_0_OR_GREATER || NETCOREAPP1_0_OR_GREATER
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#endif
         public static void ValidateBuffer<T>(T[] buf)
         {
             if (buf == null)
                 throw new ArgumentNullException(nameof(buf));
         }
 
+#if NETSTANDARD1_0_OR_GREATER || NETCOREAPP1_0_OR_GREATER
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#endif
         public static void ValidateBufferLength(int len)
         {
             if (len < 0)
                 throw new ArgumentOutOfRangeException(nameof(len));
         }
 
+#if NETSTANDARD1_0_OR_GREATER || NETCOREAPP1_0_OR_GREATER
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#endif
         public static void ValidateRange<T>(T[] buf, int from, int to)
         {
             if (buf == null)
                 throw new ArgumentNullException(nameof(buf));
-            if ((from | (buf.Length - from)) < 0)
-                throw new ArgumentOutOfRangeException(nameof(from));
-            if (((to - from) | (buf.Length - to)) < 0)
+            if ((uint)to > buf.Length)
                 throw new ArgumentOutOfRangeException(nameof(to));
+            if ((uint)from > to)
+                throw new ArgumentOutOfRangeException(nameof(from));
         }
 
+#if NETSTANDARD1_0_OR_GREATER || NETCOREAPP1_0_OR_GREATER
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#endif
         public static void ValidateSegment<T>(T[] buf, int off, int len)
         {
             if (buf == null)
                 throw new ArgumentNullException(nameof(buf));
-            int available = buf.Length - off;
-            if ((off | available) < 0)
+            if ((uint)off > buf.Length)
                 throw new ArgumentOutOfRangeException(nameof(off));
-            int remaining = available - len;
-            if ((len | remaining) < 0)
+            if ((uint)len > buf.Length - off)
                 throw new ArgumentOutOfRangeException(nameof(len));
         }
 
@@ -1215,6 +1293,48 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         {
             ValidateSegment(buf, off, len);
             InternalZeroMemory(buf, off, len);
+        }
+
+        public static void ZeroMemory(char[] buf)
+        {
+            ValidateBuffer(buf);
+            InternalZeroMemory(buf);
+        }
+
+        internal static void ZeroMemory(sbyte[] buf)
+        {
+            ValidateBuffer(buf);
+            InternalZeroMemory(buf);
+        }
+
+        internal static void ZeroMemory(uint[] buf)
+        {
+            ValidateBuffer(buf);
+            InternalZeroMemory(buf);
+        }
+
+        internal static void ZeroMemory(uint[] buf, int off, int len)
+        {
+            ValidateSegment(buf, off, len);
+            InternalZeroMemory(buf, off, len);
+        }
+
+        internal static void ZeroMemory(ulong[] buf)
+        {
+            ValidateBuffer(buf);
+            InternalZeroMemory(buf);
+        }
+
+        internal static void ZeroMemory(ulong[] buf, int off, int len)
+        {
+            ValidateSegment(buf, off, len);
+            InternalZeroMemory(buf, off, len);
+        }
+
+        internal static void ZeroMemory(ushort[] buf)
+        {
+            ValidateBuffer(buf);
+            InternalZeroMemory(buf);
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
@@ -1254,16 +1374,38 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         public static bool FixedTimeEquals(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) =>
             CryptographicOperations.FixedTimeEquals(a, b);
 
-        public static bool InternalFixedTimeEquals(byte[] a, byte[] b) => CryptographicOperations.FixedTimeEquals(a, b);
+        internal static bool InternalFixedTimeEquals(byte[] a, byte[] b) =>
+            CryptographicOperations.FixedTimeEquals(a, b);
 
-        public static bool InternalFixedTimeEquals(int len, byte[] a, int aOff, byte[] b, int bOff) =>
+        internal static bool InternalFixedTimeEquals(int len, byte[] a, int aOff, byte[] b, int bOff) =>
             CryptographicOperations.FixedTimeEquals(a.AsSpan(aOff, len), b.AsSpan(bOff, len));
 
-        internal static void InternalZeroMemory(byte[] buf) =>
-            CryptographicOperations.ZeroMemory(buf);
+        internal static bool InternalFixedTimeEquals(int len, ulong[] a, int aOff, ulong[] b, int bOff) =>
+            CryptographicOperations.FixedTimeEquals(
+                MemoryMarshal.AsBytes(a.AsSpan(aOff, len)),
+                MemoryMarshal.AsBytes(b.AsSpan(bOff, len)));
+
+        internal static void InternalZeroMemory(byte[] buf) => CryptographicOperations.ZeroMemory(buf);
 
         internal static void InternalZeroMemory(byte[] buf, int off, int len) =>
             CryptographicOperations.ZeroMemory(buf.AsSpan(off, len));
+
+        internal static void InternalZeroMemory(char[] buf) =>
+            CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(buf.AsSpan()));
+
+        internal static void InternalZeroMemory(sbyte[] buf) =>
+            CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(buf.AsSpan()));
+
+        internal static void InternalZeroMemory(ushort[] buf) =>
+            CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(buf.AsSpan()));
+
+        internal static void InternalZeroMemory(uint[] buf) => ZeroMemory(buf.AsSpan());
+
+        internal static void InternalZeroMemory(uint[] buf, int off, int len) => ZeroMemory(buf.AsSpan(off, len));
+
+        internal static void InternalZeroMemory(ulong[] buf) => ZeroMemory(buf.AsSpan());
+
+        internal static void InternalZeroMemory(ulong[] buf, int off, int len) => ZeroMemory(buf.AsSpan(off, len));
 
         public static T[] Prepend<T>(ReadOnlySpan<T> a, T b)
         {
@@ -1274,6 +1416,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         }
 
         public static void ZeroMemory(Span<byte> buffer) => CryptographicOperations.ZeroMemory(buffer);
+
+        internal static void ZeroMemory(Span<uint> buffer) =>
+            CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(buffer));
+
+        internal static void ZeroMemory(Span<ulong> buffer) =>
+            CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(buffer));
 #else
         [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
         internal static bool InternalFixedTimeEquals(byte[] a, byte[] b)
@@ -1291,7 +1439,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         }
 
         [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
-        public static bool InternalFixedTimeEquals(int len, byte[] a, int aOff, byte[] b, int bOff)
+        internal static bool InternalFixedTimeEquals(int len, byte[] a, int aOff, byte[] b, int bOff)
         {
             int d = 0;
             for (int i = 0; i < len; ++i)
@@ -1299,6 +1447,17 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
                 d |= a[aOff + i] ^ b[bOff + i];
             }
             return 0 == d;
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        internal static bool InternalFixedTimeEquals(int len, ulong[] a, int aOff, ulong[] b, int bOff)
+        {
+            ulong d = 0;
+            for (int i = 0; i < len; ++i)
+            {
+                d |= a[aOff + i] ^ b[bOff + i];
+            }
+            return 0UL == d;
         }
 
         [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
@@ -1311,11 +1470,74 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
         }
 
         [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        internal static void InternalZeroMemory(char[] buf)
+        {
+            for (int i = 0; i < buf.Length; ++i)
+            {
+                buf[i] = '\0';
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
         internal static void InternalZeroMemory(byte[] buf, int off, int len)
         {
             for (int i = 0; i < len; ++i)
             {
                 buf[off + i] = 0;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        internal static void InternalZeroMemory(sbyte[] buf)
+        {
+            for (int i = 0; i < buf.Length; ++i)
+            {
+                buf[i] = 0;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        internal static void InternalZeroMemory(ushort[] buf)
+        {
+            for (int i = 0; i < buf.Length; ++i)
+            {
+                buf[i] = 0;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        internal static void InternalZeroMemory(uint[] buf)
+        {
+            for (int i = 0; i < buf.Length; ++i)
+            {
+                buf[i] = 0U;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        internal static void InternalZeroMemory(uint[] buf, int off, int len)
+        {
+            for (int i = 0; i < len; ++i)
+            {
+                buf[off + i] = 0U;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        internal static void InternalZeroMemory(ulong[] buf)
+        {
+            for (int i = 0; i < buf.Length; ++i)
+            {
+                buf[i] = 0UL;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
+        internal static void InternalZeroMemory(ulong[] buf, int off, int len)
+        {
+            for (int i = 0; i < len; ++i)
+            {
+                buf[off + i] = 0UL;
             }
         }
 #endif

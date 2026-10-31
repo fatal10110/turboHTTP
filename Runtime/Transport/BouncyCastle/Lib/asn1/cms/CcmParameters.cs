@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
@@ -33,19 +33,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Cms
             if (count < 1 || count > 2)
                 throw new ArgumentException("Bad sequence size: " + count, nameof(seq));
 
-            m_nonce = Asn1OctetString.GetInstance(seq[pos++]);
+            m_nonce = Asn1Utilities.Read(seq, ref pos, Asn1OctetString.GetInstance);
             DerInteger icvLen = Asn1Utilities.ReadOptional(seq, ref pos, DerInteger.GetOptional);
 
             if (pos != count)
                 throw new ArgumentException("Unexpected elements in sequence", nameof(seq));
 
-            m_icvLen = icvLen == null ? DefaultIcvLen : icvLen.IntValueExact;
+            m_icvLen = ValidateIcvLen(icvLen);
         }
 
         public CcmParameters(byte[] nonce, int icvLen)
         {
             m_nonce = DerOctetString.FromContents(nonce);
-            m_icvLen = icvLen;
+            m_icvLen = ValidateIcvLenValue(icvLen);
         }
 
         public byte[] GetNonce() => Arrays.Clone(m_nonce.GetOctets());
@@ -57,6 +57,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Cms
             return m_icvLen == DefaultIcvLen
                 ?  new DerSequence(m_nonce)
                 :  new DerSequence(m_nonce, DerInteger.ValueOf(m_icvLen));
+        }
+
+        private static int ValidateIcvLen(DerInteger icvLen)
+        {
+            if (icvLen == null)
+                return DefaultIcvLen;
+
+            if (!icvLen.TryGetIntValueExact(out int icvLenValue))
+                throw new ArgumentException("Invalid 'aes-ICVlen' (outside Int32 range)");
+
+            return ValidateIcvLenValue(icvLenValue);
+        }
+
+        // RFC 5084: AES-CCM-ICVlen ::= INTEGER (4 | 6 | 8 | 10 | 12 | 14 | 16)
+        private static int ValidateIcvLenValue(int icvLen)
+        {
+            if (icvLen < 4 || icvLen > 16 || (icvLen & 1) != 0)
+                throw new ArgumentException("Invalid 'aes-ICVlen': " + icvLen);
+
+            return icvLen;
         }
     }
 }
