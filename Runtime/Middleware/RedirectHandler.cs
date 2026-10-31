@@ -8,8 +8,22 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Middleware
 {
+    /// <summary>
+    /// Notified of every redirect response a <see cref="RedirectHandler"/> consumes (the 3xx
+    /// response never reaches the handlers above it). Interceptors that sit outside the redirect
+    /// interceptor register through <see cref="RedirectHandler.AddResponseObserver"/> before it
+    /// runs, so they still see each hop (e.g. Set-Cookie on a 302, RFC 6265 section 5.3).
+    /// </summary>
+    internal interface IRedirectResponseObserver
+    {
+        /// <param name="hopRequestUri">Request-uri of the hop that produced the response.</param>
+        void OnRedirectResponse(Uri hopRequestUri, HttpHeaders headers, RequestContext context);
+    }
+
     internal sealed class RedirectHandler : IHttpHandler
     {
+        internal const string ResponseObserversStateKey = "TurboHTTP.Middleware.RedirectResponseObservers";
+
         private readonly IHttpHandler _inner;
         private readonly DispatchFunc _dispatch;
         private readonly RedirectInterceptor.RedirectOptions _options;
@@ -22,6 +36,7 @@ namespace TurboHTTP.Middleware
         private readonly TaskCompletionSource<object> _completion =
             new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        private readonly IRedirectResponseObserver[] _responseObservers;
         private UHttpRequest _currentRequest;
         private int _redirectCount;
         private bool _sawInnerRequestStart;
@@ -47,6 +62,36 @@ namespace TurboHTTP.Middleware
             _responseDiscardTimeout = responseDiscardTimeout;
             _totalTimeoutBudget = initialRequest.Timeout;
             _redirectChain.Add(initialRequest.Uri.AbsoluteUri);
+
+            // Snapshot: only observers registered by interceptors outside this redirect interceptor
+            // (they ran first). Interceptors inside it see every hop response themselves.
+            _responseObservers = context.GetState<IRedirectResponseObserver[]>(ResponseObserversStateKey);
+        }
+
+        /// <summary>
+        /// Registers <paramref name="observer"/> for the redirect responses of every redirect
+        /// interceptor that runs later on <paramref name="context"/>. Idempotent per observer.
+        /// The array is copied on write; the hops of one request run sequentially.
+        /// </summary>
+        internal static void AddResponseObserver(RequestContext context, IRedirectResponseObserver observer)
+        {
+            var existing = context.GetState<IRedirectResponseObserver[]>(ResponseObserversStateKey);
+            if (existing == null)
+            {
+                context.SetState(ResponseObserversStateKey, new[] { observer });
+                return;
+            }
+
+            for (int i = 0; i < existing.Length; i++)
+            {
+                if (ReferenceEquals(existing[i], observer))
+                    return;
+            }
+
+            var updated = new IRedirectResponseObserver[existing.Length + 1];
+            Array.Copy(existing, updated, existing.Length);
+            updated[existing.Length] = observer;
+            context.SetState(ResponseObserversStateKey, updated);
         }
 
         internal Task Completion => _completion.Task;
@@ -90,6 +135,8 @@ namespace TurboHTTP.Middleware
                     CompleteWithError(ex, context);
                     return;
                 }
+
+                NotifyResponseObservers(headers, context);
 
                 if (_redirectCount >= _options.MaxRedirects)
                 {
@@ -192,6 +239,16 @@ namespace TurboHTTP.Middleware
         public void OnResponseError(UHttpException error, RequestContext context)
         {
             CompleteWithError(error, context);
+        }
+
+        private void NotifyResponseObservers(HttpHeaders headers, RequestContext context)
+        {
+            var observers = _responseObservers;
+            if (observers == null)
+                return;
+
+            for (int i = 0; i < observers.Length; i++)
+                observers[i].OnRedirectResponse(_currentRequest.Uri, headers, context);
         }
 
         private void CompleteWithError(UHttpException error, RequestContext context)

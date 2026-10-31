@@ -198,6 +198,20 @@ namespace TurboHTTP.Auth
                 }
 
                 var token = ParseTokenResponse(response.GetBodyAsString());
+
+                // RFC 6749 section 6: the server MAY issue a new refresh token; when it does not,
+                // the client keeps using the one it just presented.
+                if (string.IsNullOrEmpty(token.RefreshToken))
+                {
+                    token = new OAuthToken(
+                        token.AccessToken,
+                        token.ExpiresAtUtc,
+                        request.RefreshToken,
+                        token.TokenType,
+                        token.IdToken,
+                        token.Scope);
+                }
+
                 await _tokenStore.SetAsync(key, token, ct).ConfigureAwait(false);
                 return token;
             }
@@ -217,7 +231,9 @@ namespace TurboHTTP.Auth
                 throw new ArgumentException("OIDC discovery endpoint must use HTTPS.", nameof(discoveryEndpoint));
             }
 
-            using var response = await _client.Get(discoveryEndpoint.ToString()).SendBufferedAsync(ct)
+            using var response = await _client.Get(discoveryEndpoint.ToString())
+                .WithMetadata(AuthInterceptor.SkipAuthMetadataKey, true)
+                .SendBufferedAsync(ct)
                 .ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
@@ -306,6 +322,9 @@ namespace TurboHTTP.Auth
                 .Post(endpoint.ToString())
                 .WithHeader("Content-Type", "application/x-www-form-urlencoded")
                 .WithBody(formBody)
+                // Never attach (or fetch) the access token on token-endpoint requests: an OAuth
+                // AuthInterceptor on _client would re-enter the refresh gate held by the caller.
+                .WithMetadata(AuthInterceptor.SkipAuthMetadataKey, true)
                 .SendBufferedAsync(ct)
                 .ConfigureAwait(false);
             return response;
