@@ -46,6 +46,24 @@ under one `_writeLock` hold; lock order `_writeLock` then `_streamCreateLock`).
   the write (a peer that stopped reading can block the write). No ACK in time: `FailAllStreams` with a
   "presumed dead" network error, then `Dispose`. The stale "we don't send PINGs" ACK branch is gone.
 
+## Review round 1
+
+- PING liveness: the read loop counts inbound frames (Interlocked); a probe whose ACK misses the deadline
+  but that saw any frame arrive after the PING returns `PeerActive` instead of failing the connection
+  (an ACK queued behind DATA or our own upload on a slow link). Test
+  `Liveness_AckDelayedButFramesArriving_ConnectionStaysAlive`.
+- Admission: a slot reserved before a SETTINGS frame lowered MAX_CONCURRENT_STREAMS is re-checked under
+  `_streamCreateLock` before the stream id is allocated; over the applied limit the request is refused
+  unsent (`Http2RetryableRequestException`, not processed; the reservation is released). Test
+  `Admission_LimitLoweredWhileReservedRequestWaitsForWriteLock_RefusedUnsent`.
+- `ClassifyDispatchFailure` split into a static overload unit-tested per branch
+  (`ClassifyDispatchFailure_MarksReplayOnlyBeforeResponseStart`); transport tests
+  `FailureAfterResponseStart_*DuringUpload_IsNotReplayed` (connection lost / REFUSED_STREAM after HEADERS while
+  the PUT body is blocked on flow control, spare connection never used, OnResponseStart once). Finding: in
+  those paths `Http2Stream.Fail` aborts the upload first, so the dispatch completes and the failure surfaces
+  through the body; the response-started branches of the classifier are defensive and are covered by the
+  unit test.
+
 ## Files
 
 Runtime: `Runtime/Core/Http2Options.cs`; `Runtime/Transport/RawSocketTransport.cs`;

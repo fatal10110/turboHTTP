@@ -32,6 +32,9 @@ namespace TurboHTTP.Transport.Http2
                     {
                         var frame = frameLease.Frame;
 
+                        // Any inbound frame proves the peer is alive (see RunLivenessCycleAsync).
+                        Interlocked.Increment(ref _inboundFrameCount);
+
                         if (_continuationStreamId != 0 && frame.Type != Http2FrameType.Continuation)
                         {
                             throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,

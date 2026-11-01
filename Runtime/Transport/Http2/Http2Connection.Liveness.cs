@@ -11,16 +11,21 @@ namespace TurboHTTP.Transport.Http2
         // PINGs (battery, and peers may treat frequent PINGs as abuse, Section 10.5). Each PING carries a
         // unique non-zero payload; the read loop clears _outstandingPingPayload when the ACK echoes it.
         // The payload is a long, so it is accessed only through Interlocked (32-bit IL2CPP).
+        // The read loop counts every inbound frame (Interlocked): a probe whose ACK is late but that saw
+        // frames arrive meanwhile (the ACK queued behind DATA or behind our own upload on a slow link)
+        // does not declare the connection dead.
         private readonly TimeSpan _pingInterval;
         private readonly TimeSpan _pingTimeout;
         private long _pingPayloadCounter;
         private long _outstandingPingPayload;
         private TaskCompletionSource<bool> _pingAckSignal; // Volatile
+        private int _inboundFrameCount;
 
         internal enum LivenessCycleResult
         {
             Idle,
             Acknowledged,
+            PeerActive,
             TimedOut
         }
 
@@ -51,8 +56,9 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// One liveness probe: with streams open, sends a PING and waits up to the PING timeout for its
-        /// ACK. Without an ACK the connection is presumed dead: its streams fail with a network error and
-        /// it is disposed, so the manager hands new requests a fresh connection.
+        /// ACK. Without an ACK, and without any other inbound frame since the PING was sent, the
+        /// connection is presumed dead: its streams fail with a network error and it is disposed, so the
+        /// manager hands new requests a fresh connection.
         /// </summary>
         internal async Task<LivenessCycleResult> RunLivenessCycleAsync(CancellationToken ct)
         {
@@ -60,6 +66,7 @@ namespace TurboHTTP.Transport.Http2
                 return LivenessCycleResult.Idle;
 
             long payload = Interlocked.Increment(ref _pingPayloadCounter);
+            int framesBeforePing = Volatile.Read(ref _inboundFrameCount);
             var ack = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             Volatile.Write(ref _pingAckSignal, ack);
             Interlocked.Exchange(ref _outstandingPingPayload, payload);
@@ -82,6 +89,11 @@ namespace TurboHTTP.Transport.Http2
                 ct.ThrowIfCancellationRequested();
                 if (Interlocked.CompareExchange(ref _outstandingPingPayload, 0, payload) != payload)
                     return LivenessCycleResult.Acknowledged; // the ACK raced the deadline
+
+                // Frames kept arriving: the peer is alive and the ACK is only delayed behind them. The
+                // outstanding payload is cleared above, so a late ACK is ignored; the next cycle re-probes.
+                if (Volatile.Read(ref _inboundFrameCount) != framesBeforePing)
+                    return LivenessCycleResult.PeerActive;
 
                 var error = new UHttpException(new UHttpError(
                     UHttpErrorType.NetworkError,

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -412,6 +413,150 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(Http2FrameType.Headers, first.Type);
 
                 await serverCodec.WriteFrameAsync(BuildResponseHeadersFrame(first.StreamId, 200, endStream: true), cts.Token);
+                using (var response = await task)
+                    Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void Admission_LimitLoweredWhileReservedRequestWaitsForWriteLock_RefusedUnsent()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+                await SendMaxConcurrentStreamsAndAwaitAckAsync(serverCodec, 2, cts.Token);
+
+                var requestA = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/a"));
+                var taskA = conn.SendRequestAsync(requestA, new RequestContext(requestA), cts.Token).AsTask();
+                int streamA = (await ReadHeadersFrameAsync(serverCodec, cts.Token)).StreamId;
+
+                const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+                var writeLock = (SemaphoreSlim)typeof(Http2Connection).GetField("_writeLock", flags).GetValue(conn);
+                var remoteSettings = (Http2Settings)typeof(Http2Connection).GetField("_remoteSettings", flags).GetValue(conn);
+                var pendingField = typeof(Http2Connection).GetField("_pendingAdmissions", flags);
+
+                // B reserves the second slot, then waits for the write lock while the peer lowers the
+                // limit to 1 (RFC 9113 Section 5.1.2): opening B would exceed the applied limit.
+                await writeLock.WaitAsync(cts.Token);
+                Task<UHttpResponse> taskB;
+                try
+                {
+                    var requestB = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/b"));
+                    taskB = conn.SendRequestAsync(requestB, new RequestContext(requestB), cts.Token).AsTask();
+                    await WaitForConditionAsync(() => (int)pendingField.GetValue(conn) == 1, cts.Token);
+
+                    var payload = BuildSettingsPayload(Http2SettingId.MaxConcurrentStreams, 1);
+                    await serverCodec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Settings,
+                        Flags = Http2FrameFlags.None,
+                        StreamId = 0,
+                        Payload = payload,
+                        Length = payload.Length
+                    }, cts.Token);
+                    await WaitForConditionAsync(() => remoteSettings.MaxConcurrentStreams == 1, cts.Token);
+                }
+                finally
+                {
+                    writeLock.Release();
+                }
+
+                var nextHeaders = ReadHeadersFrameAsync(serverCodec, cts.Token);
+                var first = await Task.WhenAny(taskB, nextHeaders);
+                Assert.AreSame(taskB, first, "the request must be refused, not opened over the lowered limit");
+                var refused = await TestHelpers.AssertThrowsAsync<Http2RetryableRequestException>(() => taskB);
+                Assert.IsTrue(refused.RequestNotProcessed, "an unsent request is replayable for any method");
+                Assert.AreEqual(0, (int)pendingField.GetValue(conn), "the reservation is released");
+
+                await serverCodec.WriteFrameAsync(BuildResponseHeadersFrame(streamA, 200, endStream: true), cts.Token);
+                using (var responseA = await taskA)
+                    Assert.AreEqual(HttpStatusCode.OK, responseA.StatusCode);
+
+                // B consumed no stream id: the next request opens streamA + 2.
+                var requestC = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/c"));
+                var taskC = conn.SendRequestAsync(requestC, new RequestContext(requestC), cts.Token).AsTask();
+                var headersC = await nextHeaders;
+                Assert.AreEqual(streamA + 2, headersC.StreamId);
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(headersC.StreamId, 200, endStream: true),
+                    cts.Token);
+                using (var responseC = await taskC)
+                    Assert.AreEqual(HttpStatusCode.OK, responseC.StatusCode);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void ClassifyDispatchFailure_MarksReplayOnlyBeforeResponseStart()
+        {
+            var error = new UHttpError(UHttpErrorType.NetworkError, "refused");
+            var notProcessed = new Http2RetryableRequestException(error, requestNotProcessed: true);
+
+            // Unprocessed before response start: the marker is kept (replay allowed for any method).
+            Assert.AreSame(notProcessed, Http2Connection.ClassifyDispatchFailure(notProcessed, false, false));
+
+            // Once the response started nothing is replayable: the marker is stripped, the error kept.
+            var stripped = Http2Connection.ClassifyDispatchFailure(notProcessed, true, true);
+            Assert.IsNotInstanceOf<Http2RetryableRequestException>(stripped);
+            Assert.AreSame(error, ((UHttpException)stripped).HttpError);
+
+            // A dispatch failing because the connection closed: connection-lost marker before response
+            // start only.
+            var lost = Http2Connection.ClassifyDispatchFailure(new OperationCanceledException(), false, true);
+            Assert.IsInstanceOf<Http2RetryableRequestException>(lost);
+            Assert.IsFalse(((Http2RetryableRequestException)lost).RequestNotProcessed);
+            Assert.IsNotInstanceOf<Http2RetryableRequestException>(
+                Http2Connection.ClassifyDispatchFailure(new OperationCanceledException(), true, true));
+
+            // A stream-scoped failure on a working connection is never marked (#15).
+            var streamScoped = Http2Connection.ClassifyDispatchFailure(new System.IO.IOException("body"), false, false);
+            Assert.IsInstanceOf<UHttpException>(streamScoped);
+            Assert.IsNotInstanceOf<Http2RetryableRequestException>(streamScoped);
+        }
+
+        [Test]
+        public void Liveness_AckDelayedButFramesArriving_ConnectionStaysAlive()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var options = new Http2Options
+                {
+                    PingInterval = TimeSpan.Zero, // loop off: the test drives one cycle
+                    PingTimeout = TimeSpan.FromMilliseconds(1500)
+                };
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token, options);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/a"));
+                var task = conn.SendRequestAsync(request, new RequestContext(request), cts.Token).AsTask();
+                int streamId = (await ReadHeadersFrameAsync(serverCodec, cts.Token)).StreamId;
+
+                var cycle = conn.RunLivenessCycleAsync(cts.Token);
+                var ping = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.Ping, ping.Type);
+
+                // The peer keeps sending (its ACK queued behind DATA on a slow link) but never ACKs in
+                // time: frames arriving after the PING prove the connection alive.
+                await serverCodec.WriteFrameAsync(new Http2Frame
+                {
+                    Type = Http2FrameType.WindowUpdate,
+                    Flags = Http2FrameFlags.None,
+                    StreamId = 0,
+                    Payload = new byte[] { 0, 0, 0, 1 },
+                    Length = 4
+                }, cts.Token);
+
+                Assert.AreEqual(Http2Connection.LivenessCycleResult.PeerActive, await cycle);
+                Assert.IsTrue(conn.IsAlive);
+                Assert.IsTrue(conn.AcceptsNewStreams);
+
+                await serverCodec.WriteFrameAsync(BuildResponseHeadersFrame(streamId, 200, endStream: true), cts.Token);
                 using (var response = await task)
                     Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 

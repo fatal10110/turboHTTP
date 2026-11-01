@@ -326,6 +326,12 @@ namespace TurboHTTP.Transport.Http2
                         if (!AcceptsNewStreamsCore())
                             throw CreateNotAcceptingException();
 
+                        // The slot was reserved against the limit in force then; a SETTINGS frame applied
+                        // since may have lowered it (RFC 9113 Section 5.1.2). Opening the stream anyway
+                        // would exceed the peer's limit, so the request is refused unsent (replayable).
+                        if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
+                            throw CreateLimitLoweredException();
+
                         streamId = AllocateNextStreamId();
 
                         // Registered before HEADERS hit the wire: the response may arrive at once.
@@ -510,14 +516,20 @@ namespace TurboHTTP.Transport.Http2
         /// only, and a replay would deliver a second OnResponseStart). A stream-scoped failure on a working
         /// connection (RST_STREAM other than REFUSED_STREAM, a request-body source error) is not marked.
         /// </summary>
-        private Exception ClassifyDispatchFailure(Exception ex, Http2Stream stream)
+        private Exception ClassifyDispatchFailure(Exception ex, Http2Stream stream) =>
+            ClassifyDispatchFailure(ex, stream != null && stream.ResponseStarted, _cts.IsCancellationRequested);
+
+        /// <summary>
+        /// The classification itself, separated from the connection state so each branch is unit-tested
+        /// (several are defensive: Fail usually aborts the upload so the dispatch completes instead).
+        /// </summary>
+        internal static Exception ClassifyDispatchFailure(Exception ex, bool responseStarted, bool connectionClosed)
         {
-            bool responseStarted = stream != null && stream.ResponseStarted;
             if (ex is Http2RetryableRequestException retryable)
                 return responseStarted ? new UHttpException(retryable.HttpError) : retryable;
 
             var mapped = MapException(ex);
-            if (!responseStarted && _cts.IsCancellationRequested)
+            if (!responseStarted && connectionClosed)
             {
                 // The connection failed or was closed (read-loop error, PING timeout, dispose).
                 return new Http2RetryableRequestException(mapped.HttpError, requestNotProcessed: false);

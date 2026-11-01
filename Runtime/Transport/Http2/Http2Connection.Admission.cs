@@ -44,6 +44,15 @@ namespace TurboHTTP.Transport.Http2
                 requestNotProcessed: true);
         }
 
+        private static UHttpException CreateLimitLoweredException()
+        {
+            return new Http2RetryableRequestException(
+                new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    "HTTP/2 peer lowered SETTINGS_MAX_CONCURRENT_STREAMS before the stream opened; the request was not sent"),
+                requestNotProcessed: true);
+        }
+
         private int FreeStreamSlotsLocked()
         {
             long free = (long)_remoteSettings.MaxConcurrentStreams - _activeStreams.Count - _pendingAdmissions;

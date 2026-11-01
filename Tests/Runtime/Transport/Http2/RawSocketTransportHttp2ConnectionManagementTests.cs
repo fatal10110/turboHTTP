@@ -121,6 +121,106 @@ namespace TurboHTTP.Tests.Transport.Http2
             });
         }
 
+        [TestCase(false, TestName = "FailureAfterResponseStart_ConnectionLostDuringUpload_IsNotReplayed")]
+        [TestCase(true, TestName = "FailureAfterResponseStart_RefusedStreamDuringUpload_IsNotReplayed")]
+        public void FailureAfterResponseStart_DuringUpload_IsNotReplayed(bool refusedStream)
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(20000);
+                using var harness = new Harness();
+                var handler = new RecordingHandler();
+
+                // SETTINGS_INITIAL_WINDOW_SIZE = 0: the PUT body stays blocked on flow control, so the
+                // dispatch is still uploading when the response starts and the failure arrives. PUT with
+                // a byte[] body is idempotent and replayable: only "the response started" stops a replay.
+                var zeroInitialWindow = new byte[] { 0x00, 0x04, 0x00, 0x00, 0x00, 0x00 };
+                harness.AddIdleConnection(async (codec, server, ct) =>
+                {
+                    var decoder = new HpackDecoder();
+                    while (true)
+                    {
+                        var frame = await codec.ReadFrameAsync(16384, ct);
+                        if (frame.Type != Http2FrameType.Headers)
+                            continue;
+
+                        var observed = new ObservedRequest { StreamId = frame.StreamId };
+                        foreach (var (name, value) in decoder.Decode(frame.Payload, 0, frame.Length))
+                        {
+                            if (name == ":method")
+                                observed.Method = value;
+                            else if (name == ":path")
+                                observed.Path = value;
+                        }
+
+                        if (observed.Method != "PUT")
+                        {
+                            await RespondAsync(codec, observed, ct);
+                            continue;
+                        }
+
+                        var headerBlock = new HpackEncoder()
+                            .Encode(new List<(string, string)> { (":status", "200") })
+                            .ToArray();
+                        await codec.WriteFrameAsync(new Http2Frame
+                        {
+                            Type = Http2FrameType.Headers,
+                            Flags = Http2FrameFlags.EndHeaders,
+                            StreamId = frame.StreamId,
+                            Payload = headerBlock,
+                            Length = headerBlock.Length
+                        }, ct);
+
+                        await handler.ResponseStarted.Task;
+                        if (refusedStream)
+                            await codec.WriteFrameAsync(RstStream(frame.StreamId, Http2ErrorCode.RefusedStream), ct);
+                        else
+                            server.Dispose(); // the connection breaks mid-response
+                        return;
+                    }
+                }, zeroInitialWindow, cts.Token);
+                await AssertOkAsync(harness.SendAsync(HttpMethod.GET, "/warm", null, cts.Token));
+
+                // A spare connection gives a wrong replay somewhere to go.
+                bool spareUsed = false;
+                harness.AddIdleConnection((codec, ct) =>
+                {
+                    spareUsed = true;
+                    return ServeAsync(codec, (c, request) => RespondAsync(c, request, ct), ct);
+                }, cts.Token);
+
+                var put = new UHttpRequest(
+                    HttpMethod.PUT,
+                    new Uri($"https://{Host}:{Port}/upload"),
+                    body: Encoding.ASCII.GetBytes("payload"));
+                Exception thrown = null;
+                try
+                {
+                    await harness.Transport.DispatchAsync(put, handler, new RequestContext(put), cts.Token);
+                }
+                catch (Exception ex)
+                {
+                    thrown = ex;
+                }
+
+                Assert.AreEqual(1, Volatile.Read(ref handler.ResponseStartCount), "OnResponseStart must never run twice");
+                Assert.IsFalse(Volatile.Read(ref spareUsed), "a request whose response started must not be replayed");
+                Assert.IsNotInstanceOf<Http2RetryableRequestException>(thrown, "no retry marker may escape");
+                // After response start the failure belongs to the body (IResponseBodySource); the dispatch
+                // may also fail (upload aborted by the lost connection), but never twice.
+                Assert.LessOrEqual(
+                    (thrown != null ? 1 : 0) + Volatile.Read(ref handler.ErrorCount),
+                    1,
+                    "at most one dispatch-level error outcome");
+
+                var body = handler.Body;
+                Assert.IsNotNull(body);
+                await TestHelpers.AssertThrowsAsync<UHttpException>(
+                    async () => await body.ReadAsync(new byte[16], cts.Token));
+                await body.DisposeAsync();
+            });
+        }
+
         [Test]
         public void RefusedStream_PostIsReplayedTransparently()
         {
@@ -224,7 +324,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 using var cts = new CancellationTokenSource(10000);
                 using var manager = new Http2ConnectionManager(new Http2Options(), new StreamingOptions());
                 var duplex = new TestDuplexStream();
-                var handshake = CompleteHandshakeAsync(duplex.ServerStream, cts.Token);
+                var handshake = CompleteHandshakeAsync(duplex.ServerStream, null, cts.Token);
                 var conn = await manager.GetOrCreateAsync("drain.example.com", 443, duplex.ClientStream, cts.Token);
                 var codec = await handshake;
 
@@ -256,7 +356,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 using var cts = new CancellationTokenSource(10000);
                 var manager = new Http2ConnectionManager(new Http2Options(), new StreamingOptions());
                 var duplex = new TestDuplexStream();
-                var handshake = CompleteHandshakeAsync(duplex.ServerStream, cts.Token);
+                var handshake = CompleteHandshakeAsync(duplex.ServerStream, null, cts.Token);
                 var conn = await manager.GetOrCreateAsync("drain.example.com", 443, duplex.ClientStream, cts.Token);
                 var codec = await handshake;
 
@@ -336,6 +436,18 @@ namespace TurboHTTP.Tests.Transport.Http2
             /// </summary>
             public void AddIdleConnection(Func<Http2FrameCodec, CancellationToken, Task> serve, CancellationToken ct)
             {
+                AddIdleConnection((codec, server, token) => serve(codec, token), null, ct);
+            }
+
+            /// <summary>
+            /// As above; <paramref name="serve"/> also gets the server end (disposing it breaks the
+            /// connection) and the server's SETTINGS carry <paramref name="serverSettings"/> (null: none).
+            /// </summary>
+            public void AddIdleConnection(
+                Func<Http2FrameCodec, Stream, CancellationToken, Task> serve,
+                byte[] serverSettings,
+                CancellationToken ct)
+            {
                 var pair = LoopbackSocketPair.Create();
                 _resources.Add(pair);
                 var duplex = new TestDuplexStream();
@@ -355,8 +467,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                 {
                     try
                     {
-                        var codec = await CompleteHandshakeAsync(duplex.ServerStream, ct);
-                        await serve(codec, ct);
+                        var codec = await CompleteHandshakeAsync(duplex.ServerStream, serverSettings, ct);
+                        await serve(codec, duplex.ServerStream, ct);
                     }
                     catch (Exception)
                     {
@@ -430,6 +542,37 @@ namespace TurboHTTP.Tests.Transport.Http2
             }
         }
 
+        /// <summary>Records each callback; keeps the started body for the test (which disposes it).</summary>
+        private sealed class RecordingHandler : IHttpHandler
+        {
+            public readonly TaskCompletionSource<bool> ResponseStarted =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public int ResponseStartCount;
+            public int ErrorCount;
+            public IResponseBodySource Body;
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+            }
+
+            public ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
+            {
+                Interlocked.Increment(ref ResponseStartCount);
+                Body = body;
+                ResponseStarted.TrySetResult(true);
+                return default;
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                Interlocked.Increment(ref ErrorCount);
+            }
+        }
+
         private sealed class ThrowingHandler : IHttpHandler
         {
             public const string Message = "handler fault for #15";
@@ -457,7 +600,10 @@ namespace TurboHTTP.Tests.Transport.Http2
             }
         }
 
-        private static async Task<Http2FrameCodec> CompleteHandshakeAsync(Stream serverStream, CancellationToken ct)
+        private static async Task<Http2FrameCodec> CompleteHandshakeAsync(
+            Stream serverStream,
+            byte[] serverSettings,
+            CancellationToken ct)
         {
             var preface = new byte[Http2Constants.ConnectionPreface.Length];
             int read = 0;
@@ -471,12 +617,13 @@ namespace TurboHTTP.Tests.Transport.Http2
 
             var codec = new Http2FrameCodec(serverStream);
             await codec.ReadFrameAsync(16384, ct);
+            var settings = serverSettings ?? Array.Empty<byte>();
             await codec.WriteFrameAsync(new Http2Frame
             {
                 Type = Http2FrameType.Settings,
                 StreamId = 0,
-                Payload = Array.Empty<byte>(),
-                Length = 0
+                Payload = settings,
+                Length = settings.Length
             }, ct);
             await codec.WriteFrameAsync(new Http2Frame
             {
