@@ -12,7 +12,7 @@ namespace TurboHTTP.Core.Internal
     /// between two counter reads may cause <see cref="ActiveCount"/> to be transiently off by one.
     /// Use these values for trend detection and health monitoring, not exact accounting.
     /// </remarks>
-    public readonly struct ObjectPoolDiagnostics
+    internal readonly struct ObjectPoolDiagnostics
     {
         /// <summary>Total <see cref="ObjectPool{T}.Rent"/> calls (non-null items returned) since last reset.</summary>
         public readonly long RentCount;
@@ -46,7 +46,7 @@ namespace TurboHTTP.Core.Internal
     /// Thread-safe. Items exceeding the capacity limit are discarded on return.
     /// </summary>
     /// <typeparam name="T">The type of objects to pool. Must be a reference type.</typeparam>
-    public sealed class ObjectPool<T> where T : class
+    internal sealed class ObjectPool<T> where T : class
     {
         private readonly T[] _items;
         private readonly Func<T> _factory;

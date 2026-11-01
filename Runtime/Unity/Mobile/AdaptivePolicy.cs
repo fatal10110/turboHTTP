@@ -1,6 +1,6 @@
 using System;
 
-namespace TurboHTTP.Core
+namespace TurboHTTP.Unity.Mobile
 {
     public sealed class AdaptivePolicy
     {

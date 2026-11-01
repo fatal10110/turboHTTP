@@ -7,10 +7,12 @@ namespace TurboHTTP.Core
     /// WebSocket) use without referencing TurboHTTP.JSON. TurboHTTP.JSON registers itself from
     /// TurboHTTP's startup bootstrap (TurboHTTP.Complete). Projects that exclude that assembly, and
     /// WebGL builds (which exclude it too), call <c>TurboHTTP.JSON.JsonModuleRegistration.EnsureRegistered()</c>
-    /// at startup or register their own <see cref="IJsonBridge"/>. Nothing here looks types up by
-    /// name, so managed code stripping cannot remove what the bridge calls.
+    /// at startup; a custom serializer goes through <c>TurboHTTP.JSON.JsonSerializer.SetDefault</c>.
+    /// Internal since #77: the bridge is plumbing between TurboHTTP assemblies (InternalsVisibleTo), not
+    /// public API. Nothing here looks types up by name, so managed code stripping cannot remove what
+    /// the bridge calls.
     /// </summary>
-    public static class ProjectJsonBridge
+    internal static class ProjectJsonBridge
     {
         // Single owner: one volatile reference; every call reads one snapshot.
         private static volatile IJsonBridge _bridge;

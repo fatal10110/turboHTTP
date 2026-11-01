@@ -3,7 +3,6 @@ using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
-using TurboHTTP.Unity.Mobile;
 using UnityEngine;
 
 namespace TurboHTTP.Unity
@@ -100,13 +99,6 @@ namespace TurboHTTP.Unity
             options.DefaultHeaders.Set("User-Agent", BuildDefaultUserAgent());
 
             configure?.Invoke(options);
-
-            if (options.BackgroundNetworkingPolicy != null &&
-                options.BackgroundNetworkingPolicy.Enable &&
-                options.BackgroundExecutionBridge == null)
-            {
-                options.BackgroundExecutionBridge = BackgroundExecutionBridgeFactory.CreateDefault();
-            }
 
             return new UHttpClient(options);
         }

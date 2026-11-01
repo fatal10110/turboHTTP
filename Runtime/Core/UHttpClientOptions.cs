@@ -69,11 +69,6 @@ namespace TurboHTTP.Core
         public TimeSpan PluginShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
         /// <summary>
-        /// Optional adaptive network behavior policy.
-        /// </summary>
-        public AdaptivePolicy AdaptivePolicy { get; set; } = new AdaptivePolicy();
-
-        /// <summary>
         /// Optional proxy settings (or environment resolution).
         /// </summary>
         public ProxySettings Proxy { get; set; }
@@ -91,22 +86,6 @@ namespace TurboHTTP.Core
         /// <see cref="ProxySettings.AllowPlaintextProxyAuth"/>.
         /// </summary>
         public bool AllowCleartext { get; set; } = CleartextTrafficPolicy.DefaultAllowCleartext;
-
-        /// <summary>
-        /// Optional background networking behavior for mobile-style pause/resume flows.
-        /// </summary>
-        public BackgroundNetworkingPolicy BackgroundNetworkingPolicy { get; set; } = new BackgroundNetworkingPolicy();
-
-        /// <summary>
-        /// Optional platform bridge used by <see cref="BackgroundNetworkingInterceptor"/>
-        /// to acquire/release background execution scopes.
-        /// </summary>
-        public IBackgroundExecutionBridge BackgroundExecutionBridge { get; set; }
-
-        /// <summary>
-        /// Detector used by <see cref="AdaptiveInterceptor"/> for quality snapshots.
-        /// </summary>
-        public NetworkQualityDetector NetworkQualityDetector { get; set; }
 
         /// <summary>
         /// Whether to follow HTTP redirects automatically (default <c>true</c>). Applied by
@@ -189,12 +168,8 @@ namespace TurboHTTP.Core
                 Transport = Transport,
                 Interceptors = Interceptors != null ? new List<IHttpInterceptor>(Interceptors) : new List<IHttpInterceptor>(),
                 PluginShutdownTimeout = PluginShutdownTimeout,
-                AdaptivePolicy = AdaptivePolicy?.Clone() ?? new AdaptivePolicy(),
                 Proxy = Proxy?.Clone(),
                 AllowCleartext = AllowCleartext,
-                BackgroundNetworkingPolicy = BackgroundNetworkingPolicy?.Clone() ?? new BackgroundNetworkingPolicy(),
-                BackgroundExecutionBridge = BackgroundExecutionBridge,
-                NetworkQualityDetector = NetworkQualityDetector,
                 FollowRedirects = FollowRedirects,
                 MaxRedirects = MaxRedirects,
                 DisposeTransport = DisposeTransport,

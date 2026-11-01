@@ -1,4 +1,4 @@
-namespace TurboHTTP.Core
+namespace TurboHTTP.Unity.Mobile
 {
     public enum NetworkQuality
     {

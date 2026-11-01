@@ -688,62 +688,11 @@ namespace TurboHTTP.Core
                 ? new List<IHttpInterceptor>(options.Interceptors)
                 : new List<IHttpInterceptor>();
 
-            TryAppendBackgroundNetworkingInterceptor(options, interceptors);
-            TryAppendAdaptiveInterceptor(options, interceptors);
-
 #if UNITY_EDITOR
             TryAppendEditorMonitorInterceptor(interceptors);
 #endif
 
             return interceptors;
-        }
-
-        private static void TryAppendAdaptiveInterceptor(
-            UHttpClientOptions options,
-            List<IHttpInterceptor> interceptors)
-        {
-            if (options?.AdaptivePolicy == null || !options.AdaptivePolicy.Enable || interceptors == null)
-                return;
-
-            if (ContainsPipelineComponent<AdaptiveInterceptor>(interceptors))
-                return;
-
-            var detector = options.NetworkQualityDetector ?? new NetworkQualityDetector();
-            options.NetworkQualityDetector = detector;
-            interceptors.Insert(0, new AdaptiveInterceptor(options.AdaptivePolicy.Clone(), detector));
-        }
-
-        private static void TryAppendBackgroundNetworkingInterceptor(
-            UHttpClientOptions options,
-            List<IHttpInterceptor> interceptors)
-        {
-            if (options?.BackgroundNetworkingPolicy == null ||
-                !options.BackgroundNetworkingPolicy.Enable ||
-                interceptors == null)
-            {
-                return;
-            }
-
-            if (ContainsPipelineComponent<BackgroundNetworkingInterceptor>(interceptors))
-                return;
-
-            interceptors.Insert(0, new BackgroundNetworkingInterceptor(
-                options.BackgroundNetworkingPolicy.Clone(),
-                options.BackgroundExecutionBridge));
-        }
-
-        private static bool ContainsPipelineComponent<T>(IReadOnlyList<IHttpInterceptor> interceptors)
-        {
-            if (interceptors == null)
-                return false;
-
-            for (int i = 0; i < interceptors.Count; i++)
-            {
-                if (interceptors[i] is T)
-                    return true;
-            }
-
-            return false;
         }
 
 #if UNITY_EDITOR

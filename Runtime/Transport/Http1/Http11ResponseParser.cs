@@ -843,21 +843,6 @@ namespace TurboHTTP.Transport.Http1
             return -1;
         }
 
-        /// <summary>
-        /// Read a line terminated by CRLF (or bare LF per RFC 9112 §2.2 robustness) from the stream.
-        /// Returns the line content without the trailing line terminator.
-        /// WARNING: This helper creates a temporary buffered reader instance and may prefetch
-        /// bytes beyond the returned line. It is intended for tests/single-line probes, not
-        /// for continued parsing of a live connection where unread bytes must be preserved.
-        /// </summary>
-        [Obsolete("Test helper only. Prefer ParseAsync/BufferedStreamReader for production parsing paths.", false)]
-        internal static async Task<string> ReadLineAsync(
-            Stream stream, CancellationToken ct, int maxLength = MaxHeaderLineLength)
-        {
-            using var reader = new BufferedStreamReader(stream);
-            return await reader.ReadLineAsync(ct, maxLength).ConfigureAwait(false);
-        }
-
         /// <returns>
         /// A tuple containing the reassembled body (or <c>null</c> for an empty chunked body)
         /// and any parsed response trailers.
