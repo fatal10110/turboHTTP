@@ -46,8 +46,8 @@ moduli 2048-8192 bits with e at most 64 bits, 32 KiB handshake-message cap.
 
 `TurboTlsAuthentication` checks, in order: RFC 6125 host identity (`TlsCertificateNameMatcher`),
 leaf EKU serverAuth, leaf validity, path validation outside BC (`ServerCertificateVerifier`:
-`X509Chain` in the Editor and on desktop, revocation off; iOS/Android reject every chain until the
-native verifiers land, #239), then `TlsUtilities.CheckPeerSigAlgs` on the platform-built path.
+`X509Chain` in the Editor and on desktop, revocation off; iOS SecTrust and Android
+`X509TrustManagerExtensions` on devices, network fetch off, any bridge failure rejects, #239), then `TlsUtilities.CheckPeerSigAlgs` on the platform-built path.
 BC APIs it uses (all present in the current Lib, so no re-sync is needed now; the next strip must
 take the new `TurboTlsAuthentication.cs` as a root): `X509Certificate`
 (`GetSubjectAlternativeNameExtension`, `GetExtendedKeyUsage`, `SubjectDN`, `NotBefore`/`NotAfter`),
