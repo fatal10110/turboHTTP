@@ -28,6 +28,8 @@
 - Tests: `Tests/Runtime/Middleware/DecompressionZlibAndMultiMemberTests.cs`,
   `Tests/Runtime/Middleware/DecompressionLimitAndAllocationTests.cs`.
 - Docs: `CHANGELOG.md`; phase docs 22a and 22a.5 note the new default.
+- Review round 1: `Runtime/Middleware/AssemblyInfo.cs` (new, `InternalsVisibleTo` the runtime tests, as the
+  other modules have) and `Tests/Runtime/Middleware/InflateLayerStreamBoundaryTests.cs` (new).
 
 ## Decisions
 
@@ -52,12 +54,22 @@
   nothing there, so the test falls back to the profiler counter "GC Allocated In Frame" around a frame
   that runs only the measured section, and skips only when neither counts. A counter-free structural test
   (the 10 MB body arrives as <= 16 KB segments) runs everywhere.
+- Dispose race (review round 1). A dispose on another thread while a header phase awaits the source used
+  to leave the inflater created afterwards undisposed and let the read decode a disposed stream. Now every
+  read loop step checks `_disposed`, and `StartBody` publishes the inflater with `Interlocked.Exchange`
+  (full fence) and re-checks `_disposed`, taking the inflater back and throwing `ObjectDisposedException`
+  when a dispose won; `Dispose` sets `_disposed` before it swaps `_inflater`, so one of the two disposes it.
+- The member-end window is pinned by a sweep (review round 1): two-member gzip and zlib whose DEFLATE data
+  (stored blocks, exact length) ends at every offset `k * 2048 - 10 .. k * 2048 + 10`, k = 1..3, on the
+  buffered path and on the streaming path with consumer buffers of exactly the member's decoded length.
 - The bomb bound is asserted as limit + one 16 KB segment + 64 KB fixed overhead (decoder state,
   exceptions, pipeline objects), the same fixed slack as the 10 MB criterion.
 
 ## Deferred
 
-- None for #219/#74. The number of gzip members is not capped (each costs >= 20 input bytes, one
+- #261 (v1.1): `AdaptiveHandler` counts response bytes only via `TryGetBufferedData`, so decoded bodies
+  over one 16 KB segment (now segmented, #74) and streamed bodies report 0 bytes. Unity module, out of lane.
+- Otherwise none for #219/#74. The number of gzip members is not capped (each costs >= 20 input bytes, one
   `DeflateStream` that is disposed at the member end, output bounded by the limit).
 
 ## Verification
@@ -68,4 +80,7 @@
   Measured (frame counter, warm pool): 10 MB buffered body 8.5 MB allocated; bomb with 512 KB limit 19.5 KB.
 - The new tests were run against the old runtime code: positive zlib, multi-member, optional-header,
   allocation, segment and 32 MB-default tests fail there (old allocation: 54.5 MB for 10 MB; bomb 1.58 MB).
+- Round 1: `check.sh` OK; PlayMode `--filter 'InflateLayerStreamBoundary|Decompression'` 85/85 pass. With
+  the round-0 `InflateLayerStream.cs` the four dispose-race tests fail (the sweep passes on both: it pins
+  the assumption rather than fixing a defect).
 - Not run: .NET (CoreCLR) `DeflateStream` (no non-Unity test host), IL2CPP player, devices.

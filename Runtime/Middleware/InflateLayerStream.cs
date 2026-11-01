@@ -36,7 +36,8 @@ namespace TurboHTTP.Middleware
     /// Threading: one reader at a time (the response body source contract), so the parse and buffer fields need
     /// no synchronization; async continuations order the accesses. <see cref="_state"/>,
     /// <see cref="_disposed"/> and <see cref="_inflater"/> are read with <see cref="Volatile"/> or swapped with
-    /// <see cref="Interlocked"/> because an abort may dispose the stream from another thread.
+    /// <see cref="Interlocked"/> because an abort may dispose the stream from another thread; every read step
+    /// re-checks <see cref="_disposed"/>, and an inflater created after a racing dispose is disposed at once.
     /// <see cref="_in"/> is a plain array (not pooled), so a dispose racing a read never returns a buffer in use.
     /// </para>
     /// </remarks>
@@ -171,6 +172,7 @@ namespace TurboHTTP.Middleware
             {
                 while (true)
                 {
+                    ThrowIfDisposed();
                     if (_phase == Phase.Body)
                     {
                         var read = CurrentInflater().Read(buffer);
@@ -220,6 +222,7 @@ namespace TurboHTTP.Middleware
             {
                 while (true)
                 {
+                    ThrowIfDisposed();
                     if (_phase == Phase.Body)
                     {
                         var read = await CurrentInflater().ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
@@ -254,14 +257,19 @@ namespace TurboHTTP.Middleware
 
         private bool CheckReadable()
         {
-            if (Volatile.Read(ref _disposed) != 0)
-                throw new ObjectDisposedException(nameof(InflateLayerStream));
+            ThrowIfDisposed();
 
             var state = Volatile.Read(ref _state);
             if (state == StateFailed)
                 throw new InvalidDataException("The compressed payload failed validation.");
 
             return state == StateReading;
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(InflateLayerStream));
         }
 
         private DeflateStream CurrentInflater()
@@ -431,7 +439,18 @@ namespace TurboHTTP.Middleware
             _memberBytes = 0;
             _adlerA = 1;
             _adlerB = 0;
-            Volatile.Write(ref _inflater, new DeflateStream(_inflaterInput, CompressionMode.Decompress, leaveOpen: true));
+            // A dispose may run on another thread while a header phase awaited the source. Publish with a full
+            // fence, then re-check: Dispose sets _disposed before it swaps _inflater out, so either it disposes
+            // this inflater or the check below sees the dispose and takes the inflater back.
+            Interlocked.Exchange(
+                ref _inflater,
+                new DeflateStream(_inflaterInput, CompressionMode.Decompress, leaveOpen: true));
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                Interlocked.Exchange(ref _inflater, null)?.Dispose();
+                throw new ObjectDisposedException(nameof(InflateLayerStream));
+            }
+
             _phase = Phase.Body;
         }
 
