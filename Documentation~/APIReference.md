@@ -256,7 +256,8 @@ options.UseAdaptiveNetworking(new AdaptivePolicy {
     MaxTimeout = TimeSpan.FromSeconds(30)
 });
 
-// iOS/Android background execution and deferred replay (platform bridge chosen automatically)
+// iOS/Android background execution and deferred replay (platform bridge chosen automatically).
+// Experimental: native bridges need the TURBOHTTP_BACKGROUND_NETWORKING define (PlatformNotes).
 var background = options.UseBackgroundNetworking(new BackgroundNetworkingPolicy { Enable = true });
 ```
 

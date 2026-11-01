@@ -39,7 +39,10 @@ COMMON_DEFINES = ["UNITY_" + v + "_OR_NEWER" for v in UNITY_VERSIONS] + [
     "UNITY_2021", "UNITY_2021_3", "NET_STANDARD_2_1", "NET_STANDARD", "NETSTANDARD2_1", "NETSTANDARD", "CSHARP_7_3_OR_NEWER", "TRACE",
     # Opt-in BouncyCastle (#196): defined so its glue and vendored library stay compiled and analyzed.
     # Nothing else references them, so the other assemblies build the same with or without it.
-    "TURBOHTTP_BOUNCYCASTLE"]
+    "TURBOHTTP_BOUNCYCASTLE",
+    # Opt-in background networking (#106): defined so the iOS/Android native bridge code paths compile
+    # and are analyzed in the ios/android variants.
+    "TURBOHTTP_BACKGROUND_NETWORKING"]
 VARIANTS = {
     # name: (Unity platform name for include/excludePlatforms, extra defines, editor assemblies visible)
     "editor": ("Editor", ["UNITY_EDITOR", "UNITY_EDITOR_64", "UNITY_EDITOR_OSX", "DEBUG", "ENABLE_MONO"], True),

@@ -18,16 +18,12 @@ CS0162|Runtime/Unity/Decoders/NLayerMp3Decoder.cs|if (!string.IsNullOrWhiteSpace
 CS0162|Runtime/Unity/Decoders/NVorbisDecoder.cs|if (!string.IsNullOrWhiteSpace(contentType) &&
 CS0162|Runtime/Unity/Decoders/StbImageSharpDecoder.cs|if (!string.IsNullOrWhiteSpace(contentType))
 CS0169|Runtime/Unity/MainThreadDispatcher.cs|private static int _editorHooksRegistered;
-CS0169|Runtime/Unity/Mobile/Android/AndroidBackgroundWorkBridge.cs|private int _pluginInitializationAttempted;
-CS0169|Runtime/Unity/Mobile/Android/AndroidBackgroundWorkBridge.cs|private int _pluginInitialized;
 CS0649|Runtime/Unity.WebSocket/UnityWebSocketClient.cs|private bool _autoConnect;
 CS0649|Runtime/Unity.WebSocket/UnityWebSocketClient.cs|private bool _autoReconnect;
 CS0649|Runtime/Unity.WebSocket/UnityWebSocketClient.cs|private string _subProtocol;
 CS0649|Runtime/Unity.WebSocket/UnityWebSocketClient.cs|private string _uri;
 CS0675|Runtime/Transport/Http2/HpackHuffman.cs|output[outIndex] = (byte)((bitBuffer << pad) | ((1 << pad) - 1));
 CS1030|Runtime/Transport/BouncyCastle/TurboTlsAuthentication.cs|#warning "Phase 3C: Certificate chain validation is NOT implemented — accepting any chain with valid hostname/dates. See Phase 6."
-CS1998|Runtime/Unity/Mobile/Android/AndroidBackgroundWorkBridge.cs|public async ValueTask<IBackgroundExecutionScope> AcquireAsync(
-CS1998|Runtime/Unity/Mobile/iOS/IosBackgroundTaskBridge.cs|public async ValueTask<IBackgroundExecutionScope> AcquireAsync(
 # Sync-over-async sites (#181). IL2CPPCompatibility: one-off self-test that blocks a worker on a Task.Run, never the main thread.
 RS0030|Runtime/Core/IL2CPPCompatibility.cs|var result = Task.Run(async () =>
 # HandlerCallbackSafetyWrapper: GetResult only after IsCompletedSuccessfully, so it observes a finished ValueTask and never blocks.
@@ -59,10 +55,6 @@ RS0030|Runtime/Unity.WebSocket/UnityWebSocketBridge.cs|var message = receiveTask
 RS0030|Runtime/Unity/CoroutineWrapper.cs|() => jsonTask.Result,
 RS0030|Runtime/Unity/CoroutineWrapper.cs|() => task.Result,
 RS0030|Runtime/Unity/CoroutineWrapper.cs|var genericMethod = getJsonMethod.MakeGenericMethod(typeof(T));
-# AndroidBackgroundWorkBridge: blocks a worker on the main-thread dispatcher (Android player only). Fix tracked in #88.
-RS0030|Runtime/Unity/Mobile/Android/AndroidBackgroundWorkBridge.cs|TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(
-RS0030|Runtime/Unity/Mobile/Android/AndroidBackgroundWorkBridge.cs|TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(() =>
-RS0030|Runtime/Unity/Mobile/Android/AndroidBackgroundWorkBridge.cs|var enqueued = TurboHTTP.Unity.MainThreadDispatcher.ExecuteAsync(() =>
 RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|Type dictionaryType = typeof(Dictionary<,>).MakeGenericType(typeof(string), valueType);
 RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|Type fallbackType = typeof(Dictionary<,>).MakeGenericType(typeof(string), valueType);
 RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|Type fallbackType = typeof(List<>).MakeGenericType(elementType);

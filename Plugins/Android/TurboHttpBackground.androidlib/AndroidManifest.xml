@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TurboHTTP background networking (experimental, opt-in). Unity includes this library only when
+     the TURBOHTTP_BACKGROUND_NETWORKING scripting define is set (importer define constraint).
+     WorkManager's own manifest entries are merged from the androidx.work dependency in build.gradle. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.turbohttp.background" />
