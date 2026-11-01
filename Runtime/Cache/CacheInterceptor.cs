@@ -430,14 +430,18 @@ namespace TurboHTTP.Cache
             CacheLookupResult lookup,
             CancellationToken cancellationToken)
         {
-            // Detach from the foreground cache-hit path before starting revalidation work.
-            await Task.Yield();
-            if (cancellationToken.IsCancellationRequested)
-                return;
+            // Detach from the foreground cache-hit path onto the thread pool. Task.Yield would resume
+            // on the caller's SynchronizationContext (Unity main thread), which may not be pumping (#245).
+            await new ThreadPoolHop();
 
-            var context = RequestContext.CreateForBackground(request);
+            RequestContext context = null;
             try
             {
+                // Checked inside the try so the cloned request is disposed on cancel-before-start too.
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
+                context = RequestContext.CreateForBackground(request);
                 await RevalidateAsync(
                     request,
                     new BackgroundRevalidationSink(MaxCacheableResponseBodyBytes, cancellationToken),
@@ -456,8 +460,8 @@ namespace TurboHTTP.Cache
             }
             finally
             {
-                context.Stop();
-                context.Clear();
+                context?.Stop();
+                context?.Clear();
                 request.Dispose();
             }
         }
@@ -819,13 +823,18 @@ namespace TurboHTTP.Cache
             SegmentedBuffer body,
             CancellationToken cancellationToken)
         {
-            // Detach from the response completion callback before snapshotting the response body.
-            await Task.Yield();
-            if (cancellationToken.IsCancellationRequested)
-                return;
+            // Detach from the response completion callback (and from _pendingMutationLock, which
+            // QueueMutationAsync holds while it starts this mutation inline) onto the thread pool
+            // before snapshotting the body. Task.Yield would resume on the caller's
+            // SynchronizationContext, and a foreground lookup of this key waits on this task (#245).
+            await new ThreadPoolHop();
 
             try
             {
+                // Checked inside the try so the pooled body is returned on cancel-before-start too.
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
                 var statusCodeForStorage = (HttpStatusCode)statusCode;
                 if (!ShouldConsiderForStorage(requestMethod, statusCodeForStorage))
                     return;
