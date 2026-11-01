@@ -164,6 +164,11 @@ namespace TurboHTTP.Transport.Tls
 
             ct.ThrowIfCancellationRequested();
 
+            // RFC 6066 section 3 (#142): A-label for IDN names, bare address for IP literals (the
+            // platform omits SNI for an address). Also the name the certificate is matched against:
+            // certificates carry A-labels (RFC 5280 section 7.2) and unbracketed addresses.
+            host = TlsHostName.ToTargetHost(host);
+
             alpnProtocols ??= EmptyAlpnProtocols;
             bool alpnSupported = IsAlpnSupported();
             bool http11Offered = OffersProtocol(alpnProtocols, Http11Protocol);

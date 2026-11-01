@@ -22,11 +22,25 @@ namespace TurboHTTP.Transport.BouncyCastle
     {
         public static readonly BouncyCastleTlsProvider Instance = new();
 
+        private readonly int _handshakeTimeoutMillis;
+
         public string ProviderName => "BouncyCastle";
 
         private BouncyCastleTlsProvider()
+            : this(TurboTlsClient.DefaultHandshakeTimeoutMillis)
         {
-            // Singleton pattern
+        }
+
+        /// <summary>
+        /// A provider with a non-default handshake bound. Production code uses <see cref="Instance"/>;
+        /// tests reach this constructor by reflection (the test assembly does not reference this one).
+        /// </summary>
+        [Preserve]
+        internal BouncyCastleTlsProvider(int handshakeTimeoutMillis)
+        {
+            if (handshakeTimeoutMillis <= 0)
+                throw new ArgumentOutOfRangeException(nameof(handshakeTimeoutMillis));
+            _handshakeTimeoutMillis = handshakeTimeoutMillis;
         }
 
         public bool IsAlpnSupported() => true;  // Always supported
@@ -47,6 +61,18 @@ namespace TurboHTTP.Transport.BouncyCastle
         /// is disposed.
         /// </para>
         /// <para>
+        /// The whole handshake is bounded by <see cref="TurboTlsClient.GetHandshakeTimeoutMillis"/>
+        /// (30 s by default, #142): at the deadline the inner stream is disposed the same way, so a
+        /// peer that never answers or trickles records cannot hold the connection, and the failure
+        /// surfaces as a retryable <see cref="IOException"/> whose inner exception is a
+        /// <see cref="TimeoutException"/>. BouncyCastle checks its own handshake timeout only in
+        /// blocking mode, which this provider does not use. The deadline is independent of the
+        /// connect timeout (which ends when the socket is connected) and of the request timeout
+        /// (<paramref name="ct"/>), which still applies: the effective bound is the smaller one.
+        /// Certificate evaluation runs inside the handshake; a deadline that expires during it
+        /// takes effect when it returns (its own bound belongs to the evaluation, #33).
+        /// </para>
+        /// <para>
         /// A fatal TLS alert (sent or received) that reports a certificate, negotiation or protocol
         /// verdict throws <see cref="AuthenticationException"/> (not retryable); transient alerts
         /// such as internal_error and transport failures throw <see cref="IOException"/>.
@@ -65,24 +91,37 @@ namespace TurboHTTP.Transport.BouncyCastle
 
             ct.ThrowIfCancellationRequested();
 
-            // Disposing the inner stream fails a pending read/write inside the handshake.
-            using var cancelRegistration = ct.Register(static state =>
-            {
-                try { ((Stream)state).Dispose(); } catch { }
-            }, innerStream);
+            // Disposing the inner stream fails a pending read/write inside the handshake, both on
+            // cancellation and at the handshake deadline.
+            using var deadline = new CancellationTokenSource();
+            var cancelRegistration = ct.Register(DisposeStream, innerStream);
+            var deadlineRegistration = deadline.Token.Register(DisposeStream, innerStream);
 
             TlsResult result;
             try
             {
+                deadline.CancelAfter(_handshakeTimeoutMillis);
+
                 // Start on a pool thread: Connect() generates key shares (CPU work) before the
                 // first await, and the caller may be a thread that must not run it.
                 result = await Task.Run(
-                    () => HandshakeAsync(innerStream, host, alpnProtocols),
+                    () => HandshakeAsync(innerStream, host, alpnProtocols, _handshakeTimeoutMillis),
                     CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception) when (ct.IsCancellationRequested)
             {
                 throw new OperationCanceledException("TLS handshake was canceled.", ct);
+            }
+            catch (Exception ex) when (deadline.IsCancellationRequested)
+            {
+                throw CreateHandshakeTimeout(ex);
+            }
+            finally
+            {
+                // Dispose waits for a callback that is already running, so after this no callback
+                // can dispose the inner stream behind the checks below.
+                cancelRegistration.Dispose();
+                deadlineRegistration.Dispose();
             }
 
             if (ct.IsCancellationRequested)
@@ -93,16 +132,36 @@ namespace TurboHTTP.Transport.BouncyCastle
                 throw new OperationCanceledException("TLS handshake was canceled.", ct);
             }
 
+            if (deadline.IsCancellationRequested)
+            {
+                // Same race with the deadline.
+                result.SecureStream.Dispose();
+                throw CreateHandshakeTimeout(null);
+            }
+
             return result;
+        }
+
+        private static void DisposeStream(object state)
+        {
+            try { ((Stream)state).Dispose(); } catch { }
+        }
+
+        private Exception CreateHandshakeTimeout(Exception inner)
+        {
+            string message = $"TLS handshake timed out after {_handshakeTimeoutMillis} ms.";
+            return new IOException(message, new TimeoutException(message, inner));
         }
 
         private async Task<TlsResult> HandshakeAsync(
             Stream innerStream,
             string host,
-            string[] alpnProtocols)
+            string[] alpnProtocols,
+            int handshakeTimeoutMillis)
         {
             var crypto = new BcTlsCrypto(new SecureRandom());
-            var client = new TurboTlsClient(crypto, host, alpnProtocols ?? Array.Empty<string>());
+            var client = new TurboTlsClient(
+                crypto, host, alpnProtocols ?? Array.Empty<string>(), handshakeTimeoutMillis);
             var secureStream = new BouncyCastleTlsStream(innerStream);
 
             try
