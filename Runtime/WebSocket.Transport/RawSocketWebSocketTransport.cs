@@ -69,6 +69,26 @@ namespace TurboHTTP.WebSocket.Transport
                 ? (proxySettings.ProxyUri.IsDefaultPort ? 80 : proxySettings.ProxyUri.Port)
                 : port;
 
+            // #85: raw sockets are not covered by iOS App Transport Security or the Android
+            // cleartext policy, so the policy is applied here, before any DNS lookup or socket.
+            // An http:// proxy leg is cleartext even for a wss:// target (CONNECT and
+            // Proxy-Authorization travel unencrypted).
+            if (!secure && !CleartextTrafficPolicy.IsPermitted(host, options.AllowCleartext))
+            {
+                throw new WebSocketException(
+                    WebSocketError.CleartextNotPermitted,
+                    "Cleartext ws:// connection to '" + host + "' is not permitted. Use wss://, or set " +
+                    "WebSocketConnectionOptions.AllowCleartext = true (the platform cleartext policy must also permit the host).");
+            }
+
+            if (useProxy && !CleartextTrafficPolicy.IsPermitted(connectHost, options.AllowCleartext))
+            {
+                throw new WebSocketException(
+                    WebSocketError.CleartextNotPermitted,
+                    "Cleartext connection to http:// proxy '" + connectHost + "' is not permitted. Set " +
+                    "WebSocketConnectionOptions.AllowCleartext = true (the platform cleartext policy must also permit the host).");
+            }
+
             var addresses = await ResolveDnsAsync(connectHost, options.DnsTimeoutMs, ct).ConfigureAwait(false);
 
             Socket socket;
@@ -101,7 +121,8 @@ namespace TurboHTTP.WebSocket.Transport
             {
                 try
                 {
-                    stream = await ProxyTunnelConnector.EstablishAsync(stream, uri, proxySettings, ct)
+                    stream = await ProxyTunnelConnector.EstablishAsync(
+                            stream, uri, proxySettings, options.AllowCleartext, ct)
                         .ConfigureAwait(false);
                 }
                 catch (WebSocketException)

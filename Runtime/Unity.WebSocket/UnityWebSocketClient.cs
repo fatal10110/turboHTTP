@@ -51,6 +51,11 @@ namespace TurboHTTP.Unity.WebSocket
         [SerializeField]
         private bool _disconnectOnPause = true;
 
+        [SerializeField]
+        [Tooltip("Allow ws:// and http:// proxy legs on iOS/Android players, where cleartext is refused by default. " +
+                 "Android also requires the app's network security config to permit the host.")]
+        private bool _allowCleartext;
+
         [Header("Events")]
         public UnityEvent OnConnectedEvent = new UnityEvent();
         public UnityWebSocketStringEvent OnMessageReceivedEvent = new UnityWebSocketStringEvent();
@@ -70,6 +75,18 @@ namespace TurboHTTP.Unity.WebSocket
         public bool IsConnected => _client != null && _client.State == WebSocketState.Open;
 
         public WebSocketState ConnectionState => _client?.State ?? WebSocketState.None;
+
+        /// <summary>
+        /// Whether the next connect may use cleartext (<c>ws://</c> or an <c>http://</c> proxy leg)
+        /// on iOS/Android players, where it is refused by default. <see langword="false"/> keeps the
+        /// platform default (<see cref="TurboHTTP.Core.CleartextTrafficPolicy.DefaultAllowCleartext"/>).
+        /// On Android the app's network security configuration must also permit the host.
+        /// </summary>
+        public bool AllowCleartext
+        {
+            get => _allowCleartext;
+            set => _allowCleartext = value;
+        }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics()
@@ -326,6 +343,10 @@ namespace TurboHTTP.Unity.WebSocket
             {
                 options.WithReconnection(WebSocketReconnectPolicy.Default);
             }
+
+            // Unchecked keeps the platform default (CleartextTrafficPolicy.DefaultAllowCleartext).
+            if (_allowCleartext)
+                options.AllowCleartext = true;
 
             return options;
         }

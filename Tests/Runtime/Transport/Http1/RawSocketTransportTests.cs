@@ -2245,7 +2245,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                     first.Headers.TryGetValue("Proxy-Authorization", out firstAuth);
                     await WriteResponseAsync(
                         stream,
-                        "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+                        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\n" +
+                        "Content-Length: 0\r\nConnection: keep-alive\r\n\r\n");
 
                     var second = await ReadRequestStartAndHeadersAsync(stream);
                     connectCount++;

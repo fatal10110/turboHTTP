@@ -114,6 +114,18 @@ namespace TurboHTTP.WebSocket
 
         public WebSocketProxySettings ProxySettings { get; set; } = WebSocketProxySettings.None;
 
+        /// <summary>
+        /// Whether this connection may use cleartext: a <c>ws://</c> URI, or the leg to an
+        /// <c>http://</c> proxy (which also carries proxy Basic credentials in the clear).
+        /// Defaults to <see cref="CleartextTrafficPolicy.DefaultAllowCleartext"/>
+        /// (<see langword="false"/> on iOS and Android players, <see langword="true"/> in the
+        /// Editor and on desktop). When it is <see langword="false"/>, or the installed
+        /// <see cref="CleartextTrafficPolicy.PlatformPolicy"/> refuses the host, the connect throws
+        /// <see cref="WebSocketException"/> with <see cref="WebSocketError.CleartextNotPermitted"/>
+        /// before any socket is opened.
+        /// </summary>
+        public bool AllowCleartext { get; set; } = CleartextTrafficPolicy.DefaultAllowCleartext;
+
         public WebSocketReconnectPolicy ReconnectPolicy { get; set; } = WebSocketReconnectPolicy.None;
 
         public WebSocketConnectionOptions WithReconnection(WebSocketReconnectPolicy policy)
@@ -183,6 +195,7 @@ namespace TurboHTTP.WebSocket
                 TlsProvider = TlsProvider,
                 TlsBackend = TlsBackend,
                 ProxySettings = ProxySettings ?? WebSocketProxySettings.None,
+                AllowCleartext = AllowCleartext,
                 ReconnectPolicy = ReconnectPolicy
             };
         }
