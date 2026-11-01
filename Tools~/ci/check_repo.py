@@ -7,6 +7,8 @@ Checks (all on git-tracked files):
   json      every .json/.asmdef parses; package.json has the required UPM fields
   unitynunit  tests use only what Unity 2021.3's NUnit (com.unity.ext.nunit 1.0.6) provides; PR CI
             cannot compile the Unity test assemblies without a license, so this is the only guard
+  ignores   every skipped test says why: Assert.Ignore/Assert.Inconclusive/[Ignore] carry an issue reference
+            (#123) or the [env] marker (TestRequirements.IgnoreEnvironment adds it) in their message (#190)
   reflect   no runtime code names a TurboHTTP type by assembly-qualified string (a by-name lookup
             that managed stripping breaks); modules reach each other through registration APIs (#186)
   coreapi   the public types declared under Runtime/Core match Tools~/ci/api-baseline/core-public-types.txt
@@ -16,7 +18,7 @@ Checks (all on git-tracked files):
             the managed #if guard compiles its callers (#176): a caller without the plugin fails the
             Xcode link, a plugin without a caller ships dead native code
 
-Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|reflect|coreapi|native ...]   (default: all)
+Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|ignores|reflect|coreapi|native ...]   (default: all)
 """
 import json
 import os
@@ -179,6 +181,67 @@ def check_unity_nunit(files):
         for pos in _async_task_tests(text):
             errors.append(f"unitynunit: {f}:{line(pos)}: async Task test methods do not run in "
                           "Unity's NUnit; write a void test that wraps the body in AssertAsync.Run")
+    return errors
+
+
+# Skipped tests must say why (#190): an issue reference ("#152"), the environment marker that
+# TestRequirements.IgnoreEnvironment prefixes ("[env]"), or the constant that holds it.
+_IGNORE_CALL = re.compile(r"\b(?:Assert\.Inconclusive|Assume\.\w+)\s*\(|(?<!\w)(?:\w+\.)*Ignore(?:Attribute)?\s*\(|\bIgnore(?:Reason)?\s*=(?!=)")
+_IGNORE_BARE_ATTRIBUTE = re.compile(r"\[\s*(?:[\w.]+\.)?Ignore(?:Attribute)?\s*\]")
+_IGNORE_REASON = re.compile(r"#\d+|\[env\]|\bEnvironmentIgnorePrefix\b")
+
+
+def _ignore_argument(text, pos):
+    """The source text of the call/attribute argument starting at pos (after the opening paren, or after '=')."""
+    i, depth, n = pos, 1, len(text)
+    in_attr_assign = text[pos - 1] != "("
+    while i < n:
+        c = text[i]
+        if c == '"':
+            verbatim = i > 0 and (text[i - 1] == "@" or text[i - 2:i] in ("$@", "@$"))
+            i += 1
+            while i < n:
+                if text[i] == '"':
+                    if verbatim and i + 1 < n and text[i + 1] == '"':
+                        i += 2
+                        continue
+                    break
+                if text[i] == "\\" and not verbatim:
+                    i += 1
+                i += 1
+        elif c == "'":
+            i += 1
+            while i < n and text[i] != "'":
+                i += 2 if text[i] == "\\" else 1
+        elif in_attr_assign and c in ",;]":
+            return text[pos:i]
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0 and not in_attr_assign:
+                return text[pos:i]
+        i += 1
+    return text[pos:]
+
+
+def check_ignores(files):
+    errors = []
+    for f in files:
+        if not (f.startswith("Tests/") and f.endswith(".cs")):
+            continue
+        with open(os.path.join(ROOT, f), encoding="utf-8-sig") as fh:
+            text = fh.read()
+        line = lambda pos: text.count("\n", 0, pos) + 1
+        for m in _IGNORE_CALL.finditer(text):
+            start = text.rfind("\n", 0, m.start()) + 1
+            if text[start:m.start()].lstrip().startswith("//"):
+                continue
+            if not _IGNORE_REASON.search(_ignore_argument(text, m.end())):
+                errors.append(f"ignores: {f}:{line(m.start())}: skipped test without an issue reference (#123) or the [env] "
+                              "marker; use TestRequirements.IgnoreEnvironment for a missing capability (#190)")
+        for m in _IGNORE_BARE_ATTRIBUTE.finditer(text):
+            errors.append(f"ignores: {f}:{line(m.start())}: [Ignore] without a reason (#190)")
     return errors
 
 
@@ -378,9 +441,10 @@ def check_native(files):
 
 
 def main():
-    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "reflect", "coreapi", "native"]
+    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "ignores", "reflect", "coreapi", "native"]
     files = tracked()
     checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit,
+              "ignores": check_ignores,
               "reflect": check_reflect, "coreapi": check_core_api, "native": check_native}
     errors = []
     for w in wanted:

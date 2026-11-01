@@ -15,7 +15,9 @@
 # (testing.md, "Periodic host-editor runs"), never per change.
 #
 # Exit codes: 0 pass, 1 test failures, 2 usage/setup error, 3 Unity not installed (prints
-# UNITY_UNAVAILABLE; PR CI does not run Unity tests, the periodic host-editor run does). Env: UNITY_TEST_PROJECT (default
+# UNITY_UNAVAILABLE; PR CI does not run Unity tests, the periodic host-editor run does), 4 skip gate
+# (a skipped test without an #issue or [env] reason, or an unfiltered run skipping more tests than
+# Tools~/unity/skip-baseline.txt allows; summarize_results.py, #151). Env: UNITY_TEST_PROJECT (default
 # <cache>/testproj), UNITY_PACKAGE_COPY (default <cache>/package), where <cache> is
 # ~/.cache/turbohttp, or %LOCALAPPDATA%\turbohttp for a Windows editor driven from WSL.
 set -euo pipefail
@@ -55,7 +57,8 @@ if [ "$win" = 1 ]; then
     [ -n "$localappdata" ] && break
     sleep 1
   done
-  wincache="$( [ -n "$localappdata" ] && wslpath -u "$localappdata" 2>/dev/null || true)"
+  wincache=""
+  if [ -n "$localappdata" ]; then wincache="$(wslpath -u "$localappdata" 2>/dev/null || true)"; fi
   [ -n "$wincache" ] || { echo "run-tests: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
   cache="$wincache/turbohttp"
 else
@@ -126,16 +129,15 @@ if [ ! -f "$xml" ]; then
   grep -E "error CS[0-9]+" "$log" | head -20 || true
   exit 2
 fi
-python3 - "$xml" <<'PY'
-import sys, xml.etree.ElementTree as ET
-run = ET.parse(sys.argv[1]).getroot()
-a = run.attrib
-print(f"run-tests: total={a.get('total')} passed={a.get('passed')} failed={a.get('failed')} "
-      f"skipped={a.get('skipped')} inconclusive={a.get('inconclusive')} duration={a.get('duration')}s")
-for case in run.iter("test-case"):
-    if case.get("result") == "Failed":
-        msg = (case.findtext("failure/message") or "").strip().splitlines()
-        print(f"  FAIL {case.get('fullname')}: {msg[0] if msg else ''}")
-PY
+is_filtered=0
+if [ -n "$filter" ] || [ -n "$category" ]; then is_filtered=1; fi
+# Failures keep exit 1; the skip gates (an unexplained skip, or more skips than Tools~/unity/skip-baseline.txt
+# allows for an unfiltered run, #151) exit 4 so a vanished test cannot pass silently.
+set +e
+python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$platform" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"
+gate=$?
+set -e
 echo "run-tests: results $xml, log $log"
-exit $(( code == 0 ? 0 : 1 ))
+if [ "$code" != 0 ]; then exit 1; fi
+if [ "$gate" != 0 ]; then exit "$gate"; fi
+exit 0

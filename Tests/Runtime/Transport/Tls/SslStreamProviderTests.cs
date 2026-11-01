@@ -45,6 +45,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 #if TURBOHTTP_INTEGRATION_TESTS
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_ValidServer_Succeeds()        {
             Task.Run(async () =>
             {
@@ -58,6 +59,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_ExpiredCert_ThrowsAuthenticationException()
         {
             Task.Run(async () =>
@@ -76,6 +78,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_WithAlpn_NegotiatesH2()        {
             Task.Run(async () =>
             {
@@ -94,6 +97,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_WithAlpn_NegotiatesHttp11()        {
             Task.Run(async () =>
             {
@@ -111,12 +115,14 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_RealServer_SucceedsWithTls12OrHigher()        {
             WrapAsync_ValidServer_Succeeds();
         }
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_CancellationRequested_ThrowsOperationCanceledException()        {
             Task.Run(async () =>
             {
