@@ -119,7 +119,8 @@ Configuration options for `UHttpClient`.
 | `DefaultTimeout` | `TimeSpan` | Default timeout (default: 30s) |
 | `DefaultHeaders` | `HttpHeaders` | Headers applied to every request |
 | `Transport` | `IHttpTransport` | Custom HTTP transport implementation |
-| `Middlewares` | `List<IHttpMiddleware>` | Middleware pipeline |
+| `Interceptors` | `List<IHttpInterceptor>` | Interceptor pipeline, outermost first; see Modules/Middleware.md for the required order |
+| `FollowRedirects` / `MaxRedirects` | `bool` / `int` | Redirect policy (default `true` / `10`); applied only when a `RedirectInterceptor` is configured |
 | `Http2` | `Http2Options` | HTTP/2 specific settings |
 | `ConnectionPool` | `ConnectionPoolOptions` | Connection pool configuration |
 | `Proxy` | `ProxySettings` | HTTP/HTTPS proxy configuration |
@@ -183,7 +184,7 @@ var logging = new LoggingMiddleware(
     logHeaders: true,
     logBody: true
 );
-options.Middlewares.Add(logging);
+options.Interceptors.Add(logging);
 ```
 
 ### RetryMiddleware
@@ -195,7 +196,7 @@ var retry = new RetryMiddleware(new RetryPolicy {
     BackoffMultiplier = 2.0,
     OnlyRetryIdempotent = true
 });
-options.Middlewares.Add(retry);
+options.Interceptors.Add(retry);
 ```
 
 ### CacheMiddleware
@@ -206,15 +207,15 @@ var cache = new CacheMiddleware(new CachePolicy {
     DefaultTtl = TimeSpan.FromMinutes(5),
     EnableRevalidation = true
 });
-options.Middlewares.Add(cache);
+options.Interceptors.Add(cache);
 ```
 
-### AuthMiddleware
+### AuthInterceptor
 
 ```csharp
 // Static Token
 var staticProvider = new StaticTokenProvider("your-token");
-options.Middlewares.Add(new AuthMiddleware(staticProvider));
+options.Interceptors.Add(new AuthInterceptor(staticProvider));
 
 // OAuth 2.0 / OIDC (Phase 14)
 var oauthConfig = new OAuthConfig {
@@ -223,7 +224,7 @@ var oauthConfig = new OAuthConfig {
     Scopes = { "openid", "profile", "api" }
 };
 var oauthClient = new OAuthClient(oauthConfig, new InMemoryTokenStore());
-options.Middlewares.Add(new AuthMiddleware(new OAuthTokenProvider(oauthClient)));
+options.Interceptors.Add(new AuthInterceptor(new OAuthTokenProvider(oauthClient)));
 ```
 
 ### RateLimitMiddleware
@@ -234,7 +235,7 @@ var rateLimit = new RateLimitMiddleware(new RateLimitPolicy {
     TimeWindow = TimeSpan.FromMinutes(1),
     PerHost = true
 });
-options.Middlewares.Add(rateLimit);
+options.Interceptors.Add(rateLimit);
 ```
 
 ### MetricsMiddleware & AdaptiveMiddleware
@@ -242,14 +243,14 @@ options.Middlewares.Add(rateLimit);
 ```csharp
 // Standard Metrics
 var metrics = new MetricsMiddleware();
-options.Middlewares.Add(metrics);
+options.Interceptors.Add(metrics);
 
 // Adaptive Networking (Phase 14 - Adjusts timeouts dynamically)
 var adaptive = new AdaptiveMiddleware(new AdaptivePolicy {
     TargetSuccessRate = 0.95,
     MaxTimeoutMultiplier = 3.0
 });
-options.Middlewares.Add(adaptive);
+options.Interceptors.Add(adaptive);
 ```
 
 ---

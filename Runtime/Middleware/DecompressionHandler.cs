@@ -448,16 +448,15 @@ namespace TurboHTTP.Middleware
             {
                 // Disposal runs after the body outcome is already decided: a truncation or trailer failure was
                 // thrown from ReadAsync (and surfaced to the consumer) before Abort() reaches this point, so a
-                // dispose-time failure cannot mask it. Record it instead of swallowing it silently (#180 will
-                // route this to the diagnostic sink).
+                // dispose-time failure cannot mask it. Record it in the diagnostic sink instead of swallowing it
+                // silently (#180).
                 try
                 {
                     _decompressionStream.Dispose();
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine(
-                        "[TurboHTTP][Decompression] Decompression stream dispose failed: " + ex.Message);
+                    TurboDiagnostics.Log("[TurboHTTP][Decompression] Decompression stream dispose failed", ex);
                 }
 
                 try
@@ -466,8 +465,7 @@ namespace TurboHTTP.Middleware
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine(
-                        "[TurboHTTP][Decompression] Read-ahead stream dispose failed: " + ex.Message);
+                    TurboDiagnostics.Log("[TurboHTTP][Decompression] Read-ahead stream dispose failed", ex);
                 }
 
                 try
@@ -476,8 +474,7 @@ namespace TurboHTTP.Middleware
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine(
-                        "[TurboHTTP][Decompression] Compressed stream dispose failed: " + ex.Message);
+                    TurboDiagnostics.Log("[TurboHTTP][Decompression] Compressed stream dispose failed", ex);
                 }
             }
 

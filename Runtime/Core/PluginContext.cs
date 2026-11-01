@@ -93,7 +93,7 @@ namespace TurboHTTP.Core
             _diagnostics?.Invoke(message ?? string.Empty);
         }
 
-        private sealed class CapabilityEnforcedInterceptor : IHttpInterceptor
+        private sealed class CapabilityEnforcedInterceptor : IHttpInterceptor, IInterceptorRole
         {
             private readonly string _pluginName;
             private readonly IHttpInterceptor _inner;
@@ -117,6 +117,9 @@ namespace TurboHTTP.Core
                 _canMutateResponse = canMutateResponse;
                 _canHandleErrors = canHandleErrors;
             }
+
+            // The wrapper takes the wrapped interceptor's place, so it carries its ordering role (#55).
+            InterceptorRole IInterceptorRole.Role => InterceptorOrdering.GetRole(_inner);
 
             public DispatchFunc Wrap(DispatchFunc next)
             {

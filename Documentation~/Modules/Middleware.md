@@ -2,13 +2,48 @@
 
 The `Middleware` architectural pattern in TurboHTTP allows you to intercept and modify requests and responses traversing the pipeline.
 
-Middlewares execute in the **order they are added** to `UHttpClientOptions.Middlewares`.
+Interceptors execute in the **order they are listed** in `UHttpClientOptions.Interceptors`: the first
+entry is the outermost (it sees the request first and the response last).
 
 ```csharp
 var options = new UHttpClientOptions();
-options.Middlewares.Add(new LoggingMiddleware());
-options.Middlewares.Add(new RetryMiddleware());
+options.Interceptors.Add(new RedirectInterceptor());
+options.Interceptors.Add(new RetryInterceptor());
 ```
+
+## Interceptor order
+
+Canonical order of the first-party interceptors, outermost first:
+
+| # | Interceptor (module) | Why it sits here |
+| :--- | :--- | :--- |
+| 1 | `LoggingInterceptor`, `MetricsInterceptor` (Observability) | See the request as the caller sent it and the final response. |
+| 2 | `RedirectInterceptor` (Middleware) | Every interceptor below it runs once per hop. |
+| 3 | `CookieInterceptor` (Middleware) | Sends and stores cookies per hop (RFC 6265 section 5). |
+| 4 | `AuthInterceptor` (Auth) | Adds `Authorization` before the cache sees the request. |
+| 5 | `CacheInterceptor` (Cache) | Must see `Authorization` (RFC 9111 section 3.5). |
+| 6 | `RetryInterceptor` (Retry) | Retries only real network attempts, not cache hits. |
+| 7 | `DecompressionInterceptor` (Middleware) | Decodes each attempt's body. |
+| 8 | `ConcurrencyInterceptor` (RateLimit) | Holds a permit only while a request is on the wire. |
+
+`UHttpClient` rejects two orders when it is constructed (`ArgumentException`), and when a plugin
+registers interceptors (`PluginException`):
+
+- **`CacheInterceptor` outside `AuthInterceptor`.** The cache would never see the `Authorization` header,
+  so `CachePolicy.AllowCacheForAuthorizedRequests = false` is bypassed and a per-user response would be
+  stored under a user-less key and served to the next user.
+- **`ConcurrencyInterceptor` outside `RetryInterceptor`.** A permit would be held through every retry
+  backoff delay (up to `RetryPolicy.MaxDelay`), starving other requests.
+
+`RedirectInterceptor` and `AuthInterceptor`, and `RedirectInterceptor` and `CookieInterceptor`, work in
+either order: the token stays bound to its origin and each hop's cookies are stored for that hop's host.
+
+## Redirects
+
+`UHttpClientOptions.FollowRedirects` (default `true`) and `MaxRedirects` (default `10`) are applied by
+`RedirectInterceptor`. Without it in `Interceptors`, a 3xx response is returned to the caller, and the
+client writes a one-time warning through the diagnostic sink. Add the interceptor, or set
+`FollowRedirects = false`.
 
 ## Standard Middlewares
 

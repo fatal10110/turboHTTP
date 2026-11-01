@@ -52,9 +52,12 @@ namespace TurboHTTP.Core
         public IHttpTransport Transport { get; set; }
 
         /// <summary>
-        /// Interceptor pipeline components.
-        /// Built-in interceptors contributed from enabled client options
+        /// Interceptor pipeline components, outermost first: index 0 sees the request first and the
+        /// response last. Built-in interceptors contributed from enabled client options
         /// (for example background networking or adaptive behavior) are prepended ahead of this list.
+        /// The client rejects orders known to be unsafe with <see cref="System.ArgumentException"/>:
+        /// a cache interceptor outside an auth interceptor, or a concurrency interceptor outside a
+        /// retry interceptor (canonical order: Documentation~/Modules/Middleware.md).
         /// </summary>
         public List<IHttpInterceptor> Interceptors { get; set; } = new List<IHttpInterceptor>();
 
@@ -92,14 +95,16 @@ namespace TurboHTTP.Core
         public NetworkQualityDetector NetworkQualityDetector { get; set; }
 
         /// <summary>
-        /// Whether to follow HTTP redirects automatically.
-        /// NOT enforced in Phase 3 — placeholder for Phase 4.
+        /// Whether to follow HTTP redirects automatically (default <c>true</c>). Applied by
+        /// <c>TurboHTTP.Middleware.RedirectInterceptor</c>, which must be in <see cref="Interceptors"/>:
+        /// without it a 3xx response is returned to the caller and the client writes a one-time
+        /// diagnostic warning. Set it to <c>false</c> to opt out (and silence the warning).
         /// </summary>
         public bool FollowRedirects { get; set; } = true;
 
         /// <summary>
-        /// Maximum number of redirects to follow.
-        /// NOT enforced in Phase 3 — placeholder for Phase 4.
+        /// Maximum number of redirects to follow (default 10). Applied by
+        /// <c>TurboHTTP.Middleware.RedirectInterceptor</c>; see <see cref="FollowRedirects"/>.
         /// </summary>
         public int MaxRedirects { get; set; } = 10;
 

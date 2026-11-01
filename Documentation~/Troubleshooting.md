@@ -58,7 +58,12 @@ If the HTTP Monitor (Window -> TurboHTTP -> Monitor) is empty:
 Enable detailed logging to debug issues:
 
 ```csharp
-using TurboHTTP.Middleware;
+using TurboHTTP.Observability;
 
-options.Middlewares.Add(new LoggingMiddleware(LoggingMiddleware.LogLevel.Detailed));
+options.Interceptors.Insert(0, new LoggingInterceptor(UnityEngine.Debug.Log, LoggingInterceptor.LogLevel.Detailed));
 ```
+
+### Library warnings on devices
+Failures TurboHTTP swallows on purpose (background cache stores, dispose-time errors) appear as
+`[TurboHTTP]` warnings in the Unity console and device logs. Route them elsewhere with
+`TurboHttpDiagnostics.SetSink(...)` (see Modules/Core.md, "Diagnostics").

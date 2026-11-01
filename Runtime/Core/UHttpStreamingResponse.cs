@@ -1,8 +1,8 @@
 using System;
-using System.Diagnostics;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
@@ -59,7 +59,7 @@ namespace TurboHTTP.Core
 #if DEBUG || UNITY_EDITOR || DEVELOPMENT_BUILD
             if (Volatile.Read(ref _disposed) == 0)
             {
-                Debug.WriteLine(
+                TurboDiagnostics.Log(
                     "[TurboHTTP] UHttpStreamingResponse was not disposed. Response bodies must be disposed to release transport resources.");
             }
 #endif
