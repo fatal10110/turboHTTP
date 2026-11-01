@@ -477,11 +477,11 @@ namespace TurboHTTP.Tests.Transport.Http2
         // --- helpers ---
 
         private async Task<(Http2Connection conn, Stream serverStream, GatedWriteStream gate)>
-            CreateGatedConnectionAsync(CancellationToken ct)
+            CreateGatedConnectionAsync(CancellationToken ct, Http2Options options = null)
         {
             var duplex = new TestDuplexStream();
             var gate = new GatedWriteStream(duplex.ClientStream);
-            var conn = new Http2Connection(gate, "test.example.com", 443);
+            var conn = new Http2Connection(gate, "test.example.com", 443, options ?? new Http2Options());
 
             var serverCodec = new Http2FrameCodec(duplex.ServerStream);
             var serverTask = Task.Run(async () =>

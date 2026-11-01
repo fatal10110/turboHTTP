@@ -450,6 +450,8 @@ namespace TurboHTTP.Transport.Http2
                     await Task.Delay(_maintenanceInterval, ct).ConfigureAwait(false);
                     CleanupRecentlyResetStreams();
                     ScanForStalledStreams();
+                    if (FailConnectionIfSendStalled())
+                        return;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -480,6 +482,28 @@ namespace TurboHTTP.Transport.Http2
                     stream.ReleaseLease();
                 }
             }
+        }
+
+        /// <summary>
+        /// Send-side stall bound (#197). A started frame is finished with the connection token only,
+        /// never the request token (RFC 9113 Sections 4.1 and 6.10), so a peer that stops reading would
+        /// hold the frame write, <see cref="_writeLock"/> and every request deadline behind it with no
+        /// bound. When the frame write in flight has made no progress for the stall timeout, the
+        /// connection is failed (every stream gets a network error) and disposed: disposal closes the
+        /// transport stream, which aborts a socket write that ignores cancellation.
+        /// </summary>
+        private bool FailConnectionIfSendStalled()
+        {
+            long stallTimeoutMs = Volatile.Read(ref _stallTimeoutMs);
+            if (!_codec.IsWriteStalled(Http2MonotonicClock.GetTimestamp(), stallTimeoutMs))
+                return false;
+
+            var error = new UHttpException(new UHttpError(
+                UHttpErrorType.NetworkError,
+                $"HTTP/2 connection send stalled: a frame write made no progress for {stallTimeoutMs} ms"));
+            FailAllStreams(error);
+            Dispose();
+            return true;
         }
 
         private void CleanupRecentlyResetStreams()
@@ -607,7 +631,12 @@ namespace TurboHTTP.Transport.Http2
 
             _cts?.Dispose();
             _connectionRecvWindowUpdateLock?.Dispose();
-            _writeLock?.Dispose();
+            // _writeLock is deliberately not disposed. A frame write blocked past the shutdown (a
+            // socket write may ignore its token, #197) still holds it, and requests queued behind
+            // that write wait on it: SemaphoreSlim.Dispose never completes async waiters, and a
+            // Release after Dispose throws. Each holder releases it in a finally, so every waiter is
+            // granted in turn and fails on the closed connection. No AvailableWaitHandle is ever
+            // created, so the semaphore owns no unmanaged resource.
             DisposeStreamOnce();
             // Return the HpackEncoder's reusable output buffer to ArrayPool.
             _hpackEncoder?.Dispose();
