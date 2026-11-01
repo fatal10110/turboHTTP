@@ -9,8 +9,11 @@ namespace TurboHTTP.Middleware
     /// <summary>
     /// Handles RFC-compliant redirect following for 301/302/303/307/308 responses.
     /// </summary>
-    public sealed class RedirectInterceptor : IHttpInterceptor
+    public sealed class RedirectInterceptor : IHttpInterceptor, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#55).
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Redirect;
+
         private static readonly TimeSpan ResponseDiscardTimeout = TimeSpan.FromSeconds(2);
         private readonly bool _defaultFollowRedirects;
         private readonly int _defaultMaxRedirects;

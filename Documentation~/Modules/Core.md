@@ -28,6 +28,20 @@ You must dispose of `UHttpClient` when you are done to release underlying resour
 myClient.Dispose();
 ```
 
+`Dispose` may run while `RegisterPluginAsync` or `UnregisterPluginAsync` is in progress: those calls then
+end with `ObjectDisposedException` (or the plugin's own failure), and a plugin that finishes initializing
+after `Dispose` is shut down instead of registered.
+
+### Diagnostics
+
+TurboHTTP writes nothing on success paths. Failures it deliberately swallows (a background cache store,
+a transport or plugin that throws while being disposed) and one-time configuration warnings (for example
+`FollowRedirects` without a `RedirectInterceptor`) go to one diagnostic sink. By default each message is a
+warning in the Unity console, in the Editor and in players. Messages name exception types only, never
+exception text, URLs or header values. Replace or silence the sink with
+`TurboHTTP.Observability.TurboHttpDiagnostics.SetSink(...)` (`null` silences it, `ResetSink()` restores
+the default); the sink is reset when Unity enters Play Mode.
+
 ## UHttpRequest
 
 `UHttpClient` exposes fluent methods (`Get`, `Post`, `Put`, `Delete`, etc.) that return a new mutable, single-use `UHttpRequest` bound to that client. This allows you to construct requests in a chained manner.

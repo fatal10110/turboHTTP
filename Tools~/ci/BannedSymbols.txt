@@ -18,6 +18,8 @@ M:System.Threading.Tasks.Task.Wait(System.TimeSpan);Blocks the caller; await ins
 P:System.Threading.Tasks.Task`1.Result;Blocks the caller; await instead
 M:System.Runtime.CompilerServices.TaskAwaiter.GetResult;Sync-over-async; await instead
 M:System.Runtime.CompilerServices.TaskAwaiter`1.GetResult;Sync-over-async; await instead
+M:System.Runtime.CompilerServices.ValueTaskAwaiter.GetResult;Sync-over-async; await instead
+M:System.Runtime.CompilerServices.ValueTaskAwaiter`1.GetResult;Sync-over-async; await instead
 
 # Time: wall clock jumps on mobile; use Stopwatch for durations, UtcNow for timestamps.
 P:System.DateTime.Now;Local wall clock; use DateTime.UtcNow or Stopwatch

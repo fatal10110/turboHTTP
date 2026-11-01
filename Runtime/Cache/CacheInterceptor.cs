@@ -1,7 +1,6 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text;
@@ -62,8 +61,11 @@ namespace TurboHTTP.Cache
     /// <summary>
     /// RFC-aware cache interceptor with conditional revalidation support.
     /// </summary>
-    public sealed partial class CacheInterceptor : IHttpInterceptor, IDisposable
+    public sealed partial class CacheInterceptor : IHttpInterceptor, IDisposable, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#55).
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Cache;
+
         private const string EmptyVaryKeyToken = "~";
         private const int MaxVaryHeaders = 32;
 
@@ -450,7 +452,7 @@ namespace TurboHTTP.Cache
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[TurboHTTP][Cache] Background revalidation failed: " + ex);
+                TurboDiagnostics.Log("[TurboHTTP][Cache] Background revalidation failed", ex);
             }
             finally
             {
@@ -870,7 +872,7 @@ namespace TurboHTTP.Cache
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[TurboHTTP][Cache] Store failed: " + ex);
+                TurboDiagnostics.Log("[TurboHTTP][Cache] Store failed", ex);
             }
         }
 
@@ -1098,7 +1100,7 @@ namespace TurboHTTP.Cache
                 {
                     var ex = t.Exception?.GetBaseException();
                     if (ex != null)
-                        Debug.WriteLine("[TurboHTTP][Cache] Background " + state + " failed: " + ex);
+                        TurboDiagnostics.Log("[TurboHTTP][Cache] Background " + state + " failed", ex);
                 },
                 operation,
                 CancellationToken.None,

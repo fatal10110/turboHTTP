@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
@@ -44,7 +44,7 @@ namespace TurboHTTP.Core
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[TurboHTTP] Editor monitor hook failed: {ex.GetType().Name}");
+                TurboDiagnostics.Log("[TurboHTTP] Editor monitor hook failed", ex);
                 return false;
             }
 
