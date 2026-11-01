@@ -170,12 +170,14 @@ namespace TurboHTTP.Tests.Transport.Tls
                 Verify(Returns(CertificateVerificationStatus.Trusted, path)));
         }
 
-        [TestCase(CertificateVerificationStatus.UntrustedRoot)]
-        [TestCase(CertificateVerificationStatus.NotTimeValid)]
-        [TestCase(CertificateVerificationStatus.Invalid)]
-        [TestCase(CertificateVerificationStatus.NoVerifier)]
-        public void RejectingBridge_PassesStatusThrough_WithoutPath(CertificateVerificationStatus status)
+        // Test parameters are ints: the status enum is internal and NUnit test methods are public.
+        [TestCase((int)CertificateVerificationStatus.UntrustedRoot)]
+        [TestCase((int)CertificateVerificationStatus.NotTimeValid)]
+        [TestCase((int)CertificateVerificationStatus.Invalid)]
+        [TestCase((int)CertificateVerificationStatus.NoVerifier)]
+        public void RejectingBridge_PassesStatusThrough_WithoutPath(int statusValue)
         {
+            var status = (CertificateVerificationStatus)statusValue;
             var result = Verify(Returns(status, new[] { Leaf, Root }));
 
             AssertRejected(status, result);
@@ -280,13 +282,14 @@ namespace TurboHTTP.Tests.Transport.Tls
             AssertRejected(CertificateVerificationStatus.Invalid, malformed);
         }
 
-        [TestCase(AppleTrustVerifier.ResultUntrustedRoot, CertificateVerificationStatus.UntrustedRoot)]
-        [TestCase(AppleTrustVerifier.ResultNotTimeValid, CertificateVerificationStatus.NotTimeValid)]
-        [TestCase(AppleTrustVerifier.ResultInvalid, CertificateVerificationStatus.Invalid)]
-        [TestCase(AppleTrustVerifier.ResultBridgeError, CertificateVerificationStatus.Invalid)]
-        [TestCase(-1, CertificateVerificationStatus.Invalid)]
-        public void AppleBridge_ResultCodes_MapToRejections(int code, CertificateVerificationStatus expected)
+        [TestCase(AppleTrustVerifier.ResultUntrustedRoot, (int)CertificateVerificationStatus.UntrustedRoot)]
+        [TestCase(AppleTrustVerifier.ResultNotTimeValid, (int)CertificateVerificationStatus.NotTimeValid)]
+        [TestCase(AppleTrustVerifier.ResultInvalid, (int)CertificateVerificationStatus.Invalid)]
+        [TestCase(AppleTrustVerifier.ResultBridgeError, (int)CertificateVerificationStatus.Invalid)]
+        [TestCase(-1, (int)CertificateVerificationStatus.Invalid)]
+        public void AppleBridge_ResultCodes_MapToRejections(int code, int expectedValue)
         {
+            var expected = (CertificateVerificationStatus)expectedValue;
             var result = AppleTrustVerifier.FromNative(code, -67843, IntPtr.Zero, 0);
 
             AssertRejected(expected, result);
