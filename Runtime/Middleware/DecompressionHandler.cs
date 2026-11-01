@@ -2,7 +2,6 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -12,8 +11,6 @@ namespace TurboHTTP.Middleware
 {
     internal sealed class DecompressionHandler : IHttpHandler
     {
-        private static readonly uint[] Crc32Table = BuildCrc32Table();
-
         private readonly IHttpHandler _inner;
         private readonly long _maxDecompressedBodySizeBytes;
         private readonly long _maxCompressedBodySizeBytes;
@@ -83,7 +80,7 @@ namespace TurboHTTP.Middleware
 
             if (body.TryGetBufferedData(out var compressed))
             {
-                BufferedResponseBodySource bufferedBody = null;
+                SegmentedResponseBodySource bufferedBody = null;
                 try
                 {
                     var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
@@ -91,7 +88,15 @@ namespace TurboHTTP.Middleware
                         compressed,
                         compressionChain,
                         _maxDecompressedBodySizeBytes);
-                    bufferedBody = new BufferedResponseBodySource(decompressed, trailers);
+                    try
+                    {
+                        bufferedBody = new SegmentedResponseBodySource(decompressed, trailers);
+                    }
+                    catch
+                    {
+                        decompressed.Dispose();
+                        throw;
+                    }
                 }
                 catch (Exception ex) when (ex is InvalidDataException || ex is IOException)
                 {
@@ -101,7 +106,16 @@ namespace TurboHTTP.Middleware
                 }
                 finally
                 {
-                    await body.DisposeAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await body.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // The decoded segments are not handed on: return them before the failure propagates.
+                        bufferedBody?.Abort();
+                        throw;
+                    }
                 }
 
                 try
@@ -164,44 +178,57 @@ namespace TurboHTTP.Middleware
             return body.TryGetBufferedData(out var buffered) && buffered.IsEmpty;
         }
 
-        private static byte[] DecompressBufferedBody(
+        /// <summary>
+        /// Decodes a buffered body into pooled 16 KB segments (#74): no growing contiguous buffer and no final
+        /// copy, so the peak is the decoded size plus one segment. The limit is checked before a segment is
+        /// added; at the limit a one-byte probe tells a complete body from one that would exceed it. The caller
+        /// owns the returned buffer; on failure its segments are returned here.
+        /// </summary>
+        private static SegmentedBuffer DecompressBufferedBody(
             ReadOnlyMemory<byte> compressed,
             CompressionKind[] compressionChain,
             long maxDecompressedBodySizeBytes)
         {
-            var compressedSequence = new ReadOnlySequence<byte>(compressed);
-
-            // Every gzip layer validates its CRC32/ISIZE trailer at end of stream (DecoderCompletionStream).
-            using var compressedStream = new ReadOnlySequenceStream(compressedSequence);
-            using var decompressionStream = CreateDecompressionStream(compressedStream, compressionChain);
-            using var output = new MemoryStream();
-
-            var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+            var output = new SegmentedBuffer();
             try
             {
-                long totalDecompressed = 0;
+                // Every gzip/zlib layer validates its trailers and reads its input to the end (InflateLayerStream).
+                using var compressedStream = new ReadOnlySequenceStream(new ReadOnlySequence<byte>(compressed));
+                using var decompressionStream = CreateDecompressionStream(compressedStream, compressionChain);
+
+                Span<byte> probe = stackalloc byte[1];
                 while (true)
                 {
-                    var read = decompressionStream.Read(buffer, 0, buffer.Length);
+                    var remainingBudget = maxDecompressedBodySizeBytes - output.Length;
+                    if (remainingBudget <= 0)
+                    {
+                        if (decompressionStream.Read(probe) > 0)
+                        {
+                            throw new IOException(
+                                $"Response decompression exceeded the maximum size ({maxDecompressedBodySizeBytes} bytes).");
+                        }
+
+                        break;
+                    }
+
+                    var span = output.GetWriteSpan();
+                    if (span.Length > remainingBudget)
+                        span = span.Slice(0, (int)remainingBudget);
+
+                    var read = decompressionStream.Read(span);
                     if (read <= 0)
                         break;
 
-                    totalDecompressed += read;
-                    if (totalDecompressed > maxDecompressedBodySizeBytes)
-                    {
-                        throw new IOException(
-                            $"Response decompression exceeded the maximum size ({maxDecompressedBodySizeBytes} bytes).");
-                    }
-
-                    output.Write(buffer, 0, read);
+                    output.Advance(read);
                 }
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
 
-            return output.ToArray();
+                return output;
+            }
+            catch
+            {
+                output.Dispose();
+                throw;
+            }
         }
 
         private sealed class DecompressionBodySource : IResponseBodySource
@@ -654,358 +681,6 @@ namespace TurboHTTP.Middleware
             }
         }
 
-        /// <summary>
-        /// Pass-through read stream under a <see cref="GZipStream"/> that counts the compressed bytes the
-        /// decoder (and the post-EOF drain) pulled and keeps the last 8 of them: the RFC 1952 member trailer.
-        /// Only one reader uses it at a time (the decoder, then the validating stream after decoder EOF), so the
-        /// fields need no synchronization; async continuations order the accesses.
-        /// </summary>
-        private sealed class GzipInputTrackingStream : Stream
-        {
-            internal const int TrailerBytes = 8;
-
-            private readonly Stream _inner;
-            private readonly bool _leaveOpen;
-            private readonly byte[] _tail = new byte[TrailerBytes];
-            private int _tailCount;
-            private long _totalBytes;
-            private int _disposed;
-
-            internal GzipInputTrackingStream(Stream inner, bool leaveOpen)
-            {
-                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
-                _leaveOpen = leaveOpen;
-            }
-
-            internal long TotalBytes => _totalBytes;
-
-            public override bool CanRead => Volatile.Read(ref _disposed) == 0;
-
-            public override bool CanSeek => false;
-
-            public override bool CanWrite => false;
-
-            public override long Length => throw new NotSupportedException();
-
-            public override long Position
-            {
-                get => throw new NotSupportedException();
-                set => throw new NotSupportedException();
-            }
-
-            internal bool TryCopyTrailer(Span<byte> destination)
-            {
-                if (_tailCount < TrailerBytes || destination.Length < TrailerBytes)
-                    return false;
-
-                _tail.AsSpan().CopyTo(destination);
-                return true;
-            }
-
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                var read = _inner.Read(buffer, offset, count);
-                Record(new ReadOnlySpan<byte>(buffer, offset, read));
-                return read;
-            }
-
-            public override int Read(Span<byte> buffer)
-            {
-                var read = _inner.Read(buffer);
-                Record(buffer.Slice(0, read));
-                return read;
-            }
-
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
-            }
-
-            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            {
-                var pending = _inner.ReadAsync(buffer, cancellationToken);
-                if (pending.IsCompletedSuccessfully)
-                {
-                    var read = pending.Result;
-                    Record(buffer.Span.Slice(0, read));
-                    return new ValueTask<int>(read);
-                }
-
-                return AwaitReadAsync(pending, buffer);
-            }
-
-            private async ValueTask<int> AwaitReadAsync(ValueTask<int> pending, Memory<byte> buffer)
-            {
-                var read = await pending.ConfigureAwait(false);
-                Record(buffer.Span.Slice(0, read));
-                return read;
-            }
-
-            private void Record(ReadOnlySpan<byte> data)
-            {
-                if (data.IsEmpty)
-                    return;
-
-                _totalBytes += data.Length;
-                if (data.Length >= TrailerBytes)
-                {
-                    data.Slice(data.Length - TrailerBytes).CopyTo(_tail);
-                    _tailCount = TrailerBytes;
-                    return;
-                }
-
-                // Keep the newest (8 - data.Length) bytes already held, then append data.
-                var keep = Math.Min(_tailCount, TrailerBytes - data.Length);
-                _tail.AsSpan(_tailCount - keep, keep).CopyTo(_tail);
-                data.CopyTo(_tail.AsSpan(keep));
-                _tailCount = keep + data.Length;
-            }
-
-            public override void Flush()
-            {
-            }
-
-            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-
-            public override void SetLength(long value) => throw new NotSupportedException();
-
-            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-            protected override void Dispose(bool disposing)
-            {
-                if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0 && !_leaveOpen)
-                    _inner.Dispose();
-
-                base.Dispose(disposing);
-            }
-        }
-
-        /// <summary>
-        /// Wraps one decoder of the chain. When the decoder reports end of stream it drains the rest of its
-        /// input (bounded): a decoder stops reading once its own format ends, so without the drain the layer
-        /// below (for example the gzip layer under a deflate layer) would never reach its own end and check.
-        /// For a gzip layer it also CRC32s the decoded bytes and checks the RFC 1952 trailer against the CRC32
-        /// and the decoded size mod 2^32: a body cut inside the deflate data or inside the trailer fails with
-        /// <see cref="InvalidDataException"/> instead of reading as a clean end of stream. Disposing before end
-        /// of stream skips the check by design (early dispose is not a completed body).
-        /// </summary>
-        private sealed class DecoderCompletionStream : Stream
-        {
-            private const int MinimumGzipMemberBytes = 18;
-            private const int MaxBytesAfterMemberEnd = 64 * 1024;
-            private const int DrainChunkBytes = 4 * 1024;
-
-            private const int StateReading = 0;
-            private const int StateValidated = 1;
-            private const int StateFailed = 2;
-
-            private readonly Stream _decoder;
-            private readonly Stream _drainSource;
-            private readonly GzipInputTrackingStream _gzipInput;
-            private uint _crc32 = uint.MaxValue;
-            private long _decodedBytes;
-            private int _state;
-            private int _disposed;
-
-            /// <param name="decoder">The decoder this stream reads from; disposed with this stream.</param>
-            /// <param name="drainSource">The decoder's input, drained to its end after the decoder's EOF.</param>
-            /// <param name="gzipInput">For a gzip layer, the tracked compressed input holding the trailer; else null.</param>
-            internal DecoderCompletionStream(Stream decoder, Stream drainSource, GzipInputTrackingStream gzipInput)
-            {
-                _decoder = decoder ?? throw new ArgumentNullException(nameof(decoder));
-                _drainSource = drainSource ?? throw new ArgumentNullException(nameof(drainSource));
-                _gzipInput = gzipInput;
-            }
-
-            public override bool CanRead => Volatile.Read(ref _disposed) == 0;
-
-            public override bool CanSeek => false;
-
-            public override bool CanWrite => false;
-
-            public override long Length => throw new NotSupportedException();
-
-            public override long Position
-            {
-                get => throw new NotSupportedException();
-                set => throw new NotSupportedException();
-            }
-
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                return Read(new Span<byte>(buffer, offset, count));
-            }
-
-            public override int Read(Span<byte> buffer)
-            {
-                if (buffer.IsEmpty)
-                    return 0;
-                if (!CheckReadable())
-                    return 0;
-
-                var read = _decoder.Read(buffer);
-                if (read > 0)
-                {
-                    Observe(buffer.Slice(0, read));
-                    return read;
-                }
-
-                var scratch = ArrayPool<byte>.Shared.Rent(DrainChunkBytes);
-                try
-                {
-                    long drained = 0;
-                    int n;
-                    while ((n = _drainSource.Read(scratch, 0, DrainChunkBytes)) > 0)
-                        drained = CountDrained(drained, n);
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(scratch);
-                }
-
-                ValidateTrailer();
-                return 0;
-            }
-
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
-            }
-
-            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            {
-                if (buffer.IsEmpty)
-                    return new ValueTask<int>(0);
-                if (!CheckReadable())
-                    return new ValueTask<int>(0);
-
-                var pending = _decoder.ReadAsync(buffer, cancellationToken);
-                if (pending.IsCompletedSuccessfully)
-                {
-                    // Consume the ValueTask exactly once.
-                    var read = pending.Result;
-                    if (read > 0)
-                    {
-                        Observe(buffer.Span.Slice(0, read));
-                        return new ValueTask<int>(read);
-                    }
-
-                    return CompleteReadAsync(new ValueTask<int>(0), buffer, cancellationToken);
-                }
-
-                return CompleteReadAsync(pending, buffer, cancellationToken);
-            }
-
-            private async ValueTask<int> CompleteReadAsync(
-                ValueTask<int> pending,
-                Memory<byte> buffer,
-                CancellationToken cancellationToken)
-            {
-                var read = await pending.ConfigureAwait(false);
-                if (read > 0)
-                {
-                    Observe(buffer.Span.Slice(0, read));
-                    return read;
-                }
-
-                var scratch = ArrayPool<byte>.Shared.Rent(DrainChunkBytes);
-                try
-                {
-                    long drained = 0;
-                    int n;
-                    while ((n = await _drainSource.ReadAsync(scratch.AsMemory(0, DrainChunkBytes), cancellationToken)
-                               .ConfigureAwait(false)) > 0)
-                    {
-                        drained = CountDrained(drained, n);
-                    }
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(scratch);
-                }
-
-                ValidateTrailer();
-                return 0;
-            }
-
-            private bool CheckReadable()
-            {
-                if (Volatile.Read(ref _disposed) != 0)
-                    throw new ObjectDisposedException(nameof(DecoderCompletionStream));
-
-                var state = Volatile.Read(ref _state);
-                if (state == StateFailed)
-                    throw new InvalidDataException("GZIP trailer validation failed.");
-
-                return state == StateReading;
-            }
-
-            private void Observe(ReadOnlySpan<byte> decoded)
-            {
-                if (_gzipInput == null)
-                    return;
-
-                _crc32 = UpdateCrc32(_crc32, decoded);
-                _decodedBytes += decoded.Length;
-            }
-
-            private long CountDrained(long drained, int read)
-            {
-                drained += read;
-                if (drained > MaxBytesAfterMemberEnd)
-                {
-                    Volatile.Write(ref _state, StateFailed);
-                    throw new InvalidDataException("Unexpected data after the end of the compressed payload.");
-                }
-
-                return drained;
-            }
-
-            private void ValidateTrailer()
-            {
-                if (_gzipInput == null)
-                {
-                    Volatile.Write(ref _state, StateValidated);
-                    return;
-                }
-
-                Span<byte> trailer = stackalloc byte[GzipInputTrackingStream.TrailerBytes];
-                if (_gzipInput.TotalBytes < MinimumGzipMemberBytes || !_gzipInput.TryCopyTrailer(trailer))
-                {
-                    Volatile.Write(ref _state, StateFailed);
-                    throw new InvalidDataException("GZIP payload is truncated.");
-                }
-
-                var expectedCrc32 = ReadUInt32LittleEndian(trailer);
-                var expectedSize = ReadUInt32LittleEndian(trailer.Slice(4));
-                if (expectedCrc32 != (_crc32 ^ uint.MaxValue) || expectedSize != unchecked((uint)_decodedBytes))
-                {
-                    Volatile.Write(ref _state, StateFailed);
-                    throw new InvalidDataException("GZIP trailer validation failed.");
-                }
-
-                Volatile.Write(ref _state, StateValidated);
-            }
-
-            public override void Flush()
-            {
-            }
-
-            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-
-            public override void SetLength(long value) => throw new NotSupportedException();
-
-            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-            protected override void Dispose(bool disposing)
-            {
-                if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
-                    _decoder.Dispose();
-
-                base.Dispose(disposing);
-            }
-        }
-
         private static Stream CreateDecompressionStream(
             Stream compressedStream,
             CompressionKind[] compressionChain)
@@ -1032,22 +707,12 @@ namespace TurboHTTP.Middleware
             switch (compression)
             {
                 case CompressionKind.Gzip:
-                    {
-                        // Unity's Mono GZipStream can report a truncated member as a clean end of stream, so each
-                        // gzip layer checks the RFC 1952 trailer (CRC32 + ISIZE) itself and fails on a mismatch or
-                        // a premature EOF.
-                        var input = new GzipInputTrackingStream(compressedStream, leaveOpen);
-                        var gzip = new GZipStream(input, CompressionMode.Decompress, leaveOpen: false);
-                        return new DecoderCompletionStream(gzip, input, input);
-                    }
+                    // Member-aware gzip decoder (RFC 1952 section 2.2): checks every member's CRC32 + ISIZE itself,
+                    // because Unity's Mono GZipStream can report a truncated member as a clean end of stream.
+                    return new InflateLayerStream(compressedStream, leaveOpen, gzip: true);
                 case CompressionKind.Deflate:
-                    {
-                        var deflate = new DeflateStream(compressedStream, CompressionMode.Decompress, leaveOpen);
-
-                        // Raw deflate has no trailer. Stacked on another decoder, drain that decoder to its end so
-                        // a gzip layer below still validates; on the wire bytes (leaveOpen) no wrapper is needed.
-                        return leaveOpen ? (Stream)deflate : new DecoderCompletionStream(deflate, compressedStream, null);
-                    }
+                    // RFC 9110 section 8.4.1.2: zlib (RFC 1950) with its Adler-32 checked; raw DEFLATE as fallback.
+                    return new InflateLayerStream(compressedStream, leaveOpen, gzip: false);
                 default:
                     throw new InvalidOperationException("Compression mode is not active.");
             }
@@ -1139,42 +804,6 @@ namespace TurboHTTP.Middleware
 
             compression = null;
             return false;
-        }
-
-        private static uint UpdateCrc32(uint crc32, ReadOnlySpan<byte> data)
-        {
-            var crc = crc32;
-            for (var i = 0; i < data.Length; i++)
-                crc = Crc32Table[(int)((crc ^ data[i]) & 0xFF)] ^ (crc >> 8);
-
-            return crc;
-        }
-
-        private static uint ReadUInt32LittleEndian(ReadOnlySpan<byte> bytes)
-        {
-            return (uint)(bytes[0]
-                | (bytes[1] << 8)
-                | (bytes[2] << 16)
-                | (bytes[3] << 24));
-        }
-
-        private static uint[] BuildCrc32Table()
-        {
-            var table = new uint[256];
-            for (uint i = 0; i < table.Length; i++)
-            {
-                var value = i;
-                for (var bit = 0; bit < 8; bit++)
-                {
-                    value = (value & 1) != 0
-                        ? 0xEDB88320u ^ (value >> 1)
-                        : value >> 1;
-                }
-
-                table[(int)i] = value;
-            }
-
-            return table;
         }
     }
 }

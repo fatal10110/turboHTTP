@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI check `check_repo.py coreapi`: the public types of `TurboHTTP.Core` must match
   `Tools~/ci/api-baseline/core-public-types.txt` (at most 60).
 
+### Changed
+- `DecompressionInterceptor`: the default decoded-size limit (`maxDecompressedBodySizeBytes`) is now
+  32 MB instead of 256 MB, sized for mobile memory budgets (#74). The same value caps a compressed body
+  with a known length. Pass a larger value to the constructor to keep the old limit.
+- `DecompressionInterceptor`: buffered responses are decoded into pooled 16 KB segments that the
+  response takes over, instead of a growing `MemoryStream` and a final copy (about half the peak
+  memory) (#74).
+
+### Fixed
+- `Content-Encoding: deflate` is decoded as the zlib format (RFC 9110 section 8.4.1.2) with its
+  Adler-32 checked; raw DEFLATE bodies still decode. A gzip body made of several members decodes, and
+  each member's CRC32 and size trailer is checked (#219).
+
 ### Breaking
 Core public surface reduced before the API freeze (#77, #156). Moved types keep their names; add
 `using TurboHTTP.Unity.Mobile;` and reference the `TurboHTTP.Unity` assembly.

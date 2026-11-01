@@ -34,7 +34,7 @@ Replace with `DecompressionBodySource` (implements `IResponseBodySource`):
 
 Decompressed-size limit enforced incrementally during streaming (not after full buffering). Test requirement: a compressed response that decompresses to 200 MB must abort at the configured limit, not OOM.
 
-**The limit is configurable** via `DecompressionInterceptor` constructor parameter (`maxDecompressedBodySizeBytes`), not a magic constant. A video streaming app and a JSON API client have very different reasonable limits. Default: 256 MB (reasonable for most workloads; the HPACK 128 KB limit from Phase 3B is a separate concern).
+**The limit is configurable** via `DecompressionInterceptor` constructor parameter (`maxDecompressedBodySizeBytes`), not a magic constant. A video streaming app and a JSON API client have very different reasonable limits. Default: 256 MB, lowered to 32 MB by #74 for mobile memory budgets (the HPACK 128 KB limit from Phase 3B is a separate concern).
 
 ### `DecompressionBodySource` ~8KB Read-Ahead Buffer
 
