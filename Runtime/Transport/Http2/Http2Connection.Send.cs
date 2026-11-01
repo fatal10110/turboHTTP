@@ -437,7 +437,7 @@ namespace TurboHTTP.Transport.Http2
                 var values = trailers.GetValues(name);
                 for (int i = 0; i < values.Count; i++)
                 {
-                    ValidateTrailerHeader(name, values[i]);
+                    ValidateRequestField(name, values[i]);
                     fields ??= new List<(string Name, string Value)>();
                     fields.Add((lowerName, values[i]));
                 }
@@ -446,21 +446,40 @@ namespace TurboHTTP.Transport.Http2
             return fields;
         }
 
-        private static void ValidateTrailerHeader(string name, string value)
+        /// <summary>
+        /// Validates the caller's request header fields with the validator shared with HTTP/1.1
+        /// (<see cref="HttpFieldValidator"/>); a violation is a non-retryable
+        /// <see cref="UHttpErrorType.InvalidRequest"/>.
+        /// </summary>
+        private static void ValidateRequestFields(HttpHeaders headers)
         {
-            if (string.IsNullOrWhiteSpace(name))
-                throw new ArgumentException("Header name cannot be null or empty");
-
-            var nameSpan = name.AsSpan();
-            for (int i = 0; i < nameSpan.Length; i++)
+            try
             {
-                if (!EncodingHelper.IsRfc9110TChar(nameSpan[i]))
-                    throw new ArgumentException($"Header name contains invalid characters: {name}");
+                HttpFieldValidator.ValidateFields(headers);
             }
-
-            if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
-                throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
+            catch (ArgumentException ex)
+            {
+                throw CreateInvalidFieldException(ex);
+            }
         }
+
+        /// <summary>
+        /// Validates one request trailer field with the shared validator (RFC 9113 Section 8.2.1).
+        /// </summary>
+        private static void ValidateRequestField(string name, string value)
+        {
+            try
+            {
+                HttpFieldValidator.ValidateField(name, value);
+            }
+            catch (ArgumentException ex)
+            {
+                throw CreateInvalidFieldException(ex);
+            }
+        }
+
+        private static UHttpException CreateInvalidFieldException(ArgumentException ex) =>
+            new UHttpException(new UHttpError(UHttpErrorType.InvalidRequest, ex.Message, ex));
 
         private static readonly Action<object> s_wakeSendWindowWaiters =
             static state => ((Http2Connection)state).WakeSendWindowWaiters();

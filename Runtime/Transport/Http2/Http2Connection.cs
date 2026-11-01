@@ -294,6 +294,11 @@ namespace TurboHTTP.Transport.Http2
         {
             context.SetState(TransportBehaviorFlags.SelfDrainsResponseBody, true);
 
+            // RFC 9113 Sections 8.2.1 and 8.3: an invalid caller field (non-token or ':'-prefixed name,
+            // NUL/CR/LF/CTL or surrounding whitespace in a value) fails the request here, before a stream
+            // slot or id is taken and before any frame is written. Not replayable: InvalidRequest.
+            ValidateRequestFields(request.Headers);
+
             Http2Stream stream = null;
             int streamId = -1;
             bool requestHeadersSent = false;
