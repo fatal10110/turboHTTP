@@ -32,8 +32,12 @@ Load for TLS, sockets, IL2CPP/AOT, iOS/Android behavior, timeouts or device vali
 - Reflection targets must survive Managed Stripping Level High. `link.xml` inside a UPM package is not
   read by UnityLinker unless an `IUnityLinkerProcessor` returns it (#8); `[Preserve]` on the target
   is the reliable option.
-- `[ModuleInitializer]` is not a supported Unity feature; transport registration needs a
-  `RuntimeInitializeOnLoadMethod` backstop (#1).
+- `[ModuleInitializer]` is not a supported Unity feature. Default registration happens in
+  `TurboHttpBootstrap` (`RuntimeInitializeOnLoadMethod(SubsystemRegistration)`, `[AlwaysLinkAssembly]`,
+  `[Preserve]`); see architecture.md "Transport". IL2CPP player and device confirmation: #100, #99.
+- Library code never relies on the caller's `SynchronizationContext`: `await Task.Yield()` resumes on
+  Unity's main thread when called from it, so a blocked or paused main thread stalls the work (#245).
+  Detach background work with `Task.Run`, and use `ConfigureAwait(false)` everywhere else.
 - Fields shared across threads: `Interlocked`/`Volatile` (ARM64 reorders; 32-bit IL2CPP tears 64-bit
   reads). Use `int` flags, not `bool`, with `Interlocked`.
 - Async state machines box when they complete asynchronously; keep hot `ReadAsync` paths completing
