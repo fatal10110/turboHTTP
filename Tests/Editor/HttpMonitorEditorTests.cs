@@ -9,6 +9,7 @@ using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Editor;
 using TurboHTTP.Observability;
+using TurboHTTP.Testing;
 using UnityEditor;
 using UnityEngine;
 
@@ -28,6 +29,8 @@ namespace TurboHTTP.Tests.Editor
         private int _savedMonitorMaxCaptureSizeBytes;
         private int _savedMonitorBinaryPreviewBytes;
         private bool _savedWindowDefaultMaskHeaders;
+        private bool _savedCaptureWithoutViewer;
+        private RedactionPolicy _savedRedactionPolicy;
 
         [SetUp]
         public void SetUp()
@@ -43,6 +46,8 @@ namespace TurboHTTP.Tests.Editor
             _savedMonitorMaxCaptureSizeBytes = MonitorInterceptor.MaxCaptureSizeBytes;
             _savedMonitorBinaryPreviewBytes = MonitorInterceptor.BinaryPreviewBytes;
             _savedWindowDefaultMaskHeaders = HttpMonitorWindow.DefaultMaskConfidentialHeaders;
+            _savedCaptureWithoutViewer = MonitorInterceptor.CaptureWithoutViewer;
+            _savedRedactionPolicy = MonitorInterceptor.RedactionPolicy;
 
             MonitorInterceptor.ClearHistory();
             CloseAllMonitorWindows();
@@ -63,6 +68,8 @@ namespace TurboHTTP.Tests.Editor
             MonitorInterceptor.MaxCaptureSizeBytes = _savedMonitorMaxCaptureSizeBytes;
             MonitorInterceptor.BinaryPreviewBytes = _savedMonitorBinaryPreviewBytes;
             HttpMonitorWindow.DefaultMaskConfidentialHeaders = _savedWindowDefaultMaskHeaders;
+            MonitorInterceptor.CaptureWithoutViewer = _savedCaptureWithoutViewer;
+            MonitorInterceptor.RedactionPolicy = _savedRedactionPolicy;
             MonitorInterceptor.ClearHistory();
             CloseAllMonitorWindows();
         }
@@ -112,45 +119,55 @@ namespace TurboHTTP.Tests.Editor
         }
 
         [Test]
-        public void ReplayBuilder_BuildsReplayRequestFromCapturedEvent()
+        public void ReplayBuilder_RedactedCapture_ReplaysWithoutCredentialsAndWarns()
         {
-            Assert.Ignore("Replay builder coverage still needs a follow-up editor test harness after the MonitorInterceptor rewrite.");
+            // Default capture redacts Authorization (#92): replay must not send the placeholder as a credential.
+            MonitorInterceptor.RedactionPolicy = RedactionPolicy.Default;
+            var evt = CaptureReplayRequest();
 
-            MonitorInterceptor.ClearHistory();
-            MonitorInterceptor.MaxCaptureSizeBytes = 4;
-            MonitorInterceptor.BinaryPreviewBytes = 4;
-
-            var requestHeaders = new HttpHeaders();
-            requestHeaders.Set("Host", "api.example.com");
-            requestHeaders.Set("Authorization", "Bearer token-123");
-            requestHeaders.Set("Content-Type", "text/plain");
-
-            var request = new UHttpRequest(
-                HttpMethod.POST,
-                new Uri("https://api.example.com/replay"),
-                requestHeaders,
-                Encoding.UTF8.GetBytes("abcdefghi"));
-            var snapshot = new List<HttpMonitorEvent>();
-            MonitorInterceptor.GetHistorySnapshot(snapshot);
-            Assert.AreEqual(1, snapshot.Count);
+            Assert.AreEqual(RedactionPolicy.RedactedValue, evt.RequestHeaders["Authorization"]);
 
             var success = InvokeTryBuildReplayRequest(
-                snapshot[0],
+                evt,
                 out var replayRequest,
                 out var warning,
                 out var error);
 
-            Assert.IsTrue(success);
+            Assert.IsTrue(success, error);
             Assert.IsNotNull(replayRequest);
             Assert.AreEqual(HttpMethod.POST, replayRequest.Method);
             Assert.AreEqual("https://api.example.com/replay", replayRequest.Uri.ToString());
-            Assert.AreEqual("Bearer token-123", replayRequest.Headers.Get("Authorization"));
+            Assert.IsFalse(replayRequest.Headers.Contains("Authorization"));
+            Assert.AreEqual("text/plain", replayRequest.Headers.Get("Content-Type"));
             Assert.IsFalse(replayRequest.Headers.Contains("Host"));
             Assert.IsTrue(replayRequest.TryGetBufferedContent(out var replayBody));
-            Assert.IsFalse(replayBody.IsEmpty);
             Assert.AreEqual(4, replayBody.Length);
+            Assert.That(warning, Does.Contain("captured with redaction"));
             Assert.That(warning, Does.Contain("truncated"));
             Assert.That(warning, Does.Contain("Transport-managed headers"));
+            Assert.That(error, Is.Empty);
+        }
+
+        [Test]
+        public void ReplayBuilder_UnredactedCapture_ReplaysCapturedHeaders()
+        {
+            MonitorInterceptor.RedactionPolicy = RedactionPolicy.None;
+            var evt = CaptureReplayRequest();
+
+            var success = InvokeTryBuildReplayRequest(
+                evt,
+                out var replayRequest,
+                out var warning,
+                out var error);
+
+            Assert.IsTrue(success, error);
+            Assert.AreEqual("Bearer token-123", replayRequest.Headers.Get("Authorization"));
+            Assert.AreEqual("text/plain", replayRequest.Headers.Get("Content-Type"));
+            Assert.IsFalse(replayRequest.Headers.Contains("Host"));
+            Assert.IsTrue(replayRequest.TryGetBufferedContent(out var replayBody));
+            Assert.AreEqual(4, replayBody.Length);
+            Assert.That(warning, Does.Not.Contain("captured with redaction"));
+            Assert.That(warning, Does.Contain("truncated"));
             Assert.That(error, Is.Empty);
         }
 
@@ -167,6 +184,49 @@ namespace TurboHTTP.Tests.Editor
             Assert.IsNull(replayRequest);
             Assert.That(warning, Is.Empty);
             Assert.That(error, Is.EqualTo("No monitor event is selected."));
+        }
+
+        /// <summary>Runs a POST through a real client with the monitor interceptor and returns the captured event.</summary>
+        private static HttpMonitorEvent CaptureReplayRequest()
+        {
+            MonitorInterceptor.CaptureEnabled = true;
+            MonitorInterceptor.CaptureWithoutViewer = true;
+            MonitorInterceptor.ClearHistory();
+            MonitorInterceptor.MaxCaptureSizeBytes = 4;
+            MonitorInterceptor.BinaryPreviewBytes = 4;
+
+            var requestHeaders = new HttpHeaders();
+            requestHeaders.Set("Host", "api.example.com");
+            requestHeaders.Set("Authorization", "Bearer token-123");
+            requestHeaders.Set("Content-Type", "text/plain");
+
+            var options = new UHttpClientOptions
+            {
+                Transport = new MockTransport(HttpStatusCode.OK),
+                Interceptors = new List<IHttpInterceptor> { new MonitorInterceptor() },
+            };
+            using (var client = new UHttpClient(options))
+            {
+                var request = new UHttpRequest(
+                    HttpMethod.POST,
+                    new Uri("https://api.example.com/replay"),
+                    requestHeaders,
+                    Encoding.UTF8.GetBytes("abcdefghi"));
+
+                // The Editor test assembly has no async test runner helper; run the request off the
+                // Unity sync context and wait for it, as AssertAsync.Run does for the runtime tests.
+                Task.Run(async () =>
+                {
+                    using (await client.SendBufferedAsync(request).ConfigureAwait(false))
+                    {
+                    }
+                }).GetAwaiter().GetResult();
+            }
+
+            var snapshot = new List<HttpMonitorEvent>();
+            MonitorInterceptor.GetHistorySnapshot(snapshot);
+            Assert.AreEqual(1, snapshot.Count);
+            return snapshot[0];
         }
 
         private static bool InvokeTryBuildReplayRequest(

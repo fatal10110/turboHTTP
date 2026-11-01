@@ -14,6 +14,7 @@ namespace TurboHTTP.Tests.Transport.Tls
     {
         [Test]
         [Category("Performance")]
+        [Category("ExternalNetwork")]
         public void Benchmark_SslStream_HandshakeTime()        {
             Task.Run(async () =>
             {
@@ -24,6 +25,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Performance")]
+        [Category("ExternalNetwork")]
         public void Benchmark_BouncyCastle_HandshakeTime()        {
             TestRequirements.RequireBouncyCastle();
 

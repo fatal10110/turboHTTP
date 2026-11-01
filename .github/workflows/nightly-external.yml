@@ -1,0 +1,60 @@
+name: nightly-external
+
+# Runs the tests that need the public internet ([Category("ExternalNetwork")], #115). PR CI excludes
+# the category (ci.yml); this job is the only scheduled place they run, so a flaky third-party host
+# never blocks a PR. Like ci.yml it needs the UNITY_LICENSE, UNITY_EMAIL and UNITY_PASSWORD secrets
+# (#188) and otherwise warns and passes.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  external-network:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        testMode: [EditMode, PlayMode]
+    env:
+      HAS_UNITY_LICENSE: ${{ secrets.UNITY_LICENSE != '' }}
+    steps:
+      - name: License check
+        if: env.HAS_UNITY_LICENSE != 'true'
+        run: echo "::warning::UNITY_LICENSE secret is not set; ExternalNetwork tests were not run"
+
+      - uses: actions/checkout@v7
+        if: env.HAS_UNITY_LICENSE == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Unity version
+        if: env.HAS_UNITY_LICENSE == 'true'
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - uses: game-ci/unity-test-runner@v4
+        if: env.HAS_UNITY_LICENSE == 'true'
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          packageMode: true
+          projectPath: .
+          unityVersion: ${{ steps.unity.outputs.version }}
+          testMode: ${{ matrix.testMode }}
+          customParameters: -testCategory "ExternalNetwork"
+          artifactsPath: artifacts-external-${{ matrix.testMode }}
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+          checkName: Unity ${{ matrix.testMode }} ExternalNetwork results
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.HAS_UNITY_LICENSE == 'true'
+        with:
+          name: unity-external-${{ matrix.testMode }}-results
+          path: artifacts-external-${{ matrix.testMode }}
