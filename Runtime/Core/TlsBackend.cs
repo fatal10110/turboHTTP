@@ -30,7 +30,13 @@ namespace TurboHTTP.Core
         /// <summary>
         /// Force use of BouncyCastle pure C# TLS implementation.
         /// Guaranteed ALPN support on all platforms. Explicit opt-in only: Auto never
-        /// selects it while its certificate chain validation is incomplete.
+        /// selects it.
+        /// Available only when the project defines the <c>TURBOHTTP_BOUNCYCASTLE</c> scripting
+        /// define symbol (Player Settings &gt; Scripting Define Symbols, per build target), which
+        /// compiles the BouncyCastle glue assembly. Without it, every TLS connection with this
+        /// backend fails: the provider lookup throws <see cref="System.InvalidOperationException"/>
+        /// naming the define (requests receive it as the inner exception of a
+        /// <see cref="UHttpException"/>).
         /// </summary>
         BouncyCastle = 2
     }
