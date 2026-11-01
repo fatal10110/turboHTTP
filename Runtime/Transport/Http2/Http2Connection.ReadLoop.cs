@@ -17,6 +17,14 @@ namespace TurboHTTP.Transport.Http2
         private int _pendingResetStreamId;
         private Http2ErrorCode _pendingResetCode;
 
+        // Read-loop owned: set once the server connection preface (a non-ACK SETTINGS frame, RFC 9113
+        // Section 3.4) has been received. Any other first frame is a connection PROTOCOL_ERROR.
+        private bool _serverPrefaceReceived;
+
+        // Read-loop owned: the highest stream id a PUSH_PROMISE reserved (server ids are even). Even ids
+        // above it were never opened or reserved, so they are idle (RFC 9113 Section 5.1.1).
+        private int _highestPromisedStreamId;
+
         // --- Read Loop ---
 
         private async Task ReadLoopAsync(CancellationToken ct)
@@ -35,11 +43,28 @@ namespace TurboHTTP.Transport.Http2
                         // Any inbound frame proves the peer is alive (see RunLivenessCycleAsync).
                         Interlocked.Increment(ref _inboundFrameCount);
 
+                        if (!_serverPrefaceReceived)
+                        {
+                            // RFC 9113 Section 3.4: the server preface is a (possibly empty) SETTINGS frame
+                            // and MUST be the first frame the server sends; a SETTINGS ACK is not a preface.
+                            if (frame.Type != Http2FrameType.Settings || frame.HasFlag(Http2FrameFlags.Ack))
+                            {
+                                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                                    frame.Type == Http2FrameType.Settings
+                                        ? "Server connection preface must be SETTINGS, got SETTINGS ACK"
+                                        : $"Server connection preface must be SETTINGS, got {frame.Type}");
+                            }
+
+                            _serverPrefaceReceived = true;
+                        }
+
                         if (_continuationStreamId != 0 && frame.Type != Http2FrameType.Continuation)
                         {
                             throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
                                 $"Expected CONTINUATION for stream {_continuationStreamId}, got {frame.Type}");
                         }
+
+                        ThrowIfFrameOnIdleStream(frame);
 
                         switch (frame.Type)
                         {
@@ -98,6 +123,48 @@ namespace TurboHTTP.Transport.Http2
         }
 
         // --- Frame Handlers ---
+
+        /// <summary>
+        /// RFC 9113 Section 5.1: a frame other than HEADERS or PRIORITY on an idle stream is a connection
+        /// error of type PROTOCOL_ERROR. For a client every server HEADERS on an idle id is one as well: the
+        /// server never opens odd ids, and an even id it may use only after reserving it with PUSH_PROMISE
+        /// (Section 5.1.1, "an unexpected stream identifier"). Closed streams (opened, then completed or
+        /// reset) are not idle and keep the closed-state handling of each frame handler.
+        /// </summary>
+        private void ThrowIfFrameOnIdleStream(Http2Frame frame)
+        {
+            switch (frame.Type)
+            {
+                case Http2FrameType.Data:
+                case Http2FrameType.Headers:
+                case Http2FrameType.RstStream:
+                case Http2FrameType.WindowUpdate:
+                case Http2FrameType.PushPromise:
+                    break;
+                default:
+                    // PRIORITY is allowed on idle streams; SETTINGS, PING and GOAWAY are stream-0 frames;
+                    // CONTINUATION is bound to the open field block; unknown types are ignored (Section 5.5).
+                    return;
+            }
+
+            // Stream 0 is rejected by each handler with its own message.
+            int streamId = frame.StreamId;
+            if (streamId != 0 && IsIdleStreamId(streamId))
+            {
+                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    $"{frame.Type} frame on idle stream {streamId}");
+            }
+        }
+
+        private bool IsIdleStreamId(int streamId)
+        {
+            // Even (server) ids: idle above the highest PUSH_PROMISE reservation. Odd (client) ids: idle from
+            // the next id to allocate on. Allocation and stream registration happen before HEADERS reach
+            // the wire, so a frame the server sends about a stream we opened always sees a larger value.
+            return (streamId & 1) == 0
+                ? streamId > _highestPromisedStreamId
+                : streamId >= Volatile.Read(ref _nextStreamId);
+        }
 
         private async Task HandleDataFrameAsync(Http2Frame frame, CancellationToken ct)
         {
@@ -762,14 +829,8 @@ namespace TurboHTTP.Transport.Http2
                 if (frame.Length != 0)
                     throw new Http2ProtocolException(Http2ErrorCode.FrameSizeError,
                         "SETTINGS ACK with non-zero payload");
-                try
-                {
-                    _settingsAckSource.SetResult(true);
-                }
-                catch (InvalidOperationException)
-                {
-                    // ACK source was already completed (timeout/cancellation race).
-                }
+                // A no-op when the timeout, cancellation or a connection failure completed it first.
+                TryCompleteSettingsAck(null);
                 return;
             }
 
@@ -1124,6 +1185,14 @@ namespace TurboHTTP.Transport.Http2
                                    (frame.Payload[payloadStart + 1] << 16) |
                                    (frame.Payload[payloadStart + 2] << 8) |
                                    frame.Payload[payloadStart + 3];
+
+            // RFC 9113 Sections 5.1.1 and 6.6: the promised id must be a new server id (even and above every
+            // id already reserved); anything else is a connection error of type PROTOCOL_ERROR.
+            if (promisedStreamId == 0 || (promisedStreamId & 1) != 0 || promisedStreamId <= _highestPromisedStreamId)
+                throw new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    $"PUSH_PROMISE promises illegal stream id {promisedStreamId}");
+
+            _highestPromisedStreamId = promisedStreamId;
 
             // RFC 9113 Section 4.3: the promised request's field block must be decoded (and its
             // CONTINUATION frames accepted) even though the push is refused, or the HPACK table desyncs.

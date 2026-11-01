@@ -113,6 +113,10 @@ namespace TurboHTTP.Transport.Http2
         // Initialization handshake
         private readonly ResettableValueTaskSource<bool> _settingsAckSource;
 
+        // 0 while InitializeAsync waits for the SETTINGS ACK, 1 once a completer won (Interlocked): the ACK
+        // (read loop), the timeout or cancellation registration, or a connection failure (FailAllStreams).
+        private int _settingsAckCompleted;
+
         private readonly int _perStreamReceiveBufferBytes;
         private readonly int _streamingSendBufferBytes;
         private readonly int _maxConnectionBufferedBytes;
@@ -218,6 +222,8 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public async Task InitializeAsync(CancellationToken ct)
         {
+            // The read loop is not running yet, so no completer can race this reset.
+            Volatile.Write(ref _settingsAckCompleted, 0);
             _settingsAckSource.PrepareForUse();
 
             // 1. Write connection preface
@@ -245,28 +251,13 @@ namespace TurboHTTP.Transport.Http2
                        {
                            if (ct.IsCancellationRequested)
                            {
-                               try
-                               {
-                                   _settingsAckSource.SetCanceled(ct);
-                               }
-                               catch (InvalidOperationException)
-                               {
-                                   // ACK may have raced and completed the source concurrently.
-                               }
+                               TryCompleteSettingsAck(new OperationCanceledException(ct));
                                return;
                            }
 
-                           var timeoutError = new UHttpException(new UHttpError(
+                           TryCompleteSettingsAck(new UHttpException(new UHttpError(
                                UHttpErrorType.Timeout,
-                               "HTTP/2 SETTINGS ACK timeout"));
-                           try
-                           {
-                               _settingsAckSource.SetException(timeoutError);
-                           }
-                           catch (InvalidOperationException)
-                           {
-                               // ACK may have raced and completed the source concurrently.
-                           }
+                               "HTTP/2 SETTINGS ACK timeout")));
                        }))
                 {
                     await _settingsAckSource.CreateValueTask().ConfigureAwait(false);
@@ -509,6 +500,22 @@ namespace TurboHTTP.Transport.Http2
                     stream.ReleaseDispatchLifetime();
                 }
             }
+        }
+
+        /// <summary>
+        /// Completes the SETTINGS ACK wait of <see cref="InitializeAsync"/> once: with success when
+        /// <paramref name="error"/> is null, else with the error. Later calls are no-ops, so the ACK, the
+        /// timeout, cancellation and a connection failure never complete the source twice.
+        /// </summary>
+        private void TryCompleteSettingsAck(Exception error)
+        {
+            if (Interlocked.Exchange(ref _settingsAckCompleted, 1) != 0)
+                return;
+
+            if (error == null)
+                _settingsAckSource.SetResult(true);
+            else
+                _settingsAckSource.SetException(error);
         }
 
         private static UHttpException MapException(Exception ex) =>
