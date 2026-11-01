@@ -81,6 +81,9 @@ namespace TurboHTTP.Transport.Tls
         /// </summary>
         internal static readonly TimeSpan UrlRetrievalTimeout = TimeSpan.FromSeconds(5);
 
+        /// <summary>id-kp-serverAuth (RFC 5280 4.2.1.12), the application policy required of the path.</summary>
+        internal const string ServerAuthOid = "1.3.6.1.5.5.7.3.1";
+
         private static readonly object TestAnchorLock = new object();
 
         // Copy-on-write snapshot: written under TestAnchorLock, read lock-free with Volatile.
@@ -173,6 +176,9 @@ namespace TurboHTTP.Transport.Tls
             policy.RevocationFlag = X509RevocationFlag.ExcludeRoot;
             policy.UrlRetrievalTimeout = UrlRetrievalTimeout;
             policy.VerificationTime = verificationTimeUtc.ToLocalTime();
+            // EKU is chained like SslStream's server validation: every CA on the path must allow
+            // serverAuth, so a clientAuth-only intermediate cannot issue a usable server leaf.
+            policy.ApplicationPolicy.Add(new Oid(ServerAuthOid));
             policy.VerificationFlags = hasTestAnchors
                 ? X509VerificationFlags.AllowUnknownCertificateAuthority
                 : X509VerificationFlags.NoFlag;
@@ -257,8 +263,12 @@ namespace TurboHTTP.Transport.Tls
 
                 return Fail(CertificateVerificationStatus.Invalid, flags.ToString());
             }
-            catch (CryptographicException ex)
+            catch (Exception ex) when (!(ex is OutOfMemoryException))
             {
+                // Broad on purpose: platform chain engines do not limit themselves to
+                // CryptographicException (Unity Mono's X509ChainImplMono.Build rethrows as
+                // ArgumentException, keys it cannot handle raise NotSupportedException). Any failure
+                // to evaluate the path is a certificate rejection, never a transient I/O error.
                 return Fail(CertificateVerificationStatus.Invalid, "chain evaluation failed: " + ex.GetType().Name);
             }
             finally

@@ -3,6 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using NUnit.Framework;
 using TurboHTTP.Transport.Tls;
 using Certs = TurboHTTP.Tests.Transport.Tls.ChainValidationTestCertificates;
+using Public = TurboHTTP.Tests.Transport.Tls.PublicChainTestCertificates;
 
 namespace TurboHTTP.Tests.Transport.Tls
 {
@@ -135,6 +136,36 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
+        public void ServerAuthLeaf_UnderClientAuthOnlyIntermediate_IsInvalid()
+        {
+            // EKU is chained: SslStream would reject this path, so the BC path must too.
+            ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
+
+            AssertStatus(CertificateVerificationStatus.Invalid,
+                Verify(Certs.LeafUnderClientAuthOnlyCa, Certs.ClientAuthOnlyCa));
+        }
+
+        [Test]
+        public void PublicChain_ProductionConfiguration_IsTrustedByPlatformRootStore()
+        {
+            // The production configuration: no test anchors (SetUp cleared them), NoFlag, platform
+            // root store. The root is not committed, so Trusted means the store supplied it. The
+            // host-editor outcome on Unity Mono is recorded on #239.
+            var at = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc);
+            Assert.That(at, Is.InRange(Public.LeafNotBeforeUtc, Public.LeafNotAfterUtc));
+
+            var result = ServerCertificateVerifier.Verify(new[] { Public.Leaf, Public.Intermediate }, at);
+
+            AssertStatus(CertificateVerificationStatus.Trusted, result);
+            Assert.AreEqual(3, result.Path.Length, "leaf + intermediate + platform root");
+            CollectionAssert.AreEqual(Public.Leaf, result.Path[0]);
+            CollectionAssert.AreEqual(Public.Intermediate, result.Path[1]);
+            using var root = new X509Certificate2(result.Path[2]);
+            StringAssert.Contains("CN=" + Public.RootCommonName, root.Subject);
+            Assert.AreEqual(root.Subject, root.Issuer, "the path ends at a self-signed root");
+        }
+
+        [Test]
         public void MalformedCertificate_IsInvalid()
         {
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
@@ -160,6 +191,8 @@ namespace TurboHTTP.Tests.Transport.Tls
             ServerCertificateVerifier.ConfigurePolicy(chain.ChainPolicy, Now, hasTestAnchors: false);
 
             Assert.AreEqual(X509RevocationMode.NoCheck, chain.ChainPolicy.RevocationMode);
+            Assert.AreEqual(1, chain.ChainPolicy.ApplicationPolicy.Count, "EKU is chained");
+            Assert.AreEqual(ServerCertificateVerifier.ServerAuthOid, chain.ChainPolicy.ApplicationPolicy[0].Value);
             Assert.AreEqual(X509VerificationFlags.NoFlag, chain.ChainPolicy.VerificationFlags,
                 "Without test anchors nothing relaxes the platform policy.");
             Assert.Greater(chain.ChainPolicy.UrlRetrievalTimeout, TimeSpan.Zero);

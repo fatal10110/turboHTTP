@@ -28,7 +28,7 @@ def name(cn):
 
 def build(subject_cn, key, issuer_cn, issuer_key, *, ca=False, path_len=None, san=None,
           eku=True, not_before=LEAF_FROM, not_after=LEAF_TO, hash_alg=None,
-          name_constraints=None):
+          name_constraints=None, ca_eku=None):
     b = (x509.CertificateBuilder()
          .subject_name(name(subject_cn))
          .issuer_name(name(issuer_cn))
@@ -41,6 +41,8 @@ def build(subject_cn, key, issuer_cn, issuer_key, *, ca=False, path_len=None, sa
     if ca:
         b = b.add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False),
                             critical=True)
+        if ca_eku is not None:
+            b = b.add_extension(x509.ExtendedKeyUsage(ca_eku), critical=False)
     else:
         b = b.add_extension(x509.KeyUsage(True, False, False, False, False, False, False, False, False),
                             critical=True)
@@ -67,9 +69,10 @@ LOCAL = dns("localhost") + [x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
 p256 = lambda: ec.generate_private_key(ec.SECP256R1())
 p384 = lambda: ec.generate_private_key(ec.SECP384R1())
 
-root_a_key, root_b_key, rogue_key, inter_key = p256(), p384(), p256(), p256()
+root_a_key, root_b_key, rogue_key, inter_key, client_ca_key = p256(), p384(), p256(), p256(), p256()
 RA, RB, RR, NC = "TurboHTTP Test Root A", "TurboHTTP Test Root B P-384", "TurboHTTP Rogue Root", \
     "TurboHTTP Test Constrained CA"
+CC = "TurboHTTP Test ClientAuth-only CA"
 
 certs = [
     ("RootA", "Root A: ECDSA P-256 self-signed CA, 2000-01-01..2126-01-01.",
@@ -103,6 +106,11 @@ certs = [
      build("www.allowed.test", p256(), NC, inter_key, san=dns("www.allowed.test"))),
     ("LeafExcluded", "Leaf from the constrained CA with SAN www.forbidden.test (violates the constraint).",
      build("www.forbidden.test", p256(), NC, inter_key, san=dns("www.forbidden.test"))),
+    ("ClientAuthOnlyCa", "Intermediate from Root A, pathLen 0, EKU clientAuth only (may not issue serverAuth).",
+     build(CC, client_ca_key, RA, root_a_key, ca=True, path_len=0, not_before=ROOT_FROM,
+           not_after=ROOT_TO, ca_eku=[ExtendedKeyUsageOID.CLIENT_AUTH])),
+    ("LeafUnderClientAuthOnlyCa", "serverAuth leaf for localhost from the clientAuth-only CA (EKU not chained).",
+     build("localhost", p256(), CC, client_ca_key, san=LOCAL)),
     ("RogueRoot", "An unrelated self-signed ECDSA P-256 CA nothing trusts.",
      build(RR, rogue_key, RR, rogue_key, ca=True, not_before=ROOT_FROM, not_after=ROOT_TO)),
     ("LeafFromRogue", "Leaf for localhost signed by the rogue root.",

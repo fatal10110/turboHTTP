@@ -69,3 +69,20 @@ certificate_unknown (no verifier), unsupported_certificate — all in
   `X509Chain` with ECDSA P-256/P-384 and name constraints (`ServerCertificateVerifierTests`). A
   failure reopens the desktop choice (#239 tracks the result).
 - IL2CPP builds, iOS/Android devices (#99, #239).
+
+## Review round 1 (PR #240)
+
+- `ServerCertificateVerifier.ConfigurePolicy` now adds id-kp-serverAuth to `ApplicationPolicy`, so
+  EKU is chained as SslStream does: a serverAuth leaf under a clientAuth-only intermediate is
+  `Invalid`. New generated fixtures `ClientAuthOnlyCa` / `LeafUnderClientAuthOnlyCa` (all generated
+  test certificates were re-keyed by the regeneration).
+- Chain evaluation catches any non-fatal exception (not only `CryptographicException`) and maps it to
+  `Invalid`: Unity Mono's chain engine rethrows as `ArgumentException`, and keys it cannot handle
+  raise `NotSupportedException`. Mono-only, so no deterministic test; noted on #239.
+- The production configuration (no anchors, `NoFlag`, platform root store) is now exercised:
+  `PublicChainTestCertificates` commits the www.digicert.com leaf + DigiCert EV RSA CA G2 (captured
+  2026-11-01, root not committed) and the test expects `Trusted` ending at DigiCert Global Root G2
+  at a fixed time inside the leaf validity. Its Unity Mono outcome is owed on the host-editor run (#239).
+- `Development/docs/agents/platform.md` TLS bullet updated to the new BC validation state.
+- Verified: check.sh OK; .NET 8 harness 66/66, and with the `ApplicationPolicy` line removed the EKU
+  test and the policy test fail (2/66). Unity not run (lane rule).
