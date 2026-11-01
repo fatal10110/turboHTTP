@@ -198,17 +198,6 @@ namespace TurboHTTP.Testing
             }
         }
 
-        [Obsolete("Use DispatchAsync or TransportDispatchHelper.CollectResponseAsync for the 22a handler pipeline.", false)]
-        public async ValueTask<UHttpResponse> SendAsync(
-            UHttpRequest request,
-            RequestContext context,
-            CancellationToken cancellationToken = default)
-        {
-            return await TransportDispatchHelper
-                .CollectResponseAsync(this, request, context, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
         public async Task DispatchAsync(
             UHttpRequest request,
             IHttpHandler handler,

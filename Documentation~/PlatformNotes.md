@@ -139,4 +139,4 @@ On Unity, `SslStream` and the other `System.Net.Security` types live in the `Sys
 If issues persist:
 1.  Enable **Development Build** and **Script Debugging**.
 2.  Check Player Logs for `ExecutionEngineException` or `MissingMethodException`.
-3.  Run `IL2CPPCompatibility.Validate(out string report)` to generated a compatibility report.
+3.  Run the package's PlayMode tests (`TurboHTTP.Tests.Runtime`, `PlatformTests`) in a development player: they include the IL2CPP/AOT smoke checks (the `IL2CPPCompatibility` helper is internal since 1.0).

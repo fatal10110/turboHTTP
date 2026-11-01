@@ -124,8 +124,10 @@ Configuration options for `UHttpClient`.
 | `Http2` | `Http2Options` | HTTP/2 specific settings |
 | `ConnectionPool` | `ConnectionPoolOptions` | Connection pool configuration |
 | `Proxy` | `ProxySettings` | HTTP/HTTPS proxy configuration |
-| `BackgroundNetworkingPolicy` | `BackgroundNetworkingPolicy` | iOS/Android native background exec settings |
-| `AdaptivePolicy` | `AdaptivePolicy` | Adaptive networking configuration |
+
+Background networking and adaptive timeouts are not options properties: they live in the
+`TurboHTTP.Unity` module (`TurboHTTP.Unity.Mobile` namespace) and are added with
+`options.UseBackgroundNetworking(policy)` and `options.UseAdaptiveNetworking(policy)` (see below).
 
 ---
 
@@ -238,20 +240,27 @@ var rateLimit = new RateLimitMiddleware(new RateLimitPolicy {
 options.Interceptors.Add(rateLimit);
 ```
 
-### MetricsMiddleware & AdaptiveMiddleware
+### MetricsMiddleware, adaptive and background networking
 
 ```csharp
+using TurboHTTP.Unity.Mobile;
+
 // Standard Metrics
 var metrics = new MetricsMiddleware();
 options.Interceptors.Add(metrics);
 
-// Adaptive Networking (Phase 14 - Adjusts timeouts dynamically)
-var adaptive = new AdaptiveMiddleware(new AdaptivePolicy {
-    TargetSuccessRate = 0.95,
-    MaxTimeoutMultiplier = 3.0
+// Adaptive timeouts from measured network quality (TurboHTTP.Unity module)
+options.UseAdaptiveNetworking(new AdaptivePolicy {
+    Enable = true,
+    MinTimeout = TimeSpan.FromSeconds(2),
+    MaxTimeout = TimeSpan.FromSeconds(30)
 });
-options.Interceptors.Add(adaptive);
+
+// iOS/Android background execution and deferred replay (platform bridge chosen automatically)
+var background = options.UseBackgroundNetworking(new BackgroundNetworkingPolicy { Enable = true });
 ```
+
+Both interceptors go to the front of `options.Interceptors` (adaptive, then background, then yours).
 
 ---
 

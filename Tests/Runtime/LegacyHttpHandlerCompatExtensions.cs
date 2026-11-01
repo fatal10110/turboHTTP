@@ -1,11 +1,15 @@
-#if UNITY_INCLUDE_TESTS
 using System;
 using System.Runtime.CompilerServices;
+using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
-namespace TurboHTTP.Core
+namespace TurboHTTP.Tests
 {
-    public static class LegacyHttpHandlerCompatExtensions
+    /// <summary>
+    /// Test-only adapter from the pre-22a synchronous handler callbacks to <see cref="IHttpHandler"/>.
+    /// Lives in the test assembly so it never ships in Core (#156).
+    /// </summary>
+    internal static class LegacyHttpHandlerCompatExtensions
     {
         private sealed class PendingResponse
         {
@@ -104,4 +108,3 @@ namespace TurboHTTP.Core
         }
     }
 }
-#endif

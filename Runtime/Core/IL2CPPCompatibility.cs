@@ -9,7 +9,7 @@ namespace TurboHTTP.Core
     /// Validates runtime compatibility with IL2CPP and AOT constraints.
     /// Runs a series of smoke tests on core language features to detect aggressive code stripping.
     /// </summary>
-    public static class IL2CPPCompatibility
+    internal static class IL2CPPCompatibility
     {
         /// <summary>
         /// Runs all compatibility checks and returns a pass/fail result.
