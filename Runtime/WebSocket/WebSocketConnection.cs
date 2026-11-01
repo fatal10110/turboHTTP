@@ -157,14 +157,23 @@ namespace TurboHTTP.WebSocket
             _lifecycleCts = new CancellationTokenSource();
 
             List<IWebSocketExtension> configuredExtensions = null;
+            var handshakeToken = CancellationToken.None;
+            var disposeOnCancel = default(CancellationTokenRegistration);
             try
             {
                 using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 handshakeCts.CancelAfter(options.HandshakeTimeout);
 
-                var handshakeToken = handshakeCts.Token;
+                handshakeToken = handshakeCts.Token;
 
                 _stream = await transport.ConnectAsync(uri, options, handshakeToken).ConfigureAwait(false);
+
+                // #226: Mono/IL2CPP NetworkStream ignores the token once a read is pending, so a server
+                // that accepts and never sends the 101 would hold this call past HandshakeTimeout.
+                // Disposing the stream on cancellation faults the pending read or write; the fault is
+                // reported as cancellation (or the handshake timeout) below. A token that already fired
+                // disposes the stream immediately.
+                disposeOnCancel = RegisterDisposeOnCancel(_stream, handshakeToken);
 
                 configuredExtensions = CreateConnectionExtensions(options);
 
@@ -223,6 +232,12 @@ namespace TurboHTTP.WebSocket
                     throw CreateExtensionNegotiationException(WebSocketCloseCode.MandatoryExtension, message);
                 }
 
+                // The opening handshake is complete: the stream is now owned by the receive loop and
+                // FinalizeClose. A token that fired before the registration was removed may have
+                // disposed it, so the connection never opens on it.
+                disposeOnCancel.Dispose();
+                handshakeToken.ThrowIfCancellationRequested();
+
                 _remoteUri = uri;
                 _subProtocol = handshakeResult.NegotiatedSubProtocol;
                 _activeExtensions = extensionNegotiationResult.ActiveExtensions;
@@ -264,20 +279,38 @@ namespace TurboHTTP.WebSocket
                     _keepAliveTask = RunKeepAliveLoopAsync(_keepAliveCts.Token);
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (Exception ex) when (ct.IsCancellationRequested &&
+                                       (ex is OperationCanceledException || handshakeToken.IsCancellationRequested))
             {
+                // The caller canceled; a disposed-stream fault caused by that cancellation is the
+                // same outcome (#226).
+                disposeOnCancel.Dispose();
                 DisposeExtensions(configuredExtensions);
                 FinalizeClose(
                     new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure),
                     new WebSocketException(WebSocketError.ConnectionClosed, "WebSocket connect was canceled."));
                 await ObserveReceiveLoopTerminationAsync().ConfigureAwait(false);
-                throw;
+                if (ex is OperationCanceledException)
+                    throw;
+
+                throw new OperationCanceledException("WebSocket connect was canceled.", ex, ct);
             }
             catch (Exception ex)
             {
+                disposeOnCancel.Dispose();
                 DisposeExtensions(configuredExtensions);
                 WebSocketException mapped;
-                if (ex is WebSocketException wsEx)
+                if (handshakeToken.IsCancellationRequested)
+                {
+                    // HandshakeTimeout expired (the caller token did not fire): the connect phase,
+                    // CONNECT tunnel, TLS or the upgrade exchange did not finish in time.
+                    mapped = new WebSocketException(
+                        WebSocketError.ConnectionClosed,
+                        "WebSocket opening handshake timed out after " +
+                        options.HandshakeTimeout.TotalMilliseconds + " ms.",
+                        ex);
+                }
+                else if (ex is WebSocketException wsEx)
                 {
                     mapped = wsEx;
                 }
@@ -300,6 +333,14 @@ namespace TurboHTTP.WebSocket
                 await ObserveReceiveLoopTerminationAsync().ConfigureAwait(false);
                 throw mapped;
             }
+        }
+
+        private static CancellationTokenRegistration RegisterDisposeOnCancel(Stream stream, CancellationToken ct)
+        {
+            if (stream == null || !ct.CanBeCanceled)
+                return default;
+
+            return ct.Register(static state => SafeDispose((Stream)state), stream);
         }
 
         private async Task TrySendExtensionFailureCloseAsync(

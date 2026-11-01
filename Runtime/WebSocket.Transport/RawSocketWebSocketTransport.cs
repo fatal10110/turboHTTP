@@ -102,7 +102,11 @@ namespace TurboHTTP.WebSocket.Transport
                     name => ResolveDnsAsync(name, options.DnsTimeoutMs, ct),
                     ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (useProxy && !(ex is WebSocketException))
+            catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
+            {
+                throw new OperationCanceledException("WebSocket connect was canceled.", ex, ct);
+            }
+            catch (Exception ex) when (useProxy && !(ex is WebSocketException) && !(ex is OperationCanceledException))
             {
                 throw new WebSocketException(
                     WebSocketError.ProxyConnectionFailed,
@@ -111,6 +115,51 @@ namespace TurboHTTP.WebSocket.Transport
             }
 
             Stream stream = new NetworkStream(socket, ownsSocket: true);
+
+            // #226 (same pattern as #162 in RawSocketTransport): Mono/IL2CPP NetworkStream ignores the
+            // token once a read is pending, so a proxy that never answers CONNECT or a server that
+            // stalls the TLS handshake would hold this call past the handshake timeout. Disposing the
+            // stream (and the socket it owns) on cancellation faults the pending read; the fault is
+            // reported as cancellation, never as a proxy or tunnel failure.
+            Stream connected;
+            var disposeOnCancel = RegisterDisposeOnCancel(stream, socket, ct);
+            try
+            {
+                connected = await EstablishStreamAsync(
+                    stream, uri, host, secure, useProxy, proxySettings, options, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
+            {
+                stream.Dispose();
+                throw new OperationCanceledException("WebSocket connect was canceled.", ex, ct);
+            }
+            finally
+            {
+                disposeOnCancel.Dispose();
+            }
+
+            if (ct.IsCancellationRequested)
+            {
+                // The token fired after the last read completed: the callback may already have
+                // disposed the stream, so it is never handed out.
+                connected.Dispose();
+                stream.Dispose();
+                throw new OperationCanceledException("WebSocket connect was canceled.", ct);
+            }
+
+            return connected;
+        }
+
+        private async Task<Stream> EstablishStreamAsync(
+            Stream stream,
+            Uri uri,
+            string host,
+            bool secure,
+            bool useProxy,
+            WebSocketProxySettings proxySettings,
+            WebSocketConnectionOptions options,
+            CancellationToken ct)
+        {
             if (Volatile.Read(ref _disposed) != 0)
             {
                 stream.Dispose();
@@ -125,18 +174,21 @@ namespace TurboHTTP.WebSocket.Transport
                             stream, uri, proxySettings, options.AllowCleartext, ct)
                         .ConfigureAwait(false);
                 }
-                catch (WebSocketException)
-                {
-                    stream.Dispose();
-                    throw;
-                }
-                catch (Exception ex)
+                catch (Exception ex) when (!(ex is WebSocketException) &&
+                                           !(ex is OperationCanceledException) &&
+                                           !ct.IsCancellationRequested)
                 {
                     stream.Dispose();
                     throw new WebSocketException(
                         WebSocketError.ProxyTunnelFailed,
                         "Failed to establish HTTP CONNECT tunnel through proxy.",
                         ex);
+                }
+                catch
+                {
+                    // WebSocketException keeps its own error; cancellation is mapped by the caller.
+                    stream.Dispose();
+                    throw;
                 }
             }
 
@@ -168,6 +220,33 @@ namespace TurboHTTP.WebSocket.Transport
                 stream.Dispose();
                 throw;
             }
+        }
+
+        private static CancellationTokenRegistration RegisterDisposeOnCancel(
+            Stream stream,
+            Socket socket,
+            CancellationToken ct)
+        {
+            if (!ct.CanBeCanceled)
+                return default;
+
+            // Connect path only (not per frame): the boxed pair is one allocation per connect.
+            return ct.Register(static state =>
+            {
+                var (ownedStream, ownedSocket) = ((Stream, Socket))state;
+                try { ownedStream.Dispose(); } catch { }
+                try { ownedSocket.Dispose(); } catch { }
+            }, (stream, socket));
+        }
+
+        /// <summary>
+        /// True when <paramref name="ex"/> is the fault a dispose-on-cancel produced (an
+        /// <see cref="ObjectDisposedException"/>, <see cref="IOException"/>, socket or TLS error, or a
+        /// proxy/tunnel error wrapping one), so the caller reports cancellation instead.
+        /// </summary>
+        private static bool IsFailureFromCancellation(Exception ex, CancellationToken ct)
+        {
+            return ct.IsCancellationRequested && !(ex is OperationCanceledException);
         }
 
         public void Dispose()
