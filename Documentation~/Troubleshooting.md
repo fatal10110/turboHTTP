@@ -40,7 +40,7 @@ Common issues and solutions for TurboHTTP.
 ### iOS
 
 *   **"Cleartext ... is not permitted"**: You are trying to use `http://`, `ws://` or an `http://` proxy. Use HTTPS/WSS, or set `AllowCleartext = true` (ATS keys in Info.plist do not apply to TurboHTTP's raw sockets; see PlatformNotes, "Cleartext traffic").
-*   **Background Timeout**: iOS apps have very limited execution time in background (~30s). Requests may be cut off.
+*   **Background Timeout**: iOS apps have very limited execution time in background (~30s). Requests may be cut off. Background networking is experimental and needs the `TURBOHTTP_BACKGROUND_NETWORKING` define (PlatformNotes).
 
 ### Android
 

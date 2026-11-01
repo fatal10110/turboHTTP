@@ -11,8 +11,12 @@ Checks (all on git-tracked files):
             that managed stripping breaks); modules reach each other through registration APIs (#186)
   coreapi   the public types declared under Runtime/Core match Tools~/ci/api-baseline/core-public-types.txt
             and stay within the cap (#77): a new public Core type fails until the baseline lists it
+  native    every DllImport("__Internal") resolves to a native plugin under Plugins/, and on each player
+            platform the plugin importer (platforms + define constraints) includes the plugin exactly when
+            the managed #if guard compiles its callers (#176): a caller without the plugin fails the
+            Xcode link, a plugin without a caller ships dead native code
 
-Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|reflect|coreapi ...]   (default: all)
+Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|reflect|coreapi|native ...]   (default: all)
 """
 import json
 import os
@@ -261,11 +265,123 @@ def check_core_api(files):
     return errors
 
 
+# Player platforms a native plugin importer can target, with the symbols Unity defines for them.
+# tvOS defines UNITY_TVOS, not UNITY_IOS, which is why plugins guarded by UNITY_IOS must not ship to tvOS.
+NATIVE_PLATFORMS = {"iPhone": {"UNITY_IOS", "UNITY_IPHONE"}, "tvOS": {"UNITY_TVOS"}, "Android": {"UNITY_ANDROID"}}
+NATIVE_SOURCES = (".mm", ".m", ".c", ".cpp")
+
+
+def plugin_importer(meta_text):
+    """(enabled platforms, define constraints) of a PluginImporter .meta, or None for other importers."""
+    if "PluginImporter:" not in meta_text:
+        return None
+    enabled = set(re.findall(r"^      (\w+): \w*\n    second:\n      enabled: 1$", meta_text, re.M))
+    m = re.search(r"^  defineConstraints:(.*)\n((?:  - .*\n)*)", meta_text, re.M)
+    constraints = []
+    if m:
+        constraints = [c.strip() for c in m.group(2).replace("  - ", "").splitlines() if c.strip()]
+    return enabled, constraints
+
+
+def preprocessor_guards(text):
+    """Yield (line index, active #if condition) for every line of a C# file."""
+    stack = []  # per level: [conditions of earlier branches, current branch condition]
+    for i, line in enumerate(text.splitlines()):
+        d = re.match(r"\s*#\s*(if|elif|else|endif)\b(.*)", line)
+        if d:
+            kind, expr = d.group(1), re.sub(r"//.*", "", d.group(2)).strip()
+            if kind == "if":
+                stack.append([[], expr])
+            elif kind == "elif" and stack:
+                stack[-1][0].append(stack[-1][1])
+                stack[-1][1] = expr
+            elif kind == "else" and stack:
+                stack[-1][0].append(stack[-1][1])
+                stack[-1][1] = "true"
+            elif kind == "endif" and stack:
+                stack.pop()
+        parts = []
+        for earlier, current in stack:
+            parts += [f"!({e})" for e in earlier] + [f"({current})"]
+        yield i, " && ".join(parts) or "true"
+
+
+def eval_guard(expr, defined):
+    tokens = re.findall(r"&&|\|\||==|!=|!|\(|\)|\w+", expr)
+    out = []
+    for t in tokens:
+        out.append({"&&": " and ", "||": " or ", "!": " not ", "==": " == ", "!=": " != ", "(": "(", ")": ")",
+                    "true": " True ", "false": " False "}.get(t, f" {t in defined} "))
+    return bool(eval("".join(out) or "True", {"__builtins__": {}}))
+
+
+def guard_symbols(expr):
+    return {t for t in re.findall(r"\w+", expr) if t not in ("true", "false")}
+
+
+def check_native(files):
+    errors = []
+    exports = {}  # native symbol -> plugin path
+    importers = {}
+    for f in files:
+        if not f.startswith("Plugins/") or not f.endswith(NATIVE_SOURCES) or f + ".meta" not in files:
+            continue
+        info = plugin_importer(open(os.path.join(ROOT, f + ".meta"), encoding="utf-8").read())
+        if info is None:
+            errors.append(f"native: {f}.meta is not a PluginImporter")
+            continue
+        importers[f] = info
+        src = open(os.path.join(ROOT, f), encoding="utf-8", errors="replace").read()
+        for name in re.findall(r'extern\s+"C"\s+[^;{(]*?\b(\w+)\s*\(', src):
+            exports[name] = f
+    callers = {}  # plugin -> [(cs file, line, guard)]
+    for f in files:
+        if not f.endswith(".cs") or not f.startswith("Runtime/") or f.startswith("Runtime/Transport/BouncyCastle/Lib/"):
+            continue
+        text = open(os.path.join(ROOT, f), encoding="utf-8", errors="replace").read()
+        if '"__Internal"' not in text:
+            continue
+        lines = text.splitlines()
+        guards = dict(preprocessor_guards(text))
+        for i, line in enumerate(lines):
+            if '"__Internal"' not in line:
+                continue
+            decl = next((l for l in lines[i + 1:i + 4] if " extern " in l), "")
+            m = re.search(r"\bextern\s+[\w<>\[\],. ]+?\s+(\w+)\s*\(", decl)
+            if not m:
+                continue
+            name = m.group(1)
+            if name not in exports:
+                errors.append(f"native: {f}:{i + 1}: DllImport(\"__Internal\") {name} has no extern \"C\" definition under Plugins/")
+                continue
+            callers.setdefault(exports[name], []).append((f, i + 1, guards[i]))
+    for plugin, (enabled, constraints) in sorted(importers.items()):
+        uses = callers.get(plugin, [])
+        custom = set(constraints)
+        for _, _, guard in uses:
+            custom |= {s for s in guard_symbols(guard) if not s.startswith(("UNITY_", "ENABLE_"))}
+        custom = sorted(custom)
+        for platform, symbols in NATIVE_PLATFORMS.items():
+            for mask in range(1 << len(custom)):
+                user = {c for b, c in enumerate(custom) if mask >> b & 1}
+                defined = symbols | user
+                included = platform in enabled and all(eval_guard(c, defined) for c in constraints)
+                called = [(cf, ln) for cf, ln, guard in uses if eval_guard(guard, defined)]
+                where = f"{platform}" + (f" with {', '.join(sorted(user))}" if user else "")
+                if called and not included:
+                    cf, ln = called[0]
+                    errors.append(f"native: {cf}:{ln} calls {plugin} on {where}, but its importer does not include it there")
+                elif included and not called and uses:
+                    errors.append(f"native: {plugin} ships to {where}, but no managed caller compiles there "
+                                  "(disable that platform or the define constraint in its .meta, or extend the #if)")
+    return errors
+
+
 def main():
-    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "reflect", "coreapi"]
+    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "reflect", "coreapi", "native"]
     files = tracked()
     checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit,
-              "reflect": check_reflect, "coreapi": check_core_api}
+              "reflect": check_reflect, "coreapi": check_core_api, "native": check_native}
     errors = []
     for w in wanted:
         errors += checks[w](files)

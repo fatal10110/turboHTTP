@@ -37,11 +37,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory) (#74).
 
 ### Fixed
+- Background networking (experimental): Android builds no longer break on the Kotlin plugin's missing
+  `androidx.work` dependency; the plugin is now `Plugins/Android/TurboHttpBackground.androidlib`
+  (Java) declaring `androidx.work:work-runtime` itself (#89). iOS begin/end and Android JNI calls run
+  on the calling thread instead of through `MainThreadDispatcher`, so they work while the player loop
+  is paused and no worker blocks on the main thread (#88). An iOS foreground request is no longer
+  cancelled after 25 s: `backgroundTimeRemaining` = `DBL_MAX` reads as unlimited and expiry comes only
+  from iOS's expiration handler (#87). The iOS native plugins are no longer shipped to tvOS (#176).
 - `Content-Encoding: deflate` is decoded as the zlib format (RFC 9110 section 8.4.1.2) with its
   Adler-32 checked; raw DEFLATE bodies still decode. A gzip body made of several members decodes, and
   each member's CRC32 and size trailer is checked (#219).
 
 ### Breaking
+- Background networking is experimental and opt-in (#106): define `TURBOHTTP_BACKGROUND_NETWORKING`
+  per build target in Player Settings to build in the iOS/Android native bridges (an Editor gate
+  leaves the plugins out of builds without it). Without the define, `UseBackgroundNetworking()` runs
+  with foreground semantics. `IosBackgroundTaskBridge` lost its `fallbackBudget` constructor
+  parameter (expiry no longer uses a timer).
 - BouncyCastle TLS is opt-in (#196): define `TURBOHTTP_BOUNCYCASTLE` per build target in
   Player Settings > Scripting Define Symbols to compile the `TurboHTTP.Transport.BouncyCastle`
   glue. Without the define, TLS connections with `TlsBackend.BouncyCastle` fail (the provider

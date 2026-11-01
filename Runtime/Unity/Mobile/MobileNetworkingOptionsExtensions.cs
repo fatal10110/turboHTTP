@@ -51,6 +51,12 @@ namespace TurboHTTP.Unity.Mobile
         /// Inserts a <see cref="BackgroundNetworkingInterceptor"/> that holds background execution
         /// scopes while requests run and queues expired requests for replay.
         /// </summary>
+        /// <remarks>
+        /// Experimental and opt-in. The default iOS and Android bridges call native code only in players
+        /// built with the <c>TURBOHTTP_BACKGROUND_NETWORKING</c> scripting define, which also makes the
+        /// Editor include the native plugins in the build. Without it (and in the Editor and on desktop)
+        /// no scope is acquired and requests keep foreground semantics. See PlatformNotes.
+        /// </remarks>
         /// <param name="options">Options to configure.</param>
         /// <param name="policy">Policy to apply (cloned). <see langword="null"/> uses a default
         /// policy with <see cref="BackgroundNetworkingPolicy.Enable"/> set to

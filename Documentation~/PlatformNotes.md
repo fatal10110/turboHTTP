@@ -85,8 +85,17 @@ Device behaviour (the Android JNI policy, iOS players) is pending physical-devic
 
 ### iOS (IL2CPP)
 
-#### Background Networking
-TurboHTTP natively supports `UIApplication.beginBackgroundTask` to allow critical requests to finish when the app enters the background. This is handled automatically by the transport layer.
+#### Background Networking (experimental, opt-in)
+`options.UseBackgroundNetworking()` holds a `UIApplication` background task while each request runs
+and queues replayable requests that iOS expires. It is **experimental and off by default**: the native
+bridge is built in only when the iOS Player Settings define `TURBOHTTP_BACKGROUND_NETWORKING` (see
+[Background networking opt-in](#background-networking-opt-in)). Without the define nothing native is
+linked and requests keep foreground semantics. A request is expired only by iOS's expiration handler
+(the app is in the background and out of time), never by a timer while the app is in the foreground.
+Device validation is pending (#99).
+
+tvOS is not a supported target: the iOS native plugins (background bridge, SecTrust verifier) are
+not shipped to tvOS, where no managed code calls them (#176).
 
 #### App Transport Security (ATS)
 ATS does not apply to raw sockets, so `Info.plist` ATS keys do not affect TurboHTTP. Cleartext
@@ -98,8 +107,21 @@ App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via
 
 ### Android (IL2CPP)
 
-#### Background Networking
-TurboHTTP provides a native Android JNI bridge to ensure network connections can complete cleanly when the app is backgrounded, mitigating OS-level socket closures during transitions.
+#### Background Networking (experimental, opt-in)
+With the Android Player Settings define `TURBOHTTP_BACKGROUND_NETWORKING`, the build includes
+`Plugins/Android/TurboHttpBackground.androidlib`, a Gradle library that declares its own
+`androidx.work:work-runtime` dependency (no Gradle template edits; WorkManager's manifest entries are
+merged only then). `options.UseBackgroundNetworking()` then holds an in-process guard per request and
+hands expired replayable requests to WorkManager. Without the define the library is left out of the
+build and requests keep foreground semantics. Device validation is pending (#99).
+
+#### Background networking opt-in
+1. Add `TURBOHTTP_BACKGROUND_NETWORKING` to **Player Settings > Other Settings > Scripting Define
+   Symbols** for each target (iOS, Android). Defines passed only through
+   `BuildPlayerOptions.extraScriptingDefines` are not seen by the plugin gate; use Player Settings.
+2. Call `options.UseBackgroundNetworking()` on the client options.
+
+The API is experimental: behavior and types may change before it is promoted.
 
 #### Cleartext traffic on Android
 Android 9+ (API 28+) forbids cleartext by default. TurboHTTP refuses it unless
