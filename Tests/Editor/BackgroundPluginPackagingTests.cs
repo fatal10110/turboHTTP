@@ -92,14 +92,18 @@ namespace TurboHTTP.Tests.Editor
         }
 
         [Test]
-        public void ProjectWithoutTheDefine_LeavesTheAndroidLibOutOfTheBuild()
+        public void Gate_IncludesTheAndroidLibOnlyWhenTheActiveTargetDefinesIt()
         {
+            // The test project does not define it, so this normally checks the "left out" case.
             var group = BuildPipeline.GetBuildTargetGroup(EditorUserBuildSettings.activeBuildTarget);
-            Assume.That(TurboHttpBackgroundPluginGate.IsDefined(PlayerSettings.GetScriptingDefineSymbolsForGroup(group)), Is.False);
+            var defined = TurboHttpBackgroundPluginGate.IsDefined(PlayerSettings.GetScriptingDefineSymbolsForGroup(group));
 
             TurboHttpBackgroundPluginGate.Register();
             var included = PluginImporter.GetImporters(BuildTarget.Android).Select(i => i.assetPath).ToArray();
-            CollectionAssert.DoesNotContain(included, Package().assetPath + "/" + AndroidLib);
+            if (defined)
+                CollectionAssert.Contains(included, Package().assetPath + "/" + AndroidLib);
+            else
+                CollectionAssert.DoesNotContain(included, Package().assetPath + "/" + AndroidLib);
         }
 
         [TestCase("Runtime/Unity/Mobile/Android/AndroidBackgroundWorkBridge.cs")]

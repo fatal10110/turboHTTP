@@ -54,14 +54,29 @@ on the main-thread dispatcher.
   never expires; native expiration cancels, queues the in-flight request, ends the task once; begin/plugin failures
   fall back to foreground and release the dedupe key.
 - `Tests/Editor/BackgroundPluginPackagingTests.cs`: .androidlib declares `androidx.work:work-runtime`, no loose
-  sources/templates, importer platforms (no tvOS), gate covers both plugins and requires the exact define, a project
-  without the define leaves the .androidlib out of `PluginImporter.GetImporters(Android)`, bridge sources never call
+  sources/templates, importer platforms (no tvOS), gate covers both plugins and requires the exact define,
+  `PluginImporter.GetImporters(Android)` contains the .androidlib only when the active target defines it, bridge sources never call
   `MainThreadDispatcher.Execute*` or `GetAwaiter().GetResult()`.
 - `check_repo.py native` (runs in check.sh/CI).
 
 ## Verified (host, Windows Unity 2021.3.45f2, AGP 7.4.2 / Gradle 7.5.1)
 
-HOST_BUILDS_PLACEHOLDER
+Probe project with the package as a `file:` dependency and a scene calling `UseBackgroundNetworking()`:
+
+| Build | Result |
+| --- | --- |
+| Android Gradle export, define, before the gate | .androidlib included as `unityLibrary:TurboHttpBackground.androidlib`; `gradle.properties` already has `android.useAndroidX=true` |
+| Android Gradle export, no define, before the gate | .androidlib STILL included (importer `defineConstraints` ignored for native plugins), managed JNI code correctly absent |
+| Android Gradle export, no define, with the gate | no .androidlib in `settings.gradle` / `unityLibrary/build.gradle` |
+| Android APK, IL2CPP ARM64, define | Succeeded; merged manifest has WorkManager `InitializationProvider`, `SystemJobService`, `SystemAlarmService`, receivers; dex has `com.turbohttp.background.*` |
+| Android APK, Mono, no define | Succeeded; no WorkManager manifest entries, no plugin classes |
+| Android APK, Mono, define, `minifyRelease` (R8) | Succeeded; plugin classes and JNI method names kept (consumer rules) |
+| iOS Xcode export (IL2CPP), define | Succeeded; `TurboHttpBackgroundTaskBridge.mm` in the Xcode project; the four `turbohttp_*` P/Invokes and the reverse P/Invoke wrapper for `OnExpired` generated |
+| iOS Xcode export (IL2CPP), no define | Succeeded; bridge .mm not in the project (SecTrust .mm still is), no `turbohttp_*background*` P/Invokes |
+
+Scoped Unity runs: EditMode `BackgroundPluginPackagingTests|WebGlBuildGuardTests` 21/21; PlayMode
+`BackgroundBridgeNativeTests|BackgroundNetworkingTests|MobileNetworkingOptionsExtensionsTests|MobileBackgroundNetworkingSmokeTests|CoreSurfaceTests` 57/57.
+`check.sh --full` passes. `check_repo.py native` fails on origin/main (both tvOS findings) and passes here.
 
 ## Not run / deferred
 
