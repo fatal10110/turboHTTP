@@ -631,7 +631,12 @@ namespace TurboHTTP.Transport.Http2
 
             _cts?.Dispose();
             _connectionRecvWindowUpdateLock?.Dispose();
-            _writeLock?.Dispose();
+            // _writeLock is deliberately not disposed. A frame write blocked past the shutdown (a
+            // socket write may ignore its token, #197) still holds it, and requests queued behind
+            // that write wait on it: SemaphoreSlim.Dispose never completes async waiters, and a
+            // Release after Dispose throws. Each holder releases it in a finally, so every waiter is
+            // granted in turn and fails on the closed connection. No AvailableWaitHandle is ever
+            // created, so the semaphore owns no unmanaged resource.
             DisposeStreamOnce();
             // Return the HpackEncoder's reusable output buffer to ArrayPool.
             _hpackEncoder?.Dispose();

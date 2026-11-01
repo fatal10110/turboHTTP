@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -72,6 +73,47 @@ namespace TurboHTTP.Tests.Transport.Http2
                 requestCts.Cancel();
                 await AssertCancelledAsync(task, cts.Token);
                 Assert.IsFalse(conn.IsAlive);
+
+                conn.Dispose();
+            });
+        }
+
+        [Test]
+        public void RequestQueuedBehindStalledWrite_FailsOnceTheWriteEnds_AfterConnectionResourcesReleased()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, _, gate) = await CreateGatedConnectionAsync(cts.Token, CreateSendStallOptions());
+
+                // Like a socket write that ignores its token, the held HEADERS write outlives the
+                // connection shutdown: only the test ends it.
+                var headersHeld = gate.BlockWrite(count => count > FrameHeaderBytes, holdUntilReleased: true);
+                var requestA = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/stalled"));
+                var taskA = conn.SendRequestAsync(requestA, new RequestContext(requestA), CancellationToken.None).AsTask();
+                await WithWatchdog(headersHeld, cts.Token);
+
+                // Request C has no deadline and queues on the write lock behind the held write.
+                var requestC = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/queued"));
+                var taskC = conn.SendRequestAsync(requestC, new RequestContext(requestC), CancellationToken.None).AsTask();
+                Assert.IsFalse(taskC.IsCompleted, "request C must be queued behind the held write");
+
+                // The stall bound fails the connection; wait until its resources are released.
+                var resourcesDisposed = typeof(Http2Connection).GetField(
+                    "_resourcesDisposed", BindingFlags.Instance | BindingFlags.NonPublic);
+                while ((int)resourcesDisposed.GetValue(conn) == 0)
+                {
+                    cts.Token.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                }
+
+                Assert.IsFalse(conn.IsAlive);
+                Assert.IsFalse(taskC.IsCompleted, "request C is still queued while the write is held");
+
+                // The write ends after the shutdown. Its lock release must reach request C.
+                gate.Release();
+                await AssertNetworkErrorAsync(taskA, cts.Token);
+                await AssertNetworkErrorAsync(taskC, cts.Token);
 
                 conn.Dispose();
             });

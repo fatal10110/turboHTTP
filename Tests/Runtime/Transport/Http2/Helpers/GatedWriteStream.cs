@@ -19,6 +19,7 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
         private Func<int, bool> _blockPredicate;
         private TaskCompletionSource<bool> _blocked;
         private TaskCompletionSource<bool> _release;
+        private bool _holdUntilReleased;
         private long _bytesRead;
         private long _readWaitThreshold;
         private TaskCompletionSource<bool> _readWaiter;
@@ -33,11 +34,19 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
         /// write's byte count, in write order) returns true. Returns a task that completes once that
         /// write is held.
         /// </summary>
-        public Task BlockWrite(Func<int, bool> predicate)
+        public Task BlockWrite(Func<int, bool> predicate) => BlockWrite(predicate, holdUntilReleased: false);
+
+        /// <summary>
+        /// Like <see cref="BlockWrite(Func{int, bool})"/>. With <paramref name="holdUntilReleased"/>
+        /// the held write ignores its cancellation token and the disposal of this stream, as a real
+        /// socket write may: only <see cref="Release"/> ends it.
+        /// </summary>
+        public Task BlockWrite(Func<int, bool> predicate, bool holdUntilReleased)
         {
             lock (_gate)
             {
                 _blockPredicate = predicate ?? throw new ArgumentNullException(nameof(predicate));
+                _holdUntilReleased = holdUntilReleased;
                 _blocked = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 return _blocked.Task;
@@ -117,7 +126,11 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
         {
             if (disposing)
             {
-                Release();
+                bool holdUntilReleased;
+                lock (_gate)
+                    holdUntilReleased = _holdUntilReleased;
+                if (!holdUntilReleased)
+                    Release();
                 _inner.Dispose();
             }
 
@@ -142,17 +155,23 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
         private async ValueTask WriteGatedAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
         {
             TaskCompletionSource<bool> release = null;
+            bool holdUntilReleased = false;
             lock (_gate)
             {
                 if (_blockPredicate != null && _blockPredicate(buffer.Length))
                 {
                     _blockPredicate = null;
                     release = _release;
+                    holdUntilReleased = _holdUntilReleased;
                     _blocked.TrySetResult(true);
                 }
             }
 
-            if (release != null)
+            if (release != null && holdUntilReleased)
+            {
+                await release.Task.ConfigureAwait(false);
+            }
+            else if (release != null)
             {
                 using (cancellationToken.Register(() => release.TrySetCanceled()))
                 {

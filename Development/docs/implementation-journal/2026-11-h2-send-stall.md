@@ -42,16 +42,24 @@ frame is finished with the connection token only, so a peer that stops reading c
 - **No early fail on request cancellation** (the issue's optional idea): failing the whole connection
   because one request's deadline expired would fail every other stream on it; the stall timeout already
   bounds the request (AC 2).
+- **`_writeLock` is no longer disposed** in `FinalizeResourceDispose` (review round 1). A stalled write
+  can outlive the shutdown and still hold the lock; `SemaphoreSlim.Dispose` never completes queued async
+  waiters (a request with no deadline queued behind it hung forever) and a `Release` after `Dispose`
+  throws. Without the dispose every holder releases in its `finally` and each waiter fails on the closed
+  connection. No `AvailableWaitHandle` is created, so nothing unmanaged leaks. `GatedWriteStream` gained
+  a `holdUntilReleased` mode (the held write ignores its token and stream disposal, like a socket write).
 - Flow-control waits (`WaitForSendWindowAsync`) are not inside a frame write and are not send stalls;
   they stay bounded by the request token.
 
 ## Verification
 
 - `'./Tools~/ci/check.sh'`: OK.
-- Unity PlayMode `--filter 'Http2ConnectionTests|Http2FrameCodec|Http2FlowControlTests'`: 200/200 passed
+- Unity PlayMode `--filter 'Http2ConnectionTests|Http2FrameCodec|Http2FlowControlTests'`: 201/201 passed
   (EditMode with the same filter runs 0 tests: the runtime test asmdef runs under PlayMode).
 - With the `FailConnectionIfSendStalled()` call disabled, `DataFrameWriteBlockedByNonReadingPeer_*` and
   `RequestDeadlineExpiresWhileHeadersWriteBlocked_*` fail with "Test watchdog expired".
+- With `_writeLock?.Dispose()` restored, `RequestQueuedBehindStalledWrite_*` fails with "Test watchdog
+  expired" (the queued request never completes).
 - Not run: full Unity suites (host editor, periodic), IL2CPP player builds, devices. Real-socket behaviour
   of an aborted write after `Dispose` (NetworkStream/SslStream on Mono/IL2CPP) is not exercised by the
   gated test stream: needs-device-validation.
