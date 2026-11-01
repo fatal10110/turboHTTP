@@ -529,21 +529,10 @@ namespace TurboHTTP.Transport.Http1
                 || string.Equals(name, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static void ValidateHeader(string name, string value)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-                throw new ArgumentException("Header name cannot be null or empty");
-
-            var nameSpan = name.AsSpan();
-            for (int i = 0; i < nameSpan.Length; i++)
-            {
-                if (!EncodingHelper.IsRfc9110TChar(nameSpan[i]))
-                    throw new ArgumentException($"Header name contains invalid characters: {name}");
-            }
-
-            if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
-                throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
-        }
+        // The field rules are shared with HTTP/2 (RFC 9110 Sections 5.1 and 5.5): token names,
+        // VCHAR / obs-text / SP / HTAB values without surrounding whitespace.
+        private static void ValidateHeader(string name, string value) =>
+            HttpFieldValidator.ValidateField(name, value);
 
         private static string GetRequestTarget(UHttpRequest request)
         {
