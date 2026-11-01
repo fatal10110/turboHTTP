@@ -14,7 +14,6 @@ namespace TurboHTTP.Transport.Http1
     internal sealed class Http11ResponseBodySource : IResponseBodySource
     {
         private const int MaxChunkLineLength = 256;
-        private const int MaxResponseBodySize = 100 * 1024 * 1024;
         private const int DefaultDrainBufferBytes = 64 * 1024;
         private const int BufferedDrainReuseThresholdBytes = 64 * 1024;
         private const int ChunkedDrainWireBudgetMultiplier = 5;
@@ -36,8 +35,6 @@ namespace TurboHTTP.Transport.Http1
 
         private long _remainingContentLength;
         private long _chunkBytesRemaining;
-        private long _decodedChunkBytes;
-        private long _readToEndBytesRead;
         private bool _awaitingChunkTerminator;
         private bool _awaitingChunkTrailers;
         private int _hasReadData;
@@ -383,13 +380,8 @@ namespace TurboHTTP.Transport.Http1
                     continue;
                 }
 
-                if (chunkSize > MaxResponseBodySize)
-                    throw new IOException("Response body exceeds maximum size");
-
-                _decodedChunkBytes += chunkSize;
-                if (_decodedChunkBytes > MaxResponseBodySize)
-                    throw new IOException("Response body exceeds maximum size");
-
+                // No size cap on a streamed body: nothing accumulates here. Buffered responses are
+                // capped where they are collected (UHttpClientOptions.MaxBufferedResponseBodySize).
                 _chunkBytesRemaining = chunkSize;
             }
         }
@@ -403,10 +395,6 @@ namespace TurboHTTP.Transport.Http1
                 CompleteBody();
                 return 0;
             }
-
-            _readToEndBytesRead += read;
-            if (_readToEndBytesRead > MaxResponseBodySize)
-                throw new IOException("Response body exceeds maximum size");
 
             return read;
         }

@@ -18,11 +18,10 @@ namespace TurboHTTP.Transport.Http2
         public int MaxHeaderListSize { get; private set; } = 64 * 1024; // 64 KB default (HPACK bomb protection)
 
         /// <summary>
-        /// Maximum response body size in bytes. Prevents unbounded MemoryStream growth
-        /// from malicious or misconfigured servers. Default 100 MB. Set to 0 for unlimited.
-        /// This is a client-side limit, not part of the HTTP/2 protocol.
+        /// Optional client-side cap on every response body in bytes (not part of the HTTP/2 protocol).
+        /// Default 0 = none; buffered responses are capped in Core where they accumulate.
         /// </summary>
-        public long MaxResponseBodySize { get; set; } = 100 * 1024 * 1024; // 100 MB default
+        public long MaxResponseBodySize { get; set; }
 
         public Http2Settings() { }
 

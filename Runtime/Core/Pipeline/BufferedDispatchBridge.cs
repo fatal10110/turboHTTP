@@ -10,7 +10,8 @@ namespace TurboHTTP.Core
             DispatchFunc dispatch,
             UHttpRequest request,
             RequestContext context,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            long maxBodyBytes = UHttpClientOptions.DefaultMaxBufferedResponseBodySize)
         {
             if (dispatch == null)
                 throw new ArgumentNullException(nameof(dispatch));
@@ -21,7 +22,7 @@ namespace TurboHTTP.Core
 
             context.SetState(Internal.TransportBehaviorFlags.StreamingResponseRequested, false);
 
-            var collector = new BufferedResponseCollectorHandler(request, context, cancellationToken);
+            var collector = new BufferedResponseCollectorHandler(request, context, cancellationToken, maxBodyBytes);
             var safeCollector = HandlerCallbackSafetyWrapper.Wrap(collector, context);
             Task dispatchTask;
             try

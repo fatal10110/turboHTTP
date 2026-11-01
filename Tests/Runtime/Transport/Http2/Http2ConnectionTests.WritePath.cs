@@ -92,7 +92,7 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
-        public void RequestTrailers_SkippedBecauseResponseCompleted_DoNotDesyncLaterHeaderBlocks()
+        public void RequestTrailers_SkippedAfterPeerReset_DoNotDesyncLaterHeaderBlocks()
         {
             AssertAsync.Run(async () =>
             {
@@ -119,11 +119,14 @@ namespace TurboHTTP.Tests.Transport.Http2
                 decoder.Decode(headersA.Block, 0, headersA.Block.Length);
                 await WithWatchdog(providerInvoked.Task, cts.Token);
 
-                // The response completes while the request body is blocked on flow control, then a
-                // connection WINDOW_UPDATE wakes the sender: it stops and never sends the trailers.
+                // The response completes while the request body is blocked on flow control, and the
+                // server stops the upload with RST_STREAM(NO_ERROR) (RFC 9113 Section 8.1): the sender
+                // stops and never sends (or encodes) the trailers. A complete response alone would not
+                // stop the upload (#19).
                 await serverCodec.WriteFrameAsync(
                     BuildResponseHeadersFrame(headersA.StreamId, 200, endStream: true), cts.Token);
-                await serverCodec.WriteFrameAsync(BuildWindowUpdateFrame(0, 1), cts.Token);
+                await serverCodec.WriteFrameAsync(
+                    BuildRstStreamFrame(headersA.StreamId, Http2ErrorCode.NoError), cts.Token);
                 Assert.AreEqual(HttpStatusCode.OK, (await taskA).StatusCode);
 
                 // A later header block repeats the unsent trailer field: the server's decoder must

@@ -10,6 +10,12 @@ namespace TurboHTTP.Transport.Http2
 {
     internal partial class Http2Connection
     {
+        // Read-loop owned: a stream reset decided on the synchronous header-block path. ReadLoopAsync
+        // writes it right after the frame is handled, so the reset keeps frame order and the header
+        // path keeps its synchronous shape (one field block concerns exactly one stream).
+        private int _pendingResetStreamId;
+        private Http2ErrorCode _pendingResetCode;
+
         // --- Read Loop ---
 
         private async Task ReadLoopAsync(CancellationToken ct)
@@ -44,6 +50,9 @@ namespace TurboHTTP.Transport.Http2
                             case Http2FrameType.PushPromise: await RejectPushPromiseAsync(frame); break;
                             case Http2FrameType.Priority: HandlePriorityFrame(frame); break;
                         }
+
+                        if (_pendingResetStreamId != 0)
+                            await FlushPendingStreamResetAsync().ConfigureAwait(false);
                     }
                 }
             }
@@ -118,7 +127,7 @@ namespace TurboHTTP.Transport.Http2
                 throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
                     "DATA exceeds connection receive window");
 
-            if (!_activeStreams.TryGetValue(frame.StreamId, out var stream))
+            if (!TryAcquireActiveStream(frame.StreamId, out var stream))
             {
                 // Post-reset DATA still counts against the connection window.
                 Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
@@ -129,93 +138,208 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
-            // RFC 7540 Section 8.1: Response MUST start with HEADERS.
-            // DATA before HEADERS is a protocol error — send RST_STREAM.
-            if (!stream.HeadersReceived)
+            // The lease keeps the stream from being returned to the pool (and re-rented by another
+            // request) while this frame mutates it.
+            try
             {
-                Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
-                await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
-                if (_activeStreams.TryRemove(frame.StreamId, out _))
+                // RFC 9113 Section 5.1: DATA after the peer's END_STREAM (half-closed remote while the request
+                // body is still being sent) is a stream error of type STREAM_CLOSED.
+                if (stream.IsRemoteClosed)
                 {
-                    stream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
-                        $"DATA received before HEADERS on stream {frame.StreamId}"));
-                    await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError);
+                    Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
+                    await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
+                    if (RemoveActiveStream(frame.StreamId, stream))
+                    {
+                        stream.Fail(new Http2ProtocolException(Http2ErrorCode.StreamClosed,
+                            $"DATA received after END_STREAM on stream {frame.StreamId}"));
+                        TrackRecentlyResetStream(frame.StreamId);
+                        await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.StreamClosed).ConfigureAwait(false);
+                    }
+                    return;
                 }
-                return;
-            }
 
-            // Validate stream-level flow control (Fix 1)
-            if (flowControlledLength > stream.RecvWindowSize)
-                throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
-                    $"DATA exceeds stream {frame.StreamId} receive window");
+                // RFC 9113 Section 8.1: a response MUST start with HEADERS.
+                // DATA before HEADERS is a protocol error — send RST_STREAM.
+                if (!stream.HeadersReceived)
+                {
+                    Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
+                    await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
+                    if (RemoveActiveStream(frame.StreamId, stream))
+                    {
+                        stream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                            $"DATA received before HEADERS on stream {frame.StreamId}"));
+                        TrackRecentlyResetStream(frame.StreamId);
+                        await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.ProtocolError).ConfigureAwait(false);
+                    }
+                    return;
+                }
 
-            // Enforce MaxResponseBodySize limit to prevent unbounded response buffering.
-            long maxBodySize = _localSettings.MaxResponseBodySize;
-            if (maxBodySize > 0 && stream.ResponseBodyLength + dataLength > maxBodySize)
-            {
+                // Validate stream-level flow control (Fix 1)
+                if (flowControlledLength > stream.RecvWindowSize)
+                    throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
+                        $"DATA exceeds stream {frame.StreamId} receive window");
+
+                // Opt-in hard cap for every HTTP/2 response (Http2Options.MaxResponseBodySize, 0 = none).
+                // Buffered responses are capped where they accumulate (UHttpClientOptions.MaxBufferedResponseBodySize).
+                long maxBodySize = _localSettings.MaxResponseBodySize;
+                if (maxBodySize > 0 && stream.ResponseBodyLength + dataLength > maxBodySize)
+                {
+                    Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
+                    stream.AdjustRecvWindowSize(-flowControlledLength);
+                    await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
+                    if (RemoveActiveStream(frame.StreamId, stream))
+                    {
+                        stream.FaultResponseBody(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                            $"Response body exceeds maximum size limit ({maxBodySize} bytes)")));
+                        TrackRecentlyResetStream(frame.StreamId);
+                        await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                    }
+                    return;
+                }
+
+                // RFC 9113 Section 8.1.1: more DATA than the content-length is a malformed response.
+                long expectedBodyLength = stream.ExpectedResponseBodyLength;
+                if (expectedBodyLength >= 0 && stream.ResponseBodyLength + dataLength > expectedBodyLength)
+                {
+                    Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
+                    stream.AdjustRecvWindowSize(-flowControlledLength);
+                    await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
+                    await ResetMalformedResponseAsync(stream,
+                        $"DATA exceeds content-length {expectedBodyLength}").ConfigureAwait(false);
+                    return;
+                }
+
+                // Decrement recv windows (both connection and stream, using full frame length)
                 Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
                 stream.AdjustRecvWindowSize(-flowControlledLength);
-                await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
-                if (_activeStreams.TryRemove(frame.StreamId, out _))
+
+                Http2ResponseBodyEnqueueResult enqueueResult = Http2ResponseBodyEnqueueResult.Accepted;
+                if (dataLength > 0)
                 {
-                    stream.FaultResponseBody(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        $"Response body exceeds maximum size limit ({maxBodySize} bytes)")));
-                    TrackRecentlyResetStream(frame.StreamId);
-                    await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel);
+                    stream.AddResponseBodyBytes(dataLength);
+                    enqueueResult = stream.TryAppendResponseData(
+                        frame.Payload,
+                        dataOffset,
+                        dataLength,
+                        flowControlledLength);
                 }
+                else if (flowControlledLength > 0 && !IsStreamClosedForReceive(frame.StreamId))
+                {
+                    // Credit the window before advertising it (RFC 9113 Section 6.9). A failed write fails
+                    // the connection, so the credit is never observed by a live stream.
+                    stream.AdjustRecvWindowSize(flowControlledLength);
+                    await SendWindowUpdateAsync(frame.StreamId, flowControlledLength, ct).ConfigureAwait(false);
+                }
+
+                await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
+
+                if (enqueueResult == Http2ResponseBodyEnqueueResult.BufferFull)
+                {
+                    if (RemoveActiveStream(frame.StreamId, stream))
+                    {
+                        stream.FaultResponseBody(new UHttpException(new UHttpError(
+                            UHttpErrorType.NetworkError,
+                            $"HTTP/2 response body exceeded the per-stream receive buffer ({PerStreamReceiveBufferBytes} bytes).")));
+                        TrackRecentlyResetStream(frame.StreamId);
+                        await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                    }
+                    return;
+                }
+
+                if (enqueueResult == Http2ResponseBodyEnqueueResult.Aborted)
+                {
+                    // The consumer abandoned the body. Whoever removes the stream first resets it: here, or
+                    // the body source's cleanup (AbortStreamFromBodySourceAsync).
+                    await ResetStreamIfActiveAsync(frame.StreamId, stream, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                    return;
+                }
+
+                // END_STREAM handling
+                if (frame.HasFlag(Http2FrameFlags.EndStream))
+                {
+                    // RFC 9113 Section 8.1.1: fewer DATA bytes than the content-length is malformed.
+                    if (expectedBodyLength >= 0 && stream.ResponseBodyLength != expectedBodyLength)
+                    {
+                        await ResetMalformedResponseAsync(stream,
+                            $"DATA total {stream.ResponseBodyLength} does not match content-length {expectedBodyLength}")
+                            .ConfigureAwait(false);
+                        return;
+                    }
+
+                    // Leave the active map before the body completes: a reader that saw the end then never
+                    // finds the stream still registered.
+                    bool closedBoth = stream.MarkRemoteClosed(out bool resetNoError);
+                    bool removed = closedBoth && RemoveActiveStream(frame.StreamId, stream);
+                    stream.CompleteResponseBody();
+                    if (removed && resetNoError)
+                    {
+                        TrackRecentlyResetStream(frame.StreamId);
+                        await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.NoError).ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                stream.ReleaseLease();
+            }
+        }
+
+        /// <summary>
+        /// Looks up an active stream and takes a lease on it (see <see cref="Http2Stream.TryAcquireLease"/>).
+        /// The caller releases it with <see cref="Http2Stream.ReleaseLease"/>.
+        /// </summary>
+        private bool TryAcquireActiveStream(int streamId, out Http2Stream stream)
+        {
+            if (_activeStreams.TryGetValue(streamId, out stream) && stream.TryAcquireLease(streamId, this))
+                return true;
+
+            stream = null;
+            return false;
+        }
+
+        /// <summary>
+        /// RFC 9113 Section 8.1.1: a malformed response is a stream error of type PROTOCOL_ERROR. Fails
+        /// the request or faults the response body, and resets the stream if it is still active.
+        /// </summary>
+        private async Task ResetMalformedResponseAsync(Http2Stream stream, string reason)
+        {
+            int streamId = stream.StreamId;
+            if (!RemoveActiveStream(streamId, stream))
                 return;
-            }
 
-            // Decrement recv windows (both connection and stream, using full frame length)
-            Interlocked.Add(ref _connectionRecvWindow, -flowControlledLength);
-            stream.AdjustRecvWindowSize(-flowControlledLength);
+            stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                "Malformed HTTP/2 response: " + reason)));
+            TrackRecentlyResetStream(streamId);
+            await SendRstStreamAsync(streamId, Http2ErrorCode.ProtocolError).ConfigureAwait(false);
+        }
 
-            Http2ResponseBodyEnqueueResult enqueueResult = Http2ResponseBodyEnqueueResult.Accepted;
-            if (dataLength > 0)
-            {
-                stream.AddResponseBodyBytes(dataLength);
-                enqueueResult = stream.TryAppendResponseData(
-                    frame.Payload,
-                    dataOffset,
-                    dataLength,
-                    flowControlledLength);
-            }
-            else if (flowControlledLength > 0 && !IsStreamClosedForReceive(frame.StreamId))
-            {
-                // Credit the window before advertising it (RFC 9113 Section 6.9). A failed write fails
-                // the connection, so the credit is never observed by a live stream.
-                stream.AdjustRecvWindowSize(flowControlledLength);
-                await SendWindowUpdateAsync(frame.StreamId, flowControlledLength, ct).ConfigureAwait(false);
-            }
+        /// <summary>
+        /// Synchronous header-path counterpart of <see cref="ResetMalformedResponseAsync"/>: the stream is
+        /// failed now (which stops its upload before the reset is written) and the RST_STREAM is queued
+        /// for <see cref="FlushPendingStreamResetAsync"/>.
+        /// </summary>
+        private void RejectMalformedResponse(Http2Stream stream, string reason)
+        {
+            int streamId = stream.StreamId;
+            bool removed = RemoveActiveStream(streamId, stream);
+            stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                "Malformed HTTP/2 response: " + reason)));
+            if (removed)
+                QueueStreamReset(streamId, Http2ErrorCode.ProtocolError);
+        }
 
-            await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);
+        private void QueueStreamReset(int streamId, Http2ErrorCode errorCode)
+        {
+            TrackRecentlyResetStream(streamId);
+            _pendingResetStreamId = streamId;
+            _pendingResetCode = errorCode;
+        }
 
-            if (enqueueResult == Http2ResponseBodyEnqueueResult.BufferFull)
-            {
-                RemoveActiveStream(frame.StreamId);
-                stream.FaultResponseBody(new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    $"HTTP/2 response body exceeded the per-stream receive buffer ({PerStreamReceiveBufferBytes} bytes).")));
-                TrackRecentlyResetStream(frame.StreamId);
-                await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
-                return;
-            }
-
-            if (enqueueResult == Http2ResponseBodyEnqueueResult.Aborted)
-            {
-                RemoveActiveStream(frame.StreamId);
-                return;
-            }
-
-            // END_STREAM handling
-            if (frame.HasFlag(Http2FrameFlags.EndStream))
-            {
-                RemoveActiveStream(frame.StreamId);
-                stream.State = stream.State == Http2StreamState.HalfClosedLocal
-                    ? Http2StreamState.Closed
-                    : Http2StreamState.HalfClosedRemote;
-                stream.CompleteResponseBody();
-            }
+        private async Task FlushPendingStreamResetAsync()
+        {
+            int streamId = _pendingResetStreamId;
+            _pendingResetStreamId = 0;
+            await SendRstStreamAsync(streamId, _pendingResetCode).ConfigureAwait(false);
         }
 
         private void HandleHeadersFrame(Http2Frame frame)
@@ -332,13 +456,27 @@ namespace TurboHTTP.Transport.Http2
         {
             _hpackDecoder.Decode(block ?? Array.Empty<byte>(), offset, count, _decodedHeaderScratch);
 
-            if (isPushPromise || !_activeStreams.TryGetValue(streamId, out var stream))
+            if (isPushPromise || !TryAcquireActiveStream(streamId, out var stream))
             {
                 _decodedHeaderScratch.Clear();
                 return;
             }
 
-            ApplyDecodedHeaders(stream, isTrailingHeaders: stream.HeadersReceived, endStream: endStream);
+            try
+            {
+                // A field block after the peer's END_STREAM is discarded, as for a closed stream.
+                if (stream.IsRemoteClosed)
+                {
+                    _decodedHeaderScratch.Clear();
+                    return;
+                }
+
+                ApplyDecodedHeaders(stream, isTrailingHeaders: stream.HeadersReceived, endStream: endStream);
+            }
+            finally
+            {
+                stream.ReleaseLease();
+            }
         }
 
         // Encoded block cap: the advertised header list size (bounded by 256 KB), never below one
@@ -396,9 +534,7 @@ namespace TurboHTTP.Transport.Http2
                 }
                 if (headerListSize > _localSettings.MaxHeaderListSize)
                 {
-                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        $"Response header list size {headerListSize} exceeds limit {_localSettings.MaxHeaderListSize}")));
-                    RemoveActiveStream(stream.StreamId);
+                    RejectMalformedResponse(stream, $"Response header list size {headerListSize} exceeds limit {_localSettings.MaxHeaderListSize}");
                     return;
                 }
 
@@ -411,9 +547,7 @@ namespace TurboHTTP.Transport.Http2
                     {
                         if (isTrailingHeaders)
                         {
-                            stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                                "Unexpected :status pseudo-header in trailing headers")));
-                            RemoveActiveStream(stream.StreamId);
+                            RejectMalformedResponse(stream, "Unexpected :status pseudo-header in trailing headers");
                             return;
                         }
 
@@ -424,9 +558,7 @@ namespace TurboHTTP.Transport.Http2
                         }
                         else
                         {
-                            stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                                $"Invalid :status value: {value}")));
-                            RemoveActiveStream(stream.StreamId);
+                            RejectMalformedResponse(stream, $"Invalid :status value: {value}");
                             return;
                         }
                     }
@@ -436,9 +568,7 @@ namespace TurboHTTP.Transport.Http2
                         var malformed = GetMalformedResponseFieldReason(name, value);
                         if (malformed != null)
                         {
-                            stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                                $"Malformed HTTP/2 response: {malformed}")));
-                            RemoveActiveStream(stream.StreamId);
+                            RejectMalformedResponse(stream, malformed);
                             return;
                         }
 
@@ -446,25 +576,19 @@ namespace TurboHTTP.Transport.Http2
                     }
                     else if (isTrailingHeaders)
                     {
-                        stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                            $"Unexpected pseudo-header in trailing headers: {name}")));
-                        RemoveActiveStream(stream.StreamId);
+                        RejectMalformedResponse(stream, $"Unexpected pseudo-header in trailing headers: {name}");
                         return;
                     }
                     else
                     {
-                        stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                            $"Unexpected pseudo-header in response headers: {name}")));
-                        RemoveActiveStream(stream.StreamId);
+                        RejectMalformedResponse(stream, $"Unexpected pseudo-header in response headers: {name}");
                         return;
                     }
                 }
 
                 if (!isTrailingHeaders && !hasStatus)
                 {
-                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        "Missing :status pseudo-header in HTTP/2 response")));
-                    RemoveActiveStream(stream.StreamId);
+                    RejectMalformedResponse(stream, "Missing :status pseudo-header in HTTP/2 response");
                     return;
                 }
 
@@ -472,43 +596,70 @@ namespace TurboHTTP.Transport.Http2
                 {
                     if (!endStream)
                     {
-                        stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                            "Trailing HEADERS frame received without END_STREAM flag (RFC 9113 §8.1)")));
-                        RemoveActiveStream(stream.StreamId);
+                        RejectMalformedResponse(stream, "Trailing HEADERS frame received without END_STREAM flag (RFC 9113 §8.1)");
+                        return;
+                    }
+
+                    // RFC 9113 Section 8.1.1: the DATA total must equal the content-length.
+                    long expectedBodyLength = stream.ExpectedResponseBodyLength;
+                    if (expectedBodyLength >= 0 && stream.ResponseBodyLength != expectedBodyLength)
+                    {
+                        RejectMalformedResponse(stream,
+                            $"DATA total {stream.ResponseBodyLength} does not match content-length {expectedBodyLength}");
                         return;
                     }
 
                     stream.AppendTrailers(responseHeaders);
-                    RemoveActiveStream(stream.StreamId);
-                    stream.State = stream.State == Http2StreamState.HalfClosedLocal
-                        ? Http2StreamState.Closed
-                        : Http2StreamState.HalfClosedRemote;
+                    bool closedBoth = stream.MarkRemoteClosed(out bool resetNoError);
+                    bool removed = closedBoth && RemoveActiveStream(stream.StreamId, stream);
                     stream.CompleteResponseBody();
+                    if (removed && resetNoError)
+                        QueueStreamReset(stream.StreamId, Http2ErrorCode.NoError);
                 }
                 else
                 {
                     if (statusCode >= 100 && statusCode < 200)
                     {
+                        // RFC 9113 Section 8.1: an interim response with END_STREAM is malformed.
+                        if (endStream)
+                        {
+                            RejectMalformedResponse(stream,
+                                $"interim {statusCode} response carries END_STREAM");
+                            return;
+                        }
+
                         if (statusCode == 100)
                             stream.SignalExpectContinueContinue();
 
                         return;
                     }
 
+                    var contentLength = GetContentLength(responseHeaders);
+
+                    // RFC 9113 Section 8.1.1: a non-zero content-length with no DATA is malformed, unless
+                    // the response has no content by definition (RFC 9110 Section 6.4.1).
+                    if (endStream && contentLength.HasValue && contentLength.Value > 0 &&
+                        !Http2Stream.IsNoContentResponse(stream.Request.Method, statusCode))
+                    {
+                        RejectMalformedResponse(stream,
+                            $"content-length {contentLength.Value} but the response ended without DATA");
+                        return;
+                    }
+
+                    // A response that ends here closes the remote side before the handler sees it.
+                    if (endStream)
+                    {
+                        bool closedBoth = stream.MarkRemoteClosed(out bool resetNoError);
+                        if (closedBoth && RemoveActiveStream(stream.StreamId, stream) && resetNoError)
+                            QueueStreamReset(stream.StreamId, Http2ErrorCode.NoError);
+                    }
+
                     stream.SignalExpectContinueFinalResponse();
                     stream.TryStartResponse(
                         statusCode,
                         responseHeaders,
-                        GetContentLength(responseHeaders),
+                        contentLength,
                         endStream);
-
-                    if (endStream)
-                    {
-                        RemoveActiveStream(stream.StreamId);
-                        stream.State = stream.State == Http2StreamState.HalfClosedLocal
-                            ? Http2StreamState.Closed
-                            : Http2StreamState.HalfClosedRemote;
-                    }
                 }
             }
             finally
@@ -638,13 +789,23 @@ namespace TurboHTTP.Transport.Http2
                     foreach (var kvp in _activeStreams)
                     {
                         var stream = kvp.Value;
-                        // A decrease may leave a window negative; senders wait until it is positive
-                        // again. Only an overflow past 2^31-1 is a connection FLOW_CONTROL_ERROR.
-                        long newWindow = (long)stream.SendWindowSize + initialWindowDelta;
-                        if (newWindow > int.MaxValue)
-                            throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
-                                "INITIAL_WINDOW_SIZE change causes stream window overflow");
-                        stream.AdjustSendWindowSize(initialWindowDelta);
+                        if (!stream.TryAcquireLease(kvp.Key, this))
+                            continue;
+
+                        try
+                        {
+                            // A decrease may leave a window negative; senders wait until it is positive
+                            // again. Only an overflow past 2^31-1 is a connection FLOW_CONTROL_ERROR.
+                            long newWindow = (long)stream.SendWindowSize + initialWindowDelta;
+                            if (newWindow > int.MaxValue)
+                                throw new Http2ProtocolException(Http2ErrorCode.FlowControlError,
+                                    "INITIAL_WINDOW_SIZE change causes stream window overflow");
+                            stream.AdjustSendWindowSize(initialWindowDelta);
+                        }
+                        finally
+                        {
+                            stream.ReleaseLease();
+                        }
                     }
                 }
             }
@@ -750,7 +911,8 @@ namespace TurboHTTP.Transport.Http2
                 {
                     if (_activeStreams.TryRemove(kvp.Key, out var stream))
                     {
-                        stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
+                        FailStreamUnderLease(kvp.Key, stream, new UHttpException(new UHttpError(
+                            UHttpErrorType.NetworkError,
                             $"Server sent GOAWAY (error={errorCode}), stream {kvp.Key} was not processed")));
                     }
                 }
@@ -778,7 +940,8 @@ namespace TurboHTTP.Transport.Http2
 
                 if (_activeStreams.TryRemove(frame.StreamId, out var erroredStream))
                 {
-                    erroredStream.Fail(new Http2ProtocolException(Http2ErrorCode.ProtocolError,
+                    FailStreamUnderLease(frame.StreamId, erroredStream, new Http2ProtocolException(
+                        Http2ErrorCode.ProtocolError,
                         $"Invalid WINDOW_UPDATE increment=0 on stream {frame.StreamId}"));
                 }
 
@@ -798,26 +961,40 @@ namespace TurboHTTP.Transport.Http2
             }
             else
             {
-                if (_activeStreams.TryGetValue(frame.StreamId, out var stream))
+                if (TryAcquireActiveStream(frame.StreamId, out var stream))
                 {
-                    long newWindow = (long)stream.SendWindowSize + increment;
-                    if (newWindow > int.MaxValue)
+                    bool overflow;
+                    try
                     {
-                        // RFC 9113 Section 6.9.1: a stream window above 2^31-1 is a stream error of type
-                        // FLOW_CONTROL_ERROR; only the connection window overflow is a connection error.
-                        if (_activeStreams.TryRemove(frame.StreamId, out var overflowedStream))
+                        overflow = (long)stream.SendWindowSize + increment > int.MaxValue;
+                        if (overflow)
                         {
-                            overflowedStream.Fail(new Http2ProtocolException(Http2ErrorCode.FlowControlError,
-                                $"Stream {frame.StreamId} send window overflow"));
+                            // RFC 9113 Section 6.9.1: a stream window above 2^31-1 is a stream error of type
+                            // FLOW_CONTROL_ERROR; only the connection window overflow is a connection error.
+                            if (RemoveActiveStream(frame.StreamId, stream))
+                            {
+                                stream.Fail(new Http2ProtocolException(Http2ErrorCode.FlowControlError,
+                                    $"Stream {frame.StreamId} send window overflow"));
+                            }
                         }
+                        else
+                        {
+                            stream.AdjustSendWindowSize(increment);
+                        }
+                    }
+                    finally
+                    {
+                        stream.ReleaseLease();
+                    }
 
+                    if (overflow)
+                    {
                         TrackRecentlyResetStream(frame.StreamId);
                         await SendRstStreamAsync(frame.StreamId, Http2ErrorCode.FlowControlError)
                             .ConfigureAwait(false);
                         return;
                     }
 
-                    stream.AdjustSendWindowSize(increment);
                     WakeSendWindowWaiters();
                 }
             }
@@ -856,7 +1033,9 @@ namespace TurboHTTP.Transport.Http2
 
             if (_activeStreams.TryRemove(frame.StreamId, out var stream))
             {
-                stream.Fail(new UHttpException(new UHttpError(
+                // After a complete response, RST_STREAM(NO_ERROR) only stops the upload: the response
+                // is kept (RFC 9113 Section 8.1); Fail leaves a completed body untouched.
+                FailStreamUnderLease(frame.StreamId, stream, new UHttpException(new UHttpError(
                     UHttpErrorType.NetworkError,
                     $"RST_STREAM: {(Http2ErrorCode)errorCode}")));
             }

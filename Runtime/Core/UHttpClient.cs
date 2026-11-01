@@ -353,7 +353,12 @@ namespace TurboHTTP.Core
             {
                 var pipelineSnapshot = _pipeline ?? _transport.DispatchAsync;
                 response = await BufferedDispatchBridge
-                    .CollectResponseAsync(pipelineSnapshot, request, context, cancellationToken)
+                    .CollectResponseAsync(
+                        pipelineSnapshot,
+                        request,
+                        context,
+                        cancellationToken,
+                        _options.MaxBufferedResponseBodySize)
                     .ConfigureAwait(false);
 
                 context.RecordEvent("RequestComplete");

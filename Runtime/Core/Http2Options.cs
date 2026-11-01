@@ -9,7 +9,7 @@ namespace TurboHTTP.Core
     {
         private bool _enablePush = true;
         private int _maxConcurrentStreams = 100;
-        private long _maxResponseBodySize = 100 * 1024 * 1024; // 100 MB default
+        private long _maxResponseBodySize; // 0 = no transport cap (#147)
         private int _initialWindowSize = 65535; // Http2Constants.DefaultInitialWindowSize
         private int _maxFrameSize = 16384; // Http2Constants.DefaultMaxFrameSize
         private int _maxHeaderListSize = 64 * 1024; // 64 KB default
@@ -44,9 +44,10 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Maximum allowed response body size in bytes. Protects against unbounded
-        /// memory consumption from malicious or misconfigured servers. Defaults to 100 MB.
-        /// Set to 0 for unlimited.
+        /// Optional hard cap, in bytes, on every HTTP/2 response body, buffered or streamed. A response
+        /// that exceeds it is reset (RST_STREAM CANCEL) and its body faults with a network error.
+        /// Defaults to 0 (no transport cap): streamed bodies never accumulate in memory, and buffered
+        /// responses are capped by <see cref="UHttpClientOptions.MaxBufferedResponseBodySize"/>.
         /// </summary>
         public long MaxResponseBodySize
         {

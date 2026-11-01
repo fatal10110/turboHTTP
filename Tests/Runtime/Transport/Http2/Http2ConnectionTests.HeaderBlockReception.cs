@@ -282,6 +282,12 @@ namespace TurboHTTP.Tests.Transport.Http2
                 StringAssert.Contains("Malformed HTTP/2 response", ex.HttpError.Message);
                 Assert.IsFalse(ex.HttpError.Message.Contains(value), "the field value is never echoed");
 
+                // #28: a malformed response is a stream error of type PROTOCOL_ERROR (RFC 9113 Section 8.1.1).
+                var reset = await serverCodec.ReadFrameAsync(16384, cts.Token);
+                Assert.AreEqual(Http2FrameType.RstStream, reset.Type);
+                Assert.AreEqual(headers.StreamId, reset.StreamId);
+                Assert.AreEqual((byte)Http2ErrorCode.ProtocolError, reset.Payload[3]);
+
                 await AssertNextRequestSucceedsAsync(conn, serverCodec, requestDecoder, headers.StreamId, cts.Token);
 
                 conn.Dispose();

@@ -104,6 +104,34 @@ namespace TurboHTTP.Core
         public int MaxRedirects { get; set; } = 10;
 
         /// <summary>
+        /// Default for <see cref="MaxBufferedResponseBodySize"/>: 100 MB.
+        /// </summary>
+        public const long DefaultMaxBufferedResponseBodySize = 100L * 1024 * 1024;
+
+        private long _maxBufferedResponseBodySize = DefaultMaxBufferedResponseBodySize;
+
+        /// <summary>
+        /// Maximum size, in bytes, of a response body that is collected into memory
+        /// (<see cref="UHttpClient.SendBufferedAsync"/> and the other buffered APIs). A larger body fails the
+        /// request with a <see cref="UHttpErrorType.NetworkError"/> and the transfer is aborted.
+        /// Defaults to 100 MB; 0 means unlimited. Streaming responses
+        /// (<see cref="UHttpClient.SendStreamingAsync"/>) are not capped by this option, because their
+        /// bytes do not accumulate in memory; <see cref="Http2Options.MaxResponseBodySize"/> is an
+        /// optional transport cap for every HTTP/2 response.
+        /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+        public long MaxBufferedResponseBodySize
+        {
+            get => _maxBufferedResponseBodySize;
+            set
+            {
+                if (value < 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Must be non-negative.");
+                _maxBufferedResponseBodySize = value;
+            }
+        }
+
+        /// <summary>
         /// When true and <see cref="Transport"/> is set, the client will dispose
         /// the transport on <see cref="UHttpClient.Dispose()"/>. Has no effect
         /// when using the factory-provided default transport (singleton, never
@@ -151,6 +179,7 @@ namespace TurboHTTP.Core
                 MaxRedirects = MaxRedirects,
                 DisposeTransport = DisposeTransport,
                 TlsBackend = TlsBackend,
+                MaxBufferedResponseBodySize = MaxBufferedResponseBodySize,
                 ConnectionPool = ConnectionPool?.Clone() ?? new ConnectionPoolOptions(),
                 Http2 = Http2?.Clone() ?? new Http2Options(),
                 Streaming = Streaming?.Clone() ?? new StreamingOptions()

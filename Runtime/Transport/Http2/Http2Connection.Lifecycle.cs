@@ -163,6 +163,60 @@ namespace TurboHTTP.Transport.Http2
             _activeStreams.TryRemove(streamId, out _);
         }
 
+        /// <summary>
+        /// Removes <paramref name="stream"/> only while it is still the entry for
+        /// <paramref name="streamId"/>. Returns true for the one caller that removed it: that caller owns
+        /// ending the stream on the wire (RST_STREAM), so a stream is never reset twice.
+        /// </summary>
+        internal bool RemoveActiveStream(int streamId, Http2Stream stream)
+        {
+            return ((ICollection<KeyValuePair<int, Http2Stream>>)_activeStreams)
+                .Remove(new KeyValuePair<int, Http2Stream>(streamId, stream));
+        }
+
+        /// <summary>
+        /// Called after a frame carrying the request's END_STREAM was written. The stream leaves the
+        /// active map once the response side is closed as well (RFC 9113 Section 5.1).
+        /// </summary>
+        private void OnRequestEndStreamSent(Http2Stream stream)
+        {
+            if (stream.MarkLocalClosed())
+                RemoveActiveStream(stream.StreamId, stream);
+        }
+
+        /// <summary>
+        /// Ends a stream whose request body will not be completed with RST_STREAM, unless another path
+        /// (peer reset, request cancellation, body-source abort, a stream error) already removed and
+        /// reset it. RST_STREAM is only sent after HEADERS, never on an idle stream (RFC 9113 Section 6.4).
+        /// </summary>
+        private async Task ResetStreamIfActiveAsync(int streamId, Http2Stream stream, Http2ErrorCode errorCode)
+        {
+            if (!RemoveActiveStream(streamId, stream))
+                return;
+
+            TrackRecentlyResetStream(streamId);
+            await SendRstStreamAsync(streamId, errorCode).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Fails a stream found through a lookup (already removed by the caller) under a lease, so a
+        /// stream that was returned to the pool or re-rented in the meantime is never touched.
+        /// </summary>
+        private void FailStreamUnderLease(int streamId, Http2Stream stream, Exception error)
+        {
+            if (stream == null || !stream.TryAcquireLease(streamId, this))
+                return;
+
+            try
+            {
+                stream.Fail(error);
+            }
+            finally
+            {
+                stream.ReleaseLease();
+            }
+        }
+
         internal void HandleRequestCancellation(Http2Stream stream, CancellationToken cancellationToken)
         {
             if (stream == null)
@@ -199,9 +253,13 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
+        /// <summary>
+        /// True when no more response frames are expected for the stream: it is no longer active, or
+        /// the peer's END_STREAM was received while the request body is still being sent.
+        /// </summary>
         internal bool IsStreamClosedForReceive(int streamId)
         {
-            return !_activeStreams.ContainsKey(streamId);
+            return !_activeStreams.TryGetValue(streamId, out var stream) || stream.IsRemoteClosed;
         }
 
         internal void TrackRecentlyResetStream(int streamId)
@@ -284,12 +342,15 @@ namespace TurboHTTP.Transport.Http2
             if (stream == null)
                 return;
 
-            RemoveActiveStream(stream.StreamId);
-            TrackRecentlyResetStream(stream.StreamId);
+            int streamId = stream.StreamId;
+            if (!RemoveActiveStream(streamId, stream))
+                return; // Another path already ended the stream (and sent its RST_STREAM).
+
+            TrackRecentlyResetStream(streamId);
 
             try
             {
-                await SendRstStreamAsync(stream.StreamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
@@ -424,10 +485,18 @@ namespace TurboHTTP.Transport.Http2
             foreach (var kvp in _activeStreams)
             {
                 var stream = kvp.Value;
-                if (!stream.IsStalled(nowTick, stallTimeoutMs))
+                if (!stream.TryAcquireLease(kvp.Key, this))
                     continue;
 
-                stream.ResponseBodySource?.Abort();
+                try
+                {
+                    if (stream.IsStalled(nowTick, stallTimeoutMs))
+                        stream.ResponseBodySource?.Abort();
+                }
+                finally
+                {
+                    stream.ReleaseLease();
+                }
             }
         }
 
@@ -475,9 +544,7 @@ namespace TurboHTTP.Transport.Http2
             foreach (var kvp in _activeStreams)
             {
                 if (_activeStreams.TryRemove(kvp.Key, out var stream))
-                {
-                    stream.Fail(ex);
-                }
+                    FailStreamUnderLease(kvp.Key, stream, ex);
             }
 
             // After _cts.Cancel(): blocked senders re-check and leave with a network error.

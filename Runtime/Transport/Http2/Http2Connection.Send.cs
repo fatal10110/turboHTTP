@@ -170,8 +170,9 @@ namespace TurboHTTP.Transport.Http2
             long totalBytesSent = 0;
             while (offset < body.Length)
             {
-                // M6: Stop sending if the stream was reset by the peer
-                if (stream.IsResponseCompleted)
+                // Stop when the stream was reset or abandoned; a started or completed response does not
+                // stop the upload (RFC 9113 Section 8.1).
+                if (stream.IsRequestBodyAborted)
                     break;
 
                 int available = Math.Min(
@@ -193,7 +194,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     // Re-checked under _writeLock: the read loop fails a stream before it writes that
                     // stream's RST_STREAM (also under _writeLock), so no DATA follows our own reset.
-                    if (stream.IsResponseCompleted)
+                    if (stream.IsRequestBodyAborted)
                         break;
 
                     int connWindow = Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0);
@@ -231,6 +232,8 @@ namespace TurboHTTP.Transport.Http2
                             streamId,
                             body.Slice(offset, actualAvailable))
                         .ConfigureAwait(false);
+                    if (isLast)
+                        OnRequestEndStreamSent(stream);
 
                     bytesSent = actualAvailable;
                 }
@@ -262,7 +265,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     while (remaining.Value > 0)
                     {
-                        if (stream.IsResponseCompleted)
+                        if (stream.IsRequestBodyAborted)
                             return totalBytesSent;
 
                         if (buffer == null)
@@ -306,7 +309,7 @@ namespace TurboHTTP.Transport.Http2
 
                 while (true)
                 {
-                    if (stream.IsResponseCompleted)
+                    if (stream.IsRequestBodyAborted)
                         return totalBytesSent;
 
                     if (buffer == null)
@@ -353,13 +356,13 @@ namespace TurboHTTP.Transport.Http2
             Http2Stream stream,
             CancellationToken ct)
         {
-            if (stream.IsResponseCompleted)
+            if (stream.IsRequestBodyAborted)
                 return;
 
             await _writeLock.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                if (stream.IsResponseCompleted)
+                if (stream.IsRequestBodyAborted)
                     return;
 
                 await WriteFrameLockedAsync(
@@ -368,6 +371,7 @@ namespace TurboHTTP.Transport.Http2
                         streamId,
                         ReadOnlyMemory<byte>.Empty)
                     .ConfigureAwait(false);
+                OnRequestEndStreamSent(stream);
             }
             finally
             {
@@ -379,7 +383,7 @@ namespace TurboHTTP.Transport.Http2
         /// Encodes and writes the request trailer block in ONE <see cref="_writeLock"/> hold, so the
         /// encoder output is consumed before any other block is encoded and the encoder's dynamic
         /// table evolves in wire order (RFC 7541 Section 2.2). When the trailers are skipped (the
-        /// response already completed) nothing is encoded, so encoder state is untouched.
+        /// upload was aborted) nothing is encoded, so encoder state is untouched.
         /// </summary>
         private async Task SendTrailingHeadersAsync(
             int streamId,
@@ -387,18 +391,19 @@ namespace TurboHTTP.Transport.Http2
             Http2Stream stream,
             CancellationToken ct)
         {
-            if (trailers == null || trailers.Count == 0 || stream.IsResponseCompleted)
+            if (trailers == null || trailers.Count == 0 || stream.IsRequestBodyAborted)
                 return;
 
             await _writeLock.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                if (stream.IsResponseCompleted)
+                if (stream.IsRequestBodyAborted)
                     return;
 
                 var trailerHeaderBlock = _hpackEncoder.Encode(trailers);
                 await SendHeadersAsync(streamId, trailerHeaderBlock, endStream: true)
                     .ConfigureAwait(false);
+                OnRequestEndStreamSent(stream);
             }
             finally
             {
@@ -415,7 +420,7 @@ namespace TurboHTTP.Transport.Http2
             Func<HttpHeaders> trailerProvider,
             Http2Stream stream)
         {
-            if (trailerProvider == null || stream.IsResponseCompleted)
+            if (trailerProvider == null || stream.IsRequestBodyAborted)
                 return null;
 
             var trailers = trailerProvider();
@@ -462,9 +467,9 @@ namespace TurboHTTP.Transport.Http2
 
         /// <summary>
         /// Waits until the send window of <paramref name="stream"/> may have changed: a stream or
-        /// connection WINDOW_UPDATE, an INITIAL_WINDOW_SIZE increase, the stream's response completing
-        /// or failing, connection failure, or <paramref name="ct"/>. Returns at once when the window is
-        /// already positive or the response is complete; callers re-check and loop. A window may be
+        /// connection WINDOW_UPDATE, an INITIAL_WINDOW_SIZE increase, the stream being reset, failed or
+        /// abandoned, connection failure, or <paramref name="ct"/>. Returns at once when the window is
+        /// already positive or the upload is aborted; callers re-check and loop. A window may be
         /// negative after an INITIAL_WINDOW_SIZE decrease (RFC 9113 Section 6.9.2): that is a wait too.
         /// </summary>
         private async ValueTask WaitForSendWindowAsync(Http2Stream stream, CancellationToken ct)
@@ -480,7 +485,7 @@ namespace TurboHTTP.Transport.Http2
 
             ct.ThrowIfCancellationRequested();
             ThrowIfConnectionClosedForSend();
-            if (stream.IsResponseCompleted ||
+            if (stream.IsRequestBodyAborted ||
                 Math.Min(Interlocked.CompareExchange(ref _connectionSendWindow, 0, 0), stream.SendWindowSize) > 0)
             {
                 return;
