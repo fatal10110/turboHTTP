@@ -17,6 +17,7 @@ namespace TurboHTTP.Core
             new TaskCompletionSource<UHttpResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly object _completionGate = new object();
         private readonly CancellationToken _cancellationToken;
+        private readonly long _maxBodyBytes;
 
         private UHttpRequest _request;
         private UHttpResponse _stagedResponse;
@@ -25,11 +26,13 @@ namespace TurboHTTP.Core
         internal BufferedResponseCollectorHandler(
             UHttpRequest request,
             RequestContext context,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            long maxBodyBytes = UHttpClientOptions.DefaultMaxBufferedResponseBodySize)
         {
             _request = request;
             _ = context ?? throw new ArgumentNullException(nameof(context));
             _cancellationToken = cancellationToken;
+            _maxBodyBytes = maxBodyBytes;
         }
 
         /// <summary>
@@ -138,12 +141,16 @@ namespace TurboHTTP.Core
 
             try
             {
+                // The buffered cap applies here, where the bytes accumulate in memory; streamed bodies
+                // are not capped (UHttpClientOptions.MaxBufferedResponseBodySize, 0 = unlimited).
                 if (body.TryDetachBufferedBody(out detachedBody))
                 {
                     detached = true;
+                    ThrowIfOverBufferedLimit(detachedBody.Sequence.Length);
                 }
                 else if (body.TryGetBufferedData(out var data))
                 {
+                    ThrowIfOverBufferedLimit(data.Length);
                     if (!data.IsEmpty)
                     {
                         bufferedBody = new SegmentedBuffer();
@@ -154,12 +161,15 @@ namespace TurboHTTP.Core
                 {
                     rented = ArrayPool<byte>.Shared.Rent(16 * 1024);
                     bufferedBody = new SegmentedBuffer();
+                    long totalRead = 0;
                     while (true)
                     {
                         var read = await body.ReadAsync(rented, _cancellationToken).ConfigureAwait(false);
                         if (read == 0)
                             break;
 
+                        totalRead += read;
+                        ThrowIfOverBufferedLimit(totalRead);
                         bufferedBody.Write(new ReadOnlySpan<byte>(rented, 0, read));
                     }
                 }
@@ -245,6 +255,17 @@ namespace TurboHTTP.Core
                         Fail(ex);
                     }
                 }
+            }
+        }
+
+        private void ThrowIfOverBufferedLimit(long bufferedBytes)
+        {
+            if (_maxBodyBytes > 0 && bufferedBytes > _maxBodyBytes)
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.NetworkError,
+                    $"Response body exceeds maximum size for a buffered response ({_maxBodyBytes} bytes, " +
+                    "UHttpClientOptions.MaxBufferedResponseBodySize)"));
             }
         }
 

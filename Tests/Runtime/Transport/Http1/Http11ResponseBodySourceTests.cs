@@ -15,8 +15,10 @@ namespace TurboHTTP.Tests.Transport.Http1
     public class Http11ResponseBodySourceTests
     {
         [Test]
-        public void ReadToEnd_ExceedsMaxBodySize_ThrowsUHttpException()
+        public void ReadToEnd_StreamsMoreThan100MB_WithoutError()
         {
+            // #147: a streamed body never accumulates, so it has no size cap. Buffered responses are
+            // capped where they are collected (UHttpClientOptions.MaxBufferedResponseBodySize).
             AssertAsync.Run(async () =>
             {
                 const int chunkBytes = 64 * 1024;
@@ -44,18 +46,16 @@ namespace TurboHTTP.Tests.Transport.Http1
                     TimeSpan.FromSeconds(30));
 
                 var buffer = new byte[chunkBytes];
-                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                long total = 0;
+                while (true)
                 {
-                    while (true)
-                    {
-                        var read = await source.ReadAsync(buffer, CancellationToken.None);
-                        if (read == 0)
-                            break;
-                    }
-                });
+                    var read = await source.ReadAsync(buffer, CancellationToken.None);
+                    if (read == 0)
+                        break;
+                    total += read;
+                }
 
-                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
-                Assert.That(ex.HttpError.Message, Does.Contain("Response body exceeds maximum size"));
+                Assert.AreEqual(payloadBytes, total);
             });
         }
 

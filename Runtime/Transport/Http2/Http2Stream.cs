@@ -25,6 +25,12 @@ namespace TurboHTTP.Transport.Http2
         {
         }
 
+        // _closeFlags bits (RFC 9113 Section 5.1). Set with CompareExchange so exactly one side observes
+        // the transition to fully closed and removes the stream from the connection's active map.
+        private const int LocalClosedFlag = 1;
+        private const int RemoteClosedFlag = 2;
+        private const int AbandonPendingFlag = 4;
+
         private int _streamId;
         private UHttpRequest _request;
         private RequestContext _context;
@@ -41,6 +47,12 @@ namespace TurboHTTP.Transport.Http2
         private int _lifetimeRefCount;
         private long _responseBodyLength;
         private long? _responseContentLength;
+        private long _expectedResponseBodyLength = -1;
+        private int _closeFlags;
+        private int _requestBodyAborted;
+        private readonly object _registrationGate = new object();
+        private CancellationTokenRegistration _cancellationRegistration;
+        private bool _cancellationRegistrationReleased;
         private Http2ResponseBodySource _responseBodySource;
         private CancellationToken _requestCancellationToken;
         private TaskCompletionSource<bool> _expectContinueSource;
@@ -86,15 +98,35 @@ namespace TurboHTTP.Transport.Http2
         public bool HeadersReceived { get; set; }
         public bool ResponseStarted => Volatile.Read(ref _responseStarted) != 0;
         public bool HasHandlerFault => Volatile.Read(ref _handlerFaulted) != 0;
-        public bool IsResponseCompleted
+        /// <summary>
+        /// True once the request body must not be sent any further: the peer reset the stream, the stream
+        /// failed or was cancelled, the handler faulted, the response body was abandoned or faulted. A
+        /// response that merely started or completed does NOT stop the upload (RFC 9113 Section 8.1).
+        /// </summary>
+        public bool IsRequestBodyAborted
         {
             get
             {
+                if (Volatile.Read(ref _requestBodyAborted) != 0)
+                    return true;
+
                 var responseBodySource = Volatile.Read(ref _responseBodySource);
-                return Volatile.Read(ref _completionSignaled) != 0 ||
-                       (responseBodySource != null && responseBodySource.IsAborted);
+                return responseBodySource != null && responseBodySource.IsAborted;
             }
         }
+
+        /// <summary>END_STREAM was sent, or the request body was abandoned (RFC 9113 Section 5.1).</summary>
+        public bool IsLocalClosed => (Volatile.Read(ref _closeFlags) & LocalClosedFlag) != 0;
+
+        /// <summary>The peer's END_STREAM was received (RFC 9113 Section 5.1).</summary>
+        public bool IsRemoteClosed => (Volatile.Read(ref _closeFlags) & RemoteClosedFlag) != 0;
+
+        /// <summary>
+        /// The response content-length that the DATA payload must match (RFC 9113 Section 8.1.1), or -1
+        /// when there is none or the response has no content by definition (HEAD, 204, 304).
+        /// </summary>
+        public long ExpectedResponseBodyLength => Interlocked.Read(ref _expectedResponseBodyLength);
+
         public bool IsStreamingResponseRequested =>
             _context != null &&
             _context.GetState(TransportBehaviorFlags.StreamingResponseRequested, false);
@@ -103,7 +135,6 @@ namespace TurboHTTP.Transport.Http2
             get => Volatile.Read(ref _responseBodySource);
             private set => Volatile.Write(ref _responseBodySource, value);
         }
-        public CancellationTokenRegistration CancellationRegistration { get; set; }
 
         public int SendWindowSize
         {
@@ -140,6 +171,9 @@ namespace TurboHTTP.Transport.Http2
             _statusCode = 0;
             _headers = null;
             _responseContentLength = null;
+            Interlocked.Exchange(ref _expectedResponseBodyLength, -1);
+            Interlocked.Exchange(ref _closeFlags, 0);
+            Interlocked.Exchange(ref _requestBodyAborted, 0);
             ResponseBodySource = null;
             HeadersReceived = false;
             State = Http2StreamState.Idle;
@@ -147,7 +181,11 @@ namespace TurboHTTP.Transport.Http2
             _sendWindowSize = initialSendWindowSize;
             _recvWindowSize = initialRecvWindowSize;
             _expectContinueSource = null;
-            CancellationRegistration = default;
+            lock (_registrationGate)
+            {
+                _cancellationRegistration = default;
+                _cancellationRegistrationReleased = false;
+            }
             Interlocked.Exchange(ref _handlerFaulted, 0);
             Interlocked.Exchange(ref _responseStarted, 0);
             Interlocked.Exchange(ref _completionSignaled, 0);
@@ -159,8 +197,9 @@ namespace TurboHTTP.Transport.Http2
         public void PrepareForPool()
         {
             Volatile.Write(ref _disposed, 1);
-            CancellationRegistration.Dispose();
-            CancellationRegistration = default;
+            ReleaseCancellationRegistration();
+            lock (_registrationGate)
+                _cancellationRegistrationReleased = false;
             _streamId = 0;
             _request = null;
             _context = null;
@@ -169,6 +208,9 @@ namespace TurboHTTP.Transport.Http2
             _statusCode = 0;
             _headers = null;
             _responseContentLength = null;
+            Interlocked.Exchange(ref _expectedResponseBodyLength, -1);
+            Interlocked.Exchange(ref _closeFlags, 0);
+            Interlocked.Exchange(ref _requestBodyAborted, 0);
             ResponseBodySource = null;
             HeadersReceived = false;
             State = Http2StreamState.Idle;
@@ -207,18 +249,153 @@ namespace TurboHTTP.Transport.Http2
             _statusCode = statusCode;
             _headers = headers ?? new HttpHeaders();
             _responseContentLength = contentLength;
+            Interlocked.Exchange(
+                ref _expectedResponseBodyLength,
+                contentLength.HasValue && !IsNoContentResponse(_request.Method, statusCode) ? contentLength.Value : -1);
             ResponseBodySource = new Http2ResponseBodySource(_connection, this, contentLength, endStream);
             Interlocked.Exchange(ref _responseStarted, 1);
             Interlocked.Increment(ref _lifetimeRefCount);
 
-            if (IsStreamingResponseRequested)
-            {
-                CancellationRegistration.Dispose();
-                CancellationRegistration = default;
-            }
-
+            // Request cancellation stays active while the upload may still be running (RFC 9113
+            // Section 8.1); a streamed body is handed off to its reader once both are done.
+            ReleaseCancellationIfStreamingHandedOff();
             _ = InvokeResponseStartAsync(ResponseBodySource);
             return true;
+        }
+
+        /// <summary>
+        /// RFC 9110 Section 6.4.1: responses to HEAD and 204/304 responses have no content, so their
+        /// content-length is not compared with the DATA payload (RFC 9113 Section 8.1.1).
+        /// </summary>
+        internal static bool IsNoContentResponse(HttpMethod method, int statusCode)
+        {
+            return method == HttpMethod.HEAD || statusCode == 204 || statusCode == 304 ||
+                   (statusCode >= 100 && statusCode < 200);
+        }
+
+        /// <summary>Records that END_STREAM was sent. Returns true when this closed both directions.</summary>
+        public bool MarkLocalClosed()
+        {
+            int previous = OrCloseFlags(LocalClosedFlag);
+            UpdateStateFromCloseFlags(previous | LocalClosedFlag);
+            return (previous & LocalClosedFlag) == 0 && (previous & RemoteClosedFlag) != 0;
+        }
+
+        /// <summary>
+        /// Abandons the request body after an early final response (RFC 9113 Section 8.1, RFC 9110
+        /// Section 10.1.1). The stream is ended with RST_STREAM(NO_ERROR) once the response is complete,
+        /// because an earlier reset would also stop the response. Returns true when the response is
+        /// already complete, so the caller sends that reset now; otherwise the read loop sends it when
+        /// the peer's END_STREAM arrives.
+        /// </summary>
+        public bool MarkLocalAbandoned()
+        {
+            AbortRequestBody();
+            int previous = OrCloseFlags(LocalClosedFlag | AbandonPendingFlag);
+            UpdateStateFromCloseFlags(previous | LocalClosedFlag);
+            return (previous & LocalClosedFlag) == 0 && (previous & RemoteClosedFlag) != 0;
+        }
+
+        /// <summary>
+        /// Records that the peer's END_STREAM was received. Returns true when this closed both
+        /// directions; <paramref name="resetNoError"/> is then true when the request body was abandoned
+        /// and the stream must be ended with RST_STREAM(NO_ERROR).
+        /// </summary>
+        public bool MarkRemoteClosed(out bool resetNoError)
+        {
+            int previous = OrCloseFlags(RemoteClosedFlag);
+            UpdateStateFromCloseFlags(previous | RemoteClosedFlag);
+            bool closedBoth = (previous & RemoteClosedFlag) == 0 && (previous & LocalClosedFlag) != 0;
+            resetNoError = closedBoth && (previous & AbandonPendingFlag) != 0;
+            return closedBoth;
+        }
+
+        /// <summary>Stops the upload: no DATA or trailers are sent for this stream any more.</summary>
+        public void AbortRequestBody()
+        {
+            if (Interlocked.Exchange(ref _requestBodyAborted, 1) == 0)
+                _connection?.WakeSendWindowWaiters();
+        }
+
+        /// <summary>
+        /// Takes a temporary lifetime reference for code that found this stream through a lookup (the
+        /// read loop, connection-wide scans). Fails when the stream was already returned to the pool or
+        /// was re-rented for another (connection, stream id), so a recycled object is never mutated.
+        /// The caller releases it with <see cref="ReleaseLease"/>.
+        /// </summary>
+        public bool TryAcquireLease(int expectedStreamId, Http2Connection expectedConnection)
+        {
+            while (true)
+            {
+                int current = Volatile.Read(ref _lifetimeRefCount);
+                if (current <= 0)
+                    return false;
+
+                if (Interlocked.CompareExchange(ref _lifetimeRefCount, current + 1, current) == current)
+                    break;
+            }
+
+            // Read after the increment: a re-rented stream has its new identity published before its
+            // reference count became positive again (Initialize).
+            if (Volatile.Read(ref _streamId) == expectedStreamId &&
+                ReferenceEquals(Volatile.Read(ref _connection), expectedConnection))
+            {
+                return true;
+            }
+
+            ReleaseLifetime();
+            return false;
+        }
+
+        public void ReleaseLease()
+        {
+            ReleaseLifetime();
+        }
+
+        /// <summary>
+        /// Stores the request-token registration (made once HEADERS are on the wire). Disposed at once
+        /// when the registration was already released (a streamed response was handed off first).
+        /// </summary>
+        public void SetCancellationRegistration(CancellationTokenRegistration registration)
+        {
+            lock (_registrationGate)
+            {
+                if (!_cancellationRegistrationReleased)
+                {
+                    _cancellationRegistration = registration;
+                    return;
+                }
+            }
+
+            registration.Dispose();
+        }
+
+        /// <summary>Disposes the request-token registration once; later registrations are disposed at once.</summary>
+        public void ReleaseCancellationRegistration()
+        {
+            CancellationTokenRegistration registration;
+            lock (_registrationGate)
+            {
+                if (_cancellationRegistrationReleased)
+                    return;
+
+                _cancellationRegistrationReleased = true;
+                registration = _cancellationRegistration;
+                _cancellationRegistration = default;
+            }
+
+            registration.Dispose();
+        }
+
+        /// <summary>
+        /// A streamed response belongs to its reader once it has started and the request side is done
+        /// (END_STREAM sent or body abandoned): request cancellation no longer aborts it. Called by both
+        /// sides (response start, upload end); each publishes its own flag first, so one of them sees both.
+        /// </summary>
+        public void ReleaseCancellationIfStreamingHandedOff()
+        {
+            if (IsStreamingResponseRequested && ResponseStarted && IsLocalClosed)
+                ReleaseCancellationRegistration();
         }
 
         public void EnableExpectContinueWait()
@@ -287,6 +464,7 @@ namespace TurboHTTP.Transport.Http2
 
         public void FaultResponseBody(Exception error)
         {
+            AbortRequestBody();
             ResponseBodySource?.Fault(error);
         }
 
@@ -314,6 +492,7 @@ namespace TurboHTTP.Transport.Http2
             if (Volatile.Read(ref _disposed) != 0)
                 return;
 
+            AbortRequestBody();
             TryCancelExpectContinueWait(cancellationToken);
 
             // Request/transport cancellation keeps its native cancellation shape so
@@ -334,6 +513,7 @@ namespace TurboHTTP.Transport.Http2
             if (Volatile.Read(ref _disposed) != 0)
                 return;
 
+            AbortRequestBody();
             var normalizedException = NormalizeTransportException(
                 exception ?? new InvalidOperationException("HTTP/2 stream failed."));
 
@@ -357,8 +537,7 @@ namespace TurboHTTP.Transport.Http2
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            CancellationRegistration.Dispose();
-            CancellationRegistration = default;
+            ReleaseCancellationRegistration();
             _handler = TurboHTTP.Transport.NullHandler.Instance;
             _request = null;
             _context = null;
@@ -395,6 +574,7 @@ namespace TurboHTTP.Transport.Http2
             catch (Exception ex)
             {
                 Interlocked.Exchange(ref _handlerFaulted, 1);
+                AbortRequestBody();
                 try
                 {
                     bodySource?.Abort();
@@ -488,8 +668,33 @@ namespace TurboHTTP.Transport.Http2
 
         private void ReleaseLifetime()
         {
-            if (Interlocked.Decrement(ref _lifetimeRefCount) == 0)
-                Http2StreamPool.Return(this);
+            if (Interlocked.Decrement(ref _lifetimeRefCount) != 0)
+                return;
+
+            // Never leave a pooled object reachable through the connection's active map.
+            _connection?.RemoveActiveStream(_streamId, this);
+            Http2StreamPool.Return(this);
+        }
+
+        private int OrCloseFlags(int flags)
+        {
+            while (true)
+            {
+                int current = Volatile.Read(ref _closeFlags);
+                if (Interlocked.CompareExchange(ref _closeFlags, current | flags, current) == current)
+                    return current;
+            }
+        }
+
+        private void UpdateStateFromCloseFlags(int flags)
+        {
+            bool local = (flags & LocalClosedFlag) != 0;
+            bool remote = (flags & RemoteClosedFlag) != 0;
+            State = local && remote
+                ? Http2StreamState.Closed
+                : local
+                    ? Http2StreamState.HalfClosedLocal
+                    : remote ? Http2StreamState.HalfClosedRemote : Http2StreamState.Open;
         }
 
         private void TryFailExpectContinueWait(Exception exception)

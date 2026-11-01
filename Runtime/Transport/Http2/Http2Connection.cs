@@ -376,12 +376,14 @@ namespace TurboHTTP.Transport.Http2
 
                     var headerBlock = _hpackEncoder.Encode(_headerListScratch);
 
+                    // Set before the write: no response frame can be processed before HEADERS are out.
+                    stream.State = Http2StreamState.Open;
                     await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody)
                         .ConfigureAwait(false);
                     requestHeadersSent = true;
                     requestEndStreamSent = !hasBody;
-
-                    stream.State = hasBody ? Http2StreamState.Open : Http2StreamState.HalfClosedLocal;
+                    if (!hasBody)
+                        OnRequestEndStreamSent(stream);
                 }
                 finally
                 {
@@ -392,10 +394,10 @@ namespace TurboHTTP.Transport.Http2
                 // never precede them (an RST_STREAM on an idle stream is a connection error,
                 // RFC 9113 Section 6.4). An already-cancelled token runs the callback here.
                 stream.SetRequestCancellationToken(ct);
-                stream.CancellationRegistration = ct.Register(
+                stream.SetCancellationRegistration(ct.Register(
                     s_requestCancellationCallback,
                     stream,
-                    useSynchronizationContext: false);
+                    useSynchronizationContext: false));
 
                 if (hasBody)
                 {
@@ -405,16 +407,35 @@ namespace TurboHTTP.Transport.Http2
 
                     if (sendRequestBody)
                     {
+                        // The upload continues after the response starts or completes, until the body
+                        // ends or the stream is reset or abandoned (RFC 9113 Section 8.1).
                         var requestBodyBytesSent = await SendDataAsync(streamId, request.Content, stream, ct)
                             .ConfigureAwait(false);
                         context.SetState(TransportBehaviorFlags.RequestBodyBytesSent, requestBodyBytesSent);
-                        requestEndStreamSent = true;
-                        stream.State = Http2StreamState.HalfClosedLocal;
+                        requestEndStreamSent = stream.IsLocalClosed;
+                        if (!requestEndStreamSent)
+                        {
+                            // Stopped without END_STREAM: the stream must still end on the wire.
+                            requestEndStreamSent = true;
+                            await ResetStreamIfActiveAsync(streamId, stream, Http2ErrorCode.Cancel)
+                                .ConfigureAwait(false);
+                        }
                     }
                     else
                     {
+                        // Early final response to Expect: 100-continue (RFC 9110 Section 10.1.1): the body
+                        // is never sent, and the stream ends with RST_STREAM(NO_ERROR) once the response
+                        // is complete (RFC 9113 Section 8.1), so the server keeps no half-open stream.
                         context.SetState(TransportBehaviorFlags.RequestBodyBytesSent, 0L);
+                        requestEndStreamSent = true;
+                        if (stream.MarkLocalAbandoned())
+                        {
+                            await ResetStreamIfActiveAsync(streamId, stream, Http2ErrorCode.NoError)
+                                .ConfigureAwait(false);
+                        }
                     }
+
+                    stream.ReleaseCancellationIfStreamingHandedOff();
                 }
 
                 context.RecordEvent("TransportH2RequestSent");
@@ -434,11 +455,11 @@ namespace TurboHTTP.Transport.Http2
                     !requestEndStreamSent &&
                     !ct.IsCancellationRequested)
                 {
-                    RemoveActiveStream(streamId);
+                    stream.AbortRequestBody();
                     try
                     {
-                        TrackRecentlyResetStream(streamId);
-                        await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                        await ResetStreamIfActiveAsync(streamId, stream, Http2ErrorCode.Cancel)
+                            .ConfigureAwait(false);
                     }
                     catch
                     {
@@ -460,10 +481,9 @@ namespace TurboHTTP.Transport.Http2
                 if (stream != null)
                 {
                     if (!stream.ResponseStarted)
-                        RemoveActiveStream(streamId);
+                        RemoveActiveStream(streamId, stream);
 
-                    stream.CancellationRegistration.Dispose();
-                    stream.CancellationRegistration = default;
+                    stream.ReleaseCancellationRegistration();
                     stream.ReleaseDispatchLifetime();
                 }
             }
@@ -478,7 +498,7 @@ namespace TurboHTTP.Transport.Http2
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
-            // Request-scoped cancellation is owned by stream.CancellationRegistration, which
+            // Request-scoped cancellation is owned by the stream's cancellation registration, which
             // faults the stream and emits the best-effort RST_STREAM when the stream is still active.
             await stream.CompletionTask.ConfigureAwait(false);
         }

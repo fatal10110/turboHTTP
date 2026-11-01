@@ -153,7 +153,7 @@ namespace TurboHTTP.Transport.Http1
         internal const int MaxHeaderLineLength = 8192;
         internal const int MaxTotalTrailerBytes = 32 * 1024;
         private const int MaxTotalHeaderBytes = 102400; // 100KB
-        private const int MaxResponseBodySize = 100 * 1024 * 1024; // 100MB
+        private const int MaxResponseBodySize = 100 * 1024 * 1024; // 100MB, buffered parse paths only
         internal const int Max1xxResponses = 10;
         private const string Http10Version = "HTTP/1.0";
         private const string Http11Version = "HTTP/1.1";
@@ -403,6 +403,8 @@ namespace TurboHTTP.Transport.Http1
                 case Http11ResponseBodyKind.ContentLength:
                     if (head.ContentLength.GetValueOrDefault() == 0)
                         return (ReadOnlyMemory<byte>.Empty, false, null, HttpHeaders.Empty);
+                    if (head.ContentLength.Value > MaxResponseBodySize)
+                        throw new IOException("Response body exceeds maximum size");
 
                     var fixedBody = await ReadFixedBodyAsync(
                             head.Reader,
@@ -584,8 +586,8 @@ namespace TurboHTTP.Transport.Http1
             if (contentLength < 0)
                 throw new FormatException("Negative Content-Length");
 
-            if (contentLength > MaxResponseBodySize)
-                throw new IOException("Response body exceeds maximum size");
+            // No size cap here: the head also frames streamed bodies, which never accumulate. The
+            // buffered paths below cap what they collect.
 
             return true;
         }

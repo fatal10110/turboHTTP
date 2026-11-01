@@ -475,6 +475,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.That(ex.Message, Does.Contain("Unexpected pseudo-header"));
                 Assert.IsTrue(conn.IsAlive);
 
+                // #28: the malformed response was reset with PROTOCOL_ERROR (RFC 9113 Section 8.1.1).
+                await AssertResetAsync(serverCodec, streamId, Http2ErrorCode.ProtocolError, cts.Token);
+
                 var followUpRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/follow-up"));
                 var followUpContext = new RequestContext(followUpRequest);
                 var followUpTask = conn.SendRequestAsync(followUpRequest, followUpContext, cts.Token);
@@ -587,6 +590,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
                 Assert.That(ex.Message, Does.Contain("without END_STREAM"));
                 Assert.IsTrue(conn.IsAlive);
+
+                // #28: the malformed response was reset with PROTOCOL_ERROR (RFC 9113 Section 8.1.1).
+                await AssertResetAsync(serverCodec, streamId, Http2ErrorCode.ProtocolError, cts.Token);
 
                 var followUpRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/follow-up-after-trailer-failure"));
                 var followUpContext = new RequestContext(followUpRequest);
@@ -755,8 +761,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = bodyBytes.Length
                 }, cts.Token);
 
-                var response = await responseTask;
-                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                // Two DATA bytes against the advertised content-length is a malformed response
+                // (RFC 9113 Section 8.1.1).
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
+                StringAssert.Contains("content-length", ex.HttpError.Message);
                 conn.Dispose();
             });
         }
