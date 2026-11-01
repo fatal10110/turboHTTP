@@ -60,9 +60,15 @@ recorded in the journal and in this table.
 
 ## Transport
 
-- `HttpTransportFactory.Register(Func<IHttpTransport>)` with a `Lazy<T>` default. Transport registers
-  `RawSocketTransport` from a `[ModuleInitializer]`; `RawSocketTransport.EnsureRegistered()` is the
-  explicit fallback. Device registration is unverified (#1).
+- `HttpTransportFactory.Register(Func<IHttpTransport>)` with a `Lazy<T>` default. The default HTTP and
+  WebSocket transports are registered by `TurboHttpBootstrap` (`Runtime/Bootstrap/`, in
+  `TurboHTTP.Complete`) from `[RuntimeInitializeOnLoadMethod(SubsystemRegistration)]` (plus
+  `[InitializeOnLoadMethod]` in the Editor); the assembly is `[AlwaysLinkAssembly]` so stripping keeps it.
+  Each run disposes the previous session's default transport (Enter Play Mode without domain reload).
+  The same bootstrap registers TurboHTTP.JSON with `ProjectJsonBridge`. The `[ModuleInitializer]`s in
+  Transport and WebSocket.Transport are only a secondary path; projects that exclude `TurboHTTP.Complete`
+  call `RawSocketTransport.EnsureRegistered()`, `RawSocketWebSocketTransport.EnsureRegistered()` and
+  `JsonModuleRegistration.EnsureRegistered()` themselves. Player-build and device checks: #100, #99.
 - `TcpConnectionPool`: per-host pooling, Happy Eyeballs, DNS/connect timeouts. `ConnectionLease` is a
   class whose idempotent `Dispose` always releases the per-host permit.
 - Socket I/O modes (`SocketIoMode`): `NetworkStream` (default), `Saea`, `PollSelect` (#38).
