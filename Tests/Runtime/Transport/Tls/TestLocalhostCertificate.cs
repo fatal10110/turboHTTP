@@ -1,6 +1,7 @@
 using System;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Tests.Transport.Tls
 {
@@ -12,10 +13,11 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// <remarks>
     /// Test material, not a secret: self-signed <c>CN=localhost</c> (SAN localhost, 127.0.0.1, ::1),
     /// RSA 2048, serverAuth, valid 2026-10-31 to 2126-10-07, PKCS#12 with SHA1/3DES so Mono can read
-    /// it. Nothing trusts it: platform <c>SslStream</c> rejects it (the fail-closed tests rely on that),
-    /// and BouncyCastle loopback handshakes succeed only because the BC provider does no chain
-    /// validation yet (#33). When #33 lands, those tests need a test-only trust anchor for this
-    /// certificate. Regenerate with
+    /// it. Nothing trusts it: platform <c>SslStream</c> rejects it (the fail-closed tests rely on that).
+    /// The BouncyCastle provider validates the chain (#33), so <see cref="TryLoad"/> registers this
+    /// certificate as a test-only trust anchor (<c>ServerCertificateVerifier.AddTestTrustAnchor</c>)
+    /// for every loopback test that loads it; production code never registers an anchor, and the
+    /// chain-validation tests show the same certificate is rejected without it. Regenerate with
     /// <c>openssl req -x509 -newkey rsa:2048 -nodes -days 36500 -subj /CN=localhost ...</c> and
     /// <c>openssl pkcs12 -export -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1</c>.
     /// </remarks>
@@ -60,15 +62,20 @@ namespace TurboHTTP.Tests.Transport.Tls
             "Y7MNMSUwIwYJKoZIhvcNAQkVMRYEFHMrZ+lxNrLq69EkdzUdWA/SUz1qMDEwITAJBgUrDgMCGgUABBQDoIiO96ox+ZtlIanu" +
             "CA3GrpjM5AQI5bzXrdx9jK8CAggA";
 
-        /// <summary>A new instance (caller disposes), or null if this runtime cannot load PKCS#12.</summary>
+        /// <summary>
+        /// A new instance (caller disposes), or null if this runtime cannot load PKCS#12. Also trusts
+        /// the certificate as a BouncyCastle test anchor (idempotent, process-wide).
+        /// </summary>
         internal static X509Certificate2 TryLoad()
         {
             try
             {
-                return new X509Certificate2(
+                var certificate = new X509Certificate2(
                     Convert.FromBase64String(PfxBase64),
                     Password,
                     X509KeyStorageFlags.Exportable);
+                ServerCertificateVerifier.AddTestTrustAnchor(certificate.RawData);
+                return certificate;
             }
             catch (CryptographicException)
             {

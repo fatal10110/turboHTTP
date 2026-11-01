@@ -42,6 +42,19 @@ starts using a new BouncyCastle API, the strip must see the change first (bc-csh
 Other bounds from upstream at BASE: ASN.1 nesting depth 64 (`Properties.Asn1MaxDepth`), RSA peer
 moduli 2048-8192 bits with e at most 64 bits, 32 KiB handshake-message cap.
 
+## Certificate validation (#33)
+
+`TurboTlsAuthentication` checks, in order: RFC 6125 host identity (`TlsCertificateNameMatcher`),
+leaf EKU serverAuth, leaf validity, path validation outside BC (`ServerCertificateVerifier`:
+`X509Chain` in the Editor and on desktop, revocation off; iOS/Android reject every chain until the
+native verifiers land, #239), then `TlsUtilities.CheckPeerSigAlgs` on the platform-built path.
+BC APIs it uses (all present in the current Lib, so no re-sync is needed now; the next strip must
+take the new `TurboTlsAuthentication.cs` as a root): `X509Certificate`
+(`GetSubjectAlternativeNameExtension`, `GetExtendedKeyUsage`, `SubjectDN`, `NotBefore`/`NotAfter`),
+`GeneralNames.GetNames`, `GeneralName`, `IAsn1String`, `Asn1OctetString`,
+`X509Name.GetValueList`/`X509Name.CN`, `KeyPurposeID`, `TlsCrypto.CreateCertificate(byte[])`,
+`TlsUtilities.CheckPeerSigAlgs`.
+
 ## Edge-cut list
 
 Every `// turbo-strip:` marker in the packaged files, copied from `STRIP_INFO.md` (paths relative to `Lib/`).

@@ -70,7 +70,8 @@ namespace TurboHTTP.Transport.BouncyCastle
         /// connect timeout (which ends when the socket is connected) and of the request timeout
         /// (<paramref name="ct"/>), which still applies: the effective bound is the smaller one.
         /// Certificate evaluation runs inside the handshake; a deadline that expires during it
-        /// takes effect when it returns (its own bound belongs to the evaluation, #33).
+        /// takes effect when it returns; the evaluation has its own bound (no revocation check,
+        /// intermediate fetch limited by <c>ServerCertificateVerifier.UrlRetrievalTimeout</c>, #33).
         /// </para>
         /// <para>
         /// A fatal TLS alert (sent or received) that reports a certificate, negotiation or protocol
