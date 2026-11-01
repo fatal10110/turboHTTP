@@ -17,18 +17,18 @@ recorded in the journal and in this table.
 
 | Assembly | References | Notes |
 | --- | --- | --- |
-| `TurboHTTP.Core` | — | `autoReferenced`; client API, request/response, pipeline, `Core.Internal` pooling/buffers |
+| `TurboHTTP.Core` | — (no assembly references) | `autoReferenced`; client API, request/response, pipeline, `Core.Internal` pooling/buffers. Not engine-free (`noEngineReferences: false`): `UnityEngine` is used only for platform detection and diagnostics (`PlatformInfo`, `PlatformConfig` compile-time constants, `UHttpClient` editor-play-mode check, `TurboDiagnostics`) |
 | `TurboHTTP.Transport` | Core | only assembly with `allowUnsafeCode`; `noEngineReferences`; excludes WebGL |
-| `TurboHTTP.Transport.BouncyCastle` | Core, Transport, SecureProtocol | TLS fallback provider glue |
+| `TurboHTTP.Transport.BouncyCastle` | Core, Transport, SecureProtocol | TLS fallback provider glue; not `noEngineReferences`; opt-in: `defineConstraints` `TURBOHTTP_BOUNCYCASTLE` (#196) |
 | `TurboHTTP.SecureProtocol` | — | vendored BouncyCastle in `Transport/BouncyCastle/Lib/` (never edited); `noEngineReferences`; excludes WebGL; asmdef sits at the `Lib/` root so the re-vendor sync keeps it (#143) |
 | `TurboHTTP.JSON` | Core | `noEngineReferences`; `LiteJsonSerializer` default, `TURBOHTTP_USE_SYSTEM_TEXT_JSON` optional |
 | `TurboHTTP.Middleware`, `.Auth`, `.Retry`, `.Cache`, `.RateLimit`, `.Observability`, `.Files`, `.Testing`, `.Unity` | Core | independently includable feature modules |
 | `TurboHTTP.WebSocket` | Core | `noEngineReferences` |
-| `TurboHTTP.WebSocket.Transport` | Core, WebSocket, Transport | raw-socket WebSocket transport |
+| `TurboHTTP.WebSocket.Transport` | Core, WebSocket, Transport | raw-socket WebSocket transport; `noEngineReferences` |
 | `TurboHTTP.Unity.WebSocket` | Core, WebSocket, Unity | MonoBehaviour client/bridge |
-| `TurboHTTP.UniTask` | Core, WebSocket, UniTask | compiled only with `com.cysharp.unitask` (`TURBOHTTP_UNITASK`); split tracked in #116 |
+| `TurboHTTP.UniTask` | Core, WebSocket, UniTask (the `com.cysharp.unitask` assembly) | compiled only with `com.cysharp.unitask` (`TURBOHTTP_UNITASK`); split tracked in #116 |
 | `TurboHTTP.Editor` | Core, Observability | HTTP Monitor window |
-| `TurboHTTP.Complete` | all runtime modules | aggregation asmdef, contains no scripts (#7) |
+| `TurboHTTP.Complete` | Core, Transport, WebSocket, WebSocket.Transport, Unity.WebSocket, Retry, Cache, Auth, Observability, Files, Unity, Testing, RateLimit, JSON, Middleware | aggregation asmdef; its only code is the `TurboHttpBootstrap` default registration (`Runtime/Bootstrap/`, `[AlwaysLinkAssembly]`, #216); omits the optional `Transport.BouncyCastle` and `UniTask` |
 
 - String references in asmdefs, never GUIDs. Namespaces are `TurboHTTP.<Module>`.
 - Modules reach `Core.Internal` through `InternalsVisibleTo` in `Runtime/Core/AssemblyInfo.cs`; third-party
@@ -136,5 +136,6 @@ recorded in the journal and in this table.
 
 ## Older documents
 
-`Development/docs/architecture.md` and the phase docs before 22 still describe the pre-interceptor
-`HttpPipeline`/`*Middleware` API (#107). Trust the code and this guide over them.
+The phase docs before 22 still describe the pre-interceptor `HttpPipeline`/`*Middleware` API
+(#107, #189); the old `Development/docs/architecture.md` was removed in favour of this guide. Trust
+the code and this guide over them.
