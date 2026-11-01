@@ -7,8 +7,8 @@ using TurboHTTP.Core;
 namespace TurboHTTP.Unity.Mobile.Android
 {
     /// <summary>
-    /// Holds an in-process guard while a request runs and hands expired replayable requests to
-    /// WorkManager. Experimental: the Java plugin (<c>Plugins/Android/TurboHttpBackground.androidlib</c>)
+    /// Holds an in-process guard while a request runs. Android scopes have no expiry signal yet, so
+    /// nothing is handed to WorkManager automatically (#267). Experimental: the Java plugin (<c>Plugins/Android/TurboHttpBackground.androidlib</c>)
     /// and its JNI calls are included only in Android players built with the
     /// <c>TURBOHTTP_BACKGROUND_NETWORKING</c> scripting define; elsewhere no scope is acquired and the
     /// deferred-work queue is tracked in memory only.

@@ -28,7 +28,20 @@ static NSMutableDictionary<NSNumber *, NSNumber *> *TurboHttpBackgroundTasks(voi
     return tasks;
 }
 
-// Cookies whose expiration handler ran before begin stored the task id (begin then ends the task).
+// Cookies whose begin call is between beginBackgroundTaskWithName: and storing the task id. Only
+// these can be marked expired-before-begin, so an expiration that races a completed end (entry
+// already taken) leaves nothing behind. Guarded by the tasks table lock.
+static NSMutableSet<NSNumber *> *TurboHttpPendingBegin(void)
+{
+    static NSMutableSet<NSNumber *> *pending = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        pending = [[NSMutableSet alloc] init];
+    });
+    return pending;
+}
+
+// Cookies whose expiration handler ran while their begin was pending (begin then ends the task).
 // Guarded by the tasks table lock; an entry is removed by the begin call that owns the cookie.
 static NSMutableSet<NSNumber *> *TurboHttpExpiredBeforeBegin(void)
 {
@@ -53,7 +66,7 @@ static UIBackgroundTaskIdentifier TurboHttpTakeTask(int cookie, BOOL fromExpirat
             taskId = (UIBackgroundTaskIdentifier)value.unsignedIntegerValue;
             [tasks removeObjectForKey:key];
         }
-        else if (fromExpiration)
+        else if (fromExpiration && [TurboHttpPendingBegin() containsObject:key])
         {
             [TurboHttpExpiredBeforeBegin() addObject:key];
         }
@@ -94,30 +107,36 @@ extern "C" int turbohttp_begin_background_task(const char *taskName, int cookie)
     if (name == nil || name.length == 0)
         name = @"TurboHTTP.Request";
 
+    NSMutableDictionary<NSNumber *, NSNumber *> *tasks = TurboHttpBackgroundTasks();
+    NSNumber *key = @(cookie);
+    @synchronized (tasks)
+    {
+        [TurboHttpPendingBegin() addObject:key];
+    }
+
     UIBackgroundTaskIdentifier taskId = [app beginBackgroundTaskWithName:name expirationHandler:^
     {
         TurboHttpBackgroundTaskExpired(cookie);
     }];
 
-    if (taskId == UIBackgroundTaskInvalid)
-        return 0;
-
-    NSMutableDictionary<NSNumber *, NSNumber *> *tasks = TurboHttpBackgroundTasks();
-    NSNumber *key = @(cookie);
     BOOL expiredAlready = NO;
     @synchronized (tasks)
     {
+        [TurboHttpPendingBegin() removeObject:key];
         NSMutableSet<NSNumber *> *expired = TurboHttpExpiredBeforeBegin();
         if ([expired containsObject:key])
         {
             [expired removeObject:key];
             expiredAlready = YES;
         }
-        else
+        else if (taskId != UIBackgroundTaskInvalid)
         {
             tasks[key] = @(taskId);
         }
     }
+
+    if (taskId == UIBackgroundTaskInvalid)
+        return 0;
 
     if (expiredAlready)
     {

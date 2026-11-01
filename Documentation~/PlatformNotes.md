@@ -92,7 +92,7 @@ bridge is built in only when the iOS Player Settings define `TURBOHTTP_BACKGROUN
 [Background networking opt-in](#background-networking-opt-in)). Without the define nothing native is
 linked and requests keep foreground semantics. A request is expired only by iOS's expiration handler
 (the app is in the background and out of time), never by a timer while the app is in the foreground.
-Device validation is pending (#99).
+Device validation is pending (#266).
 
 tvOS is not a supported target: the iOS native plugins (background bridge, SecTrust verifier) are
 not shipped to tvOS, where no managed code calls them (#176).
@@ -111,9 +111,10 @@ App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via
 With the Android Player Settings define `TURBOHTTP_BACKGROUND_NETWORKING`, the build includes
 `Plugins/Android/TurboHttpBackground.androidlib`, a Gradle library that declares its own
 `androidx.work:work-runtime` dependency (no Gradle template edits; WorkManager's manifest entries are
-merged only then). `options.UseBackgroundNetworking()` then holds an in-process guard per request and
-hands expired replayable requests to WorkManager. Without the define the library is left out of the
-build and requests keep foreground semantics. Device validation is pending (#99).
+merged only then). `options.UseBackgroundNetworking()` then holds an in-process guard per request.
+Android scopes have no expiry signal yet, so requests are not queued or handed to WorkManager
+automatically (#267). Without the define the library is left out of the build and requests keep
+foreground semantics. Device validation is pending (#266).
 
 #### Background networking opt-in
 1. Add `TURBOHTTP_BACKGROUND_NETWORKING` to **Player Settings > Other Settings > Scripting Define

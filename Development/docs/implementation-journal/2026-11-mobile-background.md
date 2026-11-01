@@ -28,7 +28,9 @@ on the main-thread dispatcher.
   - iOS: begin/end call UIKit directly (both documented thread-safe). The managed side allocates a cookie and registers
     the scope's CTS before calling begin; the native table maps cookie -> task id, and whichever of end/expiration
     removes the entry ends the task (exactly once; an expiry that beats the table insert is recorded and begin then
-    ends the task and reports failure). No lock is held across a UIKit call.
+    ends the task and reports failure). Begin marks its cookie pending before the UIKit call, and only a pending
+    cookie can be recorded as expired-before-begin, so an expiry that races a completed end leaves no entry behind
+    (review r1). No lock is held across a UIKit call.
   - Android: `IAndroidBackgroundPlugin` over JNI (`AndroidBackgroundPluginJni`), called on the calling thread after
     `AndroidJNI.AttachCurrentThread()`. Init is a lock-guarded one-time JNI call; failure leaves foreground semantics.
   - The three RS0030 baseline lines (+ comment), both CS0169 lines and both CS1998 lines for the two bridges are gone.
@@ -80,8 +82,12 @@ Scoped Unity runs: EditMode `BackgroundPluginPackagingTests|WebGlBuildGuardTests
 
 ## Not run / deferred
 
-- Device behavior (begin/end with the player loop paused, foreground request > 25 s, WorkManager on device, JNI from
-  pool threads, class lookup off the main thread): `needs-device-validation`, matrix #99.
+- Device behavior (begin/end with the player loop paused, foreground request > 25 s, the iOS expiration handler
+  ending the task once, JNI from pool threads including an attached pool thread that exits without Detach, class
+  lookup off the main thread, Xcode compile of the .mm): `needs-device-validation`, follow-up #266 (v1.0 GA).
+  The Android build line stays in matrix #99.
+- Android scopes have no expiry signal, so the WorkManager deferred-work path is unreachable on Android (same as
+  before this PR); PlatformNotes now says so. Follow-up #267 (v1.1).
 - Xcode compile/link of the .mm (no macOS host); tvOS build (module not installed).
 - CI Android/iOS player build job: #100 (blocked by the Unity license, #188).
 - #181 other sync-over-async sites (UHttpStreamingResponse, dispatch bridges, Http2Connection.Lifecycle,
