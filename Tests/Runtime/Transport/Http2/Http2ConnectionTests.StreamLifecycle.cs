@@ -276,6 +276,117 @@ namespace TurboHTTP.Tests.Transport.Http2
             });
         }
 
+        [Test]
+        public void StreamLifecycle_EndStreamHeadersWithContentLength_IsMalformed()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/no-data"));
+                var responseTask = conn.SendRequestAsync(request, new RequestContext(request), cts.Token).AsTask();
+                var headers = await ReadFrameMatchingAsync(serverCodec, f => f.Type == Http2FrameType.Headers, cts.Token);
+
+                // RFC 9113 Section 8.1.1: content-length 10 with no DATA at all (GET 200 has content).
+                await serverCodec.WriteFrameAsync(BuildResponseHeadersFrame(
+                    headers.StreamId,
+                    200,
+                    new Dictionary<string, string> { { "content-length", "10" } },
+                    endStream: true), cts.Token);
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(
+                    async () => await WithWatchdogResult(responseTask, cts.Token));
+                StringAssert.Contains("content-length", ex.HttpError.Message);
+
+                await AssertResetAsync(serverCodec, headers.StreamId, Http2ErrorCode.ProtocolError, cts.Token);
+                Assert.AreEqual(0, GetActiveStreams(conn).Count);
+                Assert.IsTrue(conn.IsAlive);
+                conn.Dispose();
+            });
+        }
+
+        [TestCase("abcd")]
+        [TestCase("abcdefghijkl")]
+        public void StreamLifecycle_TrailersEndingBodyThatMismatchesContentLength_AreMalformed(string body)
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/trailers"));
+                var responseTask = conn.SendRequestAsync(request, new RequestContext(request), cts.Token).AsTask();
+                var headers = await ReadFrameMatchingAsync(serverCodec, f => f.Type == Http2FrameType.Headers, cts.Token);
+
+                // RFC 9113 Section 8.1.1: the DATA total must equal content-length when trailers end the
+                // stream too (a shorter body is caught at the trailers, a longer one at the DATA frame).
+                await serverCodec.WriteFrameAsync(BuildResponseHeadersFrame(
+                    headers.StreamId, 200, new Dictionary<string, string> { { "content-length", "10" } }), cts.Token);
+                await serverCodec.WriteFrameAsync(BuildDataFrame(headers.StreamId, body, endStream: false), cts.Token);
+                await serverCodec.WriteFrameAsync(BuildTrailingHeadersFrame(
+                    headers.StreamId, new Dictionary<string, string> { { "x-checksum", "1" } }), cts.Token);
+
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(
+                    async () => await WithWatchdogResult(responseTask, cts.Token));
+                StringAssert.Contains("content-length", ex.HttpError.Message);
+
+                await AssertResetAsync(serverCodec, headers.StreamId, Http2ErrorCode.ProtocolError, cts.Token);
+                await AssertNoFrameWithinAsync(serverCodec, TimeSpan.FromMilliseconds(100));
+                Assert.AreEqual(0, GetActiveStreams(conn).Count);
+                Assert.IsTrue(conn.IsAlive);
+                conn.Dispose();
+            });
+        }
+
+        // --- RFC 9113 Section 5.1: frames on a half-closed (remote) stream while the upload runs ---
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void StreamLifecycle_FrameAfterEndStreamDuringUpload_ResetsStreamClosed(bool lateHeaders)
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                // A zero stream window blocks the upload, so the stream stays active (half-closed remote)
+                // after the response's END_STREAM.
+                await WriteSettingsAndReadAckAsync(
+                    serverCodec, BuildSettingsPayload(Http2SettingId.InitialWindowSize, 0), cts.Token);
+
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("https://test.example.com/half-closed"))
+                    .WithBody(new byte[4096]);
+                var responseTask = conn.SendRequestAsync(request, new RequestContext(request), cts.Token).AsTask();
+                var headers = await ReadFrameMatchingAsync(serverCodec, f => f.Type == Http2FrameType.Headers, cts.Token);
+
+                await serverCodec.WriteFrameAsync(BuildResponseHeadersFrame(headers.StreamId, 200), cts.Token);
+                await serverCodec.WriteFrameAsync(BuildDataFrame(headers.StreamId, "ok", endStream: true), cts.Token);
+                Assert.AreEqual(1, GetActiveStreams(conn).Count, "the upload keeps the stream open");
+
+                await serverCodec.WriteFrameAsync(
+                    lateHeaders
+                        ? BuildTrailingHeadersFrame(headers.StreamId, new Dictionary<string, string> { { "x-late", "1" } })
+                        : BuildDataFrame(headers.StreamId, "late", endStream: false),
+                    cts.Token);
+
+                await AssertResetAsync(serverCodec, headers.StreamId, Http2ErrorCode.StreamClosed, cts.Token);
+
+                // The response was complete before the stream error and stands; the blocked upload stops
+                // without a second RST_STREAM or more DATA.
+                var response = await WithWatchdogResult(responseTask, cts.Token);
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("ok", response.GetBodyAsString());
+                await AssertNoFrameWithinAsync(serverCodec, TimeSpan.FromMilliseconds(100));
+                Assert.AreEqual(0, GetActiveStreams(conn).Count);
+                Assert.IsTrue(conn.IsAlive);
+                conn.Dispose();
+            });
+        }
+
         [TestCase("HEAD", 200)]
         [TestCase("GET", 204)]
         [TestCase("GET", 304)]

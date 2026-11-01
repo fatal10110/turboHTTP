@@ -464,10 +464,19 @@ namespace TurboHTTP.Transport.Http2
 
             try
             {
-                // A field block after the peer's END_STREAM is discarded, as for a closed stream.
+                // RFC 9113 Section 5.1: a field block after the peer's END_STREAM (half-closed remote while
+                // the request body is still being sent) is a stream error of type STREAM_CLOSED. The block
+                // is already decoded, so the HPACK table stays in order.
                 if (stream.IsRemoteClosed)
                 {
                     _decodedHeaderScratch.Clear();
+                    if (RemoveActiveStream(streamId, stream))
+                    {
+                        stream.Fail(new Http2ProtocolException(Http2ErrorCode.StreamClosed,
+                            $"HEADERS received after END_STREAM on stream {streamId}"));
+                        QueueStreamReset(streamId, Http2ErrorCode.StreamClosed);
+                    }
+
                     return;
                 }
 

@@ -158,11 +158,6 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        internal void RemoveActiveStream(int streamId)
-        {
-            _activeStreams.TryRemove(streamId, out _);
-        }
-
         /// <summary>
         /// Removes <paramref name="stream"/> only while it is still the entry for
         /// <paramref name="streamId"/>. Returns true for the one caller that removed it: that caller owns

@@ -23,8 +23,9 @@ h2-write-path (#198).
   #31 field checks, pseudo-headers, trailers without END_STREAM) go through
   `RejectMalformedResponse`: fail, remove, track, RST_STREAM(PROTOCOL_ERROR). The synchronous header
   path queues one reset (`_pendingResetStreamId`, read-loop owned) that `ReadLoopAsync` writes right
-  after the frame, so the sync shape and frame order are kept. DATA after END_STREAM on a stream
-  that is still uploading is a STREAM_CLOSED stream error (RFC 9113 §5.1).
+  after the frame, so the sync shape and frame order are kept. DATA or a field block after END_STREAM
+  on a stream that is still uploading is a STREAM_CLOSED stream error (RFC 9113 §5.1); a response
+  that completed before it stands, only the upload stops.
 - **#25 content-length.** `TryStartResponse` records the expected length (-1 without content-length
   or for HEAD/204/304, RFC 9110 §6.4.1). DATA beyond it, an END_STREAM (DATA or trailers) short of
   it, or HEADERS+END_STREAM with a non-zero content-length is malformed: the body faults and the
@@ -83,4 +84,7 @@ H1 read-to-end > 100 MB now succeeds).
   Transport/Http2, Transport/Http1 (Http11*), Http2BodySizeTests and the buffered-dispatch tests pass;
   the 2 `UHttpClient`-based cap tests cannot run outside Unity (UnityEngine ECall) and are left to the
   host editor. Against `origin/main` the new #19/#25/#28/#147 tests and the channel race test fail.
+- Review round 1 added the half-closed (remote) DATA/HEADERS test, HEADERS+END_STREAM with
+  content-length, and trailers ending a body shorter/longer than content-length: 293 of 295 pass in
+  the scratch project (same 2 Unity-only tests); the late-HEADERS case fails without its fix.
 - Not run: Unity EditMode/PlayMode, IL2CPP, devices.
