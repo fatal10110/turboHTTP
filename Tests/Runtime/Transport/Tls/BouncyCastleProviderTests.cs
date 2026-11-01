@@ -45,6 +45,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 #if TURBOHTTP_INTEGRATION_TESTS
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_ValidServer_Succeeds()        {
             Task.Run(async () =>
             {
@@ -60,6 +61,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_WithAlpn_NegotiatesH2()        {
             Task.Run(async () =>
             {
@@ -76,6 +78,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_ExpiredCert_ThrowsFatalAlert()
         {
             TestRequirements.RequireBouncyCastle();
@@ -97,6 +100,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_WildcardCert_Succeeds()        {
             Task.Run(async () =>
             {
@@ -111,12 +115,14 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_RealServer_SucceedsWithH2Alpn()        {
             WrapAsync_WithAlpn_NegotiatesH2();
         }
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_SniSent_ServerAcceptsConnection()        {
             Task.Run(async () =>
             {
@@ -130,6 +136,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_HostnameMismatch_ThrowsAuthenticationException()
         {
             TestRequirements.RequireBouncyCastle();

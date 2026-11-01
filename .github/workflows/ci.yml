@@ -102,6 +102,15 @@ jobs:
           githubToken: ${{ secrets.GITHUB_TOKEN }}
           checkName: Unity ${{ matrix.testMode }} results
 
+      # #151: fail when the skipped count rises above Tools~/unity/skip-baseline.txt, or a skip has no
+      # #issue/[env] reason. The run excludes ExternalNetwork only, which never skips, so it counts as unfiltered.
+      - name: Skip gate
+        if: always() && env.HAS_UNITY_LICENSE == 'true'
+        run: |
+          results="$(find 'artifacts-${{ matrix.testMode }}' -name '*-results.xml' | head -n 1)"
+          if [ -z "$results" ]; then echo "::error::no Unity results file in artifacts-${{ matrix.testMode }}"; exit 1; fi
+          python3 'Tools~/unity/summarize_results.py' "$results" '${{ matrix.testMode }}' 0 'Tools~/unity/skip-baseline.txt'
+
       - uses: actions/upload-artifact@v7
         if: always() && env.HAS_UNITY_LICENSE == 'true'
         with:

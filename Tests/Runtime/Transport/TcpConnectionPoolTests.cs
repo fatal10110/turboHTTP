@@ -752,6 +752,7 @@ namespace TurboHTTP.Tests.Transport
 #if TURBOHTTP_INTEGRATION_TESTS
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void PooledConnection_TlsVersion_SetAfterTlsHandshake()
         {
             Task.Run(async () =>
@@ -790,6 +791,7 @@ namespace TurboHTTP.Tests.Transport
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void ITlsProvider_WrapAsync_ReturnsTlsResult_WithNegotiatedProtocol()
         {
             Task.Run(async () =>
@@ -835,6 +837,7 @@ namespace TurboHTTP.Tests.Transport
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void ITlsProvider_TlsBelowMinimum_ThrowsAuthenticationException()
         {
             Task.Run(async () =>

@@ -1,0 +1,8 @@
+# Maximum skipped/ignored tests in an unfiltered host-editor run, per platform (run-tests.sh, #151).
+# run-tests.sh exits 4 when an unfiltered run skips more. Every remaining skip is an environment
+# check (TestRequirements.IgnoreEnvironment, "[env]") that the periodic host-editor run is expected
+# to satisfy: a skip appearing there means a test silently stopped executing, so investigate before
+# raising a number, and justify the raise (issue number) in the PR.
+# <platform> <max skipped>
+EditMode 0
+PlayMode 0

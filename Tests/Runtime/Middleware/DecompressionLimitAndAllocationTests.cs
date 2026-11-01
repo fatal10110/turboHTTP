@@ -12,6 +12,7 @@ using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 using TurboHTTP.Middleware;
 using TurboHTTP.Testing;
+using TurboHTTP.Tests.Transport;
 using Unity.Profiling;
 using UnityEngine.TestTools;
 
@@ -321,14 +322,14 @@ namespace TurboHTTP.Tests.Middleware
 
                 _frameRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame");
                 if (!_frameRecorder.Valid)
-                    Assert.Ignore("No managed allocation counter is available on this runtime.");
+                    TestRequirements.IgnoreEnvironment("No managed allocation counter is available on this runtime.");
 
                 yield return null;
                 var frameProbe = new byte[ProbeBytes];
                 GC.KeepAlive(frameProbe);
                 yield return null;
                 if (_frameRecorder.LastValue < ProbeBytes)
-                    Assert.Ignore("The GC Allocated In Frame counter does not report allocations here.");
+                    TestRequirements.IgnoreEnvironment("The GC Allocated In Frame counter does not report allocations here.");
 
                 Name = "ProfilerRecorder(GC Allocated In Frame)";
             }

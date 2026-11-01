@@ -32,6 +32,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void HttpClient_WithSslStream_CanFetchGoogle()        {
             Task.Run(async () =>
             {
@@ -48,6 +49,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void HttpClient_WithBouncyCastle_CanFetchGoogle()        {
             TestRequirements.RequireBouncyCastle();
 
@@ -66,6 +68,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void HttpClient_Auto_SelectsCorrectProvider()        {
             Task.Run(async () =>
             {
