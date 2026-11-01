@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -30,6 +31,23 @@ namespace TurboHTTP.Transport.Connection
             public bool Success => Socket != null;
         }
 
+        /// <summary>
+        /// Connects to the first reachable address (RFC 8305 Happy Eyeballs v2). Attempts start
+        /// one at a time, <see cref="HappyEyeballsOptions.AttemptSpacingDelay"/> apart within a
+        /// family and <see cref="HappyEyeballsOptions.FamilyStaggerDelay"/> after the preferred
+        /// family for the other family, so a blackholed address never blocks a later healthy one.
+        /// The first success wins; losing attempts are cancelled and their sockets disposed.
+        /// </summary>
+        /// <param name="addresses">Resolved addresses (duplicates and nulls are ignored).</param>
+        /// <param name="port">Remote port.</param>
+        /// <param name="connectTimeout">
+        /// Wall-clock deadline for the whole connect (every attempt, sequential mode included).
+        /// <see cref="Timeout.InfiniteTimeSpan"/>, zero or a negative value disables it.
+        /// When it expires a <see cref="TimeoutException"/> is thrown.
+        /// </param>
+        /// <param name="options">Racing options.</param>
+        /// <param name="cancellationToken">Caller cancellation; surfaces as <see cref="OperationCanceledException"/>.</param>
+        /// <param name="connector">Dialer seam for tests; defaults to a TCP connect.</param>
         public static async Task<Socket> ConnectAsync(
             IPAddress[] addresses,
             int port,
@@ -50,27 +68,56 @@ namespace TurboHTTP.Transport.Connection
             if (deduped.Count == 0)
                 throw new SocketException((int)SocketError.HostNotFound);
 
-            var familyOrder = Partition(deduped, options.PreferIpv6);
-            var preferred = familyOrder.preferred;
-            var alternate = familyOrder.alternate;
+            cancellationToken.ThrowIfCancellationRequested();
 
-            if (!options.Enable || preferred.Count == 0 || alternate.Count == 0)
-            {
-                return await ConnectSequentialAsync(deduped, port, cancellationToken, connector).ConfigureAwait(false);
-            }
-
-            var schedule = BuildSchedule(preferred, alternate, options);
+            // The deadline covers every path, including the sequential one (#163).
             CancellationTokenSource timeoutCts = connectTimeout > TimeSpan.Zero && connectTimeout != Timeout.InfiniteTimeSpan
                 ? new CancellationTokenSource(connectTimeout)
                 : null;
+            CancellationTokenSource deadlineCts = timeoutCts != null
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
+                : null;
+            var token = deadlineCts?.Token ?? cancellationToken;
+
+            try
+            {
+                if (!options.Enable)
+                    return await ConnectSequentialAsync(deduped, port, token, connector).ConfigureAwait(false);
+
+                // A single family races too: its addresses are staggered by AttemptSpacingDelay
+                // instead of waiting for each attempt to fail (RFC 8305 section 5).
+                var familyOrder = Partition(deduped, options.PreferIpv6);
+                var schedule = BuildSchedule(familyOrder.preferred, familyOrder.alternate, options);
+                return await RaceAsync(schedule, port, options, token, connector).ConfigureAwait(false);
+            }
+            catch (Exception) when (timeoutCts != null &&
+                                    timeoutCts.IsCancellationRequested &&
+                                    !cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    "Connection attempt timed out after " + (long)connectTimeout.TotalMilliseconds + "ms.");
+            }
+            finally
+            {
+                try { deadlineCts?.Dispose(); } catch { }
+                try { timeoutCts?.Dispose(); } catch { }
+            }
+        }
+
+        private static async Task<Socket> RaceAsync(
+            List<ScheduledAttempt> schedule,
+            int port,
+            HappyEyeballsOptions options,
+            CancellationToken cancellationToken,
+            Func<IPAddress, int, CancellationToken, Task<Socket>> connector)
+        {
             CancellationTokenSource linkedCts = null;
             List<Task<AttemptResult>> activeTasks = null;
 
             try
             {
-                linkedCts = timeoutCts != null
-                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
-                    : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                // Own source so the winner can cancel the losers without touching the caller.
+                linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var ct = linkedCts.Token;
 
                 activeTasks = new List<Task<AttemptResult>>();
@@ -139,13 +186,13 @@ namespace TurboHTTP.Transport.Connection
                         failures.Add(result.Exception);
                 }
 
-                if (timeoutCts != null && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                    throw new TimeoutException("Happy Eyeballs connection timed out.");
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (failures.Count == 0)
                     throw new SocketException((int)SocketError.HostUnreachable);
+
+                if (failures.Count == 1)
+                    ExceptionDispatchInfo.Capture(failures[0]).Throw();
 
                 throw new AggregateException("All Happy Eyeballs connection attempts failed.", failures);
             }
@@ -165,7 +212,6 @@ namespace TurboHTTP.Transport.Connection
                 }
 
                 try { linkedCts?.Dispose(); } catch { }
-                try { timeoutCts?.Dispose(); } catch { }
             }
         }
 

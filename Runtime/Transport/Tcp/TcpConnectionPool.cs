@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -279,6 +280,7 @@ namespace TurboHTTP.Transport.Tcp
         // Test seam: replaces TlsProviderSelector.GetProvider when set (internal ctor only).
         private readonly Func<TlsBackend, ITlsProvider> _tlsProviderResolver;
         private readonly int _dnsTimeoutMs;
+        private readonly TimeSpan _connectTimeout;
         private readonly HappyEyeballsOptions _happyEyeballsOptions;
         private readonly SocketIoMode _socketIoMode;
         private readonly TimeSpan _scavengeInterval;
@@ -297,13 +299,18 @@ namespace TurboHTTP.Transport.Tcp
         /// <param name="tlsBackend">TLS backend selection strategy (default Auto).</param>
         /// <param name="dnsTimeout">Timeout for DNS lookups. Default 10 seconds.</param>
         /// <param name="socketIoMode">Socket I/O implementation (default NetworkStream).</param>
+        /// <param name="connectTimeout">
+        /// Wall-clock deadline for the TCP connect to one host (all address attempts). Default 10 seconds;
+        /// <see cref="Timeout.InfiniteTimeSpan"/> disables it. Expiry fails with <see cref="UHttpErrorType.Timeout"/>.
+        /// </param>
         public TcpConnectionPool(
             int maxConnectionsPerHost = 6,
             TimeSpan? connectionIdleTimeout = null,
             TlsBackend tlsBackend = TlsBackend.Auto,
             TimeSpan? dnsTimeout = null,
             HappyEyeballsOptions happyEyeballsOptions = null,
-            SocketIoMode socketIoMode = SocketIoMode.NetworkStream)
+            SocketIoMode socketIoMode = SocketIoMode.NetworkStream,
+            TimeSpan? connectTimeout = null)
         {
             if (maxConnectionsPerHost <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
@@ -314,11 +321,20 @@ namespace TurboHTTP.Transport.Tcp
             if (dnsTimeout.HasValue && dnsTimeout.Value.TotalMilliseconds > int.MaxValue)
                 throw new ArgumentOutOfRangeException(nameof(dnsTimeout),
                     "Must be less than or equal to Int32.MaxValue milliseconds.");
+            if (connectTimeout.HasValue && connectTimeout.Value != Timeout.InfiniteTimeSpan)
+            {
+                if (connectTimeout.Value <= TimeSpan.Zero)
+                    throw new ArgumentOutOfRangeException(nameof(connectTimeout), "Must be positive or Timeout.InfiniteTimeSpan");
+                if (connectTimeout.Value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(connectTimeout),
+                        "Must be less than or equal to Int32.MaxValue milliseconds.");
+            }
 
             _maxConnectionsPerHost = maxConnectionsPerHost;
             _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
             _tlsBackend = tlsBackend;
             _dnsTimeoutMs = dnsTimeout.HasValue ? (int)dnsTimeout.Value.TotalMilliseconds : DefaultDnsTimeoutMs;
+            _connectTimeout = connectTimeout ?? ConnectionPoolOptions.DefaultConnectTimeout;
             _happyEyeballsOptions = (happyEyeballsOptions ?? new HappyEyeballsOptions()).Clone();
             _happyEyeballsOptions.Validate();
             _socketIoMode = socketIoMode;
@@ -561,8 +577,15 @@ namespace TurboHTTP.Transport.Tcp
             // DNS resolution with timeout
             var addresses = await ResolveDnsAsync(host, ct).ConfigureAwait(false);
 
-            // Socket connection with address fallback (IPv6-safe)
-            var socket = await ConnectSocketAsync(addresses, port, ct).ConfigureAwait(false);
+            // Socket connection with address racing (IPv6-safe) under the connect deadline.
+            // An IPv4 literal that has no IPv4 route retries through NAT64-synthesized
+            // addresses (RFC 8305 section 7.1, #167).
+            var socket = await Nat64AddressSynthesizer.ConnectWithLiteralFallbackAsync(
+                host,
+                addresses,
+                candidates => ConnectSocketAsync(candidates, port, ct),
+                name => ResolveDnsAsync(name, ct),
+                ct).ConfigureAwait(false);
 
             // Build the base stream based on the configured socket I/O mode.
             // All three streams close the socket when disposed (via ownsSocket or channel ownership).
@@ -649,21 +672,44 @@ namespace TurboHTTP.Transport.Tcp
             return await dnsTask.ConfigureAwait(false);
         }
 
-        private async Task<Socket> ConnectSocketAsync(
+        private Task<Socket> ConnectSocketAsync(
             IPAddress[] addresses, int port, CancellationToken ct)
+        {
+            return ConnectWithDeadlineAsync(addresses, port, _connectTimeout, _happyEyeballsOptions, ct);
+        }
+
+        /// <summary>
+        /// Races <paramref name="addresses"/> under <paramref name="connectTimeout"/>. Deadline expiry
+        /// becomes <c>UHttpException(Timeout)</c> (caller cancellation stays an
+        /// <see cref="OperationCanceledException"/>); an all-failed race rethrows the first failure.
+        /// </summary>
+        internal static async Task<Socket> ConnectWithDeadlineAsync(
+            IPAddress[] addresses,
+            int port,
+            TimeSpan connectTimeout,
+            HappyEyeballsOptions happyEyeballsOptions,
+            CancellationToken ct,
+            Func<IPAddress, int, CancellationToken, Task<Socket>> connector = null)
         {
             try
             {
                 return await HappyEyeballsConnector.ConnectAsync(
                     addresses,
                     port,
-                    Timeout.InfiniteTimeSpan,
-                    _happyEyeballsOptions,
-                    ct).ConfigureAwait(false);
+                    connectTimeout,
+                    happyEyeballsOptions,
+                    ct,
+                    connector).ConfigureAwait(false);
+            }
+            catch (TimeoutException ex) when (!ct.IsCancellationRequested)
+            {
+                throw new UHttpException(new UHttpError(UHttpErrorType.Timeout,
+                    $"TCP connect timed out after {(long)connectTimeout.TotalMilliseconds}ms", ex));
             }
             catch (AggregateException aggregate) when (aggregate.InnerExceptions.Count > 0)
             {
-                throw aggregate.InnerExceptions[0];
+                ExceptionDispatchInfo.Capture(aggregate.InnerExceptions[0]).Throw();
+                throw;
             }
         }
 

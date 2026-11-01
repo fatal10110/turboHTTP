@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Tcp
 {
@@ -42,6 +43,14 @@ namespace TurboHTTP.Transport.Tcp
         /// <summary>Size of each pinned SAEA buffer.</summary>
         private const int BufferSize = 16 * 1024;
 
+        /// <summary>
+        /// How long <see cref="Dispose"/> waits for in-flight completions before it gives up and
+        /// leaks the buffers (#168). Matches the PollSelect poll-thread join bound.
+        /// </summary>
+        internal const int DisposeDrainTimeoutMs = 500;
+
+        private static long s_buffersLeakedOnDispose;
+
         private readonly Socket _socket;
         private readonly SocketAsyncEventArgs _recvSaea;
         private readonly SocketAsyncEventArgs _sendSaea;
@@ -59,6 +68,8 @@ namespace TurboHTTP.Transport.Tcp
         private volatile int _sendActive;
 
         private int _disposed;
+        private int _drainTimeoutMs = DisposeDrainTimeoutMs;
+        private int _buffersReleased;
 
         public SaeaSocketChannel(Socket socket)
         {
@@ -81,6 +92,28 @@ namespace TurboHTTP.Transport.Tcp
             _sendSaea.Completed += OnSendCompleted;
         }
 
+        /// <summary>
+        /// Test hook: runs right before the cancellation callback is registered, so a test can
+        /// cancel the token there and make the registration dispose the socket inline (#170).
+        /// </summary>
+        internal Action TestHookBeforeRegister { get; set; }
+
+        /// <summary>True once <see cref="Dispose"/> returned the pooled buffers (test hook, #168).</summary>
+        internal bool BuffersReleased => Volatile.Read(ref _buffersReleased) != 0;
+
+        /// <summary>Channels whose Dispose hit the drain bound and leaked their buffers (process-wide).</summary>
+        internal static long BuffersLeakedOnDispose => Interlocked.Read(ref s_buffersLeakedOnDispose);
+
+        /// <summary>
+        /// Test hook: marks a receive as submitted to the OS without submitting one, i.e. a
+        /// completion that never fires (#168). Also shortens the drain bound for the test.
+        /// </summary>
+        internal void SimulateStuckReceiveForTest(int drainTimeoutMs)
+        {
+            _drainTimeoutMs = drainTimeoutMs;
+            _recvActive = 1;
+        }
+
         // ── Receive ───────────────────────────────────────────────────────────
 
         /// <summary>
@@ -92,8 +125,7 @@ namespace TurboHTTP.Transport.Tcp
         public async ValueTask<int> ReceiveAsync(
             byte[] buffer, int offset, int count, CancellationToken ct)
         {
-            ThrowIfDisposed();
-            ct.ThrowIfCancellationRequested();
+            ThrowIfCancelledOrDisposed(ct);
 
             // Guard against concurrent same-direction calls.
             if (Interlocked.CompareExchange(ref _recvActive, 1, 0) != 0)
@@ -107,6 +139,7 @@ namespace TurboHTTP.Transport.Tcp
             CancellationTokenRegistration reg = default;
             if (ct.CanBeCanceled)
             {
+                TestHookBeforeRegister?.Invoke();
                 // Cancellation: dispose the socket. Double-dispose is safe (idempotent).
                 // The disposal triggers OperationAborted on the pending SAEA, which
                 // OnRecvCompleted maps to OperationCanceledException.
@@ -134,11 +167,13 @@ namespace TurboHTTP.Transport.Tcp
 
                 return bytesRead;
             }
-            catch
+            catch (Exception ex)
             {
                 // If the async path never started (exception before ReceiveAsync),
                 // ensure the active flag is cleared so the channel is reusable.
                 Interlocked.CompareExchange(ref _recvActive, 0, 1);
+                if (IsCancellationRace(ex, ct))
+                    throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
                 throw;
             }
             finally
@@ -156,8 +191,7 @@ namespace TurboHTTP.Transport.Tcp
         /// <exception cref="InvalidOperationException">A send is already in flight.</exception>
         public async ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
         {
-            ThrowIfDisposed();
-            ct.ThrowIfCancellationRequested();
+            ThrowIfCancelledOrDisposed(ct);
 
             int offset = 0;
             int remaining = data.Length;
@@ -179,6 +213,7 @@ namespace TurboHTTP.Transport.Tcp
                 CancellationTokenRegistration reg = default;
                 if (ct.CanBeCanceled)
                 {
+                    TestHookBeforeRegister?.Invoke();
                     reg = ct.Register(static state =>
                     {
                         try { ((Socket)state).Dispose(); } catch { }
@@ -198,9 +233,11 @@ namespace TurboHTTP.Transport.Tcp
                     offset += sent;
                     remaining -= sent;
                 }
-                catch
+                catch (Exception ex)
                 {
                     Interlocked.CompareExchange(ref _sendActive, 0, 1);
+                    if (IsCancellationRace(ex, ct))
+                        throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
                     throw;
                 }
                 finally
@@ -255,13 +292,21 @@ namespace TurboHTTP.Transport.Tcp
             // clearing the active flags and delivering an exception to any awaiter.
             try { _socket.Dispose(); } catch { }
 
-            // Spin-wait until in-flight operations complete. OperationAborted fires
-            // essentially immediately after socket disposal, so this is near-zero overhead.
-            // We must not return the ArrayPool buffers while the OS/IOCP thread still holds
-            // a reference to them.
-            var sw = new SpinWait();
-            while (Volatile.Read(ref _recvActive) != 0 || Volatile.Read(ref _sendActive) != 0)
-                sw.SpinOnce();
+            // Wait, bounded, until in-flight operations complete. OperationAborted normally
+            // fires essentially immediately after socket disposal. We must not return the
+            // ArrayPool buffers while the OS/IOCP thread still holds a reference to them.
+            if (!WaitForInFlightOperations(Volatile.Read(ref _drainTimeoutMs)))
+            {
+                // Some runtimes (Mono/IL2CPP) may never post the aborted completion (#168).
+                // Leak the SAEAs and buffers on purpose: the kernel may still write into them,
+                // so returning them to the shared pool could corrupt another renter's data.
+                Interlocked.Increment(ref s_buffersLeakedOnDispose);
+                TurboDiagnostics.LogOnce(
+                    TurboDiagnostics.OnceSaeaDisposeDrainTimeout,
+                    "[TurboHTTP] SAEA socket operation did not complete within " + DisposeDrainTimeoutMs +
+                    "ms of socket disposal; its buffers were not returned to the pool (logged once).");
+                return;
+            }
 
             // Safe to dispose SAEAs and return buffers — all completions have fired.
             _recvSaea.Dispose();
@@ -269,14 +314,51 @@ namespace TurboHTTP.Transport.Tcp
 
             ArrayPool<byte>.Shared.Return(_recvBuffer);
             ArrayPool<byte>.Shared.Return(_sendBuffer);
+            Volatile.Write(ref _buffersReleased, 1);
+        }
+
+        private bool WaitForInFlightOperations(int timeoutMs)
+        {
+            var deadline = System.Diagnostics.Stopwatch.StartNew();
+            var sw = new SpinWait();
+            while (Volatile.Read(ref _recvActive) != 0 || Volatile.Read(ref _sendActive) != 0)
+            {
+                if (deadline.ElapsedMilliseconds >= timeoutMs)
+                    return false;
+                sw.SpinOnce();
+            }
+
+            return true;
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
 
-        private void ThrowIfDisposed()
+        /// <summary>
+        /// Cancellation wins over disposal: an already-cancelled token surfaces as
+        /// <see cref="OperationCanceledException"/> even when that cancellation disposed the socket (#170).
+        /// </summary>
+        private void ThrowIfCancelledOrDisposed(CancellationToken ct)
         {
+            ct.ThrowIfCancellationRequested();
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(SaeaSocketChannel));
+        }
+
+        /// <summary>
+        /// A token cancelled between the entry check and the socket call disposes the socket
+        /// through its registration (inline when already cancelled), so the socket call throws
+        /// <see cref="ObjectDisposedException"/> or reports an abort. That is a cancellation (#170).
+        /// </summary>
+        private static bool IsCancellationRace(Exception ex, CancellationToken ct)
+        {
+            if (!ct.IsCancellationRequested)
+                return false;
+            if (ex is OperationCanceledException oce)
+                return oce.CancellationToken != ct;
+            return ex is ObjectDisposedException ||
+                   (ex is SocketException se &&
+                    (se.SocketErrorCode == SocketError.OperationAborted ||
+                     se.SocketErrorCode == SocketError.Interrupted));
         }
     }
 }

@@ -36,10 +36,11 @@ namespace TurboHTTP.Core
         /// mobile, and any target where SAEA/async callbacks are unreliable).
         /// </summary>
         /// <remarks>
-        /// This mode runs a tight poll loop on a dedicated thread per connection (or a
-        /// multiplexed select loop), reading/writing synchronously when data is available.
-        /// Slightly higher CPU usage than SAEA on desktop, but much safer on PlayStation,
-        /// Xbox, Nintendo Switch, Android, and iOS under IL2CPP.
+        /// This mode runs one dedicated poll thread per connection, reading/writing synchronously
+        /// when the socket is ready. The thread blocks on a signal while no operation is pending,
+        /// so an idle connection costs no CPU; while a receive is pending it polls in 20 ms slices
+        /// (about 50 wake-ups per second). Safer than SAEA on PlayStation, Xbox, Nintendo Switch,
+        /// Android, and iOS under IL2CPP.
         /// </remarks>
         PollSelect = 2,
     }
@@ -49,9 +50,13 @@ namespace TurboHTTP.Core
     /// </summary>
     public sealed class ConnectionPoolOptions
     {
+        /// <summary>Default <see cref="ConnectTimeout"/>: 10 seconds.</summary>
+        internal static readonly TimeSpan DefaultConnectTimeout = TimeSpan.FromSeconds(10);
+
         private int _maxConnectionsPerHost = PlatformConfig.RecommendedMaxConcurrency;
         private TimeSpan _connectionIdleTimeout = TimeSpan.FromMinutes(2);
         private int _dnsTimeoutMs = 10000;
+        private TimeSpan _connectTimeout = DefaultConnectTimeout;
         private HappyEyeballsOptions _happyEyeballs = new HappyEyeballsOptions();
         private SocketIoMode _socketIoMode = SocketIoMode.NetworkStream;
 
@@ -99,6 +104,35 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Wall-clock deadline for establishing the TCP connection to a host: every address
+        /// attempt of one connect, after DNS and before TLS. Defaults to 10 seconds.
+        /// </summary>
+        /// <remarks>
+        /// The request timeout (<c>UHttpRequest.Timeout</c>) still bounds the connect as well, so the
+        /// effective limit is the smaller of the two. When this deadline expires the request fails
+        /// with <c>UHttpErrorType.Timeout</c>. <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>
+        /// disables it (the request timeout then remains the only bound). Values must be positive
+        /// and at most <see cref="int.MaxValue"/> milliseconds.
+        /// </remarks>
+        public TimeSpan ConnectTimeout
+        {
+            get => _connectTimeout;
+            set
+            {
+                if (value != System.Threading.Timeout.InfiniteTimeSpan)
+                {
+                    if (value <= TimeSpan.Zero)
+                        throw new ArgumentOutOfRangeException(nameof(value), "Must be positive or Timeout.InfiniteTimeSpan.");
+                    if (value.TotalMilliseconds > int.MaxValue)
+                        throw new ArgumentOutOfRangeException(nameof(value),
+                            "Must be less than or equal to Int32.MaxValue milliseconds.");
+                }
+
+                _connectTimeout = value;
+            }
+        }
+
+        /// <summary>
         /// Options for Happy Eyeballs (RFC 8305) dual-stack IPv4/IPv6 connection racing.
         /// </summary>
         public HappyEyeballsOptions HappyEyeballs
@@ -131,6 +165,7 @@ namespace TurboHTTP.Core
                 _maxConnectionsPerHost = _maxConnectionsPerHost,
                 _connectionIdleTimeout = _connectionIdleTimeout,
                 _dnsTimeoutMs = _dnsTimeoutMs,
+                _connectTimeout = _connectTimeout,
                 _happyEyeballs = _happyEyeballs.Clone(),
                 _socketIoMode = _socketIoMode,
             };
@@ -141,6 +176,7 @@ namespace TurboHTTP.Core
             return _maxConnectionsPerHost == PlatformConfig.RecommendedMaxConcurrency &&
                    _connectionIdleTimeout == TimeSpan.FromMinutes(2) &&
                    _dnsTimeoutMs == 10000 &&
+                   _connectTimeout == DefaultConnectTimeout &&
                    _happyEyeballs.IsDefault() &&
                    _socketIoMode == SocketIoMode.NetworkStream;
         }

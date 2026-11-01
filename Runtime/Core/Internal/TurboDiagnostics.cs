@@ -24,6 +24,9 @@ namespace TurboHTTP.Core.Internal
         /// <summary>Once-flag: FollowRedirects is set but no redirect interceptor is configured (#64).</summary>
         internal const int OnceFollowRedirectsWithoutInterceptor = 1;
 
+        /// <summary>Once-flag: a SAEA channel leaked its buffers because a completion never fired (#168).</summary>
+        internal const int OnceSaeaDisposeDrainTimeout = 1 << 4;
+
         private static readonly Action<string> DefaultSink = WriteDefault;
 
         private static Action<string> _sink = DefaultSink;
