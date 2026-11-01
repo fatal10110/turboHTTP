@@ -1,22 +1,22 @@
 # UniTask Module
 
-TurboHTTP treats `ValueTask` as a first-class citizen for high-performance, zero-allocation async methods. However, in the Unity ecosystem, [UniTask](https://github.com/Cysharp/UniTask) is the dominant zero-allocation awaitable. 
+TurboHTTP's async methods return `ValueTask`/`Task`. If you use [UniTask](https://github.com/Cysharp/UniTask), the optional `TurboHTTP.UniTask` assembly adds adapters.
 
-TurboHTTP provides native adapters to seamlessly integrate with `UniTask`.
+## Enabling UniTask support
 
-## Enabling UniTask Support
-
-If you have UniTask installed in your project, the macros `UNITASK_SUPPORT` and `UNITASK_WEBSOCKET_SUPPORT` will automatically light up.
-
-You can include `TurboHTTP.UniTask` to access extension methods.
+The assembly compiles only when the `com.cysharp.unitask` package (2.0.0 or newer) is installed, which defines `TURBOHTTP_UNITASK`. It is not auto-referenced: reference `TurboHTTP.UniTask` from your own `.asmdef`. The adapters need UniTask, so these snippets are not compiled with the rest of the documentation.
 
 ## Usage
 
-You can safely await any `ValueTask` returning method from TurboHTTP inside a `UniTask` method.
+`GetAsync`, `PostAsync`, `PutAsync`, `PatchAsync`, `DeleteAsync`, `HeadAsync` and `OptionsAsync` on `UHttpClient` return `UniTask<UHttpResponse>` (buffered), and `AsUniTask()` converts any request. Continuations resume on the main thread by UniTask's rules.
 
+<!-- snippet: skip needs the UniTask package, which the shadow build does not have -->
 ```csharp
 using Cysharp.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.JSON;
+using TurboHTTP.UniTask;
+using UnityEngine;
 
 public class DataService : MonoBehaviour
 {
@@ -24,40 +24,33 @@ public class DataService : MonoBehaviour
 
     public async UniTask<MyData> FetchDataAsync()
     {
-        // SendAsync() returns ValueTask<UHttpResponse>
-        var response = await _client.Get("/api/data").SendAsync();
-        
+        using var response = await _client.GetAsync("https://api.example.com/data");
         return response.AsJson<MyData>();
     }
 }
 ```
 
-## WebSocket UniTask Extensions
+`WithTimeout(TimeSpan)` and `AttachToCancellationToken(token)` apply to a `UniTask<UHttpResponse>`; `TurboHttpUniTaskOptions.DefaultPlayerLoopTiming` selects the player-loop timing used for continuations.
 
-The `WebSocket` module also has UniTask wrappers to avoid allocation in the receive loop.
+## WebSocket
 
+`ConnectAsUniTask` connects an `IWebSocketClient` as a `UniTask`.
+
+<!-- snippet: skip needs the UniTask package, which the shadow build does not have -->
 ```csharp
+using System;
+using System.Threading;
 using Cysharp.Threading.Tasks;
+using TurboHTTP.UniTask;
 using TurboHTTP.WebSocket;
 
-public async UniTask ReceiveLoopAsync(UWebSocket ws, CancellationToken ct)
+public static class WebSocketExample
 {
-    var memory = new byte[1024].AsMemory();
-    
-    while (ws.State == WebSocketState.Open)
+    public static async UniTask ConnectAsync(IWebSocketClient ws, CancellationToken ct)
     {
-        // ReceiveAsync normally returns ValueTask. 
-        // UniTask integration ensures optimal execution context.
-        var result = await ws.ReceiveAsync(memory, ct);
-        
-        if (result.MessageType == WebSocketMessageType.Text)
-        {
-            // Process
-        }
+        await ws.ConnectAsUniTask(new Uri("wss://echo.websocket.events"), ct);
     }
 }
 ```
 
-## Awaiters & SynchronizationContext
-
-TurboHTTP requests avoid capturing the Unity `SynchronizationContext` automatically (internally using `.ConfigureAwait(false)`). When you await a TurboHTTP call in a `UniTask` method on the main thread, UniTask's custom awaiter seamlessly bridges you back to the main thread upon completion.
+Plain `Task`/`ValueTask` awaiting also works inside UniTask methods: TurboHTTP never captures the Unity `SynchronizationContext` (it uses `ConfigureAwait(false)` internally), so awaiting from a `UniTask` method returns you to the main thread through UniTask's own awaiter.

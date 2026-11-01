@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.JSON;
 using UnityEngine;
 
 namespace TurboHTTP.Samples.JsonApi
@@ -112,7 +113,7 @@ namespace TurboHTTP.Samples.JsonApi
         {
             Debug.Log("=== Delete Post ===");
 
-            var response = await _client.Delete("/posts/1").SendAsync();
+            using var response = await _client.Delete("/posts/1").SendBufferedAsync();
 
             Debug.Log($"Delete status: {response.StatusCode}");
         }

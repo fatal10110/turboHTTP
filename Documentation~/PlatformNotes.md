@@ -34,11 +34,11 @@ var options = new UHttpClientOptions
 };
 ```
 
-To override concurrency, configure the Transport directly:
+To override connection concurrency, configure the connection pool:
 
+<!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
 ```csharp
-var pool = new TcpConnectionPool(maxConnectionsPerHost: 4);
-var transport = new RawSocketTransport(pool);
+options.ConnectionPool.MaxConnectionsPerHost = 4;
 ```
 
 ## Cleartext traffic
@@ -74,6 +74,8 @@ TurboHTTP applies its own policy instead, before it resolves or connects any add
   body that cannot be replayed, or a second 407) the 407 response is returned to the caller.
 
 ```csharp
+using TurboHTTP.WebSocket;
+
 // Local development server over plain HTTP / ws:// on a device:
 var client = new UHttpClient(new UHttpClientOptions { AllowCleartext = true });
 var wsOptions = new WebSocketConnectionOptions { AllowCleartext = true };
@@ -102,8 +104,8 @@ ATS does not apply to raw sockets, so `Info.plist` ATS keys do not affect TurboH
 `http://` and `ws://` are refused by TurboHTTP's own default on iOS players; set
 `AllowCleartext = true` to opt in (see [Cleartext traffic](#cleartext-traffic)).
 
-#### IPv6
-App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via standard C# Sockets.
+#### IPv6 and NAT64
+App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via standard C# Sockets and resolves names with Happy Eyeballs (RFC 8305), so a hostname works on dual-stack and IPv6-only networks. On a NAT64/DNS64 network connect to hostnames, not IPv4 literals (`http://203.0.113.5/` has no synthesized IPv6 address). Behavior on a real NAT64 network is `needs-device-validation` (#99); it has not been verified from the Editor.
 
 ### Android (IL2CPP)
 

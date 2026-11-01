@@ -1,53 +1,113 @@
 # Auth Module
 
-TurboHTTP's `Auth` module provides an extensible framework for handling authentication, ranging from simple static tokens to complex OAuth 2.0 and OIDC flows.
+The `TurboHTTP.Auth` module attaches credentials to requests, from a simple static token to OAuth 2.0 / OpenID Connect with automatic refresh.
 
-## AuthMiddleware
+## AuthInterceptor
 
-All authentication logic is encapsulated within `AuthMiddleware`. This middleware intercepts outbound requests and injects the necessary Authorization headers based on an `ITokenProvider`.
+`AuthInterceptor` asks an `IAuthTokenProvider` for a token and sets `Authorization: <scheme> <token>` on each request (`Bearer` unless you pass another scheme). A provider that returns `null` or an empty string skips authentication for that request.
 
+<!-- snippet: with IAuthTokenProvider myTokenProvider = null; -->
 ```csharp
 using TurboHTTP.Auth;
 
-// Add generic Auth Middleware configured with a specific provider
 var options = new UHttpClientOptions();
-options.Middlewares.Add(new AuthMiddleware(myTokenProvider));
+options.Interceptors.Add(new AuthInterceptor(myTokenProvider));
+var client = new UHttpClient(options);
 ```
 
-## Token Providers
+The credential stays with its origin: the interceptor binds to the scheme, host and port of the first request it authenticates and never attaches the token to requests for another origin, including a cross-origin redirect target (RFC 9110 section 11.6.2 and 15.4). Place it below `CookieInterceptor` and above `CacheInterceptor`; see [Interceptors](Interceptors.md) for the order. The token never appears in logs or exceptions.
+
+To authenticate a single request, use `WithBearerToken`:
+
+<!-- snippet: with UHttpClient client = null; -->
+```csharp
+using TurboHTTP.Auth;
+
+using var response = await client.Get("https://api.example.com/me")
+    .WithBearerToken("token123")
+    .SendBufferedAsync();
+```
+
+## Token providers
+
+`IAuthTokenProvider` has one method, `Task<string> GetTokenAsync(CancellationToken)`. Implement it to fetch or refresh tokens your own way:
+
+```csharp
+using System.Threading;
+using System.Threading.Tasks;
+using TurboHTTP.Auth;
+
+public sealed class MyTokenProvider : IAuthTokenProvider
+{
+    public Task<string> GetTokenAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult("token-from-my-login-flow");
+    }
+}
+```
 
 ### StaticTokenProvider
 
-Provides a constant Bearer token. Useful for simple API keys or long-lived personal access tokens.
+A constant token: simple API keys or long-lived personal access tokens.
 
+<!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
 ```csharp
-var provider = new StaticTokenProvider("your-api-key");
+using TurboHTTP.Auth;
+
+options.Interceptors.Add(new AuthInterceptor(new StaticTokenProvider("your-api-key")));
 ```
 
 ### OAuthTokenProvider
 
-Handles complex OAuth 2.0 flows, including automated token refresh. It requires an `OAuthClient` and an `ITokenStore`.
+`OAuthTokenProvider` returns the stored access token and refreshes it through `OAuthClient` when it is about to expire. The application obtains the first token itself (authorization code with PKCE, which opens a browser or a system web view), stores it in an `ITokenStore`, and hands the store key to the provider.
 
 ```csharp
-// 1. Configure OAuth Client
-var oauthConfig = new OAuthConfig {
-    TokenUrl = "https://auth.example.com/oauth/token",
-    ClientId = "my-client",
-    ClientSecret = "my-secret",
-    Scopes = { "api.read", "api.write" }
-};
-var oauthClient = new OAuthClient(oauthConfig, new InMemoryTokenStore());
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using TurboHTTP.Auth;
+using TurboHTTP.Core;
 
-// 2. Wrap in Provider
-var provider = new OAuthTokenProvider(oauthClient);
+public static class OAuthSetup
+{
+    public static async Task<AuthInterceptor> CreateAsync(string authorizationCode, string codeVerifier, CancellationToken ct)
+    {
+        var config = new OAuthConfig
+        {
+            ClientId = "my-client",
+            AuthorizationEndpoint = new Uri("https://auth.example.com/oauth/authorize"),
+            TokenEndpoint = new Uri("https://auth.example.com/oauth/token"),
+            RedirectUri = new Uri("com.example.game://callback"),
+            Scopes = new[] { "api.read", "api.write" }
+        };
 
-var options = new UHttpClientOptions();
-options.Middlewares.Add(new AuthMiddleware(provider));
+        var store = new InMemoryTokenStore();
+        var oauth = new OAuthClient(tokenStore: store);
+
+        // 1. Send the user to the authorization endpoint (the request carries state and the PKCE challenge).
+        OAuthAuthorizationRequest authorization = await oauth.CreateAuthorizationRequestAsync(config, ct);
+        Uri browserUri = authorization.AuthorizationUri; // open it, then receive the redirect with ?code=...
+
+        // 2. Exchange the code and keep the token.
+        OAuthToken token = await oauth.ExchangeCodeAsync(new OAuthCodeExchangeRequest
+        {
+            Config = config,
+            AuthorizationCode = authorizationCode,
+            CodeVerifier = codeVerifier
+        }, ct);
+        string key = OAuthClient.BuildTokenStoreKey(config, "api");
+        await store.SetAsync(key, token, ct);
+
+        // 3. The provider refreshes the token from the store when it expires.
+        var provider = new OAuthTokenProvider(oauth, key, new OAuthRefreshRequest { Config = config, TokenStoreKey = key });
+        return new AuthInterceptor(provider);
+    }
+}
 ```
 
-## Token Stores
+Set `OAuthConfig.UseOidcDiscovery` to resolve the endpoints from the issuer's discovery document. Endpoints must use HTTPS; `AllowInsecureEndpointsForDevelopment` relaxes that for local test servers only.
 
-TurboHTTP provides several `ITokenStore` implementations:
-- `InMemoryTokenStore`: Stores tokens in memory for the session duration.
-- `PlayerPrefsTokenStore`: Persists tokens across application restarts using Unity's `PlayerPrefs`.
-- Custom implementation: Implement `ITokenStore` to save tokens securely (e.g., to iOS Keychain or Android Keystore natively).
+## Token stores
+
+*   `InMemoryTokenStore`: keeps tokens for the lifetime of the process.
+*   Your own `ITokenStore` (`GetAsync`, `SetAsync`, `RemoveAsync`): persist tokens somewhere safe, for example the iOS Keychain or the Android Keystore. TurboHTTP does not ship a persistent store.
