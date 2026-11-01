@@ -33,6 +33,6 @@ Wave run w1101, lane docs-customer. README, `Documentation~/` and `Samples~/` ar
 
 ## How verified
 
-- `'./Tools~/ci/check.sh'`: pass (invariants incl. `docs`, format, shadow build with the 5 samples and 56 doc blocks). `python3 'Tools~/ci/test_doc_snippets.py'`: pass. Before the rewrite the same checks reported 105 problems in `check_repo.py docs` and syntax errors in the snippet build; a deliberately wrong snippet (`new LoggingMiddleware()`) fails the build at its Markdown line.
+- `'./Tools~/ci/check.sh'`: pass (invariants incl. `docs`, format, shadow build with the 5 samples and 58 compiled doc blocks). `python3 'Tools~/ci/test_doc_snippets.py'`: pass. Before the rewrite the same checks reported 105 problems in `check_repo.py docs` and syntax errors in the snippet build; a deliberately wrong snippet (`new LoggingMiddleware()`) fails the build at its Markdown line.
 - Unity 2021.3.45f2 (host editor, clean project `docs-customer`): the five `Samples~/0N-*` folders copied into `Assets/Samples/` compile to `TurboHTTP.Samples.*.dll`; EditMode `--filter ModuleAutoReference` 19/19 pass with them present.
 - Not run: PlayMode, IL2CPP, device, and the samples themselves (they call public services; #268).

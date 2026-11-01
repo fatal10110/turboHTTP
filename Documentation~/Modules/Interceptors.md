@@ -125,7 +125,7 @@ options.Interceptors.Add(new CacheInterceptor(new CachePolicy
 *   **`DoNotCacheWithoutFreshness`**: responses without explicit freshness information are not stored. Default `true`.
 *   **`EnableHeuristicFreshness`** / **`HeuristicFreshnessLifetime`**: opt in to a heuristic lifetime for responses without explicit freshness (default off, one minute).
 *   **`AllowCacheForAuthorizedRequests`**, **`AllowSetCookieResponses`**, **`AllowVaryCookie`**, **`AllowVaryAuthorization`**: all default `false`; per-user responses are not stored unless you opt in.
-*   **`InvalidateOnUnsafeMethods`**: a successful POST, PUT or DELETE invalidates the cached entry for its URL. Default `true`.
+*   **`InvalidateOnUnsafeMethods`**: a successful POST, PUT, PATCH or DELETE invalidates the cached entry for its URL. Default `true`.
 *   **`Storage`**: an `ICacheStorage`; defaults to an in-memory `MemoryCacheStorage` (100 entries, 10 MB).
 
 There is no default TTL: an entry lives exactly as long as the response's own freshness allows.

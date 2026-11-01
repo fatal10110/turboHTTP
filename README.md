@@ -16,7 +16,7 @@
 *   **Observability:** Detailed timeline traces for every request (DNS, Connect, SSL, TTFB).
 *   **Reliability:** Interceptors for retries with idempotency awareness, RFC 9111 caching, redirects, cookies and concurrency limits.
 *   **Performance:** Zero-allocation focused design with memory pooling and native `ValueTask` / `UniTask` support.
-*   **Unity Integration:** `Texture2D`, `Sprite` and `AudioClip` decoding off the main thread, downloads to Unity paths, coroutine helpers.
+*   **Unity Integration:** `Texture2D`, `Sprite` and `AudioClip` decoding (optionally off the main thread), downloads to Unity paths, coroutine helpers.
 *   **WebSockets:** RFC 6455 compliant WebSocket client with automatic reconnection and framing.
 *   **Testing:** Record/Replay mode and Mock Server for deterministic testing.
 

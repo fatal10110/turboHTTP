@@ -70,36 +70,45 @@ using TurboHTTP.Core;
 
 public static class OAuthSetup
 {
-    public static async Task<AuthInterceptor> CreateAsync(string authorizationCode, string codeVerifier, CancellationToken ct)
+    static readonly OAuthConfig Config = new OAuthConfig
     {
-        var config = new OAuthConfig
+        ClientId = "my-client",
+        AuthorizationEndpoint = new Uri("https://auth.example.com/oauth/authorize"),
+        TokenEndpoint = new Uri("https://auth.example.com/oauth/token"),
+        RedirectUri = new Uri("com.example.game://callback"),
+        Scopes = new[] { "api.read", "api.write" }
+    };
+
+    static readonly InMemoryTokenStore Store = new InMemoryTokenStore();
+    static readonly OAuthClient OAuth = new OAuthClient(tokenStore: Store);
+
+    // Keep the request until the redirect arrives: it holds the state and the PKCE verifier.
+    static OAuthAuthorizationRequest pending;
+
+    // Step 1: send the user to the authorization endpoint (state and PKCE challenge are in the URI).
+    public static async Task<Uri> BeginAsync(CancellationToken ct)
+    {
+        pending = await OAuth.CreateAuthorizationRequestAsync(Config, ct);
+        return pending.AuthorizationUri; // open it in a browser or system web view
+    }
+
+    // Step 2: the redirect (com.example.game://callback?code=...&state=...) arrived.
+    public static async Task<AuthInterceptor> CompleteAsync(string returnedCode, string returnedState, CancellationToken ct)
+    {
+        // Reject a redirect whose state does not match the request (RFC 6749 section 10.12).
+        OAuthClient.ValidateState(pending.State, returnedState);
+
+        OAuthToken token = await OAuth.ExchangeCodeAsync(new OAuthCodeExchangeRequest
         {
-            ClientId = "my-client",
-            AuthorizationEndpoint = new Uri("https://auth.example.com/oauth/authorize"),
-            TokenEndpoint = new Uri("https://auth.example.com/oauth/token"),
-            RedirectUri = new Uri("com.example.game://callback"),
-            Scopes = new[] { "api.read", "api.write" }
-        };
-
-        var store = new InMemoryTokenStore();
-        var oauth = new OAuthClient(tokenStore: store);
-
-        // 1. Send the user to the authorization endpoint (the request carries state and the PKCE challenge).
-        OAuthAuthorizationRequest authorization = await oauth.CreateAuthorizationRequestAsync(config, ct);
-        Uri browserUri = authorization.AuthorizationUri; // open it, then receive the redirect with ?code=...
-
-        // 2. Exchange the code and keep the token.
-        OAuthToken token = await oauth.ExchangeCodeAsync(new OAuthCodeExchangeRequest
-        {
-            Config = config,
-            AuthorizationCode = authorizationCode,
-            CodeVerifier = codeVerifier
+            Config = Config,
+            AuthorizationCode = returnedCode,
+            CodeVerifier = pending.CodeVerifier // proves this client started the flow (RFC 7636)
         }, ct);
-        string key = OAuthClient.BuildTokenStoreKey(config, "api");
-        await store.SetAsync(key, token, ct);
+        string key = OAuthClient.BuildTokenStoreKey(Config, "api");
+        await Store.SetAsync(key, token, ct);
 
-        // 3. The provider refreshes the token from the store when it expires.
-        var provider = new OAuthTokenProvider(oauth, key, new OAuthRefreshRequest { Config = config, TokenStoreKey = key });
+        // The provider refreshes the token from the store when it expires.
+        var provider = new OAuthTokenProvider(OAuth, key, new OAuthRefreshRequest { Config = Config, TokenStoreKey = key });
         return new AuthInterceptor(provider);
     }
 }
