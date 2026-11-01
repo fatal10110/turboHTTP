@@ -62,10 +62,15 @@ namespace TurboHTTP.Transport.Tls
     /// can make is fetching a missing intermediate, bounded by <see cref="UrlRetrievalTimeout"/>,
     /// which is well under the handshake deadline: certificate evaluation runs synchronously on
     /// the handshake thread and the handshake deadline cannot interrupt it (#142).</para>
-    /// <para>iOS and Android devices have no verifier yet (native SecTrust / TrustManager bridges
-    /// are tracked separately): every chain is rejected with
-    /// <see cref="CertificateVerificationStatus.NoVerifier"/>. Failing closed is required; this
-    /// path never accepts a certificate the platform would reject.</para>
+    /// <para>iOS and Android devices cannot use <see cref="X509Chain"/>; they use the native
+    /// verifier (#239) through <see cref="PlatformVerifierRunner"/>: iOS SecTrust
+    /// (<see cref="AppleTrustVerifier"/>, installed here) and Android
+    /// <c>X509TrustManagerExtensions</c> (registered by the BouncyCastle glue through
+    /// <see cref="RegisterPlatformVerifier"/>, since it needs UnityEngine's JNI). Both use the
+    /// platform trust store and policy and never fetch from the network. Without a registered
+    /// verifier every chain is rejected with <see cref="CertificateVerificationStatus.NoVerifier"/>;
+    /// any bridge failure or timeout is a rejection too. Failing closed is required; this path
+    /// never accepts a certificate the platform would reject.</para>
     /// <para>Test trust anchors (<see cref="AddTestTrustAnchor"/>) exist only for the loopback
     /// test fixtures. Production code never adds one; with none registered the verifier trusts
     /// exactly the platform roots.</para>
@@ -89,8 +94,20 @@ namespace TurboHTTP.Transport.Tls
         // Copy-on-write snapshot: written under TestAnchorLock, read lock-free with Volatile.
         private static byte[][] s_testTrustAnchors = Array.Empty<byte[]>();
 
-        /// <summary>True on builds where no chain verifier exists (iOS/Android devices).</summary>
-        internal static bool IsUnsupportedPlatform
+        // Set once (Interlocked), read with Volatile. iOS installs its bridge here; Android's is
+        // registered by the BouncyCastle glue (engine-referencing, JNI).
+        private static PlatformCertificateVerifier s_platformVerifier =
+#if UNITY_IOS && !UNITY_EDITOR
+            AppleTrustVerifier.Verify;
+#else
+            null;
+#endif
+
+        /// <summary>
+        /// True on builds where <see cref="X509Chain"/> is not used and only a native platform
+        /// verifier can accept a chain (iOS/Android devices).
+        /// </summary>
+        internal static bool RequiresPlatformVerifier
         {
             get
             {
@@ -103,11 +120,35 @@ namespace TurboHTTP.Transport.Tls
         }
 
         /// <summary>
-        /// Verifies <paramref name="chainDer"/> (leaf first, as sent by the server) at
-        /// <paramref name="verificationTimeUtc"/>.
+        /// Installs the native verifier for this platform once; later calls are ignored. Returns
+        /// whether <paramref name="verifier"/> was installed.
+        /// </summary>
+        internal static bool RegisterPlatformVerifier(PlatformCertificateVerifier verifier)
+        {
+            if (verifier == null)
+                throw new ArgumentNullException(nameof(verifier));
+            return Interlocked.CompareExchange(ref s_platformVerifier, verifier, null) == null;
+        }
+
+        /// <summary>
+        /// Verifies <paramref name="chainDer"/> (leaf first, as sent by the server) for
+        /// <paramref name="host"/> (platform form: <see cref="TlsHostName.ToTargetHost"/>) at
+        /// <paramref name="verificationTimeUtc"/>. Only the native platform verifiers use
+        /// <paramref name="host"/>; host-name matching stays with <see cref="TlsCertificateNameMatcher"/>.
         /// </summary>
         internal static CertificateVerificationResult Verify(
-            IReadOnlyList<byte[]> chainDer, DateTime verificationTimeUtc)
+            IReadOnlyList<byte[]> chainDer, string host, DateTime verificationTimeUtc)
+            => Verify(chainDer, host, verificationTimeUtc, RequiresPlatformVerifier,
+                Volatile.Read(ref s_platformVerifier), PlatformVerifierLimits.Default);
+
+        /// <summary>
+        /// <see cref="Verify(IReadOnlyList{byte[]}, string, DateTime)"/> with the platform choice
+        /// explicit, so tests drive the native-verifier path in the Editor.
+        /// </summary>
+        internal static CertificateVerificationResult Verify(
+            IReadOnlyList<byte[]> chainDer, string host, DateTime verificationTimeUtc,
+            bool requiresPlatformVerifier, PlatformCertificateVerifier platformVerifier,
+            PlatformVerifierLimits limits)
         {
             if (chainDer == null || chainDer.Count == 0)
                 return Fail(CertificateVerificationStatus.Invalid, "empty certificate chain");
@@ -118,11 +159,10 @@ namespace TurboHTTP.Transport.Tls
 
             var anchors = Volatile.Read(ref s_testTrustAnchors);
 
-            if (IsUnsupportedPlatform && anchors.Length == 0)
-            {
-                return Fail(CertificateVerificationStatus.NoVerifier,
-                    "no certificate verifier on this platform; BouncyCastle rejects every server certificate here");
-            }
+            // Test anchors (loopback fixtures, also on devices) need the X509Chain path: the
+            // platform verifiers only know the platform trust store.
+            if (requiresPlatformVerifier && anchors.Length == 0)
+                return PlatformVerifierRunner.Run(platformVerifier, chainDer, host, verificationTimeUtc, limits);
 
             return VerifyWithX509Chain(chainDer, verificationTimeUtc, anchors);
         }
@@ -290,7 +330,7 @@ namespace TurboHTTP.Transport.Tls
             return false;
         }
 
-        private static bool SameBytes(byte[] a, byte[] b)
+        internal static bool SameBytes(byte[] a, byte[] b)
         {
             if (a == null || b == null || a.Length != b.Length)
                 return false;

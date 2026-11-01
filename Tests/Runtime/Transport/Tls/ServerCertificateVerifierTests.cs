@@ -35,7 +35,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         private static CertificateVerificationResult Verify(params byte[][] chain)
-            => ServerCertificateVerifier.Verify(chain, Now);
+            => ServerCertificateVerifier.Verify(chain, "test.local", Now);
 
         private static void AssertStatus(CertificateVerificationStatus expected, CertificateVerificationResult result)
         {
@@ -154,7 +154,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             var at = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc);
             Assert.That(at, Is.InRange(Public.LeafNotBeforeUtc, Public.LeafNotAfterUtc));
 
-            var result = ServerCertificateVerifier.Verify(new[] { Public.Leaf, Public.Intermediate }, at);
+            var result = ServerCertificateVerifier.Verify(new[] { Public.Leaf, Public.Intermediate }, "www.digicert.com", at);
 
             AssertStatus(CertificateVerificationStatus.Trusted, result);
             Assert.AreEqual(3, result.Path.Length, "leaf + intermediate + platform root");

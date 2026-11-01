@@ -72,7 +72,10 @@ namespace TurboHTTP.Transport.BouncyCastle
             var now = DateTime.UtcNow;
             ValidateLeaf(chainDer[0], _targetHost, now);
 
-            var builtPath = VerifyPath(chainDer, now);
+#if UNITY_ANDROID && !UNITY_EDITOR
+            AndroidTrustManagerVerifier.EnsureRegistered();
+#endif
+            var builtPath = VerifyPath(chainDer, TlsHostName.ToTargetHost(_targetHost), now);
 
             CheckPathSignatureAlgorithms(builtPath);
         }
@@ -197,9 +200,9 @@ namespace TurboHTTP.Transport.BouncyCastle
         /// Runs the platform verifier and maps its outcome to a fatal alert. Returns the built path
         /// (leaf first, anchor last).
         /// </summary>
-        private static byte[][] VerifyPath(byte[][] chainDer, DateTime nowUtc)
+        private static byte[][] VerifyPath(byte[][] chainDer, string platformHost, DateTime nowUtc)
         {
-            var result = ServerCertificateVerifier.Verify(chainDer, nowUtc);
+            var result = ServerCertificateVerifier.Verify(chainDer, platformHost, nowUtc);
             switch (result.Status)
             {
                 case CertificateVerificationStatus.Trusted:
