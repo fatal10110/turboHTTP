@@ -10,13 +10,13 @@
 
 *   **Modular Architecture:** Core client with optional specific modules (Retry, Cache, etc.) and a zero-overhead plugin system.
 *   **Modern Transport:** Raw socket-based transport supporting HTTP/1.1 and **HTTP/2** (with multiplexing).
-*   **Resilience & Routing:** Happy Eyeballs dual-stack, full Proxy support, and Adaptive timeouts based on network quality.
+*   **Resilience & Routing:** Happy Eyeballs dual-stack, HTTP proxy support (CONNECT tunnels, environment variables), and adaptive timeouts based on network quality (`TurboHTTP.Unity`).
 *   **Enterprise Security:** Advanced OAuth 2.0 & OIDC support with automated token refresh.
-*   **Mobile Readiness:** Native background networking for seamless iOS and Android execution.
+*   **Mobile Readiness:** IL2CPP-safe on iOS and Android; experimental, opt-in background networking.
 *   **Observability:** Detailed timeline traces for every request (DNS, Connect, SSL, TTFB).
-*   **Reliability:** Intelligent retry logic with idempotency awareness.
+*   **Reliability:** Interceptors for retries with idempotency awareness, RFC 9111 caching, redirects, cookies and concurrency limits.
 *   **Performance:** Zero-allocation focused design with memory pooling and native `ValueTask` / `UniTask` support.
-*   **Unity Integration:** Native `Texture2D`, `AudioClip`, and AssetBundle support on background threads.
+*   **Unity Integration:** `Texture2D`, `Sprite` and `AudioClip` decoding (optionally off the main thread), downloads to Unity paths, coroutine helpers.
 *   **WebSockets:** RFC 6455 compliant WebSocket client with automatic reconnection and framing.
 *   **Testing:** Record/Replay mode and Mock Server for deterministic testing.
 
@@ -36,8 +36,17 @@ Alternatively, if you are using a git URL:
 ## Quick Start
 
 ```csharp
+using System;
 using TurboHTTP.Core;
+using TurboHTTP.JSON;
 using UnityEngine;
+
+[Serializable]
+public class MyData
+{
+    public int id;
+    public string name;
+}
 
 public class Example : MonoBehaviour
 {
@@ -45,39 +54,49 @@ public class Example : MonoBehaviour
 
     private void Awake()
     {
-        // specific configuration
         var options = new UHttpClientOptions
         {
-             BaseUrl = "https://api.example.com"
+            BaseUrl = "https://api.example.com"
         };
         _client = new UHttpClient(options);
     }
 
     private async void Start()
     {
-        // Simple GET request
-        var response = await _client.Get("/data")
-            .WithHeader("Authorization", "Bearer token")
-            .WithTimeout(TimeSpan.FromSeconds(10))
-            .SendAsync();
+        try
+        {
+            // GET request; dispose the response when you are done with it.
+            using var response = await _client.Get("/data")
+                .WithHeader("Accept", "application/json")
+                .WithTimeout(TimeSpan.FromSeconds(10))
+                .SendBufferedAsync();
 
-        if (response.IsSuccessStatusCode)
-        {
-            var data = response.AsJson<MyData>();
-            Debug.Log($"Received: {data.id}");
+            if (response.IsSuccessStatusCode)
+            {
+                MyData data = response.AsJson<MyData>();
+                Debug.Log($"Received: {data.id}");
+            }
+            else
+            {
+                // 4xx/5xx are normal responses, not exceptions.
+                Debug.LogError($"Error: {response.StatusCode}");
+            }
         }
-        else
+        catch (UHttpException ex)
         {
-            Debug.LogError($"Error: {response.StatusCode}");
+            // Network, TLS, timeout and protocol failures.
+            Debug.LogError($"Request failed: {ex.HttpError.Type}");
         }
     }
-    
+
     private void OnDestroy()
     {
         _client.Dispose();
     }
 }
 ```
+
+Retries, caching, redirects, cookies and authentication are interceptors you add to `UHttpClientOptions.Interceptors`; see [Interceptors](Documentation~/Modules/Interceptors.md).
 
 ## Platform Support
 
@@ -88,7 +107,7 @@ The default HTTP and WebSocket transports register themselves at startup; no ini
 
 ## Assembly References
 
-Scripts without an assembly definition (`Assembly-CSharp`) see every user-facing TurboHTTP module (Core, Transport, JSON, Retry, Auth, Cache, Middleware, RateLimit, Observability, Files, Unity, WebSocket). Code inside your own `.asmdef` must list the modules it uses (for example `TurboHTTP.Core`, `TurboHTTP.JSON`) in its references. `TurboHTTP.Testing`, `TurboHTTP.UniTask` and `TurboHTTP.Transport.BouncyCastle` are always referenced explicitly. The BouncyCastle TLS provider is opt-in: add `TURBOHTTP_BOUNCYCASTLE` to Player Settings > Scripting Define Symbols to compile it (it then registers itself at startup and `TlsBackend.BouncyCastle` resolves); without the define it is not compiled.
+Scripts without an assembly definition (`Assembly-CSharp`) see every user-facing TurboHTTP module (Core, Transport, JSON, Retry, Auth, Cache, `TurboHTTP.Middleware` (redirects, cookies, decompression), RateLimit, Observability, Files, Unity, WebSocket). Code inside your own `.asmdef` must list the modules it uses (for example `TurboHTTP.Core`, `TurboHTTP.JSON`) in its references. `TurboHTTP.Testing`, `TurboHTTP.UniTask` and `TurboHTTP.Transport.BouncyCastle` are always referenced explicitly. The package's Samples each ship an assembly definition with the references they need. The BouncyCastle TLS provider is opt-in: add `TURBOHTTP_BOUNCYCASTLE` to Player Settings > Scripting Define Symbols to compile it (it then registers itself at startup and `TlsBackend.BouncyCastle` resolves); without the define it is not compiled.
 
 ## Documentation
 
@@ -99,7 +118,7 @@ Comprehensive documentation is available in the `Documentation~` folder (visible
 *   **Module Deep Dives**:
     *   [Core](Documentation~/Modules/Core.md), [Transport](Documentation~/Modules/Transport.md), [WebSocket](Documentation~/Modules/WebSocket.md)
     *   [Unity Integration](Documentation~/Modules/Unity.md), [UniTask Support](Documentation~/Modules/UniTask.md)
-    *   [Auth](Documentation~/Modules/Auth.md), [Middleware](Documentation~/Modules/Middleware.md), [Testing](Documentation~/Modules/Testing.md)
+    *   [Auth](Documentation~/Modules/Auth.md), [Interceptors](Documentation~/Modules/Interceptors.md), [Testing](Documentation~/Modules/Testing.md)
 *   [**Platform Notes**](Documentation~/PlatformNotes.md): Platform-specific configuration (iOS, Android, IL2CPP).
 *   [**Troubleshooting**](Documentation~/Troubleshooting.md): Common issues and solutions.
 *   [**Migration Guide**](Documentation~/MigrationGuide.md): Moving from UnityWebRequest or BestHTTP.

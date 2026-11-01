@@ -1,0 +1,17 @@
+{
+  "name": "TurboHTTP.Samples.Authentication",
+  "rootNamespace": "TurboHTTP.Samples.Authentication",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.Auth"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

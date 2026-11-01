@@ -1,14 +1,16 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Auth;
 using TurboHTTP.Core;
-using TurboHTTP.Middleware;
 using UnityEngine;
 
 namespace TurboHTTP.Samples.Authentication
 {
     /// <summary>
-    /// Example of token-based authentication using AuthMiddleware.
+    /// Example of token-based authentication using AuthInterceptor.
+    /// The interceptor attaches "Authorization: Bearer <token>" and keeps the token bound to the origin it
+    /// was first used with, so it is never sent to another host (for example after a cross-origin redirect).
     /// Demonstrates token injection and refresh logic.
     /// </summary>
     public class AuthenticationExample : MonoBehaviour
@@ -26,8 +28,8 @@ namespace TurboHTTP.Samples.Authentication
                 BaseUrl = "https://httpbin.org" // Using httpbin to test headers
             };
 
-            // Add auth middleware
-            options.Middlewares.Add(new AuthMiddleware(_tokenProvider));
+            // Add the auth interceptor
+            options.Interceptors.Add(new AuthInterceptor(_tokenProvider));
 
             _client = new UHttpClient(options);
 
@@ -44,8 +46,8 @@ namespace TurboHTTP.Samples.Authentication
         {
             Debug.Log("=== Example 1: Authenticated Request ===");
 
-            // The middleware will automatically add the Authorization header
-            var response = await _client.Get("/bearer").SendAsync();
+            // The interceptor will automatically add the Authorization header
+            using var response = await _client.Get("/bearer").SendBufferedAsync();
 
             Debug.Log($"Status: {response.StatusCode}");
             // httpbin/bearer returns the token it received
@@ -61,7 +63,7 @@ namespace TurboHTTP.Samples.Authentication
             _tokenProvider.InvalidateToken();
 
             // Next request should trigger a refresh
-            var response = await _client.Get("/bearer").SendAsync();
+            using var response = await _client.Get("/bearer").SendBufferedAsync();
 
             Debug.Log($"Status: {response.StatusCode}");
             Debug.Log("Token was refreshed automatically!");
@@ -84,7 +86,7 @@ namespace TurboHTTP.Samples.Authentication
     /// <summary>
     /// Simple token provider that calls a delegate to get a token.
     /// </summary>
-    public class DynamicTokenProvider : ITokenProvider
+    public class DynamicTokenProvider : IAuthTokenProvider
     {
         private readonly Func<Task<string>> _fetchTokenFunc;
         private string _cachedToken;
@@ -94,7 +96,7 @@ namespace TurboHTTP.Samples.Authentication
             _fetchTokenFunc = fetchTokenFunc;
         }
 
-        public async Task<string> GetTokenAsync()
+        public async Task<string> GetTokenAsync(CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrEmpty(_cachedToken))
             {

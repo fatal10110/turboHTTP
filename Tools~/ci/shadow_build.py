@@ -24,11 +24,17 @@ import subprocess
 import sys
 from xml.sax.saxutils import escape
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import doc_snippets  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CI = os.path.join(ROOT, "Tools~", "ci")
 OUT = os.path.join(ROOT, ".build", "shadow")
 BASELINE = os.path.join(CI, "analyzer-baseline.txt")
-SOURCE_DIRS = ["Runtime", "Editor"]
+# Samples~ is compiled like a runtime module (each sample ships its own asmdef), so a sample that no
+# longer compiles against the API fails here instead of in a customer project (#98).
+SOURCE_DIRS = ["Runtime", "Editor", "Samples~"]
+DOC_ASSEMBLY = "TurboHTTP.DocSnippets"
 # Third-party code compiled but never held to TurboHTTP's analyzer policy.
 VENDORED = ("Runtime/Transport/BouncyCastle/Lib/",)
 
@@ -150,6 +156,31 @@ def generate(variant, asmdefs, dlls):
         open(os.path.join(pdir, name + ".csproj"), "w").write("\n".join(lines))
         projects.append(name)
 
+    # Documentation snippets (README.md, Documentation~): one generated file per fenced csharp block,
+    # compiled against every module so a documented API that does not exist fails the build (#232).
+    files, _, _ = doc_snippets.write_project_sources(os.path.join(vdir, DOC_ASSEMBLY, "src"))
+    pdir = os.path.join(vdir, DOC_ASSEMBLY)
+    doc_refs = sorted(n for n in chosen if not n.startswith("TurboHTTP.Samples."))
+    lines = [
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        f'  <Import Project="{escape(os.path.join(CI, "Shadow.props"))}" />',
+        "  <PropertyGroup>",
+        f"    <AssemblyName>{DOC_ASSEMBLY}</AssemblyName>",
+        f"    <DefineConstants>$(DefineConstants);{';'.join(sorted(defines))}</DefineConstants>",
+        # Snippets are illustrations: unused locals and async methods without await are fine.
+        "    <RunAnalyzers>false</RunAnalyzers>",
+        "    <NoWarn>$(NoWarn);CS0168;CS0219;CS1998;CS8321;CS0162;CS0649;CS0414</NoWarn>",
+        "  </PropertyGroup>",
+        "  <ItemGroup>",
+    ]
+    lines += [f'    <Compile Include="{escape(s)}" />' for s in files]
+    lines += [f'    <ProjectReference Include="../{r}/{r}.csproj" />' for r in doc_refs]
+    lines += [f'    <Reference Include="{escape(os.path.join(dlls, d))}" Private="false" />'
+              for d in engine + (editor if editor_visible else [])]
+    lines += ["  </ItemGroup>", "</Project>", ""]
+    open(os.path.join(pdir, DOC_ASSEMBLY + ".csproj"), "w").write("\n".join(lines))
+    projects.append(DOC_ASSEMBLY)
+
     lines = ['<Project Sdk="Microsoft.NET.Sdk">',
              "  <PropertyGroup><TargetFramework>netstandard2.1</TargetFramework>"
              "<EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>",
@@ -208,7 +239,7 @@ def main():
             if d["kind"] != "warning":
                 continue
             rel = os.path.relpath(os.path.abspath(d["file"]), ROOT)
-            if rel.startswith("..") or rel.startswith(VENDORED) or rel.startswith(".build"):
+            if rel.startswith("..") or rel.startswith(VENDORED) or rel.startswith(".build") or rel.endswith(".md"):
                 continue
             # MSBuild prints each diagnostic once per project that reports it; dedupe exact repeats.
             ident = (d["file"], d["line"], d["rule"], d["msg"])

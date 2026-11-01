@@ -27,7 +27,7 @@ step "repo invariants"
 python3 "Tools~/ci/check_repo.py" || fail "repo invariants"
 
 step "format (dotnet format whitespace)"
-fmt=(dotnet format whitespace --folder --exclude Runtime/Transport/BouncyCastle/Lib -v q)
+fmt=(dotnet format whitespace --folder --exclude Runtime/Transport/BouncyCastle/Lib --exclude .build -v q)
 if [ "$fix" = 1 ]; then "${fmt[@]}" || fail "format"
 else "${fmt[@]}" --verify-no-changes || fail "format (run: Tools~/ci/check.sh --fix)"; fi
 
@@ -49,6 +49,7 @@ if [ "$full" = 1 ]; then
   if [ -d "Tools~/agent-tools" ]; then
     python3 -m unittest discover -s "Tools~/agent-tools" -p 'test_*.py' -q || fail "agent-tools tests"
   fi
+  python3 "Tools~/ci/test_doc_snippets.py" -q || fail "doc snippet harness tests"
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"
   step "waves orchestration simulation"
   if command -v node >/dev/null; then node .claude/skills/turbohttp-waves/waves_sim.mjs >/dev/null || fail "waves_sim"
