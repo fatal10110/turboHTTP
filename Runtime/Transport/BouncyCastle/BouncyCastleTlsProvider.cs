@@ -17,7 +17,7 @@ namespace TurboHTTP.Transport.BouncyCastle
     /// TLS provider using BouncyCastle pure C# implementation.
     /// Guaranteed to work on all platforms, including IL2CPP/AOT builds.
     /// </summary>
-    [Preserve]  // Prevent IL2CPP from stripping (loaded via reflection)
+    [Preserve]  // Registered with TlsProviderSelector by BouncyCastleModuleRegistration at startup
     internal sealed class BouncyCastleTlsProvider : ITlsProvider
     {
         public static readonly BouncyCastleTlsProvider Instance = new();

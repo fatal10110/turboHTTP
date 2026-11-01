@@ -180,18 +180,12 @@ def check_unity_nunit(files):
 
 # "TurboHTTP.Some.Type, TurboHTTP.Assembly": the string Type.GetType needs to cross an assembly.
 _QUALIFIED_TURBO_TYPE = re.compile(r'"TurboHTTP\.[A-Za-z0-9_.+]+,\s*TurboHTTP[A-Za-z0-9_.]*')
-# Temporary: sites other issues remove. Delete an entry when its site is gone (#186).
-REFLECT_ALLOWLIST = {
-    "Runtime/Transport/Tls/TlsProviderSelector.cs",  # BouncyCastle provider lookup, TLS lanes (#34, #36)
-}
 
 
 def check_reflect(files):
     errors = []
     for f in files:
         if not (f.startswith("Runtime/") and f.endswith(".cs")) or f.startswith("Runtime/Transport/BouncyCastle/Lib/"):
-            continue
-        if f in REFLECT_ALLOWLIST:
             continue
         path = os.path.join(ROOT, f)
         if not os.path.exists(path):

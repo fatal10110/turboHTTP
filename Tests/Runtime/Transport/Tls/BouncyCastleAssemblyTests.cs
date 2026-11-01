@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using NUnit.Framework;
+using TurboHTTP.Core;
 using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Tests.Transport.Tls
@@ -24,6 +25,17 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             var provider = TestRequirements.RequireBouncyCastleProvider();
             Assert.AreEqual("BouncyCastle", provider.ProviderName);
+        }
+
+        [Test]
+        public void GlueAssembly_RegistersItsProviderAtStartup()
+        {
+            // No test code registers it: BouncyCastleModuleRegistration runs from its startup hooks
+            // when the project defines TURBOHTTP_BOUNCYCASTLE (#196), with no by-name lookup (#186).
+            var provider = TestRequirements.RequireBouncyCastleProvider();
+
+            Assert.AreEqual(TestRequirements.BouncyCastleGlueAssembly, provider.GetType().Assembly.GetName().Name);
+            Assert.AreSame(provider, TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle));
         }
 
         [Test]

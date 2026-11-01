@@ -14,7 +14,9 @@
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": false,
-    "defineConstraints": [],
+    "defineConstraints": [
+        "TURBOHTTP_BOUNCYCASTLE"
+    ],
     "versionDefines": [],
     "noEngineReferences": false
 }
