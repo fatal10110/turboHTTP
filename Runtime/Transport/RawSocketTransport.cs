@@ -163,10 +163,54 @@ namespace TurboHTTP.Transport
             ex as UHttpException ??
             new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
 
-        private static bool CanRetryH2RequestAfterTransportFailure(UHttpRequest request)
+        // Replays of one request after HTTP/2 failures that RFC 9113 Section 8.7 marks as unprocessed
+        // (REFUSED_STREAM, above a GOAWAY last-stream-id). Bounded so a peer that refuses every stream
+        // cannot loop a request forever.
+        internal const int MaxH2UnprocessedRetries = 3;
+
+        /// <summary>
+        /// A not-processed failure is replayed for any method (RFC 9113 Section 8.7); a connection
+        /// failure before the response started only for idempotent methods (RFC 9110 Section 9.2.2) and
+        /// once. Both need a body that can be sent again.
+        /// </summary>
+        internal static bool ShouldRetryH2Request(
+            Http2RetryableRequestException failure,
+            UHttpRequest request,
+            int attempt,
+            CancellationToken ct)
         {
-            return request.Method.IsIdempotent() &&
-                request.Content.Replayability != RequestBodyReplayability.NonReplayable;
+            if (ct.IsCancellationRequested ||
+                request.Content.Replayability == RequestBodyReplayability.NonReplayable)
+            {
+                return false;
+            }
+
+            return failure.RequestNotProcessed
+                ? attempt < MaxH2UnprocessedRetries
+                : attempt == 0 && request.Method.IsIdempotent();
+        }
+
+        /// <summary>
+        /// Dispatches on an HTTP/2 connection. After a failure the connection is evicted (instance-exact)
+        /// only when it no longer accepts streams; a stream-scoped failure leaves it and its other streams
+        /// in place (RFC 9113 Section 5.4.2).
+        /// </summary>
+        private async Task DispatchOnH2ConnectionAsync(
+            Http2Connection connection,
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            try
+            {
+                await connection.DispatchAsync(request, handler, context, ct).ConfigureAwait(false);
+            }
+            catch (Exception) when (!connection.AcceptsNewStreams)
+            {
+                _h2Manager.EvictIfUnusable(connection);
+                throw;
+            }
         }
 
         private static bool CanRetryHttp11RequestAfterTransportFailure(
@@ -351,6 +395,49 @@ namespace TurboHTTP.Transport
             // 3. Record transport start
             context.RecordEvent("TransportStart");
 
+            // 4. Dispatch. An HTTP/2 failure marked retryable (stream refused or above a GOAWAY
+            // last-stream-id, or the connection failed before the response started) is replayed on a
+            // fresh attempt, bounded, within the same timeout.
+            for (int h2Attempt = 0; ; h2Attempt++)
+            {
+                try
+                {
+                    await DispatchAttemptAsync(
+                            request,
+                            handler,
+                            context,
+                            host,
+                            port,
+                            secure,
+                            proxy,
+                            timeoutCts,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+                catch (Http2RetryableRequestException ex) when (
+                    Volatile.Read(ref _disposed) == 0 &&
+                    ShouldRetryH2Request(ex, request, h2Attempt, ct))
+                {
+                    context.RecordEvent(ex.RequestNotProcessed
+                        ? "TransportH2RetryUnprocessed"
+                        : "TransportH2StaleRetry");
+                }
+            }
+        }
+
+        private async Task DispatchAttemptAsync(
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            string host,
+            int port,
+            bool secure,
+            ProxySettings proxy,
+            CancellationTokenSource timeoutCts,
+            CancellationToken cancellationToken)
+        {
+            var ct = timeoutCts.Token;
             try
             {
                 if (proxy != null)
@@ -373,24 +460,10 @@ namespace TurboHTTP.Transport
                     var h2Conn = _h2Manager.GetIfExists(host, port);
                     if (h2Conn != null)
                     {
-                        try
-                        {
-                            context.RecordEvent("TransportH2Reuse");
-                            await h2Conn.DispatchAsync(request, handler, context, ct)
-                                .ConfigureAwait(false);
-                            return;
-                        }
-                        catch (Exception) when (!ct.IsCancellationRequested)
-                        {
-                            // Stale h2 connection — always remove from manager to avoid
-                            // subsequent requests hitting the same dead connection.
-                            _h2Manager.Remove(host, port);
-
-                            if (!CanRetryH2RequestAfterTransportFailure(request))
-                                throw;
-
-                            context.RecordEvent("TransportH2StaleRetry");
-                        }
+                        context.RecordEvent("TransportH2Reuse");
+                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
+                            .ConfigureAwait(false);
+                        return;
                     }
                 }
 
@@ -410,7 +483,7 @@ namespace TurboHTTP.Transport
                         var h2Conn = await _h2Manager.GetOrCreateAsync(
                             host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
                         lease = null;
-                        await h2Conn.DispatchAsync(request, handler, context, ct)
+                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
                             .ConfigureAwait(false);
                         return;
                     }
@@ -456,7 +529,7 @@ namespace TurboHTTP.Transport
                                 var h2Conn = await _h2Manager.GetOrCreateAsync(
                                     host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
                                 freshLease = null;
-                                await h2Conn.DispatchAsync(request, handler, context, ct)
+                                await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
                                     .ConfigureAwait(false);
                                 return;
                             }
@@ -634,27 +707,10 @@ namespace TurboHTTP.Transport
                 if (existingH2 != null)
                 {
                     var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-                    try
-                    {
-                        context.RecordEvent("TransportProxyH2Reuse");
-                        await existingH2.DispatchAsync(tunneledRequest, handler, context, ct)
-                            .ConfigureAwait(false);
-                        return;
-                    }
-                    catch (Exception ex) when (
-                        !ct.IsCancellationRequested &&
-                        (ex is IOException ||
-                         (ex is UHttpException uhe &&
-                          uhe.HttpError != null &&
-                          uhe.HttpError.IsRetryable())))
-                    {
-                        _h2Manager.Remove(host, port, proxyHost, proxyPort);
-
-                        if (!CanRetryH2RequestAfterTransportFailure(request))
-                            throw;
-
-                        context.RecordEvent("TransportProxyH2StaleRetry");
-                    }
+                    context.RecordEvent("TransportProxyH2Reuse");
+                    await DispatchOnH2ConnectionAsync(existingH2, tunneledRequest, handler, context, ct)
+                        .ConfigureAwait(false);
+                    return;
                 }
             }
 
@@ -711,7 +767,7 @@ namespace TurboHTTP.Transport
                         .ConfigureAwait(false);
                     lease = null;
 
-                    await h2Conn.DispatchAsync(tunneledRequest, handler, context, ct)
+                    await DispatchOnH2ConnectionAsync(h2Conn, tunneledRequest, handler, context, ct)
                         .ConfigureAwait(false);
                     return;
                 }
@@ -830,7 +886,7 @@ namespace TurboHTTP.Transport
                                 .ConfigureAwait(false);
                             freshLease = null;
 
-                            await h2Conn.DispatchAsync(dispatchRequest, handler, context, ct)
+                            await DispatchOnH2ConnectionAsync(h2Conn, dispatchRequest, handler, context, ct)
                                 .ConfigureAwait(false);
                             return;
                         }
