@@ -22,6 +22,11 @@ namespace TurboHTTP.Transport.Http2
 
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _initLocks
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+
+        // Connections evicted after GOAWAY that still drain in-flight streams (RFC 9113 Section 6.8).
+        // Each closes itself once drained; the manager only keeps them to dispose them on its own Dispose.
+        private readonly ConcurrentDictionary<Http2Connection, byte> _draining
+            = new ConcurrentDictionary<Http2Connection, byte>();
         private int _disposed;
 
         public Http2ConnectionManager(Http2Options options, StreamingOptions streamingOptions)
@@ -40,14 +45,13 @@ namespace TurboHTTP.Transport.Http2
                 return null;
 
             string key = $"{host}:{port}";
-            if (_connections.TryGetValue(key, out var conn) && conn.IsAlive)
+            if (_connections.TryGetValue(key, out var conn) && conn.AcceptsNewStreams)
                 return conn;
 
-            // Proactively evict stale entries so they do not accumulate in long-idle sessions.
-            // A GOAWAY'd connection sets IsAlive = false but the slow-path cleanup may never
-            // run if no new request arrives. Eviction here prevents unbounded dead-object retention.
+            // Proactively evict stale entries so they do not accumulate in long-idle sessions: a failed
+            // connection is disposed, a GOAWAY'd one keeps draining its in-flight streams.
             if (conn != null)
-                RemoveExactAndDispose(key, conn);
+                RemoveExactAndRetire(key, conn);
 
             return null;
         }
@@ -66,12 +70,12 @@ namespace TurboHTTP.Transport.Http2
                 return null;
 
             string key = BuildTunnelKey(originHost, originPort, proxyHost, proxyPort);
-            if (_connections.TryGetValue(key, out var conn) && conn.IsAlive)
+            if (_connections.TryGetValue(key, out var conn) && conn.AcceptsNewStreams)
                 return conn;
 
             // Same proactive eviction as the direct overload.
             if (conn != null)
-                RemoveExactAndDispose(key, conn);
+                RemoveExactAndRetire(key, conn);
 
             return null;
         }
@@ -108,7 +112,7 @@ namespace TurboHTTP.Transport.Http2
             string key = $"{host}:{port}";
 
             // Fast path: existing alive connection
-            if (_connections.TryGetValue(key, out var existing) && existing.IsAlive)
+            if (_connections.TryGetValue(key, out var existing) && existing.AcceptsNewStreams)
             {
                 tlsStream.Dispose();
                 return new ValueTask<Http2Connection>(existing);
@@ -138,7 +142,7 @@ namespace TurboHTTP.Transport.Http2
             string key = BuildTunnelKey(originHost, originPort, proxyHost, proxyPort);
 
             // Fast path: existing alive connection
-            if (_connections.TryGetValue(key, out var existing) && existing.IsAlive)
+            if (_connections.TryGetValue(key, out var existing) && existing.AcceptsNewStreams)
             {
                 tlsStream.Dispose();
                 return new ValueTask<Http2Connection>(existing);
@@ -182,19 +186,16 @@ namespace TurboHTTP.Transport.Http2
                 try
                 {
                     // Double-check after acquiring lock
-                    if (_connections.TryGetValue(key, out existing) && existing.IsAlive)
+                    if (_connections.TryGetValue(key, out existing) && existing.AcceptsNewStreams)
                     {
                         tlsStream.Dispose();
                         tlsStream = null;
                         return existing;
                     }
 
-                    // Remove stale connection
+                    // Evict the stale connection (exact instance; a draining one finishes its streams).
                     if (existing != null)
-                    {
-                        _connections.TryRemove(key, out _);
-                        existing.Dispose();
-                    }
+                        RemoveExactAndRetire(key, existing);
 
                     // Create and initialize new connection (consumes tlsStream).
                     // If InitializeAsync fails (timeout, protocol error, cancellation),
@@ -209,6 +210,7 @@ namespace TurboHTTP.Transport.Http2
                     tlsStream = null;
 
                     await newConnection.InitializeAsync(ct);
+                    newConnection.ManagerKey = key;
                     _connections[key] = newConnection;
                     published = true;
                     return newConnection;
@@ -237,7 +239,25 @@ namespace TurboHTTP.Transport.Http2
         }
 
         /// <summary>
-        /// Remove and dispose a stale connection.
+        /// Evicts <paramref name="connection"/> after a failed dispatch when it no longer accepts new
+        /// streams. Instance-exact: a newer connection published under the same key is never touched.
+        /// A connection that still works (the failure was stream-scoped, RFC 9113 Section 5.4.2) stays.
+        /// </summary>
+        internal void EvictIfUnusable(Http2Connection connection)
+        {
+            if (connection == null || connection.AcceptsNewStreams)
+                return;
+
+            string key = connection.ManagerKey;
+            if (key != null)
+                RemoveExactAndRetire(key, connection);
+            else if (!connection.IsAlive)
+                connection.Dispose();
+        }
+
+        /// <summary>
+        /// Remove and dispose whatever connection is registered for this host:port (key-based; tests and
+        /// diagnostics only, dispatch failures use <see cref="EvictIfUnusable"/>).
         /// </summary>
         public void Remove(string host, int port)
         {
@@ -252,7 +272,8 @@ namespace TurboHTTP.Transport.Http2
         }
 
         /// <summary>
-        /// Remove and dispose a stale tunneled connection.
+        /// Remove and dispose whatever tunneled connection is registered for this key (key-based; tests
+        /// and diagnostics only, dispatch failures use <see cref="EvictIfUnusable"/>).
         /// </summary>
         public void Remove(
             string originHost,
@@ -281,6 +302,12 @@ namespace TurboHTTP.Transport.Http2
             }
             _connections.Clear();
 
+            foreach (var kvp in _draining)
+            {
+                kvp.Key.Dispose();
+            }
+            _draining.Clear();
+
             foreach (var kvp in _initLocks)
             {
                 kvp.Value.Dispose();
@@ -297,10 +324,34 @@ namespace TurboHTTP.Transport.Http2
             return $"{originHost}:{originPort}|via|{proxyHost}:{proxyPort}";
         }
 
-        private void RemoveExactAndDispose(string key, Http2Connection connection)
+        /// <summary>
+        /// Removes <paramref name="connection"/> only while it is still the entry for
+        /// <paramref name="key"/>, then disposes it, or, when it is draining after GOAWAY, leaves it to
+        /// close itself once its in-flight streams are done.
+        /// </summary>
+        private void RemoveExactAndRetire(string key, Http2Connection connection)
         {
             var entry = new KeyValuePair<string, Http2Connection>(key, connection);
-            if (((ICollection<KeyValuePair<string, Http2Connection>>)_connections).Remove(entry))
+            if (!((ICollection<KeyValuePair<string, Http2Connection>>)_connections).Remove(entry))
+                return;
+
+            if (!connection.IsAlive || Volatile.Read(ref _disposed) != 0)
+            {
+                connection.Dispose();
+                return;
+            }
+
+            // Prune drained or failed connections, so the set only holds connections still draining.
+            foreach (var kvp in _draining)
+            {
+                if (!kvp.Key.IsAlive)
+                    _draining.TryRemove(kvp.Key, out _);
+            }
+
+            _draining[connection] = 0;
+
+            // Raced with Dispose(): it may have cleared the set before the add above.
+            if (Volatile.Read(ref _disposed) != 0 && _draining.TryRemove(connection, out _))
                 connection.Dispose();
         }
     }

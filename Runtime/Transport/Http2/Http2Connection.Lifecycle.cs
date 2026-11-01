@@ -19,8 +19,11 @@ namespace TurboHTTP.Transport.Http2
 
                 // Keep one increment of headroom so _nextStreamId never wraps into negatives.
                 if (current <= 0 || current >= int.MaxValue - 1)
-                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        "Stream ID space exhausted, close and reopen connection"));
+                {
+                    // Not sent: the request may be replayed on a fresh connection (RFC 9113 Section 5.1.1).
+                    _streamIdsExhausted = true;
+                    throw CreateNotAcceptingException();
+                }
 
                 int next = current + 2;
                 if (Interlocked.CompareExchange(ref _nextStreamId, next, current) == current)
@@ -82,40 +85,6 @@ namespace TurboHTTP.Transport.Http2
                 }).ConfigureAwait(false);
         }
 
-        private async Task KeepAliveLoopAsync(CancellationToken ct)
-        {
-            try
-            {
-                while (!ct.IsCancellationRequested)
-                {
-                    await Task.Delay(KeepAlivePingInterval, ct).ConfigureAwait(false);
-                    await SendKeepAlivePingAsync(ct).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                // Expected during disposal.
-            }
-            catch (ObjectDisposedException)
-            {
-                // Connection is shutting down.
-            }
-            catch
-            {
-                // Keepalive must never crash the process.
-            }
-        }
-
-        private async Task SendKeepAlivePingAsync(CancellationToken ct)
-        {
-            await SendFrameWithPooledPayloadAsync(
-                Http2FrameType.Ping,
-                0,
-                8,
-                ct,
-                payload => Array.Clear(payload, 0, 8)).ConfigureAwait(false);
-        }
-
         private async Task SendFrameWithPooledPayloadAsync(
             Http2FrameType type,
             int streamId,
@@ -165,8 +134,26 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         internal bool RemoveActiveStream(int streamId, Http2Stream stream)
         {
-            return ((ICollection<KeyValuePair<int, Http2Stream>>)_activeStreams)
-                .Remove(new KeyValuePair<int, Http2Stream>(streamId, stream));
+            if (!((ICollection<KeyValuePair<int, Http2Stream>>)_activeStreams)
+                    .Remove(new KeyValuePair<int, Http2Stream>(streamId, stream)))
+            {
+                return false;
+            }
+
+            OnActiveStreamRemoved();
+            return true;
+        }
+
+        /// <summary>
+        /// Removes whatever stream is registered under <paramref name="streamId"/> and frees its slot.
+        /// </summary>
+        private bool TryRemoveActiveStream(int streamId, out Http2Stream stream)
+        {
+            if (!_activeStreams.TryRemove(streamId, out stream))
+                return false;
+
+            OnActiveStreamRemoved();
+            return true;
         }
 
         /// <summary>
@@ -223,7 +210,7 @@ namespace TurboHTTP.Transport.Http2
             // active-stream bookkeeping already raced with completion/cleanup.
             stream.Cancel(cancellationToken);
 
-            if (_activeStreams.TryRemove(streamId, out _))
+            if (TryRemoveActiveStream(streamId, out _))
             {
                 TrackRecentlyResetStream(streamId);
                 _ = SendCancelRstAfterRequestCancellationAsync(streamId);
@@ -533,13 +520,19 @@ namespace TurboHTTP.Transport.Http2
 
         private void FailAllStreams(Exception ex)
         {
-            _goawayReceived = true;
+            // Cancelling _cts makes IsAlive and AcceptsNewStreams false; queued requests are refused
+            // as not sent (retryable), streams in flight fail with ex.
             _cts.Cancel();
+            lock (_streamCreateLock)
+                PumpAdmissionWaitersLocked();
 
+            // A connection failure: a request whose response has not started may be replayed on a fresh
+            // connection when it is idempotent (RawSocketTransport.ShouldRetryH2Request).
+            var streamError = new Http2RetryableRequestException(MapException(ex).HttpError, requestNotProcessed: false);
             foreach (var kvp in _activeStreams)
             {
                 if (_activeStreams.TryRemove(kvp.Key, out var stream))
-                    FailStreamUnderLease(kvp.Key, stream, ex);
+                    FailStreamUnderLease(kvp.Key, stream, streamError);
             }
 
             // After _cts.Cancel(): blocked senders re-check and leave with a network error.

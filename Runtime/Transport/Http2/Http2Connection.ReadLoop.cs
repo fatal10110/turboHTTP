@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -791,6 +792,10 @@ namespace TurboHTTP.Transport.Http2
                         _hpackEncoder.SetMaxDynamicTableSize(_remoteSettings.HeaderTableSize);
                 }
 
+                // A raised MAX_CONCURRENT_STREAMS admits queued requests; a lowered one only affects new
+                // streams (RFC 9113 Section 6.5.2: open streams above the limit are not closed).
+                PumpAdmissionWaitersLocked();
+
                 int newInitialWindowSize = _remoteSettings.InitialWindowSize;
                 if (newInitialWindowSize != oldInitialWindowSize)
                 {
@@ -863,7 +868,10 @@ namespace TurboHTTP.Transport.Http2
                     "PING payload must be 8 bytes");
 
             if (frame.HasFlag(Http2FrameFlags.Ack))
-                return; // We don't send PINGs proactively in Phase 3
+            {
+                OnPingAck(frame.Payload);
+                return;
+            }
 
             try
             {
@@ -909,22 +917,46 @@ namespace TurboHTTP.Transport.Http2
             uint errorCode = ((uint)frame.Payload[4] << 24) | ((uint)frame.Payload[5] << 16) |
                              ((uint)frame.Payload[6] << 8) | frame.Payload[7];
 
-            _goawayReceived = true;
-            _lastGoawayStreamId = lastStreamId;
+            // RFC 9113 Section 6.8: no new streams from now on; a later GOAWAY may lower the last stream id
+            // but never raise it. Applied under _streamCreateLock, so every stream DispatchAsync registers
+            // is either refused there or visible to the scan below. Queued requests are refused (not sent).
+            lock (_streamCreateLock)
+            {
+                if (_goawayReceived)
+                    lastStreamId = Math.Min(lastStreamId, _lastGoawayStreamId);
 
-            // Fail streams above lastStreamId and let stream/body-source lifetime release
-            // return them to the pool when both dispatch and response ownership are done.
+                _lastGoawayStreamId = lastStreamId;
+                Volatile.Write(ref _goawayErrorCode, errorCode);
+                _goawayReceived = true;
+                PumpAdmissionWaitersLocked();
+            }
+
+            // Streams above lastStreamId were not processed (Section 8.7): the transport replays them on
+            // another connection for any method. Streams at or below it keep running (drain).
+            List<KeyValuePair<int, Http2Stream>> unprocessed = null;
             foreach (var kvp in _activeStreams)
             {
-                if (kvp.Key > lastStreamId)
+                if (kvp.Key > lastStreamId && _activeStreams.TryRemove(kvp.Key, out var stream))
                 {
-                    if (_activeStreams.TryRemove(kvp.Key, out var stream))
-                    {
-                        FailStreamUnderLease(kvp.Key, stream, new UHttpException(new UHttpError(
-                            UHttpErrorType.NetworkError,
-                            $"Server sent GOAWAY (error={errorCode}), stream {kvp.Key} was not processed")));
-                    }
+                    unprocessed ??= new List<KeyValuePair<int, Http2Stream>>();
+                    unprocessed.Add(new KeyValuePair<int, Http2Stream>(kvp.Key, stream));
                 }
+            }
+
+            // Nothing left to drain: close now, before the unprocessed streams' requests observe their
+            // failure, so a replay never finds this connection still published as alive.
+            TryCompleteDrain(inline: true);
+
+            if (unprocessed == null)
+                return;
+
+            foreach (var kvp in unprocessed)
+            {
+                FailStreamUnderLease(kvp.Key, kvp.Value, new Http2RetryableRequestException(
+                    new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        $"Server sent GOAWAY (error={(Http2ErrorCode)errorCode}), stream {kvp.Key} was not processed"),
+                    requestNotProcessed: true));
             }
         }
 
@@ -947,7 +979,7 @@ namespace TurboHTTP.Transport.Http2
                         "WINDOW_UPDATE increment must be non-zero");
                 }
 
-                if (_activeStreams.TryRemove(frame.StreamId, out var erroredStream))
+                if (TryRemoveActiveStream(frame.StreamId, out var erroredStream))
                 {
                     FailStreamUnderLease(frame.StreamId, erroredStream, new Http2ProtocolException(
                         Http2ErrorCode.ProtocolError,
@@ -1040,13 +1072,20 @@ namespace TurboHTTP.Transport.Http2
             uint errorCode = ((uint)frame.Payload[0] << 24) | ((uint)frame.Payload[1] << 16) |
                              ((uint)frame.Payload[2] << 8) | frame.Payload[3];
 
-            if (_activeStreams.TryRemove(frame.StreamId, out var stream))
+            if (TryRemoveActiveStream(frame.StreamId, out var stream))
             {
                 // After a complete response, RST_STREAM(NO_ERROR) only stops the upload: the response
                 // is kept (RFC 9113 Section 8.1); Fail leaves a completed body untouched.
-                FailStreamUnderLease(frame.StreamId, stream, new UHttpException(new UHttpError(
+                var error = new UHttpError(
                     UHttpErrorType.NetworkError,
-                    $"RST_STREAM: {(Http2ErrorCode)errorCode}")));
+                    $"RST_STREAM: {(Http2ErrorCode)errorCode}");
+
+                // REFUSED_STREAM: the peer did no application processing (RFC 9113 Section 8.7), so the
+                // transport may replay the request for any method. A stream error never ends the
+                // connection (Section 5.4.2).
+                FailStreamUnderLease(frame.StreamId, stream, errorCode == (uint)Http2ErrorCode.RefusedStream
+                    ? new Http2RetryableRequestException(error, requestNotProcessed: true)
+                    : new UHttpException(error));
             }
         }
 
