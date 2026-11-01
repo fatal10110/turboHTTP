@@ -561,6 +561,10 @@ namespace TurboHTTP.Transport.Http2
 
             // After _cts.Cancel(): blocked senders re-check and leave with a network error.
             WakeSendWindowWaiters();
+
+            // A connection that dies before the SETTINGS ACK (an invalid server preface, a closed stream)
+            // fails InitializeAsync now with that error instead of at the ACK timeout.
+            TryCompleteSettingsAck(MapException(ex));
         }
 
         public void Dispose()
