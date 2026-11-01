@@ -1,10 +1,10 @@
 using System;
-using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Http1;
 using TurboHTTP.WebSocket;
 
@@ -38,7 +38,7 @@ namespace TurboHTTP.WebSocket.Transport
                 if (attemptedAuth && proxySettings.Credentials.HasValue)
                 {
                     proxyAuthorization = BuildBasicAuthorization(proxySettings.Credentials.Value);
-                    Debug.WriteLine(
+                    TurboDiagnostics.Log(
                         "[TurboHTTP] Using Basic proxy authentication over an unencrypted proxy connection.");
                 }
 

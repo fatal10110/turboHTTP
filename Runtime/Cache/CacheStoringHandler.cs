@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -105,7 +104,7 @@ namespace TurboHTTP.Cache
                 catch (Exception ex)
                 {
                     bodyToStore?.Dispose();
-                    Debug.WriteLine("[TurboHTTP][Cache] Failed to queue cache store: " + ex);
+                    TurboDiagnostics.Log("[TurboHTTP][Cache] Failed to queue cache store", ex);
                 }
 
                 return;
@@ -302,7 +301,7 @@ namespace TurboHTTP.Cache
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine("[TurboHTTP][Cache] Failed to queue cache store: " + ex);
+                        TurboDiagnostics.Log("[TurboHTTP][Cache] Failed to queue cache store", ex);
                     }
                     finally
                     {
@@ -335,7 +334,7 @@ namespace TurboHTTP.Cache
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[TurboHTTP][Cache] Tee accumulator detached after write failure: " + ex);
+                TurboDiagnostics.Log("[TurboHTTP][Cache] Tee accumulator detached after write failure", ex);
                 DetachAccumulator();
             }
         }

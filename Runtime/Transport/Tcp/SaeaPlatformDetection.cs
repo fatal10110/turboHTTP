@@ -1,5 +1,6 @@
 using System;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Tcp
 {
@@ -64,10 +65,12 @@ namespace TurboHTTP.Transport.Tcp
         /// <summary>
         /// Emits a single diagnostic line describing the selected socket I/O mode and the
         /// expected completion model. Called once per <see cref="TcpConnectionPool"/> instance.
-        /// Uses <see cref="System.Diagnostics.Debug.WriteLine"/> so the output appears in the
-        /// Unity Editor Console (Development builds) without a hard Unity dependency.
+        /// This is success-path information, so it is compiled in only when the
+        /// <c>TURBOHTTP_VERBOSE_DIAGNOSTICS</c> scripting define is set; it then goes to the
+        /// diagnostic sink (<see cref="TurboDiagnostics"/>, #180).
         /// </summary>
         /// <param name="mode">The selected <see cref="SocketIoMode"/>.</param>
+        [System.Diagnostics.Conditional("TURBOHTTP_VERBOSE_DIAGNOSTICS")]
         public static void LogSelectedMode(SocketIoMode mode)
         {
             string modeLabel;
@@ -84,8 +87,7 @@ namespace TurboHTTP.Transport.Tcp
                     break;
             }
 
-            System.Diagnostics.Debug.WriteLine(
-                $"[TurboHTTP] Socket I/O mode: {modeLabel}");
+            TurboDiagnostics.Log($"[TurboHTTP] Socket I/O mode: {modeLabel}");
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────

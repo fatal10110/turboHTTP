@@ -8,8 +8,11 @@ namespace TurboHTTP.RateLimit
     /// <summary>
     /// Interceptor that enforces per-host and global concurrency limits on HTTP requests.
     /// </summary>
-    public sealed class ConcurrencyInterceptor : IHttpInterceptor, IDisposable
+    public sealed class ConcurrencyInterceptor : IHttpInterceptor, IDisposable, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#55).
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Concurrency;
+
         private readonly ConcurrencyLimiter _limiter;
         private readonly bool _ownsLimiter;
         private int _disposed;

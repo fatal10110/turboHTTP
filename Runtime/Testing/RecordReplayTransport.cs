@@ -498,8 +498,7 @@ namespace TurboHTTP.Testing
 
             if (disposeException != null)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"[TurboHTTP] RecordReplayTransport dispose error: {disposeException}");
+                TurboDiagnostics.Log("[TurboHTTP] RecordReplayTransport dispose error", disposeException);
             }
         }
 
@@ -979,8 +978,7 @@ namespace TurboHTTP.Testing
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine(
-                        $"[TurboHTTP] RecordReplayTransport body dispose failed: {ex.GetType().Name}");
+                    TurboDiagnostics.Log("[TurboHTTP] RecordReplayTransport body dispose failed", ex);
                 }
             }
 

@@ -18,8 +18,11 @@ namespace TurboHTTP.Auth
     /// interceptor order does not decide whether a token leaks. Redirects back to the original
     /// origin carry the credential again.
     /// </remarks>
-    public sealed class AuthInterceptor : IHttpInterceptor
+    public sealed class AuthInterceptor : IHttpInterceptor, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#55).
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Auth;
+
         /// <summary>
         /// Request metadata key (value <c>true</c>) that makes the interceptor pass the request on
         /// without fetching or attaching a credential. Set by <see cref="OAuthClient"/> on its token

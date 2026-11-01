@@ -9,6 +9,8 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("TurboHTTP.Middleware")]
 [assembly: InternalsVisibleTo("TurboHTTP.Observability")]
 [assembly: InternalsVisibleTo("TurboHTTP.Retry")]
+[assembly: InternalsVisibleTo("TurboHTTP.RateLimit")]
 [assembly: InternalsVisibleTo("TurboHTTP.WebSocket")]
+[assembly: InternalsVisibleTo("TurboHTTP.WebSocket.Transport")]
 [assembly: InternalsVisibleTo("TurboHTTP.Complete")]
 [assembly: InternalsVisibleTo("TurboHTTP.Tests.Runtime")]

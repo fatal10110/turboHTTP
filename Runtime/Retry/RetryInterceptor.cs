@@ -9,8 +9,11 @@ namespace TurboHTTP.Retry
     /// <summary>
     /// Interceptor that retries retryable requests with exponential backoff.
     /// </summary>
-    public sealed class RetryInterceptor : IHttpInterceptor
+    public sealed class RetryInterceptor : IHttpInterceptor, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#55).
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Retry;
+
         private static readonly TimeSpan ResponseDiscardTimeout = TimeSpan.FromSeconds(2);
 
         private readonly Action<string> _log;
