@@ -13,8 +13,8 @@ namespace TurboHTTP.Transport.BouncyCastle
     /// </summary>
     /// <remarks>
     /// Security-relevant choices are explicit overrides here so they hold whatever the vendored
-    /// library's defaults are (#142): the AEAD/ECDHE suite list, no OCSP stapling request (nothing
-    /// validates a staple until #33), close_notify required, and SNI per RFC 6066 section 3.
+    /// library's defaults are (#142): the AEAD/ECDHE suite list, no OCSP stapling request (revocation
+    /// is off by decision, #33), close_notify required, and SNI per RFC 6066 section 3.
     /// </remarks>
     internal sealed class TurboTlsClient : DefaultTlsClient
     {
@@ -84,8 +84,9 @@ namespace TurboHTTP.Transport.BouncyCastle
 
         public override TlsAuthentication GetAuthentication()
         {
-            // Certificate name matching keeps the caller's host (#33 owns its rules).
-            return new TurboTlsAuthentication(_targetHost);
+            // Chain, host identity and signature-algorithm checks (#33); name matching uses the
+            // caller's host, normalized by TlsCertificateNameMatcher.
+            return new TurboTlsAuthentication(m_context, _targetHost);
         }
 
         /// <summary>
@@ -101,7 +102,8 @@ namespace TurboHTTP.Transport.BouncyCastle
         public override bool RequiresCloseNotify() => true;
 
         /// <summary>
-        /// No status_request (RFC 6066 section 8): nothing validates an OCSP staple until #33.
+        /// No status_request (RFC 6066 section 8): revocation checking is off by decision (#33), so a
+        /// staple would go unread.
         /// </summary>
         protected override CertificateStatusRequest GetCertificateStatusRequest() => null;
 
