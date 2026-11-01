@@ -79,6 +79,20 @@ namespace TurboHTTP.Core
         public ProxySettings Proxy { get; set; }
 
         /// <summary>
+        /// Whether this client may send cleartext traffic: <c>http://</c> requests and requests
+        /// through an <c>http://</c> proxy. Defaults to
+        /// <see cref="CleartextTrafficPolicy.DefaultAllowCleartext"/> (<see langword="false"/> on
+        /// iOS and Android players, <see langword="true"/> in the Editor and on desktop). When it is
+        /// <see langword="false"/>, or the installed <see cref="CleartextTrafficPolicy.PlatformPolicy"/>
+        /// refuses the host, the transport throws <see cref="UHttpException"/>
+        /// (<see cref="UHttpErrorType.InvalidRequest"/>) before it opens any socket. Raw sockets
+        /// are not covered by iOS App Transport Security, so this option is the opt-in for
+        /// cleartext on iOS. Proxy Basic credentials additionally require
+        /// <see cref="ProxySettings.AllowPlaintextProxyAuth"/>.
+        /// </summary>
+        public bool AllowCleartext { get; set; } = CleartextTrafficPolicy.DefaultAllowCleartext;
+
+        /// <summary>
         /// Optional background networking behavior for mobile-style pause/resume flows.
         /// </summary>
         public BackgroundNetworkingPolicy BackgroundNetworkingPolicy { get; set; } = new BackgroundNetworkingPolicy();
@@ -177,6 +191,7 @@ namespace TurboHTTP.Core
                 PluginShutdownTimeout = PluginShutdownTimeout,
                 AdaptivePolicy = AdaptivePolicy?.Clone() ?? new AdaptivePolicy(),
                 Proxy = Proxy?.Clone(),
+                AllowCleartext = AllowCleartext,
                 BackgroundNetworkingPolicy = BackgroundNetworkingPolicy?.Clone() ?? new BackgroundNetworkingPolicy(),
                 BackgroundExecutionBridge = BackgroundExecutionBridge,
                 NetworkQualityDetector = NetworkQualityDetector,

@@ -14,6 +14,14 @@ var ws = client.WebSockets.Create("wss://echo.websocket.events");
 await ws.ConnectAsync(CancellationToken.None);
 ```
 
+### Cleartext (`ws://`)
+
+`ws://` URIs and `http://` proxies are cleartext. They are refused before any socket is opened
+(`WebSocketError.CleartextNotPermitted`) unless `WebSocketConnectionOptions.AllowCleartext` is
+`true` and the platform policy permits the host. The option defaults to `false` on iOS and Android
+players and `true` in the Editor and on desktop. Proxy Basic credentials are sent only when the
+proxy's 407 offers `Basic`, and only when cleartext is allowed. See PlatformNotes, "Cleartext traffic".
+
 ## Sending and Receiving (ValueTask)
 
 The API is fully asynchronous and native to `ValueTask`, ensuring zero allocations on the hot path.

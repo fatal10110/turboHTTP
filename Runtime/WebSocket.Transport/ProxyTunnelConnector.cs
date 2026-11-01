@@ -12,10 +12,18 @@ namespace TurboHTTP.WebSocket.Transport
 {
     internal static class ProxyTunnelConnector
     {
+        /// <summary>
+        /// Sends CONNECT over <paramref name="stream"/> (the cleartext leg to an http:// proxy) and
+        /// returns the stream once the proxy reports a 2xx. On a 407 the request is retried once
+        /// with Basic credentials, and only when the proxy offers the Basic scheme
+        /// (RFC 9110 section 11.7.1) and <paramref name="allowCleartextCredentials"/> permits
+        /// sending them unencrypted (RFC 7617 section 4).
+        /// </summary>
         public static async Task<Stream> EstablishAsync(
             Stream stream,
             Uri targetUri,
             WebSocketProxySettings proxySettings,
+            bool allowCleartextCredentials,
             CancellationToken ct)
         {
             if (stream == null)
@@ -78,6 +86,26 @@ namespace TurboHTTP.WebSocket.Transport
                         throw new WebSocketException(
                             WebSocketError.ProxyTunnelFailed,
                             "Proxy rejected CONNECT after Basic authentication.");
+                    }
+
+                    // RFC 9110 section 11.7.1: answer only a challenge the client supports. Basic
+                    // credentials go out only when the proxy offers Basic (#85).
+                    if (!AuthChallengeParser.OffersScheme(response.Headers.GetValues("Proxy-Authenticate"), "Basic"))
+                    {
+                        throw new WebSocketException(
+                            WebSocketError.ProxyAuthenticationRequired,
+                            "Proxy authentication is required (407) but the proxy does not offer the Basic scheme; " +
+                            "credentials were not sent.");
+                    }
+
+                    // RFC 7617 section 4: Basic over an unencrypted proxy leg exposes the
+                    // credentials; it needs the explicit cleartext opt-in (#85).
+                    if (!allowCleartextCredentials)
+                    {
+                        throw new WebSocketException(
+                            WebSocketError.CleartextNotPermitted,
+                            "Proxy requires Basic authentication, which would send the credentials over a cleartext " +
+                            "proxy connection; credentials were not sent. Set WebSocketConnectionOptions.AllowCleartext = true to allow it.");
                     }
 
                     if (!CanRetryOnSameConnection(response))

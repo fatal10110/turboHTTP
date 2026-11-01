@@ -257,7 +257,15 @@ namespace TurboHTTP.WebSocket
         ProxyTunnelFailed,
         CompressionFailed,
         DecompressionFailed,
-        DecompressedMessageTooLarge
+        DecompressedMessageTooLarge,
+
+        /// <summary>
+        /// The connection would carry cleartext (a <c>ws://</c> URI or an <c>http://</c> proxy
+        /// leg) but <see cref="WebSocketConnectionOptions.AllowCleartext"/> is
+        /// <see langword="false"/> or the platform cleartext policy refuses the host. Raised before
+        /// any socket is opened.
+        /// </summary>
+        CleartextNotPermitted
     }
 
     /// <summary>

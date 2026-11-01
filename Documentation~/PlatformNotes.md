@@ -41,6 +41,44 @@ var pool = new TcpConnectionPool(maxConnectionsPerHost: 4);
 var transport = new RawSocketTransport(pool);
 ```
 
+## Cleartext traffic
+
+TurboHTTP opens raw sockets, so the operating system's cleartext rules (iOS App Transport
+Security, the Android network security configuration) are never applied to its connections.
+TurboHTTP applies its own policy instead, before it resolves or connects any address:
+
+- **What counts as cleartext:** an `http://` request, a `ws://` WebSocket, and the leg to an
+  `http://` proxy (CONNECT and `Proxy-Authorization` travel unencrypted even for an `https://` or
+  `wss://` target).
+- **The switch:** `UHttpClientOptions.AllowCleartext` for HTTP and
+  `WebSocketConnectionOptions.AllowCleartext` for WebSocket (the `client.WebSocket(...)` extension
+  copies the client's value). It defaults to `CleartextTrafficPolicy.DefaultAllowCleartext`:
+  **`false` on iOS and Android players**, `true` in the Editor and on desktop.
+- **Platform policy:** when the switch is `true`, an installed `CleartextTrafficPolicy.PlatformPolicy`
+  must also permit the host. On Android players the TurboHTTP Unity module installs one that asks
+  `NetworkSecurityPolicy.isCleartextTrafficPermitted(host)`, so `android:usesCleartextTraffic` or a
+  network security config domain rule is still needed on Android 9+. On iOS no Info.plist key is
+  read; `AllowCleartext = true` is the explicit opt-in, and ATS keys only affect `UnityWebRequest`
+  and other OS stacks.
+- **Refusal:** HTTP throws `UHttpException` with `UHttpErrorType.InvalidRequest`; WebSocket throws
+  `WebSocketException` with `WebSocketError.CleartextNotPermitted`. No socket is opened.
+- **Proxy credentials (CONNECT tunnels):** for `https://` and `wss://` targets through a proxy,
+  Basic proxy credentials are sent only in answer to a 407 whose `Proxy-Authenticate` offers
+  `Basic` (RFC 9110 section 11.7.1), and only over a proxy leg that `AllowCleartext` permits
+  (RFC 7617 section 4). The HTTP transport also requires `ProxySettings.AllowPlaintextProxyAuth`.
+- **Proxy credentials (HTTP forward proxying):** for `http://` targets the HTTP transport still
+  sends Basic `Proxy-Authorization` preemptively on the forwarded request when
+  `ProxySettings.AllowPlaintextProxyAuth` is `true` (the request is cleartext, so it also needs
+  `AllowCleartext`). Challenge-driven credentials for this path are tracked in #236.
+
+```csharp
+// Local development server over plain HTTP / ws:// on a device:
+var client = new UHttpClient(new UHttpClientOptions { AllowCleartext = true });
+var wsOptions = new WebSocketConnectionOptions { AllowCleartext = true };
+```
+
+Device behaviour (the Android JNI policy, iOS players) is pending physical-device validation (#99).
+
 ## Platform-Specific Configurations
 
 ### iOS (IL2CPP)
@@ -49,14 +87,9 @@ var transport = new RawSocketTransport(pool);
 TurboHTTP natively supports `UIApplication.beginBackgroundTask` to allow critical requests to finish when the app enters the background. This is handled automatically by the transport layer.
 
 #### App Transport Security (ATS)
-iOS blocks cleartext HTTP by default. To allow HTTP (e.g., for local dev), add to `Info.plist`:
-```xml
-<key>NSAppTransportSecurity</key>
-<dict>
-    <key>NSAllowsArbitraryLoads</key>
-    <true/>
-</dict>
-```
+ATS does not apply to raw sockets, so `Info.plist` ATS keys do not affect TurboHTTP. Cleartext
+`http://` and `ws://` are refused by TurboHTTP's own default on iOS players; set
+`AllowCleartext = true` to opt in (see [Cleartext traffic](#cleartext-traffic)).
 
 #### IPv6
 App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via standard C# Sockets.
@@ -66,8 +99,11 @@ App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via
 #### Background Networking
 TurboHTTP provides a native Android JNI bridge to ensure network connections can complete cleanly when the app is backgrounded, mitigating OS-level socket closures during transitions.
 
-#### Cleartext Traffic
-Android 9+ (API 28+) blocks cleartext traffic. To allow it, add `android:usesCleartextTraffic="true"` to `<application>` in `AndroidManifest.xml`.
+#### Cleartext traffic on Android
+Android 9+ (API 28+) forbids cleartext by default. TurboHTTP refuses it unless
+`AllowCleartext = true` **and** the app's policy permits the host: add
+`android:usesCleartextTraffic="true"` to `<application>` in `AndroidManifest.xml`, or a network
+security config domain rule (see [Cleartext traffic](#cleartext-traffic)).
 
 #### Permissions
 Ensure the internet permission is in `AndroidManifest.xml`:

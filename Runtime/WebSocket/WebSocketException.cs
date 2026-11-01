@@ -78,6 +78,7 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.CompressionFailed:
                 case WebSocketError.DecompressionFailed:
                 case WebSocketError.DecompressedMessageTooLarge:
+                case WebSocketError.CleartextNotPermitted:
                 default:
                     return false;
             }
@@ -103,6 +104,7 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.CompressionFailed:
                 case WebSocketError.DecompressionFailed:
                 case WebSocketError.DecompressedMessageTooLarge:
+                case WebSocketError.CleartextNotPermitted:
                     return UHttpErrorType.InvalidRequest;
 
                 case WebSocketError.ConnectionClosed:

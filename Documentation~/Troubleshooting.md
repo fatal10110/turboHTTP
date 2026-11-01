@@ -39,12 +39,12 @@ Common issues and solutions for TurboHTTP.
 
 ### iOS
 
-*   **"Cleartext not permitted"**: You are trying to use HTTP. Use HTTPS or configure ATS in Info.plist.
+*   **"Cleartext ... is not permitted"**: You are trying to use `http://`, `ws://` or an `http://` proxy. Use HTTPS/WSS, or set `AllowCleartext = true` (ATS keys in Info.plist do not apply to TurboHTTP's raw sockets; see PlatformNotes, "Cleartext traffic").
 *   **Background Timeout**: iOS apps have very limited execution time in background (~30s). Requests may be cut off.
 
 ### Android
 
-*   **"java.net.UnknownServiceException: CLEARTEXT"**: You need to enable cleartext traffic in AndroidManifest.xml if using HTTP.
+*   **"Cleartext ... is not permitted"**: Set `AllowCleartext = true` and permit the host in AndroidManifest.xml (`usesCleartextTraffic`) or the network security config (see PlatformNotes, "Cleartext traffic").
 *   **Permission Denied**: Missing `android.permission.INTERNET`.
 
 ## Tools

@@ -328,6 +328,26 @@ namespace TurboHTTP.Transport
             var secure = string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase);
             var proxy = ResolveProxySettings(request);
 
+            // #85: raw sockets are not covered by iOS App Transport Security or the Android
+            // cleartext policy, so the policy is applied here, before any socket. The leg to an
+            // http:// proxy is cleartext even for an https:// target.
+            var allowCleartext = ResolveAllowCleartext(request);
+            if (!secure && !CleartextTrafficPolicy.IsPermitted(host, allowCleartext))
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest,
+                    $"Cleartext http:// request to '{host}' is not permitted. Use https://, or set " +
+                    "UHttpClientOptions.AllowCleartext = true (the platform cleartext policy must also permit the host)."));
+            }
+
+            if (proxy?.Address != null && !CleartextTrafficPolicy.IsPermitted(proxy.Address.Host, allowCleartext))
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest,
+                    $"Cleartext connection to http:// proxy '{proxy.Address.Host}' is not permitted. Set " +
+                    "UHttpClientOptions.AllowCleartext = true (the platform cleartext policy must also permit the host)."));
+            }
+
             // 3. Record transport start
             context.RecordEvent("TransportStart");
 
@@ -940,6 +960,18 @@ namespace TurboHTTP.Transport
             }
         }
 
+        private static bool ResolveAllowCleartext(UHttpRequest request)
+        {
+            if (request?.Metadata != null &&
+                request.Metadata.TryGetValue(RequestMetadataKeys.AllowCleartext, out var value) &&
+                value is bool allow)
+            {
+                return allow;
+            }
+
+            return CleartextTrafficPolicy.DefaultAllowCleartext;
+        }
+
         private static ProxySettings ResolveProxySettings(UHttpRequest request)
         {
             if (request?.Metadata == null)
@@ -1072,8 +1104,14 @@ namespace TurboHTTP.Transport
                     return tlsResult;
                 }
 
+                // RFC 9110 section 11.7.1 / RFC 7617: Basic credentials answer only a Basic
+                // challenge (#85). The proxy leg itself already passed the cleartext policy.
+                var offersBasic = response.StatusCode == 407 &&
+                    AuthChallengeParser.OffersScheme(response.Headers.GetValues("Proxy-Authenticate"), "Basic");
+
                 if (response.StatusCode == 407 &&
                     !attemptedAuth &&
+                    offersBasic &&
                     proxy?.Credentials != null &&
                     proxy.AllowPlaintextProxyAuth)
                 {
@@ -1090,9 +1128,14 @@ namespace TurboHTTP.Transport
                     //     never attempted; tell the caller how to enable it.
                     //   - Credentials were submitted (attemptedAuth = true) but rejected by the proxy.
                     //   - No credentials were configured at all.
-                    string reason = proxy?.Credentials != null && !proxy.AllowPlaintextProxyAuth
-                        ? "credentials were supplied but AllowPlaintextProxyAuth is disabled"
-                        : "credentials were not provided or were rejected";
+                    //   - The proxy does not offer the Basic scheme, so credentials were not sent.
+                    string reason;
+                    if (proxy?.Credentials != null && !attemptedAuth && !offersBasic)
+                        reason = "the proxy does not offer the Basic scheme, so credentials were not sent";
+                    else if (proxy?.Credentials != null && !proxy.AllowPlaintextProxyAuth)
+                        reason = "credentials were supplied but AllowPlaintextProxyAuth is disabled";
+                    else
+                        reason = "credentials were not provided or were rejected";
 
                     throw new UHttpException(new UHttpError(
                         UHttpErrorType.InvalidRequest,

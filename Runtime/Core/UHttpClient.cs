@@ -645,6 +645,7 @@ namespace TurboHTTP.Core
         {
             request.WithMetadata(RequestMetadataKeys.FollowRedirects, _options.FollowRedirects);
             request.WithMetadata(RequestMetadataKeys.MaxRedirects, _options.MaxRedirects);
+            request.WithMetadata(RequestMetadataKeys.AllowCleartext, _options.AllowCleartext);
 
             if (!request.Metadata.ContainsKey(RequestMetadataKeys.ProxyDisabled) &&
                 !request.Metadata.ContainsKey(RequestMetadataKeys.ProxySettings))
