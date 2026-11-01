@@ -1,173 +1,247 @@
-
-
 using System;
-using System.Linq;
+using System.Collections.Generic;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.X509;
+using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Transport.BouncyCastle
 {
     /// <summary>
-    /// TLS authentication handler for server certificate validation.
+    /// Server certificate authentication for the BouncyCastle provider (#33).
     /// </summary>
     /// <remarks>
-    /// <b>SECURITY WARNING — NON-PRODUCTION:</b> This implementation performs hostname and
-    /// validity-period checks only. Certificate chain validation (signature verification,
-    /// trust anchor matching, revocation) is NOT implemented. This means any self-signed or
-    /// forged certificate with correct hostname/dates will be accepted, leaving connections
-    /// vulnerable to MITM attacks. Full chain validation is deferred to Phase 6.
-    /// Do NOT use BouncyCastle TLS backend in production until Phase 6 is complete.
+    /// <para>Order, each step failing closed with a fatal alert the provider maps to
+    /// <c>AuthenticationException</c> (and the transport to <c>UHttpErrorType.CertificateError</c>):</para>
+    /// <list type="number">
+    /// <item>Host identity (RFC 6125 section 6) against the leaf's subjectAltName, CN only without
+    /// one: <see cref="TlsCertificateNameMatcher"/>. Mismatch: bad_certificate.</item>
+    /// <item>Leaf extended key usage, when present, includes serverAuth (RFC 5280 4.2.1.12).
+    /// Otherwise: bad_certificate.</item>
+    /// <item>Leaf validity period. Outside it: certificate_expired.</item>
+    /// <item>Path validation outside BouncyCastle (decision A on #141):
+    /// <see cref="ServerCertificateVerifier"/> on the DER chain. Untrusted: unknown_ca; time:
+    /// certificate_expired; no verifier on this platform: certificate_unknown; anything else:
+    /// bad_certificate.</item>
+    /// <item><see cref="TlsUtilities.CheckPeerSigAlgs"/> on the path the platform built (leaf to
+    /// anchor), so every certificate signature in it uses an algorithm this client offered.</item>
+    /// </list>
+    /// <para>Runs synchronously on the handshake thread inside BouncyCastle's input processing.
+    /// One instance per handshake; no shared state besides the verifier's immutable anchor snapshot.
+    /// Every BouncyCastle API used for certificate checks stays in this file: the vendored-library
+    /// strip computes its kept closure from it (Runtime/Transport/BouncyCastle/README.md).</para>
     /// </remarks>
     internal sealed class TurboTlsAuthentication : TlsAuthentication
     {
+        private readonly TlsContext _context;
         private readonly string _targetHost;
 
-        public TurboTlsAuthentication(string targetHost)
+        public TurboTlsAuthentication(TlsContext context, string targetHost)
         {
+            _context = context ?? throw new ArgumentNullException(nameof(context));
             _targetHost = targetHost ?? throw new ArgumentNullException(nameof(targetHost));
         }
 
         public TlsCredentials GetClientCredentials(CertificateRequest certificateRequest)
         {
-            // No client certificate support in this phase
+            // No client certificate support.
             return null;
         }
 
         public void NotifyServerCertificate(TlsServerCertificate serverCertificate)
         {
-            if (serverCertificate == null || serverCertificate.Certificate.IsEmpty)
+            if (serverCertificate == null || serverCertificate.Certificate == null || serverCertificate.Certificate.IsEmpty)
             {
                 throw new TlsFatalAlert(AlertDescription.certificate_unknown,
                     "Server did not provide a certificate");
             }
 
             var chain = serverCertificate.Certificate;
-            var leafCert = chain.GetCertificateAt(0);
-
-            // 1. Validate certificate chain
-            ValidateCertificateChain(chain);
-
-            // 2. Verify hostname matches certificate
-            ValidateHostname(leafCert, _targetHost);
-
-            // 3. Check certificate validity period
-            ValidateValidity(leafCert);
-        }
-
-        private void ValidateCertificateChain(Certificate chain)
-        {
-            if (chain.Length == 0)
+            if (chain.Length > ServerCertificateVerifier.MaxChainLength)
             {
-                throw new TlsFatalAlert(AlertDescription.certificate_unknown,
-                    "Certificate chain is empty");
-            }
-            // TODO: Full chain validation deferred to Phase 6
-#pragma warning disable CS0168
-#warning "Phase 3C: Certificate chain validation is NOT implemented — accepting any chain with valid hostname/dates. See Phase 6."
-#pragma warning restore CS0168
-        }
-
-        private void ValidateHostname(TlsCertificate tlsCertificate, string hostname)
-        {
-            var cert = new X509Certificate(tlsCertificate.GetEncoded());
-
-            var sans = GetSubjectAlternativeNames(cert);
-
-            if (sans.Any(san => MatchesHostname(san, hostname)))
-            {
-                return;
+                throw new TlsFatalAlert(AlertDescription.bad_certificate,
+                    $"Server certificate chain longer than {ServerCertificateVerifier.MaxChainLength}");
             }
 
-            var subject = cert.SubjectDN.ToString();
-            var cn = ExtractCommonName(subject);
-            if (cn != null && MatchesHostname(cn, hostname))
-            {
-                return;
-            }
+            var chainDer = new byte[chain.Length][];
+            for (int i = 0; i < chainDer.Length; i++)
+                chainDer[i] = chain.GetCertificateAt(i).GetEncoded();
 
-            throw new TlsFatalAlert(AlertDescription.bad_certificate,
-                $"Certificate hostname mismatch: expected '{hostname}', " +
-                $"certificate valid for: {string.Join(", ", sans)}");
-        }
-
-        private void ValidateValidity(TlsCertificate tlsCertificate)
-        {
-            var cert = new X509Certificate(tlsCertificate.GetEncoded());
             var now = DateTime.UtcNow;
+            ValidateLeaf(chainDer[0], _targetHost, now);
 
-            if (now < cert.NotBefore)
-            {
-                throw new TlsFatalAlert(AlertDescription.certificate_expired,
-                    $"Certificate not yet valid (NotBefore: {cert.NotBefore})");
-            }
+            var builtPath = VerifyPath(chainDer, now);
 
-            if (now > cert.NotAfter)
-            {
-                throw new TlsFatalAlert(AlertDescription.certificate_expired,
-                    $"Certificate expired (NotAfter: {cert.NotAfter})");
-            }
+            CheckPathSignatureAlgorithms(builtPath);
         }
 
-        private string[] GetSubjectAlternativeNames(X509Certificate cert)
+        /// <summary>
+        /// Host identity, EKU and validity of the leaf. Throws <see cref="TlsFatalAlert"/>.
+        /// </summary>
+        private static void ValidateLeaf(byte[] leafDer, string targetHost, DateTime nowUtc)
+        {
+            var cert = ParseCertificate(leafDer);
+            ValidateHostname(cert, targetHost);
+            ValidateExtendedKeyUsage(cert);
+            ValidateValidity(cert, nowUtc);
+        }
+
+        private static X509Certificate ParseCertificate(byte[] der)
         {
             try
             {
-                var sans = cert.GetSubjectAlternativeNames();
-                if (sans == null)
-                    return Array.Empty<string>();
+                return new X509Certificate(der);
+            }
+            catch (Exception ex) when (!(ex is TlsFatalAlert))
+            {
+                throw new TlsFatalAlert(AlertDescription.bad_certificate, "Malformed server certificate", ex);
+            }
+        }
 
-                var result = new System.Collections.Generic.List<string>();
-                foreach (var san in sans)
+        private static void ValidateHostname(X509Certificate cert, string targetHost)
+        {
+            bool hasSan;
+            var dnsNames = new List<string>();
+            var ipAddresses = new List<byte[]>();
+            IList<string> commonNames;
+
+            try
+            {
+                var generalNames = cert.GetSubjectAlternativeNameExtension();
+                hasSan = generalNames != null;
+                if (hasSan)
                 {
-                    if (san.Count >= 2 && san[0] is int type && type == 2)
+                    foreach (var name in generalNames.GetNames())
                     {
-                        result.Add(san[1].ToString());
+                        switch (name.TagNo)
+                        {
+                            case GeneralName.DnsName:
+                                dnsNames.Add(((IAsn1String)name.Name).GetString());
+                                break;
+                            case GeneralName.IPAddress:
+                                ipAddresses.Add(Asn1OctetString.GetInstance(name.Name).GetOctets());
+                                break;
+                        }
                     }
                 }
-                return result.ToArray();
+
+                commonNames = cert.SubjectDN.GetValueList(X509Name.CN);
             }
-            catch
+            catch (Exception ex) when (!(ex is TlsFatalAlert))
             {
+                // A name extension the parser rejects fails the handshake; it never reads as "no names".
+                throw new TlsFatalAlert(AlertDescription.bad_certificate,
+                    "Malformed subjectAltName or subject in server certificate", ex);
+            }
+
+            if (!TlsCertificateNameMatcher.Matches(targetHost, hasSan, dnsNames, ipAddresses, ToReadOnly(commonNames)))
+            {
+                // Names only, no other certificate content; host names are not credentials.
+                throw new TlsFatalAlert(AlertDescription.bad_certificate,
+                    $"Server certificate does not match host '{targetHost}' " +
+                    $"(subjectAltName dNSName: {string.Join(", ", dnsNames)}; iPAddress entries: {ipAddresses.Count})");
+            }
+        }
+
+        private static IReadOnlyList<string> ToReadOnly(IList<string> values)
+        {
+            if (values == null)
                 return Array.Empty<string>();
+            return values as IReadOnlyList<string> ?? new List<string>(values);
+        }
+
+        private static void ValidateExtendedKeyUsage(X509Certificate cert)
+        {
+            IList<DerObjectIdentifier> usages;
+            try
+            {
+                usages = cert.GetExtendedKeyUsage();
+            }
+            catch (Exception ex) when (!(ex is TlsFatalAlert))
+            {
+                throw new TlsFatalAlert(AlertDescription.bad_certificate,
+                    "Malformed extended key usage in server certificate", ex);
+            }
+
+            if (usages == null)
+                return;
+
+            foreach (var usage in usages)
+            {
+                if (usage.Equals(KeyPurposeID.id_kp_serverAuth) || usage.Equals(KeyPurposeID.AnyExtendedKeyUsage))
+                    return;
+            }
+
+            throw new TlsFatalAlert(AlertDescription.bad_certificate,
+                "Server certificate extended key usage does not permit serverAuth");
+        }
+
+        private static void ValidateValidity(X509Certificate cert, DateTime nowUtc)
+        {
+            if (nowUtc < cert.NotBefore.ToUniversalTime())
+            {
+                throw new TlsFatalAlert(AlertDescription.certificate_expired,
+                    $"Server certificate not yet valid (NotBefore: {cert.NotBefore.ToUniversalTime():u})");
+            }
+
+            if (nowUtc > cert.NotAfter.ToUniversalTime())
+            {
+                throw new TlsFatalAlert(AlertDescription.certificate_expired,
+                    $"Server certificate expired (NotAfter: {cert.NotAfter.ToUniversalTime():u})");
             }
         }
 
-        private string ExtractCommonName(string subject)
+        /// <summary>
+        /// Runs the platform verifier and maps its outcome to a fatal alert. Returns the built path
+        /// (leaf first, anchor last).
+        /// </summary>
+        private static byte[][] VerifyPath(byte[][] chainDer, DateTime nowUtc)
         {
-            var parts = subject.Split(',');
-            foreach (var part in parts)
+            var result = ServerCertificateVerifier.Verify(chainDer, nowUtc);
+            switch (result.Status)
             {
-                var kv = part.Trim().Split('=');
-                if (kv.Length == 2 && kv[0].Trim().Equals("CN", StringComparison.OrdinalIgnoreCase))
-                {
-                    return kv[1].Trim();
-                }
+                case CertificateVerificationStatus.Trusted:
+                    return result.Path;
+                case CertificateVerificationStatus.UntrustedRoot:
+                    throw new TlsFatalAlert(AlertDescription.unknown_ca,
+                        "Server certificate chain is not trusted: " + result.Detail);
+                case CertificateVerificationStatus.NotTimeValid:
+                    throw new TlsFatalAlert(AlertDescription.certificate_expired,
+                        "Server certificate chain is outside its validity period: " + result.Detail);
+                case CertificateVerificationStatus.NoVerifier:
+                    throw new TlsFatalAlert(AlertDescription.certificate_unknown, result.Detail);
+                default:
+                    throw new TlsFatalAlert(AlertDescription.bad_certificate,
+                        "Server certificate chain is invalid: " + result.Detail);
             }
-            return null;
         }
 
-        private bool MatchesHostname(string pattern, string hostname)
+        /// <summary>
+        /// RFC 8446 4.4.2.2 / RFC 5246 7.4.2: the certificate signatures on the verified path must
+        /// use algorithms the client offered. Keys outside the restricted factory (RSA 2048-8192,
+        /// EC P-256/384/521) surface as ArgumentException or unsupported_certificate.
+        /// </summary>
+        private void CheckPathSignatureAlgorithms(byte[][] builtPath)
         {
-            if (string.Equals(pattern, hostname, StringComparison.OrdinalIgnoreCase))
+            try
             {
-                return true;
-            }
+                var path = new TlsCertificate[builtPath.Length];
+                for (int i = 0; i < builtPath.Length; i++)
+                    path[i] = _context.Crypto.CreateCertificate(builtPath[i]);
 
-            if (pattern.StartsWith("*."))
+                TlsUtilities.CheckPeerSigAlgs(_context, path);
+            }
+            catch (TlsFatalAlert)
             {
-                var suffix = pattern.Substring(2);
-                var dotIndex = hostname.IndexOf('.');
-
-                if (dotIndex > 0)
-                {
-                    var hostSuffix = hostname.Substring(dotIndex + 1);
-                    return string.Equals(suffix, hostSuffix, StringComparison.OrdinalIgnoreCase);
-                }
+                throw;
             }
-
-            return false;
+            catch (Exception ex)
+            {
+                throw new TlsFatalAlert(AlertDescription.unsupported_certificate,
+                    "Server certificate path uses an unsupported key or signature algorithm", ex);
+            }
         }
     }
 }

@@ -194,29 +194,21 @@ namespace TurboHTTP.Transport.BouncyCastle
 
 ### Certificate Validation Steps
 
-1. **Chain validation**: Verify the certificate chain is not empty (basic check)
-2. **Hostname validation**: Check hostname matches SAN or CN
-3. **Validity period**: Ensure certificate is currently valid (not expired or not-yet-valid)
+Updated by #33 (2026-11; decision A on #141). In order, each failing closed:
 
-### Hostname Verification
-
-**Priority order:**
-1. **Subject Alternative Names (SAN)** - preferred, modern standard
-2. **Common Name (CN)** - fallback for older certificates
-
-**Wildcard support:**
-- `*.example.com` matches `www.example.com`, `api.example.com`
-- `*.example.com` does **NOT** match `example.com` (requires subdomain)
-- `*.example.com` does **NOT** match `a.b.example.com` (single-level wildcard)
-
-This follows RFC 6125 Section 6.4.3.
-
-### SAN Extraction
-
-Subject Alternative Names are extracted from the X.509 extension:
-- Extension OID: `2.5.29.17`
-- Only `dNSName` entries (type 2) are used
-- Other types (IP addresses, email, URI) are ignored for hostname validation
+1. **Host identity** (RFC 6125 s6) via `TlsCertificateNameMatcher` (Transport): target is
+   `TlsHostName.ToTargetHost` (A-labels, bare IP, no trailing dot); IP literals match only
+   iPAddress SANs; dNSName otherwise; CN only when the certificate has no subjectAltName at all;
+   wildcard only as the complete left-most label with at least two labels after it (`*.com`,
+   `f*.example.com` match nothing). Mismatch: `bad_certificate`.
+2. **EKU**: when present it must include serverAuth (or anyExtendedKeyUsage). Else `bad_certificate`.
+3. **Validity period** of the leaf. Else `certificate_expired`.
+4. **Path validation outside BC** via `ServerCertificateVerifier` (Transport): `X509Chain` on the
+   server's DER chain in the Editor/desktop, revocation off, intermediate fetch bounded at 5 s;
+   untrusted: `unknown_ca`, time: `certificate_expired`, other: `bad_certificate`. iOS/Android:
+   no verifier yet, every chain rejected with `certificate_unknown` (native bridges: #239).
+5. **`TlsUtilities.CheckPeerSigAlgs`** on the platform-built path (leaf to anchor); unsupported
+   keys: `unsupported_certificate`.
 
 ### Client Certificate Support
 
@@ -224,28 +216,19 @@ Subject Alternative Names are extracted from the X.509 extension:
 
 ## Security Status
 
-### ✅ Implemented:
-- Hostname verification (SAN + CN)
-- Wildcard certificate support
-- Certificate validity period check
-- Non-empty chain check
-
-### ⚠️ NOT Implemented (Deferred):
-- **Full chain validation**: Not verifying signatures or trusted roots
-- **Certificate revocation**: No CRL or OCSP checks
-- **Certificate pinning**: Deferred to Phase 6
-
-**WARNING:** Current implementation is **INSECURE** for production use. It only performs basic checks. For production:
-1. Validate certificate signatures against trusted root CA store
-2. Implement certificate revocation checks
-3. Add certificate pinning support
+Implemented (#33): chain validation (Editor/desktop), RFC 6125 host identity, EKU, validity,
+signature-algorithm check on the built path. Not implemented: revocation (off by decision A, no
+OCSP request), native iOS/Android verifiers (#239; devices reject every certificate meanwhile),
+pinning / user validation callback (#117).
 
 ## Error Handling
 
 Throws `TlsFatalAlert` on validation failure:
 - `AlertDescription.certificate_unknown` - chain empty or cert missing
-- `AlertDescription.bad_certificate` - hostname mismatch
-- `AlertDescription.certificate_expired` - validity period check failed
+- `AlertDescription.bad_certificate` - hostname mismatch, EKU, malformed names, invalid path
+- `AlertDescription.certificate_expired` - validity period check failed (leaf or path)
+- `AlertDescription.unknown_ca` - path does not end at a trusted anchor
+- `AlertDescription.unsupported_certificate` - key or signature algorithm outside the restricted set
 
 BouncyCastle will abort the handshake and bubble this exception up to the caller.
 

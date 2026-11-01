@@ -9,8 +9,11 @@ Load for TLS, sockets, IL2CPP/AOT, iOS/Android behavior, timeouts or device vali
   through a runtime-probed `SslClientAuthenticationOptions` overload; without it the 4-argument
   overload is used with dispose-on-cancel.
 - BouncyCastle (`TurboHTTP.Transport.BouncyCastle`) exists for IL2CPP platforms where `SslStream`
-  ALPN is missing. **Its certificate chain validation is not implemented** (#33), so it is explicit
-  opt-in only (`TlsBackend.BouncyCastle`).
+  ALPN is missing. It is explicit opt-in only (`TlsBackend.BouncyCastle`). Its server certificates
+  are checked by `ServerCertificateVerifier` (#33): RFC 6125 host matching, then `X509Chain` against
+  the platform root store in the Editor and on desktop (revocation off, EKU chained). On iOS/Android
+  players it fails closed (`certificate_unknown`) until the native SecTrust/TrustManager verifiers
+  land (#239).
 - TLS fallback rule (#34, #110): Auto mode picks the TLS provider before the handshake and never
   picks one without full certificate chain validation; a failed handshake (certificate,
   authentication, network or platform capability) propagates to the caller with no runtime
