@@ -19,7 +19,6 @@ namespace TurboHTTP.Tests.Transport.Http1
     /// Basic proxy credentials only when the 407 offers Basic.
     /// </summary>
     [TestFixture]
-    [NonParallelizable]
     public class RawSocketTransportCleartextTests
     {
         [Test]

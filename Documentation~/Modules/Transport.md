@@ -9,7 +9,7 @@ By default, `UHttpClient` uses the `RawSocketTransport`. It handles:
 - **HTTP/2**: Multiplexed streams over a single connection, HPACK header compression.
 - **TLS/SSL**: `TlsBackend.Auto` (default) uses `SslStream` and never falls back to another provider: TLS failures are reported to the caller. Without SslStream ALPN support, connections use HTTP/1.1. BouncyCastle is used only when `TlsBackend.BouncyCastle` is selected explicitly.
 - **DNS**: Happy Eyeballs (RFC 8305) for fast IPv4/IPv6 fallback.
-- **Cleartext policy**: `http://` targets and `http://` proxy legs are refused before any socket is opened (`UHttpErrorType.InvalidRequest`) unless `UHttpClientOptions.AllowCleartext` is `true` (default `false` on iOS/Android players, `true` in the Editor and on desktop) and the platform policy permits the host. CONNECT sends Basic proxy credentials only when the 407 offers `Basic`. See PlatformNotes, "Cleartext traffic".
+- **Cleartext policy**: `http://` targets and `http://` proxy legs are refused before any socket is opened (`UHttpErrorType.InvalidRequest`) unless `UHttpClientOptions.AllowCleartext` is `true` (default `false` on iOS/Android players, `true` in the Editor and on desktop) and the platform policy permits the host. CONNECT sends Basic proxy credentials only when the 407 offers `Basic`; HTTP forward proxying (`http://` targets) still sends them preemptively when `AllowPlaintextProxyAuth` is set (#236). See PlatformNotes, "Cleartext traffic".
 
 ### HTTP/2 Multiplexing
 

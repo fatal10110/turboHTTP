@@ -62,10 +62,14 @@ TurboHTTP applies its own policy instead, before it resolves or connects any add
   and other OS stacks.
 - **Refusal:** HTTP throws `UHttpException` with `UHttpErrorType.InvalidRequest`; WebSocket throws
   `WebSocketException` with `WebSocketError.CleartextNotPermitted`. No socket is opened.
-- **Proxy credentials:** Basic proxy credentials are sent only in answer to a 407 whose
-  `Proxy-Authenticate` offers `Basic` (RFC 9110 section 11.7.1), and only over a proxy leg that
-  `AllowCleartext` permits (RFC 7617 section 4). The HTTP transport also requires
-  `ProxySettings.AllowPlaintextProxyAuth`.
+- **Proxy credentials (CONNECT tunnels):** for `https://` and `wss://` targets through a proxy,
+  Basic proxy credentials are sent only in answer to a 407 whose `Proxy-Authenticate` offers
+  `Basic` (RFC 9110 section 11.7.1), and only over a proxy leg that `AllowCleartext` permits
+  (RFC 7617 section 4). The HTTP transport also requires `ProxySettings.AllowPlaintextProxyAuth`.
+- **Proxy credentials (HTTP forward proxying):** for `http://` targets the HTTP transport still
+  sends Basic `Proxy-Authorization` preemptively on the forwarded request when
+  `ProxySettings.AllowPlaintextProxyAuth` is `true` (the request is cleartext, so it also needs
+  `AllowCleartext`). Challenge-driven credentials for this path are tracked in #236.
 
 ```csharp
 // Local development server over plain HTTP / ws:// on a device:

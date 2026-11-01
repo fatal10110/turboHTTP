@@ -38,3 +38,7 @@
   - With the main `RawSocketTransport.cs`, all 5 HTTP behaviour tests fail.
   - With the WS checks removed, all 8 WS behaviour tests fail.
 - Not run: Unity EditMode/PlayMode (host editor, periodic), IL2CPP, iOS/Android devices.
+
+## Review round 1
+- Removed `[NonParallelizable]` from the two new fixtures (Unity's NUnit lacks it; Unity runs tests serially, so the static `PlatformPolicy` the tests set is not shared across concurrent tests).
+- PlatformNotes and Modules/Transport.md now limit the "Basic only on a Basic challenge" claim to CONNECT tunnels and document the preemptive forward-proxy path (#236).

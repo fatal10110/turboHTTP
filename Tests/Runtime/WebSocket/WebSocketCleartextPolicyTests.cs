@@ -14,7 +14,6 @@ namespace TurboHTTP.Tests.WebSocket
     /// platform policy permits the host, before any DNS lookup or socket.
     /// </summary>
     [TestFixture]
-    [NonParallelizable]
     public sealed class WebSocketCleartextPolicyTests
     {
         [Test]
