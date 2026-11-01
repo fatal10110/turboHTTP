@@ -648,7 +648,7 @@ Current state:
 - **owns the ~8KB read-ahead buffer** — `ResponseBodyStream` is a thin zero-overhead adapter with no buffer; `DecompressionBodySource` wraps the inner source's `ResponseBodyStream` in a private `BufferedStream` (~8KB) before passing to `GZipStream`. This avoids triple-buffering on the HTTP/1.1 path while ensuring `GZipStream` gets efficient reads
 - wrap the underlying body source (via `ResponseBodyStream` adapter + `BufferedStream`) in a persistent `GZipStream` / `DeflateStream`
 - decompress incrementally on reads — `GZipStream.Read` calls the inner stream's `Read` incrementally (confirmed: works on .NET Standard 2.1 and Unity IL2CPP Mono)
-- enforce decompressed-size limits during streaming: a running counter tracks total decompressed bytes across all `ReadAsync` calls. The decompression bomb limit is configurable via constructor parameter (default 256 MB). If `_maxDecompressedBodySizeBytes` is exceeded, the body source is aborted and `ReadAsync` throws `IOException`
+- enforce decompressed-size limits during streaming: a running counter tracks total decompressed bytes across all `ReadAsync` calls. The decompression bomb limit is configurable via constructor parameter (default 256 MB, lowered to 32 MB by #74). If `_maxDecompressedBodySizeBytes` is exceeded, the body source is aborted and `ReadAsync` throws `IOException`
 - the `GZipStream` lifetime is tied to the response lifetime — constructed once, never re-initialized
 
 #### GZIP Trailer Validation in Streaming Mode
