@@ -35,10 +35,10 @@ def read_baseline(path, platform):
 
 
 def skipped_cases(root):
-    """(fullname, reason) of every skipped or ignored test-case."""
+    """(fullname, reason) of every skipped, ignored or inconclusive test-case (a failed Assume.That is Inconclusive)."""
     cases = []
     for case in root.iter("test-case"):
-        if case.get("result") in ("Skipped", "Ignored") or case.get("label") == "Ignored":
+        if case.get("result") in ("Skipped", "Ignored", "Inconclusive") or case.get("label") == "Ignored":
             reason = (case.findtext("reason/message") or case.findtext("failure/message") or "").strip()
             cases.append((case.get("fullname") or case.get("name") or "?", " ".join(reason.split())))
     return cases

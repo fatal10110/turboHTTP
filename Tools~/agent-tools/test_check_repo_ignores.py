@@ -55,6 +55,11 @@ class IgnoresCheckTest(unittest.TestCase):
         self.assertEqual(2, len(errors))
         self.assertEqual([], self.run_check('class T { [Ignore("tracked in #5")] [Test] void A() { } }'))
 
+    def test_assume_is_checked(self):
+        errors = self.run_check('class T { void A() { Assume.That(x, Is.EqualTo(0), "window open"); Assume.True(y); } }')
+        self.assertEqual(2, len(errors))
+        self.assertEqual([], self.run_check('class T { void A() { Assume.That(x, Is.EqualTo(0), "[env] window open"); Assume.True(y, "see #12"); } }'))
+
     def test_bare_ignore_attribute_fails(self):
         self.assertEqual(1, len(self.run_check('class T { [Ignore] [Test] void A() { } }')))
 

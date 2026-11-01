@@ -16,11 +16,14 @@ def load_module():
     return module
 
 
-def results_xml(*skips, failed=False):
+def results_xml(*skips, failed=False, inconclusive=()):
     cases = ['<test-case name="Ok" fullname="N.T.Ok" result="Passed" />']
     for i, reason in enumerate(skips):
         body = f"<reason><message><![CDATA[{reason}]]></message></reason>" if reason is not None else ""
         cases.append(f'<test-case name="S{i}" fullname="N.T.Skip{i}" result="Skipped" label="Ignored">{body}</test-case>')
+    for i, reason in enumerate(inconclusive):
+        cases.append(f'<test-case name="I{i}" fullname="N.T.Assume{i}" result="Inconclusive">'
+                     f'<reason><message><![CDATA[{reason}]]></message></reason></test-case>')
     if failed:
         cases.append('<test-case name="Bad" fullname="N.T.Bad" result="Failed"><failure><message>boom</message></failure></test-case>')
     return ('<test-run total="3" passed="1" failed="%d" skipped="%d" inconclusive="0" duration="1">'
@@ -41,6 +44,14 @@ class SummarizeResultsTest(unittest.TestCase):
         out = io.StringIO()
         code = self.module.summarize(str(path), platform, filtered, str(self.baseline), out=out)
         return code, out.getvalue()
+
+    def test_inconclusive_counts_as_skipped(self):
+        code, out = self.run_summary(results_xml(inconclusive=["[env] window open", "no reason marker"]))
+        self.assertEqual(4, code)
+        self.assertIn("SKIP N.T.Assume1: no reason marker", out)
+        self.assertIn("SKIP GATE FAILED", out)
+        code, _ = self.run_summary(results_xml(inconclusive=["[env] a", "[env] b", "[env] c"]))
+        self.assertEqual(4, code)  # three > baseline 2
 
     def test_within_baseline_with_explained_skips_passes(self):
         code, out = self.run_summary(results_xml("[env] no network", "tracked in #151"))

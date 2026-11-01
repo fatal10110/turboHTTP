@@ -182,7 +182,7 @@ def check_unity_nunit(files):
 
 # Skipped tests must say why (#190): an issue reference ("#152"), the environment marker that
 # TestRequirements.IgnoreEnvironment prefixes ("[env]"), or the constant that holds it.
-_IGNORE_CALL = re.compile(r"\bAssert\.Inconclusive\s*\(|(?<!\w)(?:\w+\.)*Ignore(?:Attribute)?\s*\(|\bIgnore(?:Reason)?\s*=(?!=)")
+_IGNORE_CALL = re.compile(r"\b(?:Assert\.Inconclusive|Assume\.\w+)\s*\(|(?<!\w)(?:\w+\.)*Ignore(?:Attribute)?\s*\(|\bIgnore(?:Reason)?\s*=(?!=)")
 _IGNORE_BARE_ATTRIBUTE = re.compile(r"\[\s*(?:[\w.]+\.)?Ignore(?:Attribute)?\s*\]")
 _IGNORE_REASON = re.compile(r"#\d+|\[env\]|\bEnvironmentIgnorePrefix\b")
 

@@ -83,7 +83,7 @@ namespace TurboHTTP.Tests.Observability
         [Test]
         public void NoViewer_CapturesNothing()
         {
-            Assume.That(MonitorInterceptor.ViewerCount, Is.EqualTo(0), "an HTTP Monitor window is open");
+            Assume.That(MonitorInterceptor.ViewerCount, Is.EqualTo(0), "[env] an HTTP Monitor window is open");
             Assert.IsTrue(MonitorInterceptor.CaptureEnabled);
             Assert.IsFalse(MonitorInterceptor.IsCapturing);
 
@@ -107,7 +107,7 @@ namespace TurboHTTP.Tests.Observability
         [Test]
         public void ViewerHandle_DetachesOnceAndStopsCapture()
         {
-            Assume.That(MonitorInterceptor.ViewerCount, Is.EqualTo(0), "an HTTP Monitor window is open");
+            Assume.That(MonitorInterceptor.ViewerCount, Is.EqualTo(0), "[env] an HTTP Monitor window is open");
             var viewer = MonitorInterceptor.AttachViewer();
             Assert.AreEqual(1, MonitorInterceptor.ViewerCount);
             Assert.IsTrue(MonitorInterceptor.IsCapturing);

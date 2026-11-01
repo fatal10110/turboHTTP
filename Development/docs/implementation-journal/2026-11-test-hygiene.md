@@ -42,8 +42,13 @@ Tests and test tooling only; no product code changed.
 - #151 baselines are 0/0: every skip left is an environment skip that the periodic host-editor run is expected
   to satisfy, so a skip there means a test stopped executing. The unfiltered PlayMode suite hangs (#246), so the
   PlayMode number is unconfirmed; raise it with a justification if the first full run shows a legitimate skip.
-- The CI half of #151 ("fails CI when the skipped count rises") cannot be met while the unity-tests job passes
-  vacuously without a license (#188); it is bound to #188.
+- The CI half of #151: `ci.yml` unity-tests runs `summarize_results.py` after the runner (licensed runs only;
+  unlicensed it is skipped like the rest of the job, #188), so a rising skip count or an unexplained skip fails CI.
+  It cannot be seen working until #188 provides a license.
+- Review round 1: `Inconclusive` results (a failed `Assume.That`) count as skipped in the summary, and the
+  `ignores` check also covers `Assume.*` calls (the two `MonitorRedactionTests` sites now say `[env]`).
+- The `#if TURBOHTTP_INTEGRATION_TESTS` gated internet tests never run in the nightly job; tracked in #263 (#115 is
+  therefore "Part of", not closed).
 - `testing.md` should mention `skip-baseline.txt`, exit code 4 and the nightly workflow; docs-agents owns that
   file, so it is not edited here.
 
