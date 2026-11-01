@@ -198,8 +198,13 @@ namespace TurboHTTP.Tests.WebSocket
                 {
                     if (stream is SslStream ssl)
                     {
-                        await ssl.AuthenticateAsServerAsync(
-                            _options.ServerCertificate, false, SslProtocols.Tls12, false).ConfigureAwait(false);
+                        // AuthenticateAsServerAsync takes no token on netstandard2.1: closing the
+                        // socket on cancellation is what bounds the handshake when Dispose runs.
+                        using (ct.Register(tcpClient.Dispose))
+                        {
+                            await ssl.AuthenticateAsServerAsync(
+                                _options.ServerCertificate, false, SslProtocols.Tls12, false).ConfigureAwait(false);
+                        }
                     }
 
                     requestHead = await ReadHeaderBlockAsync(stream, ct).ConfigureAwait(false);

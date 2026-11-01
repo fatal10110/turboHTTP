@@ -100,3 +100,7 @@ using `PlayerBuildInterface.CompilePlayerScripts`:
 
 Not run: the full EditMode/PlayMode suites (they hang on #245/#246), IL2CPP player builds and devices
 (#99, #103), and the tests on .NET 8/CoreCLR.
+
+Remainder: #206 AC3 ("both tests pass in a full host-editor PlayMode run") is not met yet. Only the
+filtered PlayMode runs above passed; the full run waits for the next periodic host-editor run after
+#245/#246, so this PR is "Part of #206" and #206 stays open until that run is green.
