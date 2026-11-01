@@ -15,7 +15,7 @@ options.Interceptors.Add(new AuthInterceptor(myTokenProvider));
 var client = new UHttpClient(options);
 ```
 
-The credential stays with its origin: the interceptor binds to the scheme, host and port of the first request it authenticates and never attaches the token to requests for another origin, including a cross-origin redirect target (RFC 9110 section 11.6.2 and 15.4). Place it below `CookieInterceptor` and above `CacheInterceptor`; see [Interceptors](Interceptors.md) for the order. The token never appears in logs or exceptions.
+The credential stays with its origin: for each call the interceptor binds to the scheme, host and port of the original request and never attaches the token to a hop for another origin, such as a cross-origin redirect target, as browsers do. Place it below `CookieInterceptor` and above `CacheInterceptor`; see [Interceptors](Interceptors.md) for the order. The token never appears in logs or exceptions.
 
 To authenticate a single request, use `WithBearerToken`:
 

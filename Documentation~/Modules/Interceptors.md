@@ -61,8 +61,8 @@ list (adaptive, then background, then yours).
 client writes a one-time warning through the diagnostic sink. Add the interceptor, or set
 `FollowRedirects = false`.
 
-`Authorization` and cookies never follow a redirect to another origin (RFC 9110 section 15.4): the
-token stays bound to the origin it was first used with.
+`AuthInterceptor` does not attach its token to a redirect hop for another origin, and `CookieInterceptor`
+sends each hop only the cookies stored for that hop's host (RFC 6265 section 5.4).
 
 <!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
 ```csharp

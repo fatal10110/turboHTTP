@@ -15,7 +15,7 @@ MainThreadDispatcher.Enqueue(() => myGameObject.SetActive(true));
 
 ## Content handlers
 
-Extension methods on `UHttpClient` download and decode common Unity asset types. Decoding happens off the main thread where possible; the final Unity object is created on the main thread.
+Extension methods on `UHttpClient` download and decode common Unity asset types. The download runs on background threads and the Unity object is created on the main thread; `TextureOptions.EnableThreadedDecode` moves the pixel decoding off the main thread too.
 
 ### Textures and sprites
 

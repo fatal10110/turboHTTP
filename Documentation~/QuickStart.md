@@ -16,7 +16,7 @@ Get started with TurboHTTP in under 5 minutes. Every snippet here is compiled ag
 3.  Navigate to the `TurboHTTP` folder and select `package.json`.
 4.  Wait for compilation to finish.
 
-The package's **Samples** (Package Manager -> TurboHTTP -> Samples -> Import) are ready-made scenes of code: each sample has its own assembly definition referencing the modules it needs.
+The package's **Samples** (Package Manager -> TurboHTTP -> Samples -> Import) are ready-made example scripts: each sample has its own assembly definition referencing the modules it needs.
 
 ## Your First Request
 
