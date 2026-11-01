@@ -407,6 +407,41 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Headers.TryGetValue("Proxy-Authorization", out var value) ? value : null;
         }
 
+        // A keep-alive Basic 407 whose body the transport will not drain (chunked, or larger than
+        // MaxProxyChallengeDrainBytes = 64 KiB) must not be pooled: the retry goes on a fresh
+        // connection. The scripted proxy keeps connection 1 open, so pooling it would put the
+        // retry on connection 1.
+        [TestCase("Content-Length: 65537\r\nConnection: keep-alive\r\n\r\n")]
+        [TestCase("Transfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n6\r\ndenied\r\n0\r\n\r\n")]
+        public void ForwardProxy_BasicChallengeWithUndrainableBody_RetriesOnFreshConnection(string framingAndBody)
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var proxy = new ScriptedProxy(request =>
+                {
+                    if (request.ProxyAuthorization == null)
+                    {
+                        return new ProxyReply(
+                            "HTTP/1.1 407 Proxy Authentication Required\r\n" + BasicChallenge + framingAndBody,
+                            close: false);
+                    }
+
+                    return new ProxyReply("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", close: true);
+                });
+
+                using var client = CreateClient(proxy.Port, allowPlaintextProxyAuth: true);
+                using var response = await client.Get("http://origin.example.com/a").SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual("ok", response.GetBodyAsString());
+                var requests = proxy.Requests;
+                Assert.AreEqual(2, requests.Count);
+                Assert.IsNull(requests[0].ProxyAuthorization);
+                Assert.AreEqual(2, requests[1].Connection, "an undrainable 407 body closes the connection");
+                Assert.AreEqual(ExpectedBasic, requests[1].ProxyAuthorization);
+            });
+        }
+
         private readonly struct ProxyReply
         {
             public ProxyReply(string response, bool close, bool sendContinue = false)
