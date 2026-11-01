@@ -13,7 +13,7 @@ phase's entries with `ls Development/docs/implementation-journal | grep phase<N>
 | 3 Client API + HTTP/1.1 (3.1–3.5) | done | detailed plans in `phases/phase3/`; `phase-03-client-api.md` is historical only. Registration moved to the `TurboHttpBootstrap` (#216); player/device checks #100, #99. HTTP/1.1 parser and reuse hardening merged (#200, #215) |
 | 3B HTTP/2 | done, hardened | v1.0-beta hardening merged in waves run w1030 (#198, #210, #224, #234, #241, #244); left: idle-stream/first-frame conformance #30 |
 | 3C BouncyCastle TLS fallback | re-vendored (strip v2, #223); Auto fails closed (#195) | chain validation + RFC 6125 matching in the BC path (#240), native iOS/Android verifiers #239 (#33 stays open); full AES-256-GCM handshakes #230; Unity-only test failures #206 |
-| 4 Pipeline, 5 Content handlers | done | later rewritten as interceptors (22.x); docs still use old names (#107, #108) |
+| 4 Pipeline, 5 Content handlers | done | later rewritten as interceptors (22.x); pre-22 phase docs still use old names (#108); old `docs/architecture.md` removed (#107, #189) |
 | 6 Performance & hardening, 7 Testing infra | done | soak test (#114) |
 | 8 Docs & samples | not started | #98 |
 | 9 Platform compatibility | partial (detection/config only) | device matrix #99 |

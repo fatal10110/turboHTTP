@@ -28,7 +28,7 @@ Scoped guides (bottom table) are loaded only when the task needs them.
 2. Protocol correctness: the RFC is the oracle (9110 semantics, 9111 caching, 9112 HTTP/1.1,
    9113 HTTP/2, 7541 HPACK, 6455/7692 WebSocket, 6265 cookies, 5280/6125 TLS paths and names).
 3. Security, then IL2CPP/mobile safety (sections 3–4).
-4. Architecture and module rules (section 4, `architecture.md`).
+4. Architecture and module rules (section 4, [`architecture.md`](Development/docs/agents/architecture.md)).
 5. Required verification (section 5).
 6. Skill and tool defaults.
 
@@ -61,8 +61,8 @@ with an RFC, follow the RFC and record the conflict in the PR.
   and are returned once on every path: success, exception, cancellation, dispose.
 - **Allocations.** Hot paths stay allocation-free where they already are: `ArrayPool`, the writers
   and segmented buffers in `TurboHTTP.Core.Internal`, `ValueTask`; no LINQ or closures per frame.
-- **Modules.** Core depends on nothing; optional modules depend only on Core except the documented
-  exceptions (`architecture.md`, enforced by `Tools~/ci/check_repo.py`). Only Transport may use
+- **Modules.** Core references no other assembly (it uses `UnityEngine` only for platform detection and diagnostics); optional modules depend only on Core except the documented
+  exceptions ([`architecture.md`](Development/docs/agents/architecture.md), enforced by `Tools~/ci/check_repo.py`). Only Transport may use
   unsafe code. Transport, JSON and WebSocket cores have no Unity engine references. Module
   conveniences are extension methods in the owning module; Core's request API keeps raw HTTP primitives.
 - **Public API** changes need XML docs and a mention in the PR; prefer internal.
