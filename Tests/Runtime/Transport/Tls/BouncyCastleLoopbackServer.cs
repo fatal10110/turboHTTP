@@ -4,6 +4,7 @@ using System.IO;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
@@ -14,27 +15,37 @@ using TurboHTTP.Transport.Tls;
 namespace TurboHTTP.Tests.Transport.Tls
 {
     /// <summary>
-    /// Loopback server for BouncyCastle client tests. Accepts any number of connections; each runs
-    /// on its own dedicated (non-pool) thread, so tests that clamp the thread pool measure only the
-    /// client. With a certificate the connection is a TLS 1.2 <see cref="SslStream"/> server
-    /// (self-signed CN=localhost: accepted by the BouncyCastle client while chain validation, #33,
-    /// is not implemented); without one the handler gets the raw socket stream (scripted bytes).
+    /// Loopback server for BouncyCastle client tests. Accepts any number of connections; with a
+    /// synchronous handler each runs on its own dedicated thread. With a certificate the connection
+    /// is a TLS 1.2 <see cref="SslStream"/> server (the committed CN=localhost test certificate);
+    /// without one the handler gets the raw socket stream (scripted bytes).
+    /// <para>
+    /// A dedicated thread does not keep the server off the thread pool on Unity's Mono: its
+    /// synchronous SslStream API runs every inner read and write as <c>Task.Run(() => inner.Read(...))</c>
+    /// and waits for it (<c>Mono.Net.Security.MobileAuthenticatedStream.InnerRead</c>), so each
+    /// blocked server read holds a pool worker (#206). Tests that clamp the pool use
+    /// <see cref="TryStartTlsAsync"/>, whose handshake and handler never block a pool thread.
+    /// </para>
     /// </summary>
     internal sealed class BouncyCastleLoopbackServer : IDisposable
     {
         private readonly TcpListener _listener;
         private readonly X509Certificate2 _certificate;
         private readonly Action<Stream> _handler;
+        private readonly Func<Stream, Task> _asyncHandler;
+        private readonly List<Task> _serveTasks = new List<Task>();
         private readonly List<TcpClient> _clients = new List<TcpClient>();
         private readonly object _clientsLock = new object();
         private int _accepted;
         private Exception _handlerError;
         private int _disposed;
 
-        private BouncyCastleLoopbackServer(X509Certificate2 certificate, Action<Stream> handler)
+        private BouncyCastleLoopbackServer(
+            X509Certificate2 certificate, Action<Stream> handler, Func<Stream, Task> asyncHandler = null)
         {
             _certificate = certificate;
             _handler = handler;
+            _asyncHandler = asyncHandler;
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             StartThread(AcceptLoop, "bc-test-accept");
@@ -52,6 +63,17 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             var certificate = LocalTlsTestServer.TryCreateLocalhostCertificate();
             return certificate == null ? null : new BouncyCastleLoopbackServer(certificate, handler);
+        }
+
+        /// <summary>
+        /// TLS server with an asynchronous handshake and handler: no thread, pool or dedicated, is
+        /// blocked while it waits for the client. Null when the runtime cannot load the committed
+        /// test certificate.
+        /// </summary>
+        public static BouncyCastleLoopbackServer TryStartTlsAsync(Func<Stream, Task> handler)
+        {
+            var certificate = LocalTlsTestServer.TryCreateLocalhostCertificate();
+            return certificate == null ? null : new BouncyCastleLoopbackServer(certificate, null, handler);
         }
 
         /// <summary>Plain TCP server for scripted TLS records.</summary>
@@ -94,6 +116,66 @@ namespace TurboHTTP.Tests.Transport.Tls
                 if (n <= 0)
                     throw new EndOfStreamException();
                 read += n;
+            }
+        }
+
+        /// <summary>
+        /// Sends the server's close_notify (RFC 5246 section 7.2.1, RFC 8446 section 6.1) and
+        /// waits until it is written. On .NET <see cref="SslStream.ShutdownAsync"/> always sends
+        /// it. Unity's Mono SslStream (UnityTls) sends it only when the internal
+        /// <c>MonoTlsSettings.SendCloseNotify</c> flag is set, which defaults to false
+        /// (<c>Mono.Unity.UnityTlsContext.Shutdown</c>), so a plain ShutdownAsync puts nothing on
+        /// the wire there (#206). The flag is set on this stream's own settings copy.
+        /// </summary>
+        public static void SendCloseNotify(SslStream ssl)
+        {
+            if (Type.GetType("Mono.Runtime") != null)
+            {
+                var settingsField = typeof(SslStream).GetField(
+                    "settings", BindingFlags.Instance | BindingFlags.NonPublic);
+                object settings = settingsField?.GetValue(ssl);
+                var sendCloseNotify = settings?.GetType().GetProperty(
+                    "SendCloseNotify", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (sendCloseNotify == null)
+                {
+                    throw new InvalidOperationException(
+                        "Mono SslStream settings.SendCloseNotify not found; the server cannot send close_notify.");
+                }
+
+                sendCloseNotify.SetValue(settings, true);
+            }
+
+            ssl.ShutdownAsync().GetAwaiter().GetResult();
+        }
+
+        public static async Task ReadExactAsync(Stream stream, byte[] buffer, int count)
+        {
+            int read = 0;
+            while (read < count)
+            {
+                int n = await stream.ReadAsync(buffer, read, count - read).ConfigureAwait(false);
+                if (n <= 0)
+                    throw new EndOfStreamException();
+                read += n;
+            }
+        }
+
+        /// <summary>Completes when the peer closes (or the socket fails).</summary>
+        public static async Task DrainUntilClosedAsync(Stream stream)
+        {
+            var buffer = new byte[1024];
+            try
+            {
+                while (await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false) > 0)
+                {
+                    // Discard: only the close matters.
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
             }
         }
 
@@ -158,7 +240,20 @@ namespace TurboHTTP.Tests.Transport.Tls
                     _clients.Add(client);
                 }
 
-                StartThread(() => Serve(client), "bc-test-conn");
+                if (_asyncHandler != null)
+                {
+                    // Owned by the server: Dispose closes the client, which ends the task; every
+                    // exception is caught inside ServeAsync.
+                    var serve = ServeAsync(client);
+                    lock (_clientsLock)
+                    {
+                        _serveTasks.Add(serve);
+                    }
+                }
+                else
+                {
+                    StartThread(() => Serve(client), "bc-test-conn");
+                }
             }
         }
 
@@ -180,6 +275,31 @@ namespace TurboHTTP.Tests.Transport.Tls
                 using (stream)
                 {
                     _handler(stream);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (Volatile.Read(ref _disposed) == 0)
+                    Interlocked.CompareExchange(ref _handlerError, ex, null);
+            }
+            finally
+            {
+                try { client.Close(); } catch { }
+            }
+        }
+
+        private async Task ServeAsync(TcpClient client)
+        {
+            try
+            {
+                Stream stream = client.GetStream();
+                var ssl = new SslStream(stream, leaveInnerStreamOpen: false);
+                stream = ssl;
+                using (stream)
+                {
+                    await ssl.AuthenticateAsServerAsync(_certificate, false, SslProtocols.Tls12, false)
+                        .ConfigureAwait(false);
+                    await _asyncHandler(stream).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)

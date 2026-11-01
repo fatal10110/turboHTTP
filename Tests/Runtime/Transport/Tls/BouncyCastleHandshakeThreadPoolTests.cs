@@ -84,14 +84,16 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
 
-            // Echo one byte so each connection also proves post-handshake I/O.
-            using var server = BouncyCastleLoopbackServer.TryStartTls(stream =>
+            // Echo one byte so each connection also proves post-handshake I/O. The server is
+            // asynchronous: Unity Mono's synchronous SslStream holds a pool worker per blocked read,
+            // so a synchronous server would starve the clamped pool by itself (#206).
+            using var server = BouncyCastleLoopbackServer.TryStartTlsAsync(async stream =>
             {
                 var one = new byte[1];
-                BouncyCastleLoopbackServer.ReadExact(stream, one, 1);
-                stream.Write(one, 0, 1);
-                stream.Flush();
-                BouncyCastleLoopbackServer.DrainUntilClosed(stream);
+                await BouncyCastleLoopbackServer.ReadExactAsync(stream, one, 1).ConfigureAwait(false);
+                await stream.WriteAsync(one, 0, 1).ConfigureAwait(false);
+                await stream.FlushAsync().ConfigureAwait(false);
+                await BouncyCastleLoopbackServer.DrainUntilClosedAsync(stream).ConfigureAwait(false);
             });
             if (server == null)
             {

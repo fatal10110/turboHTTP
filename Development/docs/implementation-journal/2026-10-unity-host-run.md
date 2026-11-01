@@ -61,3 +61,18 @@ Not run: IL2CPP player builds, devices (#99).
   Watch the log's modification time; a run with no log progress for a few minutes has hung.
 
 Not run: IL2CPP player builds, devices (#99).
+
+## 2026-11-01: lane bc-host-verify (base main 84b1345, waves run w1101)
+
+Filtered PlayMode runs only (#206, #221):
+- BC gate `BouncyCastle|TlsHostnameValidation|TlsProviderSelector|TlsIntegration|TlsFallback`: 95/95, 0 skipped.
+- `RawSocketTransportProxyTunnel`: 15/15.
+- `WebSocket`: 156/156.
+- `PollSelect|SocketChannelLifecycle|TcpStreamAdapter`: 15/15.
+- The two #206 tests pass after test-side fixes. Root causes are in `2026-11-bc-host-verify.md`:
+  - Mono's sync SslStream holds a pool worker per blocked read.
+  - Mono's SslStream sends no close_notify by default.
+- Player-script compile for Win64/Android/iOS at API levels .NET Standard 2.1 and .NET Framework: clean.
+- Filed #255 (CONNECT h2 with BC in the editor is impossible: Mono SslStream has no ALPN).
+
+Not run: full suites (#245/#246), IL2CPP player builds, devices (#99).
