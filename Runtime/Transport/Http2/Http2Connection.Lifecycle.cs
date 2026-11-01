@@ -450,6 +450,8 @@ namespace TurboHTTP.Transport.Http2
                     await Task.Delay(_maintenanceInterval, ct).ConfigureAwait(false);
                     CleanupRecentlyResetStreams();
                     ScanForStalledStreams();
+                    if (FailConnectionIfSendStalled())
+                        return;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -480,6 +482,28 @@ namespace TurboHTTP.Transport.Http2
                     stream.ReleaseLease();
                 }
             }
+        }
+
+        /// <summary>
+        /// Send-side stall bound (#197). A started frame is finished with the connection token only,
+        /// never the request token (RFC 9113 Sections 4.1 and 6.10), so a peer that stops reading would
+        /// hold the frame write, <see cref="_writeLock"/> and every request deadline behind it with no
+        /// bound. When the frame write in flight has made no progress for the stall timeout, the
+        /// connection is failed (every stream gets a network error) and disposed: disposal closes the
+        /// transport stream, which aborts a socket write that ignores cancellation.
+        /// </summary>
+        private bool FailConnectionIfSendStalled()
+        {
+            long stallTimeoutMs = Volatile.Read(ref _stallTimeoutMs);
+            if (!_codec.IsWriteStalled(Http2MonotonicClock.GetTimestamp(), stallTimeoutMs))
+                return false;
+
+            var error = new UHttpException(new UHttpError(
+                UHttpErrorType.NetworkError,
+                $"HTTP/2 connection send stalled: a frame write made no progress for {stallTimeoutMs} ms"));
+            FailAllStreams(error);
+            Dispose();
+            return true;
         }
 
         private void CleanupRecentlyResetStreams()
