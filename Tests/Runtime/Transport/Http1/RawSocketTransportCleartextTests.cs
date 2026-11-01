@@ -166,7 +166,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
             return (Task)method.Invoke(
                 transport,
-                new object[] { stream, targetHost, targetPort, proxy, CancellationToken.None });
+                new object[] { stream, targetHost, targetPort, proxy, false, CancellationToken.None });
         }
 
         /// <summary>Serves a scripted proxy reply and records what the client wrote.</summary>
