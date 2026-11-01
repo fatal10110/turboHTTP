@@ -63,5 +63,13 @@
   shadow build with the BC glue compiled under the new define.
 - The run-tests.sh define edit was checked on sample `ProjectSettings` fragments: `{}`, an existing
   Standalone entry, and a second run.
-- Unity EditMode/PlayMode scoped runs: see the PR "Local gates" section.
+- Unity 2021.3.45f2 host editor, using a per-lane test project that got the define from the new
+  run-tests.sh step:
+  - EditMode `--filter 'TurboHttpLinkerProcessorTests|ModuleAutoReferenceTests|TlsProviderSelectorTests|TlsProviderRegistrationTests|BouncyCastleAssemblyTests|PlatformConfigNoReflectionTests|TlsPlatformCapabilit'`:
+    38/38 passed.
+  - PlayMode `--filter 'TlsProviderSelectorTests|TlsProviderRegistrationTests|BouncyCastleAssemblyTests|PlatformConfigNoReflectionTests|TlsPlatformCapabilit'`:
+    51/51 passed. This includes `GlueAssembly_RegistersItsProviderAtStartup`, the self-registration
+    with no test call.
+  - PlayMode `--filter 'BouncyCastle' --category '!ExternalNetwork'`: 68/68 passed. These are the BC
+    handshake suites, running through the registered provider.
 - Not run: IL2CPP player builds, Stripping High, device runs.
