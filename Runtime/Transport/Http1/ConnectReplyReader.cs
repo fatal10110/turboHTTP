@@ -13,10 +13,11 @@ namespace TurboHTTP.Transport.Http1
     /// </summary>
     internal sealed class ConnectReply
     {
-        internal ConnectReply(int statusCode, HttpHeaders headers)
+        internal ConnectReply(int statusCode, HttpHeaders headers, bool isHttp10 = false)
         {
             StatusCode = statusCode;
             Headers = headers ?? throw new ArgumentNullException(nameof(headers));
+            IsHttp10 = isHttp10;
         }
 
         /// <summary>Three-digit status code from the reply's status line.</summary>
@@ -40,6 +41,23 @@ namespace TurboHTTP.Transport.Http1
 
         /// <summary>True when the reply carries the <c>close</c> connection option.</summary>
         public bool HasConnectionClose => ConnectReplyReader.ContainsToken(Headers.Get("Connection"), "close");
+
+        /// <summary>True when the status line names HTTP/1.0.</summary>
+        public bool IsHttp10 { get; }
+
+        /// <summary>
+        /// The one reuse rule for a 407 (or any non-2xx) CONNECT reply, shared by the HTTP transport
+        /// and the WebSocket proxy tunnel (#229): another CONNECT may follow on the same connection
+        /// only when the body has a known length and the proxy keeps the connection open, that is
+        /// Content-Length without Transfer-Encoding (RFC 9112 section 6.3 rules 3 and 8: TE with CL
+        /// is an error, no framing runs to close), no <c>close</c> option (RFC 9112 section 9.6),
+        /// and for HTTP/1.0 an explicit <c>keep-alive</c> (RFC 9112 section 9.3).
+        /// </summary>
+        public bool CanRetryOnSameConnection =>
+            !HasConnectionClose &&
+            Headers.Get("Transfer-Encoding") == null &&
+            HasContentLength &&
+            (!IsHttp10 || ConnectReplyReader.ContainsToken(Headers.Get("Connection"), "keep-alive"));
     }
 
     /// <summary>
@@ -82,6 +100,7 @@ namespace TurboHTTP.Transport.Http1
                 throw Fail("Proxy closed the connection before sending a CONNECT response.");
 
             var statusCode = ParseStatusCode(statusLine);
+            var isHttp10 = statusLine.StartsWith("HTTP/1.0 ", StringComparison.Ordinal);
             var headers = new HttpHeaders();
 
             while (true)
@@ -100,7 +119,7 @@ namespace TurboHTTP.Transport.Http1
                 headers.Add(line.Substring(0, colon).Trim(), line.Substring(colon + 1).Trim());
             }
 
-            return new ConnectReply(statusCode, headers);
+            return new ConnectReply(statusCode, headers, isHttp10);
         }
 
         /// <summary>
