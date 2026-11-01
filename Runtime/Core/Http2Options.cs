@@ -14,6 +14,10 @@ namespace TurboHTTP.Core
         private int _maxFrameSize = 16384; // Http2Constants.DefaultMaxFrameSize
         private int _maxHeaderListSize = 64 * 1024; // 64 KB default
         private int _maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes;
+        private TimeSpan _pingInterval = DefaultPingInterval;
+        private TimeSpan _pingTimeout = DefaultPingTimeout;
+        internal static readonly TimeSpan DefaultPingInterval = TimeSpan.FromSeconds(30);
+        internal static readonly TimeSpan DefaultPingTimeout = TimeSpan.FromSeconds(10);
         internal int TestPerStreamReceiveBufferBytesOverride { get; set; }
         internal int TestMaxConnectionBufferedBytesOverride { get; set; }
         internal int TestStallTimeoutMillisecondsOverride { get; set; }
@@ -119,6 +123,38 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>
+        /// How long a connection with open streams waits between liveness PINGs (RFC 9113 Section 6.7).
+        /// A connection with no open streams sends no PINGs. <see cref="TimeSpan.Zero"/> disables liveness
+        /// PINGs. Defaults to 30 seconds.
+        /// </summary>
+        public TimeSpan PingInterval
+        {
+            get => _pingInterval;
+            set
+            {
+                if (value < TimeSpan.Zero || value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Must be between zero and int.MaxValue milliseconds.");
+                _pingInterval = value;
+            }
+        }
+
+        /// <summary>
+        /// How long a liveness PING may wait for its ACK. Without an ACK in time the connection is
+        /// presumed dead: its streams fail with a network error and new requests use a fresh connection.
+        /// Defaults to 10 seconds.
+        /// </summary>
+        public TimeSpan PingTimeout
+        {
+            get => _pingTimeout;
+            set
+            {
+                if (value <= TimeSpan.Zero || value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Must be greater than zero and at most int.MaxValue milliseconds.");
+                _pingTimeout = value;
+            }
+        }
+
         public Http2Options Clone()
         {
             return new Http2Options
@@ -130,6 +166,8 @@ namespace TurboHTTP.Core
                 _maxFrameSize = _maxFrameSize,
                 _maxHeaderListSize = _maxHeaderListSize,
                 _maxDecodedHeaderBytes = _maxDecodedHeaderBytes,
+                _pingInterval = _pingInterval,
+                _pingTimeout = _pingTimeout,
                 TestPerStreamReceiveBufferBytesOverride = TestPerStreamReceiveBufferBytesOverride,
                 TestMaxConnectionBufferedBytesOverride = TestMaxConnectionBufferedBytesOverride,
                 TestStallTimeoutMillisecondsOverride = TestStallTimeoutMillisecondsOverride,
@@ -146,6 +184,8 @@ namespace TurboHTTP.Core
                    _maxFrameSize == 16384 &&
                    _maxHeaderListSize == 64 * 1024 &&
                    _maxDecodedHeaderBytes == UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes &&
+                   _pingInterval == DefaultPingInterval &&
+                   _pingTimeout == DefaultPingTimeout &&
                    TestPerStreamReceiveBufferBytesOverride == 0 &&
                    TestMaxConnectionBufferedBytesOverride == 0 &&
                    TestStallTimeoutMillisecondsOverride == 0 &&

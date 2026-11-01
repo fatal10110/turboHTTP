@@ -529,6 +529,16 @@ namespace TurboHTTP.Transport.Http2
             }
 
             State = Http2StreamState.Closed;
+
+            // A replayable failure before the response started is not delivered to the handler: the
+            // dispatch rethrows it, and RawSocketTransport either replays the request or reports it
+            // through OnResponseError itself, so the handler sees exactly one outcome.
+            if (normalizedException is Http2RetryableRequestException)
+            {
+                TrySetException(normalizedException);
+                return;
+            }
+
             CompleteWithResponseStartFailure(normalizedException);
         }
 
