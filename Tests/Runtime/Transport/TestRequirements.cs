@@ -40,7 +40,8 @@ namespace TurboHTTP.Tests.Transport
             {
                 throw BouncyCastleMissing(
                     "TlsProviderSelector.IsBouncyCastleAvailable() is false; the " + BouncyCastleGlueAssembly +
-                    " assembly ships with the package and must be part of the test build.");
+                    " assembly ships with the package and must be part of the test build (define " +
+                    "TURBOHTTP_BOUNCYCASTLE in the test project; Tools~/unity/run-tests.sh does).");
             }
         }
 

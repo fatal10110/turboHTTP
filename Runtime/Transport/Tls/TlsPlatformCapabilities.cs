@@ -73,7 +73,13 @@ namespace TurboHTTP.Transport.Tls
         /// Clears the cached capability snapshot so the next <see cref="GetSummary"/>
         /// call re-evaluates the environment. Intended for tests.
         /// </summary>
-        internal static void RefreshForTesting()
+        internal static void RefreshForTesting() => Invalidate();
+
+        /// <summary>
+        /// Clears the cached capability snapshot; called when the BouncyCastle provider registers
+        /// after a summary was already taken, so the summary does not keep reporting it missing.
+        /// </summary>
+        internal static void Invalidate()
         {
             lock (s_lock)
             {

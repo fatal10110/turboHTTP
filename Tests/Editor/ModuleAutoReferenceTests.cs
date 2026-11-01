@@ -20,6 +20,7 @@ namespace TurboHTTP.Tests.Editor
         {
             public string name;
             public bool autoReferenced;
+            public string[] defineConstraints;
         }
 
         private string _packageRoot;
@@ -57,6 +58,15 @@ namespace TurboHTTP.Tests.Editor
         public void OptInModule_StaysExplicit(string relativePath)
         {
             Assert.That(Read(relativePath).autoReferenced, Is.False, relativePath);
+        }
+
+        [Test]
+        public void BouncyCastleGlue_CompilesOnlyWhenTheProjectOptsIn()
+        {
+            // Without TURBOHTTP_BOUNCYCASTLE the glue is not compiled, so nothing references the
+            // vendored library and neither assembly reaches a player's linker output (#196).
+            var fields = Read("Transport/BouncyCastle/TurboHTTP.Transport.BouncyCastle.asmdef");
+            Assert.That(fields.defineConstraints, Is.EquivalentTo(new[] { "TURBOHTTP_BOUNCYCASTLE" }));
         }
 
         private AsmdefFields Read(string relativePath)

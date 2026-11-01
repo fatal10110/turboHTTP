@@ -81,6 +81,31 @@ m["dependencies"].setdefault("com.unity.test-framework", "1.1.33")
 m["testables"] = sorted(set(m.get("testables", [])) | {"com.turbohttp.complete"})
 json.dump(m, open(path, "w"), indent=2)
 PY
+# BouncyCastle is opt-in (TURBOHTTP_BOUNCYCASTLE, #196); the TLS suites need it compiled, so the
+# test project defines it for the Standalone group (the Editor's group) in its Player settings.
+python3 - "$proj/ProjectSettings/ProjectSettings.asset" TURBOHTTP_BOUNCYCASTLE <<'PY'
+import re, sys
+path, define = sys.argv[1], sys.argv[2]
+text = open(path, encoding="utf-8").read()
+m = re.search(r"^  scriptingDefineSymbols:(.*)\n((?:    .*\n)*)", text, re.M)
+if not m:
+    print("run-tests: no scriptingDefineSymbols in " + path, file=sys.stderr)
+    sys.exit(2)
+entries = [] if m.group(1).strip() == "{}" else m.group(2).splitlines()
+for i, line in enumerate(entries):
+    key, _, value = line.strip().partition(":")
+    if key == "Standalone":
+        symbols = [s for s in value.strip().split(";") if s]
+        if define not in symbols:
+            entries[i] = "    Standalone: " + ";".join(symbols + [define])
+        break
+else:
+    entries.append("    Standalone: " + define)
+block = "  scriptingDefineSymbols:\n" + "".join(e + "\n" for e in entries)
+new = text[:m.start()] + block + text[m.end():]
+if new != text:
+    open(path, "w", encoding="utf-8").write(new)
+PY
 
 ts="$(date +%Y%m%d-%H%M%S)"
 xml="$cache/results-$platform-$ts.xml"; log="$cache/unity-$platform-$ts.log"

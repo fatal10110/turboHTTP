@@ -142,10 +142,13 @@ namespace TurboHTTP.Core
         /// Default is Auto, which selects the best provider for the current platform.
         /// </summary>
         /// <remarks>
-        /// - Auto: Prefer SslStream; use BouncyCastle only if platform TLS is unavailable.
-        ///   The first TLS handshake probes SslStream viability; failures are cached process-wide.
+        /// - Auto: Uses SslStream. Auto never selects BouncyCastle and never switches providers
+        ///   after a handshake failure; the error is reported to the caller.
         /// - SslStream: Force use of System.Net.Security.SslStream (may not support ALPN on all platforms)
-        /// - BouncyCastle: Force use of BouncyCastle TLS (guaranteed ALPN support everywhere)
+        /// - BouncyCastle: Force use of BouncyCastle TLS (guaranteed ALPN support everywhere).
+        ///   Requires the <c>TURBOHTTP_BOUNCYCASTLE</c> scripting define symbol; without it every
+        ///   TLS connection fails with a <see cref="UHttpException"/> whose inner exception is an
+        ///   <see cref="System.InvalidOperationException"/> naming the define.
         /// 
         /// Note: Advanced security features (certificate pinning, custom validation callbacks)
         /// are planned for Phase 6 (Advanced Middleware) and not yet available.

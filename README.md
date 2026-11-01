@@ -88,7 +88,7 @@ The default HTTP and WebSocket transports register themselves at startup; no ini
 
 ## Assembly References
 
-Scripts without an assembly definition (`Assembly-CSharp`) see every user-facing TurboHTTP module (Core, Transport, JSON, Retry, Auth, Cache, Middleware, RateLimit, Observability, Files, Unity, WebSocket). Code inside your own `.asmdef` must list the modules it uses (for example `TurboHTTP.Core`, `TurboHTTP.JSON`) in its references. `TurboHTTP.Testing`, `TurboHTTP.UniTask` and `TurboHTTP.Transport.BouncyCastle` are always referenced explicitly.
+Scripts without an assembly definition (`Assembly-CSharp`) see every user-facing TurboHTTP module (Core, Transport, JSON, Retry, Auth, Cache, Middleware, RateLimit, Observability, Files, Unity, WebSocket). Code inside your own `.asmdef` must list the modules it uses (for example `TurboHTTP.Core`, `TurboHTTP.JSON`) in its references. `TurboHTTP.Testing`, `TurboHTTP.UniTask` and `TurboHTTP.Transport.BouncyCastle` are always referenced explicitly. The BouncyCastle TLS provider is opt-in: add `TURBOHTTP_BOUNCYCASTLE` to Player Settings > Scripting Define Symbols to compile it (it then registers itself at startup and `TlsBackend.BouncyCastle` resolves); without the define it is not compiled.
 
 ## Documentation
 

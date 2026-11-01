@@ -22,10 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation Rework**: Restructured documentation, added contributing guidelines, and polished user guides.
 - `UHttpClientOptions.UseAdaptiveNetworking(...)` and `UseBackgroundNetworking(...)` extension methods
   (`TurboHTTP.Unity.Mobile`, `TurboHTTP.Unity` module) replace the removed options properties.
+- `BouncyCastleModuleRegistration.EnsureRegistered()` (`TurboHTTP.Transport.BouncyCastle`, only with
+  `TURBOHTTP_BOUNCYCASTLE`): registers the BouncyCastle TLS provider explicitly; it also runs at
+  startup automatically (#196).
 - CI check `check_repo.py coreapi`: the public types of `TurboHTTP.Core` must match
   `Tools~/ci/api-baseline/core-public-types.txt` (at most 60).
 
 ### Breaking
+- BouncyCastle TLS is opt-in (#196): define `TURBOHTTP_BOUNCYCASTLE` per build target in
+  Player Settings > Scripting Define Symbols to compile the `TurboHTTP.Transport.BouncyCastle`
+  glue. Without the define, TLS connections with `TlsBackend.BouncyCastle` fail (the provider
+  lookup throws `InvalidOperationException`, the inner exception of the request's
+  `UHttpException`) and the BouncyCastle assemblies are not linked into player builds. `TlsBackend.Auto` is unchanged
+  (it never selects BouncyCastle).
+
 Core public surface reduced before the API freeze (#77, #156). Moved types keep their names; add
 `using TurboHTTP.Unity.Mobile;` and reference the `TurboHTTP.Unity` assembly.
 - `AdaptiveInterceptor` moved from `TurboHTTP.Core` to `TurboHTTP.Unity.Mobile` (`TurboHTTP.Unity`).
