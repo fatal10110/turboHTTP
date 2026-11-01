@@ -66,10 +66,12 @@ TurboHTTP applies its own policy instead, before it resolves or connects any add
   Basic proxy credentials are sent only in answer to a 407 whose `Proxy-Authenticate` offers
   `Basic` (RFC 9110 section 11.7.1), and only over a proxy leg that `AllowCleartext` permits
   (RFC 7617 section 4). The HTTP transport also requires `ProxySettings.AllowPlaintextProxyAuth`.
-- **Proxy credentials (HTTP forward proxying):** for `http://` targets the HTTP transport still
-  sends Basic `Proxy-Authorization` preemptively on the forwarded request when
+- **Proxy credentials (HTTP forward proxying):** for `http://` targets the forwarded request goes
+  out without `Proxy-Authorization`. When the proxy answers 407 with a `Proxy-Authenticate` that
+  offers `Basic`, the HTTP transport resends the request once with Basic credentials, provided
   `ProxySettings.AllowPlaintextProxyAuth` is `true` (the request is cleartext, so it also needs
-  `AllowCleartext`). Challenge-driven credentials for this path are tracked in #236.
+  `AllowCleartext`) and the request body can be sent again. Otherwise (no Basic offer, a stream
+  body that cannot be replayed, or a second 407) the 407 response is returned to the caller.
 
 ```csharp
 // Local development server over plain HTTP / ws:// on a device:

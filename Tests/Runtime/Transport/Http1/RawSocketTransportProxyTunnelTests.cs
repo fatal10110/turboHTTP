@@ -1236,7 +1236,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
             return (Task<TlsResult>)method.Invoke(
                 transport,
-                new object[] { stream, targetHost, targetPort, proxy, ct });
+                new object[] { stream, targetHost, targetPort, proxy, false, ct });
         }
 
         private static UHttpRequest InvokePrepareHttpsProxyTunnelRequest(UHttpRequest request)

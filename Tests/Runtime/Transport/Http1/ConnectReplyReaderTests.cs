@@ -259,7 +259,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 {
                     await (Task<TlsResult>)method.Invoke(
                         transport,
-                        new object[] { stream, "api.example.com", 443, null, CancellationToken.None });
+                        new object[] { stream, "api.example.com", 443, null, false, CancellationToken.None });
                     Assert.Fail("The scripted stream fails the TLS handshake.");
                 }
                 catch (Exception ex) when (!(ex is AssertionException))

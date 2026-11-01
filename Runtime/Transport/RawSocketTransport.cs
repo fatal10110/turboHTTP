@@ -717,8 +717,15 @@ namespace TurboHTTP.Transport
             if (!secure)
             {
                 context.RecordEvent("TransportProxyConnecting");
-                var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
-                await DispatchProxyHttp11WithRetryAsync(
+
+                // RFC 9110 section 11.7.1 / RFC 7617: the forwarded request goes out without
+                // credentials; Basic answers a Basic 407 challenge once, and only when the body can
+                // be sent again (#236).
+                var answerBasicChallenge = proxy.Credentials != null &&
+                    proxy.AllowPlaintextProxyAuth &&
+                    request.Content.Replayability != RequestBodyReplayability.NonReplayable;
+                var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy, includeCredentials: false);
+                var delivered = await DispatchProxyHttp11WithRetryAsync(
                         proxyHost,
                         proxyPort,
                         poolKeyOverride: null,
@@ -727,6 +734,26 @@ namespace TurboHTTP.Transport
                         targetPort: 0,
                         proxy,
                         forwardedRequest,
+                        request,
+                        handler,
+                        context,
+                        ct,
+                        interceptBasicProxyChallenge: answerBasicChallenge)
+                    .ConfigureAwait(false);
+                if (delivered)
+                    return;
+
+                context.RecordEvent("TransportProxyAuthRetry");
+                var authenticatedRequest = PrepareHttpProxyForwardRequest(request, proxy, includeCredentials: true);
+                await DispatchProxyHttp11WithRetryAsync(
+                        proxyHost,
+                        proxyPort,
+                        poolKeyOverride: null,
+                        establishTunnel: false,
+                        targetHost: null,
+                        targetPort: 0,
+                        proxy,
+                        authenticatedRequest,
                         request,
                         handler,
                         context,
@@ -796,7 +823,14 @@ namespace TurboHTTP.Transport
             }
         }
 
-        private async Task DispatchProxyHttp11WithRetryAsync(
+        /// <summary>
+        /// Dispatches an HTTP/1.1 request through the proxy, retrying once on a fresh connection
+        /// when a reused one turns out stale. Returns <c>true</c> once the response reached
+        /// <paramref name="handler"/>; returns <c>false</c> only when
+        /// <paramref name="interceptBasicProxyChallenge"/> is set and the proxy answered with a
+        /// Basic 407, which was consumed (connection pooled or closed) without reaching the handler.
+        /// </summary>
+        private async Task<bool> DispatchProxyHttp11WithRetryAsync(
             string proxyHost,
             int proxyPort,
             string poolKeyOverride,
@@ -809,7 +843,8 @@ namespace TurboHTTP.Transport
             IHttpHandler handler,
             RequestContext context,
             CancellationToken ct,
-            ConnectionLease preparedLease = null)
+            ConnectionLease preparedLease = null,
+            bool interceptBasicProxyChallenge = false)
         {
             ConnectionLease lease = null;
             try
@@ -833,16 +868,18 @@ namespace TurboHTTP.Transport
                 var writeState = new Http11RequestWriteState();
                 try
                 {
-                    await DispatchOnLeaseAsync(
+                    var result = await DispatchOnLeaseAsync(
                             lease,
                             dispatchRequest,
                             handler,
                             context,
                             writeState,
-                            ct)
+                            ct,
+                            interceptBasicProxyChallenge)
                         .ConfigureAwait(false);
+                    var completedLease = lease;
                     lease = null;
-                    return;
+                    return CompleteLeaseDispatch(completedLease, result);
                 }
                 catch (Exception ex) when (
                     lease != null &&
@@ -888,22 +925,24 @@ namespace TurboHTTP.Transport
 
                             await DispatchOnH2ConnectionAsync(h2Conn, dispatchRequest, handler, context, ct)
                                 .ConfigureAwait(false);
-                            return;
+                            return true;
                         }
 
                         var retryWriteState = new Http11RequestWriteState();
                         try
                         {
-                            await DispatchOnLeaseAsync(
+                            var retryResult = await DispatchOnLeaseAsync(
                                     freshLease,
                                     dispatchRequest,
                                     handler,
                                     context,
                                     retryWriteState,
-                                    ct)
+                                    ct,
+                                    interceptBasicProxyChallenge)
                                 .ConfigureAwait(false);
+                            var completedLease = freshLease;
                             freshLease = null;
-                            return;
+                            return CompleteLeaseDispatch(completedLease, retryResult);
                         }
                         catch (Exception retryEx) when (
                             ShouldSurfaceCommittedNonReplayableBodyFailure(
@@ -950,64 +989,83 @@ namespace TurboHTTP.Transport
             ConnectionLease lease = null;
             try
             {
-                lease = await _pool.GetConnectionAsync(
-                        proxyHost,
-                        proxyPort,
-                        secure: false,
-                        poolKeyOverride,
-                        ct)
-                    .ConfigureAwait(false);
-
-                if (!establishTunnel)
-                    return lease;
-
-                // Idle validation for TLS-wrapped tunnels is best-effort because the pool can
-                // only observe the outer proxy TCP socket. The stale-retry path remains the
-                // correctness backstop if the origin-side tunnel state has already gone bad.
-                if (lease.Connection.IsSecure)
+                // A CONNECT answered with a Basic 407 that cannot be reused (#229) is retried once,
+                // with credentials, on a fresh proxy connection.
+                var includeAuth = false;
+                while (true)
                 {
-                    if (string.Equals(
-                            lease.Connection.PoolKey,
+                    lease = await _pool.GetConnectionAsync(
+                            proxyHost,
+                            proxyPort,
+                            secure: false,
                             poolKeyOverride,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
+                            ct)
+                        .ConfigureAwait(false);
+
+                    if (!establishTunnel)
                         return lease;
-                    }
 
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Reused proxy tunnel connection was bound to an unexpected target."));
-                }
-
-                context.RecordEvent("TransportProxyConnect");
-                context.RecordEvent("TransportProxyConnectTunnelEstablished");
-                TlsResult tlsResult;
-                using (RegisterDisposeOnCancel(lease.Connection, ct))
-                {
-                    try
+                    // Idle validation for TLS-wrapped tunnels is best-effort because the pool can
+                    // only observe the outer proxy TCP socket. The stale-retry path remains the
+                    // correctness backstop if the origin-side tunnel state has already gone bad.
+                    if (lease.Connection.IsSecure)
                     {
-                        tlsResult = await EstablishConnectTunnelAsync(
-                                lease.Connection.Stream,
-                                targetHost,
-                                targetPort,
-                                proxy,
-                                ct)
-                            .ConfigureAwait(false);
-                    }
-                    catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
-                    {
-                        throw new OperationCanceledException("Proxy CONNECT tunnel setup was cancelled.", ex, ct);
-                    }
-                }
+                        if (string.Equals(
+                                lease.Connection.PoolKey,
+                                poolKeyOverride,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            return lease;
+                        }
 
-                if (ct.IsCancellationRequested)
-                {
-                    // The token fired after the handshake; the proxy socket may already be disposed.
-                    try { tlsResult.SecureStream?.Dispose(); } catch { /* best effort */ }
-                    ct.ThrowIfCancellationRequested();
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.NetworkError,
+                            "Reused proxy tunnel connection was bound to an unexpected target."));
+                    }
+
+                    context.RecordEvent("TransportProxyConnect");
+                    TlsResult tlsResult;
+                    using (RegisterDisposeOnCancel(lease.Connection, ct))
+                    {
+                        try
+                        {
+                            tlsResult = await EstablishConnectTunnelAsync(
+                                    lease.Connection.Stream,
+                                    targetHost,
+                                    targetPort,
+                                    proxy,
+                                    includeAuth,
+                                    ct)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
+                        {
+                            throw new OperationCanceledException("Proxy CONNECT tunnel setup was cancelled.", ex, ct);
+                        }
+                    }
+
+                    if (tlsResult == null)
+                    {
+                        // The proxy closes, or the 407 body cannot be delimited: drop this
+                        // connection (releasing its pool permit) and authenticate on a new one.
+                        lease.Dispose();
+                        lease = null;
+                        ct.ThrowIfCancellationRequested();
+                        includeAuth = true;
+                        context.RecordEvent("TransportProxyConnectAuthReconnect");
+                        continue;
+                    }
+
+                    context.RecordEvent("TransportProxyConnectTunnelEstablished");
+                    if (ct.IsCancellationRequested)
+                    {
+                        // The token fired after the handshake; the proxy socket may already be disposed.
+                        try { tlsResult.SecureStream?.Dispose(); } catch { /* best effort */ }
+                        ct.ThrowIfCancellationRequested();
+                    }
+                    RebindConnectTunnelLease(lease, targetHost, targetPort, poolKeyOverride, tlsResult);
+                    return lease;
                 }
-                RebindConnectTunnelLease(lease, targetHost, targetPort, poolKeyOverride, tlsResult);
-                return lease;
             }
             catch
             {
@@ -1046,25 +1104,26 @@ namespace TurboHTTP.Transport
             return null;
         }
 
-        private static UHttpRequest PrepareHttpProxyForwardRequest(UHttpRequest request, ProxySettings proxy)
+        /// <summary>
+        /// Clones <paramref name="request"/> for absolute-form forwarding. A caller-supplied
+        /// Proxy-Authorization never goes out; with <paramref name="includeCredentials"/> the clone
+        /// carries Basic credentials from <paramref name="proxy"/> (the answer to a Basic 407, #236)
+        /// when they are configured and <see cref="ProxySettings.AllowPlaintextProxyAuth"/> is set.
+        /// The user's request is never modified.
+        /// </summary>
+        private static UHttpRequest PrepareHttpProxyForwardRequest(
+            UHttpRequest request,
+            ProxySettings proxy,
+            bool includeCredentials)
         {
             var metadata = CloneMetadataWith(request.Metadata, RequestMetadataKeys.ProxyAbsoluteForm, true);
             var headers = request.Headers.Clone();
-            var proxyAuthValue = BuildProxyAuthorizationHeaderValue(proxy);
-            if (!string.IsNullOrEmpty(proxyAuthValue))
+            headers.Remove("Proxy-Authorization");
+            if (includeCredentials && proxy != null && proxy.AllowPlaintextProxyAuth)
             {
-                if (proxy.AllowPlaintextProxyAuth)
-                {
+                var proxyAuthValue = BuildProxyAuthorizationHeaderValue(proxy);
+                if (!string.IsNullOrEmpty(proxyAuthValue))
                     headers.Set("Proxy-Authorization", proxyAuthValue);
-                }
-                else
-                {
-                    headers.Remove("Proxy-Authorization");
-                }
-            }
-            else
-            {
-                headers.Remove("Proxy-Authorization");
             }
 
             return request
@@ -1124,15 +1183,23 @@ namespace TurboHTTP.Transport
                 tlsResult.NegotiatedAlpn);
         }
 
+        /// <summary>
+        /// Sends CONNECT on <paramref name="proxyStream"/> and wraps the tunnel in TLS. A Basic 407
+        /// is answered once with credentials on the same stream when the reply is safely framed
+        /// (<see cref="ConnectReply.CanRetryOnSameConnection"/>); otherwise the method returns
+        /// <c>null</c> and the caller retries with <paramref name="includeAuth"/> on a fresh
+        /// connection (#229).
+        /// </summary>
         private async Task<TlsResult> EstablishConnectTunnelAsync(
             Stream proxyStream,
             string targetHost,
             int targetPort,
             ProxySettings proxy,
+            bool includeAuth,
             CancellationToken ct)
         {
             var authority = BuildAuthority(targetHost, targetPort);
-            var attemptedAuth = false;
+            var attemptedAuth = includeAuth;
 
             while (true)
             {
@@ -1171,6 +1238,12 @@ namespace TurboHTTP.Transport
                     proxy?.Credentials != null &&
                     proxy.AllowPlaintextProxyAuth)
                 {
+                    // RFC 9112 sections 6.3 and 9.6: a 407 that closes the connection, has no
+                    // framing, or carries both Transfer-Encoding and Content-Length cannot be
+                    // followed by another CONNECT on this connection.
+                    if (!response.CanRetryOnSameConnection)
+                        return null;
+
                     // Consume the 407 body so the retried CONNECT reads its own reply.
                     await ConnectReplyReader.DrainBodyAsync(proxyStream, response, ct).ConfigureAwait(false);
                     attemptedAuth = true;
@@ -1321,13 +1394,105 @@ namespace TurboHTTP.Transport
             return keepAlive;
         }
 
-        private async Task DispatchOnLeaseAsync(
+        /// <summary>How <see cref="DispatchOnLeaseAsync"/> left its lease.</summary>
+        private enum LeaseDispatchResult
+        {
+            /// <summary>The response reached the handler; its body source owns the lease.</summary>
+            ResponseDelivered,
+
+            /// <summary>A Basic 407 was consumed and its body drained; the lease can be pooled.</summary>
+            ProxyChallengeDrained,
+
+            /// <summary>A Basic 407 was consumed but the connection cannot carry another request.</summary>
+            ProxyChallengeConnectionUnusable
+        }
+
+        /// <summary>
+        /// Largest 407 body drained so the forward-proxy retry can reuse the connection (#236);
+        /// a larger, chunked or close-delimited body closes the connection instead.
+        /// </summary>
+        private const int MaxProxyChallengeDrainBytes = 64 * 1024;
+
+        /// <summary>
+        /// Settles the lease after <see cref="DispatchOnLeaseAsync"/> returned. Returns <c>true</c>
+        /// when the response was delivered (the body source owns the lease); otherwise pools or
+        /// destroys the lease and returns <c>false</c>.
+        /// </summary>
+        private static bool CompleteLeaseDispatch(ConnectionLease lease, LeaseDispatchResult result)
+        {
+            switch (result)
+            {
+                case LeaseDispatchResult.ResponseDelivered:
+                    return true;
+                case LeaseDispatchResult.ProxyChallengeDrained:
+                    lease.ReturnToPool();
+                    return false;
+                default:
+                    lease.Dispose();
+                    return false;
+            }
+        }
+
+        private static bool IsBasicProxyChallenge(ParsedResponseHead head)
+        {
+            return (int)head.StatusCode == 407 &&
+                AuthChallengeParser.OffersScheme(head.Headers.GetValues("Proxy-Authenticate"), "Basic");
+        }
+
+        /// <summary>
+        /// Consumes a forward-proxy 407 body so the connection can carry the authenticated retry.
+        /// Returns <c>false</c> when the connection must be closed instead: not keep-alive, a body
+        /// that is chunked, runs to close or exceeds <see cref="MaxProxyChallengeDrainBytes"/>, or
+        /// a read failure (cancellation included; the caller checks the token).
+        /// </summary>
+        private static async Task<bool> TryDrainProxyChallengeBodyAsync(ParsedResponseHead head, CancellationToken ct)
+        {
+            if (!head.KeepAlive)
+                return false;
+            if (head.BodyKind == Http11ResponseBodyKind.Empty)
+                return true;
+            if (head.BodyKind != Http11ResponseBodyKind.ContentLength)
+                return false;
+
+            var remaining = head.ContentLength.GetValueOrDefault();
+            if (remaining == 0)
+                return true;
+            if (remaining < 0 || remaining > MaxProxyChallengeDrainBytes)
+                return false;
+
+            var buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(remaining, 16 * 1024));
+            try
+            {
+                while (remaining > 0)
+                {
+                    var read = await head.Reader
+                        .ReadAsync(buffer.AsMemory(0, (int)Math.Min(remaining, buffer.Length)), ct)
+                        .ConfigureAwait(false);
+                    if (read <= 0)
+                        return false;
+                    remaining -= read;
+                }
+
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private async Task<LeaseDispatchResult> DispatchOnLeaseAsync(
             ConnectionLease lease,
             UHttpRequest request,
             IHttpHandler handler,
             RequestContext context,
             Http11RequestWriteState requestWriteState,
-            CancellationToken ct)
+            CancellationToken ct,
+            bool interceptBasicProxyChallenge = false)
         {
             ParsedResponseHead parsedHead;
             using (RegisterDisposeOnCancel(lease.Connection, ct))
@@ -1354,6 +1519,23 @@ namespace TurboHTTP.Transport
 
             using var head = parsedHead;
 
+            if (interceptBasicProxyChallenge && IsBasicProxyChallenge(head))
+            {
+                // The 407 never reaches the handler: the caller retries once with Basic (#236).
+                // The drain stays under dispose-on-cancel like the head read (#162).
+                bool drained;
+                using (RegisterDisposeOnCancel(lease.Connection, ct))
+                {
+                    drained = await TryDrainProxyChallengeBodyAsync(head, ct).ConfigureAwait(false);
+                }
+
+                ct.ThrowIfCancellationRequested();
+                context.RecordEvent("TransportProxyAuthChallenge");
+                return drained
+                    ? LeaseDispatchResult.ProxyChallengeDrained
+                    : LeaseDispatchResult.ProxyChallengeConnectionUnusable;
+            }
+
             var transportBodyReadToken = context.GetState(
                 TransportBehaviorFlags.StreamingResponseRequested,
                 false)
@@ -1371,6 +1553,7 @@ namespace TurboHTTP.Transport
                 .ConfigureAwait(false);
 
             context.RecordEvent("TransportComplete");
+            return LeaseDispatchResult.ResponseDelivered;
         }
 
         private static async Task<bool> DispatchOnStreamAsync(

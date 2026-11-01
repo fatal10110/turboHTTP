@@ -108,7 +108,9 @@ namespace TurboHTTP.WebSocket.Transport
                             "proxy connection; credentials were not sent. Set WebSocketConnectionOptions.AllowCleartext = true to allow it.");
                     }
 
-                    if (!CanRetryOnSameConnection(response))
+                    // One reuse rule with the HTTP transport (#229). This stack works on a single
+                    // stream, so a reply that is not reusable fails instead of reconnecting.
+                    if (!response.CanRetryOnSameConnection)
                     {
                         throw new WebSocketException(
                             WebSocketError.ProxyTunnelFailed,
@@ -170,17 +172,6 @@ namespace TurboHTTP.WebSocket.Transport
             {
                 throw new WebSocketException(WebSocketError.ProxyTunnelFailed, ex.HttpError.Message, ex);
             }
-        }
-
-        /// <summary>
-        /// A 407 can be retried on the same connection only when its body has a known length:
-        /// Content-Length without Transfer-Encoding, and no <c>Connection: close</c>.
-        /// </summary>
-        private static bool CanRetryOnSameConnection(ConnectReply reply)
-        {
-            return !reply.HasConnectionClose &&
-                reply.Headers.Get("Transfer-Encoding") == null &&
-                reply.HasContentLength;
         }
 
         private static string BuildBasicAuthorization(ProxyCredentials credentials)
