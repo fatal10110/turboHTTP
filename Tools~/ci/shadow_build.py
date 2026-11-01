@@ -36,7 +36,10 @@ UNITY_VERSIONS = ["5_3", "5_4", "5_5", "5_6", "2017_1", "2017_2", "2017_3", "201
                   "2018_3", "2018_4", "2019_1", "2019_2", "2019_3", "2019_4", "2020_1", "2020_2", "2020_3",
                   "2021_1", "2021_2", "2021_3"]
 COMMON_DEFINES = ["UNITY_" + v + "_OR_NEWER" for v in UNITY_VERSIONS] + [
-    "UNITY_2021", "UNITY_2021_3", "NET_STANDARD_2_1", "NET_STANDARD", "NETSTANDARD2_1", "NETSTANDARD", "CSHARP_7_3_OR_NEWER", "TRACE"]
+    "UNITY_2021", "UNITY_2021_3", "NET_STANDARD_2_1", "NET_STANDARD", "NETSTANDARD2_1", "NETSTANDARD", "CSHARP_7_3_OR_NEWER", "TRACE",
+    # Opt-in BouncyCastle (#196): defined so its glue and vendored library stay compiled and analyzed.
+    # Nothing else references them, so the other assemblies build the same with or without it.
+    "TURBOHTTP_BOUNCYCASTLE"]
 VARIANTS = {
     # name: (Unity platform name for include/excludePlatforms, extra defines, editor assemblies visible)
     "editor": ("Editor", ["UNITY_EDITOR", "UNITY_EDITOR_64", "UNITY_EDITOR_OSX", "DEBUG", "ENABLE_MONO"], True),

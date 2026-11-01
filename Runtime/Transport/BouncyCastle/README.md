@@ -22,6 +22,12 @@ Sync command (the anchored excludes keep `Lib/TurboHTTP.SecureProtocol.asmdef` f
 rsync -a --delete --exclude='/*.asmdef' --exclude='/*.asmdef.meta' <bc-csharp>/strip/out/Lib/ Runtime/Transport/BouncyCastle/Lib/
 ```
 
+The glue and this library are opt-in (#196): the glue asmdef has `defineConstraints:
+["TURBOHTTP_BOUNCYCASTLE"]` and registers the provider with `TlsProviderSelector` at startup
+(`BouncyCastleModuleRegistration.cs`, no by-name lookup, #186). Nothing else references
+`TurboHTTP.SecureProtocol`, so without the define the linker drops it; `link.xml` roots only the
+registration entry point and the provider (Lib/ has no type-by-name reflection).
+
 The closure roots are the glue files next to this README (`BouncyCastleTlsProvider.cs`,
 `BouncyCastleTlsStream.cs`, `TurboTlsClient.cs`, `TurboTlsAuthentication.cs`). When one of them
 starts using a new BouncyCastle API, the strip must see the change first (bc-csharp `roots/`,

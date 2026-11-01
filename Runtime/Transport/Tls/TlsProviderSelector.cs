@@ -10,13 +10,15 @@ namespace TurboHTTP.Transport.Tls
     /// </summary>
     public static class TlsProviderSelector
     {
-        // Lazy caching for BouncyCastle provider - avoids reflection overhead on every call
-        private static readonly Lazy<ITlsProvider> _bouncyCastleProvider =
-            new Lazy<ITlsProvider>(LoadBouncyCastleProvider, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
+        // The BouncyCastle provider, registered by the TurboHTTP.Transport.BouncyCastle assembly at
+        // startup (BouncyCastleModuleRegistration, #196). No by-name type lookup: that assembly
+        // compiles only when the project defines TURBOHTTP_BOUNCYCASTLE, and a lookup by string is
+        // invisible to UnityLinker (#186). Written with Interlocked.Exchange, read with
+        // Volatile.Read: registration runs on the main thread, reads on connection threads
+        // (ARM64 / 32-bit IL2CPP memory model).
+        private static ITlsProvider _bouncyCastleProvider;
 
-        // Thread-safe availability check cache (avoids non-atomic nullable writes on 32-bit IL2CPP).
-        private static readonly Lazy<bool> _bouncyCastleAvailable =
-            new Lazy<bool>(DetectBouncyCastleAvailability, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
+        internal const string BouncyCastleDefine = "TURBOHTTP_BOUNCYCASTLE";
 
         // SslStream handshake viability state, diagnostics only (never changes provider routing).
         // 0 = not yet probed, 1 = viable (handshake succeeded), 2 = platform TLS failure observed.
@@ -71,56 +73,53 @@ namespace TurboHTTP.Transport.Tls
         }
 
         /// <summary>
-        /// Check if BouncyCastle TLS provider is available without throwing.
+        /// Check if BouncyCastle TLS provider is available without throwing: true once the
+        /// TurboHTTP.Transport.BouncyCastle assembly (compiled only when the project defines
+        /// <c>TURBOHTTP_BOUNCYCASTLE</c>) has registered its provider.
         /// </summary>
         public static bool IsBouncyCastleAvailable()
         {
-            return _bouncyCastleAvailable.Value;
+            return Volatile.Read(ref _bouncyCastleProvider) != null;
         }
 
         private static ITlsProvider GetBouncyCastleProvider()
         {
-            if (!IsBouncyCastleAvailable())
+            var provider = Volatile.Read(ref _bouncyCastleProvider);
+            if (provider == null)
             {
                 throw new InvalidOperationException(
-                    "BouncyCastle TLS provider is not available. " +
-                    "Ensure TurboHTTP.Transport.BouncyCastle assembly is included in your project.");
+                    "BouncyCastle TLS provider is not available. It is opt-in: add " + BouncyCastleDefine +
+                    " to Player Settings > Scripting Define Symbols so the TurboHTTP.Transport.BouncyCastle " +
+                    "assembly compiles; it registers its provider at startup (or call " +
+                    "BouncyCastleModuleRegistration.EnsureRegistered()).");
             }
 
-            return _bouncyCastleProvider.Value;
+            return provider;
         }
 
-        private static ITlsProvider LoadBouncyCastleProvider()
+        /// <summary>
+        /// Registers the BouncyCastle provider. Called by the TurboHTTP.Transport.BouncyCastle
+        /// assembly at startup; idempotent. It only makes <see cref="TlsBackend.BouncyCastle"/>
+        /// resolvable: <see cref="TlsBackend.Auto"/> never selects it.
+        /// </summary>
+        internal static void RegisterBouncyCastleProvider(ITlsProvider provider)
         {
-            // Use reflection to load BouncyCastle provider
-            // This allows the BouncyCastle module to be optional
-            // Note: Requires [Preserve] attribute on BouncyCastleTlsProvider for IL2CPP
-            var bcType = Type.GetType(
-                "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
-                throwOnError: true);
+            if (provider == null)
+                throw new ArgumentNullException(nameof(provider));
 
-            // Get singleton instance via reflection
-            // Note: Instance is a 'static readonly' field, not a property
-            var instanceField = bcType.GetField("Instance",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-
-            if (instanceField == null)
-            {
-                throw new InvalidOperationException(
-                    $"BouncyCastle TLS provider type '{bcType.FullName}' does not have a public static 'Instance' field. " +
-                    "This indicates a version mismatch or corrupted assembly.");
-            }
-
-            return (ITlsProvider)instanceField.GetValue(null);
+            if (!ReferenceEquals(Interlocked.Exchange(ref _bouncyCastleProvider, provider), provider))
+                TlsPlatformCapabilities.Invalidate();
         }
 
-        private static bool DetectBouncyCastleAvailability()
+        /// <summary>
+        /// Replaces the registered BouncyCastle provider (null clears it) and returns the previous
+        /// one. Internal, for testing only.
+        /// </summary>
+        internal static ITlsProvider ExchangeBouncyCastleProviderForTesting(ITlsProvider provider)
         {
-            var bcType = Type.GetType(
-                "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
-                throwOnError: false);
-
-            return bcType != null;
+            var previous = Interlocked.Exchange(ref _bouncyCastleProvider, provider);
+            TlsPlatformCapabilities.Invalidate();
+            return previous;
         }
 
         /// <summary>

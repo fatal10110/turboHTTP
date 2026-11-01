@@ -1,16 +1,19 @@
 <linker>
   <!--
-    BouncyCastle TLS provider: the glue (TurboHTTP.Transport.BouncyCastle) and the vendored
-    BouncyCastle library it compiles against (TurboHTTP.SecureProtocol, Lib/ with its own asmdef).
-    Preserve both assemblies entirely because:
-    1. Entry point (BouncyCastleTlsProvider) is loaded via reflection
-    2. BC internally resolves algorithms by string OIDs (e.g. "AES/GCM/NoPadding"),
-       so the linker can't statically trace all code paths
-    3. Can be narrowed to specific ciphers later for size optimization
+    BouncyCastle TLS provider (opt-in, TURBOHTTP_BOUNCYCASTLE, #196). Only the registration entry
+    point and the provider are rooted here; [assembly: AlwaysLinkAssembly] keeps the glue assembly
+    in the linker input and [Preserve] keeps the same members. Neither the glue nor the vendored
+    library (TurboHTTP.SecureProtocol, Lib/) resolves types by name: the provider is registered
+    with TlsProviderSelector instead of found by reflection (#186), and Lib/ has no Type.GetType,
+    Activator or Assembly.Load. Its only name-based lookup (DigestUtilities through util/Enums.cs)
+    reads enum members, which the linker keeps with every enum type it keeps. The rest of both
+    assemblies is therefore reached statically and stripped like any other code.
     This file lives in the BouncyCastle folder (owned by the glue asmdef, not in Lib/, which the
     upstream re-vendor sync replaces wholesale) so that TurboHttpLinkerProcessor passes it to
     UnityLinker only when the TurboHTTP.Transport.BouncyCastle assembly is part of the build.
   -->
-  <assembly fullname="TurboHTTP.Transport.BouncyCastle" preserve="all"/>
-  <assembly fullname="TurboHTTP.SecureProtocol" preserve="all"/>
+  <assembly fullname="TurboHTTP.Transport.BouncyCastle">
+    <type fullname="TurboHTTP.Transport.BouncyCastle.BouncyCastleModuleRegistration" preserve="all"/>
+    <type fullname="TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider" preserve="all"/>
+  </assembly>
 </linker>

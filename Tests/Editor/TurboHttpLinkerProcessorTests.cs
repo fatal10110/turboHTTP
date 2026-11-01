@@ -172,14 +172,18 @@ namespace TurboHTTP.Tests.Editor
 
             Assert.That(AssemblyNames(XDocument.Load(transportLinkXml)), Does.Not.Contain(BouncyCastleAssembly));
 
-            var assembly = XDocument.Load(bouncyCastleLinkXml).Descendants("assembly")
+            // Narrowed (#196): the rule roots the registration entry point and the provider; the
+            // rest of the glue and the vendored library (TurboHTTP.SecureProtocol, #143) are reached
+            // statically, so neither assembly is preserved whole.
+            var bouncyCastleRules = XDocument.Load(bouncyCastleLinkXml);
+            var assembly = bouncyCastleRules.Descendants("assembly")
                 .Single(a => (string)a.Attribute("fullname") == BouncyCastleAssembly);
-            Assert.That((string)assembly.Attribute("preserve"), Is.EqualTo("all"));
-            // The vendored library is its own assembly (#143) and is preserved by the same rule file,
-            // which stays owned by the glue asmdef so it merges only when BouncyCastle ships.
-            var libAssembly = XDocument.Load(bouncyCastleLinkXml).Descendants("assembly")
-                .Single(a => (string)a.Attribute("fullname") == BouncyCastleLibAssembly);
-            Assert.That((string)libAssembly.Attribute("preserve"), Is.EqualTo("all"));
+            Assert.That(assembly.Attribute("preserve"), Is.Null);
+            AssertPreservesAll(bouncyCastleRules, BouncyCastleAssembly,
+                "TurboHTTP.Transport.BouncyCastle.BouncyCastleModuleRegistration");
+            AssertPreservesAll(bouncyCastleRules, BouncyCastleAssembly,
+                "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider");
+            Assert.That(AssemblyNames(bouncyCastleRules), Does.Not.Contain(BouncyCastleLibAssembly));
             Assert.That(TurboHttpLinkerProcessor.FindOwningAssembly(bouncyCastleLinkXml, _packageRoot),
                 Is.EqualTo(BouncyCastleAssembly));
             Assert.That(TurboHttpLinkerProcessor.FindOwningAssembly(transportLinkXml, _packageRoot),
@@ -191,7 +195,8 @@ namespace TurboHTTP.Tests.Editor
         {
             var withAll = TurboHttpLinkerProcessor.BuildMergedLinkXml(_packageRoot, _ => true);
             Assert.That(AssemblyNames(withAll), Does.Contain(BouncyCastleAssembly));
-            Assert.That(AssemblyNames(withAll), Does.Contain(BouncyCastleLibAssembly));
+            // No rule preserves the vendored library: it is reached from the glue (#196).
+            Assert.That(AssemblyNames(withAll), Does.Not.Contain(BouncyCastleLibAssembly));
 
             var withoutOptional = TurboHttpLinkerProcessor.BuildMergedLinkXml(
                 _packageRoot, name => name != BouncyCastleAssembly && name != "TurboHTTP.JSON");
