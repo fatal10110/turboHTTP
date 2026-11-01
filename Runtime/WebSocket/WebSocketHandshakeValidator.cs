@@ -140,6 +140,12 @@ namespace TurboHTTP.WebSocket
             {
                 throw;
             }
+            catch (Exception ex) when (ct.IsCancellationRequested)
+            {
+                // #226: the caller disposed the stream to abort a read the platform does not cancel;
+                // that is cancellation, not a malformed or missing handshake response.
+                throw new OperationCanceledException("WebSocket handshake response read was canceled.", ex, ct);
+            }
             catch (Exception ex)
             {
                 return new WebSocketHandshakeResult(
