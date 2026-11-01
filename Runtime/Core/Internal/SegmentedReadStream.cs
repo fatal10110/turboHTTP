@@ -24,7 +24,7 @@ namespace TurboHTTP.Core.Internal
     /// with consumers that require seekable streams (e.g. decompressors, JSON readers).
     /// </para>
     /// </remarks>
-    public sealed class SegmentedReadStream : Stream
+    internal sealed class SegmentedReadStream : Stream
     {
         private readonly ReadOnlySequence<byte> _sequence;
         private SequencePosition _current;

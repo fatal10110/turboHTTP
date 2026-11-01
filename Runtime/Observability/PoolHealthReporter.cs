@@ -77,7 +77,9 @@ namespace TurboHTTP.Observability
         /// </summary>
         /// <param name="name">Human-readable pool name shown in log output.</param>
         /// <param name="pool">The pool to monitor.</param>
-        public void Register<T>(string name, ObjectPool<T> pool) where T : class
+        /// <remarks>Internal since <see cref="ObjectPool{T}"/> became a Core-internal type (#77);
+        /// the shared <see cref="ByteArrayPool"/> is always reported.</remarks>
+        internal void Register<T>(string name, ObjectPool<T> pool) where T : class
         {
             if (name == null) throw new ArgumentNullException(nameof(name));
             if (pool == null) throw new ArgumentNullException(nameof(pool));

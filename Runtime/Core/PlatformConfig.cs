@@ -14,7 +14,7 @@ namespace TurboHTTP.Core
     /// <see cref="ConnectionPoolOptions"/>, performs no reflection and no UnityEngine call and is
     /// safe on any thread.
     /// </remarks>
-    public static class PlatformConfig
+    internal static class PlatformConfig
     {
 #if (UNITY_IOS || UNITY_ANDROID) && !UNITY_EDITOR
         // Mobile: higher tolerance for poor connectivity; conservative concurrency to preserve resources.

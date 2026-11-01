@@ -26,7 +26,7 @@ namespace TurboHTTP.Core.Internal
     /// <b>Thread safety:</b> Single-writer/single-reader by design. Not thread-safe.
     /// </para>
     /// </remarks>
-    public sealed class SegmentedBuffer : IDisposable
+    internal sealed class SegmentedBuffer : IDisposable
     {
         /// <summary>
         /// Default segment size: 16 KB. Stays well below the 85 KB LOH threshold.

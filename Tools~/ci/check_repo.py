@@ -9,8 +9,10 @@ Checks (all on git-tracked files):
             cannot compile the Unity test assemblies without a license, so this is the only guard
   reflect   no runtime code names a TurboHTTP type by assembly-qualified string (a by-name lookup
             that managed stripping breaks); modules reach each other through registration APIs (#186)
+  coreapi   the public types declared under Runtime/Core match Tools~/ci/api-baseline/core-public-types.txt
+            and stay within the cap (#77): a new public Core type fails until the baseline lists it
 
-Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|reflect ...]   (default: all)
+Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|reflect|coreapi ...]   (default: all)
 """
 import json
 import os
@@ -201,11 +203,75 @@ def check_reflect(files):
     return errors
 
 
+CORE_API_BASELINE = "Tools~/ci/api-baseline/core-public-types.txt"
+CORE_PUBLIC_TYPE_CAP = 60  # #77 acceptance criterion; raising it needs an architecture decision
+_PUBLIC_TYPE = re.compile(
+    r"^\s*public\s+(?:(?:static|sealed|abstract|readonly|partial|unsafe|new|ref)\s+)*"
+    r"(class|struct|enum|interface|delegate|record)\s+(.*)$")
+_NAMESPACE = re.compile(r"^\s*namespace\s+([\w.]+)")
+
+
+def core_public_types(files):
+    """`Namespace.Name` (generic types as `Name`N`) for every line in Runtime/Core/**/*.cs that declares a
+    public type, top-level or nested, whatever #if guards it. Same rule as the baseline header."""
+    found = []
+    for path in files:
+        if not (path.startswith("Runtime/Core/") and path.endswith(".cs")):
+            continue
+        namespace = ""
+        with open(os.path.join(ROOT, path), encoding="utf-8-sig") as fh:
+            for line in fh:
+                ns = _NAMESPACE.match(line)
+                if ns:
+                    namespace = ns.group(1)
+                    continue
+                m = _PUBLIC_TYPE.match(line)
+                if not m:
+                    continue
+                kind, rest = m.groups()
+                if kind == "delegate":
+                    name = re.search(r"(\w+)\s*(<[^>]*>)?\s*\(", rest)
+                else:
+                    name = re.match(r"(\w+)\s*(<[^>]*>)?", rest)
+                if not name:
+                    continue
+                arity = name.group(2).count(",") + 1 if name.group(2) else 0
+                found.append((f"{namespace}.{name.group(1)}" + (f"`{arity}" if arity else ""), path))
+    return found
+
+
+def check_core_api(files):
+    errors = []
+    declared = core_public_types(files)
+    names = [n for n, _ in declared]
+    baseline_path = os.path.join(ROOT, CORE_API_BASELINE)
+    if not os.path.exists(baseline_path):
+        return [f"coreapi: {CORE_API_BASELINE} is missing"]
+    with open(baseline_path, encoding="utf-8") as fh:
+        lines = [l.strip() for l in fh]
+    listed = [l for l in lines if l and not l.startswith("#")]
+    for dup in sorted({n for n in listed if listed.count(n) > 1}):
+        errors.append(f"coreapi: {CORE_API_BASELINE} lists {dup} more than once")
+    for name, path in declared:
+        if name not in listed:
+            errors.append(f"coreapi: {path}: public type {name} is not in {CORE_API_BASELINE}; make it internal, "
+                          "or add it to the baseline in the same PR (new public Core API needs a PR mention)")
+    for name in sorted(set(listed) - set(names)):
+        errors.append(f"coreapi: {CORE_API_BASELINE} lists {name}, which Runtime/Core no longer declares public; "
+                      "remove the line")
+    count = [l for l in lines if l.startswith("# count:")]
+    if not count or count[0].split(":", 1)[1].strip() != str(len(listed)):
+        errors.append(f"coreapi: {CORE_API_BASELINE} needs a '# count: {len(listed)}' header matching its entries")
+    if len(names) > CORE_PUBLIC_TYPE_CAP:
+        errors.append(f"coreapi: Runtime/Core declares {len(names)} public types; the cap is {CORE_PUBLIC_TYPE_CAP} (#77)")
+    return errors
+
+
 def main():
-    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "reflect"]
+    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "reflect", "coreapi"]
     files = tracked()
     checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit,
-              "reflect": check_reflect}
+              "reflect": check_reflect, "coreapi": check_core_api}
     errors = []
     for w in wanted:
         errors += checks[w](files)

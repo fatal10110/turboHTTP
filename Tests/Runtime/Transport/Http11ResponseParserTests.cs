@@ -455,8 +455,9 @@ namespace TurboHTTP.Tests.Transport
             var line = new string('a', 8200) + "\r\n";
             var bytes = Encoding.ASCII.GetBytes(line);
             using var ms = new MemoryStream(bytes);
+            using var reader = new Http11ResponseParser.BufferedStreamReader(ms);
             AssertAsync.ThrowsAsync<FormatException>(async () =>
-                await Http11ResponseParser.ReadLineAsync(ms, CancellationToken.None));
+                await reader.ReadLineAsync(CancellationToken.None, Http11ResponseParser.MaxHeaderLineLength));
         }
 
         [Test]

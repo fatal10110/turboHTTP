@@ -1,5 +1,5 @@
 using NUnit.Framework;
-using TurboHTTP.Core;
+using TurboHTTP.Unity.Mobile;
 
 namespace TurboHTTP.Tests.Core
 {

@@ -1,6 +1,7 @@
 using System;
+using TurboHTTP.Core;
 
-namespace TurboHTTP.Core
+namespace TurboHTTP.Unity.Mobile
 {
     public static class BackgroundRequestBuilderExtensions
     {

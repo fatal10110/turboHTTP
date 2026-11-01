@@ -3,11 +3,11 @@ using System;
 namespace TurboHTTP.Core
 {
     /// <summary>
-    /// JSON entry points that the optional TurboHTTP.JSON module (or the application) registers with
+    /// JSON entry points that the optional TurboHTTP.JSON module registers with
     /// <see cref="ProjectJsonBridge.Register"/>, so modules that reference only TurboHTTP.Core can
-    /// serialize JSON without reflection.
+    /// serialize JSON without reflection. Internal since #77, like <see cref="ProjectJsonBridge"/>.
     /// </summary>
-    public interface IJsonBridge
+    internal interface IJsonBridge
     {
         /// <summary>Serializes <paramref name="value"/> declared as <paramref name="type"/> to JSON text.</summary>
         string Serialize(object value, Type type);

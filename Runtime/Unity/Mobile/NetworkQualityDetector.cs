@@ -1,7 +1,7 @@
 using System;
 using System.Threading;
 
-namespace TurboHTTP.Core
+namespace TurboHTTP.Unity.Mobile
 {
     public sealed class NetworkQualityDetector
     {
