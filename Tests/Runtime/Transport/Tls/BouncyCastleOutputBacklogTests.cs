@@ -29,12 +29,13 @@ namespace TurboHTTP.Tests.Transport.Tls
             // The SslStream server cannot emit hello_request, so the trigger is its close_notify:
             // the client engine answers it with its own close_notify (RFC 5246 section 7.2.1),
             // which stays queued because the writer holds the gate. The bound is lowered to one
-            // byte so that single reply exceeds it.
+            // byte so that single reply exceeds it. SendCloseNotify also makes Unity's Mono
+            // SslStream emit the alert (its ShutdownAsync sends nothing by default, #206).
             using var server = BouncyCastleLoopbackServer.TryStartTls(stream =>
             {
                 if (!sendCloseNotify.Wait(Bound))
                     return;
-                ((SslStream)stream).ShutdownAsync().GetAwaiter().GetResult();
+                BouncyCastleLoopbackServer.SendCloseNotify((SslStream)stream);
                 BouncyCastleLoopbackServer.DrainUntilClosed(stream);
             });
             if (server == null)
