@@ -92,7 +92,8 @@ namespace TurboHTTP.Transport
                             tlsBackend: tlsBackend,
                             dnsTimeout: TimeSpan.FromMilliseconds(poolOptions.DnsTimeoutMs),
                             happyEyeballsOptions: poolOptions.HappyEyeballs,
-                            socketIoMode: poolOptions.SocketIoMode),
+                            socketIoMode: poolOptions.SocketIoMode,
+                            connectTimeout: poolOptions.ConnectTimeout),
                         tlsBackend: tlsBackend,
                         http2Options: http2Options,
                         streamingOptions: streamingOptions));

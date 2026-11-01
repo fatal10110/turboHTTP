@@ -74,8 +74,13 @@ namespace TurboHTTP.WebSocket.Transport
             Socket socket;
             try
             {
-                socket = await ConnectSocketAsync(addresses, connectPort, options.ConnectTimeout, ct)
-                    .ConfigureAwait(false);
+                // An IPv4 literal without an IPv4 route retries through NAT64 synthesis (#167).
+                socket = await Nat64AddressSynthesizer.ConnectWithLiteralFallbackAsync(
+                    connectHost,
+                    addresses,
+                    candidates => ConnectSocketAsync(candidates, connectPort, options.ConnectTimeout, ct),
+                    name => ResolveDnsAsync(name, options.DnsTimeoutMs, ct),
+                    ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (useProxy && !(ex is WebSocketException))
             {
