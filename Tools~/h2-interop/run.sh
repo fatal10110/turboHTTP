@@ -50,7 +50,7 @@ rm -rf "$out"
 mkdir -p "$out/empty-cert-dir"
 status=0
 containers=()
-# shellcheck disable=SC2317  # invoked by the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap
 cleanup() {
   if [ ${#containers[@]} -gt 0 ]; then docker rm -f "${containers[@]}" >/dev/null 2>&1 || true; fi
 }
