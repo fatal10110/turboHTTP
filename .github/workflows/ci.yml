@@ -117,13 +117,55 @@ jobs:
           name: unity-${{ matrix.testMode }}-results
           path: artifacts-${{ matrix.testMode }}
 
+  # TLS interop (#230, #113): the production TLS providers (BouncyCastle, SslStream, Auto) over the
+  # shadow-built DLLs against OpenSSL 3 s_server: handshakes pinned to 0xC030 / 0x1302 through
+  # BouncyCastleTlsStream, and the negative certificate suite with positive controls. Unity is not
+  # needed; a missing openssl or BouncyCastle provider fails the job (Tools~/tls-interop/run.sh).
+  tls-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Unity version
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v6
+        with:
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
+
+      - name: TLS interop rows
+        run: '"Tools~/tls-interop/run.sh"'
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: tls-interop-logs
+          path: .build/tls-interop/run
+
   # The ruleset requires this single check; it passes only when every job above does.
   ci:
     if: always()
-    needs: [lint, unity-tests]
+    needs: [lint, tls-interop, unity-tests]
     runs-on: ubuntu-latest
     steps:
       - env:
           LINT: ${{ needs.lint.result }}
+          TLS_INTEROP: ${{ needs.tls-interop.result }}
           UNITY: ${{ needs.unity-tests.result }}
-        run: '[ "$LINT" = success ] && [ "$UNITY" = success ]'
+        run: '[ "$LINT" = success ] && [ "$TLS_INTEROP" = success ] && [ "$UNITY" = success ]'

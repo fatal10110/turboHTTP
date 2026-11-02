@@ -16,6 +16,8 @@ MemoryCaptures/
 *.csproj
 # The Autobahn interop harness (Tools~/autobahn, #217) is a committed plain .NET project.
 !Tools~/autobahn/*.csproj
+# The TLS interop job (Tools~/tls-interop, #230) is a committed plain .NET project.
+!Tools~/tls-interop/*.csproj
 *.sln
 *.suo
 *.user

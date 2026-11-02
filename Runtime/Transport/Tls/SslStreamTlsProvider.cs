@@ -255,6 +255,10 @@ namespace TurboHTTP.Transport.Tls
                 var negotiatedProtocol = sslStream.SslProtocol;
                 EnsureMinimumTlsVersion(negotiatedProtocol);
 
+                // RFC 6125 1.7.2: an IP host needs an iPAddress SAN. The platform check passed, but
+                // some platforms also accept a dNSName spelling the address (#113).
+                SubjectAltNameIpAddresses.EnsureIpLiteralIdentity(host, sslStream.RemoteCertificate);
+
                 // Extract ALPN result
                 string negotiatedAlpn = null;
                 if (alpnAttempted)
