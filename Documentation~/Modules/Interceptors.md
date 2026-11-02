@@ -24,6 +24,28 @@ var client = new UHttpClient(options);
 | RateLimit (`TurboHTTP.RateLimit`) | `ConcurrencyInterceptor` |
 | Unity (`TurboHTTP.Unity`) | `AdaptiveInterceptor`, `BackgroundNetworkingInterceptor` (added by `options.UseAdaptiveNetworking(...)` / `options.UseBackgroundNetworking(...)`) |
 
+## Interceptor lifetime
+
+Interceptors belong to the code that creates them. `UHttpClient.Dispose()` leaves the interceptors in
+`UHttpClientOptions.Interceptors` alone unless `UHttpClientOptions.DisposeInterceptors` is `true`; then it
+disposes every `IDisposable` one, last to first, before an owned transport. `UHttpClientOptions.Clone()`
+copies the list but shares the instances, so several clients can use one cache, cookie jar or concurrency
+limiter, and disposing one of them does not break the others. Set `DisposeInterceptors = true` only when a
+client is the sole user of its interceptors. Interceptors that a plugin contributes belong to the plugin.
+
+<!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
+```csharp
+using TurboHTTP.Cache;
+
+var cache = new CacheInterceptor();
+options.Interceptors.Add(cache);
+var clientA = new UHttpClient(options);
+var clientB = new UHttpClient(options.Clone()); // shares the same CacheInterceptor
+clientA.Dispose();                              // clientB keeps using the cache
+clientB.Dispose();
+cache.Dispose();                                // the creator disposes it
+```
+
 ## Interceptor order
 
 Canonical order of the first-party interceptors, outermost first:

@@ -30,7 +30,10 @@ namespace TurboHTTP.Samples.AdvancedFeatures
         {
             var options = new UHttpClientOptions
             {
-                BaseUrl = "https://httpbin.org"
+                BaseUrl = "https://httpbin.org",
+                // This client is the only user of the interceptors below, so it disposes them
+                // (the cache and the concurrency limiter) when it is disposed.
+                DisposeInterceptors = true
             };
 
             // 1. Metrics: outermost, sees every request as the caller sent it.
