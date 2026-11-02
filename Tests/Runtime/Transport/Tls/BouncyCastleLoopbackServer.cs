@@ -66,6 +66,17 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         /// <summary>
+        /// TLS server presenting <paramref name="certificate"/> (with its private key; only that
+        /// certificate is sent, no chain). The server owns and disposes the certificate.
+        /// </summary>
+        public static BouncyCastleLoopbackServer StartTls(X509Certificate2 certificate, Action<Stream> handler)
+        {
+            if (certificate == null)
+                throw new ArgumentNullException(nameof(certificate));
+            return new BouncyCastleLoopbackServer(certificate, handler);
+        }
+
+        /// <summary>
         /// TLS server with an asynchronous handshake and handler: no thread, pool or dedicated, is
         /// blocked while it waits for the client. Null when the runtime cannot load the committed
         /// test certificate.

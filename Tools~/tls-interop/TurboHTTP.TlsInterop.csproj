@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    TLS interop job (#230, #113): the production TLS providers against OpenSSL 3 s_server. Not a Unity
+    assembly: Tools~ is ignored by Unity. It links the shadow-build DLLs (Tools~/ci/shadow_build.py,
+    editor variant, which defines TURBOHTTP_BOUNCYCASTLE) instead of compiling Runtime/ again, so it
+    exercises exactly the netstandard2.1 assemblies the analyzers checked. Build output goes to
+    .build/tls-interop (Directory.Build.props). Run it through Tools~/tls-interop/run.sh.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>TurboHTTP.Tools.TlsInterop</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepoRoot>
+    <ShadowBin Condition="'$(ShadowBin)' == ''">$(RepoRoot).build/shadow/editor/bin/Debug/netstandard2.1/</ShadowBin>
+    <UnityManaged Condition="'$(UnityManaged)' == ''">$(RepoRoot).tools/unity-managed/$([System.IO.File]::ReadAllText('$(RepoRoot)Tools~/ci/unity-version').Trim())/</UnityManaged>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="TurboHTTP.Core" HintPath="$(ShadowBin)TurboHTTP.Core.dll" />
+    <Reference Include="TurboHTTP.Transport" HintPath="$(ShadowBin)TurboHTTP.Transport.dll" />
+    <Reference Include="TurboHTTP.Transport.BouncyCastle" HintPath="$(ShadowBin)TurboHTTP.Transport.BouncyCastle.dll" />
+    <Reference Include="TurboHTTP.SecureProtocol" HintPath="$(ShadowBin)TurboHTTP.SecureProtocol.dll" />
+    <!-- TurboHTTP.Core links UnityEngine (PlatformInfo/PlatformConfig); BouncyCastleModuleRegistration carries
+         UnityEngine attributes. The TLS path never calls into the engine. -->
+    <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
+  </ItemGroup>
+</Project>
