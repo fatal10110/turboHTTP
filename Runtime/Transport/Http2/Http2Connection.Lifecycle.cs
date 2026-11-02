@@ -624,14 +624,10 @@ namespace TurboHTTP.Transport.Http2
             if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
                 return;
 
-            try
-            {
-                shutdownTasks?.GetAwaiter().GetResult();
-            }
-            catch
-            {
-                // Best effort only.
-            }
+            // Both callers pass a completed task (Dispose checks IsCompleted; the async path has awaited
+            // it), so nothing waits here: a faulted loop task only has its exception observed (#181).
+            if (shutdownTasks != null && shutdownTasks.IsFaulted)
+                _ = shutdownTasks.Exception;
 
             _cts?.Dispose();
             _connectionRecvWindowUpdateLock?.Dispose();
