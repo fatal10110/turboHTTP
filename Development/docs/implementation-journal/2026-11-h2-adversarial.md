@@ -99,8 +99,8 @@ temporarily mutating Transport (not committed):
 - `Tools~/h2-interop/run.sh`: adversarial 15/15, interop Kestrel 6/6, nghttpd 5/5, nginx 6/6. The
   adversarial rows passed three runs in a row.
 - `Tools~/ci/check.sh`: OK.
-- Unity EditMode, scoped `--filter Http2AdversarialServerTests`: see the PR.
-- Not run: the full Unity suites (host-editor periodic run), PlayMode, IL2CPP, devices. The scenarios
+- Unity PlayMode, scoped `--filter Http2AdversarialServerTests`: 15/15 passed (the runtime test assembly runs under PlayMode; an EditMode run discovers 0 tests).
+- Not run: the full Unity suites (host-editor periodic run), EditMode (nothing to discover), IL2CPP, devices. The scenarios
   are in-memory, so device behavior (ALPN on iOS/Android) is not covered.
 
 ## Deferred

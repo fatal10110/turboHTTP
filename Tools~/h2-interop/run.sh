@@ -49,6 +49,12 @@ out="$PWD/.build/h2-interop/run"
 rm -rf "$out"
 mkdir -p "$out/empty-cert-dir"
 status=0
+containers=()
+# shellcheck disable=SC2317  # invoked by the EXIT trap
+cleanup() {
+  if [ ${#containers[@]} -gt 0 ]; then docker rm -f "${containers[@]}" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
 
 if [ "$only" != interop ]; then
   dotnet "$dll" adversarial "${row[@]}" | tee "$out/adversarial.log" || status=1
@@ -56,10 +62,6 @@ fi
 
 if [ "$only" != adversarial ]; then
   dotnet "$dll" generate "$out"
-  containers=()
-  cleanup() { [ ${#containers[@]} -eq 0 ] || docker rm -f "${containers[@]}" >/dev/null 2>&1 || true; }
-  trap cleanup EXIT
-
   docker build -q -t turbohttp-h2-interop-nghttpd "Tools~/h2-interop/docker/nghttpd" >/dev/null
   nghttpd=$(docker run -d -p 127.0.0.1::8443 -v "$out:/pki:ro" turbohttp-h2-interop-nghttpd \
     --echo-upload --htdocs=/pki/www 8443 /pki/leaf.key /pki/leaf-valid.pem)
@@ -73,11 +75,13 @@ if [ "$only" != adversarial ]; then
 
   # The run phase trusts only the per-run root: SSL_CERT_FILE replaces the system bundle and
   # SSL_CERT_DIR points at an empty directory (.NET reads both when it loads the root store).
-  for target in "kestrel 0" "nghttpd $(port "$nghttpd")" "nginx $(port "$nginx")"; do
-    set -- $target
+  interop() {
     SSL_CERT_FILE="$out/root.pem" SSL_CERT_DIR="$out/empty-cert-dir" \
       dotnet "$dll" interop "$out" "$1" "$2" "${row[@]}" | tee -a "$out/interop.log" || status=1
-  done
+  }
+  interop kestrel 0
+  interop nghttpd "$(port "$nghttpd")"
+  interop nginx "$(port "$nginx")"
   for c in "${containers[@]}"; do docker logs "$c" >"$out/docker-${c:0:12}.log" 2>&1 || true; done
 fi
 
