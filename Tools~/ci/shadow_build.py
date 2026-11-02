@@ -206,7 +206,8 @@ def build(project):
 def baseline_key(d):
     path = os.path.relpath(os.path.abspath(d["file"]), ROOT)
     try:
-        text = open(os.path.join(ROOT, path), encoding="utf-8-sig").read().splitlines()[int(d["line"]) - 1].strip()
+        with open(os.path.join(ROOT, path), encoding="utf-8-sig") as f:
+            text = f.read().splitlines()[int(d["line"]) - 1].strip()
     except (OSError, IndexError):
         text = ""
     return f"{d['rule']}|{path}|{text}"

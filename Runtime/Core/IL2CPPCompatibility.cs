@@ -50,9 +50,10 @@ namespace TurboHTTP.Core
 
         private static bool CheckAsyncAwait()
         {
-            // Exercise a real async state machine on a worker thread to avoid main-thread deadlocks.
-            // Task.Yield is safe here: inside Task.Run there is no SynchronizationContext, so the
-            // continuation resumes on the thread pool, never on the caller's context (#245).
+            // Exercise a real async state machine on a pool thread. The caller blocks until it finishes,
+            // but cannot deadlock: inside Task.Run there is no SynchronizationContext, so the
+            // continuation after Task.Yield resumes on the thread pool, never on the caller's context
+            // (#245). The class is internal and only the self-tests call it (#181).
             var result = Task.Run(async () =>
             {
                 await Task.Yield();

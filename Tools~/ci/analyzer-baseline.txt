@@ -24,26 +24,22 @@ CS0649|Runtime/Unity.WebSocket/UnityWebSocketClient.cs|private string _subProtoc
 CS0649|Runtime/Unity.WebSocket/UnityWebSocketClient.cs|private string _uri;
 CS0675|Runtime/Transport/Http2/HpackHuffman.cs|output[outIndex] = (byte)((bitBuffer << pad) | ((1 << pad) - 1));
 CS1030|Runtime/Transport/BouncyCastle/TurboTlsAuthentication.cs|#warning "Phase 3C: Certificate chain validation is NOT implemented — accepting any chain with valid hostname/dates. See Phase 6."
-# Sync-over-async sites (#181). IL2CPPCompatibility: one-off self-test that blocks a worker on a Task.Run, never the main thread.
+# Sync-over-async sites (#181). IL2CPPCompatibility: internal self-test (only tests call ValidateAll); the caller waits one
+# Task.Run hop that has no SynchronizationContext, so it cannot deadlock, and no request path runs it.
 RS0030|Runtime/Core/IL2CPPCompatibility.cs|var result = Task.Run(async () =>
-# HandlerCallbackSafetyWrapper: GetResult only after IsCompletedSuccessfully, so it observes a finished ValueTask and never blocks.
-RS0030|Runtime/Core/Pipeline/HandlerCallbackSafetyWrapper.cs|pending.GetAwaiter().GetResult();
-# Dispatch bridges: GetResult on a task already completed (faulted/canceled branch) to rethrow its exception; never blocks.
+# Dispatch bridges: GetResult on a task that is already canceled, only to rethrow its OperationCanceledException and tell a
+# plain cancellation from a typed one (a canceled Task exposes no exception otherwise); never blocks.
 RS0030|Runtime/Core/Pipeline/BufferedDispatchBridge.cs|task.GetAwaiter().GetResult();
 RS0030|Runtime/Core/Pipeline/StreamingDispatchBridge.cs|task.GetAwaiter().GetResult();
-# UHttpStreamingResponse.Dispose (sync IDisposable): the first GetResult runs only after IsCompletedSuccessfully (no block);
-# the AsTask() one blocks on a pending body dispose; DisposeAsync is the non-blocking path callers should use.
-RS0030|Runtime/Core/UHttpStreamingResponse.cs|disposeTask.AsTask().GetAwaiter().GetResult();
-RS0030|Runtime/Core/UHttpStreamingResponse.cs|disposeTask.GetAwaiter().GetResult();
 # DecompressionHandler stream and ResponseBodyStream: synchronous Stream.Read overrides bridging to ReadAsync for sync callers;
 # the library itself reads asynchronously (DecompressionBodySource offloads when a SynchronizationContext is present).
 RS0030|Runtime/Middleware/DecompressionHandler.cs|return _inner.ReadAsync(
 RS0030|Runtime/Middleware/DecompressionHandler.cs|var read = _inner.ReadAsync(
 # ResponseBodyStream.Read: same synchronous Stream.Read bridge.
 RS0030|Runtime/Core/ResponseBodyStream.cs|return ReadCoreAsync(new Memory<byte>(buffer, offset, count), CancellationToken.None)
-# Http2Connection.FinalizeResourceDispose: best-effort wait for loop tasks during sync Dispose.
-RS0030|Runtime/Transport/Http2/Http2Connection.Lifecycle.cs|shutdownTasks?.GetAwaiter().GetResult();
-# PollSelectStream/SaeaStream: synchronous Stream.Read/Write overrides; the transport itself only calls the async ones.
+# PollSelectStream/SaeaStream: synchronous Stream.Read/Write overrides. The transport's own paths are async; only the
+# synchronous Read/Write/Dispose (close_notify) of BouncyCastleTlsStream reach them, never its handshake (#169,
+# BouncyCastleHandshakeThreadPoolTests asserts no sync I/O there).
 RS0030|Runtime/Transport/Tcp/PollSelectStream.cs|=> ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
 RS0030|Runtime/Transport/Tcp/PollSelectStream.cs|=> WriteAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
 RS0030|Runtime/Transport/Tcp/SaeaStream.cs|=> ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
