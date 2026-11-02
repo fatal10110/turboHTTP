@@ -5,7 +5,23 @@ All notable changes to TurboHTTP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0-pre.1] - 2026-11-02
+
+First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); third-party notices are in
+`Third-Party Notices.md`.
+
+### Modules
+Assemblies shipped in this package: `TurboHTTP.Core`, `TurboHTTP.Transport` (raw-socket HTTP/1.1 and
+HTTP/2 over `SslStream`), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback, compiled with the
+`TURBOHTTP_BOUNCYCASTLE` scripting symbol), `TurboHTTP.Middleware` (redirect, cookie, decompression and
+default-header interceptors), `TurboHTTP.Auth` (OAuth 2.0, OIDC, PKCE), `TurboHTTP.Retry`,
+`TurboHTTP.Cache`, `TurboHTTP.RateLimit`, `TurboHTTP.Observability`, `TurboHTTP.Files`, `TurboHTTP.JSON`
+(with a built-in LiteJson reader/writer), `TurboHTTP.Testing` (`MockTransport`, `RecordReplayTransport`),
+`TurboHTTP.Unity` (asset handlers, decoders, mobile networking), `TurboHTTP.WebSocket`,
+`TurboHTTP.WebSocket.Transport`, `TurboHTTP.Unity.WebSocket`, `TurboHTTP.UniTask` (needs the UniTask
+package), `TurboHTTP.Complete` (startup registration) and the Editor HTTP Monitor window. Retry, cache,
+authentication and rate limiting are interceptors on `UHttpClientOptions.Interceptors`.
+
 
 ### Added
 - **Phase 14 Features**:
@@ -14,8 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Background Networking for native iOS/Android seamless connection persistence.
   - Adaptive Networking for dynamic timeouts based on network quality.
   - OAuth 2.0 & OIDC integration with automated token refresh and PKCE flow.
-  - Interceptor Middleware architecture for request/response mutation.
-  - Mock Server capability for robust offline unit and integration testing.
+  - Interceptor pipeline (`IHttpInterceptor`) for request/response mutation.
+  - `MockTransport` and `RecordReplayTransport` for offline unit and integration testing.
   - Plugin System for zero-overhead, modular extensions.
 - Initial project structure
 - Modular assembly definitions
@@ -113,19 +129,3 @@ Core public surface reduced before the API freeze (#77, #156). Moved types keep 
 - Obsolete `MockTransport.SendAsync(UHttpRequest, RequestContext, CancellationToken)` and
   `RecordReplayTransport.SendAsync(...)` (`TurboHTTP.Testing`) removed: use `DispatchAsync` or
   `TransportDispatchHelper.CollectResponseAsync`.
-
-## [1.0.0] - TBD
-
-### Added
-- Core HTTP client with fluent API
-- Retry middleware with idempotency awareness
-- Cache middleware with ETag support
-- Authentication middleware
-- Rate limiting middleware
-- Observability module with timeline tracing
-- File downloader with resume support
-- Unity content handlers (Texture2D, AudioClip)
-- Testing module with record/replay
-- Performance module with memory pooling
-- Editor HTTP Monitor window
-- Comprehensive samples and documentation
