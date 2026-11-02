@@ -23,6 +23,9 @@ that exercises it. No product code changed.
   and a `WebSocketClient`, round-trips JSON through `JsonSerializer`, and prints
   `TURBOHTTP_SMOKE PASS http=... ws=... json=ok bc=present|absent`. It never calls any
   `EnsureRegistered()` and never touches the network.
+- `Tools~/unity/player-smoke/QuickStartExample.cs`: the README "Quick Start" block copied verbatim
+  (JSON, `SendBufferedAsync`, `UHttpException`), compiled into the same Assembly-CSharp; the
+  component is never put in the scene, so it sends nothing.
 - `Tools~/unity/player-smoke/Editor/TurboHttpPlayerBuild.cs`: `-executeMethod TurboHttpPlayerBuild.Build`.
   Sets the backend (IL2CPP: Managed Stripping Level High; Mono: Disabled, Unity's default), re-checks
   the `TURBOHTTP_BOUNCYCASTLE` define, builds one empty scene and copies
@@ -40,16 +43,21 @@ that exercises it. No product code changed.
   on IL2CPP High only, which is what #8 AC2 and #196 AC1 are about.
 - The built-in JSON serializer rejects POCOs ("Use a dictionary or register a custom serializer"),
   so the smoke round-trips a `Dictionary<string, object>`.
-- The README Quick Start calls `SendAsync()`, which no longer exists (`SendBufferedAsync`), so the
-  README snippet itself does not compile. The smoke compiles the same Quick Start shape against the
-  current API (`QuickStartGet`, compiled, never called). Fixing the README is #98.
+- #7 AC1 is proven by compiling the README Quick Start verbatim (`QuickStartExample.cs`, after #269
+  rewrote it) plus the Retry/Auth/WebSocket usage in `TurboHttpPlayerSmoke.cs` from an `Assets/`
+  folder without an asmdef, in every player build below. #7 AC2 (samples compile when imported)
+  was delivered by #269: each sample has an asmdef compiled by the shadow build, and the
+  docs-customer lane compiled the five samples in a clean 2021.3 project (`2026-11-docs-customer.md`).
+  Running the samples stays in #268.
+- The Quick Start's `response.AsJson<MyData>()` compiles but throws at runtime with the bundled
+  serializer (custom types are rejected): #271.
 - WSL interop intermittently fails to start Windows processes (`UtilAcceptVsock: accept4 failed`);
   the script retries a Unity or player start that wrote no log and skips the `cmd.exe` probe when
   `UNITY_SMOKE_DIR` is set. A `find` over `Library/Bee` on `/mnt/c` once failed with "Cannot
   allocate memory" and hid the linker output, so the script uses the fixed
   `Library/Bee/artifacts/{Android,WinPlayerBuildProgram}/ManagedStripped` paths instead.
 
-## Results (host: WSL2 + Windows Unity 2021.3.45f2, package at the PR head)
+## Results (host: WSL2 + Windows Unity 2021.3.45f2, package at the PR head; all rows rerun 2026-11-02 after merging #269 and adding `QuickStartExample.cs`)
 
 | Build | Result |
 | --- | --- |

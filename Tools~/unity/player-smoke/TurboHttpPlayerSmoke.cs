@@ -1,15 +1,14 @@
 // Player smoke for Tools~/unity/build-player.sh. The script copies this folder into the throwaway
 // project's Assets/TurboHttpSmoke/ with no .asmdef, so it compiles into Assembly-CSharp: that proves
 // the auto-referenced modules (Core, JSON, Retry, Auth, WebSocket) are visible to a plain Assets/
-// script (#7 AC1). At startup it builds a client the README Quick Start way and a WebSocket client
+// script (#7 AC1; QuickStartExample.cs is the README Quick Start verbatim). At startup it builds a client the README Quick Start way and a WebSocket client
 // WITHOUT calling any EnsureRegistered(), so it only passes when TurboHttpBootstrap registered the
 // default transports by itself in a player (#1 AC1). It prints one marker line and quits:
 //   TURBOHTTP_SMOKE PASS http=<transport type> ws=<transport type> json=ok bc=<present|absent>
 //   TURBOHTTP_SMOKE FAIL <exception>
-// It never sends a request (no network); the Quick Start send path below is compiled, not run.
+// It never sends a request (no network); QuickStartExample is compiled, never attached to a scene.
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
 using TurboHTTP.Auth;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
@@ -84,19 +83,5 @@ public static class TurboHttpPlayerSmoke
             : "absent";
 
         return "http=" + http + " ws=" + ws + " json=ok bc=" + bc;
-    }
-
-    // Quick Start send path (README.md "Quick Start", with the current SendBufferedAsync: the
-    // README still shows the removed SendAsync, #98): compiled into the player to prove the
-    // extension methods resolve from Assembly-CSharp; never called by the smoke.
-    public static async Task<Dictionary<string, object>> QuickStartGet(UHttpClient client)
-    {
-        using (var response = await client.Get("/data")
-                   .WithBearerToken("token")
-                   .WithTimeout(TimeSpan.FromSeconds(10))
-                   .SendBufferedAsync())
-        {
-            return response.IsSuccessStatusCode ? response.AsJson<Dictionary<string, object>>() : null;
-        }
     }
 }
