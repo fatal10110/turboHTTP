@@ -54,10 +54,12 @@ using TurboHTTP.JSON;
 
 using var response = await client.Post("/users")
     .WithHeader("X-Custom-Header", "Value")
-    .WithJsonBody(new { Name = "Alice", Role = "Admin" })
+    .WithJsonBody(new MyDto { id = 1, name = "Alice" }) // [Serializable] class, see below
     .WithTimeout(TimeSpan.FromSeconds(5)) // overrides DefaultTimeout
     .SendBufferedAsync();
 ```
+
+`MyDto` here and below is a `[Serializable]` class with public fields; see [JSON serializers](../APIReference.md#json-serializers) for the shapes the default serializer reads and how to register another one.
 
 A request is single-use: sending it (or calling `Dispose()`) ends its lease, and any further use throws `ObjectDisposedException`. A relative URL is resolved against `UHttpClientOptions.BaseUrl`.
 

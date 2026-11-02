@@ -76,7 +76,7 @@ public class Example : MonoBehaviour
 
 ### 2. POST JSON
 
-`WithJsonBody` (from `TurboHTTP.JSON`) serializes an object and sets `Content-Type: application/json`.
+`WithJsonBody` (from `TurboHTTP.JSON`) serializes an object and sets `Content-Type: application/json`. The JSON helpers use Unity's `JsonUtility` by default (registered at startup), so DTOs are `[Serializable]` classes with public fields; see [JSON serializers](APIReference.md#json-serializers) for other shapes and custom serializers.
 
 ```csharp
 using System;

@@ -96,6 +96,8 @@ public class Example : MonoBehaviour
 }
 ```
 
+`AsJson<T>()`, `WithJsonBody(...)` and `GetJsonAsync<T>(...)` read and write `[Serializable]` classes with public fields, like `MyData` above, through Unity's `JsonUtility`, which TurboHTTP registers at startup; dictionaries, top-level arrays (`MyData[]`) and other shapes are covered in [JSON serializers](Documentation~/APIReference.md#json-serializers), including how to plug in another serializer.
+
 Retries, caching, redirects, cookies and authentication are interceptors you add to `UHttpClientOptions.Interceptors`; see [Interceptors](Documentation~/Modules/Interceptors.md).
 
 ## Platform Support

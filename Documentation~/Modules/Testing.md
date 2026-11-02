@@ -18,7 +18,7 @@ transport.EnqueueResponse(System.Net.HttpStatusCode.ServiceUnavailable);
 using var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
 
 using var first = await client.Get("https://api.example.com/users/1").SendBufferedAsync();
-MyDto dto = first.AsJson<MyDto>();
+MyDto dto = first.AsJson<MyDto>(); // [Serializable] DTO, see APIReference.md#json-serializers
 
 using var second = await client.Get("https://api.example.com/users/1").SendBufferedAsync();
 // second.StatusCode == 503: error statuses are normal responses.

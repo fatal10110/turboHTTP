@@ -25,7 +25,7 @@ public class DataService : MonoBehaviour
     public async UniTask<MyData> FetchDataAsync()
     {
         using var response = await _client.GetAsync("https://api.example.com/data");
-        return response.AsJson<MyData>();
+        return response.AsJson<MyData>(); // [Serializable] DTO, see APIReference.md#json-serializers
     }
 }
 ```

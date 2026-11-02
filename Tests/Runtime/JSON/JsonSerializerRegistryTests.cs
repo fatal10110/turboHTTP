@@ -9,21 +9,31 @@ namespace TurboHTTP.Tests.JSON
     [TestFixture]
     public class JsonSerializerRegistryTests
     {
-        [TearDown]
-        public void TearDown()
+        private IJsonSerializer _previous;
+
+        [SetUp]
+        public void SetUp()
         {
-            // Reset after each test
+            // The startup bootstrap may have installed JsonUtilitySerializer; these tests cover the
+            // built-in LiteJson state, so start from it and restore the startup default afterwards.
+            _previous = JsonSerializer.Default;
             JsonSerializer.ResetToDefault();
         }
 
+        [TearDown]
+        public void TearDown()
+        {
+            JsonSerializer.Default = _previous;
+        }
+
         [Test]
-        public void Default_IsLiteJsonSerializer()
+        public void ResetToDefault_IsLiteJsonSerializer()
         {
             Assert.That(JsonSerializer.Default, Is.SameAs(LiteJsonSerializer.Instance));
         }
 
         [Test]
-        public void HasCustomSerializer_WhenDefault_ReturnsFalse()
+        public void HasCustomSerializer_AfterReset_ReturnsFalse()
         {
             Assert.That(JsonSerializer.HasCustomSerializer(), Is.False);
         }
