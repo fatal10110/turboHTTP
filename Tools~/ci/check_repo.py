@@ -146,6 +146,18 @@ def check_json(files):
             for s in data.get("samples", []):
                 if not os.path.isdir(os.path.join(ROOT, s.get("path", ""))):
                     errors.append(f"json: package.json sample path {s.get('path')} does not exist")
+            raw = json.dumps(data).lower()
+            for placeholder in ("yourcompany", "your name", "custom/dual"):
+                if placeholder in raw:
+                    errors.append(f"json: package.json still has the placeholder '{placeholder}'")
+            try:
+                with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as cl:
+                    top = re.search(r"^## \[([^\]]+)\]", cl.read(), re.M)
+            except OSError:
+                top = None
+            if top and top.group(1) != data.get("version"):
+                errors.append(
+                    f"json: package.json version {data.get('version')} differs from the top CHANGELOG entry {top.group(1)}")
     return errors
 
 

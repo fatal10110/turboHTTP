@@ -1,7 +1,7 @@
 # TurboHTTP
 
 [![Unity 2021.3+](https://img.shields.io/badge/unity-2021.3%2B-blue.svg)](https://unity3d.com/get-unity/download)
-[![License: Custom](https://img.shields.io/badge/License-Custom-yellow.svg)](LICENSE.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 [![Platform: All](https://img.shields.io/badge/Platform-Win%20%7C%20Mac%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey)](Documentation~/PlatformNotes.md)
 
 **TurboHTTP** is a production-grade, modular HTTP client for Unity, designed for reliability, performance, and advanced observability. It serves as a modern alternative to `UnityWebRequest`, offering HTTP/2 support, detailed timeline tracing, and a fluent API.
@@ -11,14 +11,14 @@
 *   **Modular Architecture:** Core client with optional specific modules (Retry, Cache, etc.) and a zero-overhead plugin system.
 *   **Modern Transport:** Raw socket-based transport supporting HTTP/1.1 and **HTTP/2** (with multiplexing).
 *   **Resilience & Routing:** Happy Eyeballs dual-stack, HTTP proxy support (CONNECT tunnels, environment variables), and adaptive timeouts based on network quality (`TurboHTTP.Unity`).
-*   **Enterprise Security:** Advanced OAuth 2.0 & OIDC support with automated token refresh.
+*   **Authentication:** OAuth 2.0 & OIDC support with PKCE and automated token refresh.
 *   **Mobile Readiness:** IL2CPP-safe on iOS and Android; experimental, opt-in background networking.
 *   **Observability:** Detailed timeline traces for every request (DNS, Connect, SSL, TTFB).
 *   **Reliability:** Interceptors for retries with idempotency awareness, RFC 9111 caching, redirects, cookies and concurrency limits.
 *   **Performance:** Zero-allocation focused design with memory pooling and native `ValueTask` / `UniTask` support.
 *   **Unity Integration:** `Texture2D`, `Sprite` and `AudioClip` decoding (optionally off the main thread), downloads to Unity paths, coroutine helpers.
 *   **WebSockets:** RFC 6455 compliant WebSocket client with automatic reconnection and framing.
-*   **Testing:** Record/Replay mode and Mock Server for deterministic testing.
+*   **Testing:** Record/Replay mode and `MockTransport` for deterministic testing.
 
 ## Installation
 
@@ -135,4 +135,4 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 ## License
 
-This project is free for personal use and small companies. For enterprise commercial use, a separate agreement is required. See the [LICENSE.md](LICENSE.md) file for details.
+TurboHTTP is open source under the MIT License. See [LICENSE.md](LICENSE.md); bundled third-party components are listed in [Third-Party Notices.md](Third-Party%20Notices.md).

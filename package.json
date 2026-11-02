@@ -1,7 +1,7 @@
 {
   "name": "com.turbohttp.complete",
   "displayName": "TurboHTTP - Complete HTTP Client",
-  "version": "1.0.0",
+  "version": "1.0.0-pre.1",
   "unity": "2021.3",
   "description": "Production-grade modular HTTP client for Unity with advanced features: retry logic, caching, observability, file downloads, and Unity asset handlers. Designed for games and applications requiring reliable network communication.",
   "keywords": [
@@ -13,16 +13,21 @@
     "upload",
     "json",
     "cache",
-    "retry",
-    "middleware"
+    "retry"
   ],
   "category": "Network",
   "author": {
-    "name": "Your Name/Company",
-    "email": "support@yourcompany.com",
-    "url": "https://yourcompany.com"
+    "name": "fatal10110",
+    "url": "https://github.com/fatal10110"
   },
-  "license": "Custom/Dual-License",
+  "license": "MIT",
+  "documentationUrl": "https://github.com/fatal10110/turboHTTP/blob/main/README.md",
+  "changelogUrl": "https://github.com/fatal10110/turboHTTP/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/fatal10110/turboHTTP/blob/main/LICENSE.md",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fatal10110/turboHTTP.git"
+  },
   "dependencies": {},
   "samples": [
     {
