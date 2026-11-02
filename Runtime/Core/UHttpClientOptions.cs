@@ -138,6 +138,17 @@ namespace TurboHTTP.Core
         public bool DisposeTransport { get; set; }
 
         /// <summary>
+        /// When true, the client disposes every <see cref="IDisposable"/> interceptor in
+        /// <see cref="Interceptors"/> on <see cref="UHttpClient.Dispose()"/>, last to first, before
+        /// an owned transport. Default false: the code that created the interceptors owns them.
+        /// <see cref="Clone"/> shares interceptor instances, so several clients may use one cache,
+        /// cookie or concurrency interceptor; set this only when the client is their sole user.
+        /// Interceptors contributed by plugins belong to the plugin and are never disposed through
+        /// this option.
+        /// </summary>
+        public bool DisposeInterceptors { get; set; }
+
+        /// <summary>
         /// TLS backend selection strategy.
         /// Default is Auto, which selects the best provider for the current platform.
         /// </summary>
@@ -159,7 +170,8 @@ namespace TurboHTTP.Core
         /// Creates a deep copy of these options. Headers and pipeline component lists are
         /// cloned; Transport is a shared reference (NOT snapshotted). Interceptor
         /// instances are shared references. Stateful interceptors are therefore
-        /// shared across option clones by design.
+        /// shared across option clones by design; see <see cref="DisposeInterceptors"/> for who
+        /// disposes them.
         /// </summary>
         public UHttpClientOptions Clone()
         {
@@ -176,6 +188,7 @@ namespace TurboHTTP.Core
                 FollowRedirects = FollowRedirects,
                 MaxRedirects = MaxRedirects,
                 DisposeTransport = DisposeTransport,
+                DisposeInterceptors = DisposeInterceptors,
                 TlsBackend = TlsBackend,
                 MaxBufferedResponseBodySize = MaxBufferedResponseBodySize,
                 ConnectionPool = ConnectionPool?.Clone() ?? new ConnectionPoolOptions(),

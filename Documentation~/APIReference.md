@@ -138,6 +138,7 @@ Configuration options for `UHttpClient`.
 | `DefaultHeaders` | `HttpHeaders` | Headers applied to every request |
 | `Transport` | `IHttpTransport` | Custom HTTP transport implementation |
 | `DisposeTransport` | `bool` | Dispose a custom `Transport` together with the client |
+| `DisposeInterceptors` | `bool` | Dispose the `IDisposable` interceptors in `Interceptors` together with the client (default `false`: the creator owns them, and `Clone()` shares them between clients) |
 | `Interceptors` | `List<IHttpInterceptor>` | Interceptor pipeline, outermost first; see [Interceptors](Modules/Interceptors.md) for the required order |
 | `FollowRedirects` / `MaxRedirects` | `bool` / `int` | Redirect policy (default `true` / `10`); applied only when a `RedirectInterceptor` is configured |
 | `MaxBufferedResponseBodySize` | `long` | Cap for buffered bodies (default 100 MB; `0` = unlimited) |
@@ -217,6 +218,8 @@ options.Interceptors.Add(new CacheInterceptor(new CachePolicy { EnableRevalidati
 options.Interceptors.Add(new RetryInterceptor(new RetryPolicy { MaxRetries = 3 }));
 options.Interceptors.Add(new ConcurrencyInterceptor(maxConnectionsPerHost: 6));
 ```
+
+The client disposes these interceptors only when `DisposeInterceptors` is `true`; otherwise the code that created them disposes them (see [Interceptor lifetime](Modules/Interceptors.md#interceptor-lifetime)).
 
 ---
 

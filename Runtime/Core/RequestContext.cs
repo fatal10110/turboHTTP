@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Threading;
 
 namespace TurboHTTP.Core
 {
@@ -36,6 +37,8 @@ namespace TurboHTTP.Core
         private readonly List<TimelineEvent> _timeline;
         private readonly Dictionary<string, object> _state;
         private readonly object _lock = new object();
+        // 0 = live, 1 = completed by CompleteAfterResponse. Set once with Interlocked.Exchange.
+        private int _completed;
         private TimelineEvent[] _timelineSnapshot;
         private bool _timelineSnapshotDirty;
         private IReadOnlyDictionary<string, object> _stateSnapshot;
@@ -161,6 +164,21 @@ namespace TurboHTTP.Core
         {
             _stopwatch.Stop();
             return _stopwatch.Elapsed;
+        }
+
+        /// <summary>
+        /// Stops the stopwatch and clears timeline and state, at most once. A streaming send hands the
+        /// context to its <see cref="UHttpStreamingResponse"/> and calls this when the response is
+        /// disposed, so handlers that complete at body end (logging, metrics, monitor) still read a
+        /// running stopwatch and the request state (#70).
+        /// </summary>
+        internal void CompleteAfterResponse()
+        {
+            if (Interlocked.Exchange(ref _completed, 1) != 0)
+                return;
+
+            _stopwatch.Stop();
+            Clear();
         }
 
         /// <summary>

@@ -221,6 +221,7 @@ namespace TurboHTTP.Tests.Core
             {
                 Transport = transport,
                 DisposeTransport = true,
+                DisposeInterceptors = true,
                 Interceptors = new List<IHttpInterceptor> { interceptor1, interceptor2, interceptor3 }
             });
 
@@ -242,6 +243,7 @@ namespace TurboHTTP.Tests.Core
             {
                 Transport = transport,
                 DisposeTransport = true,
+                DisposeInterceptors = true,
                 Interceptors = new List<IHttpInterceptor> { interceptor1, interceptor2 }
             });
 
