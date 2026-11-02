@@ -57,7 +57,7 @@ namespace TurboHTTP.Core
         /// (for example background networking or adaptive behavior) are prepended ahead of this list.
         /// The client rejects orders known to be unsafe with <see cref="System.ArgumentException"/>:
         /// a cache interceptor outside an auth interceptor, or a concurrency interceptor outside a
-        /// retry interceptor (canonical order: Documentation~/Modules/Middleware.md).
+        /// retry interceptor (canonical order: Documentation~/Modules/Interceptors.md).
         /// </summary>
         public List<IHttpInterceptor> Interceptors { get; set; } = new List<IHttpInterceptor>();
 

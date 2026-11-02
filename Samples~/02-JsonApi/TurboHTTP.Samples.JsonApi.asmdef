@@ -1,0 +1,17 @@
+{
+  "name": "TurboHTTP.Samples.JsonApi",
+  "rootNamespace": "TurboHTTP.Samples.JsonApi",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.JSON"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

@@ -1,0 +1,21 @@
+{
+  "name": "TurboHTTP.Samples.AdvancedFeatures",
+  "rootNamespace": "TurboHTTP.Samples.AdvancedFeatures",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.Cache",
+    "TurboHTTP.Middleware",
+    "TurboHTTP.Observability",
+    "TurboHTTP.RateLimit",
+    "TurboHTTP.Retry"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

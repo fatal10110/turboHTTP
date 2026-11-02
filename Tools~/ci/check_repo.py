@@ -13,12 +13,16 @@ Checks (all on git-tracked files):
             that managed stripping breaks); modules reach each other through registration APIs (#186)
   coreapi   the public types declared under Runtime/Core match Tools~/ci/api-baseline/core-public-types.txt
             and stay within the cap (#77): a new public Core type fails until the baseline lists it
+  docs      README.md and Documentation~ name no removed middleware API (*Middleware types, Middlewares,
+            the request-level SendAsync()), their fenced csharp blocks parse (snippet directives), and every
+            Samples~ folder ships an asmdef that package.json lists (#232, #98); the snippets and samples
+            compile in the shadow build
   native    every DllImport("__Internal") resolves to a native plugin under Plugins/, and on each player
             platform the plugin importer (platforms + define constraints) includes the plugin exactly when
             the managed #if guard compiles its callers (#176): a caller without the plugin fails the
             Xcode link, a plugin without a caller ships dead native code
 
-Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|ignores|reflect|coreapi|native ...]   (default: all)
+Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|ignores|reflect|coreapi|native|docs ...]   (default: all)
 """
 import json
 import os
@@ -103,6 +107,14 @@ def check_asmdef(files):
             if r.startswith("GUID:"):
                 errors.append(f"asmdef: {f} uses a GUID reference ({r}); use the assembly name")
         allowed = ALLOWED_REFS.get(name, {"TurboHTTP.Core"})
+        if f.startswith("Samples~/"):
+            # Samples show customer code: any shipped runtime module, never tests or editor tooling.
+            allowed = None
+            if not name.startswith("TurboHTTP.Samples."):
+                errors.append(f"asmdef: {f} must be named TurboHTTP.Samples.<Name> (Package Manager import copies it into Assets)")
+            for r in refs:
+                if r.startswith("TurboHTTP.Tests") or r == "TurboHTTP.Editor" or r.startswith("UnityEngine.TestRunner"):
+                    errors.append(f"asmdef: sample {name} must not reference {r}")
         if allowed is not None:
             for r in refs:
                 if r not in allowed and r not in {"UnityEngine.TestRunner", "UnityEditor.TestRunner"}:
@@ -440,12 +452,41 @@ def check_native(files):
     return errors
 
 
+# Removed pipeline vocabulary (#232): the interceptor API replaced *Middleware types and Options.Middlewares;
+# the request-level SendAsync() became SendBufferedAsync()/SendStreamingAsync(). The TurboHTTP.Middleware
+# module/namespace still exists, so its name is allowed; a line that says "formerly" is a history note.
+STALE_DOC_NAME = re.compile(r"\b\w*Middleware\w*\b|\bMiddlewares\b|\bSendAsync\(\s*\)|`SendAsync\(request\)`")
+STALE_DOC_ALLOWED = re.compile(r"TurboHTTP\.Middleware\b|\(formerly [^)]*\)")
+
+
+def check_docs(files):
+    errors = []
+    sys.path.insert(0, os.path.join(ROOT, "Tools~", "ci"))
+    import doc_snippets
+    _, problems = doc_snippets.all_snippets()
+    errors += [f"docs: {p}" for p in problems]
+    for f in files:
+        if not (f == "README.md" or (f.startswith(("Documentation~/", "Samples~/")) and f.endswith((".md", ".cs")))):
+            continue
+        for n, line in enumerate(open(os.path.join(ROOT, f), encoding="utf-8").read().splitlines(), 1):
+            for m in STALE_DOC_NAME.finditer(STALE_DOC_ALLOWED.sub("", line)):
+                errors.append(f"docs: {f}:{n}: '{m.group(0)}' names an API that does not exist "
+                              "(interceptors replaced middleware; use SendBufferedAsync/SendStreamingAsync)")
+    samples = {s.get("path") for s in json.load(open(os.path.join(ROOT, "package.json"), encoding="utf-8-sig")).get("samples", [])}
+    folders = {os.path.dirname(f) for f in files if f.startswith("Samples~/") and f.endswith(".asmdef")}
+    for folder in sorted(samples - folders):
+        errors.append(f"docs: package.json sample {folder} has no .asmdef (each sample compiles in the shadow build)")
+    for folder in sorted({os.path.dirname(f) for f in files if f.startswith("Samples~/") and f.endswith(".cs")} - folders):
+        errors.append(f"docs: {folder} has C# files but no .asmdef")
+    return errors
+
+
 def main():
-    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "ignores", "reflect", "coreapi", "native"]
+    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "ignores", "reflect", "coreapi", "native", "docs"]
     files = tracked()
     checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit,
               "ignores": check_ignores,
-              "reflect": check_reflect, "coreapi": check_core_api, "native": check_native}
+              "reflect": check_reflect, "coreapi": check_core_api, "native": check_native, "docs": check_docs}
     errors = []
     for w in wanted:
         errors += checks[w](files)

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using TurboHTTP.Cache;
 using TurboHTTP.Core;
@@ -11,17 +12,19 @@ using UnityEngine;
 namespace TurboHTTP.Samples.AdvancedFeatures
 {
     /// <summary>
-    /// Example of advanced features working together:
-    /// - Retry logic
-    /// - Caching
-    /// - Rate limiting
+    /// Example of advanced features working together as interceptors:
     /// - Metrics/Observability
-    /// - WebSockets (Phase 18)
+    /// - Redirects
+    /// - Caching
+    /// - Retry logic
+    /// - Concurrency limits
+    /// The order below is the canonical interceptor order (outermost first); see
+    /// Documentation~/Modules/Interceptors.md.
     /// </summary>
     public class AdvancedFeaturesExample : MonoBehaviour
     {
         private UHttpClient _client;
-        private MetricsMiddleware _metrics;
+        private MetricsInterceptor _metrics;
 
         void Start()
         {
@@ -30,38 +33,31 @@ namespace TurboHTTP.Samples.AdvancedFeatures
                 BaseUrl = "https://httpbin.org"
             };
 
-            // 1. Retry Policy
-            var retryPolicy = new RetryPolicy
+            // 1. Metrics: outermost, sees every request as the caller sent it.
+            _metrics = new MetricsInterceptor();
+            options.Interceptors.Add(_metrics);
+
+            // 2. Redirects: FollowRedirects/MaxRedirects only take effect with this interceptor.
+            options.Interceptors.Add(new RedirectInterceptor());
+
+            // 3. Cache: honours Cache-Control, ETag and Last-Modified (RFC 9111).
+            options.Interceptors.Add(new CacheInterceptor(new CachePolicy
+            {
+                EnableRevalidation = true
+            }));
+
+            // 4. Retry: exponential backoff for idempotent requests; below the cache so that
+            //    cache hits are never retried.
+            options.Interceptors.Add(new RetryInterceptor(new RetryPolicy
             {
                 MaxRetries = 3,
                 InitialDelay = TimeSpan.FromSeconds(0.5),
                 BackoffMultiplier = 2.0,
-                JitterFactor = 0.1,
-                OnlyRetryIdempotent = true // GET/HEAD/PUT/DELETE
-            };
-            options.Middlewares.Add(new RetryMiddleware(retryPolicy));
+                OnlyRetryIdempotent = true // GET/HEAD/PUT/DELETE/OPTIONS
+            }));
 
-            // 2. Cache Policy
-            var cachePolicy = new CachePolicy
-            {
-                EnableCache = true,
-                DefaultTtl = TimeSpan.FromSeconds(10), // Short TTL for demo
-                EnableRevalidation = true
-            };
-            options.Middlewares.Add(new CacheMiddleware(cachePolicy));
-
-            // 3. Rate Limit Policy
-            var rateLimitPolicy = new RateLimitPolicy
-            {
-                MaxRequests = 5,
-                TimeWindow = TimeSpan.FromSeconds(10),
-                PerHost = true
-            };
-            options.Middlewares.Add(new RateLimitMiddleware(rateLimitPolicy));
-
-            // 4. Metrics
-            _metrics = new MetricsMiddleware();
-            options.Middlewares.Add(_metrics);
+            // 5. Concurrency: innermost, so a permit is held only while a request is on the wire.
+            options.Interceptors.Add(new ConcurrencyInterceptor(maxConnectionsPerHost: 2, maxTotalConnections: 8));
 
             _client = new UHttpClient(options);
 
@@ -72,8 +68,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
         {
             await Example1_Caching();
             await Example2_Retries();
-            await Example3_RateLimiting();
-            await Example4_WebSockets();
+            await Example3_ConcurrencyLimit();
 
             PrintMetrics();
         }
@@ -82,18 +77,14 @@ namespace TurboHTTP.Samples.AdvancedFeatures
         {
             Debug.Log("=== Example 1: Caching ===");
 
-            Debug.Log("Request 1 (Network)...");
-            var r1 = await _client.Get("/get").SendAsync();
+            // httpbin.org/cache/60 answers with Cache-Control: public, max-age=60.
+            Debug.Log("Request 1 (network)...");
+            using var r1 = await _client.Get("/cache/60").SendBufferedAsync();
             Debug.Log($"Status: {r1.StatusCode}, Time: {r1.ElapsedTime.TotalMilliseconds}ms");
 
-            Debug.Log("Request 2 (Cache)...");
-            var r2 = await _client.Get("/get").SendAsync();
+            Debug.Log("Request 2 (cache)...");
+            using var r2 = await _client.Get("/cache/60").SendBufferedAsync();
             Debug.Log($"Status: {r2.StatusCode}, Time: {r2.ElapsedTime.TotalMilliseconds}ms");
-
-            if (r2.ElapsedTime.TotalMilliseconds < 10)
-            {
-                Debug.Log("Request served from cache instantly!");
-            }
         }
 
         async Task Example2_Retries()
@@ -102,39 +93,30 @@ namespace TurboHTTP.Samples.AdvancedFeatures
 
             try
             {
-                // Request a 503 Service Unavailable which triggers retry
-                // Note: httpbin might not reliably accept /status/503 for retries if implementation expects specific errors
-                // But let's assume standard behavior.
-                var response = await _client.Get("/status/503").WithTimeout(TimeSpan.FromSeconds(2)).SendAsync();
+                // 503 is retryable: the interceptor retries with backoff before giving up.
+                using var response = await _client.Get("/status/503")
+                    .WithTimeout(TimeSpan.FromSeconds(5))
+                    .SendBufferedAsync();
 
-                Debug.Log($"Final Status: {response.StatusCode}");
+                Debug.Log($"Final status: {response.StatusCode}");
             }
             catch (UHttpException ex)
             {
-                Debug.Log($"Request failed after retries: {ex.Message}");
+                Debug.Log($"Request failed after retries: {ex.HttpError.Type}");
             }
         }
 
-        async Task Example3_RateLimiting()
+        async Task Example3_ConcurrencyLimit()
         {
-            Debug.Log("=== Example 3: Rate Limiting ===");
+            Debug.Log("=== Example 3: Concurrency limit ===");
 
-            for (int i = 0; i < 7; i++)
+            // Six requests start together, but at most two are on the wire to the host at a time.
+            var tasks = Enumerable.Range(0, 6).Select(async i =>
             {
-                try
-                {
-                    await _client.Get("/get").SendAsync();
-                    Debug.Log($"Request {i + 1} success");
-                }
-                catch (UHttpException ex) when (ex.HttpError.Type == UHttpErrorType.HttpError && ex.HttpError.Code == (System.Net.HttpStatusCode)429)
-                {
-                    Debug.Log($"Request {i + 1} rate limited (429)!");
-                }
-                catch (Exception ex)
-                {
-                    Debug.Log($"Request {i + 1} failed: {ex.Message}");
-                }
-            }
+                using var response = await _client.Get("/delay/1").SendBufferedAsync();
+                Debug.Log($"Request {i + 1}: {response.StatusCode}");
+            });
+            await Task.WhenAll(tasks);
         }
 
         void PrintMetrics()
@@ -144,36 +126,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             Debug.Log($"Total Requests: {m.TotalRequests}");
             Debug.Log($"Successful: {m.SuccessfulRequests}");
             Debug.Log($"Failed: {m.FailedRequests}");
-            Debug.Log($"Cached: {m.CachedRequests}");
-            Debug.Log($"Retried: {m.RetriedRequests}");
-        }
-
-        async Task Example4_WebSockets()
-        {
-            Debug.Log("=== Example 4: WebSockets ===");
-
-            // Create a WebSocket connection
-            var ws = _client.WebSockets.Create("wss://echo.websocket.events");
-
-            await ws.ConnectAsync(System.Threading.CancellationToken.None);
-            Debug.Log("WebSocket connected.");
-
-            // Send a message
-            await ws.SendTextAsync("Hello from TurboHTTP Advanced WebSocket!");
-
-            // Note: In a real app, you would loop receive continually. 
-            // For this sample, we just wait briefly for the echo.
-            var buffer = new byte[1024];
-            var result = await ws.ReceiveAsync(buffer.AsMemory(), System.Threading.CancellationToken.None);
-
-            if (result.MessageType == TurboHTTP.WebSocket.WebSocketMessageType.Text)
-            {
-                var text = System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count);
-                Debug.Log($"WebSocket Received: {text}");
-            }
-
-            // Close connection
-            await ws.CloseAsync(TurboHTTP.WebSocket.WebSocketCloseStatus.NormalClosure, "Demo Complete");
+            Debug.Log($"Average response time: {m.GetAverageResponseTimeMs():F0}ms");
         }
 
         void OnDestroy()

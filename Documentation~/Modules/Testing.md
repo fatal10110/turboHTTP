@@ -1,63 +1,74 @@
 # Testing Module
 
-TurboHTTP provides built-in isolation and mocking tools inside the `TurboHTTP.Testing` module, designed to facilitate robust unit and integration testing without network instability.
+The `TurboHTTP.Testing` module provides mocking and record/replay tools for tests that need no network. It is opt-in: reference the `TurboHTTP.Testing` assembly from your test assembly (it is not auto-referenced).
 
-## Record / Replay Testing
+## MockTransport
 
-Record/Replay mode allows you to execute your code against a live server once to record the HTTP traffic, and then subsequent test runs "replay" those exact responses offline instantly.
+`MockTransport` answers requests from memory. Queue responses with `EnqueueResponse`, `EnqueueJsonResponse` or `EnqueueError`, or give it a handler; inspect what the client sent with `LastRequest`, `CapturedRequests` and `RequestCount`.
 
-This guarantees deterministic testing.
+<!-- snippet: with System.Net.HttpStatusCode created = System.Net.HttpStatusCode.Created; -->
+```csharp
+using TurboHTTP.JSON;
+using TurboHTTP.Testing;
 
+var transport = new MockTransport();
+transport.EnqueueJsonResponse(new MyDto { id = 1, name = "Alice" });
+transport.EnqueueResponse(System.Net.HttpStatusCode.ServiceUnavailable);
+
+using var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
+
+using var first = await client.Get("https://api.example.com/users/1").SendBufferedAsync();
+MyDto dto = first.AsJson<MyDto>();
+
+using var second = await client.Get("https://api.example.com/users/1").SendBufferedAsync();
+// second.StatusCode == 503: error statuses are normal responses.
+```
+
+## Mock server
+
+`MockHttpServer` matches requests by method and path and produces responses with `MockResponseBuilder`. `CreateTransport()` returns the `IHttpTransport` to give to the client.
+
+<!-- snippet: with System.Net.HttpStatusCode ok = System.Net.HttpStatusCode.OK; -->
 ```csharp
 using TurboHTTP.Testing;
 
-[Test]
-public async Task FetchUser_ReturnsCorrectData()
+var server = new MockHttpServer();
+
+server.When(TurboHTTP.Core.HttpMethod.POST, "/login")
+    .Respond(r => r.Status(System.Net.HttpStatusCode.OK).Json(new { Token = "mock_token" }));
+
+server.When(TurboHTTP.Core.HttpMethod.GET, "/data")
+    .Respond(r => r.Status(System.Net.HttpStatusCode.InternalServerError));
+
+var options = new UHttpClientOptions { Transport = server.CreateTransport() };
+using var client = new UHttpClient(options);
+
+using var response = await client.Post("https://api.example.com/login").SendBufferedAsync();
+server.AssertReceived("/login", 1);
+```
+
+Further route options: `Times(n)`, `Priority(n)`, `WithHeader`, `WithQuery`, `WithBody`, `WithJsonBody<T>` predicates, `RespondSequence(...)` for a scripted series of responses, and `Delay(...)` on the response builder. `GetHistory()` lists the requests that arrived.
+
+## Record / Replay
+
+`RecordReplayTransport` wraps a real transport. In `Record` mode it forwards requests and saves the traffic to a file; in `Replay` mode it answers from that file and never touches the network, which makes tests deterministic. `Passthrough` forwards without recording. Sensitive headers, query parameters and JSON fields are redacted in the recording by default (`RecordReplayRedactionPolicy`).
+
+<!-- snippet: with string path = "Assets/Tests/Recordings/FetchUser.json"; -->
+```csharp
+using TurboHTTP.Testing;
+using TurboHTTP.Transport;
+
+var transport = new RecordReplayTransport(new RawSocketTransport(), new RecordReplayTransportOptions
 {
-    // MODE can be RecordReplayMode.Record or RecordReplayMode.Replay
-    var transport = new RecordReplayTransport(
-        new RawSocketTransport(),
-        RecordReplayMode.Replay, 
-        recordingFilePath: "Assets/Tests/Recordings/FetchUser.json"
-    );
+    Mode = RecordReplayMode.Replay,          // RecordReplayMode.Record the first time
+    RecordingPath = path,
+    MismatchPolicy = RecordReplayMismatchPolicy.Strict
+});
 
-    var options = new UHttpClientOptions { Transport = transport };
-    using var client = new UHttpClient(options);
+using var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
+using var response = await client.Get("https://api.example.com/user/1").SendBufferedAsync();
 
-    var response = await client.Get("https://api.example.com/user/1").SendAsync();
-    Assert.IsTrue(response.IsSuccessStatusCode);
-
-    // If in Record mode, save at the end of the test.
-    if (transport.Mode == RecordReplayMode.Record)
-    {
-        transport.SaveRecordings();
-    }
-}
+transport.SaveRecordings(); // in Record mode; also done on Dispose (AutoFlushOnDispose)
 ```
 
-## Mock Server
-
-The in-memory Mock Server intercepts outbound requests at the transport level (bypassing Sockets entirely) and serves pre-configured responses in microseconds.
-
-```csharp
-using TurboHTTP.Testing;
-
-var mockServer = new MockHttpServer();
-
-// Setup routing
-mockServer.Setup(route => route
-    .MatchMethod(HttpMethod.Post)
-    .MatchPath("/login"))
-    .Returns(new MockResponseBuilder()
-        .WithStatusCode(HttpStatusCode.OK)
-        .WithJsonBody(new { Token = "mock_token" }));
-
-mockServer.Setup(route => route
-    .MatchPath("/data"))
-    .Returns(new MockResponseBuilder()
-        .WithStatusCode(HttpStatusCode.InternalServerError));
-
-// Assign the MockTransport to your client options
-var options = new UHttpClientOptions { Transport = new MockTransport(mockServer) };
-var client = new UHttpClient(options);
-```
+Use these tools in an NUnit test assembly (`TurboHTTP.Testing` referenced); the recording path is relative to the project.

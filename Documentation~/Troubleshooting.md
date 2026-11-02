@@ -11,7 +11,7 @@ Common issues and solutions for TurboHTTP.
 **Solutions:**
 1.  **Increase Timeout:** `.WithTimeout(TimeSpan.FromSeconds(60))`
 2.  **Network Check:** Verify device connectivity.
-3.  **DNS Issues:** If DNS is slow, configure `TcpConnectionPool(dnsTimeout: ...)` with a higher value.
+3.  **DNS Issues:** If DNS is slow, raise `UHttpClientOptions.ConnectionPool.DnsTimeoutMs` (and `ConnectTimeout`).
 4.  **Mobile:** Mobile networks can be high latency; default timeout increases on mobile (45s), but you may need more.
 
 ### SSL/TLS Handshake Failures
@@ -57,10 +57,11 @@ If the HTTP Monitor (Window -> TurboHTTP -> Monitor) is empty:
 ### Logging
 Enable detailed logging to debug issues:
 
+<!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
 ```csharp
 using TurboHTTP.Observability;
 
-options.Interceptors.Insert(0, new LoggingInterceptor(UnityEngine.Debug.Log, LoggingInterceptor.LogLevel.Detailed));
+options.Interceptors.Insert(0, new LoggingInterceptor(Debug.Log, LoggingInterceptor.LogLevel.Detailed));
 ```
 
 ### Library warnings on devices

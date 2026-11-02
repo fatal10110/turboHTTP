@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.JSON;
 using UnityEngine;
 
 namespace TurboHTTP.Samples.BasicUsage
@@ -8,7 +9,7 @@ namespace TurboHTTP.Samples.BasicUsage
     /// <summary>
     /// Basic usage examples for TurboHTTP.
     /// Demonstrates GET, POST, PUT, DELETE requests.
-    /// Note: `SendAsync()` returns a zero-allocation `ValueTask`. 
+    /// Note: `SendBufferedAsync()` returns a `ValueTask<UHttpResponse>`; dispose every response (`using var`). 
     /// These samples use `Task` for simplicity, but in hot paths, 
     /// consider returning `ValueTask` or using `UniTask`.
     /// </summary>
@@ -36,7 +37,7 @@ namespace TurboHTTP.Samples.BasicUsage
         {
             Debug.Log("=== Example 1: Simple GET ===");
 
-            var response = await _client.Get("https://httpbin.org/get").SendAsync();
+            using var response = await _client.Get("https://httpbin.org/get").SendBufferedAsync();
 
             Debug.Log($"Status: {response.StatusCode}");
             Debug.Log($"Body: {response.GetBodyAsString()}");
@@ -46,11 +47,11 @@ namespace TurboHTTP.Samples.BasicUsage
         {
             Debug.Log("=== Example 2: GET with Headers ===");
 
-            var response = await _client
+            using var response = await _client
                 .Get("https://httpbin.org/headers")
                 .WithHeader("X-Custom-Header", "my-value")
                 .WithHeader("Accept", "application/json")
-                .SendAsync();
+                .SendBufferedAsync();
 
             Debug.Log(response.GetBodyAsString());
         }
@@ -61,10 +62,10 @@ namespace TurboHTTP.Samples.BasicUsage
 
             var data = new { name = "John Doe", age = 30 };
 
-            var response = await _client
+            using var response = await _client
                 .Post("https://httpbin.org/post")
                 .WithJsonBody(data)
-                .SendAsync();
+                .SendBufferedAsync();
 
             Debug.Log(response.GetBodyAsString());
         }
@@ -75,10 +76,10 @@ namespace TurboHTTP.Samples.BasicUsage
 
             var data = new { id = 1, title = "Updated Title" };
 
-            var response = await _client
+            using var response = await _client
                 .Put("https://httpbin.org/put")
                 .WithJsonBody(data)
-                .SendAsync();
+                .SendBufferedAsync();
 
             Debug.Log($"Status: {response.StatusCode}");
         }
@@ -87,9 +88,9 @@ namespace TurboHTTP.Samples.BasicUsage
         {
             Debug.Log("=== Example 5: DELETE ===");
 
-            var response = await _client
+            using var response = await _client
                 .Delete("https://httpbin.org/delete")
-                .SendAsync();
+                .SendBufferedAsync();
 
             Debug.Log($"Status: {response.StatusCode}");
         }
@@ -100,9 +101,9 @@ namespace TurboHTTP.Samples.BasicUsage
 
             try
             {
-                var response = await _client
+                using var response = await _client
                     .Get("https://httpbin.org/status/404")
-                    .SendAsync();
+                    .SendBufferedAsync();
 
                 response.EnsureSuccessStatusCode();
             }

@@ -4,14 +4,28 @@ TurboHTTP includes a robust, zero-allocation, fully RFC 6455 compliant WebSocket
 
 ## Creating a Connection
 
-WebSockets are created via the `UHttpClient.WebSockets` factory.
+Create a client with `WebSocketClient.Create(options)` and connect it to a `ws://` or `wss://` URI. The raw-socket WebSocket transport (`TurboHTTP.WebSocket.Transport`) registers itself at startup, so no setup code is needed.
 
+<!-- snippet: with CancellationToken ct = default; -->
 ```csharp
-var client = new UHttpClient();
-var ws = client.WebSockets.Create("wss://echo.websocket.events");
+using TurboHTTP.WebSocket;
 
-// Connect
-await ws.ConnectAsync(CancellationToken.None);
+IWebSocketClient ws = WebSocketClient.Create(new WebSocketConnectionOptions());
+await ws.ConnectAsync(new Uri("wss://echo.websocket.events"), ct);
+// ... send and receive ...
+await ws.CloseAsync(WebSocketCloseCode.NormalClosure, "bye", ct);
+ws.Dispose();
+```
+
+The `TurboHTTP.Unity.WebSocket` module adds `client.WebSocket(url)` on `UHttpClient`, which connects a client that raises its events on the Unity main thread and inherits the TLS backend and cleartext setting of the HTTP client:
+
+<!-- snippet: with UHttpClient httpClient = null; -->
+```csharp
+using TurboHTTP.Unity.WebSocket;
+using TurboHTTP.WebSocket;
+
+IWebSocketClient ws = await httpClient.WebSocket("wss://echo.websocket.events");
+ws.OnMessage += message => Debug.Log(message.Text);
 ```
 
 ### Cleartext (`ws://`)
@@ -22,41 +36,36 @@ await ws.ConnectAsync(CancellationToken.None);
 players and `true` in the Editor and on desktop. Proxy Basic credentials are sent only when the
 proxy's 407 offers `Basic`, and only when cleartext is allowed. See PlatformNotes, "Cleartext traffic".
 
-## Sending and Receiving (ValueTask)
-
-The API is fully asynchronous and native to `ValueTask`, ensuring zero allocations on the hot path.
+## Sending and Receiving
 
 ### Sending
 
+<!-- snippet: with IWebSocketClient ws = null; -->
 ```csharp
-// Send text
-await ws.SendTextAsync("Hello World");
+using TurboHTTP.WebSocket;
 
-// Send binary (using spans/memory)
-byte[] data = new byte[] { 1, 2, 3 };
-await ws.SendBinaryAsync(data.AsMemory());
+await ws.SendAsync("Hello World");                       // text frame
+
+byte[] data = { 1, 2, 3 };
+await ws.SendAsync(data);                                // binary frame
+await ws.SendAsync(new ReadOnlyMemory<byte>(data, 0, 2));
 ```
 
 ### Receiving
 
-Receiving is done in a loop using `ReceiveAsync`. The result contains the message type and the payload. For zero-allocation, payload is returned as a leased `Memory<byte>` that **must** be released or consumed.
+Pull messages with `ReceiveAsync` (one message) or `ReceiveAllAsync` (an async stream). A `WebSocketMessage` holds a leased payload buffer and is `IDisposable`: dispose it once you have consumed it.
 
+<!-- snippet: with IWebSocketClient ws = null; CancellationToken ct = default; -->
 ```csharp
-var buffer = new byte[4096]; // Reusable buffer
+using TurboHTTP.WebSocket;
+
 while (ws.State == WebSocketState.Open)
 {
-    var result = await ws.ReceiveAsync(buffer.AsMemory(), CancellationToken.None);
-    
-    if (result.MessageType == WebSocketMessageType.Text)
-    {
-        var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
-        Debug.Log($"Received: {text}");
-    }
-    else if (result.MessageType == WebSocketMessageType.Close)
-    {
-        Debug.Log("Server initiated close.");
-        break;
-    }
+    using WebSocketMessage message = await ws.ReceiveAsync(ct);
+    if (message.IsText)
+        Debug.Log($"Received: {message.Text}");
+    else
+        Debug.Log($"Received {message.Length} bytes");
 }
 ```
 
@@ -98,25 +107,38 @@ the send from that point aborts the connection (local close code 1006) and throw
 
 ## Reconnection & Resilience
 
-The client supports automatic reconnections with exponential backoff.
+Set a `WebSocketReconnectPolicy` on the connection options and `WebSocketClient.Create` returns a `ResilientWebSocketClient`, which reconnects with exponential backoff and jitter.
 
+<!-- snippet: with CancellationToken ct = default; -->
 ```csharp
-var options = new WebSocketOptions {
-    EnableAutoReconnect = true,
-    MaxReconnectAttempts = 5,
-    InitialDelay = TimeSpan.FromSeconds(1)
-};
-var ws = client.WebSockets.Create("wss://api.example.com", options);
+using TurboHTTP.WebSocket;
 
+var options = new WebSocketConnectionOptions
+{
+    ReconnectPolicy = new WebSocketReconnectPolicy(maxRetries: 5, initialDelay: TimeSpan.FromSeconds(1))
+};
+var ws = (ResilientWebSocketClient)WebSocketClient.Create(options);
+
+ws.OnReconnecting += (attempt, delay) => Debug.Log($"Reconnecting (attempt {attempt}) in {delay.TotalSeconds:F1}s");
 ws.OnReconnected += () => Debug.Log("Reconnected!");
-ws.OnDisconnected += (code, reason) => Debug.Log($"Lost connection: {reason}");
+ws.OnClosed += (code, reason) => Debug.Log($"Closed: {code} {reason}");
+
+await ws.ConnectAsync(new Uri("wss://api.example.com/stream"), options, ct);
 ```
+
+`WebSocketReconnectPolicy.Default`, `.Infinite` and `.None` are ready-made policies.
+
+## Proxies, TLS and limits
+
+`WebSocketConnectionOptions.ProxySettings` (a `WebSocketProxySettings`) routes the connection through an HTTP CONNECT proxy; `TlsBackend` selects the TLS provider with the same rules as HTTP (see [Transport](Transport.md)); `MaxMessageSize`, `MaxFrameSize` and the receive-queue bounds cap what a peer can make the client buffer.
 
 ## Extensions & Compression
 
 Per-Message Deflate (`permessage-deflate`, RFC 7692) is opt-in:
 
 ```csharp
+using TurboHTTP.WebSocket;
+
 var options = new WebSocketConnectionOptions().WithCompression();          // optional
 var strict = new WebSocketConnectionOptions().WithRequiredCompression();   // close 1010 if declined
 ```
