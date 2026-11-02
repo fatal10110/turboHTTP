@@ -77,6 +77,9 @@ Wave run w1102, lane parser-fuzz. One PR.
   `run.sh` replayed the corpus through the SharpFuzz-instrumented DLLs outside libfuzzer-dotnet, which
   aborts with `AccessViolationException` (no coverage shared memory). The libfuzzer driver now skips
   that replay; libFuzzer executes the seed corpus itself before mutating.
+- `fuzz.yml` run 41542544712 at 41d5ba1: all 8 jobs green, 1,000,000 libFuzzer runs per target, 0
+  findings (hpack 32 s, h2-frames 40 s, ws-inflate 47 s, json 55 s, h1-response 84 s, h1-chunked-body
+  109 s, ws-frames 119 s, h2-connection 267 s).
 - Unity PlayMode, `--filter 'ParserFuzzRegression|WebSocketFuzzRegression|JsonFuzzRegression'`: 8/8
   passed (EditMode matches none: the tests live in the runtime test assembly).
 - Not run locally: libFuzzer / SharpFuzz instrumentation (CI only), IL2CPP, devices.
