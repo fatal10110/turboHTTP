@@ -76,3 +76,22 @@ Filtered PlayMode runs only (#206, #221):
 - Filed #255 (CONNECT h2 with BC in the editor is impossible: Mono SslStream has no ALPN).
 
 Not run: full suites (#245/#246), IL2CPP player builds, devices (#99).
+
+## 2026-11-02: after waves run w1101 (main c10b519)
+
+Full suites, Unity 2021.3.45f2, Windows Editor driven from WSL:
+- EditMode: 68 total, 68 passed, 0 failed, 0 skipped.
+- PlayMode: **completed** (the #245/#246 hang is gone): 2159 total, 2145 passed, 14 failed, 0 skipped
+  (within the 0-skip baseline), 64 s.
+  - 9 × `ServerCertificateVerifierTests`: Unity Mono `X509Chain` throws `NotSupportedException` on ECDSA
+    chains and finds no root store (`PartialChain`). Known: #248 (owner decision).
+  - 2 × `SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName`: UnityTls sends
+    `server_name` for IP literals. Recorded on #46.
+  - `ConnectionOptionsTests.DefaultOptions_ShouldReuseDefaultTransport`: fails alone too. Filed #275
+    (re-registration drops the created default transport).
+  - `TransportBootstrapTests` / `JsonBridgeRegistrationTests` bootstrap attribute tests:
+    `AmbiguousMatchException` because `RuntimeInitializeOnLoadMethodAttribute` derives from
+    `PreserveAttribute`. Test bug, filed #276.
+- Closed from this run: #246 (full run completes), #206 (both tests pass in the full run).
+
+Not run: IL2CPP Win64 player (no Windows 10 SDK on the host, see #273), devices (#99).
