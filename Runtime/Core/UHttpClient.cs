@@ -16,6 +16,9 @@ namespace TurboHTTP.Core
         private readonly UHttpClientOptions _options;
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
+        // Snapshot of UHttpClientOptions.DisposeInterceptors (#63): configured interceptors are
+        // disposed by the client only when the caller handed their ownership to it.
+        private readonly bool _ownsInterceptors;
         private readonly IReadOnlyList<IHttpInterceptor> _baseInterceptors;
 
         // Written only under _pluginLock; read lock-free (volatile) by the send paths.
@@ -108,6 +111,7 @@ namespace TurboHTTP.Core
                 throw new ArgumentException(orderViolation, nameof(options));
 
             WarnIfRedirectsAreNotFollowed(_options, _baseInterceptors);
+            _ownsInterceptors = _options.DisposeInterceptors;
 
             if (_options.Transport != null)
             {
@@ -456,6 +460,7 @@ namespace TurboHTTP.Core
             var context = new RequestContext(request);
             context.RecordEvent("RequestStart");
             UHttpStreamingResponse response = null;
+            var contextHandedToResponse = false;
 
             try
             {
@@ -465,7 +470,12 @@ namespace TurboHTTP.Core
                     .ConfigureAwait(false);
 
                 context.RecordEvent("RequestComplete");
-                context.Stop();
+
+                // The body is still in flight: handlers complete when it is disposed and read the
+                // context then (elapsed time, request state). The response stops and clears the
+                // context after its body source has been disposed (#70).
+                response.AttachRequestRelease(context.CompleteAfterResponse);
+                contextHandedToResponse = true;
                 return response;
             }
             catch (UHttpException)
@@ -492,7 +502,8 @@ namespace TurboHTTP.Core
             finally
             {
                 request.EndSend();
-                context.Clear();
+                if (!contextHandedToResponse)
+                    context.Clear();
             }
         }
 
@@ -516,7 +527,8 @@ namespace TurboHTTP.Core
                 SchedulePluginShutdownOnDispose(pluginsToShutdown[i]);
             }
 
-            DisposeConfiguredInterceptors();
+            if (_ownsInterceptors)
+                DisposeConfiguredInterceptors();
 
             if (_ownsTransport)
             {
