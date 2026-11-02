@@ -1,0 +1,7 @@
+<Project>
+  <!-- Keep bin/obj out of the source tree (Tools~/h2-interop) and inside the ignored .build folder. -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../.build/h2-interop/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../../.build/h2-interop/bin/</BaseOutputPath>
+  </PropertyGroup>
+</Project>

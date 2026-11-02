@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    HTTP/2 adversarial-server and interop job (#111). Not a Unity assembly: Tools~ is ignored by Unity.
+    It links the shadow-build DLLs (Tools~/ci/shadow_build.py, editor variant) like Tools~/tls-interop,
+    so it exercises the netstandard2.1 assemblies the analyzers checked, and compiles the scripted-server
+    scenarios straight from Tests/Runtime/Transport/Http2/Adversarial (the same files the NUnit suite runs).
+    Transport grants it InternalsVisibleTo for Http2Connection, Http2FrameCodec and HPACK. Kestrel comes
+    from the ASP.NET Core shared framework. Build output goes to .build/h2-interop. Run it through run.sh.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>TurboHTTP.Tools.H2Interop</RootNamespace>
+    <AssemblyName>TurboHTTP.H2Interop</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepoRoot>
+    <ShadowBin Condition="'$(ShadowBin)' == ''">$(RepoRoot).build/shadow/editor/bin/Debug/netstandard2.1/</ShadowBin>
+    <UnityManaged Condition="'$(UnityManaged)' == ''">$(RepoRoot).tools/unity-managed/$([System.IO.File]::ReadAllText('$(RepoRoot)Tools~/ci/unity-version').Trim())/</UnityManaged>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Reference Include="TurboHTTP.Core" HintPath="$(ShadowBin)TurboHTTP.Core.dll" />
+    <Reference Include="TurboHTTP.Transport" HintPath="$(ShadowBin)TurboHTTP.Transport.dll" />
+    <!-- TurboHTTP.Core links UnityEngine (PlatformInfo/PlatformConfig); the HTTP/2 path never calls into the engine. -->
+    <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="$(RepoRoot)Tests/Runtime/Transport/Http2/Adversarial/*.cs" Link="Adversarial/%(Filename)%(Extension)" />
+    <Compile Include="$(RepoRoot)Tests/Runtime/Transport/Http2/Helpers/TestDuplexStream.cs" Link="Adversarial/TestDuplexStream.cs" />
+    <Compile Include="$(RepoRoot)Tools~/tls-interop/TestPki.cs" Link="TestPki.cs" />
+  </ItemGroup>
+</Project>
