@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Text;
@@ -43,7 +44,9 @@ namespace TurboHTTP.Tests.Core
             var hook = method.GetCustomAttribute<RuntimeInitializeOnLoadMethodAttribute>();
             Assert.That(hook, Is.Not.Null, "[RuntimeInitializeOnLoadMethod] on the JSON registration");
             Assert.That(hook.loadType, Is.EqualTo(RuntimeInitializeLoadType.SubsystemRegistration));
-            Assert.That(method.GetCustomAttribute<PreserveAttribute>(), Is.Not.Null, "[Preserve]");
+            // RuntimeInitializeOnLoadMethodAttribute derives from PreserveAttribute: match the exact type (#276).
+            Assert.That(method.GetCustomAttributes<PreserveAttribute>().Any(a => a.GetType() == typeof(PreserveAttribute)),
+                Is.True, "explicit [Preserve]");
 
             ProjectJsonBridge.Reset();
             Assert.That(ProjectJsonBridge.IsRegistered, Is.False);

@@ -9,13 +9,15 @@ namespace TurboHTTP.Core
     {
         private bool _enablePush = true;
         private int _maxConcurrentStreams = 100;
-        private long _maxResponseBodySize; // 0 = no transport cap (#147)
+        private long _maxResponseBodySize = DefaultMaxResponseBodySize;
         private int _initialWindowSize = 65535; // Http2Constants.DefaultInitialWindowSize
         private int _maxFrameSize = 16384; // Http2Constants.DefaultMaxFrameSize
         private int _maxHeaderListSize = 64 * 1024; // 64 KB default
         private int _maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes;
         private TimeSpan _pingInterval = DefaultPingInterval;
         private TimeSpan _pingTimeout = DefaultPingTimeout;
+        // 0 = no transport cap (#147). IsDefault compares against the same constant (#275).
+        internal const long DefaultMaxResponseBodySize = 0;
         internal static readonly TimeSpan DefaultPingInterval = TimeSpan.FromSeconds(30);
         internal static readonly TimeSpan DefaultPingTimeout = TimeSpan.FromSeconds(10);
         internal int TestPerStreamReceiveBufferBytesOverride { get; set; }
@@ -179,7 +181,7 @@ namespace TurboHTTP.Core
         {
             return _enablePush == true &&
                    _maxConcurrentStreams == 100 &&
-                   _maxResponseBodySize == 100 * 1024 * 1024 &&
+                   _maxResponseBodySize == DefaultMaxResponseBodySize &&
                    _initialWindowSize == 65535 &&
                    _maxFrameSize == 16384 &&
                    _maxHeaderListSize == 64 * 1024 &&
