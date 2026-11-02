@@ -220,6 +220,11 @@ elif [ "$target" != win64-mono ]; then
 fi
 
 if [ "$toolchain" = 1 ]; then
+  # A linker-output failure above is a real regression, not a missing toolchain: report it first.
+  if [ "$fail" != 0 ]; then
+    echo "build-player: FAIL ($target): linker output check failed before the missing native toolchain; see $log"
+    exit 1
+  fi
   echo "TOOLCHAIN_UNAVAILABLE: linker output checked above (fail=$fail); the native IL2CPP compile needs the Windows 10 SDK + MSVC; see $log"
   exit 3
 fi
