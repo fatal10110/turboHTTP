@@ -10,16 +10,23 @@ namespace TurboHTTP.Transport.Tls
     /// store, and returns the built path. A <see cref="PlatformCertificateVerifier"/>.
     /// </summary>
     /// <remarks>
-    /// The bridge uses Security.framework and Foundation only, so a macOS player can reuse it
-    /// (#248). The result buffer is allocated by the bridge and released here exactly once
+    /// The macOS Editor and players run the same evaluation through
+    /// <see cref="MacSecTrustVerifier"/> (Unity does not compile a loose <c>.mm</c> for them) and
+    /// share the result codes and their mapping here (#248). The result buffer is allocated by the bridge and released here exactly once
     /// (<c>TurboHttp_SecTrustFree</c>), on every path. The buffer layout is native-endian
     /// <c>int32 count</c>, then per certificate <c>int32 length</c> and the DER bytes.
     /// Needs device validation (#99).
     /// </remarks>
     internal static class AppleTrustVerifier
     {
-        /// <summary>Bridge result codes; keep in sync with <c>TurboHttpSecTrustVerifier.mm</c>.</summary>
-        internal const int ResultTrusted = 0;
+        /// <summary>
+        /// Bridge result codes; keep in sync with <c>TurboHttpSecTrustVerifier.mm</c> (checked by
+        /// <c>check_repo.py native</c>). Fail-closed convention (#278): 0 means "not set" and is a
+        /// rejection; success is a distinctive non-zero value ("TRST"), so a zeroed or garbage
+        /// return never reads as trusted.
+        /// </summary>
+        internal const int ResultNotSet = 0;
+        internal const int ResultTrusted = 0x54525354;
         internal const int ResultUntrustedRoot = 1;
         internal const int ResultNotTimeValid = 2;
         internal const int ResultInvalid = 3;
@@ -73,24 +80,56 @@ namespace TurboHTTP.Transport.Tls
         }
 #endif
 
+        // SecBase.h codes that SecTrustEvaluateWithError reports in its CFError (OSStatus domain).
+        internal const int ErrSecCertificateExpired = -67818;
+        internal const int ErrSecCertificateNotValidYet = -67819;
+        internal const int ErrSecNotTrusted = -67843;
+
         /// <summary>
         /// Maps a bridge result to a verification result. Reads the path only for
         /// <see cref="ResultTrusted"/>; does not take ownership of <paramref name="pathBuffer"/>.
         /// </summary>
         internal static CertificateVerificationResult FromNative(
             int code, int osStatus, IntPtr pathBuffer, int pathBufferLength)
+            => code == ResultTrusted
+                ? CertificateVerificationResult.Trusted(ReadPath(pathBuffer, pathBufferLength))
+                : Rejection(code, osStatus);
+
+        /// <summary>
+        /// The SecTrustEvaluateWithError error code to a result code, as <c>MapEvaluationError</c>
+        /// in the bridge: validity period, untrusted anchor, anything else (host name, usage,
+        /// constraints, signatures) invalid.
+        /// </summary>
+        internal static int MapEvaluationError(long errorCode)
+        {
+            switch (errorCode)
+            {
+                case ErrSecCertificateExpired:
+                case ErrSecCertificateNotValidYet:
+                    return ResultNotTimeValid;
+                case ErrSecNotTrusted:
+                    return ResultUntrustedRoot;
+                default:
+                    return ResultInvalid;
+            }
+        }
+
+        /// <summary>
+        /// The rejection for a non-success result code. <see cref="ResultNotSet"/>, a stray
+        /// <see cref="ResultTrusted"/> and unknown codes are bridge errors.
+        /// </summary>
+        internal static CertificateVerificationResult Rejection(int code, int osStatus)
         {
             switch (code)
             {
-                case ResultTrusted:
-                    return new CertificateVerificationResult(
-                        CertificateVerificationStatus.Trusted, null, ReadPath(pathBuffer, pathBufferLength));
                 case ResultUntrustedRoot:
                     return Fail(CertificateVerificationStatus.UntrustedRoot, "SecTrust: not trusted", osStatus);
                 case ResultNotTimeValid:
                     return Fail(CertificateVerificationStatus.NotTimeValid, "SecTrust: outside the validity period", osStatus);
                 case ResultInvalid:
                     return Fail(CertificateVerificationStatus.Invalid, "SecTrust: evaluation failed", osStatus);
+                case ResultNotSet:
+                    return Fail(CertificateVerificationStatus.Invalid, "SecTrust bridge returned no result", osStatus);
                 default:
                     return Fail(CertificateVerificationStatus.Invalid, "SecTrust bridge error " + code, osStatus);
             }
@@ -133,6 +172,6 @@ namespace TurboHTTP.Transport.Tls
 
         private static CertificateVerificationResult Fail(
             CertificateVerificationStatus status, string detail, int osStatus)
-            => new CertificateVerificationResult(status, detail + " (OSStatus " + osStatus + ")", null);
+            => CertificateVerificationResult.Rejected(status, detail + " (OSStatus " + osStatus + ")");
     }
 }

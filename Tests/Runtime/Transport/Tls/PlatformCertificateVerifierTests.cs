@@ -50,7 +50,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             PlatformCertificateVerifier bridge, PlatformVerifierLimits limits = null,
             string host = Host, byte[][] chain = null)
             => ServerCertificateVerifier.Verify(chain ?? new[] { Leaf, Intermediate }, host, Now,
-                requiresPlatformVerifier: true, bridge, limits ?? Limits());
+                bridge, limits ?? Limits());
 
         private static PlatformCertificateVerifier Returns(CertificateVerificationStatus status, byte[][] path)
             => (chain, host, time) => new CertificateVerificationResult(status, "bridge detail", path);
@@ -287,6 +287,8 @@ namespace TurboHTTP.Tests.Transport.Tls
         [TestCase(AppleTrustVerifier.ResultInvalid, (int)CertificateVerificationStatus.Invalid)]
         [TestCase(AppleTrustVerifier.ResultBridgeError, (int)CertificateVerificationStatus.Invalid)]
         [TestCase(-1, (int)CertificateVerificationStatus.Invalid)]
+        [TestCase(AppleTrustVerifier.ResultNotSet, (int)CertificateVerificationStatus.Invalid)]
+        [TestCase(1 + AppleTrustVerifier.ResultTrusted, (int)CertificateVerificationStatus.Invalid)]
         public void AppleBridge_ResultCodes_MapToRejections(int code, int expectedValue)
         {
             var expected = (CertificateVerificationStatus)expectedValue;
