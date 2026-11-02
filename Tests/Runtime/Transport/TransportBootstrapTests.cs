@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -48,7 +49,10 @@ namespace TurboHTTP.Tests.Transport
             var hook = Bootstrap.GetCustomAttribute<RuntimeInitializeOnLoadMethodAttribute>();
             Assert.That(hook, Is.Not.Null, "[RuntimeInitializeOnLoadMethod] on the bootstrap");
             Assert.That(hook.loadType, Is.EqualTo(RuntimeInitializeLoadType.SubsystemRegistration));
-            Assert.That(Bootstrap.GetCustomAttribute<PreserveAttribute>(), Is.Not.Null, "[Preserve] on the method");
+            // RuntimeInitializeOnLoadMethodAttribute derives from PreserveAttribute, so match the exact
+            // type: GetCustomAttribute<PreserveAttribute>() would throw AmbiguousMatchException (#276).
+            Assert.That(Bootstrap.GetCustomAttributes<PreserveAttribute>().Any(a => a.GetType() == typeof(PreserveAttribute)),
+                Is.True, "explicit [Preserve] on the method");
             Assert.That(typeof(TurboHttpBootstrap).GetCustomAttribute<PreserveAttribute>(), Is.Not.Null,
                 "[Preserve] on the type");
             Assert.That(typeof(TurboHttpBootstrap).Assembly.GetCustomAttribute<AlwaysLinkAssemblyAttribute>(),
