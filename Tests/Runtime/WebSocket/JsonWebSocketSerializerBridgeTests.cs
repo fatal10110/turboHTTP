@@ -26,6 +26,11 @@ namespace TurboHTTP.Tests.WebSocket
             }
         }
 
+        public sealed class PropertyDto
+        {
+            public string Room { get; set; }
+        }
+
         [Serializable]
         public sealed class Item
         {
@@ -124,6 +129,21 @@ namespace TurboHTTP.Tests.WebSocket
             Assert.That(inbound.room, Is.EqualTo("lobby"));
             Assert.That(inbound.items.Count, Is.EqualTo(1));
             Assert.That(inbound.items[0].id, Is.EqualTo("a"));
+        }
+
+        [Test]
+        public void PropertyOnlyDto_WithJsonUtilitySerializer_FailsInsteadOfSendingEmptyObject()
+        {
+            // The removed mapper read and wrote properties; JsonUtility skips them, so the type is
+            // rejected rather than sent as "{}" or received as defaults.
+            JsonSerializer.SetDefault(JsonUtilitySerializer.Instance);
+            var serializer = new JsonWebSocketSerializer<PropertyDto>();
+
+            var send = Assert.Throws<WebSocketException>(() => serializer.Serialize(new PropertyDto { Room = "r" }));
+            var receive = Assert.Throws<WebSocketException>(() => serializer.Deserialize(Text("{\"Room\":\"r\"}")));
+
+            Assert.That(send.Error, Is.EqualTo(WebSocketError.SerializationFailed));
+            Assert.That(receive.Error, Is.EqualTo(WebSocketError.SerializationFailed));
         }
 
         private static WebSocketMessage Text(string text)

@@ -41,6 +41,28 @@ namespace TurboHTTP.Tests.JSON
             public Inner inner;
         }
 
+        public class PropertyOnlyDto
+        {
+            public int Id { get; set; }
+            public string Name { get; set; }
+        }
+
+        [Serializable]
+        public class PrivateSerializeFieldDto
+        {
+            [UnityEngine.SerializeField]
+            private int value;
+
+            public int Value => value;
+        }
+
+        [Serializable]
+        public struct Point
+        {
+            public int x;
+            public int y;
+        }
+
         [SetUp]
         public void SetUp()
         {
@@ -142,6 +164,36 @@ namespace TurboHTTP.Tests.JSON
         {
             Assert.That(() => JsonUtilitySerializer.Instance.Serialize(new { Name = "Alice" }),
                 Throws.TypeOf<JsonSerializationException>().With.Message.Contains("Anonymous"));
+        }
+
+        [Test]
+        public void PropertyOnlyDto_ThrowsInBothDirections_InsteadOfLosingData()
+        {
+            // JsonUtility writes "{}" and reads an all-defaults instance for this type, silently.
+            Assert.That(() => JsonUtilitySerializer.Instance.Serialize(new PropertyOnlyDto { Id = 1, Name = "a" }),
+                Throws.TypeOf<JsonSerializationException>().With.Message.Contains("properties"));
+            Assert.That(() => JsonUtilitySerializer.Instance.Deserialize<PropertyOnlyDto>("{\"Id\":1}"),
+                Throws.TypeOf<JsonSerializationException>().With.Message.Contains("properties"));
+        }
+
+        [Test]
+        public void PrivateSerializeField_CountsAsSerializable()
+        {
+            var dto = JsonUtilitySerializer.Instance.Deserialize<PrivateSerializeFieldDto>("{\"value\":7}");
+
+            Assert.That(dto.Value, Is.EqualTo(7));
+        }
+
+        [Test]
+        public void NullableStruct_JsonNull_IsNull_AndValueParses()
+        {
+            Assert.That(JsonUtilitySerializer.Instance.Deserialize<Point?>("null"), Is.Null);
+
+            Point? point = JsonUtilitySerializer.Instance.Deserialize<Point?>("{\"x\":1,\"y\":2}");
+
+            Assert.That(point.HasValue, Is.True);
+            Assert.That(point.Value.x, Is.EqualTo(1));
+            Assert.That(point.Value.y, Is.EqualTo(2));
         }
 
         [Test]

@@ -35,7 +35,7 @@ Tests/Runtime/WebSocket/WebSocketSerializationTests.cs, README.md, Documentation
   reference JSON; a new `TurboHTTP.Unity.Json` asmdef would be a new cross-module reference needing an
   architecture-table exception. Complete already references JSON and UnityEngine and holds the bootstrap.
   Consequence: architecture.md's Complete row ("its only code is the TurboHttpBootstrap default
-  registration") is now stale; it is a hot-group file this lane may not edit (recorded in the PR).
+  registration") is now stale; it is a hot-group file this lane may not edit (follow-up #284).
   Projects without Complete (WebGL, or excluded) keep LiteJson and register their own serializer.
 - **Registration keeps user choices.** Install only over the built-in default, so a serializer set
   earlier (editor script, previous Enter-Play-Mode session without domain reload) survives.
@@ -46,6 +46,15 @@ Tests/Runtime/WebSocket/WebSocketSerializationTests.cs, README.md, Documentation
   `SerializationFailed`. The regression test uses a DTO with only a private parameterless
   constructor: the old mapper built it through `Activator.CreateInstance(nonPublic: true)` from the
   dictionary fallback; now the result is `SerializationFailed` with exactly one serializer call.
+- **No silent `{}` (review round 1).** `JsonUtility` writes a type without serializable fields as
+  `{}` and reads it as defaults, without an error. `JsonUtilitySerializer` now rejects such types
+  (no public / `[SerializeField]` / `[SerializeReference]` instance field, walking base types; cached
+  per type in a `ConcurrentDictionary`) with `JsonSerializationException` in both directions, as it
+  already did for anonymous types. Property-only DTOs therefore fail with `SerializationFailed` on the
+  WebSocket path; properties of a type that also has fields are still skipped silently (documented).
+  Breaking versus the removed WebSocket mapper, which read and wrote properties: recorded in
+  CHANGELOG `### Breaking`. A JSON `null` for `Nullable<struct>` now returns null, and a non-null
+  value deserializes into the underlying struct.
 - **Threading.** Unity documents `JsonUtility.ToJson/FromJson` as callable from background threads;
   `Deserialize_OffTheMainThread_Works` exercises it through `Task.Run` in the Editor.
 

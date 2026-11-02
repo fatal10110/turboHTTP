@@ -15,10 +15,13 @@ namespace TurboHTTP.WebSocket
     /// registered serializer supports. With the default <c>JsonUtilitySerializer</c> that is a
     /// <c>[Serializable]</c> class with public fields (nested <c>[Serializable]</c> types, arrays and
     /// <c>List&lt;T&gt;</c> fields; no properties or dictionary fields) or
-    /// <c>Dictionary&lt;string, object&gt;</c>. Types the serializer cannot map, such as DTOs with
-    /// auto-properties under <c>JsonUtility</c>, fail with
-    /// <see cref="WebSocketError.SerializationFailed"/>; register a full serializer with
-    /// <c>JsonSerializer.SetDefault</c> for them.
+    /// <c>Dictionary&lt;string, object&gt;</c>. Types the serializer rejects fail with
+    /// <see cref="WebSocketError.SerializationFailed"/>: with <c>JsonUtilitySerializer</c> that is an
+    /// anonymous type or a type without any serializable field (a DTO with only auto-properties).
+    /// Properties of a type that also has public fields are skipped without an error (not sent, left
+    /// at their defaults on receive). The reflection mapper this type used before read and wrote
+    /// properties; property DTOs need public fields now, or a full serializer registered with
+    /// <c>JsonSerializer.SetDefault</c>.
     /// </para>
     /// <para>
     /// Failures of either direction are thrown as <see cref="WebSocketException"/> with

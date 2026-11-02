@@ -1,8 +1,10 @@
 using System;
 using System.Buffers;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 using TurboHTTP.JSON.Lite;
 using UnityEngine;
@@ -23,8 +25,11 @@ namespace TurboHTTP.JSON
     /// <b>Supported shapes.</b> Custom types follow <see cref="JsonUtility"/> rules: public fields (or
     /// <c>[SerializeField]</c> private fields) of <c>[Serializable]</c> classes and structs, nested
     /// <c>[Serializable]</c> types, arrays and <c>List&lt;T&gt;</c> fields. Properties, dictionary
-    /// fields, polymorphic fields and anonymous types are not serialized by <see cref="JsonUtility"/>;
-    /// anonymous types throw <see cref="JsonSerializationException"/> instead of producing <c>{}</c>.
+    /// fields, polymorphic fields and anonymous types are not serialized by <see cref="JsonUtility"/>.
+    /// Anonymous types and types without a serializable field (for example DTOs with only
+    /// auto-properties) throw <see cref="JsonSerializationException"/> in both directions instead of
+    /// producing <c>{}</c> or an all-defaults instance; properties of a type that also has
+    /// serializable fields are skipped without an error.
     /// For those, use <c>Dictionary&lt;string, object&gt;</c> or register a full serializer (for
     /// example a Newtonsoft adapter) with <see cref="JsonSerializer.SetDefault"/>.
     /// </para>
@@ -188,6 +193,7 @@ namespace TurboHTTP.JSON
                     + "JsonSerializer.SetDefault.");
             }
 
+            EnsureHasSerializableFields(type);
             return JsonUtility.ToJson(value);
         }
 
@@ -249,14 +255,17 @@ namespace TurboHTTP.JSON
                     + "serializer with JsonSerializer.SetDefault.");
             }
 
+            Type nullableUnderlying = Nullable.GetUnderlyingType(type);
             if (IsJsonNull(json))
             {
-                if (!type.IsValueType)
+                if (!type.IsValueType || nullableUnderlying != null)
                     return null;
                 throw new JsonSerializationException($"Cannot convert null to value type '{type.Name}'");
             }
 
-            return JsonUtility.FromJson(json, type);
+            Type target = nullableUnderlying ?? type;
+            EnsureHasSerializableFields(target);
+            return JsonUtility.FromJson(json, target);
         }
 
         private static Array DeserializeArray(string json, Type elementType, int depth)
@@ -321,6 +330,47 @@ namespace TurboHTTP.JSON
         {
             return type.Name.StartsWith("<>", StringComparison.Ordinal)
                 && type.Name.Contains("AnonymousType");
+        }
+
+        /// <summary>
+        /// <see cref="JsonUtility"/> writes a type without serializable fields as <c>{}</c> and reads
+        /// it back as defaults, without an error. That is almost always a DTO with auto-properties,
+        /// so such a type is rejected instead of losing data silently.
+        /// </summary>
+        private static void EnsureHasSerializableFields(Type type)
+        {
+            if (FieldCheckCache.GetOrAdd(type, HasSerializableFieldsFactory))
+                return;
+
+            throw new JsonSerializationException(
+                $"Type '{type.Name}' has no field JsonUtility can serialize (properties are not serialized). "
+                + "Use public fields (or [SerializeField] private fields), a Dictionary<string, object>, or "
+                + "register a serializer with JsonSerializer.SetDefault.");
+        }
+
+        private static readonly ConcurrentDictionary<Type, bool> FieldCheckCache =
+            new ConcurrentDictionary<Type, bool>();
+
+        private static readonly Func<Type, bool> HasSerializableFieldsFactory = HasSerializableFields;
+
+        private static bool HasSerializableFields(Type type)
+        {
+            const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.DeclaredOnly;
+            for (Type current = type; current != null && current != typeof(object); current = current.BaseType)
+            {
+                foreach (FieldInfo field in current.GetFields(Flags))
+                {
+                    if (field.IsInitOnly || field.IsNotSerialized)
+                        continue;
+                    if (field.IsPublic
+                        || field.IsDefined(typeof(SerializeField), false)
+                        || field.IsDefined(typeof(SerializeReference), false))
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private static bool IsJsonNull(string json)
