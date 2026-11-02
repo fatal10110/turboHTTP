@@ -18,6 +18,8 @@ MemoryCaptures/
 !Tools~/autobahn/*.csproj
 # The TLS interop job (Tools~/tls-interop, #230) is a committed plain .NET project.
 !Tools~/tls-interop/*.csproj
+# The parser fuzz harness (Tools~/fuzz, #112) is a committed plain .NET project.
+!Tools~/fuzz/*.csproj
 *.sln
 *.suo
 *.user
