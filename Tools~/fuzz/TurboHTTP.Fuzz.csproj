@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Parser fuzz harness (#112). Not a Unity assembly: Tools~ is ignored by Unity. It links the
+    shadow-build DLLs (Tools~/ci/shadow_build.py) so it exercises the netstandard2.1 assemblies the
+    analyzers checked. The assembly name matches the InternalsVisibleTo grant in
+    Runtime/Transport/AssemblyInfo.cs. Run it through Tools~/fuzz/run.sh (README.md).
+
+    Two drivers:
+      default             the built-in seeded mutation loop (no coverage guidance, no extra packages)
+      -p:FuzzDriver=libfuzzer  SharpFuzz + libfuzzer-dotnet, coverage guided; run.sh instruments a
+                          copy of the TurboHTTP DLLs in the build output, never .build/shadow itself.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>TurboHTTP.Fuzz</AssemblyName>
+    <RootNamespace>TurboHTTP.Tools.Fuzz</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepoRoot>
+    <ShadowBin Condition="'$(ShadowBin)' == ''">$(RepoRoot).build/shadow/editor/bin/Debug/netstandard2.1/</ShadowBin>
+    <UnityManaged Condition="'$(UnityManaged)' == ''">$(RepoRoot).tools/unity-managed/$([System.IO.File]::ReadAllText('$(RepoRoot)Tools~/ci/unity-version').Trim())/</UnityManaged>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(FuzzDriver)' == 'libfuzzer'">
+    <DefineConstants>$(DefineConstants);TURBOHTTP_LIBFUZZER</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(FuzzDriver)' == 'libfuzzer'">
+    <PackageReference Include="SharpFuzz" Version="2.3.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="TurboHTTP.Core" HintPath="$(ShadowBin)TurboHTTP.Core.dll" />
+    <Reference Include="TurboHTTP.Transport" HintPath="$(ShadowBin)TurboHTTP.Transport.dll" />
+    <Reference Include="TurboHTTP.WebSocket" HintPath="$(ShadowBin)TurboHTTP.WebSocket.dll" />
+    <Reference Include="TurboHTTP.JSON" HintPath="$(ShadowBin)TurboHTTP.JSON.dll" />
+    <!-- TurboHTTP.Core links UnityEngine (PlatformInfo/PlatformConfig); no fuzz target calls it. -->
+    <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
+  </ItemGroup>
+</Project>
