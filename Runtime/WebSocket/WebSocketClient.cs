@@ -271,23 +271,15 @@ namespace TurboHTTP.WebSocket
         {
             ThrowIfDisposed();
 
+            // Closed is not an error by itself (#217): messages received before the peer's close frame
+            // stay readable; the queue the listener completes after them then reports ConnectionClosed.
             var state = State;
-            if (state == WebSocketState.Closed)
-            {
-                var connection = Volatile.Read(ref _connection);
-                var closeStatus = connection?.CloseStatus;
-                throw new WebSocketException(
-                    WebSocketError.ConnectionClosed,
-                    "WebSocket connection is closed.",
-                    null,
-                    closeStatus?.Code,
-                    closeStatus?.Reason);
-            }
-
-            if (state != WebSocketState.Open && state != WebSocketState.Closing)
+            if (state != WebSocketState.Open &&
+                state != WebSocketState.Closing &&
+                state != WebSocketState.Closed)
             {
                 throw new InvalidOperationException(
-                    "ReceiveAsync requires Open or Closing state. Current state: " + state + ".");
+                    "ReceiveAsync requires Open, Closing, or Closed state. Current state: " + state + ".");
             }
 
             if (!fromAsyncEnumerable && Volatile.Read(ref _receiveAllInProgress) != 0)
@@ -520,18 +512,17 @@ namespace TurboHTTP.WebSocket
             if (state != WebSocketState.Closed)
                 return;
 
-            // #208: only the current connection completes the current queue and raises OnClosed. A
-            // replaced connection's late event (already dispatched when it was unsubscribed) is stale.
-            BoundedAsyncQueue<WebSocketMessage> queue;
+            // #208: only the current connection raises OnClosed. A replaced connection's late event
+            // (already dispatched when it was unsubscribed) is stale.
             lock (_sync)
             {
                 if (!ReferenceEquals(_connection, connection))
                     return;
-
-                queue = _messageQueue;
             }
 
-            queue?.Complete(connection.TerminalError);
+            // The queue is not completed here (#217): the listener may still hold a message it took from
+            // the connection ahead of the close. It completes the queue itself once the connection's
+            // drained queue reports the close.
             RaiseClosedFromConnection(connection);
         }
 

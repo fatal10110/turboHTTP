@@ -14,6 +14,8 @@ MemoryCaptures/
 
 # Visual Studio / Rider / Unity
 *.csproj
+# The Autobahn interop harness (Tools~/autobahn, #217) is a committed plain .NET project.
+!Tools~/autobahn/*.csproj
 *.sln
 *.suo
 *.user

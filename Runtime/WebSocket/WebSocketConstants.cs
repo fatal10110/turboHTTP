@@ -9,7 +9,10 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public static class WebSocketConstants
     {
-        public const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-5AB53DC52D51";
+        /// <summary>
+        /// GUID appended to Sec-WebSocket-Key to derive Sec-WebSocket-Accept (RFC 6455 Section 1.3, 4.2.2).
+        /// </summary>
+        public const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         public const int SupportedVersion = 13;
 
         public const int DefaultMaxMessageSize = 4 * 1024 * 1024;
