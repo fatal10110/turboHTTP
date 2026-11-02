@@ -12,8 +12,8 @@ First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); t
 
 ### Modules
 Assemblies shipped in this package: `TurboHTTP.Core`, `TurboHTTP.Transport` (raw-socket HTTP/1.1 and
-HTTP/2 over `SslStream`), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback, compiled with the
-`TURBOHTTP_BOUNCYCASTLE` scripting symbol), `TurboHTTP.Middleware` (redirect, cookie, decompression and
+HTTP/2 over `SslStream`), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol`
+library, compiled with the `TURBOHTTP_BOUNCYCASTLE` scripting symbol), `TurboHTTP.Middleware` (redirect, cookie, decompression and
 default-header interceptors), `TurboHTTP.Auth` (OAuth 2.0, OIDC, PKCE), `TurboHTTP.Retry`,
 `TurboHTTP.Cache`, `TurboHTTP.RateLimit`, `TurboHTTP.Observability`, `TurboHTTP.Files`, `TurboHTTP.JSON`
 (with a built-in LiteJson reader/writer), `TurboHTTP.Testing` (`MockTransport`, `RecordReplayTransport`),
