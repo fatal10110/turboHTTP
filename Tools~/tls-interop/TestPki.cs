@@ -10,7 +10,8 @@ namespace TurboHTTP.Tools.TlsInterop
     /// The interop job's throwaway PKI, generated per run with <see cref="CertificateRequest"/> (the job runs
     /// on .NET 8, not Unity Mono): a root, an intermediate, a rogue root and one PEM leaf per case, all leaves
     /// sharing one RSA 2048 key (<c>leaf.key</c>). Only <c>root.pem</c> becomes trusted, through
-    /// <c>SSL_CERT_FILE</c> in the run phase, so the production verifier code path is unchanged.
+    /// <c>SSL_CERT_FILE</c> in the run phase, so the SslStream verifier code path is unchanged; BouncyCastle
+    /// gets it as a test trust anchor (Program, #248: no platform verifier on Linux).
     /// </summary>
     internal static class TestPki
     {

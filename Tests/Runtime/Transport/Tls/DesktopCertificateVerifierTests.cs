@@ -102,6 +102,32 @@ namespace TurboHTTP.Tests.Transport.Tls
             }
         }
 
+        // A Windows/macOS build that runs on another OS (the CI shadow build compiles the Editor
+        // variant with UNITY_EDITOR_OSX and runs it on Linux) must not select crypt32/SecTrust.
+        [TestCase((int)VerifierPlatform.MacOS, (int)VerifierPlatform.Linux, (int)VerifierPlatform.Linux)]
+        [TestCase((int)VerifierPlatform.Windows, (int)VerifierPlatform.Linux, (int)VerifierPlatform.Linux)]
+        [TestCase((int)VerifierPlatform.MacOS, (int)VerifierPlatform.Windows, (int)VerifierPlatform.Other)]
+        [TestCase((int)VerifierPlatform.Windows, (int)VerifierPlatform.MacOS, (int)VerifierPlatform.Other)]
+        [TestCase((int)VerifierPlatform.Windows, (int)VerifierPlatform.Other, (int)VerifierPlatform.Other)]
+        [TestCase((int)VerifierPlatform.Windows, (int)VerifierPlatform.Windows, (int)VerifierPlatform.Windows)]
+        [TestCase((int)VerifierPlatform.MacOS, (int)VerifierPlatform.MacOS, (int)VerifierPlatform.MacOS)]
+        [TestCase((int)VerifierPlatform.Linux, (int)VerifierPlatform.Windows, (int)VerifierPlatform.Linux)]
+        [TestCase((int)VerifierPlatform.Other, (int)VerifierPlatform.MacOS, (int)VerifierPlatform.Other)]
+        public void ResolvePlatform_ConfirmsTheDesktopOsAtRunTime(int compiled, int runtime, int expected)
+        {
+            Assert.AreEqual((VerifierPlatform)expected,
+                ServerCertificateVerifier.ResolvePlatform((VerifierPlatform)compiled, (VerifierPlatform)runtime));
+        }
+
+        [Test]
+        public void CurrentPlatform_NeverNamesADesktopOsOtherThanTheHost()
+        {
+            var current = ServerCertificateVerifier.CurrentPlatform;
+            if (current == VerifierPlatform.Windows || current == VerifierPlatform.MacOS)
+                Assert.AreEqual(ServerCertificateVerifier.DetectRuntimePlatform(), current,
+                    "the selected native verifier must belong to the OS the process runs on");
+        }
+
         [Test]
         public void DesktopVerifier_AppliesThePlatformHostPolicy()
         {

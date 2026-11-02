@@ -8,8 +8,9 @@
 # Rows: BouncyCastle handshakes pinned to 0xC030 (TLS 1.2) and 0x1302 (TLS 1.3) plus one HTTP/1.1
 # request through BouncyCastleTlsStream; the negative certificate suite and a TLS 1.1 server for the
 # SslStream, BouncyCastle and Auto backends, with positive controls. The per-run test root is trusted
-# only through SSL_CERT_FILE/SSL_CERT_DIR (the system roots are not), so the platform verifier runs
-# unchanged. Needs dotnet (SDK 8), OpenSSL 3 and the Unity managed DLLs the shadow build uses
+# only through SSL_CERT_FILE/SSL_CERT_DIR (the system roots are not), so the SslStream verifier runs
+# unchanged; BouncyCastle has no platform verifier on Linux (#248), so the harness also registers the
+# root as a test trust anchor and checks the production rejection in one row. Needs dotnet (SDK 8), OpenSSL 3 and the Unity managed DLLs the shadow build uses
 # (Tools~/ci/fetch-unity-dlls.sh, or UNITY_DLLS / UNITY_PATH). Output lands in .build/tls-interop/run.
 # Exit 0 = every row passed; 1 = a row or a precondition failed (never a skip); 2 = usage; 3 = tool missing.
 set -euo pipefail

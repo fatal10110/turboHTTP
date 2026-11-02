@@ -82,11 +82,21 @@ Now:
 - `Development/docs/agents/platform.md` and `project-status.md` still describe the X509Chain desktop
   path. Lanes may not edit them (hot files), so they are left for the next claude-md lane.
 
+- **The desktop OS is confirmed at run time** (CI round 1). The CI shadow build compiles the Editor
+  variant with `UNITY_EDITOR_OSX` and the TLS interop job runs it on Linux, where SecTrust threw
+  `DllNotFoundException`. `ServerCertificateVerifier.ResolvePlatform` keeps a Windows/macOS define only
+  when `RuntimeInformation` names the same OS; otherwise it resolves to Linux (on Linux) or Other, both
+  of which install no verifier and fail closed. The interop harness (`Tools~/tls-interop`, internals
+  access through `InternalsVisibleTo("TurboHTTP.TlsInterop")`) registers its per-run root as a test
+  trust anchor for the BouncyCastle rows, and the new `bouncycastle/linux-unsupported` row checks that
+  production BouncyCastle on Linux rejects a valid chain with the Linux-unsupported detail.
+
 ## Deferred
 - #286: macOS host editor and macOS player validation (needs-device-validation).
 - #249 (bc-csharp strip work, not this lane): after merge, the bc-csharp roots need `refresh_roots.py` again.
 
 ## Verification
 - `./Tools~/ci/check.sh`: pass.
+- `./Tools~/tls-interop/run.sh` (WSL Linux, OpenSSL 3): 43/43 rows pass.
 - Unity PlayMode on the Windows host (2021.3.45f2, Mono), filtered: see the PR "Local gates" section.
 - Not run: macOS (no Mac, #286), Linux Editor, IL2CPP players, iOS/Android devices (#99).

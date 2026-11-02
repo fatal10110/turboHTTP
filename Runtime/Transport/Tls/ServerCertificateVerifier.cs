@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
@@ -138,38 +139,86 @@ namespace TurboHTTP.Transport.Tls
         // Copy-on-write snapshot: written under TestAnchorLock, read lock-free with Volatile.
         private static byte[][] s_testTrustAnchors = Array.Empty<byte[]>();
 
-        // Set once (Interlocked), read with Volatile. iOS, Windows and macOS install their verifier
-        // here; Android's is registered by the BouncyCastle glue (engine-referencing, JNI). The
-        // Editor defines the build target's UNITY_IOS/UNITY_STANDALONE_* too, so the Editor cases
-        // test UNITY_EDITOR_* first.
-        private static PlatformCertificateVerifier s_platformVerifier =
+        // The OS family the Unity defines name. The Editor defines the build target's
+        // UNITY_IOS/UNITY_STANDALONE_* too, so the Editor cases test UNITY_EDITOR_* first.
+        private const VerifierPlatform CompiledPlatform =
 #if UNITY_IOS && !UNITY_EDITOR
-            AppleTrustVerifier.Verify;
+            VerifierPlatform.Other;
 #elif UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
-            WindowsCertificateVerifier.Verify;
+            VerifierPlatform.Windows;
 #elif UNITY_EDITOR_OSX || (UNITY_STANDALONE_OSX && !UNITY_EDITOR)
-            MacSecTrustVerifier.Verify;
+            VerifierPlatform.MacOS;
+#elif UNITY_EDITOR_LINUX || (UNITY_STANDALONE_LINUX && !UNITY_EDITOR)
+            VerifierPlatform.Linux;
 #else
-            null;
+            VerifierPlatform.Other;
 #endif
 
-        /// <summary>The OS family this build verifies on.</summary>
-        internal static VerifierPlatform CurrentPlatform
+        // Declared before s_platformVerifier: static initializers run in textual order.
+        private static readonly VerifierPlatform s_currentPlatform =
+            CompiledPlatform == VerifierPlatform.Windows || CompiledPlatform == VerifierPlatform.MacOS
+                ? ResolvePlatform(CompiledPlatform, DetectRuntimePlatform())
+                : CompiledPlatform;
+
+        // Set once (Interlocked), read with Volatile. iOS, Windows and macOS install their verifier
+        // here; Android's is registered by the BouncyCastle glue (engine-referencing, JNI).
+        private static PlatformCertificateVerifier s_platformVerifier = DefaultPlatformVerifier(s_currentPlatform);
+
+        /// <summary>
+        /// The OS family this process verifies on: the one the Unity defines name, confirmed at run
+        /// time for the desktop verifiers (see <see cref="ResolvePlatform"/>).
+        /// </summary>
+        internal static VerifierPlatform CurrentPlatform => s_currentPlatform;
+
+        /// <summary>
+        /// Confirms a desktop OS the defines name against the OS the process runs on. A Windows or
+        /// macOS build running elsewhere (a build made with another OS's defines, such as a CI
+        /// shadow build) must not call crypt32 or SecTrust: it resolves to <see cref="VerifierPlatform.Linux"/>
+        /// on Linux and to <see cref="VerifierPlatform.Other"/> otherwise, both of which install no
+        /// verifier and reject every production chain. Other compiled platforms pass through.
+        /// </summary>
+        internal static VerifierPlatform ResolvePlatform(VerifierPlatform compiled, VerifierPlatform runtime)
         {
-            get
+            if (compiled != VerifierPlatform.Windows && compiled != VerifierPlatform.MacOS)
+                return compiled;
+            if (runtime == compiled)
+                return compiled;
+            return runtime == VerifierPlatform.Linux ? VerifierPlatform.Linux : VerifierPlatform.Other;
+        }
+
+        /// <summary>The desktop OS family the process runs on, or <see cref="VerifierPlatform.Other"/>.</summary>
+        internal static VerifierPlatform DetectRuntimePlatform()
+        {
+            try
             {
-#if UNITY_IOS && !UNITY_EDITOR
-                return VerifierPlatform.Other;
-#elif UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
-                return VerifierPlatform.Windows;
-#elif UNITY_EDITOR_OSX || (UNITY_STANDALONE_OSX && !UNITY_EDITOR)
-                return VerifierPlatform.MacOS;
-#elif UNITY_EDITOR_LINUX || (UNITY_STANDALONE_LINUX && !UNITY_EDITOR)
-                return VerifierPlatform.Linux;
-#else
-                return VerifierPlatform.Other;
-#endif
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    return VerifierPlatform.Windows;
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                    return VerifierPlatform.MacOS;
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                    return VerifierPlatform.Linux;
             }
+            catch (PlatformNotSupportedException)
+            {
+                // Unknown OS: no desktop verifier (fail closed).
+            }
+
+            return VerifierPlatform.Other;
+        }
+
+        private static PlatformCertificateVerifier DefaultPlatformVerifier(VerifierPlatform platform)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            _ = platform;
+            return AppleTrustVerifier.Verify;
+#elif UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
+            return platform == VerifierPlatform.Windows ? WindowsCertificateVerifier.Verify : (PlatformCertificateVerifier)null;
+#elif UNITY_EDITOR_OSX || (UNITY_STANDALONE_OSX && !UNITY_EDITOR)
+            return platform == VerifierPlatform.MacOS ? MacSecTrustVerifier.Verify : (PlatformCertificateVerifier)null;
+#else
+            _ = platform;
+            return null;
+#endif
         }
 
         /// <summary>
