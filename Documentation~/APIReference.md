@@ -160,7 +160,7 @@ Background networking and adaptive timeouts are not options properties: they liv
 
 ### JSON Extensions
 
-`TurboHTTP.JSON`. Without a custom serializer registered through `JsonSerializer.SetDefault(...)`, the module uses its bundled serializer.
+`TurboHTTP.JSON`. `MyDto` stands for a `[Serializable]` class with public fields (see [JSON serializers](#json-serializers)).
 
 <!-- snippet: with UHttpClient client = null; UHttpResponse response = null; string url = ""; -->
 ```csharp
@@ -180,6 +180,40 @@ MyDto updated = await client.PutJsonAsync<MyDto, MyDto>(url, data);
 
 // Build a request body
 using var response2 = await client.Post(url).WithJsonBody(data).SendBufferedAsync();
+```
+
+### JSON serializers
+
+Every JSON helper (`AsJson<T>`, `TryAsJson`, `WithJsonBody`, `GetJsonAsync`/`PostJsonAsync`/..., the mocks,
+`GetJsonCoroutine<T>`, `JsonWebSocketSerializer<T>`) goes through `JsonSerializer.Default`:
+
+- **At startup** (TurboHTTP.Complete's bootstrap, every platform except WebGL) the default is
+  `JsonUtilitySerializer`, backed by Unity's `JsonUtility`. Custom types follow `JsonUtility` rules:
+  `[Serializable]` classes or structs with public (or `[SerializeField]`) fields, nested `[Serializable]`
+  types, arrays and `List<T>` fields. Properties, dictionary fields, polymorphic fields and anonymous
+  types are not serialized (anonymous types throw `JsonSerializationException`).
+  `object`, `Dictionary<string, object>`, `List<object>` and primitives are handled by the built-in
+  `LiteJsonSerializer`; a top-level JSON array reads into `T[]` (`GetJsonAsync<Post[]>`), while a
+  top-level `List<T>` or `Dictionary<string, T>` of a custom type is not supported: use `T[]` or a wrapper class.
+- **Without TurboHTTP.Complete** (or after `JsonSerializer.ResetToDefault()`) the default is
+  `LiteJsonSerializer`, which has no engine dependency and reads only `object`, `Dictionary<string, object>`,
+  `List<object>` and primitives; call `JsonModuleRegistration.EnsureRegistered()` and set a serializer for
+  custom types yourself.
+- **Your own serializer** (for example a Newtonsoft.Json adapter implementing `IJsonSerializer`) replaces
+  either: call `JsonSerializer.SetDefault(...)` at startup. The bootstrap installs `JsonUtilitySerializer`
+  only while the default is still the built-in one, so a serializer you set first is kept.
+
+Under IL2CPP with managed stripping, keep DTOs that are only reached by name with `[Preserve]`.
+
+<!-- snippet: skip needs a project serializer type -->
+```csharp
+using TurboHTTP.JSON;
+
+// Before the first request, e.g. from [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]:
+JsonSerializer.SetDefault(new MyNewtonsoftSerializer());
+
+// Back to the startup default (code referencing TurboHTTP.Complete):
+JsonSerializer.SetDefault(JsonUtilitySerializer.Instance);
 ```
 
 ### Unity Extensions

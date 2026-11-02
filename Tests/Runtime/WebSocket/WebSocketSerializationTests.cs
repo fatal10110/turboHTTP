@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TurboHTTP.JSON;
 using TurboHTTP.WebSocket;
 
 namespace TurboHTTP.Tests.WebSocket
@@ -10,6 +11,24 @@ namespace TurboHTTP.Tests.WebSocket
     [TestFixture]
     public sealed class WebSocketSerializationTests
     {
+        private IJsonSerializer _previousJson;
+
+        [SetUp]
+        public void SetUp()
+        {
+            // The JSON tests use the serializer the startup bootstrap installs; set it explicitly so
+            // a test that reset JsonSerializer earlier in the run does not change the outcome.
+            _previousJson = JsonSerializer.Default;
+            JsonSerializer.SetDefault(JsonUtilitySerializer.Instance);
+            JsonModuleRegistration.EnsureRegistered();
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            JsonSerializer.Default = _previousJson;
+        }
+
         [Test]
         public void JsonSerializer_RoundTrip_WorksForComplexObject()
         {
@@ -25,19 +44,19 @@ namespace TurboHTTP.Tests.WebSocket
                 var serializer = new JsonWebSocketSerializer<ChatEnvelope>();
                 var outbound = new ChatEnvelope
                 {
-                    Room = "lobby",
-                    User = "alice",
-                    Sequence = 42,
-                    Tags = new List<string> { "a", "b", "c" }
+                    room = "lobby",
+                    user = "alice",
+                    sequence = 42,
+                    tags = new List<string> { "a", "b", "c" }
                 };
 
                 await client.SendAsync(outbound, serializer, CancellationToken.None).ConfigureAwait(false);
                 var inbound = await client.ReceiveAsync(serializer, CancellationToken.None).ConfigureAwait(false);
 
-                Assert.AreEqual(outbound.Room, inbound.Room);
-                Assert.AreEqual(outbound.User, inbound.User);
-                Assert.AreEqual(outbound.Sequence, inbound.Sequence);
-                CollectionAssert.AreEqual(outbound.Tags, inbound.Tags);
+                Assert.AreEqual(outbound.room, inbound.room);
+                Assert.AreEqual(outbound.user, inbound.user);
+                Assert.AreEqual(outbound.sequence, inbound.sequence);
+                CollectionAssert.AreEqual(outbound.tags, inbound.tags);
             });
         }
 
@@ -123,12 +142,14 @@ namespace TurboHTTP.Tests.WebSocket
             };
         }
 
-        private sealed class ChatEnvelope
+        // JsonUtility shape: [Serializable] with public fields (#192: no reflection mapper).
+        [Serializable]
+        public sealed class ChatEnvelope
         {
-            public string Room { get; set; }
-            public string User { get; set; }
-            public int Sequence { get; set; }
-            public List<string> Tags { get; set; }
+            public string room;
+            public string user;
+            public int sequence;
+            public List<string> tags;
         }
     }
 }

@@ -11,9 +11,12 @@ namespace TurboHTTP.JSON.Lite
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Limitations:</b> This serializer works with primitives, dictionaries, 
+    /// <b>Limitations:</b> This serializer works with primitives, dictionaries,
     /// and lists. Custom types must be converted to/from Dictionary&lt;string, object&gt;
-    /// manually, or use a full-featured serializer like Newtonsoft.
+    /// manually, or handled by another serializer: TurboHTTP.Complete installs the
+    /// <c>JsonUtility</c>-backed <c>JsonUtilitySerializer</c> at startup (which delegates these
+    /// built-in shapes to this class), or register your own with
+    /// <see cref="JsonSerializer.SetDefault"/>.
     /// </para>
     /// </remarks>
     public sealed class LiteJsonSerializer : IJsonSerializer
@@ -28,7 +31,7 @@ namespace TurboHTTP.JSON.Lite
         /// </summary>
         /// <remarks>
         /// Supported types: primitives, strings, DateTime, Guid, enums,
-        /// arrays, lists, and dictionaries. Custom types throw an exception.
+        /// arrays, lists, and dictionaries. Custom types throw <see cref="JsonSerializationException"/>.
         /// </remarks>
         public string Serialize<T>(T value)
         {
@@ -64,7 +67,7 @@ namespace TurboHTTP.JSON.Lite
         /// To deserialize to custom types, either:
         /// <list type="bullet">
         /// <item>Manually convert the returned dictionary</item>
-        /// <item>Use a full-featured serializer like Newtonsoft</item>
+        /// <item>Use another serializer (<c>JsonUtilitySerializer</c>, or your own via <see cref="JsonSerializer.SetDefault"/>)</item>
         /// </list>
         /// </para>
         /// </remarks>

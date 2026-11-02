@@ -71,9 +71,13 @@ namespace TurboHTTP
         /// <summary>
         /// Registers TurboHTTP.JSON with <see cref="ProjectJsonBridge"/>, so OAuth token parsing, the
         /// mocks, <c>GetJsonCoroutine&lt;T&gt;</c> and WebSocket JSON messages reach JSON through
-        /// registration instead of a by-name type lookup that managed stripping can break. Same hooks
-        /// as <see cref="RegisterDefaultTransports"/>; projects that exclude this assembly call
-        /// <see cref="JsonModuleRegistration.EnsureRegistered"/> at startup instead.
+        /// registration instead of a by-name type lookup that managed stripping can break, and
+        /// installs <see cref="JsonUtilitySerializer"/> as <see cref="JsonSerializer.Default"/> unless
+        /// the project registered its own serializer first (so <c>AsJson&lt;T&gt;()</c> works for
+        /// <c>[Serializable]</c> classes out of the box). Same hooks as
+        /// <see cref="RegisterDefaultTransports"/>; projects that exclude this assembly call
+        /// <see cref="JsonModuleRegistration.EnsureRegistered"/> at startup instead and register a
+        /// serializer for custom types with <see cref="JsonSerializer.SetDefault"/>.
         /// </summary>
         [Preserve]
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
@@ -83,6 +87,7 @@ namespace TurboHTTP
         internal static void RegisterJsonBridge()
         {
             JsonModuleRegistration.EnsureRegistered();
+            JsonUtilitySerializer.RegisterAsDefaultIfBuiltIn();
         }
     }
 }

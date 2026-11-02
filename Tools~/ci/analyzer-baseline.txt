@@ -51,12 +51,3 @@ RS0030|Runtime/Unity.WebSocket/UnityWebSocketBridge.cs|var message = receiveTask
 RS0030|Runtime/Unity/CoroutineWrapper.cs|() => jsonTask.Result,
 RS0030|Runtime/Unity/CoroutineWrapper.cs|() => task.Result,
 RS0030|Runtime/Unity/CoroutineWrapper.cs|var genericMethod = getJsonMethod.MakeGenericMethod(typeof(T));
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|Type dictionaryType = typeof(Dictionary<,>).MakeGenericType(typeof(string), valueType);
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|Type fallbackType = typeof(Dictionary<,>).MakeGenericType(typeof(string), valueType);
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|Type fallbackType = typeof(List<>).MakeGenericType(elementType);
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|Type listType = typeof(List<>).MakeGenericType(elementType);
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|return (IDictionary)Activator.CreateInstance(dictionaryType);
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|return (IDictionary)Activator.CreateInstance(fallbackType);
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|return (IList)Activator.CreateInstance(fallbackType);
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|return (IList)Activator.CreateInstance(listType);
-RS0030|Runtime/WebSocket/JsonWebSocketSerializer.cs|return Activator.CreateInstance(nonNullableType);

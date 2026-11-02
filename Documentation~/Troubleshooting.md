@@ -30,10 +30,11 @@ Common issues and solutions for TurboHTTP.
 **Symptom:** Exception when calling `.AsJson<T>()`.
 
 **Solutions:**
-1.  **Public Properties:** Ideally use properties (`{ get; set; }`) for your DTOs.
-2.  **Attributes:** Use `[Serializable]` or `[JsonPropertyName]` if keys don't match.
-3.  **Structure:** Verify the JSON response matches your class structure.
-4.  **IL2CPP:** Ensure your DTO class isn't being stripped (see [Platform Notes](PlatformNotes.md)).
+1.  **DTO shape:** The default serializer is Unity's `JsonUtility`: mark the class `[Serializable]` and use public fields whose names match the JSON keys exactly. Properties (`{ get; set; }`), dictionary fields and anonymous types are not serialized.
+2.  **Top-level arrays:** Deserialize a JSON array into `T[]`, not `List<T>`.
+3.  **Other shapes:** Use `Dictionary<string, object>`, or register a full serializer with `JsonSerializer.SetDefault(...)` (see [JSON serializers](APIReference.md#json-serializers)).
+4.  **Structure:** Verify the JSON response matches your class structure.
+5.  **IL2CPP:** Ensure your DTO class isn't being stripped (see [Platform Notes](PlatformNotes.md)).
 
 ## Platform-Specific
 

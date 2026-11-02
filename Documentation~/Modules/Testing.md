@@ -18,7 +18,7 @@ transport.EnqueueResponse(System.Net.HttpStatusCode.ServiceUnavailable);
 using var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
 
 using var first = await client.Get("https://api.example.com/users/1").SendBufferedAsync();
-MyDto dto = first.AsJson<MyDto>();
+MyDto dto = first.AsJson<MyDto>(); // [Serializable] DTO, see APIReference.md#json-serializers
 
 using var second = await client.Get("https://api.example.com/users/1").SendBufferedAsync();
 // second.StatusCode == 503: error statuses are normal responses.
@@ -35,7 +35,8 @@ using TurboHTTP.Testing;
 var server = new MockHttpServer();
 
 server.When(TurboHTTP.Core.HttpMethod.POST, "/login")
-    .Respond(r => r.Status(System.Net.HttpStatusCode.OK).Json(new { Token = "mock_token" }));
+    .Respond(r => r.Status(System.Net.HttpStatusCode.OK)
+        .Json(new System.Collections.Generic.Dictionary<string, object> { ["token"] = "mock_token" }));
 
 server.When(TurboHTTP.Core.HttpMethod.GET, "/data")
     .Respond(r => r.Status(System.Net.HttpStatusCode.InternalServerError));
@@ -46,6 +47,8 @@ using var client = new UHttpClient(options);
 using var response = await client.Post("https://api.example.com/login").SendBufferedAsync();
 server.AssertReceived("/login", 1);
 ```
+
+`Json(...)` serializes with the registered JSON serializer: anonymous types are not supported, so use a `Dictionary<string, object>` or a `[Serializable]` class with public fields (see [JSON serializers](../APIReference.md#json-serializers)).
 
 Further route options: `Times(n)`, `Priority(n)`, `WithHeader`, `WithQuery`, `WithBody`, `WithJsonBody<T>` predicates, `RespondSequence(...)` for a scripted series of responses, and `Delay(...)` on the response builder. `GetHistory()` lists the requests that arrived.
 

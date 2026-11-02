@@ -15,6 +15,22 @@ namespace TurboHTTP.Samples.BasicUsage
     /// </summary>
     public class BasicUsageExample : MonoBehaviour
     {
+        // WithJsonBody uses Unity's JsonUtility by default: [Serializable] classes with public
+        // fields (anonymous types are not supported).
+        [Serializable]
+        public class PersonBody
+        {
+            public string name;
+            public int age;
+        }
+
+        [Serializable]
+        public class TitleBody
+        {
+            public int id;
+            public string title;
+        }
+
         private UHttpClient _client;
 
         void Start()
@@ -60,7 +76,7 @@ namespace TurboHTTP.Samples.BasicUsage
         {
             Debug.Log("=== Example 3: POST ===");
 
-            var data = new { name = "John Doe", age = 30 };
+            var data = new PersonBody { name = "John Doe", age = 30 };
 
             using var response = await _client
                 .Post("https://httpbin.org/post")
@@ -74,7 +90,7 @@ namespace TurboHTTP.Samples.BasicUsage
         {
             Debug.Log("=== Example 4: PUT ===");
 
-            var data = new { id = 1, title = "Updated Title" };
+            var data = new TitleBody { id = 1, title = "Updated Title" };
 
             using var response = await _client
                 .Put("https://httpbin.org/put")

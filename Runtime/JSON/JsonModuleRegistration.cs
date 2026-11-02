@@ -12,7 +12,9 @@ namespace TurboHTTP.JSON
     /// TurboHTTP's startup bootstrap (TurboHTTP.Complete) calls <see cref="EnsureRegistered"/>, so no
     /// startup code is needed normally. Call it yourself when that assembly is excluded from the
     /// build (it is excluded on WebGL). The bridge forwards to <see cref="JsonSerializer"/>, so a
-    /// serializer set with <see cref="JsonSerializer.SetDefault"/> is honored.
+    /// serializer set with <see cref="JsonSerializer.SetDefault"/> is honored. This call does not
+    /// change <see cref="JsonSerializer.Default"/>: without TurboHTTP.Complete it stays the built-in
+    /// <see cref="Lite.LiteJsonSerializer"/>, so register a serializer for custom types yourself.
     /// </remarks>
     public static class JsonModuleRegistration
     {

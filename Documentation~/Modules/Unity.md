@@ -58,7 +58,7 @@ TurboHTTP does not load AssetBundles. Download the bundle with `DownloadToPersis
 
 ## Coroutine integration
 
-If you prefer coroutines over `async`/`await`, `SendCoroutine` and `GetJsonCoroutine<T>` wrap a request and deliver the result on the main thread through callbacks.
+If you prefer coroutines over `async`/`await`, `SendCoroutine` and `GetJsonCoroutine<T>` wrap a request and deliver the result on the main thread through callbacks. `GetJsonCoroutine<T>` uses the registered JSON serializer ([JSON serializers](../APIReference.md#json-serializers)).
 
 <!-- snippet: with UHttpClient client = null; -->
 ```csharp
