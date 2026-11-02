@@ -208,10 +208,11 @@ namespace TurboHTTP.Transport.Tls
         /// full certificate chain validation; a failed handshake (certificate, authentication,
         /// network or platform capability) propagates to the caller with no runtime
         /// catch-and-retry on another provider. BouncyCastle validates chains through
-        /// <see cref="ServerCertificateVerifier"/> only in the Editor and on desktop; on iOS and
-        /// Android it has no verifier yet and rejects every certificate (#33, #239). Auto therefore
-        /// always returns SslStream and throws when it is unavailable; BouncyCastle is used only
-        /// when <see cref="TlsBackend.BouncyCastle"/> is selected explicitly.
+        /// <see cref="ServerCertificateVerifier"/> with the OS verifier (Windows crypt32, macOS and
+        /// iOS SecTrust, the Android trust manager; the mobile and macOS ones are not yet
+        /// device-validated) and rejects every certificate on Linux, which has none (#33, #239,
+        /// #248). Auto therefore always returns SslStream and throws when it is unavailable;
+        /// BouncyCastle is used only when <see cref="TlsBackend.BouncyCastle"/> is selected explicitly.
         /// </summary>
         private static ITlsProvider GetAutoProvider()
         {

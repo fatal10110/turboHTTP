@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
@@ -7,25 +8,36 @@ using System.Threading;
 namespace TurboHTTP.Transport.Tls
 {
     /// <summary>Outcome class of <see cref="ServerCertificateVerifier.Verify"/>.</summary>
+    /// <remarks>
+    /// Fail-closed convention (#278): the zero value is <see cref="NotVerified"/>, a rejection, so a
+    /// default or unset result never reads as trusted. Success has an explicit non-zero value.
+    /// </remarks>
     internal enum CertificateVerificationStatus
     {
+        /// <summary>No verification happened (the default value); always a rejection.</summary>
+        NotVerified = 0,
+
         /// <summary>The chain builds to a trusted anchor with no error.</summary>
-        Trusted,
+        Trusted = 1,
 
         /// <summary>The chain does not end at a trusted anchor (unknown CA, self-signed, partial).</summary>
-        UntrustedRoot,
+        UntrustedRoot = 2,
 
         /// <summary>A certificate in the chain is expired or not yet valid.</summary>
-        NotTimeValid,
+        NotTimeValid = 3,
 
         /// <summary>Any other path error: signature, basic constraints, name constraints, usage, encoding.</summary>
-        Invalid,
+        Invalid = 4,
 
         /// <summary>No certificate verifier exists on this platform; the chain is rejected.</summary>
-        NoVerifier,
+        NoVerifier = 5,
     }
 
     /// <summary>Result of <see cref="ServerCertificateVerifier.Verify"/>.</summary>
+    /// <remarks>
+    /// <c>default</c> is <see cref="CertificateVerificationStatus.NotVerified"/> without a path, a
+    /// rejection. Consumers accept a chain only through <see cref="IsTrusted"/>.
+    /// </remarks>
     internal readonly struct CertificateVerificationResult
     {
         internal CertificateVerificationResult(
@@ -35,6 +47,14 @@ namespace TurboHTTP.Transport.Tls
             Detail = detail;
             Path = path;
         }
+
+        /// <summary>A success with the path the verifier built (leaf first, anchor last).</summary>
+        internal static CertificateVerificationResult Trusted(byte[][] path)
+            => new CertificateVerificationResult(CertificateVerificationStatus.Trusted, null, path);
+
+        /// <summary>A rejection; carries no path.</summary>
+        internal static CertificateVerificationResult Rejected(CertificateVerificationStatus status, string detail)
+            => new CertificateVerificationResult(status, detail, null);
 
         /// <summary>Outcome class.</summary>
         internal CertificateVerificationStatus Status { get; }
@@ -47,6 +67,29 @@ namespace TurboHTTP.Transport.Tls
         /// <see cref="CertificateVerificationStatus.Trusted"/>.
         /// </summary>
         internal byte[][] Path { get; }
+
+        /// <summary>
+        /// The only success test: <see cref="CertificateVerificationStatus.Trusted"/> with a
+        /// non-empty path. Any other status, and <c>Trusted</c> without a path, is a rejection.
+        /// </summary>
+        internal bool IsTrusted
+            => Status == CertificateVerificationStatus.Trusted && Path != null && Path.Length > 0;
+    }
+
+    /// <summary>The host OS family the verifier is compiled for (selects the native verifier).</summary>
+    internal enum VerifierPlatform
+    {
+        /// <summary>iOS/Android devices, or a build without a Unity platform define.</summary>
+        Other = 0,
+
+        /// <summary>Windows Editor or Windows standalone player: crypt32.</summary>
+        Windows = 1,
+
+        /// <summary>macOS Editor or macOS standalone player: Security.framework SecTrust.</summary>
+        MacOS = 2,
+
+        /// <summary>Linux Editor or Linux standalone player: no verifier, BouncyCastle unsupported.</summary>
+        Linux = 3,
     }
 
     /// <summary>
@@ -56,24 +99,25 @@ namespace TurboHTTP.Transport.Tls
     /// (<see cref="TlsCertificateNameMatcher"/>).
     /// </summary>
     /// <remarks>
-    /// <para>Editor and desktop players use <see cref="X509Chain"/> on the same DER chain against
-    /// the platform root store, with revocation checking off (decision A: no OCSP/CRL; the
-    /// provider does not request staples either). The only network access <see cref="X509Chain"/>
-    /// can make is fetching a missing intermediate, bounded by <see cref="UrlRetrievalTimeout"/>,
-    /// which is well under the handshake deadline: certificate evaluation runs synchronously on
-    /// the handshake thread and the handshake deadline cannot interrupt it (#142).</para>
-    /// <para>iOS and Android devices cannot use <see cref="X509Chain"/>; they use the native
-    /// verifier (#239) through <see cref="PlatformVerifierRunner"/>: iOS SecTrust
-    /// (<see cref="AppleTrustVerifier"/>, installed here) and Android
-    /// <c>X509TrustManagerExtensions</c> (registered by the BouncyCastle glue through
-    /// <see cref="RegisterPlatformVerifier"/>, since it needs UnityEngine's JNI). Both use the
-    /// platform trust store and policy and never fetch from the network. Without a registered
-    /// verifier every chain is rejected with <see cref="CertificateVerificationStatus.NoVerifier"/>;
-    /// any bridge failure or timeout is a rejection too. Failing closed is required; this path
-    /// never accepts a certificate the platform would reject.</para>
+    /// <para>Every platform verifies through the OS verifier, run by
+    /// <see cref="PlatformVerifierRunner"/> with the platform trust store and policy, revocation off
+    /// (decision A: no OCSP/CRL; the provider does not request staples either) and no network
+    /// fetch: certificate evaluation runs synchronously on the handshake thread and the handshake
+    /// deadline cannot interrupt it (#142). Windows Editor and players use crypt32
+    /// (<see cref="WindowsCertificateVerifier"/>), macOS Editor and players Security.framework
+    /// SecTrust (<see cref="MacSecTrustVerifier"/>), iOS SecTrust through the native bridge
+    /// (<see cref="AppleTrustVerifier"/>), all installed here; Android
+    /// <c>X509TrustManagerExtensions</c> is registered by the BouncyCastle glue through
+    /// <see cref="RegisterPlatformVerifier"/>, since it needs UnityEngine's JNI (#239, #248).
+    /// Linux has no verifier: BouncyCastle is unsupported there and every chain is rejected with
+    /// <see cref="CertificateVerificationStatus.NoVerifier"/>, as on any platform without a
+    /// registered verifier. Any bridge failure or timeout is a rejection too. Failing closed is
+    /// required; this path never accepts a certificate the platform would reject.</para>
     /// <para>Test trust anchors (<see cref="AddTestTrustAnchor"/>) exist only for the loopback
     /// test fixtures. Production code never adds one; with none registered the verifier trusts
-    /// exactly the platform roots.</para>
+    /// exactly the platform roots. The Windows and macOS verifiers take the anchors as their only
+    /// roots; elsewhere (devices, Linux) the anchors are served by <see cref="X509Chain"/>, which
+    /// production never reaches.</para>
     /// </remarks>
     internal static class ServerCertificateVerifier
     {
@@ -81,8 +125,9 @@ namespace TurboHTTP.Transport.Tls
         internal const int MaxChainLength = 10;
 
         /// <summary>
-        /// Upper bound for any intermediate fetch <see cref="X509Chain"/> performs (revocation is
-        /// off). Well under <c>TurboTlsClient.DefaultHandshakeTimeoutMillis</c> (30 s).
+        /// Upper bound for any URL retrieval a chain engine is configured with (revocation is off;
+        /// the platform verifiers also disable network fetch). Well under
+        /// <c>TurboTlsClient.DefaultHandshakeTimeoutMillis</c> (30 s).
         /// </summary>
         internal static readonly TimeSpan UrlRetrievalTimeout = TimeSpan.FromSeconds(5);
 
@@ -94,30 +139,110 @@ namespace TurboHTTP.Transport.Tls
         // Copy-on-write snapshot: written under TestAnchorLock, read lock-free with Volatile.
         private static byte[][] s_testTrustAnchors = Array.Empty<byte[]>();
 
-        // Set once (Interlocked), read with Volatile. iOS installs its bridge here; Android's is
-        // registered by the BouncyCastle glue (engine-referencing, JNI).
-        private static PlatformCertificateVerifier s_platformVerifier =
+        // The OS family the Unity defines name. The Editor defines the build target's
+        // UNITY_IOS/UNITY_STANDALONE_* too, so the Editor cases test UNITY_EDITOR_* first.
+        private const VerifierPlatform CompiledPlatform =
 #if UNITY_IOS && !UNITY_EDITOR
-            AppleTrustVerifier.Verify;
+            VerifierPlatform.Other;
+#elif UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
+            VerifierPlatform.Windows;
+#elif UNITY_EDITOR_OSX || (UNITY_STANDALONE_OSX && !UNITY_EDITOR)
+            VerifierPlatform.MacOS;
+#elif UNITY_EDITOR_LINUX || (UNITY_STANDALONE_LINUX && !UNITY_EDITOR)
+            VerifierPlatform.Linux;
 #else
-            null;
+            VerifierPlatform.Other;
 #endif
 
+        // Declared before s_platformVerifier: static initializers run in textual order.
+        private static readonly VerifierPlatform s_currentPlatform =
+            CompiledPlatform == VerifierPlatform.Windows || CompiledPlatform == VerifierPlatform.MacOS
+                ? ResolvePlatform(CompiledPlatform, DetectRuntimePlatform())
+                : CompiledPlatform;
+
+        // Set once (Interlocked), read with Volatile. iOS, Windows and macOS install their verifier
+        // here; Android's is registered by the BouncyCastle glue (engine-referencing, JNI).
+        private static PlatformCertificateVerifier s_platformVerifier = DefaultPlatformVerifier(s_currentPlatform);
+
         /// <summary>
-        /// True on builds where <see cref="X509Chain"/> is not used and only a native platform
-        /// verifier can accept a chain (iOS/Android devices).
+        /// The OS family this process verifies on: the one the Unity defines name, confirmed at run
+        /// time for the desktop verifiers (see <see cref="ResolvePlatform"/>).
         /// </summary>
-        internal static bool RequiresPlatformVerifier
+        internal static VerifierPlatform CurrentPlatform => s_currentPlatform;
+
+        /// <summary>
+        /// Confirms a desktop OS the defines name against the OS the process runs on. A Windows or
+        /// macOS build running elsewhere (a build made with another OS's defines, such as a CI
+        /// shadow build) must not call crypt32 or SecTrust: it resolves to <see cref="VerifierPlatform.Linux"/>
+        /// on Linux and to <see cref="VerifierPlatform.Other"/> otherwise, both of which install no
+        /// verifier and reject every production chain. Other compiled platforms pass through.
+        /// </summary>
+        internal static VerifierPlatform ResolvePlatform(VerifierPlatform compiled, VerifierPlatform runtime)
         {
-            get
-            {
-#if (UNITY_IOS || UNITY_ANDROID) && !UNITY_EDITOR
-                return true;
-#else
-                return false;
-#endif
-            }
+            if (compiled != VerifierPlatform.Windows && compiled != VerifierPlatform.MacOS)
+                return compiled;
+            if (runtime == compiled)
+                return compiled;
+            return runtime == VerifierPlatform.Linux ? VerifierPlatform.Linux : VerifierPlatform.Other;
         }
+
+        /// <summary>The desktop OS family the process runs on, or <see cref="VerifierPlatform.Other"/>.</summary>
+        internal static VerifierPlatform DetectRuntimePlatform()
+        {
+            try
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    return VerifierPlatform.Windows;
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                    return VerifierPlatform.MacOS;
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                    return VerifierPlatform.Linux;
+            }
+            catch (PlatformNotSupportedException)
+            {
+                // Unknown OS: no desktop verifier (fail closed).
+            }
+
+            return VerifierPlatform.Other;
+        }
+
+        private static PlatformCertificateVerifier DefaultPlatformVerifier(VerifierPlatform platform)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            _ = platform;
+            return AppleTrustVerifier.Verify;
+#elif UNITY_EDITOR_WIN || (UNITY_STANDALONE_WIN && !UNITY_EDITOR)
+            return platform == VerifierPlatform.Windows ? WindowsCertificateVerifier.Verify : (PlatformCertificateVerifier)null;
+#elif UNITY_EDITOR_OSX || (UNITY_STANDALONE_OSX && !UNITY_EDITOR)
+            return platform == VerifierPlatform.MacOS ? MacSecTrustVerifier.Verify : (PlatformCertificateVerifier)null;
+#else
+            _ = platform;
+            return null;
+#endif
+        }
+
+        /// <summary>
+        /// True where the installed verifier takes test anchors itself (Windows, macOS), so test
+        /// fixtures exercise the production verifier there.
+        /// </summary>
+        internal static bool PlatformVerifierTrustsTestAnchors
+            => CurrentPlatform == VerifierPlatform.Windows || CurrentPlatform == VerifierPlatform.MacOS;
+
+        /// <summary>Detail of the <see cref="CertificateVerificationStatus.NoVerifier"/> rejection.</summary>
+        internal const string NoVerifierDetail =
+            "no certificate verifier on this platform; BouncyCastle rejects every server certificate here";
+
+        /// <summary>
+        /// Detail of the <see cref="CertificateVerificationStatus.NoVerifier"/> rejection on Linux
+        /// (#248): there is no platform verifier to delegate to, and no bundled roots.
+        /// </summary>
+        internal const string LinuxUnsupportedDetail =
+            "TlsBackend.BouncyCastle is unsupported on Linux: there is no platform certificate verifier, " +
+            "so every server certificate is rejected; use TlsBackend.Auto or TlsBackend.SslStream";
+
+        /// <summary>The <see cref="CertificateVerificationStatus.NoVerifier"/> detail for <paramref name="platform"/>.</summary>
+        internal static string NoVerifierDetailFor(VerifierPlatform platform)
+            => platform == VerifierPlatform.Linux ? LinuxUnsupportedDetail : NoVerifierDetail;
 
         /// <summary>
         /// Installs the native verifier for this platform once; later calls are ignored. Returns
@@ -133,13 +258,14 @@ namespace TurboHTTP.Transport.Tls
         /// <summary>
         /// Verifies <paramref name="chainDer"/> (leaf first, as sent by the server) for
         /// <paramref name="host"/> (platform form: <see cref="TlsHostName.ToTargetHost"/>) at
-        /// <paramref name="verificationTimeUtc"/>. Only the native platform verifiers use
-        /// <paramref name="host"/>; host-name matching stays with <see cref="TlsCertificateNameMatcher"/>.
+        /// <paramref name="verificationTimeUtc"/>. The platform verifiers also apply their own SSL
+        /// host-name policy to <paramref name="host"/>; RFC 6125 matching stays with
+        /// <see cref="TlsCertificateNameMatcher"/>.
         /// </summary>
         internal static CertificateVerificationResult Verify(
             IReadOnlyList<byte[]> chainDer, string host, DateTime verificationTimeUtc)
-            => Verify(chainDer, host, verificationTimeUtc, RequiresPlatformVerifier,
-                Volatile.Read(ref s_platformVerifier), PlatformVerifierLimits.Default);
+            => Verify(chainDer, host, verificationTimeUtc, Volatile.Read(ref s_platformVerifier),
+                PlatformVerifierLimits.Default, PlatformVerifierTrustsTestAnchors, CurrentPlatform);
 
         /// <summary>
         /// <see cref="Verify(IReadOnlyList{byte[]}, string, DateTime)"/> with the platform choice
@@ -147,8 +273,8 @@ namespace TurboHTTP.Transport.Tls
         /// </summary>
         internal static CertificateVerificationResult Verify(
             IReadOnlyList<byte[]> chainDer, string host, DateTime verificationTimeUtc,
-            bool requiresPlatformVerifier, PlatformCertificateVerifier platformVerifier,
-            PlatformVerifierLimits limits)
+            PlatformCertificateVerifier platformVerifier, PlatformVerifierLimits limits,
+            bool verifierTrustsTestAnchors = false, VerifierPlatform platform = VerifierPlatform.Other)
         {
             if (chainDer == null || chainDer.Count == 0)
                 return Fail(CertificateVerificationStatus.Invalid, "empty certificate chain");
@@ -159,12 +285,15 @@ namespace TurboHTTP.Transport.Tls
 
             var anchors = Volatile.Read(ref s_testTrustAnchors);
 
-            // Test anchors (loopback fixtures, also on devices) need the X509Chain path: the
-            // platform verifiers only know the platform trust store.
-            if (requiresPlatformVerifier && anchors.Length == 0)
-                return PlatformVerifierRunner.Run(platformVerifier, chainDer, host, verificationTimeUtc, limits);
+            // Test anchors (loopback fixtures) only: where the platform verifier cannot take them
+            // (devices, Linux), X509Chain serves them. Production registers none and never gets here.
+            if (anchors.Length > 0 && !(verifierTrustsTestAnchors && platformVerifier != null))
+                return VerifyWithX509Chain(chainDer, verificationTimeUtc, anchors);
 
-            return VerifyWithX509Chain(chainDer, verificationTimeUtc, anchors);
+            if (platformVerifier == null)
+                return Fail(CertificateVerificationStatus.NoVerifier, NoVerifierDetailFor(platform));
+
+            return PlatformVerifierRunner.Run(platformVerifier, chainDer, host, verificationTimeUtc, limits);
         }
 
         /// <summary>
@@ -291,7 +420,7 @@ namespace TurboHTTP.Transport.Tls
                     flags &= ~X509ChainStatusFlags.UntrustedRoot;
 
                 if (flags == X509ChainStatusFlags.NoError)
-                    return new CertificateVerificationResult(CertificateVerificationStatus.Trusted, null, path);
+                    return CertificateVerificationResult.Trusted(path);
 
                 const X509ChainStatusFlags untrusted =
                     X509ChainStatusFlags.UntrustedRoot | X509ChainStatusFlags.PartialChain;
@@ -343,6 +472,6 @@ namespace TurboHTTP.Transport.Tls
         }
 
         private static CertificateVerificationResult Fail(CertificateVerificationStatus status, string detail)
-            => new CertificateVerificationResult(status, detail, null);
+            => CertificateVerificationResult.Rejected(status, detail);
     }
 }

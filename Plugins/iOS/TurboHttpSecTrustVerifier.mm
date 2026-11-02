@@ -1,7 +1,9 @@
 // Server certificate path validation for the BouncyCastle TLS provider (#239), called from
 // Runtime/Transport/Tls/AppleTrustVerifier.cs through DllImport("__Internal").
 //
-// Security.framework and Foundation only (no UIKit), so a macOS player can reuse this file (#248).
+// Security.framework and Foundation only (no UIKit). The macOS Editor and players run the same
+// evaluation from C# (Runtime/Transport/Tls/MacSecTrustVerifier.cs, #248): Unity does not compile a
+// loose .mm for them.
 // Core Foundation objects only, released explicitly: the file builds with or without ARC.
 //
 // Policy: SecPolicyCreateSSL(server, host) against the system trust store, network fetch disabled
@@ -19,10 +21,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Keep in sync with AppleTrustVerifier.Result* in C#.
+// Keep in sync with AppleTrustVerifier.Result* in C# (checked by Tools~/ci/check_repo.py native).
+// Fail-closed convention (#278): 0 is "not set" and a rejection; success is a distinctive non-zero
+// value ("TRST"), so a zeroed or garbage return never reads as trusted.
 enum
 {
-    kTurboTrustTrusted = 0,
+    kTurboTrustNotSet = 0,
+    kTurboTrustTrusted = 0x54525354,
     kTurboTrustUntrustedRoot = 1,
     kTurboTrustNotTimeValid = 2,
     kTurboTrustInvalid = 3,

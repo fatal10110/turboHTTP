@@ -37,7 +37,7 @@ starts using a new BouncyCastle API, the strip must see the change first (bc-csh
 
 | | Decision |
 | --- | --- |
-| A | Chain validation via the native verifier or `X509Chain` (#33). BC `X509Certificate.Verify`, `IsSignatureValid` and `VerifyAltSignature` throw `NotSupportedException`. |
+| A | Chain validation via the native verifier (#33, #248; `X509Chain` only for test anchors on devices and Linux). BC `X509Certificate.Verify`, `IsSignatureValid` and `VerifyAltSignature` throw `NotSupportedException`. |
 | B | No CBC: TLS 1.2 is ECDHE + AEAD only. |
 | C | No ML-KEM hybrid groups. |
 | D | No OCSP `status_request`, so must-staple is not enforced. |
@@ -51,9 +51,11 @@ moduli 2048-8192 bits with e at most 64 bits, 32 KiB handshake-message cap.
 ## Certificate validation (#33)
 
 `TurboTlsAuthentication` checks, in order: RFC 6125 host identity (`TlsCertificateNameMatcher`),
-leaf EKU serverAuth, leaf validity, path validation outside BC (`ServerCertificateVerifier`:
-`X509Chain` in the Editor and on desktop, revocation off; iOS SecTrust and Android
-`X509TrustManagerExtensions` on devices, network fetch off, any bridge failure rejects, #239), then `TlsUtilities.CheckPeerSigAlgs` on the platform-built path.
+leaf EKU serverAuth, leaf validity, path validation outside BC (`ServerCertificateVerifier`, the
+OS verifier everywhere: Windows crypt32 and macOS SecTrust in the Editor and desktop players (#248),
+iOS SecTrust and Android `X509TrustManagerExtensions` on devices (#239); revocation and network
+fetch off, any bridge failure rejects; Linux has no verifier and rejects every chain), then
+`TlsUtilities.CheckPeerSigAlgs` on the platform-built path.
 BC APIs it uses (all present in the current Lib, so no re-sync is needed now; the next strip must
 take the new `TurboTlsAuthentication.cs` as a root): `X509Certificate`
 (`GetSubjectAlternativeNameExtension`, `GetExtendedKeyUsage`, `SubjectDN`, `NotBefore`/`NotAfter`),

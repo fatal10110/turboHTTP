@@ -8,11 +8,11 @@ using Public = TurboHTTP.Tests.Transport.Tls.PublicChainTestCertificates;
 namespace TurboHTTP.Tests.Transport.Tls
 {
     /// <summary>
-    /// #33: path validation of <see cref="ServerCertificateVerifier"/> (the <see cref="X509Chain"/>
-    /// path used by the BouncyCastle provider in the Editor and on desktop) on committed ECDSA test
-    /// chains. The P-384 and name-constraint cases are the decision-A check on #141: they decide
-    /// whether Unity Mono's <see cref="X509Chain"/> is fit for the desktop path. Their result is
-    /// owed on the host-editor run; a failure there reopens the desktop choice.
+    /// #33, #248: path validation of <see cref="ServerCertificateVerifier"/> in its production
+    /// configuration on committed ECDSA test chains. On Windows and macOS this is the native
+    /// desktop verifier (crypt32, SecTrust), which takes the test anchors as its only roots and also
+    /// applies the platform SSL host-name policy, so each case passes the host its leaf names.
+    /// Linux has no verifier (BouncyCastle unsupported, #248): the fixture is skipped there.
     /// </summary>
     [TestFixture]
     public class ServerCertificateVerifierTests
@@ -24,6 +24,9 @@ namespace TurboHTTP.Tests.Transport.Tls
         [SetUp]
         public void SetUp()
         {
+            if (ServerCertificateVerifier.CurrentPlatform == VerifierPlatform.Linux)
+                TestRequirements.IgnoreEnvironment("BouncyCastle has no certificate verifier on Linux (#248).");
+
             _savedAnchors = ServerCertificateVerifier.SnapshotTestTrustAnchors();
             ServerCertificateVerifier.RestoreTestTrustAnchors(null);
         }
@@ -34,8 +37,12 @@ namespace TurboHTTP.Tests.Transport.Tls
             ServerCertificateVerifier.RestoreTestTrustAnchors(_savedAnchors);
         }
 
+        // The committed leaves name localhost unless a case passes its own host.
         private static CertificateVerificationResult Verify(params byte[][] chain)
-            => ServerCertificateVerifier.Verify(chain, "test.local", Now);
+            => VerifyFor("localhost", chain);
+
+        private static CertificateVerificationResult VerifyFor(string host, params byte[][] chain)
+            => ServerCertificateVerifier.Verify(chain, host, Now);
 
         private static void AssertStatus(CertificateVerificationStatus expected, CertificateVerificationResult result)
         {
@@ -124,7 +131,8 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
 
-            AssertStatus(CertificateVerificationStatus.Trusted, Verify(Certs.LeafPermitted, Certs.ConstrainedCa));
+            AssertStatus(CertificateVerificationStatus.Trusted,
+                VerifyFor("www.allowed.test", Certs.LeafPermitted, Certs.ConstrainedCa));
         }
 
         [Test]
@@ -132,7 +140,11 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
 
-            AssertStatus(CertificateVerificationStatus.Invalid, Verify(Certs.LeafExcluded, Certs.ConstrainedCa));
+            var result = VerifyFor("www.forbidden.test", Certs.LeafExcluded, Certs.ConstrainedCa);
+
+            AssertStatus(CertificateVerificationStatus.Invalid, result);
+            if (ServerCertificateVerifier.CurrentPlatform == VerifierPlatform.Windows)
+                StringAssert.Contains("name constraints", result.Detail, "rejected for the constraint, not for building");
         }
 
         [Test]
@@ -148,9 +160,8 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void PublicChain_ProductionConfiguration_IsTrustedByPlatformRootStore()
         {
-            // The production configuration: no test anchors (SetUp cleared them), NoFlag, platform
-            // root store. The root is not committed, so Trusted means the store supplied it. The
-            // host-editor outcome on Unity Mono is recorded on #239.
+            // The production configuration: no test anchors (SetUp cleared them), the platform root
+            // store. The root is not committed, so Trusted means the store supplied it (#248).
             var at = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc);
             Assert.That(at, Is.InRange(Public.LeafNotBeforeUtc, Public.LeafNotAfterUtc));
 

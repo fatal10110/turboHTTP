@@ -461,6 +461,39 @@ def check_native(files):
                 elif included and not called and uses:
                     errors.append(f"native: {plugin} ships to {where}, but no managed caller compiles there "
                                   "(disable that platform or the define constraint in its .meta, or extend the #if)")
+    return errors + check_result_codes(files)
+
+
+# Native bridge result codes mirrored in C# (#278): same names and values on both sides, 0 reserved for
+# "not set" (a rejection), success non-zero. (native source, enum prefix, C# file, const prefix)
+RESULT_CODE_PAIRS = [("Plugins/iOS/TurboHttpSecTrustVerifier.mm", "kTurboTrust",
+                      "Runtime/Transport/Tls/AppleTrustVerifier.cs", "Result")]
+
+
+def _int_literal(text):
+    return int(text, 16) if text.lower().startswith("0x") else int(text)
+
+
+def check_result_codes(files):
+    errors = []
+    for native, native_prefix, managed, managed_prefix in RESULT_CODE_PAIRS:
+        if native not in files or managed not in files:
+            errors.append(f"native: result-code pair {native} / {managed} is missing")
+            continue
+        src = open(os.path.join(ROOT, native), encoding="utf-8", errors="replace").read()
+        cs = open(os.path.join(ROOT, managed), encoding="utf-8", errors="replace").read()
+        native_codes = {n: _int_literal(v) for n, v in
+                        re.findall(rf"\b{native_prefix}(\w+)\s*=\s*(0x[0-9A-Fa-f]+|-?\d+)\s*,", src)}
+        managed_codes = {n: _int_literal(v) for n, v in
+                         re.findall(rf"\bconst\s+int\s+{managed_prefix}(\w+)\s*=\s*(0x[0-9A-Fa-f]+|-?\d+)\s*;", cs)}
+        if native_codes != managed_codes:
+            errors.append(f"native: result codes differ between {native} {sorted(native_codes.items())} "
+                          f"and {managed} {sorted(managed_codes.items())}")
+        for where, codes in ((native, native_codes), (managed, managed_codes)):
+            if codes.get("Trusted", 0) == 0:
+                errors.append(f"native: {where}: the Trusted result code must exist and be non-zero (#278)")
+            if [n for n, v in codes.items() if v == 0] != ["NotSet"]:
+                errors.append(f"native: {where}: 0 must be the NotSet code and nothing else (#278)")
     return errors
 
 

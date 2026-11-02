@@ -12,6 +12,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -75,6 +76,13 @@ namespace TurboHTTP.Tools.TlsInterop
                 return 1;
             }
 
+            // #248: production BouncyCastle has no platform verifier on Linux and rejects every chain
+            // (bouncycastle/linux-unsupported checks that). The other BouncyCastle rows trust the per-run
+            // root through the test-anchor hook the Unity loopback fixtures use: X509Chain on Linux,
+            // crypt32/SecTrust (anchors only) on Windows/macOS. SslStream and Auto ignore it.
+            using (var root = new X509Certificate2(expectedRoots))
+                ServerCertificateVerifier.AddTestTrustAnchor(root.RawData);
+
             var rows = BuildRows();
             int failed = 0, ran = 0;
             foreach (var (name, body) in rows)
@@ -110,6 +118,9 @@ namespace TurboHTTP.Tools.TlsInterop
                 // The TLS 1.1 server of the tls-below-1.2 rows really speaks TLS 1.1.
                 ("control/tls1.1-server-accepts-tls1.1-client", Tls11ServerControlAsync),
             };
+
+            if (ServerCertificateVerifier.CurrentPlatform == VerifierPlatform.Linux)
+                rows.Add(("bouncycastle/linux-unsupported/valid@localhost", LinuxUnsupportedAsync));
 
             foreach (var backend in AllBackends)
             {
@@ -230,6 +241,45 @@ namespace TurboHTTP.Tools.TlsInterop
                 Check(ex.HttpError.Type == UHttpErrorType.CertificateError, "error " + ex.HttpError.Type + ": " + ex.Message);
                 server.WaitForExit();
                 return "CertificateError: " + FirstLine(ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// #248: without test anchors (production), BouncyCastle on Linux rejects even a valid chain with the
+        /// Linux-unsupported detail (driven through the provider: the alert detail is on the
+        /// <see cref="AuthenticationException"/> chain).
+        /// </summary>
+        private static async Task<string> LinuxUnsupportedAsync()
+        {
+            var anchors = ServerCertificateVerifier.SnapshotTestTrustAnchors();
+            ServerCertificateVerifier.RestoreTestTrustAnchors(null);
+            try
+            {
+                var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
+                using var server = OpenSslServer.Start(s_logDir, LogName("valid", new[] { "linux-unsupported" }), Identity("valid", new[] { "-www" }));
+                var stream = await ConnectAsync(server.Port).ConfigureAwait(false);
+                try
+                {
+                    using var cts = new CancellationTokenSource(Timeout);
+                    var result = await provider.WrapAsync(stream, "localhost", new[] { "http/1.1" }, cts.Token).ConfigureAwait(false);
+                    result.SecureStream.Dispose();
+                    throw new InvalidOperationException("accepted a chain without a platform verifier");
+                }
+                catch (AuthenticationException ex)
+                {
+                    Check(ex.ToString().Contains(ServerCertificateVerifier.LinuxUnsupportedDetail, StringComparison.Ordinal),
+                        "no Linux-unsupported detail: " + FirstLine(ex.ToString()));
+                    server.WaitForExit();
+                    return "AuthenticationException: Linux unsupported";
+                }
+                finally
+                {
+                    stream.Dispose();
+                }
+            }
+            finally
+            {
+                ServerCertificateVerifier.RestoreTestTrustAnchors(anchors);
             }
         }
 

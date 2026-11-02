@@ -5,8 +5,9 @@ using System.Threading;
 namespace TurboHTTP.Transport.Tls
 {
     /// <summary>
-    /// A native certificate path verifier (iOS SecTrust, Android
-    /// <c>X509TrustManagerExtensions</c>; #239), run by <see cref="PlatformVerifierRunner"/>.
+    /// A native certificate path verifier (iOS and macOS SecTrust, Android
+    /// <c>X509TrustManagerExtensions</c>, Windows crypt32; #239, #248), run by
+    /// <see cref="PlatformVerifierRunner"/>.
     /// </summary>
     /// <remarks>
     /// <para>Contract for implementations:</para>
@@ -20,6 +21,9 @@ namespace TurboHTTP.Transport.Tls
     /// platform built (DER, leaf first, anchor last). <see cref="CertificateVerificationResult.Detail"/>
     /// never carries certificate contents or platform error text that could.</item>
     /// <item>It never fetches from the network. It may throw: any exception is a rejection.</item>
+    /// <item>Fail-closed convention (#278): its result starts as a rejection (<c>default</c> is
+    /// <see cref="CertificateVerificationStatus.NotVerified"/>), and any native result code it maps
+    /// uses 0 for "not set or error", never for success.</item>
     /// </list>
     /// </remarks>
     internal delegate CertificateVerificationResult PlatformCertificateVerifier(
@@ -91,8 +95,7 @@ namespace TurboHTTP.Transport.Tls
         {
             if (verifier == null)
             {
-                return Fail(CertificateVerificationStatus.NoVerifier,
-                    "no certificate verifier on this platform; BouncyCastle rejects every server certificate here");
+                return Fail(CertificateVerificationStatus.NoVerifier, ServerCertificateVerifier.NoVerifierDetail);
             }
 
             if (string.IsNullOrEmpty(host))
@@ -152,6 +155,9 @@ namespace TurboHTTP.Transport.Tls
             {
                 case CertificateVerificationStatus.Trusted:
                     break;
+                case CertificateVerificationStatus.NotVerified:
+                    // default(CertificateVerificationResult), or a bridge that never set its result.
+                    return Fail(CertificateVerificationStatus.Invalid, "platform verifier returned no result");
                 case CertificateVerificationStatus.UntrustedRoot:
                 case CertificateVerificationStatus.NotTimeValid:
                 case CertificateVerificationStatus.Invalid:
@@ -185,11 +191,11 @@ namespace TurboHTTP.Transport.Tls
                     "platform path does not start at the server certificate");
             }
 
-            return new CertificateVerificationResult(CertificateVerificationStatus.Trusted, null, path);
+            return CertificateVerificationResult.Trusted(path);
         }
 
         private static CertificateVerificationResult Fail(CertificateVerificationStatus status, string detail)
-            => new CertificateVerificationResult(status, detail, null);
+            => CertificateVerificationResult.Rejected(status, detail);
 
         private sealed class Call
         {

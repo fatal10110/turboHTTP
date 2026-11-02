@@ -22,7 +22,7 @@ TurboHTTP automatically allows the runtime platform to determine optimal default
 | :--- | :--- | :--- |
 | **Request Timeout** | 30 seconds | 45 seconds |
 | **Max Concurrency** | 16 requests | 8 requests |
-| **TLS Provider** | SslStream | SslStream (Auto never falls back to BouncyCastle; define `TURBOHTTP_BOUNCYCASTLE` and select `TlsBackend.BouncyCastle` explicitly to use it; on devices it verifies chains with SecTrust / the Android trust manager; device validation pending) |
+| **TLS Provider** | SslStream (an explicit `TlsBackend.BouncyCastle` verifies chains with crypt32 on Windows and SecTrust on macOS; unsupported on Linux, where it rejects every certificate) | SslStream (Auto never falls back to BouncyCastle; define `TURBOHTTP_BOUNCYCASTLE` and select `TlsBackend.BouncyCastle` explicitly to use it; on devices it verifies chains with SecTrust / the Android trust manager; device validation pending) |
 
 ### Overriding Defaults
 

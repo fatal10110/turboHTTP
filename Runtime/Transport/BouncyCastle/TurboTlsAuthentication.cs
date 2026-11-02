@@ -201,12 +201,20 @@ namespace TurboHTTP.Transport.BouncyCastle
         /// (leaf first, anchor last).
         /// </summary>
         private static byte[][] VerifyPath(byte[][] chainDer, string platformHost, DateTime nowUtc)
+            => ToBuiltPath(ServerCertificateVerifier.Verify(chainDer, platformHost, nowUtc));
+
+        /// <summary>
+        /// Accepts only <see cref="CertificateVerificationResult.IsTrusted"/> (Trusted with a
+        /// non-empty path, #278); every other result, including <c>default</c> and an unknown
+        /// status, is a fatal alert.
+        /// </summary>
+        private static byte[][] ToBuiltPath(CertificateVerificationResult result)
         {
-            var result = ServerCertificateVerifier.Verify(chainDer, platformHost, nowUtc);
+            if (result.IsTrusted)
+                return result.Path;
+
             switch (result.Status)
             {
-                case CertificateVerificationStatus.Trusted:
-                    return result.Path;
                 case CertificateVerificationStatus.UntrustedRoot:
                     throw new TlsFatalAlert(AlertDescription.unknown_ca,
                         "Server certificate chain is not trusted: " + result.Detail);
@@ -216,8 +224,9 @@ namespace TurboHTTP.Transport.BouncyCastle
                 case CertificateVerificationStatus.NoVerifier:
                     throw new TlsFatalAlert(AlertDescription.certificate_unknown, result.Detail);
                 default:
+                    // Invalid, NotVerified (no result), Trusted without a path, unknown values.
                     throw new TlsFatalAlert(AlertDescription.bad_certificate,
-                        "Server certificate chain is invalid: " + result.Detail);
+                        "Server certificate chain is invalid: " + (result.Detail ?? "no verification result"));
             }
         }
 
