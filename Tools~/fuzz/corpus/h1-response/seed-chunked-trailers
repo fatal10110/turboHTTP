@@ -1,0 +1,11 @@
+HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+Trailer: X-Trailer
+
+5
+hello
+6;ext=1
+ world
+0
+X-Trailer: t
+

@@ -20,6 +20,8 @@ MemoryCaptures/
 !Tools~/tls-interop/*.csproj
 # The HTTP/2 interop job (Tools~/h2-interop, #111) is a committed plain .NET project.
 !Tools~/h2-interop/*.csproj
+# The parser fuzz harness (Tools~/fuzz, #112) is a committed plain .NET project.
+!Tools~/fuzz/*.csproj
 *.sln
 *.suo
 *.user

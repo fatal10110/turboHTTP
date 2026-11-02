@@ -1,0 +1,2 @@
+# The fuzz corpus (Tools~/fuzz/corpus) is raw protocol bytes: never normalize line endings.
+Tools~/fuzz/corpus/** binary

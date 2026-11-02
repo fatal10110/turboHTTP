@@ -1,0 +1,101 @@
+name: fuzz
+
+# Coverage-guided fuzzing of the protocol parsers (#112): SharpFuzz instruments the shadow-built
+# TurboHTTP DLLs and libfuzzer-dotnet drives them (Tools~/fuzz/README.md). No Unity license is
+# needed. One job per target. Pull requests that touch a parser get a bounded run (up to 1M execs or
+# 10 minutes per target); the weekly and manual runs take the full budget. A crash, hang or memory
+# blow-up fails the job and uploads the input; file it as an issue (README.md, "Findings").
+on:
+  pull_request:
+    paths:
+      - "Tools~/fuzz/**"
+      - "Runtime/Transport/Http1/**"
+      - "Runtime/Transport/Http2/**"
+      - "Runtime/WebSocket/**"
+      - "Runtime/JSON/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "libFuzzer executions per target"
+        required: false
+        default: "1000000"
+      seconds:
+        description: "Time limit per target, seconds"
+        required: false
+        default: "3600"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # libfuzzer-dotnet, built from a pinned commit with the runner's clang; the hash covers the source.
+  LIBFUZZER_DOTNET_COMMIT: bd39d4e88d715ab460a929943645be2a186cde52
+  LIBFUZZER_DOTNET_SHA256: 90f019e2e9ad3a0b93c7ecc2c5afb2fbfc8b5aab6aac51c7e0d349ec79354f36
+  SHARPFUZZ_VERSION: 2.3.0
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [h1-response, h1-chunked-body, hpack, h2-frames, h2-connection, ws-frames, ws-inflate, json]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Unity version
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v6
+        with:
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-fuzz-${{ hashFiles('Tools~/ci/Shadow.props', 'Tools~/fuzz/TurboHTTP.Fuzz.csproj') }}
+
+      - name: Install SharpFuzz and libfuzzer-dotnet
+        run: |
+          dotnet tool install --global SharpFuzz.CommandLine --version "$SHARPFUZZ_VERSION"
+          mkdir -p "$RUNNER_TEMP/libfuzzer-dotnet"
+          cd "$RUNNER_TEMP/libfuzzer-dotnet"
+          curl -sSfL -o libfuzzer-dotnet.cc \
+            "https://raw.githubusercontent.com/Metalnem/libfuzzer-dotnet/$LIBFUZZER_DOTNET_COMMIT/libfuzzer-dotnet.cc"
+          echo "$LIBFUZZER_DOTNET_SHA256  libfuzzer-dotnet.cc" | sha256sum -c -
+          clang -O2 -fsanitize=fuzzer libfuzzer-dotnet.cc -o libfuzzer-dotnet
+          echo "LIBFUZZER_DOTNET=$PWD/libfuzzer-dotnet" >> "$GITHUB_ENV"
+
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || '1000000' }}
+          SECONDS_BUDGET: ${{ github.event_name == 'pull_request' && '600' || (github.event_name == 'workflow_dispatch' && inputs.seconds || '3600') }}
+        run: '"Tools~/fuzz/run.sh" --driver libfuzzer --target "$TARGET" --runs "$RUNS" --time "$SECONDS_BUDGET"'
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            .build/fuzz/artifacts
+            .build/fuzz/*.libfuzzer.log
+          if-no-files-found: ignore
