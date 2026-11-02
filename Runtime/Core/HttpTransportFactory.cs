@@ -18,6 +18,8 @@ namespace TurboHTTP.Core
         private static volatile Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport> _advancedFactoryWithStreaming;
         private static volatile Lazy<IHttpTransport> _lazy;
         private static volatile Func<TransportCapabilities> _capabilities;
+        // True while _lazy comes from SetForTesting instead of _factory. Guarded by _lock.
+        private static bool _lazyIsOverride;
         private static readonly object _lock = new object();
 
         /// <summary>
@@ -53,6 +55,7 @@ namespace TurboHTTP.Core
                 _advancedFactoryWithStreaming = null;
                 _capabilities = null;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
+                _lazyIsOverride = false;
             }
         }
 
@@ -73,6 +76,47 @@ namespace TurboHTTP.Core
                 _advancedFactoryWithStreaming = advancedFactory;
                 _capabilities = null;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
+                _lazyIsOverride = false;
+            }
+        }
+
+        /// <summary>
+        /// Registers the given factories and capabilities probe unless exactly these factories are
+        /// already the current registration with a live default, in which case only the probe is
+        /// set and the default singleton (created or not) is kept. Returns true when it registered.
+        /// <c>RawSocketTransport.EnsureRegistered()</c> uses this with cached delegates, so calling
+        /// it again (module initializer, startup code, the bootstrap after
+        /// <see cref="DetachCreatedDefault"/>) never drops a default that clients already share
+        /// (#275). Any other registration, <see cref="SetForTesting"/> or <see cref="Reset"/> in
+        /// between makes the next call register again.
+        /// </summary>
+        internal static bool RegisterUnlessCurrent(
+            Func<IHttpTransport> factory,
+            Func<TlsBackend, IHttpTransport> backendFactory,
+            Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport> advancedFactory,
+            Func<TransportCapabilities> capabilities)
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            lock (_lock)
+            {
+                var current = _lazy != null &&
+                              !_lazyIsOverride &&
+                              ReferenceEquals(_factory, factory) &&
+                              ReferenceEquals(_backendFactory, backendFactory) &&
+                              _advancedFactory == null &&
+                              ReferenceEquals(_advancedFactoryWithStreaming, advancedFactory);
+                if (!current)
+                {
+                    _factory = factory;
+                    _backendFactory = backendFactory;
+                    _advancedFactory = null;
+                    _advancedFactoryWithStreaming = advancedFactory;
+                    _lazy = new Lazy<IHttpTransport>(factory, LazyThreadSafetyMode.ExecutionAndPublication);
+                    _lazyIsOverride = false;
+                }
+
+                _capabilities = capabilities;
+                return !current;
             }
         }
 
@@ -189,6 +233,7 @@ namespace TurboHTTP.Core
             lock (_lock)
             {
                 _lazy = new Lazy<IHttpTransport>(() => transport, LazyThreadSafetyMode.ExecutionAndPublication);
+                _lazyIsOverride = true;
             }
         }
 
@@ -213,6 +258,7 @@ namespace TurboHTTP.Core
                 _lazy = factory != null
                     ? new Lazy<IHttpTransport>(factory, LazyThreadSafetyMode.ExecutionAndPublication)
                     : null;
+                _lazyIsOverride = false;
                 return created;
             }
         }
@@ -231,6 +277,7 @@ namespace TurboHTTP.Core
                 _advancedFactoryWithStreaming = null;
                 _capabilities = null;
                 _lazy = null;
+                _lazyIsOverride = false;
             }
         }
     }

@@ -78,13 +78,31 @@ namespace TurboHTTP.Transport
         /// Not needed in normal usage: TurboHTTP's startup bootstrap (TurboHTTP.Complete) calls it
         /// at <c>RuntimeInitializeLoadType.SubsystemRegistration</c>. Call it at startup when that
         /// assembly is excluded from the build, or after <see cref="HttpTransportFactory.Reset"/>.
+        /// Idempotent: while this transport is already the registered one, a further call keeps
+        /// the current <see cref="HttpTransportFactory.Default"/> instance, so clients created
+        /// earlier keep sharing it and no created default is dropped undisposed. It replaces any
+        /// other registration (a custom factory or <see cref="HttpTransportFactory.SetForTesting"/>).
         /// </summary>
         public static void EnsureRegistered()
         {
-            HttpTransportFactory.Register(
-                () => new RawSocketTransport(),
-                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend),
-                (tlsBackend, poolOptions, http2Options, streamingOptions) =>
+            HttpTransportFactory.RegisterUnlessCurrent(
+                Registration.Default,
+                Registration.WithBackend,
+                Registration.WithOptions,
+                Registration.Capabilities);
+        }
+
+        // The factories live in static fields so every EnsureRegistered call passes the same
+        // delegate instances and HttpTransportFactory can recognize its own registration (#275).
+        private static class Registration
+        {
+            internal static readonly Func<IHttpTransport> Default = () => new RawSocketTransport();
+
+            internal static readonly Func<TlsBackend, IHttpTransport> WithBackend =
+                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend);
+
+            internal static readonly Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport>
+                WithOptions = (tlsBackend, poolOptions, http2Options, streamingOptions) =>
                     new RawSocketTransport(
                         pool: new TcpConnectionPool(
                             maxConnectionsPerHost: poolOptions.MaxConnectionsPerHost,
@@ -96,8 +114,9 @@ namespace TurboHTTP.Transport
                             connectTimeout: poolOptions.ConnectTimeout),
                         tlsBackend: tlsBackend,
                         http2Options: http2Options,
-                        streamingOptions: streamingOptions));
-            HttpTransportFactory.RegisterCapabilities(ProbeCapabilities);
+                        streamingOptions: streamingOptions);
+
+            internal static readonly Func<TransportCapabilities> Capabilities = ProbeCapabilities;
         }
 
         // HTTP/2 needs ALPN: SslStream exposes it on this runtime, or the BouncyCastle provider is
