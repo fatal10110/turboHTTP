@@ -40,6 +40,21 @@ Kestrel and nghttpd), `request-headers-large` and `response-headers-many` (Kestr
 row checks that the request ran on an HTTP/2 connection. The per-run root
 (`Tools~/tls-interop/TestPki.cs`) is trusted only through `SSL_CERT_FILE`/`SSL_CERT_DIR`.
 
+The `bc-*` rows (#255) run the same client with `TlsBackend.BouncyCastle` against each server:
+
+| Row | What it proves |
+| --- | --- |
+| `bc-get-small` | BouncyCastle offers ALPN h2 and serves one HTTP/2 request directly (no proxy). |
+| `bc-connect-get-small` | Through a real CONNECT tunnel (`ConnectProxy.cs`, RFC 9110 9.3.6), BouncyCastle negotiates h2 inside the tunnel. One GET runs, then 20 concurrent GETs multiplex on that connection. The HTTP/2 connection is keyed by origin and proxy, no direct connection exists, and the proxy sees exactly one `CONNECT 127.0.0.1:<port>`. |
+| `bc-connect-get-large` | 2 MiB through the tunnel: HTTP/2 flow control over BouncyCastle records over the relayed stream. |
+
+A missing BouncyCastle provider fails the whole interop run as a precondition and never skips it (#140).
+BouncyCastle has no platform verifier on Linux (#248), so the harness trusts the per-run root through
+`ServerCertificateVerifier.AddTestTrustAnchor`, as `Tools~/tls-interop` does. SslStream ignores that
+hook. These rows are the Editor-independent proof for #255: the Unity Editor's Mono `SslStream` has no
+ALPN, and the vendored BouncyCastle strip has no TLS server, so no loopback origin inside the Editor can
+select h2. Device validation of h2 through CONNECT stays with #103.
+
 h2spec tests servers, not clients, so it is not used. The adversarial rows are the client-side
 counterpart: they check how the client reacts to hostile server frames.
 

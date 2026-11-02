@@ -5,18 +5,24 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Tools.TlsInterop;
 using TurboHTTP.Transport;
+using TurboHTTP.Transport.BouncyCastle;
+using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Tools.H2Interop
 {
     /// <summary>
     /// Interop rows: the production client (<see cref="RawSocketTransport"/>, SslStream, ALPN h2) against real
     /// HTTP/2 servers over TLS on loopback. Every row checks the request went over an HTTP/2 connection.
+    /// The <c>bc-*</c> rows use <see cref="TlsBackend.BouncyCastle"/> instead, directly and through a real
+    /// CONNECT tunnel (<see cref="ConnectProxy"/>, #255): BouncyCastle offers ALPN h2 inside the tunnel and the
+    /// HTTP/2 connection is keyed by origin and proxy. A missing BouncyCastle provider fails the run (#140).
     /// UHttpClient is not used: the editor shadow build of TurboHTTP.Core calls into the Unity engine while
     /// building its interceptors, which a plain .NET process cannot (as in Tools~/tls-interop).
     /// </summary>
@@ -57,6 +63,21 @@ namespace TurboHTTP.Tools.H2Interop
                 Console.WriteLine("FAIL precondition: SSL_CERT_FILE must be " + expectedRoots + " (run through Tools~/h2-interop/run.sh)");
                 return 1;
             }
+
+            // No Unity bootstrap runs here (TurboHttpBootstrap / RuntimeInitializeOnLoadMethod).
+            RawSocketTransport.EnsureRegistered();
+            BouncyCastleModuleRegistration.EnsureRegistered();
+            if (!TlsProviderSelector.IsBouncyCastleAvailable())
+            {
+                Console.WriteLine("FAIL precondition: the BouncyCastle TLS provider is not available (#140)");
+                return 1;
+            }
+
+            // BouncyCastle has no platform verifier on Linux (#248) and would reject every chain; trust the
+            // per-run root through the test-anchor hook (as Tools~/tls-interop does). SslStream ignores it and
+            // keeps trusting the root through SSL_CERT_FILE.
+            using (var root = new X509Certificate2(expectedRoots))
+                ServerCertificateVerifier.AddTestTrustAnchor(root.RawData);
 
             if (server != "kestrel" && server != "nghttpd" && server != "nginx")
             {
@@ -107,6 +128,9 @@ namespace TurboHTTP.Tools.H2Interop
             ("post-upload", PostUploadAsync),
             ("request-headers-large", RequestHeadersLargeAsync),
             ("response-headers-many", ResponseHeadersManyAsync),
+            ("bc-get-small", BcGetSmallAsync),
+            ("bc-connect-get-small", BcConnectGetSmallAsync),
+            ("bc-connect-get-large", BcConnectGetLargeAsync),
         };
 
         private sealed class Target
@@ -210,11 +234,74 @@ namespace TurboHTTP.Tools.H2Interop
             CheckHttp2(transport, target);
         }
 
+        // BouncyCastle straight to the server: ALPN h2 without a proxy, so a tunnel failure below is not a BC one.
+        private static async Task BcGetSmallAsync(Target target, CancellationToken ct)
+        {
+            using var transport = new RawSocketTransport(null, TlsBackend.BouncyCastle);
+            using var response = await SendAsync(transport, target, HttpMethod.GET, "/small.txt", null, null, ct).ConfigureAwait(false);
+            Check(response.GetBodyAsString() == SmallBody, "body: " + response.GetBodyAsString());
+            CheckHttp2(transport, target);
+        }
+
+        // #255: BouncyCastle through a real CONNECT tunnel. One GET opens the tunnel and negotiates h2 inside it;
+        // 20 concurrent GETs then multiplex on that HTTP/2 connection, so the proxy sees exactly one tunnel.
+        private static async Task BcConnectGetSmallAsync(Target target, CancellationToken ct)
+        {
+            await using var proxy = ConnectProxy.Start();
+            using (var transport = new RawSocketTransport(null, TlsBackend.BouncyCastle))
+            {
+                using (var first = await SendAsync(transport, target, HttpMethod.GET, "/small.txt", null, null, ct, proxy).ConfigureAwait(false))
+                    Check(first.GetBodyAsString() == SmallBody, "first body: " + first.GetBodyAsString());
+                CheckHttp2ViaProxy(transport, target, proxy);
+
+                var tasks = new Task<UHttpResponse>[20];
+                for (int i = 0; i < tasks.Length; i++)
+                    tasks[i] = SendAsync(transport, target, HttpMethod.GET, "/small.txt?i=" + i.ToString(CultureInfo.InvariantCulture), null, null, ct, proxy);
+                for (int i = 0; i < tasks.Length; i++)
+                {
+                    using var response = await tasks[i].ConfigureAwait(false);
+                    Check(response.GetBodyAsString() == SmallBody, "request " + i + " body: " + response.GetBodyAsString());
+                }
+
+                CheckHttp2ViaProxy(transport, target, proxy);
+            }
+
+            CheckTunnels(proxy, target, 1);
+        }
+
+        // 2 MiB through the tunnel: HTTP/2 flow control over BouncyCastle records over the relayed TCP stream.
+        private static async Task BcConnectGetLargeAsync(Target target, CancellationToken ct)
+        {
+            await using var proxy = ConnectProxy.Start();
+            using (var transport = new RawSocketTransport(null, TlsBackend.BouncyCastle))
+            {
+                using (var response = await SendAsync(transport, target, HttpMethod.GET, "/large.bin", null, null, ct, proxy).ConfigureAwait(false))
+                    Check(SameBytes(Pattern(LargeBytes, 1), response.Body.ToArray()), "large body differs (" + response.Body.Length + " bytes)");
+                CheckHttp2ViaProxy(transport, target, proxy);
+            }
+
+            CheckTunnels(proxy, target, 1);
+        }
+
         private static async Task<UHttpResponse> SendAsync(
-            RawSocketTransport transport, Target target, HttpMethod method, string path, byte[] body, HttpHeaders headers, CancellationToken ct)
+            RawSocketTransport transport, Target target, HttpMethod method, string path, byte[] body, HttpHeaders headers, CancellationToken ct,
+            ConnectProxy proxy = null)
         {
             var uri = new Uri("https://" + Host + ":" + target.Port.ToString(CultureInfo.InvariantCulture) + path);
             var request = new UHttpRequest(method, uri, headers, body);
+            if (proxy != null)
+            {
+                // The transport reads the proxy from request metadata (UHttpClient resolves it there); the leg to
+                // the http:// proxy is cleartext, so the request opts in like UHttpClientOptions.AllowCleartext.
+                request = request
+                    .WithProxy(new ProxySettings
+                    {
+                        Address = new Uri("http://" + Host + ":" + proxy.Port.ToString(CultureInfo.InvariantCulture)),
+                        UseEnvironmentVariables = false,
+                    })
+                    .WithMetadata(RequestMetadataKeys.AllowCleartext, true);
+            }
+
             var response = await TransportDispatchHelper.CollectResponseAsync(transport, request, new RequestContext(request), ct).ConfigureAwait(false);
             if ((int)response.StatusCode != 200)
             {
@@ -228,6 +315,23 @@ namespace TurboHTTP.Tools.H2Interop
 
         private static void CheckHttp2(RawSocketTransport transport, Target target) =>
             Check(transport.HasHttp2Connection(Host, target.Port), "the request did not run on an HTTP/2 connection");
+
+        /// <summary>The HTTP/2 connection exists under the origin x proxy key, and no direct one was opened.</summary>
+        private static void CheckHttp2ViaProxy(RawSocketTransport transport, Target target, ConnectProxy proxy)
+        {
+            Check(transport.HasHttp2Connection(Host, target.Port, Host, proxy.Port),
+                "the request did not run on an HTTP/2 connection through the CONNECT tunnel");
+            Check(!transport.HasHttp2Connection(Host, target.Port), "an HTTP/2 connection bypassed the proxy");
+        }
+
+        private static void CheckTunnels(ConnectProxy proxy, Target target, int expected)
+        {
+            string authority = Host + ":" + target.Port.ToString(CultureInfo.InvariantCulture);
+            var targets = proxy.ConnectTargets;
+            Check(proxy.AcceptCount == expected && targets.Length == expected && Array.TrueForAll(targets, t => t == authority),
+                "expected " + expected + " CONNECT " + authority + ", proxy saw " + proxy.AcceptCount + " connection(s): " +
+                string.Join(", ", targets));
+        }
 
         /// <summary>Readiness of a server started by run.sh (docker) or in-process: TCP accept on the port.</summary>
         private static async Task WaitForListenerAsync(string server, int port)

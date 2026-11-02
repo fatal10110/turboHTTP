@@ -11,7 +11,8 @@
 # host editor) drive a real Http2Connection in memory with hostile frame sequences. Interop rows: the
 # production RawSocketTransport (SslStream, ALPN h2) against Kestrel (in-process), nghttpd and nginx (docker,
 # pinned images) over TLS on loopback; the per-run root (Tools~/tls-interop/TestPki.cs) is trusted only
-# through SSL_CERT_FILE/SSL_CERT_DIR. Needs dotnet (SDK 8 with the ASP.NET Core runtime), docker for the
+# through SSL_CERT_FILE/SSL_CERT_DIR. The bc-* rows repeat this with BouncyCastle, directly and through an
+# in-harness CONNECT proxy (#255); BouncyCastle trusts the root through the test-anchor hook. Needs dotnet (SDK 8 with the ASP.NET Core runtime), docker for the
 # nghttpd/nginx rows and the Unity managed DLLs the shadow build uses (Tools~/ci/fetch-unity-dlls.sh, or
 # UNITY_DLLS / UNITY_PATH). Output lands in .build/h2-interop/run.
 # Exit 0 = every row passed; 1 = a row or a precondition failed (never a skip); 2 = usage; 3 = tool missing.

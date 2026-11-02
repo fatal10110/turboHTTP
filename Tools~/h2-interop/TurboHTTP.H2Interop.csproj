@@ -23,6 +23,9 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <Reference Include="TurboHTTP.Core" HintPath="$(ShadowBin)TurboHTTP.Core.dll" />
     <Reference Include="TurboHTTP.Transport" HintPath="$(ShadowBin)TurboHTTP.Transport.dll" />
+    <!-- The bc-* rows (#255): BouncyCastle glue and the vendored library, compiled by the shadow build with TURBOHTTP_BOUNCYCASTLE. -->
+    <Reference Include="TurboHTTP.Transport.BouncyCastle" HintPath="$(ShadowBin)TurboHTTP.Transport.BouncyCastle.dll" />
+    <Reference Include="TurboHTTP.SecureProtocol" HintPath="$(ShadowBin)TurboHTTP.SecureProtocol.dll" />
     <!-- TurboHTTP.Core links UnityEngine (PlatformInfo/PlatformConfig); the HTTP/2 path never calls into the engine. -->
     <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
     <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
