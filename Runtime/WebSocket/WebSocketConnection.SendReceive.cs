@@ -66,16 +66,22 @@ namespace TurboHTTP.WebSocket
         {
             ThrowIfDisposed();
 
+            // Closed still drains (#217): FinalizeClose completes the queue before the Closed transition,
+            // so messages that arrived ahead of the peer's close frame are returned first and the
+            // completed queue then reports ConnectionClosed.
             var state = State;
-            if (state != WebSocketState.Open && state != WebSocketState.Closing)
+            var queue = _receiveQueue;
+            if (state != WebSocketState.Open &&
+                state != WebSocketState.Closing &&
+                !(state == WebSocketState.Closed && queue != null))
             {
                 throw new InvalidOperationException(
-                    "ReceiveAsync requires Open or Closing state. Current state: " + state + ".");
+                    "ReceiveAsync requires Open, Closing, or Closed state. Current state: " + state + ".");
             }
 
             try
             {
-                return await _receiveQueue.DequeueAsync(ct).ConfigureAwait(false);
+                return await queue.DequeueAsync(ct).ConfigureAwait(false);
             }
             catch (AsyncQueueCompletedException ex)
             {

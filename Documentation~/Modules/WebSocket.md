@@ -69,6 +69,11 @@ while (ws.State == WebSocketState.Open)
 }
 ```
 
+Messages that arrived before the server's close frame stay readable after `State` becomes `Closed`:
+`ReceiveAsync` returns them in order and only then throws `WebSocketException` with
+`WebSocketError.ConnectionClosed` and the server's close code. A loop that must not miss the last
+messages reads until that exception instead of testing `State`.
+
 ### Events vs. `ReceiveAsync`
 
 `WebSocketClient` and `ResilientWebSocketClient` deliver messages through the `OnMessage` event, the
@@ -149,9 +154,23 @@ incoming messages are inflated without keeping context between messages. It neve
 it is rejected. `PerMessageDeflateOptions` therefore only accepts `serverNoContextTakeover: true` and
 `clientMaxWindowBits: 15`.
 
+When the server's response does not include `client_no_context_takeover`, the server may keep one
+inflater for all client messages (RFC 7692 section 7.2.2). On runtimes whose `DeflateStream` cannot
+end a message with a sync flush (Unity Mono, and IL2CPP with the same class libraries), the client
+then sends its messages uncompressed, which the extension allows. Incoming messages are always
+decompressed.
+
 The handshake fails (`WebSocketError.ExtensionNegotiationFailed`, close code 1002) whenever the server
 selects an extension the client did not offer, selects one twice, or uses parameters the client
 cannot honour, whether compression is optional or required (RFC 6455 section 4.1). Raw extension
 strings in `WebSocketConnectionOptions.Extensions` are not supported and fail `Validate`; register
 extensions with `WithExtension` instead. Control frames with any RSV bit set close the connection
 with 1002.
+
+### Interop
+
+The client is checked against the [Autobahn testsuite](https://github.com/crossbario/autobahn-testsuite)
+fuzzing server (framing, ping/pong, reserved bits, opcodes, fragmentation, UTF-8, close handling,
+limits and `permessage-deflate`). Cases that need a parameter the client declines by design (above)
+fail the handshake on purpose. The gate, its results and every documented exception are in
+`Tools~/autobahn/README.md` in the package repository.

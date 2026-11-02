@@ -1,0 +1,58 @@
+name: autobahn
+
+# WebSocket interop gate against the Autobahn testsuite fuzzing server (#217). Manual only: it runs
+# for about an hour and is a pre-GA gate, not a PR check (Tools~/autobahn/README.md). It needs no
+# Unity license: the harness links the shadow-build DLLs, built from the Unity managed DLLs that
+# Tools~/ci/fetch-unity-dlls.sh extracts from the public unityci/editor image.
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "Case patterns, comma separated (empty = the full gate in Tools~/autobahn/config)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  autobahn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Unity version
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v6
+        with:
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
+
+      - name: Run the Autobahn gate
+        env:
+          CASES: ${{ inputs.cases }}
+        run: |
+          if [ -n "$CASES" ]; then
+            'Tools~/autobahn/run.sh' --cases "$CASES"
+          else
+            'Tools~/autobahn/run.sh'
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: autobahn-reports
+          path: |
+            .build/autobahn/reports
+            .build/autobahn/*.log
+          if-no-files-found: warn
