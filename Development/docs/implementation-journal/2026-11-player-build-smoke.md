@@ -44,8 +44,10 @@ that exercises it. No product code changed.
   README snippet itself does not compile. The smoke compiles the same Quick Start shape against the
   current API (`QuickStartGet`, compiled, never called). Fixing the README is #98.
 - WSL interop intermittently fails to start Windows processes (`UtilAcceptVsock: accept4 failed`);
-  the script retries a Unity start that wrote no log and skips the `cmd.exe` probe when
-  `UNITY_SMOKE_DIR` is set.
+  the script retries a Unity or player start that wrote no log and skips the `cmd.exe` probe when
+  `UNITY_SMOKE_DIR` is set. A `find` over `Library/Bee` on `/mnt/c` once failed with "Cannot
+  allocate memory" and hid the linker output, so the script uses the fixed
+  `Library/Bee/artifacts/{Android,WinPlayerBuildProgram}/ManagedStripped` paths instead.
 
 ## Results (host: WSL2 + Windows Unity 2021.3.45f2, package at the PR head)
 

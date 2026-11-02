@@ -40,9 +40,10 @@ while [ $# -gt 0 ]; do
     *) echo "usage: $0 --target win64-mono|win64-il2cpp|android-il2cpp [--bouncycastle] [--background]" >&2; exit 2 ;;
   esac
 done
+# stripped: the UnityLinker output folder (under Library/Bee/artifacts) of the target's build program.
 case "$target" in
-  win64-mono|win64-il2cpp) group=Standalone; buildtarget=Win64; product=TurboHttpSmoke.exe ;;
-  android-il2cpp) group=Android; buildtarget=Android; product=TurboHttpSmoke.apk ;;
+  win64-mono|win64-il2cpp) group=Standalone; buildtarget=Win64; product=TurboHttpSmoke.exe; stripped=WinPlayerBuildProgram ;;
+  android-il2cpp) group=Android; buildtarget=Android; product=TurboHttpSmoke.apk; stripped=Android ;;
   *) echo "build-player: --target win64-mono|win64-il2cpp|android-il2cpp required" >&2; exit 2 ;;
 esac
 
@@ -94,9 +95,17 @@ variant="$target-nobc"
 out="$work/builds/$variant-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$out"
 
-rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --exclude='Library/' \
-  --exclude='Temp/' --exclude='Logs/' --exclude='.DS_Store' --exclude='.claude/' --exclude='Tools~/' \
-  "$repo/" "$pkg/"
+# /mnt/c (drvfs) under memory pressure sometimes fails a readdir with ENOMEM: retry the sync.
+synced=0
+for _ in 1 2 3; do
+  if rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --exclude='Library/' \
+       --exclude='Temp/' --exclude='Logs/' --exclude='.DS_Store' --exclude='.claude/' --exclude='Tools~/' \
+       --exclude='Development/' "$repo/" "$pkg/"; then
+    synced=1; break
+  fi
+  sleep 5
+done
+[ "$synced" = 1 ] || { echo "build-player: cannot sync the package to $pkg" >&2; exit 2; }
 
 if [ ! -d "$proj/ProjectSettings" ]; then
   "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$work/create.log")"
@@ -142,9 +151,8 @@ if new != text:
 PY
 
 # Stale linker output from an earlier build of the other variant must not satisfy the checks.
-if [ -d "$proj/Library/Bee/artifacts" ]; then
-  find "$proj/Library/Bee/artifacts" -maxdepth 3 -type d -name ManagedStripped -prune -exec rm -rf {} +
-fi
+stripped="$proj/Library/Bee/artifacts/$stripped/ManagedStripped"
+rm -rf "$stripped"
 
 log="$out/build.log"
 echo "build-player: $variant -> $out"
@@ -169,7 +177,7 @@ grep -E "TURBOHTTP_BUILD|error CS[0-9]+" "$log" | head -20 || true
 # Assemblies that reached the player: the stripped linker output for IL2CPP, <name>_Data/Managed for Mono.
 case "$target" in
   win64-mono) managed="$out/TurboHttpSmoke_Data/Managed" ;;
-  *) managed="$(find "$proj/Library/Bee/artifacts" -maxdepth 3 -type d -name ManagedStripped 2>/dev/null | head -1 || true)" ;;
+  *) managed="$stripped" ;;
 esac
 
 toolchain=0
@@ -240,10 +248,15 @@ fi
 
 if [ "$target" != android-il2cpp ]; then
   plog="$out/player.log"
-  set +e
-  (cd "$out" && timeout 300 "./$product" -batchmode -nographics -logFile "$(topath "$plog")" >/dev/null 2>&1)
-  pcode=$?
-  set -e
+  pcode=0
+  for _ in 1 2 3; do
+    set +e
+    (cd "$out" && timeout 300 "./$product" -batchmode -nographics -logFile "$(topath "$plog")" >/dev/null 2>&1)
+    pcode=$?
+    set -e
+    [ -f "$plog" ] && break
+    sleep 5
+  done
   marker="$(grep -m1 -E "TURBOHTTP_SMOKE (PASS|FAIL)" "$plog" 2>/dev/null || true)"
   echo "build-player: player exit $pcode: ${marker:-no TURBOHTTP_SMOKE marker}"
   case "$marker" in
