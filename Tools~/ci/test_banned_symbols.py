@@ -72,8 +72,15 @@ class SyncOverAsyncBanTests(unittest.TestCase):
         cls.code, cls.diags, cls.output = shadow_build.build(project)
 
     def rs0030(self):
-        return [d for d in self.diags
-                if d["rule"] == "RS0030" and os.path.basename(d["file"]) == "Scratch.cs"]
+        # MSBuild may print a diagnostic more than once (CI's SDK does); dedupe exact repeats the way
+        # shadow_build.main does before counting.
+        seen, hits = set(), []
+        for d in self.diags:
+            ident = (d["file"], d["line"], d["rule"], d["msg"])
+            if d["rule"] == "RS0030" and os.path.basename(d["file"]) == "Scratch.cs" and ident not in seen:
+                seen.add(ident)
+                hits.append(d)
+        return hits
 
     def test_scratch_project_builds(self):
         errors = [d for d in self.diags if d["kind"] == "error"]
