@@ -76,7 +76,11 @@ for target in "${targets[@]}"; do
   artifacts="$out/artifacts/$target"
   mkdir -p "$artifacts"
   echo "== $target ($driver)"
-  "${harness[@]}" replay "$target" "$corpus" || status=1
+  # Instrumented DLLs write coverage into the shared memory libfuzzer-dotnet maps; run outside it they
+  # crash with AccessViolationException. libFuzzer executes every seed corpus file first anyway.
+  if [ "$driver" != libfuzzer ]; then
+    "${harness[@]}" replay "$target" "$corpus" || status=1
+  fi
 
   case "$driver" in
     mutate)

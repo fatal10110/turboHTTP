@@ -69,4 +69,10 @@ Wave run w1102, lane parser-fuzz. One PR.
 - Mutation driver (no coverage guidance), seed 112, max-len 4096, 1,000,000 inputs per target,
   0 findings in every target: h1-response 43 s, h1-chunked-body 76 s, hpack 13 s, h2-frames 42 s,
   h2-connection 195 s, ws-frames 31 s, ws-inflate 26 s, json 19 s.
+- First `fuzz.yml` run on the PR (run 41540559792, head 44d41a1): libFuzzer completed 1,000,000 runs
+  in every target with no finding (json 77 s, hpack 51 s, h2-frames 89 s, h1-response 128 s,
+  h1-chunked-body 133 s, ws-inflate 96 s, ws-frames 143 s, h2-connection 532 s), but each job exited 1:
+  `run.sh` replayed the corpus through the SharpFuzz-instrumented DLLs outside libfuzzer-dotnet, which
+  aborts with `AccessViolationException` (no coverage shared memory). The libfuzzer driver now skips
+  that replay; libFuzzer executes the seed corpus itself before mutating.
 - Not run locally: libFuzzer / SharpFuzz instrumentation (CI only), Unity PlayMode, IL2CPP, devices.

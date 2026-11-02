@@ -42,6 +42,8 @@ under `.build/fuzz/artifacts/<target>/`.
   SharpFuzz.CommandLine --version 2.3.0`) and `libfuzzer-dotnet` (built with clang from
   [Metalnem/libfuzzer-dotnet](https://github.com/Metalnem/libfuzzer-dotnet); set `LIBFUZZER_DOTNET`
   to its path). New inputs go to `.build/fuzz/work/<target>`; the committed corpus is read only.
+  libFuzzer runs the corpus itself first, so this driver skips the separate replay: instrumented DLLs
+  only run under `libfuzzer-dotnet` (outside it they fail with `AccessViolationException`).
 
 `.github/workflows/fuzz.yml` runs the libfuzzer driver, one job per target: on pull requests that
 touch a parser, up to 1M executions or 10 minutes per target; weekly and on manual dispatch, the
@@ -57,7 +59,8 @@ replays it.
 
 ## Findings
 
-1. Reproduce: `dotnet .build/fuzz/bin/Release/net8.0/TurboHTTP.Fuzz.dll replay <target> <input>`.
+1. Reproduce on an uninstrumented build (`'Tools~/fuzz/run.sh' --target <target>` rebuilds one):
+   `dotnet .build/fuzz/bin/Release/net8.0/TurboHTTP.Fuzz.dll replay <target> <input>`.
 2. Dedupe with `Tools~/agent-tools/issue_search.py` and file one issue per distinct defect with the
    issue template (protocol or security crashes go to milestone v1.0-beta). Attach the input as hex.
 3. The fix adds a regression test under `Tests/Runtime/<area>/` (the `*FuzzRegressionTests` files
