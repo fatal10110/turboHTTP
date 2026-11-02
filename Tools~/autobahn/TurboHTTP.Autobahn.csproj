@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Autobahn testsuite client harness (#217). Not a Unity assembly: Tools~ is ignored by Unity.
+    It links the shadow-build DLLs (Tools~/ci/shadow_build.py) instead of compiling Runtime/ again,
+    so it exercises exactly the netstandard2.1 assemblies the analyzers checked. Build output goes to
+    .build/autobahn (Directory.Build.props). Run it through Tools~/autobahn/run.sh.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>TurboHTTP.Tools.Autobahn</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepoRoot>
+    <ShadowBin Condition="'$(ShadowBin)' == ''">$(RepoRoot).build/shadow/editor/bin/Debug/netstandard2.1/</ShadowBin>
+    <UnityManaged Condition="'$(UnityManaged)' == ''">$(RepoRoot).tools/unity-managed/$([System.IO.File]::ReadAllText('$(RepoRoot)Tools~/ci/unity-version').Trim())/</UnityManaged>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="TurboHTTP.Core" HintPath="$(ShadowBin)TurboHTTP.Core.dll" />
+    <Reference Include="TurboHTTP.Transport" HintPath="$(ShadowBin)TurboHTTP.Transport.dll" />
+    <Reference Include="TurboHTTP.WebSocket" HintPath="$(ShadowBin)TurboHTTP.WebSocket.dll" />
+    <Reference Include="TurboHTTP.WebSocket.Transport" HintPath="$(ShadowBin)TurboHTTP.WebSocket.Transport.dll" />
+    <!-- TurboHTTP.Core links UnityEngine (PlatformInfo/PlatformConfig); the WebSocket path never calls it. -->
+    <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
+  </ItemGroup>
+</Project>

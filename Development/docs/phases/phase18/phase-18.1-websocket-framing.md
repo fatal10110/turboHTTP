@@ -110,7 +110,7 @@ Implementation constraints:
 
 Required behavior:
 
-1. Define protocol constants: WebSocket GUID (`258EAFA5-E914-47DA-95CA-5AB53DC52D51`), supported version (`13`).
+1. Define protocol constants: WebSocket GUID (`258EAFA5-E914-47DA-95CA-C5AB0DC85B11`), supported version (`13`).
 2. Define default configuration values: max frame size (16MB), max message size (4MB), max fragment count (64), fragmentation threshold (64KB), close handshake timeout (5s), ping interval (25s), pong timeout (10s), receive queue capacity (100).
 3. Add static utility methods:
    - `ComputeAcceptKey(string clientKey)` — SHA-1 hash of client key + GUID, base64 encoded (RFC 6455 Section 4.2.2).
