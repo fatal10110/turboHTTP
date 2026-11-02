@@ -25,10 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BouncyCastleModuleRegistration.EnsureRegistered()` (`TurboHTTP.Transport.BouncyCastle`, only with
   `TURBOHTTP_BOUNCYCASTLE`): registers the BouncyCastle TLS provider explicitly; it also runs at
   startup automatically (#196).
+- `JsonUtilitySerializer` (`TurboHTTP.JSON` namespace, `TurboHTTP.Complete` assembly): an
+  `IJsonSerializer` backed by Unity's `JsonUtility`, so `AsJson<T>()`, `WithJsonBody(...)` and
+  `JsonWebSocketSerializer<T>` work with `[Serializable]` classes with public fields (#271). Types
+  without a serializable field (property-only DTOs) and anonymous types throw
+  `JsonSerializationException` instead of producing `{}`.
 - CI check `check_repo.py coreapi`: the public types of `TurboHTTP.Core` must match
   `Tools~/ci/api-baseline/core-public-types.txt` (at most 60).
 
 ### Changed
+- `JsonSerializer.Default` is `JsonUtilitySerializer` after startup when `TurboHTTP.Complete` is in the
+  project (installed only over the built-in LiteJson default, so an earlier `SetDefault` wins), and
+  `JsonSerializer.HasCustomSerializer()` returns true after startup. `ResetToDefault()` still restores
+  LiteJson (#271).
 - `DecompressionInterceptor`: the default decoded-size limit (`maxDecompressedBodySizeBytes`) is now
   32 MB instead of 256 MB, sized for mobile memory budgets (#74). The same value caps a compressed body
   with a known length. Pass a larger value to the constructor to keep the old limit.
@@ -49,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each member's CRC32 and size trailer is checked (#219).
 
 ### Breaking
+- `JsonWebSocketSerializer<T>`: the reflection mapper is removed; messages go through the registered
+  JSON serializer only (#192). DTOs with properties are no longer read or written (with
+  `JsonUtilitySerializer`, a property-only DTO fails with `WebSocketError.SerializationFailed`; use
+  public fields or register a full serializer with `JsonSerializer.SetDefault`), and a serializer failure
+  is no longer retried through dictionary normalization or private-constructor activation.
 - Background networking is experimental and opt-in (#106): define `TURBOHTTP_BACKGROUND_NETWORKING`
   per build target in Player Settings to build in the iOS/Android native bridges (an Editor gate
   leaves the plugins out of builds without it). Without the define, `UseBackgroundNetworking()` runs
