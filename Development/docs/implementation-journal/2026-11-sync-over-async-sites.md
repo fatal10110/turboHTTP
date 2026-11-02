@@ -51,7 +51,11 @@ Out of scope and untouched: `DecompressionHandler`, `ResponseBodyStream.Read`, `
 - `Tools~/ci/check.sh`: OK (no new analyzer warning after removing the four baseline lines).
 - `UHttpStreamingResponseSyncDisposeTests.Dispose_WhileBodyDisposeIsPending_ReturnsAtOnce_AndReleasesWhenItCompletes`
   fails on the old code: the old `Dispose` blocks until a 10 s watchdog fails the pending dispose, then
-  the "Dispose waited" and "released only after the body dispose" assertions fail. On the new code the
+  the "Dispose waited" assertion fails (confirmed in Unity, below). On the new code the
   watchdog is removed before it can fire, so the test does not depend on timing.
-- Unity scoped runs: see the PR "Local gates" section.
+- Unity 2021.3.45f2 (host editor), PlayMode, filter
+  `UHttpStreamingResponseSyncDisposeTests|UHttpStreamingResponseTests|HandlerCallbackSafetyWrapperTests|BufferedDispatchBridgeTests|StreamingAllocationGateTests|InterceptorPipelineTests|CoreSurfaceTests|PlatformTests|Http2ConnectionTests|TcpStreamAdapterTests|BouncyCastleHandshakeThreadPoolTests|CacheInterceptorTests|Decompression|RawSocketTransportTests|MonitorInterceptorTests|LoggingInterceptorTests`:
+  453 passed, 0 failed. With the old `UHttpStreamingResponse.cs` restored, `UHttpStreamingResponseSyncDisposeTests`
+  fails both pending-dispose tests ("Dispose waited for the body dispose to finish."); the two synchronous ones pass.
+  (An EditMode run of `Tests/Runtime` finds 0 tests; Runtime tests run in PlayMode.)
 - Not run: the full Unity EditMode/PlayMode suites (host-editor periodic run), IL2CPP player builds, devices.
