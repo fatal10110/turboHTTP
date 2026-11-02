@@ -51,7 +51,9 @@ Wave run w1102, lane parser-fuzz. One PR.
   SETTINGS plus SETTINGS ACK, then holds the input until the client has written its HEADERS frame, so
   the padding, priority and CONTINUATION paths run against an open stream. A read-loop failure whose
   root cause (through `UHttpError.InnerException`) is not a protocol, compression or I/O error is a
-  finding, because the loop's `catch (Exception)` would otherwise hide it.
+  finding, because the loop's `catch (Exception)` would otherwise hide it. `OperationCanceledException`
+  is allowed too: when the read loop closes the connection, a sender waiting for its send window
+  gets one (`Http2Connection.Send.cs`, `ThrowIfConnectionClosedForSend`).
 - **permessage-deflate.** The targets negotiate `server_no_context_takeover`: inbound context takeover
   is not implemented and `AcceptNegotiation` rejects a response without it.
 - **Lane brief correction.** `ParsedResponse` is not `IDisposable`; the targets call
@@ -59,8 +61,8 @@ Wave run w1102, lane parser-fuzz. One PR.
 
 ## Deferred
 
-- Coverage-guided runs of at least 1M executions per target run in `fuzz.yml`; the result of its
-  first run on the PR decides whether #112 closes (see the PR body).
+- None. The coverage-guided runs (1,000,000 libFuzzer executions per target, 0 findings) are in
+  Verification. `h2-connection` needs about 530 s of the 600 s PR budget for 1M runs.
 
 ## Verification
 
@@ -75,4 +77,6 @@ Wave run w1102, lane parser-fuzz. One PR.
   `run.sh` replayed the corpus through the SharpFuzz-instrumented DLLs outside libfuzzer-dotnet, which
   aborts with `AccessViolationException` (no coverage shared memory). The libfuzzer driver now skips
   that replay; libFuzzer executes the seed corpus itself before mutating.
-- Not run locally: libFuzzer / SharpFuzz instrumentation (CI only), Unity PlayMode, IL2CPP, devices.
+- Unity PlayMode, `--filter 'ParserFuzzRegression|WebSocketFuzzRegression|JsonFuzzRegression'`: 8/8
+  passed (EditMode matches none: the tests live in the runtime test assembly).
+- Not run locally: libFuzzer / SharpFuzz instrumentation (CI only), IL2CPP, devices.
