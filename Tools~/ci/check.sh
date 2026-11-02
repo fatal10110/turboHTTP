@@ -50,6 +50,7 @@ if [ "$full" = 1 ]; then
     python3 -m unittest discover -s "Tools~/agent-tools" -p 'test_*.py' -q || fail "agent-tools tests"
   fi
   python3 "Tools~/ci/test_doc_snippets.py" -q || fail "doc snippet harness tests"
+  python3 "Tools~/ci/test_banned_symbols.py" -q || fail "banned-symbol (sync-over-async) gate test"
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"
   step "waves orchestration simulation"
   if command -v node >/dev/null; then node .claude/skills/turbohttp-waves/waves_sim.mjs >/dev/null || fail "waves_sim"

@@ -54,13 +54,9 @@ namespace TurboHTTP.Core
             try
             {
                 var pending = _inner.OnResponseStartAsync(statusCode, headers, body, context ?? _context);
-                if (pending.IsCompletedSuccessfully)
-                {
-                    pending.GetAwaiter().GetResult();
-                    Interlocked.Exchange(ref _terminated, 1);
-                    return default;
-                }
-
+                // An already completed callback runs this async method to the end synchronously, so the
+                // common path still returns a completed ValueTask without allocating (and without a
+                // banned GetResult on the caller's thread, #181).
                 return AwaitResponseStartAsync(pending, body);
             }
             catch (Exception ex)
