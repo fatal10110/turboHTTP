@@ -44,6 +44,7 @@ namespace TurboHTTP.Cache
 
             // RFC 9111 section 4.3.4: freshen the stored response with the 304's header fields.
             var merged = MergeNotModifiedEntry(request, lookup.Entry, notModifiedHeaders ?? HttpHeaders.Empty, baseKey);
+            var setCookies = notModifiedHeaders?.GetValues("Set-Cookie");
             if (merged.Entry != null)
             {
                 if (!string.Equals(lookup.StorageKey, merged.Entry.Key, StringComparison.Ordinal))
@@ -51,12 +52,12 @@ namespace TurboHTTP.Cache
                 else
                     await StorePreparedEntryQueuedAsync(baseKey, merged, cancellationToken).ConfigureAwait(false);
 
-                await ServeCachedEntryAsync(handler, merged.Entry, request, context, "REVALIDATED").ConfigureAwait(false);
+                await ServeCachedEntryAsync(handler, merged.Entry, request, context, "REVALIDATED", setCookies).ConfigureAwait(false);
                 return;
             }
 
             await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-            await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "REVALIDATED").ConfigureAwait(false);
+            await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "REVALIDATED", setCookies).ConfigureAwait(false);
         }
 
         private async ValueTask CompleteModifiedRevalidationAsync(
