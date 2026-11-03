@@ -1,5 +1,7 @@
 # Phase 3C: BouncyCastle TLS Fallback for IL2CPP/AOT Platforms
 
+> **Superseded (#34, #110, 2026-11):** Auto mode no longer falls back to BouncyCastle at runtime. The "Fallback path" (automatic fall back to BouncyCastle) below describes the original design. See the TLS fallback rule in `phase22c/overview.md` (principle 6): Auto picks the provider before the handshake, never picks one without full certificate chain validation, and a failed handshake propagates to the caller; BouncyCastle is selected only explicitly (`TlsBackend.BouncyCastle`).
+
 **Milestone:** M0 (Spike)
 **Dependencies:** Phase 3B (HTTP/2 Protocol Implementation)
 **Estimated Complexity:** High

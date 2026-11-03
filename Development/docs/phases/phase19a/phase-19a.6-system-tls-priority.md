@@ -1,5 +1,7 @@
 # Phase 19a.6: TLS Provider Hardening (System-First, Safe Fallback)
 
+> **Superseded (#34, #110, 2026-11):** Auto mode no longer falls back to BouncyCastle at runtime. The "Fall back to BouncyCastle only for capability/platform limitations" rule below describes the original design. See the TLS fallback rule in `phase22c/overview.md` (principle 6): Auto picks the provider before the handshake, never picks one without full certificate chain validation, and a failed handshake propagates to the caller; BouncyCastle is selected only explicitly (`TlsBackend.BouncyCastle`).
+
 **Depends on:** 19a.1 (`ArrayPool<byte>` completion)
 **Estimated Effort:** 1 week
 

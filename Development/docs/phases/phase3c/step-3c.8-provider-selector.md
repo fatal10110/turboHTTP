@@ -1,5 +1,7 @@
 # Step 3C.8: TlsProviderSelector
 
+> **Superseded (#34, #110, 2026-11):** Auto mode no longer falls back to BouncyCastle at runtime. The "falls back to BouncyCastle" code and comments below describe the original design. See the TLS fallback rule in `phase22c/overview.md` (principle 6): Auto picks the provider before the handshake, never picks one without full certificate chain validation, and a failed handshake propagates to the caller; BouncyCastle is selected only explicitly (`TlsBackend.BouncyCastle`).
+
 **File:** `Runtime/Transport/Tls/TlsProviderSelector.cs`  
 **Depends on:** Steps 3C.3, 3C.7  
 **Spec:** Platform Detection

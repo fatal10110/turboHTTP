@@ -1,0 +1,26 @@
+{
+  "name": "SamplesRun",
+  "rootNamespace": "",
+  "references": [
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner",
+    "TurboHTTP.Samples.BasicUsage",
+    "TurboHTTP.Samples.JsonApi",
+    "TurboHTTP.Samples.FileDownload",
+    "TurboHTTP.Samples.Authentication",
+    "TurboHTTP.Samples.AdvancedFeatures"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
