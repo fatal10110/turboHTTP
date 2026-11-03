@@ -22,7 +22,9 @@ namespace TurboHTTP.Unity.Mobile.Android
     /// blocks on the main thread (#88, #181). The expiry budget is timed on the thread pool from the
     /// player's pause notification, so it fires while the player loop is paused; the bridge owns the
     /// expiration token every scope carries and cancels it when the budget is spent. Returning to the
-    /// foreground gives later scopes a fresh token. Expiry behavior on devices is tracked in #266.
+    /// foreground gives later scopes a fresh token. The bridge listens to the signal only while it
+    /// has live scopes, so an idle bridge is not rooted by the process-wide pause notifications.
+    /// Expiry behavior on devices is tracked in #266.
     /// </remarks>
     public sealed class AndroidBackgroundWorkBridge : IBackgroundExecutionBridge, IDeferredBackgroundWorkBridge
     {
@@ -31,12 +33,16 @@ namespace TurboHTTP.Unity.Mobile.Android
         private readonly ConcurrentDictionary<string, byte> _queuedWorkIds = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         private readonly IAndroidBackgroundExpirySignal _expirySignal;
         private readonly object _expiryGate = new object();
+        private readonly Action _onExpiryChanged;
 
         // Owned by _expiryGate. One source per foreground episode: cancelled when the budget is
         // spent, replaced (never reset) on return to the foreground because scopes hold its token.
         // A cancelled source has no timer or wait handle, so a replaced one is left to the GC.
         private CancellationTokenSource _expiry;
         private bool _expiryCancelled;
+
+        // Owned by _expiryGate. The signal handler is attached while this is above zero.
+        private int _liveScopes;
 
         /// <summary>Creates a bridge over the platform plugin (none outside opted-in Android players).</summary>
         /// <param name="config">Bridge configuration (cloned); <see langword="null"/> uses the defaults.</param>
@@ -72,12 +78,9 @@ namespace TurboHTTP.Unity.Mobile.Android
                 expirySignal = new AndroidPauseExpirySignal(_config.BackgroundBudgetMilliseconds);
 
             _expirySignal = expirySignal;
+            _onExpiryChanged = OnExpiryChanged;
             if (expirySignal != null)
-            {
                 _expiry = new CancellationTokenSource();
-                expirySignal.ExpiryChanged += OnExpiryChanged;
-                OnExpiryChanged();
-            }
         }
 
         /// <inheritdoc />
@@ -106,10 +109,21 @@ namespace TurboHTTP.Unity.Mobile.Android
             var expirationToken = CancellationToken.None;
             if (expirySignal != null)
             {
+                CancellationTokenSource toCancel = null;
                 lock (_expiryGate)
                 {
+                    // The first live scope attaches the handler and catches up with an expiry or a
+                    // resume that happened while nothing listened.
+                    if (_liveScopes++ == 0)
+                    {
+                        expirySignal.ExpiryChanged += _onExpiryChanged;
+                        toCancel = UpdateExpiryLocked();
+                    }
+
                     expirationToken = _expiry.Token;
                 }
+
+                Cancel(toCancel);
             }
 
             IBackgroundExecutionScope scope = new Mobile.BackgroundExecutionScope(
@@ -130,43 +144,69 @@ namespace TurboHTTP.Unity.Mobile.Android
                         // The guard is advisory; a failed end leaves only a stale map entry in the plugin.
                     }
 
+                    if (expirySignal != null)
+                        ReleaseLiveScope(expirySignal);
+
                     return default;
                 });
             return new ValueTask<IBackgroundExecutionScope>(scope);
         }
 
-        private void OnExpiryChanged()
+        private void ReleaseLiveScope(IAndroidBackgroundExpirySignal expirySignal)
         {
-            CancellationTokenSource toCancel = null;
             lock (_expiryGate)
             {
-                if (_expirySignal.IsExpired)
-                {
-                    if (!_expiryCancelled)
-                    {
-                        _expiryCancelled = true;
-                        toCancel = _expiry;
-                    }
-                }
-                else if (_expiryCancelled)
-                {
-                    _expiry = new CancellationTokenSource();
-                    _expiryCancelled = false;
-                }
+                if (--_liveScopes == 0)
+                    expirySignal.ExpiryChanged -= _onExpiryChanged;
+            }
+        }
+
+        private void OnExpiryChanged()
+        {
+            CancellationTokenSource toCancel;
+            lock (_expiryGate)
+            {
+                toCancel = UpdateExpiryLocked();
             }
 
-            // Outside the lock: cancellation runs the in-flight requests' callbacks synchronously.
-            // A resume that raced in has already given later scopes a fresh source.
-            if (toCancel != null)
+            Cancel(toCancel);
+        }
+
+        // Caller holds _expiryGate. Returns the source to cancel once the lock is released.
+        private CancellationTokenSource UpdateExpiryLocked()
+        {
+            if (_expirySignal.IsExpired)
             {
-                try
-                {
-                    toCancel.Cancel();
-                }
-                catch (AggregateException)
-                {
-                    // A registration threw; the token is cancelled regardless.
-                }
+                if (_expiryCancelled)
+                    return null;
+
+                _expiryCancelled = true;
+                return _expiry;
+            }
+
+            if (_expiryCancelled)
+            {
+                _expiry = new CancellationTokenSource();
+                _expiryCancelled = false;
+            }
+
+            return null;
+        }
+
+        // Outside the lock: cancellation runs the in-flight requests' callbacks synchronously.
+        // A resume that raced in has already given later scopes a fresh source.
+        private static void Cancel(CancellationTokenSource toCancel)
+        {
+            if (toCancel == null)
+                return;
+
+            try
+            {
+                toCancel.Cancel();
+            }
+            catch (AggregateException)
+            {
+                // A registration threw; the token is cancelled regardless.
             }
         }
 

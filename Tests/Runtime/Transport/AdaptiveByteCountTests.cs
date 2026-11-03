@@ -128,6 +128,32 @@ namespace TurboHTTP.Tests.Transport
             });
         }
 
+        [Test]
+        public void DrainAsync_IsForwardedToTheInnerSource_NotReadThrough()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var inner = new DrainOnlyBody();
+                var completions = 0;
+                long counted = -1;
+                var body = new CountingResponseBodySource(inner, n =>
+                {
+                    completions++;
+                    counted = n;
+                });
+
+                await body.DrainAsync(CancellationToken.None);
+                Assert.AreEqual(1, inner.DrainCalls, "a discard stays a discard (HTTP/2 resets the stream)");
+                Assert.AreEqual(0, inner.ReadCalls);
+                Assert.AreEqual(1, completions);
+                Assert.AreEqual(0, counted, "drained bytes are not counted");
+
+                await body.DisposeAsync();
+                Assert.AreEqual(1, completions);
+                Assert.AreEqual(1, inner.DisposeCalls);
+            });
+        }
+
         private static byte[] CreatePayload(int length)
         {
             var payload = new byte[length];
@@ -143,6 +169,54 @@ namespace TurboHTTP.Tests.Transport
                 using (var gzip = new GZipStream(stream, CompressionLevel.Fastest, leaveOpen: true))
                     gzip.Write(input, 0, input.Length);
                 return stream.ToArray();
+            }
+        }
+
+        private sealed class DrainOnlyBody : IResponseBodySource
+        {
+            public int DrainCalls;
+            public int ReadCalls;
+            public int DisposeCalls;
+
+            public long? Length => null;
+
+            public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
+            {
+                data = default;
+                return false;
+            }
+
+            public bool TryDetachBufferedBody(out DetachedBufferedBody body)
+            {
+                body = default;
+                return false;
+            }
+
+            public ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken ct)
+            {
+                ReadCalls++;
+                throw new InvalidOperationException("DrainAsync must not read the body through");
+            }
+
+            public ValueTask DrainAsync(CancellationToken ct)
+            {
+                DrainCalls++;
+                return default;
+            }
+
+            public void Abort()
+            {
+            }
+
+            public ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
+            {
+                return new ValueTask<HttpHeaders>(new HttpHeaders());
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                DisposeCalls++;
+                return default;
             }
         }
 

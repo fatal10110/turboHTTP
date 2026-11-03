@@ -19,10 +19,16 @@ namespace TurboHTTP.Tests.Mobile
     [TestFixture]
     public class AndroidBackgroundExpiryTests
     {
+        [SetUp]
+        public void SetUp()
+        {
+            AndroidAppPauseSource.ResetStaticState();
+        }
+
         [TearDown]
         public void TearDown()
         {
-            AndroidAppPauseSource.Report(false);
+            AndroidAppPauseSource.ResetStaticState();
         }
 
         [Test]
@@ -180,6 +186,69 @@ namespace TurboHTTP.Tests.Mobile
         }
 
         [Test]
+        public void Bridge_IsReachableFromThePauseSource_OnlyWhileItHasLiveScopes()
+        {
+            var signal = new AndroidPauseExpirySignal(budgetMilliseconds: 60 * 60 * 1000);
+            var bridge = new AndroidBackgroundWorkBridge(new AndroidBackgroundWorkConfig(), new FakeAndroidPlugin(), signal);
+            Assert.AreEqual(0, AndroidAppPauseSource.ListenerCount, "an idle bridge is not rooted by the static source");
+
+            var first = Acquire(bridge);
+            var second = Acquire(bridge);
+            Assert.AreEqual(1, AndroidAppPauseSource.ListenerCount);
+
+            Release(first);
+            Assert.AreEqual(1, AndroidAppPauseSource.ListenerCount, "a live scope keeps the signal attached");
+
+            Release(second);
+            Release(second);
+            Assert.AreEqual(0, AndroidAppPauseSource.ListenerCount, "the last scope detaches it, once");
+
+            var third = Acquire(bridge);
+            Assert.AreEqual(1, AndroidAppPauseSource.ListenerCount);
+            Release(third);
+            Assert.AreEqual(0, AndroidAppPauseSource.ListenerCount);
+        }
+
+        [Test]
+        public void Bridge_ScopeBegunAfterAnExpiryNobodyListenedTo_IsExpired()
+        {
+            var signal = new AndroidPauseExpirySignal(budgetMilliseconds: 0);
+            var bridge = new AndroidBackgroundWorkBridge(new AndroidBackgroundWorkConfig(), new FakeAndroidPlugin(), signal);
+
+            var foreground = Acquire(bridge);
+            Release(foreground);
+
+            AndroidAppPauseSource.Report(true);
+            var whilePaused = Acquire(bridge);
+            Assert.IsTrue(whilePaused.ExpirationToken.IsCancellationRequested, "the budget ran from the pause, not from the attach");
+            Release(whilePaused);
+
+            AndroidAppPauseSource.Report(false);
+            var resumed = Acquire(bridge);
+            Assert.IsFalse(resumed.ExpirationToken.IsCancellationRequested, "a resume nobody listened to still clears the expiry");
+
+            AndroidAppPauseSource.Report(true);
+            Assert.IsTrue(resumed.ExpirationToken.IsCancellationRequested);
+            Release(resumed);
+        }
+
+        [Test]
+        public void PauseSignal_AttachedMidPause_TimesTheBudgetFromThePause()
+        {
+            AndroidAppPauseSource.Report(true);
+            var signal = new AndroidPauseExpirySignal(budgetMilliseconds: 60 * 60 * 1000);
+            Assert.That(signal.RemainingBudget, Is.LessThanOrEqualTo(TimeSpan.FromHours(1)));
+
+            Action handler = () => { };
+            signal.ExpiryChanged += handler;
+            Assert.AreEqual(1, AndroidAppPauseSource.ListenerCount);
+            Assert.IsFalse(signal.IsExpired);
+
+            signal.ExpiryChanged -= handler;
+            Assert.AreEqual(0, AndroidAppPauseSource.ListenerCount);
+        }
+
+        [Test]
         public void Config_Clone_CopiesTheBudget()
         {
             var clone = new AndroidBackgroundWorkConfig { BackgroundBudgetMilliseconds = 1234 }.Clone();
@@ -195,6 +264,12 @@ namespace TurboHTTP.Tests.Mobile
             Assert.IsTrue(pending.IsCompleted);
             Assert.IsNotNull(pending.Result);
             return pending.Result;
+        }
+
+        private static void Release(IBackgroundExecutionScope scope)
+        {
+            // The bridge's dispose action is synchronous.
+            Assert.IsTrue(scope.DisposeAsync().IsCompleted);
         }
 
         private sealed class FakeExpirySignal : IAndroidBackgroundExpirySignal

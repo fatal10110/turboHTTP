@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -8,10 +7,11 @@ namespace TurboHTTP.Unity.Mobile
 {
     /// <summary>
     /// Forwards a response body and counts the bytes the consumer takes from it: bytes returned by
-    /// <see cref="ReadAsync"/> (and <see cref="DrainAsync"/>), the length of a detached buffered
-    /// sequence (no copy), or the length of a buffered view the consumer read without reading the
-    /// stream. <c>onComplete</c> runs once, with the count, at the first of end of stream, detach,
-    /// read failure or dispose (#261).
+    /// <see cref="ReadAsync"/>, the length of a detached buffered sequence (no copy), or the length
+    /// of a buffered view the consumer read without reading the stream. <see cref="DrainAsync"/> is
+    /// forwarded to the inner source, which may discard without reading (an HTTP/2 stream is reset),
+    /// so drained bytes are not counted. <c>onComplete</c> runs once, with the count, at the first of
+    /// end of stream, detach, drain, read failure or dispose (#261).
     /// </summary>
     /// <remarks>
     /// The source keeps the single-consumer contract of <see cref="IResponseBodySource"/>: it owns
@@ -19,8 +19,6 @@ namespace TurboHTTP.Unity.Mobile
     /// </remarks>
     internal sealed class CountingResponseBodySource : IResponseBodySource
     {
-        private const int DrainBufferSize = 16 * 1024;
-
         private readonly IResponseBodySource _inner;
         private readonly Action<long> _onComplete;
 
@@ -84,17 +82,15 @@ namespace TurboHTTP.Unity.Mobile
 
         public async ValueTask DrainAsync(CancellationToken ct)
         {
-            // Drained bytes crossed the network as well, so drain through ReadAsync to count them.
-            var rented = ArrayPool<byte>.Shared.Rent(DrainBufferSize);
+            // Forwarded, never read here: reading would turn a discard (HTTP/2 resets the stream)
+            // into a full download.
             try
             {
-                while (await ReadAsync(rented, ct).ConfigureAwait(false) != 0)
-                {
-                }
+                await _inner.DrainAsync(ct).ConfigureAwait(false);
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(rented);
+                Complete();
             }
         }
 

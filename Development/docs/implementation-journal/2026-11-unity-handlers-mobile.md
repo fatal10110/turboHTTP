@@ -24,8 +24,10 @@ no asmdef reference changed.
   `GetAudioClipAsync` continues on; it is now cached before scene load.
 - **#261 adaptive bytes.** `AdaptiveHandler` counts a single-segment buffered body at the head as
   before; any other body is wrapped in `CountingResponseBodySource` (Unity/Mobile), which counts
-  reads, drains, detached sequences (no copy) and buffered views, and reports once at end of stream,
-  detach, failure or dispose. The sample is then recorded at body completion; one sample per request
+  reads, detached sequences (no copy) and buffered views, and reports once at end of stream,
+  detach, drain, failure or dispose. `DrainAsync` is forwarded, not read through (an HTTP/2 drain
+  resets the stream; reading would turn the discard into a download), so drained bytes are not
+  counted (review round 1). The sample is then recorded at body completion; one sample per request
   (an error after the head records the failure sample instead). Latency stays time-to-head.
 - **#267 Android expiry.** `AndroidBackgroundWorkBridge` owns the scopes' expiration token: one
   `CancellationTokenSource` per foreground episode, cancelled when an `IAndroidBackgroundExpirySignal`
@@ -35,6 +37,12 @@ no asmdef reference changed.
   (default 5000) and clears on resume, so it fires while the player loop is paused (#88).
   `RemainingBudget` is zero once expired, so `BackgroundNetworkingInterceptor` queues replayable
   requests and calls `TryEnqueueDeferredWork`. `Documentation~/PlatformNotes.md` updated.
+  Review round 1: the bridge subscribes to the signal only while it has live scopes (first
+  acquire attaches, last scope dispose detaches), and the signal listens to the static
+  `AndroidAppPauseSource` only while it has handlers, so an idle bridge built per
+  `UseBackgroundNetworking()` is not rooted for the life of the process. The source records the
+  pause timestamp and the signal computes `IsExpired` from it, so a scope begun mid-pause is timed
+  from the pause, not from the attach; the timer rounds up and re-arms if it fires early.
 
 ## Decisions
 
@@ -71,3 +79,7 @@ Runtime/Unity/Mobile: `AdaptiveHandler.cs`, `NetworkQualityDetector.cs` (interna
   where the audio device does not advance.
 - Not run: full Unity suites (periodic host-editor run), IL2CPP builds, Android/iOS devices. The
   Android pause/expiry on a device is added to #266 (`needs-device-validation`).
+- Review round 1: check.sh pass; PlayMode filter
+  `AdaptiveByteCountTests|AndroidBackgroundExpiryTests|AdaptiveInterceptorTests|BackgroundBridgeNativeTests|BackgroundNetworkingTests|MobileBackgroundNetworkingSmokeTests`:
+  47/47 pass. New: drain forwarding, listener count with and without live scopes, expiry nobody
+  listened to, attach mid-pause.
