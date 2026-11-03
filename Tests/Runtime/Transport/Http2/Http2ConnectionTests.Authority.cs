@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http2;
 
 namespace TurboHTTP.Tests.Transport.Http2

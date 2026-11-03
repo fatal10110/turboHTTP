@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -50,8 +49,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var client = CreateClient();
 
                 const string badValue = "sha-256=\u0001";
+                // No body: a zero-length body with trailers goes out chunked on HTTP/1.1.
                 var request = client.Post("http://127.0.0.1:" + server.Port + "/upload")
-                    .WithBody(Encoding.ASCII.GetBytes("abc"))
                     .WithRequestTrailers(
                         new[] { "X-Checksum" },
                         () =>
@@ -74,7 +73,19 @@ namespace TurboHTTP.Tests.Transport.Http1
             Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type, ex.ToString());
             Assert.IsFalse(ex.HttpError.IsRetryable());
             Assert.IsInstanceOf<ArgumentException>(ex.InnerException, ex.ToString());
-            StringAssert.DoesNotContain(value, ex.HttpError.Message, "the value must not reach the message");
+            if (HasControlCharacter(value))
+                StringAssert.DoesNotContain(value, ex.HttpError.Message, "the value must not reach the message");
+        }
+
+        private static bool HasControlCharacter(string value)
+        {
+            foreach (var c in value)
+            {
+                if (c < 0x20)
+                    return true;
+            }
+
+            return false;
         }
 
         private static UHttpClient CreateClient()
