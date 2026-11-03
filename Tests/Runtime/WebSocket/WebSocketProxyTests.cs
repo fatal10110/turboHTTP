@@ -219,6 +219,7 @@ namespace TurboHTTP.Tests.WebSocket
         {
             return new WebSocketConnectionOptions
             {
+                AllowCleartext = true,
                 HandshakeTimeout = TimeSpan.FromSeconds(2),
                 CloseHandshakeTimeout = TimeSpan.FromMilliseconds(500),
                 PingInterval = TimeSpan.Zero,

@@ -130,7 +130,7 @@ namespace TurboHTTP.Tests.Testing
             byte[] forwarded;
             using (var transport = RecordTransport(new RawSocketTransport()))
             {
-                forwarded = DispatchAndRead(transport, Get(url), out var error);
+                forwarded = DispatchAndRead(transport, TestHelpers.AllowLoopbackCleartext(Get(url)), out var error);
                 Assert.IsNull(error, error?.Message);
                 transport.SaveRecordings();
             }

@@ -221,6 +221,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -251,7 +252,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                 });
 
                 using var transport = new RawSocketTransport();
-                var request = new UHttpRequest(HttpMethod.GET, new Uri($"http://127.0.0.1:{server.Port}/"));
+                var request = TestHelpers.AllowLoopbackCleartext(
+                    new UHttpRequest(HttpMethod.GET, new Uri($"http://127.0.0.1:{server.Port}/")));
                 var context = new RequestContext(request);
                 var handler = new FailingResponseStartHandler();
 
@@ -292,7 +294,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                 var pool = new TcpConnectionPool(maxConnectionsPerHost: 1);
                 using var transport = new RawSocketTransport(pool);
 
-                var request = new UHttpRequest(HttpMethod.GET, new Uri($"http://127.0.0.1:{server.Port}/"));
+                var request = TestHelpers.AllowLoopbackCleartext(
+                    new UHttpRequest(HttpMethod.GET, new Uri($"http://127.0.0.1:{server.Port}/")));
                 var context = new RequestContext(request);
                 var handler = new ThrowingTerminalHandler();
 
@@ -303,6 +306,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = false
                 });
@@ -342,6 +346,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var transport = new RawSocketTransport(pool);
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true
                 });
@@ -387,6 +392,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var transport = new RawSocketTransport(pool);
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true
                 });
@@ -437,6 +443,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -483,6 +490,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -527,6 +535,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(
                         pool: null,
                         tlsBackend: TlsBackend.Auto,
@@ -578,6 +587,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(
                         pool: null,
                         tlsBackend: TlsBackend.Auto,
@@ -630,6 +640,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(
                         pool: null,
                         tlsBackend: TlsBackend.Auto,
@@ -701,6 +712,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -752,6 +764,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(
                         pool: null,
                         tlsBackend: TlsBackend.Auto,
@@ -813,6 +826,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     delayPerRead: TimeSpan.FromMilliseconds(100));
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(
                         pool: null,
                         tlsBackend: TlsBackend.Auto,
@@ -872,6 +886,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     delayPerRead: TimeSpan.FromMilliseconds(100));
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(
                         pool: null,
                         tlsBackend: TlsBackend.Auto,
@@ -926,6 +941,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     new IOException("body-send-failure"));
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(
                         pool: null,
                         tlsBackend: TlsBackend.Auto,
@@ -1027,6 +1043,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(
                         pool: null,
                         tlsBackend: TlsBackend.Auto,
@@ -1075,6 +1092,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var transport = new RawSocketTransport(pool);
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true
                 });
@@ -1131,6 +1149,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var transport = new RawSocketTransport(pool);
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true
                 });
@@ -1198,6 +1217,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var transport = new RawSocketTransport(pool);
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true
                 });
@@ -1252,6 +1272,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1314,6 +1335,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1385,6 +1407,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1449,6 +1472,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1514,6 +1538,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1563,6 +1588,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1606,6 +1632,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1644,6 +1671,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1701,6 +1729,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1776,6 +1805,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
@@ -1819,6 +1849,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var transport = new RawSocketTransport(pool);
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true
                 });
@@ -1859,6 +1890,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -1899,6 +1931,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -1944,6 +1977,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var bodyStream = new TrackingNonSeekableReadStream(Encoding.UTF8.GetBytes("stream body"));
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -2016,6 +2050,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -2097,6 +2132,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -2160,6 +2196,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -2205,6 +2242,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -2269,6 +2307,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -2341,6 +2380,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -2374,6 +2414,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true,
                     Proxy = proxySettings
@@ -2400,6 +2441,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(),
                     DisposeTransport = true
                 });
