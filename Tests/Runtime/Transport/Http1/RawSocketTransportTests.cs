@@ -1001,10 +1001,10 @@ namespace TurboHTTP.Tests.Transport.Http1
                         ExpectContinueTimeoutMs = 100
                     });
 
-                var request = new UHttpRequest(
+                var request = TestHelpers.AllowLoopbackCleartext(new UHttpRequest(
                     HttpMethod.POST,
                     new Uri($"http://127.0.0.1:{server.Port}/auto"),
-                    body: Encoding.UTF8.GetBytes("payload"));
+                    body: Encoding.UTF8.GetBytes("payload")));
                 var context = new RequestContext(request);
                 var handler = new CapturingRequestStartHandler();
 

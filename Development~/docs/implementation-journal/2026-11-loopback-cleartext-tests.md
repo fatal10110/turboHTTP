@@ -8,7 +8,7 @@
   `RawSocketTransportConnectionReuseTests`, `ReusedConnectionFirstByteTimeoutTests`, `WebSocketProxyTests`
   and `WebSocketBouncyCastleTlsTests`.
 - New `TestHelpers.AllowLoopbackCleartext(request)` covers requests dispatched straight to the transport
-  (`RawSocketTransportTests` x2, `RawSocketTransportCancellationTests` x2, `RecordReplayStreamingTests`).
+  (`RawSocketTransportTests` x3, `RawSocketTransportCancellationTests` x2, `RecordReplayStreamingTests`).
 - testing.md, "Writing tests": new loopback tests opt in the same way.
 
 ## Why
@@ -45,7 +45,11 @@ PR does not close.
 - `check.sh`: invariants, format and the shadow build with analyzers all pass.
 - Unity 2021.3.45f2 Editor PlayMode, filtered to the nine touched fixtures (`run-tests.sh --platform
   PlayMode --filter '<fixture names>'`): 117/117 passed, which is every test case in those fixtures.
-- iOS simulator run 3 with this change: see `2026-11-ios-simulator-run.md`.
+- iOS simulator run 3 (Unity 6000.3.26f1, ARM64 Simulator SDK, iOS 26.4) with this change: failures
+  dropped from 96 to 16 over the same 2309 finished tests. None of the remaining 16 is a cleartext refusal
+  except `RawSocketTransport_AutoExpectContinueThreshold_InjectsHeaderBeforeHandlerCallbacks`, a direct
+  dispatch built across several lines that the first pass missed. It is fixed in this change and was not
+  rerun on the simulator. Details are in the iOS simulator run journal (#99 PR).
 
 ## Not run
 - The full Editor suites; the Android device run with this change.
