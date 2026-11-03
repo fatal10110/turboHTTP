@@ -21,7 +21,7 @@
 # #196 AC1); with it, both are present. Mono keeps stripping Disabled and copies every compiled
 # assembly, so its SecureProtocol presence is reported, not asserted. Windows players are started
 # with -batchmode -nographics and must print "TURBOHTTP_SMOKE PASS"; Android is built, not run
-# (device rows: #99). CI player builds need a Unity license (#100).
+# (device rows: #99). CI never builds players (no Unity license, #188, #100): this script, run in a host editor, is the player-build gate (testing.md, "Host-editor gates").
 #
 # Exit codes: 0 pass, 1 build or check failure, 2 usage/setup error, 3 Unity, a build module or the
 # native toolchain is not installed (prints UNITY_UNAVAILABLE or TOOLCHAIN_UNAVAILABLE). Env:

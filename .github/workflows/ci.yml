@@ -57,66 +57,6 @@ jobs:
       - name: Check
         run: '"Tools~/ci/check.sh" --full'
 
-  # Unity Test Runner (EditMode + PlayMode) on the pinned Unity version via GameCI.
-  # Needs the UNITY_LICENSE, UNITY_EMAIL and UNITY_PASSWORD secrets (see
-  # Development/docs/agents/tooling.md). Without them the job warns and passes, so
-  # forks and fresh clones still get the lint gate.
-  unity-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        testMode: [EditMode, PlayMode]
-    env:
-      HAS_UNITY_LICENSE: ${{ secrets.UNITY_LICENSE != '' }}
-    steps:
-      - name: License check
-        if: env.HAS_UNITY_LICENSE != 'true'
-        run: echo "::warning::UNITY_LICENSE secret is not set; Unity tests were not run"
-
-      - uses: actions/checkout@v7
-        if: env.HAS_UNITY_LICENSE == 'true'
-        with:
-          persist-credentials: false
-
-      - name: Unity version
-        if: env.HAS_UNITY_LICENSE == 'true'
-        id: unity
-        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
-
-      - uses: game-ci/unity-test-runner@v4
-        if: env.HAS_UNITY_LICENSE == 'true'
-        env:
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-        with:
-          packageMode: true
-          projectPath: .
-          unityVersion: ${{ steps.unity.outputs.version }}
-          testMode: ${{ matrix.testMode }}
-          # Tests that need the public internet stay out of PR CI.
-          customParameters: -testCategory "!ExternalNetwork"
-          artifactsPath: artifacts-${{ matrix.testMode }}
-          githubToken: ${{ secrets.GITHUB_TOKEN }}
-          checkName: Unity ${{ matrix.testMode }} results
-
-      # #151: fail when the skipped count rises above Tools~/unity/skip-baseline.txt, or a skip has no
-      # #issue/[env] reason. The run excludes ExternalNetwork only, which never skips, so it counts as unfiltered.
-      - name: Skip gate
-        if: always() && env.HAS_UNITY_LICENSE == 'true'
-        run: |
-          results="$(find 'artifacts-${{ matrix.testMode }}' -name '*-results.xml' | head -n 1)"
-          if [ -z "$results" ]; then echo "::error::no Unity results file in artifacts-${{ matrix.testMode }}"; exit 1; fi
-          python3 'Tools~/unity/summarize_results.py' "$results" '${{ matrix.testMode }}' 0 'Tools~/unity/skip-baseline.txt'
-
-      - uses: actions/upload-artifact@v7
-        if: always() && env.HAS_UNITY_LICENSE == 'true'
-        with:
-          name: unity-${{ matrix.testMode }}-results
-          path: artifacts-${{ matrix.testMode }}
-
   # TLS interop (#230, #113): the production TLS providers (BouncyCastle, SslStream, Auto) over the
   # shadow-built DLLs against OpenSSL 3 s_server: handshakes pinned to 0xC030 / 0x1302 through
   # BouncyCastleTlsStream, and the negative certificate suite with positive controls. Unity is not
@@ -200,14 +140,15 @@ jobs:
           path: .build/h2-interop/run
 
   # The ruleset requires this single check; it passes only when every job above does.
+  # CI never runs Unity (no license, #188): the Unity gates are the host-editor runs in
+  # Development/docs/agents/testing.md ("Host-editor gates"), not a job here.
   ci:
     if: always()
-    needs: [lint, tls-interop, h2-interop, unity-tests]
+    needs: [lint, tls-interop, h2-interop]
     runs-on: ubuntu-latest
     steps:
       - env:
           LINT: ${{ needs.lint.result }}
           TLS_INTEROP: ${{ needs.tls-interop.result }}
           H2_INTEROP: ${{ needs.h2-interop.result }}
-          UNITY: ${{ needs.unity-tests.result }}
-        run: '[ "$LINT" = success ] && [ "$TLS_INTEROP" = success ] && [ "$H2_INTEROP" = success ] && [ "$UNITY" = success ]'
+        run: '[ "$LINT" = success ] && [ "$TLS_INTEROP" = success ] && [ "$H2_INTEROP" = success ]'

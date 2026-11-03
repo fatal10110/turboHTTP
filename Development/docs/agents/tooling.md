@@ -12,12 +12,18 @@ cloud agent containers).
 | Whitespace format (`.editorconfig`, `dotnet format whitespace`) | `"Tools~/ci/check.sh"` (`--fix` to apply) | `lint` | yes |
 | Shadow build: every runtime/editor asmdef compiled by the .NET SDK for the Editor, iOS and Android define sets, with Roslyn analyzers and banned APIs (`Tools~/ci/BannedSymbols.txt`), warnings ratcheted by `Tools~/ci/analyzer-baseline.txt` | `"Tools~/ci/check.sh"` (editor) / `--full` (all) | `lint` | yes |
 | actionlint, shellcheck, Python tool tests, issue-seed validation | `"Tools~/ci/check.sh" --full` | `lint` | yes |
-| Unity Test Runner, EditMode + PlayMode (Unity 2021.3.45f2) | `"Tools~/unity/run-tests.sh" --platform EditMode\|PlayMode [--filter X]` | `unity-tests` | yes, once the license secrets exist |
+| Unity Test Runner, EditMode + PlayMode (Unity 2021.3.45f2); skip baseline `Tools~/unity/skip-baseline.txt` | `"Tools~/unity/run-tests.sh" --platform EditMode\|PlayMode [--filter X]` (full runs only in the host editor) | none: CI has no Unity license (#188) | no; host-editor gate, `testing.md` "Host-editor gates" |
+| Internet-facing tests (`ExternalNetwork`, incl. the `TURBOHTTP_INTEGRATION_TESTS` blocks, #263) | `"Tools~/unity/run-tests.sh" --platform PlayMode --category ExternalNetwork` | none | no; host-editor gate |
+| Player builds (Mono Win64, IL2CPP Android with/without BouncyCastle, IL2CPP Win64) and linker-output checks | `"Tools~/unity/build-player.sh" --target ...` | none | no; host-editor gate |
 | CodeQL (C#, build-mode none; GitHub Actions) | — | `CodeQL` | errors / high+ security alerts |
 | Copilot code review, code quality | — | ruleset | advisory / errors |
 
 The required status check is the aggregate job `ci` (`.github/workflows/ci.yml`), which passes
-only when `lint` and `unity-tests` pass.
+only when `lint`, `tls-interop` and `h2-interop` pass. None of them needs Unity: the repository has
+no Unity license and CI never gets one (owner decision 2026-11-02, #188), so there is no
+`unity-tests` job that could report a pass it never earned. The Unity gates (full EditMode/PlayMode
+runs with the skip baseline, the `ExternalNetwork` run, player builds) are run by hand in a host editor
+(`testing.md`, "Host-editor gates") after each waves run and before a milestone closes.
 
 Why a shadow build: Unity compiles the package itself, but CI and agents need compiler errors
 and analyzers without a Unity install or license. `Tools~/ci/shadow_build.py` generates one
@@ -25,7 +31,8 @@ and analyzers without a Unity install or license. `Tools~/ci/shadow_build.py` ge
 include/exclude platforms) under `.build/shadow/<variant>/`, references Unity's managed DLLs,
 and mirrors Unity 2021.3's compiler setup (.NET Standard 2.1, C# 9, `NETSTANDARD2_1` without the
 SDK's `*_OR_GREATER` symbols). Test assemblies are not part of it (they need Unity's
-test-framework package); they compile in the `unity-tests` job.
+test-framework package); they compile in the host-editor run (`check_repo.py unitynunit` and `ignores`
+catch the common failures statically; compiling `Tests/` in the shadow build is #297).
 
 ## Required tools
 
@@ -40,7 +47,7 @@ test-framework package); they compile in the `unity-tests` job.
 | actionlint | 1.7+ | `check.sh --full` |
 | shellcheck | 0.9+ | `check.sh --full` |
 | Node.js | 18+ | `turbohttp-waves` simulation (`waves_sim.mjs`) |
-| Unity | 2021.3.45f2 (optional locally) | `run-tests.sh`; PR CI does not run Unity tests (no license, #188), they run in a host editor (testing.md, "Periodic host-editor runs") |
+| Unity | 2021.3.45f2 (optional locally) | `run-tests.sh`, `build-player.sh`; CI does not run Unity (no license, #188), they run in a host editor (testing.md, "Host-editor gates") |
 
 ### macOS (Homebrew)
 
@@ -142,23 +149,14 @@ no `.meta` and do not ship).
 
 ## CI configuration (repository admin)
 
-### Secrets for `unity-tests`
+### Unity license
 
-GameCI activation (<https://game.ci/docs/github/activation>):
-
-1. Activate Unity locally once (Hub → sign in → Personal license).
-2. Copy the license file: macOS `/Library/Application Support/Unity/Unity_lic.ulf`, Windows
-   `C:\ProgramData\Unity\Unity_lic.ulf`, Linux `~/.local/share/unity3d/Unity/Unity_lic.ulf`.
-3. Add repository secrets (Settings → Secrets and variables → Actions):
-   `UNITY_LICENSE` (file contents), `UNITY_EMAIL`, `UNITY_PASSWORD`.
-
-```bash
-gh secret set UNITY_LICENSE < "/Library/Application Support/Unity/Unity_lic.ulf"
-gh secret set UNITY_EMAIL
-gh secret set UNITY_PASSWORD
-```
-
-Until these exist the `unity-tests` job warns and passes.
+None. CI has no `UNITY_LICENSE`, `UNITY_EMAIL` or `UNITY_PASSWORD` secret and workflows must not
+reference them: Unity runs only in a licensed host editor (owner decision 2026-11-02, #188, #100).
+Former CI roles: the EditMode/PlayMode matrix is `run-tests.sh`, the nightly internet run is
+`run-tests.sh --category ExternalNetwork` (the `nightly-external.yml` workflow was a no-op without a
+license and is gone, #263), the IL2CPP player builds are `build-player.sh` (#273). A 2021.3 plus
+latest-LTS matrix and coverage artifacts are not planned.
 
 ### `main` ruleset
 

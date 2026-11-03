@@ -50,7 +50,9 @@ in `tooling.md`.
 - When the transport is right and a test is wrong (e.g. an over-sending flow-control peer), fix the
   test to model a compliant peer; never relax timeouts to make a test pass.
 - Tests that need the public internet carry `[Category("ExternalNetwork")]`; very slow or
-  >100 MB tests carry `[Explicit]` plus `Integration` or `Performance`. CI excludes `ExternalNetwork`.
+  >100 MB tests carry `[Explicit]` plus `Integration` or `Performance`. No CI job runs Unity; the
+  `ExternalNetwork` category runs in the host editor (`run-tests.sh --category ExternalNetwork`, see
+  "Host-editor gates"), never as a gate on a PR.
 - Tests are not exempt from ownership rules: dispose clients and responses (`using var`), and say so
   in a comment when a test deliberately disposes early.
 - Do not encode a known bug as expected behavior; if a fix lands later, the test must change with it
@@ -72,37 +74,63 @@ in `tooling.md`.
 - A journal or PR that says "Unity not run" or "isolated .NET harness only" is unverified. Record
   exactly which lane ran: EditMode, PlayMode, IL2CPP player, device.
 
-## Periodic host-editor runs
+## Host-editor gates
 
-PR CI cannot run Unity tests: the repo has no `UNITY_LICENSE` secret, so the `unity-tests` jobs
-log a warning and pass without running anything (#188). The real Unity check is a full run in a
-local Unity 2021.3 editor, done:
+CI never runs Unity: the repository has no `UNITY_LICENSE` and will not get one (owner decision
+2026-11-02, #188), so ci.yml has no `unity-tests` job and the required check `ci` covers `lint`,
+`tls-interop` and `h2-interop` only. The Unity gates are these runs in a licensed local Unity 2021.3
+editor (WSL + Windows editor: `UNITY_PATH=/mnt/<drive>/.../Editor/Unity.exe`), done:
 
 - after every `turbohttp-waves` run (its Step 5), before ticking a milestone's tracking issue, and
   before closing a milestone;
 - otherwise once in a while (about weekly while PRs are merging), and whenever a change touches
   test infrastructure, asmdefs or `#if` platform guards.
 
-How (from a clean worktree of the commit under test, e.g. `origin/main`):
+From a clean worktree of the commit under test (e.g. `origin/main`), one Unity process at a time:
 
 ```bash
-export UNITY_PATH=<Unity 2021.3.45f2 editor binary>   # WSL + Windows editor: /mnt/<drive>/.../Editor/Unity.exe
-'./Tools~/unity/run-tests.sh' --platform EditMode
+export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
+'./Tools~/unity/run-tests.sh' --platform EditMode                       # 1. full suites + skip gate
 './Tools~/unity/run-tests.sh' --platform PlayMode
+'./Tools~/unity/run-tests.sh' --platform PlayMode --category ExternalNetwork   # 2. internet tests
+'./Tools~/unity/build-player.sh' --target win64-mono                    # 3. player builds
+'./Tools~/unity/build-player.sh' --target android-il2cpp                #    (+ --bouncycastle; win64-il2cpp when the SDK is installed)
 ```
 
-From WSL the script detects `Unity.exe`, keeps its project under `%LOCALAPPDATA%\turbohttp` and passes
-Windows paths (Unity cannot open a project on `\\wsl$`). The Editor must be licensed on that machine
-(a Unity Personal license activated through the Hub is enough). Only this periodic run may omit
-`--filter`; agents working on one change never run the whole suite.
+1. **Full suites and the skip gate.** Only this run may omit `--filter`. `summarize_results.py` exits 4
+   when a skipped test has no `#issue` or `[env]` reason, or when an unfiltered run skips more tests
+   than `Tools~/unity/skip-baseline.txt` allows (`EditMode 0`, `PlayMode 0`); a filtered or category
+   run does not apply the baseline. Lower the baseline in the same PR that removes skips; never raise
+   it to make a run pass. `check.sh` enforces the static half (`ignores`: an `Ignore` needs an
+   `#issue` or `[env]` reason).
+2. **ExternalNetwork run (#115, #263).** Needs the public internet. `--category ExternalNetwork` implies
+   `--integration`: the script defines `TURBOHTTP_INTEGRATION_TESTS` in the test project for that run
+   so the internet blocks guarded by it compile (TLS integration, BouncyCastle/SslStream provider and
+   TCP pool tests), and removes the define again on every other run, so scoped runs never compile
+   them. A failing test is fixed, or becomes `TestRequirements.IgnoreEnvironment(...)` / an
+   `Assert.Ignore("#<issue> ...")`; it is never left red. The two loopback tests behind the same define
+   (`Parse_ReadToEnd_ExceedsMaxBodySize_ThrowsIOException`, a 100 MB body, and
+   `RawSocketTransport_FreshConnection_IOException_NoRetry`) are not `ExternalNetwork`: run them with
+   `--platform PlayMode --integration --filter 'ExceedsMaxBodySize|FreshConnection_IOException_NoRetry'`.
+3. **Player builds (#273, #100).** `build-player.sh` builds Mono Win64, Android IL2CPP with and without
+   `--bouncycastle`, and IL2CPP Win64 when the Visual Studio C++ toolchain is present, runs the Windows
+   players and checks the linker output (BouncyCastle assemblies absent without the opt-in). iOS and
+   device rows stay `needs-device-validation` (#99).
+
+From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
+Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and
+`UNITY_PACKAGE_COPY` per lane so two runs never share a project. The Editor must be licensed on that
+machine (a Unity Personal license activated through the Hub is enough). Agents working on one change
+never run the whole suite.
 
 Afterwards:
 
 - every failure, compile error or newly Ignored test becomes a fix or a `type:bug` issue in the
   owning milestone (search for an existing one first);
-- record the run in one journal file, `implementation-journal/YYYY-MM-unity-host-run.md` (append a
-  dated section per run): commit, totals per platform (passed/failed/skipped/inconclusive) and
-  the issues filed. A milestone closes only after a green run on its final commit.
+- record the run in a journal file (`implementation-journal/YYYY-MM-unity-host-run.md` is the running
+  log: append a dated section per run, or add a new dated file when your lane may not edit it):
+  commit, totals per platform (passed/failed/skipped/inconclusive) and the issues filed. A milestone
+  closes only after a green run on its final commit.
 
 ## Reviews of test changes
 

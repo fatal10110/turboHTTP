@@ -3,7 +3,7 @@
 # a synced copy of this package (keeps Library/ and .meta churn out of the repo).
 #
 #   UNITY_PATH=/Applications/Unity/Hub/Editor/2021.3.45f2/Unity.app/Contents/MacOS/Unity \
-#     Tools~/unity/run-tests.sh --platform EditMode|PlayMode [--filter <regex>] [--category <name>]
+#     Tools~/unity/run-tests.sh --platform EditMode|PlayMode [--filter <regex>] [--category <name>] [--integration]
 #
 # WSL with a Windows editor: point UNITY_PATH at Unity.exe under /mnt/<drive>/... The package copy,
 # test project, results and log then live under %LOCALAPPDATA%\turbohttp (Unity cannot run a project
@@ -11,11 +11,18 @@
 #
 #   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe Tools~/unity/run-tests.sh --platform EditMode
 #
+# --integration (implied by --category ExternalNetwork) defines TURBOHTTP_INTEGRATION_TESTS for the run so the
+# internet-facing blocks guarded by it compile (TLS integration, BouncyCastle/SslStream providers, pool tests,
+# #263). The define is written to the test project for that run and removed again on every other run, so a
+# scoped run never compiles them. The ExternalNetwork host run is
+#   Tools~/unity/run-tests.sh --platform PlayMode --category ExternalNetwork
+# and needs the public internet (testing.md, "Host-editor gates").
+#
 # Without --filter/--category the whole suite runs; do that only for the periodic host-editor run
-# (testing.md, "Periodic host-editor runs"), never per change.
+# (testing.md, "Host-editor gates"), never per change.
 #
 # Exit codes: 0 pass, 1 test failures, 2 usage/setup error, 3 Unity not installed (prints
-# UNITY_UNAVAILABLE; PR CI does not run Unity tests, the periodic host-editor run does), 4 skip gate
+# UNITY_UNAVAILABLE; CI never runs Unity (no license, #188): this script in a host editor is the Unity gate), 4 skip gate
 # (a skipped test without an #issue or [env] reason, or an unfiltered run skipping more tests than
 # Tools~/unity/skip-baseline.txt allows; summarize_results.py, #151). Env: UNITY_TEST_PROJECT (default
 # <cache>/testproj), UNITY_PACKAGE_COPY (default <cache>/package), where <cache> is
@@ -23,20 +30,22 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-platform=""; filter=""; category=""
+platform=""; filter=""; category=""; integration=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --platform) platform="$2"; shift 2 ;;
     --filter) filter="$2"; shift 2 ;;
     --category) category="$2"; shift 2 ;;
-    *) echo "usage: $0 --platform EditMode|PlayMode [--filter regex] [--category name]" >&2; exit 2 ;;
+    --integration) integration=1; shift ;;
+    *) echo "usage: $0 --platform EditMode|PlayMode [--filter regex] [--category name] [--integration]" >&2; exit 2 ;;
   esac
 done
 case "$platform" in EditMode|PlayMode) ;; *) echo "run-tests: --platform EditMode|PlayMode required" >&2; exit 2 ;; esac
+if [ "$category" = ExternalNetwork ]; then integration=1; fi
 
 unity="${UNITY_PATH:-}"
 if [ -z "$unity" ] || [ ! -x "$unity" ]; then
-  echo "UNITY_UNAVAILABLE: set UNITY_PATH to a Unity $(cat "$repo/Tools~/ci/unity-version") editor binary; PR CI does not run Unity tests (no license, #188)"
+  echo "UNITY_UNAVAILABLE: set UNITY_PATH to a Unity $(cat "$repo/Tools~/ci/unity-version") editor binary; CI never runs Unity (no license, #188); Unity gates run in a host editor"
   exit 3
 fi
 
@@ -86,9 +95,15 @@ json.dump(m, open(path, "w"), indent=2)
 PY
 # BouncyCastle is opt-in (TURBOHTTP_BOUNCYCASTLE, #196); the TLS suites need it compiled, so the
 # test project defines it for the Standalone group (the Editor's group) in its Player settings.
-python3 - "$proj/ProjectSettings/ProjectSettings.asset" TURBOHTTP_BOUNCYCASTLE <<'PY'
+# TURBOHTTP_INTEGRATION_TESTS (#263) is defined only for --integration / --category ExternalNetwork runs
+# and removed otherwise, so a leftover from an earlier run never compiles the internet-facing tests.
+optional_define=""
+if [ "$integration" = 1 ]; then optional_define=TURBOHTTP_INTEGRATION_TESTS; fi
+python3 - "$proj/ProjectSettings/ProjectSettings.asset" TURBOHTTP_BOUNCYCASTLE "$optional_define" <<'PY'
 import re, sys
-path, define = sys.argv[1], sys.argv[2]
+path, always, optional = sys.argv[1], sys.argv[2], sys.argv[3]
+managed = {"TURBOHTTP_BOUNCYCASTLE", "TURBOHTTP_INTEGRATION_TESTS"}
+wanted = {always} | ({optional} if optional else set())
 text = open(path, encoding="utf-8").read()
 m = re.search(r"^  scriptingDefineSymbols:(.*)\n((?:    .*\n)*)", text, re.M)
 if not m:
@@ -98,12 +113,11 @@ entries = [] if m.group(1).strip() == "{}" else m.group(2).splitlines()
 for i, line in enumerate(entries):
     key, _, value = line.strip().partition(":")
     if key == "Standalone":
-        symbols = [s for s in value.strip().split(";") if s]
-        if define not in symbols:
-            entries[i] = "    Standalone: " + ";".join(symbols + [define])
+        symbols = [s for s in value.strip().split(";") if s and s not in managed]
+        entries[i] = "    Standalone: " + ";".join(symbols + sorted(wanted))
         break
 else:
-    entries.append("    Standalone: " + define)
+    entries.append("    Standalone: " + ";".join(sorted(wanted)))
 block = "  scriptingDefineSymbols:\n" + "".join(e + "\n" for e in entries)
 new = text[:m.start()] + block + text[m.end():]
 if new != text:
