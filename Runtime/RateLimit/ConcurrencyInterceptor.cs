@@ -7,6 +7,12 @@ namespace TurboHTTP.RateLimit
 {
     /// <summary>
     /// Interceptor that enforces per-host and global concurrency limits on HTTP requests.
+    /// <para><b>Permit lifetime:</b> a permit is held while the request is sent and until the
+    /// response headers are delivered, i.e. for the downstream dispatch. A buffered response is
+    /// read completely within that time; for <c>SendStreamingAsync</c> the permit is released when
+    /// the headers arrive, so reading a streamed body is not counted against these limits. The
+    /// connection pool (<c>ConnectionPoolOptions.MaxConnectionsPerHost</c>) still bounds the
+    /// sockets a streamed body keeps busy.</para>
     /// </summary>
     public sealed class ConcurrencyInterceptor : IHttpInterceptor, IDisposable, IInterceptorRole
     {
