@@ -407,7 +407,28 @@ namespace TurboHTTP.Unity
             }
         }
 
+        private static string s_rootPath;
+
+        // Application.temporaryCachePath is main-thread only, but files are reserved from the
+        // continuation of a network read, which runs on a worker; the path is read once up front.
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void CacheRootPath()
+        {
+            Volatile.Write(ref s_rootPath, ReadRootPath());
+        }
+
         private static string GetRootPath()
+        {
+            var cached = Volatile.Read(ref s_rootPath);
+            if (cached != null)
+                return cached;
+
+            cached = ReadRootPath();
+            Volatile.Write(ref s_rootPath, cached);
+            return cached;
+        }
+
+        private static string ReadRootPath()
         {
             return Path.Combine(Application.temporaryCachePath, RootFolderName, AudioFolderName);
         }

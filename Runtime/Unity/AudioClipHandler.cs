@@ -50,7 +50,12 @@ namespace TurboHTTP.Unity
         /// <summary> Minimum size in bytes to trigger threaded decode instead of Unity main thread. </summary>
         public int ThreadedDecodeMinBytes { get; set; } = 512 * 1024;
 
-        /// <summary> Let Unity stream large downloaded clips instead of holding fully in heap memory. </summary>
+        /// <summary>
+        /// Let Unity stream large downloaded clips instead of holding fully in heap memory. A streamed
+        /// clip reads its temp file while it plays, so the file is kept (and counts toward
+        /// <see cref="MaxActiveTempFiles"/>) until the clip is destroyed; it is deleted within about a
+        /// second after that.
+        /// </summary>
         public bool EnableStreamingForLargeClips { get; set; } = true;
 
         /// <summary> Above this size threshold in bytes, the audio will be streamed if enabled. </summary>
@@ -283,6 +288,7 @@ namespace TurboHTTP.Unity
 
                 return await MainThreadDispatcher.ExecuteAsync(
                     () => CreateAudioClip(decoded, clipName),
+                    UnityObjects.Destroy,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -311,7 +317,7 @@ namespace TurboHTTP.Unity
 
             if (!clip.SetData(decoded.Samples, 0))
             {
-                UnityEngine.Object.Destroy(clip);
+                UnityObjects.Destroy(clip);
                 throw new InvalidOperationException("Failed to push decoded PCM data into AudioClip.");
             }
 
@@ -332,6 +338,9 @@ namespace TurboHTTP.Unity
                     "Audio temp-file manager reached MaxActiveTempFiles limit.");
             }
 
+            // A streamed clip reads the file while it plays, so the loading coroutine claims the
+            // file for the clip's lifetime (#96); otherwise it is released here once loading ends.
+            var lease = new TempFileLease(tempPath);
             try
             {
                 await UnityTempFileManager.Shared
@@ -343,7 +352,7 @@ namespace TurboHTTP.Unity
                     response.Body.Length >= options.StreamingThresholdBytes;
 
                 return await LoadAudioClipFromFileAsync(
-                        tempPath,
+                        lease,
                         audioType,
                         clipName,
                         shouldStream,
@@ -352,12 +361,13 @@ namespace TurboHTTP.Unity
             }
             finally
             {
-                UnityTempFileManager.Shared.ReleaseAndScheduleDelete(tempPath);
+                if (lease.TryClaim())
+                    UnityTempFileManager.Shared.ReleaseAndScheduleDelete(tempPath);
             }
         }
 
         private static async Task<AudioClip> LoadAudioClipFromFileAsync(
-            string filePath,
+            TempFileLease lease,
             AudioClipType audioType,
             string clipName,
             bool streamAudio,
@@ -374,11 +384,12 @@ namespace TurboHTTP.Unity
             {
                 await MainThreadDispatcher.ExecuteControlAsync(() =>
                 {
-                    var fileUri = new Uri(filePath).AbsoluteUri;
+                    var fileUri = new Uri(lease.Path).AbsoluteUri;
                     var unityAudioType = ToUnityAudioType(audioType);
 
                     MainThreadDispatcher.Instance.StartCoroutine(
                         LoadAudioClipCoroutine(
+                            lease,
                             fileUri,
                             unityAudioType,
                             clipName,
@@ -396,6 +407,7 @@ namespace TurboHTTP.Unity
         }
 
         private static IEnumerator LoadAudioClipCoroutine(
+            TempFileLease lease,
             string fileUri,
             UnityEngine.AudioType unityAudioType,
             string clipName,
@@ -440,9 +452,12 @@ namespace TurboHTTP.Unity
                     yield break;
                 }
 
+                AudioClip clip = null;
+                var claimedFile = false;
+                var trackedFile = false;
                 try
                 {
-                    var clip = DownloadHandlerAudioClip.GetContent(request);
+                    clip = DownloadHandlerAudioClip.GetContent(request);
                     if (clip == null)
                     {
                         tcs.TrySetException(new InvalidOperationException(
@@ -451,10 +466,33 @@ namespace TurboHTTP.Unity
                     }
 
                     clip.name = clipName;
-                    tcs.TrySetResult(clip);
+                    if (streamAudio)
+                    {
+                        if (!lease.TryClaim())
+                        {
+                            // The load was cancelled and its file already released: the clip
+                            // cannot stream and nobody receives it.
+                            UnityObjects.Destroy(clip);
+                            tcs.TrySetCanceled(cancellationToken);
+                            yield break;
+                        }
+
+                        claimedFile = true;
+                        StreamedAudioTempFiles.Track(clip, lease.Path);
+                        trackedFile = true;
+                    }
+
+                    // Cancellation can complete the task while the clip is created; the clip is
+                    // then nobody's and is destroyed instead of leaked (#94). A tracked clip's file
+                    // is released by the next sweep.
+                    if (!tcs.TrySetResult(clip))
+                        UnityObjects.Destroy(clip);
                 }
                 catch (Exception ex)
                 {
+                    UnityObjects.Destroy(clip);
+                    if (claimedFile && !trackedFile)
+                        UnityTempFileManager.Shared.ReleaseAndScheduleDelete(lease.Path);
                     tcs.TrySetException(new InvalidOperationException(
                         "Failed to finalize decoded AudioClip.",
                         ex));

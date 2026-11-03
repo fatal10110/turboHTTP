@@ -231,6 +231,14 @@ namespace TurboHTTP.Unity
                     return;
                 }
 
+                // From here cancellation reaches the decode through its token only. A registration
+                // that completed the task while the decode ran would drop the finished texture,
+                // which is never garbage collected (#94); the decode itself releases what it
+                // created when it observes the token.
+                item.Registration.Dispose();
+                if (item.Task.Task.IsCompleted)
+                    return;
+
                 var queueLatencyTicks = Stopwatch.GetTimestamp() - item.EnqueueTimestamp;
                 var queueLatency = TimeSpan.FromSeconds(queueLatencyTicks / (double)Stopwatch.Frequency);
 
