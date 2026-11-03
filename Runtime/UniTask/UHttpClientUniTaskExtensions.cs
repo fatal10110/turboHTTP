@@ -147,46 +147,68 @@ namespace TurboHTTP.UniTask
             return client.Patch(url).WithBody(body).AsUniTask(cancellationToken, playerLoopTiming);
         }
 
+        /// <summary>
+        /// Sends <paramref name="request"/> through <paramref name="client"/> and returns the buffered
+        /// response as a <see cref="UniTask{T}"/>. The caller owns the response and disposes it.
+        /// </summary>
+        /// <param name="client">The client that sends the request.</param>
+        /// <param name="request">The request to send.</param>
+        /// <param name="cancellationToken">Reaches the transport: cancelling it aborts the in-flight request
+        /// and releases its connection. For a deadline, set <see cref="UHttpRequest.WithTimeout(System.TimeSpan)"/>
+        /// on the request (enforced by the transport), or cancel this token from a timer.</param>
+        /// <param name="playerLoopTiming">Player-loop timing the result is delivered on; defaults to
+        /// <see cref="TurboHttpUniTaskOptions.DefaultPlayerLoopTiming"/>.</param>
         public static UniTask<UHttpResponse> AsUniTask(
             this UHttpClient client,
             UHttpRequest request,
             CancellationToken cancellationToken = default,
             PlayerLoopTiming? playerLoopTiming = null)
         {
+            if (client == null) throw new System.ArgumentNullException(nameof(client));
             var timing = playerLoopTiming ?? TurboHttpUniTaskOptions.DefaultPlayerLoopTiming;
-            var operation = client.SendBufferedAsync(request, cancellationToken);
-            return timing == PlayerLoopTiming.Update
-                ? operation.AsUniTask()
-                : ConvertWithTiming(operation, timing);
+            return AwaitResponse(new ValueTask<UHttpResponse>(client.SendBufferedAsync(request, cancellationToken)), timing);
         }
 
+        /// <summary>
+        /// Sends <paramref name="request"/> through its owning client and returns the buffered response as a
+        /// <see cref="UniTask{T}"/>. The caller owns the response and disposes it.
+        /// </summary>
+        /// <param name="request">A request created by a <see cref="UHttpClient"/>; it is disposed once sent.</param>
+        /// <param name="cancellationToken">Reaches the transport: cancelling it aborts the in-flight request
+        /// and releases its connection. For a deadline, set <see cref="UHttpRequest.WithTimeout(System.TimeSpan)"/>
+        /// on the request (enforced by the transport), or cancel this token from a timer.</param>
+        /// <param name="playerLoopTiming">Player-loop timing the result is delivered on; defaults to
+        /// <see cref="TurboHttpUniTaskOptions.DefaultPlayerLoopTiming"/>.</param>
         public static UniTask<UHttpResponse> AsUniTask(
             this UHttpRequest request,
             CancellationToken cancellationToken = default,
             PlayerLoopTiming? playerLoopTiming = null)
         {
+            if (request == null) throw new System.ArgumentNullException(nameof(request));
             var timing = playerLoopTiming ?? TurboHttpUniTaskOptions.DefaultPlayerLoopTiming;
-            var operation = request.SendBufferedAsync(cancellationToken);
-            return timing == PlayerLoopTiming.Update
-                ? operation.AsUniTask()
-                : ConvertWithTiming(operation, timing);
+            return AwaitResponse(request.SendBufferedAsync(cancellationToken), timing);
         }
 
-        private static async UniTask<UHttpResponse> ConvertWithTiming(
-            Task<UHttpResponse> operation,
-            PlayerLoopTiming playerLoopTiming)
-        {
-            var response = await operation;
-            await UniTask.Yield(playerLoopTiming);
-            return response;
-        }
-
-        private static async UniTask<UHttpResponse> ConvertWithTiming(
+        // UniTask bridges ValueTask only on Unity 2022.3+ (UniTask.AsValueTask.cs), and Task.AsUniTask()
+        // throws without a SynchronizationContext, so both paths await here instead.
+        private static async UniTask<UHttpResponse> AwaitResponse(
             ValueTask<UHttpResponse> operation,
             PlayerLoopTiming playerLoopTiming)
         {
             var response = await operation;
-            await UniTask.Yield(playerLoopTiming);
+            if (playerLoopTiming == PlayerLoopTiming.Update)
+                return response;
+
+            try
+            {
+                await Cysharp.Threading.Tasks.UniTask.Yield(playerLoopTiming);
+            }
+            catch
+            {
+                response?.Dispose(); // the caller never receives it
+                throw;
+            }
+
             return response;
         }
     }

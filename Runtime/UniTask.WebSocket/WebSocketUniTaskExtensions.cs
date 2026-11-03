@@ -2,17 +2,22 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Cysharp.Threading.Tasks;
 using TurboHTTP.WebSocket;
 
 namespace TurboHTTP.UniTask
 {
     /// <summary>
-    /// Convenience adapters from TurboHTTP WebSocket Task/ValueTask APIs to UniTask.
+    /// Convenience adapters from TurboHTTP WebSocket Task/ValueTask APIs to UniTask. They live in the
+    /// <c>TurboHTTP.UniTask.WebSocket</c> assembly (reference it next to <c>TurboHTTP.UniTask</c>) so that
+    /// HTTP-only UniTask users do not compile <c>TurboHTTP.WebSocket</c>.
     /// </summary>
     public static class WebSocketUniTaskExtensions
     {
-        public static UniTask ConnectAsUniTask(
+        // Inside namespace TurboHTTP.UniTask the bare name UniTask binds to the namespace, so the
+        // non-generic UniTask type is written fully qualified.
+        public static Cysharp.Threading.Tasks.UniTask ConnectAsUniTask(
             this IWebSocketClient client,
             Uri uri,
             CancellationToken cancellationToken = default)
@@ -21,7 +26,7 @@ namespace TurboHTTP.UniTask
             return client.ConnectAsync(uri, cancellationToken).AsUniTask();
         }
 
-        public static UniTask ConnectAsUniTask(
+        public static Cysharp.Threading.Tasks.UniTask ConnectAsUniTask(
             this IWebSocketClient client,
             Uri uri,
             WebSocketConnectionOptions options,
@@ -32,7 +37,7 @@ namespace TurboHTTP.UniTask
             return client.ConnectAsync(uri, options, cancellationToken).AsUniTask();
         }
 
-        public static UniTask SendAsUniTask(
+        public static Cysharp.Threading.Tasks.UniTask SendAsUniTask(
             this IWebSocketClient client,
             string message,
             CancellationToken cancellationToken = default)
@@ -41,7 +46,7 @@ namespace TurboHTTP.UniTask
             return client.SendAsync(message, cancellationToken).AsUniTask();
         }
 
-        public static UniTask SendAsUniTask(
+        public static Cysharp.Threading.Tasks.UniTask SendAsUniTask(
             this IWebSocketClient client,
             ReadOnlyMemory<byte> data,
             CancellationToken cancellationToken = default)
@@ -50,7 +55,7 @@ namespace TurboHTTP.UniTask
             return client.SendAsync(data, cancellationToken).AsUniTask();
         }
 
-        public static UniTask SendAsUniTask(
+        public static Cysharp.Threading.Tasks.UniTask SendAsUniTask(
             this IWebSocketClient client,
             byte[] data,
             CancellationToken cancellationToken = default)
@@ -64,10 +69,10 @@ namespace TurboHTTP.UniTask
             CancellationToken cancellationToken = default)
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
-            return client.ReceiveAsync(cancellationToken).AsUniTask();
+            return AwaitValueTask(client.ReceiveAsync(cancellationToken));
         }
 
-        public static UniTask CloseAsUniTask(
+        public static Cysharp.Threading.Tasks.UniTask CloseAsUniTask(
             this IWebSocketClient client,
             WebSocketCloseCode code = WebSocketCloseCode.NormalClosure,
             string reason = null,
@@ -83,6 +88,17 @@ namespace TurboHTTP.UniTask
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
             return new UniTaskAsyncEnumerableAdapter<WebSocketMessage>(client.ReceiveAllAsync(cancellationToken));
+        }
+
+        // UniTask converts ValueTask only on Unity 2022.3+ (UniTask.AsValueTask.cs); await it here instead.
+        private static async UniTask<T> AwaitValueTask<T>(ValueTask<T> operation)
+        {
+            return await operation;
+        }
+
+        private static async Cysharp.Threading.Tasks.UniTask AwaitValueTask(ValueTask operation)
+        {
+            await operation;
         }
 
         private sealed class UniTaskAsyncEnumerableAdapter<T> : IUniTaskAsyncEnumerable<T>
@@ -114,12 +130,12 @@ namespace TurboHTTP.UniTask
 
             public UniTask<bool> MoveNextAsync()
             {
-                return _inner.MoveNextAsync().AsUniTask();
+                return AwaitValueTask(_inner.MoveNextAsync());
             }
 
-            public UniTask DisposeAsync()
+            public Cysharp.Threading.Tasks.UniTask DisposeAsync()
             {
-                return _inner.DisposeAsync().AsUniTask();
+                return AwaitValueTask(_inner.DisposeAsync());
             }
         }
     }
