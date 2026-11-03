@@ -217,13 +217,14 @@ namespace TurboHTTP.Cache
                 varyHeaders: entry.VaryHeaders,
                 varyKey: entry.VaryKey,
                 staleWhileRevalidate: entry.StaleWhileRevalidate,
-                mustRevalidate: entry.MustRevalidate);
+                mustRevalidate: entry.MustRevalidate,
+                trailers: entry.Trailers);
         }
 
         internal static long EstimateEntrySizeBytes(CacheEntry entry)
         {
             long bodyBytes = entry.BodyLength;
-            long headerBytes = EstimateHeaderBytes(entry.Headers);
+            long headerBytes = EstimateHeaderBytes(entry.Headers) + EstimateHeaderBytes(entry.Trailers);
             return bodyBytes + headerBytes + FixedMetadataBytesPerEntry;
         }
 

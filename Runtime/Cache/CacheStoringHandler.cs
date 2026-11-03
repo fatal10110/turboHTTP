@@ -67,10 +67,36 @@ namespace TurboHTTP.Cache
                 return;
             }
 
+            // RFC 9111 section 4.2.3 response_time: the headers have arrived.
+            var responseTimeUtc = _owner.GetUtcNow();
             if (body.TryGetBufferedData(out var buffered))
             {
+                if ((long)buffered.Length > _maxCacheableResponseBodyBytes)
+                {
+                    await _inner.OnResponseStartAsync(statusCode, capturedHeaders, body, context).ConfigureAwait(false);
+                    return;
+                }
+
+                // A fully buffered body has its trailers already (#155). Read them before the consumer can
+                // consume or dispose the body; when they cannot be read the response is delivered but not stored.
+                HttpHeaders trailersToStore;
+                try
+                {
+                    var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
+                    trailersToStore = trailers == null || trailers.Count == 0 ? null : trailers.Clone();
+                }
+                catch (Exception ex)
+                {
+                    TurboDiagnostics.Log("[TurboHTTP][Cache] Response not stored: trailers unavailable", ex);
+                    await _inner.OnResponseStartAsync(statusCode, capturedHeaders, body, context).ConfigureAwait(false);
+                    return;
+                }
+
+                // The consumer owns capturedHeaders (UHttpResponse.Headers) and may mutate it while the background
+                // store runs; the store gets its own copy, taken before the consumer sees the headers (#61).
+                var headersToStore = capturedHeaders.Clone();
                 SegmentedBuffer bodyToStore = null;
-                if ((long)buffered.Length <= _maxCacheableResponseBodyBytes && !buffered.IsEmpty)
+                if (!buffered.IsEmpty)
                 {
                     bodyToStore = new SegmentedBuffer();
                     bodyToStore.Write(buffered.Span);
@@ -86,9 +112,6 @@ namespace TurboHTTP.Cache
                     throw;
                 }
 
-                if ((long)buffered.Length > _maxCacheableResponseBodyBytes)
-                    return;
-
                 try
                 {
                     _owner.QueueStoreResponse(
@@ -97,8 +120,10 @@ namespace TurboHTTP.Cache
                         _requestHeaders,
                         _baseKey,
                         statusCode,
-                        capturedHeaders,
-                        bodyToStore);
+                        headersToStore,
+                        bodyToStore,
+                        trailersToStore,
+                        responseTimeUtc);
                     bodyToStore = null;
                 }
                 catch (Exception ex)
@@ -119,6 +144,7 @@ namespace TurboHTTP.Cache
                 _baseKey,
                 statusCode,
                 capturedHeaders,
+                responseTimeUtc,
                 _maxCacheableResponseBodyBytes);
 
             await _inner.OnResponseStartAsync(statusCode, capturedHeaders, tee, context).ConfigureAwait(false);
@@ -142,11 +168,14 @@ namespace TurboHTTP.Cache
         private readonly string _baseKey;
         private readonly int _statusCode;
         private readonly HttpHeaders _responseHeaders;
+        private readonly DateTime _responseTimeUtc;
         private readonly long _maxCacheableResponseBodyBytes;
 
         private IStreamingCacheAccumulator _accumulator;
         private long _accumulatedBytes;
         private HttpHeaders _trailers;
+        // Copy for the store, taken before the consumer receives _trailers (#61/#155); null when there are none.
+        private HttpHeaders _trailersToStore;
         private int _trailersLoaded;
         private int _completedNaturally;
         private int _aborted;
@@ -161,6 +190,7 @@ namespace TurboHTTP.Cache
             string baseKey,
             int statusCode,
             HttpHeaders responseHeaders,
+            DateTime responseTimeUtc,
             long maxCacheableResponseBodyBytes)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
@@ -171,6 +201,7 @@ namespace TurboHTTP.Cache
             _baseKey = baseKey ?? throw new ArgumentNullException(nameof(baseKey));
             _statusCode = statusCode;
             _responseHeaders = responseHeaders?.Clone() ?? new HttpHeaders();
+            _responseTimeUtc = responseTimeUtc;
             if (maxCacheableResponseBodyBytes <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxCacheableResponseBodyBytes));
 
@@ -256,8 +287,7 @@ namespace TurboHTTP.Cache
 
             try
             {
-                _trailers = await _inner.GetTrailersAsync(ct).ConfigureAwait(false);
-                Volatile.Write(ref _trailersLoaded, 1);
+                SetLoadedTrailers(await _inner.GetTrailersAsync(ct).ConfigureAwait(false));
                 return _trailers ?? HttpHeaders.Empty;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -296,7 +326,9 @@ namespace TurboHTTP.Cache
                             _baseKey,
                             _statusCode,
                             _responseHeaders,
-                            bodyToStore);
+                            bodyToStore,
+                            _trailersToStore,
+                            _responseTimeUtc);
                         bodyToStore = null;
                     }
                     catch (Exception ex)
@@ -348,8 +380,7 @@ namespace TurboHTTP.Cache
             try
             {
                 timeoutCts = new CancellationTokenSource(TrailerLoadTimeout);
-                _trailers = await _inner.GetTrailersAsync(timeoutCts.Token).ConfigureAwait(false);
-                Volatile.Write(ref _trailersLoaded, 1);
+                SetLoadedTrailers(await _inner.GetTrailersAsync(timeoutCts.Token).ConfigureAwait(false));
                 return true;
             }
             catch
@@ -361,6 +392,13 @@ namespace TurboHTTP.Cache
             {
                 timeoutCts?.Dispose();
             }
+        }
+
+        private void SetLoadedTrailers(HttpHeaders trailers)
+        {
+            _trailers = trailers;
+            _trailersToStore = trailers == null || trailers.Count == 0 ? null : trailers.Clone();
+            Volatile.Write(ref _trailersLoaded, 1);
         }
 
         private void DetachAccumulator()
