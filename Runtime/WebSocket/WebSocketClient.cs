@@ -215,7 +215,7 @@ namespace TurboHTTP.WebSocket
                 throw new ArgumentNullException(nameof(message));
 
             EnsureOpenState();
-            await Volatile.Read(ref _connection).SendTextAsync(message, ct).ConfigureAwait(false);
+            await RequireConnection().SendTextAsync(message, ct).ConfigureAwait(false);
         }
 
         public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
@@ -223,7 +223,7 @@ namespace TurboHTTP.WebSocket
             ThrowIfDisposed();
             EnsureOpenState();
 
-            await Volatile.Read(ref _connection).SendBinaryAsync(data, ct).ConfigureAwait(false);
+            await RequireConnection().SendBinaryAsync(data, ct).ConfigureAwait(false);
         }
 
         public Task SendAsync(byte[] data, CancellationToken ct = default)
@@ -557,6 +557,13 @@ namespace TurboHTTP.WebSocket
 
             var closedHandler = OnClosed;
             closedHandler?.Invoke(status.Code, status.Reason);
+        }
+
+        private WebSocketConnection RequireConnection()
+        {
+            // A concurrent close or dispose detaches the connection after the state check (#84).
+            return Volatile.Read(ref _connection) ??
+                throw new WebSocketException(WebSocketError.ConnectionClosed, "WebSocket connection is closed.");
         }
 
         private void EnsureOpenState()

@@ -43,9 +43,11 @@ namespace TurboHTTP.Tests.WebSocket
                     Assert.IsInstanceOf<OperationCanceledException>(sendError.InnerException);
                     AssertAborted(connection);
 
-                    // The next send must not start a new data frame after the unfinished fragment.
-                    Assert.Throws<InvalidOperationException>(
-                        () => connection.SendTextAsync("next", CancellationToken.None).GetAwaiter().GetResult());
+                    // The next send must not start a new data frame after the unfinished fragment; a
+                    // closed connection fails sends with WebSocketException (#84).
+                    var nextError = AssertAsync.ThrowsAsync<WebSocketException>(
+                        () => connection.SendTextAsync("next", CancellationToken.None));
+                    Assert.AreEqual(WebSocketError.ConnectionClosed, nextError.Error);
 
                     await WebSocketReceiveBackpressureTests.WaitWithTimeout(peer.ReaderCompleted,
                         TimeSpan.FromSeconds(5), "Peer did not observe the aborted connection.").ConfigureAwait(false);

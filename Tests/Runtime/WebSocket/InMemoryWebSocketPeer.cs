@@ -43,6 +43,13 @@ namespace TurboHTTP.Tests.WebSocket
         /// <summary>Optional Sec-WebSocket-Extensions value sent in the handshake response.</summary>
         public string HandshakeExtensionsHeader { get; set; }
 
+        /// <summary>
+        /// When true (the default) the server closes its side of the transport once both Close frames were
+        /// exchanged, as RFC 6455 section 7.1.1 expects of a server. Set false to hold the transport open and
+        /// close it later with <see cref="CloseTransport"/>.
+        /// </summary>
+        public bool CloseTransportAfterCloseHandshake { get; set; } = true;
+
         /// <summary>Completes when the server stops reading (client EOF, close or error).</summary>
         public Task ReaderCompleted => _readerDone.Task;
 
@@ -100,6 +107,12 @@ namespace TurboHTTP.Tests.WebSocket
 
             _frames.TryDequeue(out var frame);
             return frame;
+        }
+
+        /// <summary>Closes the server side of the transport: the client reads EOF (the TCP FIN analogue).</summary>
+        public void CloseTransport()
+        {
+            SafeDispose(_serverStream);
         }
 
         public void Dispose()
@@ -166,6 +179,9 @@ namespace TurboHTTP.Tests.WebSocket
                                 await SendFrameAsync(WebSocketOpcode.Close, frame.Payload.ToArray(), fin: true)
                                     .ConfigureAwait(false);
                             }
+
+                            if (CloseTransportAfterCloseHandshake)
+                                CloseTransport();
 
                             break;
                         }
