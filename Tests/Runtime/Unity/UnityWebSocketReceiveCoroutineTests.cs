@@ -1,5 +1,7 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 using TurboHTTP.Unity;
 using TurboHTTP.Unity.WebSocket;
@@ -89,6 +91,81 @@ namespace TurboHTTP.Tests.UnityModule
                 bridge.Dispose();
                 if (go != null)
                     Object.DestroyImmediate(go);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator ThrowingOnMessage_EndsAndDisposesTheHandle()
+        {
+            _ = MainThreadDispatcher.Instance;
+            var go = new GameObject("ws-coroutine-throwing");
+            var host = go.AddComponent<WebSocketCoroutineHost>();
+            var fake = new ScriptedWebSocketClient();
+            var bridge = new UnityWebSocketBridge(fake);
+            try
+            {
+                int calls = 0;
+                var handle = bridge.ReceiveAsCoroutine(
+                    m =>
+                    {
+                        calls++;
+                        throw new InvalidOperationException("user callback failed");
+                    },
+                    callbackOwner: host);
+                host.StartCoroutine(handle);
+
+                yield return null;
+                var pendingToken = fake.ReceiveToken;
+                LogAssert.Expect(LogType.Exception, new Regex("user callback failed"));
+                Assert.IsTrue(fake.CompleteReceive(ScriptedWebSocketClient.CreateTextMessage("boom")));
+                for (int frame = 0; frame < MaxFrames && !handle.IsDisposed; frame++)
+                    yield return null;
+
+                Assert.AreEqual(1, calls);
+                Assert.IsTrue(handle.IsDisposed, "Unity stops a throwing coroutine without disposing it; the handle does.");
+                Assert.IsTrue(pendingToken.IsCancellationRequested, "The receive token is released with the handle.");
+                Assert.IsFalse(handle.MoveNext());
+            }
+            finally
+            {
+                bridge.Dispose();
+                Object.DestroyImmediate(go);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator Dispose_WithAReceivedUndeliveredMessage_DisposesIt_WithoutDelivery()
+        {
+            _ = MainThreadDispatcher.Instance;
+            var go = new GameObject("ws-coroutine-undelivered");
+            var host = go.AddComponent<WebSocketCoroutineHost>();
+            var fake = new ScriptedWebSocketClient();
+            var bridge = new UnityWebSocketBridge(fake);
+            try
+            {
+                int calls = 0;
+                var handle = bridge.ReceiveAsCoroutine(m => calls++, callbackOwner: host);
+                var running = host.StartCoroutine(handle);
+
+                yield return null;
+                var message = ScriptedWebSocketClient.CreateTextMessage("late");
+                Assert.AreEqual(4, message.Length);
+
+                // Same frame: the receive completes, then the caller stops and disposes the coroutine.
+                Assert.IsTrue(fake.CompleteReceive(message));
+                host.StopCoroutine(running);
+                handle.Dispose();
+
+                for (int frame = 0; frame < MaxFrames && message.Length != 0; frame++)
+                    yield return null;
+
+                Assert.AreEqual(0, message.Length, "The message received after the stop is disposed.");
+                Assert.AreEqual(0, calls, "It is never delivered.");
+            }
+            finally
+            {
+                bridge.Dispose();
+                Object.DestroyImmediate(go);
             }
         }
 

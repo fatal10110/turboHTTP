@@ -69,6 +69,7 @@ namespace TurboHTTP.Unity.WebSocket
         private Connection _connection;
         private Task _connectTask;
         private int _connectGeneration;
+        private CancellationTokenSource _connectAttemptCts;
         private Task _disconnectTask;
         private int _generation;
         private LifecycleCancellationBinding _lifecycleBinding;
@@ -161,6 +162,7 @@ namespace TurboHTTP.Unity.WebSocket
             Connection connection;
             CancellationTokenSource componentCts;
             LifecycleCancellationBinding lifecycleBinding;
+            CancellationTokenSource connectAttempt;
             lock (_stateGate)
             {
                 _generation++;
@@ -170,7 +172,10 @@ namespace TurboHTTP.Unity.WebSocket
                 _componentCts = null;
                 lifecycleBinding = _lifecycleBinding;
                 _lifecycleBinding = null;
+                connectAttempt = TakeConnectAttempt_NoLock();
             }
+
+            CancelQuietly(connectAttempt);
 
             // Cancel first: an in-flight connect or graceful close (OnDisable in the previous frame) stops
             // and aborts its own client. Linked tokens are only created under _stateGate, which now sees
@@ -262,22 +267,35 @@ namespace TurboHTTP.Unity.WebSocket
         /// </summary>
         public Task DisconnectAsync(CancellationToken ct = default)
         {
-            TaskCompletionSource<bool> completion;
+            TaskCompletionSource<bool> completion = null;
             Connection connection;
+            Task sharedDisconnect = null;
+            CancellationTokenSource connectAttempt;
             lock (_stateGate)
             {
                 _generation++;
-
-                if (_disconnectTask != null && !_disconnectTask.IsCompleted)
-                    return _disconnectTask;
+                connectAttempt = TakeConnectAttempt_NoLock();
 
                 connection = _connection;
-                if (connection == null)
-                    return Task.CompletedTask;
-
-                completion = new TaskCompletionSource<bool>();
-                _disconnectTask = completion.Task;
+                if (_disconnectTask != null && !_disconnectTask.IsCompleted)
+                {
+                    sharedDisconnect = _disconnectTask;
+                }
+                else if (connection != null)
+                {
+                    completion = new TaskCompletionSource<bool>();
+                    _disconnectTask = completion.Task;
+                }
             }
+
+            // Outside the lock: cancellation callbacks of the handshake run synchronously.
+            CancelQuietly(connectAttempt);
+
+            if (sharedDisconnect != null)
+                return sharedDisconnect;
+
+            if (completion == null)
+                return Task.CompletedTask;
 
             CompleteFrom(DisconnectCoreAsync(connection, ct), completion);
             return completion.Task;
@@ -358,22 +376,49 @@ namespace TurboHTTP.Unity.WebSocket
             if (!Uri.TryCreate(_uri, UriKind.Absolute, out var targetUri))
                 throw new InvalidOperationException("WebSocket URI is invalid.");
 
-            var options = BuildConnectionOptions();
-            var factory = ClientFactory;
-            var client = factory != null ? factory(options) : WebSocketClient.Create(options);
-            var connection = new Connection(client, new UnityWebSocketBridge(client), this);
+            // Per-attempt source: Disconnect, quit and destroy cancel the handshake itself, so a superseded
+            // connect ends at once instead of running to its timeout (#91).
+            CancellationTokenSource attempt;
+            lock (_stateGate)
+            {
+                ThrowIfSuperseded_NoLock(generation);
+                attempt = new CancellationTokenSource();
+                _connectAttemptCts = attempt;
+            }
 
-            connection.Wire(this);
+            Connection connection;
             try
             {
-                using var linked = CreateLinkedToken(ct);
-                await connection.Bridge.ConnectAsync(targetUri, options, linked.Token).ConfigureAwait(false);
+                var options = BuildConnectionOptions();
+                var factory = ClientFactory;
+                var client = factory != null ? factory(options) : WebSocketClient.Create(options);
+                connection = new Connection(client, new UnityWebSocketBridge(client), this);
+
+                connection.Wire(this);
+                try
+                {
+                    using var linked = CreateLinkedToken(ct);
+                    using var handshake = CancellationTokenSource.CreateLinkedTokenSource(linked.Token, attempt.Token);
+                    await connection.Bridge.ConnectAsync(targetUri, options, handshake.Token).ConfigureAwait(false);
+                }
+                catch
+                {
+                    connection.Unwire(this);
+                    await connection.Bridge.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
             }
-            catch
+            finally
             {
-                connection.Unwire(this);
-                await connection.Bridge.DisposeAsync().ConfigureAwait(false);
-                throw;
+                lock (_stateGate)
+                {
+                    if (ReferenceEquals(_connectAttemptCts, attempt))
+                        _connectAttemptCts = null;
+                }
+
+                // A canceler that took the source before this point gets ObjectDisposedException, which
+                // CancelQuietly ignores: the attempt is over either way.
+                attempt.Dispose();
             }
 
             bool published;
@@ -674,10 +719,21 @@ namespace TurboHTTP.Unity.WebSocket
             {
                 cts.Cancel();
             }
+            catch (ObjectDisposedException)
+            {
+                // The owner disposed it after the operation ended; nothing is left to cancel.
+            }
             catch (AggregateException ex)
             {
                 Debug.LogException(ex);
             }
+        }
+
+        private CancellationTokenSource TakeConnectAttempt_NoLock()
+        {
+            var attempt = _connectAttemptCts;
+            _connectAttemptCts = null;
+            return attempt;
         }
 
         private static void EnsureQuittingHook()
@@ -709,12 +765,16 @@ namespace TurboHTTP.Unity.WebSocket
         private void AbortForQuit()
         {
             Connection connection;
+            CancellationTokenSource connectAttempt;
             lock (_stateGate)
             {
                 _generation++;
                 connection = _connection;
                 Volatile.Write(ref _connection, null);
+                connectAttempt = TakeConnectAttempt_NoLock();
             }
+
+            CancelQuietly(connectAttempt);
 
             if (connection == null)
                 return;

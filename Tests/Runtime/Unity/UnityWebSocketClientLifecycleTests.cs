@@ -27,6 +27,7 @@ namespace TurboHTTP.Tests.UnityModule
         private int _connected;
         private List<int> _disconnectCodes;
         private bool _holdNextConnect;
+        private bool _ignoreConnectToken;
 
         [SetUp]
         public void SetUp()
@@ -36,6 +37,7 @@ namespace TurboHTTP.Tests.UnityModule
             _disconnectCodes = new List<int>();
             _connected = 0;
             _holdNextConnect = false;
+            _ignoreConnectToken = false;
 
             _go = new GameObject("ws-client-lifecycle");
             _component = _go.AddComponent<UnityWebSocketClient>();
@@ -47,6 +49,7 @@ namespace TurboHTTP.Tests.UnityModule
                 {
                     _holdNextConnect = false;
                     client.HoldConnect();
+                    client.IgnoreConnectToken = _ignoreConnectToken;
                 }
 
                 lock (_clients)
@@ -144,14 +147,44 @@ namespace TurboHTTP.Tests.UnityModule
         }
 
         [UnityTest]
-        public IEnumerator DisconnectDuringConnect_SupersedesTheConnect()
+        public IEnumerator DisconnectDuringConnect_CancelsTheHandshake_AndAResumeConnectIsNotDelayed()
         {
             _holdNextConnect = true;
+            var connect = _component.ConnectAsync();
+            var first = ClientAt(0);
+            Assert.AreEqual(WebSocketState.Connecting, first.State);
+            Assert.IsFalse(first.ConnectToken.IsCancellationRequested);
+
+            _component.Disconnect();
+            Assert.IsTrue(first.ConnectToken.IsCancellationRequested, "Disconnect cancels the in-flight handshake.");
+
+            // The handshake is never released: only the cancellation can end it.
+            yield return WaitFor(() => connect.IsCompleted);
+            Assert.IsTrue(connect.IsCanceled, "The canceled connect reports cancellation, not a failure.");
+            yield return WaitFor(() => first.IsDisposed);
+
+            var resume = _component.ConnectAsync();
+            yield return WaitFor(() => resume.IsCompleted);
+
+            Assert.IsTrue(resume.Status == TaskStatus.RanToCompletion, "The resume connect succeeds.");
+            Assert.IsTrue(_component.IsConnected);
+            Assert.AreEqual(WebSocketState.Open, ClientAt(1).State);
+            Assert.AreEqual(1, _connected, "Only the resumed connection raises OnConnected.");
+            Assert.AreEqual(0, _disconnectCodes.Count, "A connection that never opened raises no OnDisconnected.");
+            Assert.AreEqual(0, first.CloseCalls);
+        }
+
+        [UnityTest]
+        public IEnumerator DisconnectDuringConnect_HandshakeThatCompletesAnyway_IsClosed()
+        {
+            _holdNextConnect = true;
+            _ignoreConnectToken = true;
             var connect = _component.ConnectAsync();
             var client = ClientAt(0);
             Assert.AreEqual(WebSocketState.Connecting, client.State);
 
             _component.Disconnect();
+            Assert.IsTrue(client.ConnectToken.IsCancellationRequested, "Disconnect cancels the in-flight handshake.");
             client.ReleaseConnect();
             yield return WaitFor(() => connect.IsCompleted);
 

@@ -37,6 +37,10 @@ namespace TurboHTTP.Tests.UnityModule
         public int DisposeCalls;
         public bool FailClose;
         public CancellationToken CloseToken;
+        public CancellationToken ConnectToken;
+
+        /// <summary>When set, a held ConnectAsync ignores its token (a handshake that completes despite a cancel).</summary>
+        public bool IgnoreConnectToken;
         public CancellationToken ReceiveToken;
 
         public bool IsDisposed => Volatile.Read(ref DisposeCalls) > 0;
@@ -59,11 +63,26 @@ namespace TurboHTTP.Tests.UnityModule
         public async Task ConnectAsync(Uri uri, WebSocketConnectionOptions options, CancellationToken ct = default)
         {
             SetState(WebSocketState.Connecting);
+            ConnectToken = ct;
             var gate = _connectGate;
             if (gate != null)
-                await gate.Task.ConfigureAwait(false);
+            {
+                if (IgnoreConnectToken)
+                {
+                    await gate.Task.ConfigureAwait(false);
+                }
+                else
+                {
+                    var canceled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    using (ct.Register(() => canceled.TrySetCanceled(ct)))
+                    {
+                        await Task.WhenAny(gate.Task, canceled.Task).ConfigureAwait(false);
+                    }
+                }
+            }
 
-            ct.ThrowIfCancellationRequested();
+            if (!IgnoreConnectToken)
+                ct.ThrowIfCancellationRequested();
             SetState(WebSocketState.Open);
             OnConnected?.Invoke();
         }

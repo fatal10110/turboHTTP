@@ -155,6 +155,56 @@ namespace TurboHTTP.Tests.UnityModule
             }
         }
 
+        [UnityTest]
+        public IEnumerator SustainedFlood_DropsInTwoDrainCycles_LogOneWarning()
+        {
+            _ = MainThreadDispatcher.Instance;
+            var defaults = MainThreadDispatcher.GetSettings();
+            MainThreadDispatcher.Configure(Saturating(MainThreadBackpressurePolicy.Reject, capacity: 1));
+
+            var fake = new ScriptedWebSocketClient();
+            var bridge = new UnityWebSocketBridge(fake);
+            bridge.DropWarningInterval = TimeSpan.FromHours(1);
+            int warnings = 0;
+            Application.LogCallback onLog = (condition, stackTrace, type) =>
+            {
+                if (type == LogType.Warning && condition.Contains("[TurboHTTP] Dropping Unity WebSocket callbacks"))
+                    Interlocked.Increment(ref warnings);
+            };
+            Application.logMessageReceivedThreaded += onLog;
+            try
+            {
+                int delivered = 0;
+                int dropped = 0;
+                bridge.OnMessage += m =>
+                {
+                    delivered++;
+                    m.Dispose();
+                };
+                bridge.OnMessageDropped += () => Interlocked.Increment(ref dropped);
+
+                for (int cycle = 1; cycle <= 2; cycle++)
+                {
+                    for (int i = 0; i < 8; i++)
+                        fake.EmitMessage("c" + cycle + "m" + i);
+
+                    for (int frame = 0; frame < MaxFrames && delivered < cycle; frame++)
+                        yield return null;
+
+                    Assert.AreEqual(cycle, delivered, "One message per cycle fits in the queue and is delivered.");
+                }
+
+                Assert.AreEqual(14, Volatile.Read(ref dropped), "Both cycles drop 7 messages each.");
+                Assert.AreEqual(1, Volatile.Read(ref warnings), "A sustained flood logs one warning per interval, not one per drain.");
+            }
+            finally
+            {
+                Application.logMessageReceivedThreaded -= onLog;
+                MainThreadDispatcher.Configure(defaults);
+                bridge.Dispose();
+            }
+        }
+
         [Test]
         public void Reject_QueueFull_ThrowsTypedRejection_ThatIsAnInvalidOperationException()
         {

@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Unity;
 using TurboHTTP.WebSocket;
 using UnityEngine;
+using Debug = UnityEngine.Debug;
 
 namespace TurboHTTP.Unity.WebSocket
 {
@@ -16,13 +18,19 @@ namespace TurboHTTP.Unity.WebSocket
         private readonly IWebSocketClient _client;
         private readonly ResilientWebSocketClient _resilientClient;
         private int _disposed;
-        private int _dropWarningActive;
+        private long _lastDropWarningTimestamp;
+        private int _dropsSinceWarning;
+        private long _dropWarningIntervalTicks = DefaultDropWarningIntervalSeconds * Stopwatch.Frequency;
         private int _pendingErrorFallbacks;
 
         // OnError can repeat (for example once per failing reconnect attempt), so its control-lane fallback is
         // bounded; past the bound an error callback is dropped like a message. OnConnected/OnClosed are not
         // bounded: there is one of each per connection.
         private const int MaxPendingErrorFallbacks = 32;
+
+        // A sustained flood drops on every frame while the dispatcher still drains, so the warning is
+        // throttled by time, not by delivery resuming (#90).
+        private const long DefaultDropWarningIntervalSeconds = 10;
 
         public event Action OnConnected;
         public event Action<WebSocketMessage> OnMessage;
@@ -362,14 +370,32 @@ namespace TurboHTTP.Unity.WebSocket
         {
             NotifyMessageDropped();
 
-            // One warning per saturation episode, not one per dropped message: the flag is cleared
-            // when a message callback runs again (#90).
-            if (Interlocked.Exchange(ref _dropWarningActive, 1) == 0)
-            {
-                Debug.LogWarning(
-                    "[TurboHTTP] Dropping Unity WebSocket callbacks due to main-thread dispatcher backpressure (first: " +
-                    callbackName + "). Further drops raise OnMessageDropped without a log until delivery resumes.");
-            }
+            // At most one warning per interval, carrying the drop count since the previous one (#90).
+            Interlocked.Increment(ref _dropsSinceWarning);
+            long now = Stopwatch.GetTimestamp();
+            long last = Interlocked.Read(ref _lastDropWarningTimestamp);
+            if (last != 0 && now - last < Interlocked.Read(ref _dropWarningIntervalTicks))
+                return;
+
+            if (Interlocked.CompareExchange(ref _lastDropWarningTimestamp, now, last) != last)
+                return;
+
+            int dropped = Interlocked.Exchange(ref _dropsSinceWarning, 0);
+            Debug.LogWarning(
+                "[TurboHTTP] Dropping Unity WebSocket callbacks due to main-thread dispatcher backpressure (" +
+                dropped + " dropped since the last warning, latest: " + callbackName +
+                "). Further drops raise OnMessageDropped and are logged at most once per interval.");
+        }
+
+        /// <summary>
+        /// Minimum time between two backpressure drop warnings (test seam).
+        /// </summary>
+        internal TimeSpan DropWarningInterval
+        {
+            get => TimeSpan.FromSeconds((double)Interlocked.Read(ref _dropWarningIntervalTicks) / Stopwatch.Frequency);
+            set => Interlocked.Exchange(
+                ref _dropWarningIntervalTicks,
+                (long)(value.TotalSeconds * Stopwatch.Frequency));
         }
 
         private void NotifyMessageDropped()
@@ -386,12 +412,6 @@ namespace TurboHTTP.Unity.WebSocket
             {
                 Debug.LogException(ex);
             }
-        }
-
-        private void OnDispatchedCallbackRan()
-        {
-            if (Volatile.Read(ref _dropWarningActive) != 0)
-                Interlocked.Exchange(ref _dropWarningActive, 0);
         }
 
         private bool TryReserveErrorFallback()
@@ -496,7 +516,6 @@ namespace TurboHTTP.Unity.WebSocket
                     return;
 
                 _action();
-                _owner?.OnDispatchedCallbackRan();
             }
 
             public void OnControlLaneCompleted()

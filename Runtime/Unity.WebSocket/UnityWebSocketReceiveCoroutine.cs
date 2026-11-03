@@ -126,7 +126,16 @@ namespace TurboHTTP.Unity.WebSocket
                     message.Dispose();
                 }
 
-                _onMessage?.Invoke(detached);
+                try
+                {
+                    _onMessage?.Invoke(detached);
+                }
+                catch
+                {
+                    // Unity stops a coroutine whose MoveNext throws without disposing it.
+                    Finish();
+                    throw;
+                }
             }
         }
 

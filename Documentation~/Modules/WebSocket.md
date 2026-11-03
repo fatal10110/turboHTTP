@@ -33,8 +33,8 @@ ws.OnMessage += message => Debug.Log(message.Text);
 `UnityWebSocketBridge` (and so `UnityWebSocketClient`) posts each event to `MainThreadDispatcher`.
 When its user queue is full (`MainThreadDispatcherSettings.UserQueueCapacity`, policy
 `BackpressurePolicy`), message, metrics, quality and reconnect callbacks are dropped: a dropped
-message is disposed, `OnMessageDropped` is raised on the thread that saw the drop, and one warning is
-logged per saturation episode. `OnConnected` and `OnClosed` are never dropped: they queue behind the
+message is disposed, `OnMessageDropped` is raised on the thread that saw the drop, and at most one
+warning (with the drop count since the previous one) is logged every 10 seconds. `OnConnected` and `OnClosed` are never dropped: they queue behind the
 messages already waiting and move to the dispatcher's control lane when the user queue rejects or
 evicts them, so under saturation they can arrive before older queued messages. `OnError` takes the
 same path, with at most 32 errors waiting on the control lane at once. Work the

@@ -13,21 +13,25 @@ cleanup, OnDisable/OnDestroy CTS race). Milestone v1.1.
   from the caller's own cancellation. The `Wait` timeout keeps the `TimeoutException` as inner exception.
 - `UnityWebSocketBridge`: drops are recognized by type (the old `"dropped"` text match never matched:
   Reject says "rejected" and DropOldest surfaced as canceled). A dropped callback disposes its message,
-  raises `OnMessageDropped`, and one warning is logged per saturation episode (cleared when a callback
-  runs again) instead of a `Debug.LogException` per message. `OnConnected`/`OnClosed` take the user lane
+  raises `OnMessageDropped`, and at most one warning per 10 s (with the drop count since the previous
+  one) is logged instead of a `Debug.LogException` per message. Review round 1: the first version reset
+  the warning whenever a callback ran, which logs once per frame under a sustained flood. `OnConnected`/`OnClosed` take the user lane
   (so they stay behind queued messages) and are re-dispatched on the control lane when the user lane
   rejects or evicts them; a per-item started flag keeps them at most once and tells a drop from a fault
   thrown by the callback. `OnError` uses the same fallback, bounded to 32 pending per bridge.
 - `UnityWebSocketBridge.ReceiveAsCoroutine` returns `UnityWebSocketReceiveCoroutine` (IEnumerator +
   IDisposable). Unity does not dispose a stopped coroutine, so the handle owns the lifecycle binding and
   the pending receive; `Dispose` cancels the receive, releases the binding and disposes a message that
-  completes after the stop. The `receiveTask.Result` analyzer-baseline entry is gone with the iterator.
+  completes after the stop. A throwing `onMessage` disposes the handle before rethrowing (Unity stops
+  that coroutine without disposing it either). The `receiveTask.Result` analyzer-baseline entry is gone with the iterator.
 - `UnityWebSocketClient`: one `_stateGate` lock owns the connection (`Connection` = client + bridge +
   once-only disconnect flag), the connect/disconnect tasks, a generation counter and the lifecycle
   sources. `DisconnectAsync` closes only the connection it captured and clears the field only if it is
   still that one; concurrent disconnects share one close. `ConnectAsync` waits for a pending disconnect
   (and for a superseded connect) before creating its client; a disconnect or destroy during a connect
-  bumps the generation, so the late handshake is closed and the connect reports cancellation.
+  bumps the generation and cancels a per-attempt source linked into the handshake token (review round 1),
+  so the handshake ends at once and a resume connect is not held behind it; a handshake that completes
+  anyway is closed and the connect reports cancellation.
   `OnDisconnectedEvent` is raised once per connection: by the client's close event, or by a fallback
   queued after it when the close failed or aborted (code 1006). `OnDestroy` takes the sources under the
   lock, cancels, aborts, then disposes; linked tokens are created only under the lock and a destroyed
@@ -69,5 +73,10 @@ UnityWebSocketReceiveCoroutineTests.cs, ScriptedWebSocketClient.cs, WebSocketCor
   `TaskCompletionSource` start gate does not inline its continuation on the main thread (Unity's
   SynchronizationContext disables inlining), so connect/disconnect now start synchronously outside the lock
   and publish a proxy task first.
+- Review round 1: added `ThrowingOnMessage_EndsAndDisposesTheHandle`,
+  `Dispose_WithAReceivedUndeliveredMessage_DisposesIt_WithoutDelivery`,
+  `SustainedFlood_DropsInTwoDrainCycles_LogOneWarning`,
+  `DisconnectDuringConnect_CancelsTheHandshake_AndAResumeConnectIsNotDelayed` (the old superseded-connect
+  test is kept as `DisconnectDuringConnect_HandshakeThatCompletesAnyway_IsClosed`).
 - Not run: full Unity suites (host editor, periodic), IL2CPP player builds, devices (pause/resume on
   iOS/Android is device behavior: `needs-device-validation`).
