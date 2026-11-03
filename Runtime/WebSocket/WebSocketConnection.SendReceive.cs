@@ -642,6 +642,11 @@ namespace TurboHTTP.WebSocket
             byte rsvBits,
             CancellationToken ct)
         {
+            // With an extension active the outbound state (permessage-deflate context takeover, RFC 7692
+            // section 7.2.1) already includes this message, so it is committed before its first byte: a
+            // cancellation from here aborts instead of leaving the peer's decompressor out of step.
+            bool committed = _activeExtensions.Count > 0;
+
             int threshold = _options.FragmentationThreshold;
             if (payload.Length <= threshold)
             {
@@ -649,7 +654,7 @@ namespace TurboHTTP.WebSocket
                     OutboundFrame.Data(opcode, isFinal: true, payload, rsvBits),
                     allowClosingState: true,
                     applicationMessage: true,
-                    messageStarted: false,
+                    messageStarted: committed,
                     ct).ConfigureAwait(false);
                 return;
             }
@@ -669,7 +674,7 @@ namespace TurboHTTP.WebSocket
                         first ? rsvBits : (byte)0),
                     allowClosingState: true,
                     applicationMessage: true,
-                    messageStarted: !first,
+                    messageStarted: committed || !first,
                     ct).ConfigureAwait(false);
 
                 offset += fragmentLength;
