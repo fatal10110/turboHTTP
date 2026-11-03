@@ -12,7 +12,7 @@
 - **Transport Layer:** Raw TCP sockets with custom HTTP/1.1 and HTTP/2 implementation (no UnityWebRequest dependency)
 - **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation; the vendored BouncyCastle provider is an opt-in fallback (`TURBOHTTP_BOUNCYCASTLE`, [Phase 3C](phases/phase-03c-bouncy-castle-tls.md)) and never a bypass for certificate failures
 - **JSON Library:** the built-in LiteJson reader/writer (`TurboHTTP.JSON`) by default; `System.Text.Json` is opt-in via `TURBOHTTP_USE_SYSTEM_TEXT_JSON`. With `TurboHTTP.Complete` in the project, `JsonUtilitySerializer` (Unity `JsonUtility`) is installed over LiteJson after startup (#271)
-- **Distribution:** `1.0.0-pre.N` tags from `main` (Git URL / OpenUPM preview) while the device matrix waits for hardware; `1.0.0` GA comes after the device matrix (#99) and a green full host-editor run, then Unity Asset Store submission (#101)
+- **Distribution:** `1.0.0-pre.N` tags from `main` (Git URL / OpenUPM preview) while the device matrix waits for hardware; `1.0.0` GA comes after the device matrix (#99) and a green full host-editor run: GA is the `v1.0.0` tag, its GitHub Release and the OpenUPM listing ([release checklist](release-checklist.md), #101); the Unity Asset Store is a post-1.0 decision
 
 ## Architecture Philosophy
 
@@ -153,7 +153,7 @@ The roadmap uses the GitHub milestones; the old `M0`-`M5` labels are retired. A 
 | --- | --- | --- |
 | 1 | `v1.0-alpha: Release blockers` | Packaging, license, defects that block a first preview |
 | 2 | `v1.0-beta: Protocol & correctness hardening` | RFC conformance, security, ownership and concurrency fixes for the shipped transport and modules |
-| 3 | `v1.0 GA: Docs, validation & release` | Docs and samples (#98), device matrix (#99), IL2CPP/CI (#100), Asset Store release (#101), validation gates #102 (22a.6), #103 (22c), #104 (18a), #105 (Phase 15) |
+| 3 | `v1.0 GA: Docs, validation & release` | Docs and samples (#98), device matrix (#99), IL2CPP/CI (#100), release process: tags, GitHub Release, OpenUPM (#101), validation gates #102 (22a.6), #103 (22c), #104 (18a), #105 (Phase 15) |
 | 4 | `v1.1: Post-release hardening` | 16.3 security and privacy hardening (#117) |
 | 5 | `v1.2: Features & performance` | 16.1 rate limiting (#118), 16.5 parallel helpers (#119), 19c (#120), 23 (#121), 24.2-24.4 (#122-#124) |
 | 6 | `v2.0: Advanced protocols` | 16.2 WebGL (#130), 16.4 GraphQL (#131), 25 gRPC (#132), 22d (#125-#129) |
@@ -253,7 +253,7 @@ v1.0 GA is ready when:
 - ✓ Record/replay mode working
 - ✓ No open release blockers (milestones v1.0-alpha, v1.0-beta and v1.0 GA)
 - ✓ Gated features (22c, 18a, background networking, BouncyCastle) default-off or labelled experimental as described above (22c default-off is #103)
-- ✓ Release package ready (`1.0.0-pre.N` train, then GA and Asset Store submission, #101)
+- ✓ Release package ready (`1.0.0-pre.N` train, then the `v1.0.0` tag, GitHub Release and OpenUPM listing per the [release checklist](release-checklist.md), #101)
 
 Code coverage is not a gate; the deterministic suites and the allocation gates are.
 
@@ -262,7 +262,7 @@ Code coverage is not a gate; the deterministic suites and the allocation gates a
 1. Review each phase document in the `phases/` directory; its `**Milestone:**` header says where it lands.
 2. Work the open issues by milestone: v1.0-alpha, v1.0-beta, v1.0 GA (feature freeze: bug fixes, validation and docs only).
 3. Tag `1.0.0-pre.N` from `main` while the device matrix (#99) waits for hardware.
-4. Release `1.0.0` after #99 and a green full host-editor run, then submit to the Unity Asset Store (#101).
+4. Release `1.0.0` after #99 and a green full host-editor run: tag `v1.0.0`, publish the GitHub Release and update the OpenUPM listing ([release checklist](release-checklist.md), #101). The Unity Asset Store is a post-1.0 decision.
 5. Post-1.0: v1.1, v1.2, v2.0 as listed in [Development Milestones](#development-milestones).
 
 ---
