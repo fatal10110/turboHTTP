@@ -5,9 +5,15 @@
 # from the NUnit XML the player writes on the device (pulled over adb).
 #
 #   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe \
-#     Tools~/unity/run-device-tests.sh [--stripping Low|High] [--arch arm64|armv7] [--filter <regex>] [--category <name>] [--integration]
+#     Tools~/unity/run-device-tests.sh [--stripping Low|High] [--arch arm64|armv7|x86_64] [--serial <adb serial>]
+#       [--skip-build] [--filter <regex>] [--category <name>] [--integration]
 #
-# One device must be attached (adb devices). Defaults: Stripping High, arm64. The player settings come from
+# Without --serial, one device must be attached (adb devices) and Unity deploys to it. With --serial (a phone
+# beside an emulator, or several emulators), Unity only builds the APK and exits, and the script installs and
+# launches it on that device; results always come from the device-side file then. --skip-build (with --serial)
+# reinstalls the APK the last --serial build of that stripping level and architecture left, so one build
+# serves several devices; pass the same --filter/--category, which are baked into the player. x86_64 is for the x86_64
+# emulator images (run-emulator-tests.sh). Defaults: Stripping High, arm64. The player settings come from
 # Assets/Editor/TurboHttpDeviceTestBuild.cs (written into the test project): IL2CPP, the stripping level,
 # the target architecture and INTERNET permission; TURBOHTTP_BOUNCYCASTLE is set for the Android group in
 # ProjectSettings.asset. Env: UNITY_DEVICE_TEST_PROJECT (default <cache>/device-testproj),
@@ -17,20 +23,23 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-platform=PlayMode; filter=""; category=""; integration=0; stripping=High; arch=arm64
+platform=PlayMode; filter=""; category=""; integration=0; stripping=High; arch=arm64; serial=""; skip_build=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --stripping) stripping="$2"; shift 2 ;;
     --arch) arch="$2"; shift 2 ;;
+    --serial) serial="$2"; shift 2 ;;
+    --skip-build) skip_build=1; shift ;;
     --filter) filter="$2"; shift 2 ;;
     --category) category="$2"; shift 2 ;;
     --integration) integration=1; shift ;;
-    *) echo "usage: $0 [--stripping Low|High] [--arch arm64|armv7] [--filter regex] [--category name] [--integration]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--stripping Low|High] [--arch arm64|armv7|x86_64] [--serial id [--skip-build]] [--filter regex] [--category name] [--integration]" >&2; exit 2 ;;
   esac
 done
 case "$stripping" in Low|High) ;; *) echo "run-device-tests: --stripping Low|High" >&2; exit 2 ;; esac
-case "$arch" in arm64|armv7) ;; *) echo "run-device-tests: --arch arm64|armv7" >&2; exit 2 ;; esac
+case "$arch" in arm64|armv7|x86_64) ;; *) echo "run-device-tests: --arch arm64|armv7|x86_64" >&2; exit 2 ;; esac
 if [ "$category" = ExternalNetwork ]; then integration=1; fi
+if [ "$skip_build" = 1 ] && [ -z "$serial" ]; then echo "run-device-tests: --skip-build needs --serial" >&2; exit 2; fi
 
 unity="${UNITY_PATH:-}"
 if [ -z "$unity" ] || [ ! -x "$unity" ]; then
@@ -74,9 +83,16 @@ adb_exe="$engines/AndroidPlayer/SDK/platform-tools/adb.exe"
 [ -x "$adb_exe" ] || adb_exe="$engines/AndroidPlayer/SDK/platform-tools/adb"
 [ -x "$adb_exe" ] || adb_exe="$(command -v adb || true)"
 [ -n "$adb_exe" ] || { echo "run-device-tests: no adb (editor Android SDK under $engines, or PATH)" >&2; exit 2; }
-adbr() { local out; for _ in 1 2 3 4 5; do if out="$("$adb_exe" "$@" 2>/dev/null)"; then printf '%s' "$out" | tr -d '\r'; return 0; fi; sleep 2; done; return 1; }
-[ "$(adbr get-state || true)" = device ] || { echo "run-device-tests: no Android device ready on adb ($adb_exe devices)" >&2; exit 2; }
+adb_target=()
+if [ -n "$serial" ]; then adb_target=(-s "$serial"); fi
+# Each call is bounded (where timeout exists): a frozen device or emulator otherwise blocks adb forever.
+adb_timeout=()
+if command -v timeout >/dev/null 2>&1; then adb_timeout=(timeout 120); fi
+adbr() { local out; for _ in 1 2 3 4 5; do if out="$(${adb_timeout[@]+"${adb_timeout[@]}"} "$adb_exe" ${adb_target[@]+"${adb_target[@]}"} "$@" 2>/dev/null)"; then printf '%s' "$out" | tr -d '\r'; return 0; fi; sleep 2; done; return 1; }
+[ "$(adbr get-state || true)" = device ] || { echo "run-device-tests: no Android device ${serial:+$serial }ready on adb ($adb_exe devices)" >&2; exit 2; }
 
+# The test project and the build are skipped with --skip-build (the APK is reused).
+if [ "$skip_build" = 0 ]; then
 rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --exclude='Library/' \
   --exclude='Temp/' --exclude='Logs/' --exclude='.DS_Store' --exclude='.claude/' --exclude='Tools~/' \
   "$repo/" "$pkg/"
@@ -128,6 +144,7 @@ mkdir -p "$proj/Assets/Editor"
 cat > "$proj/Assets/Editor/TurboHttpDeviceTestBuild.cs" <<'CS'
 // Written by Tools~/unity/run-device-tests.sh. Device player settings for the Unity Test Runner (#99).
 using System;
+using System.IO;
 using UnityEditor;
 using UnityEditor.TestTools;
 using UnityEngine;
@@ -140,14 +157,25 @@ public class TurboHttpDeviceTestBuild : ITestPlayerBuildModifier
     {
         var stripping = Environment.GetEnvironmentVariable("TURBOHTTP_DEVICE_STRIPPING") == "Low"
             ? ManagedStrippingLevel.Low : ManagedStrippingLevel.High;
-        var arch = Environment.GetEnvironmentVariable("TURBOHTTP_DEVICE_ARCH") == "armv7"
-            ? AndroidArchitecture.ARMv7 : AndroidArchitecture.ARM64;
+        var archName = Environment.GetEnvironmentVariable("TURBOHTTP_DEVICE_ARCH");
+        var arch = archName == "armv7" ? AndroidArchitecture.ARMv7
+            : archName == "x86_64" ? AndroidArchitecture.X86_64 : AndroidArchitecture.ARM64;
         PlayerSettings.SetScriptingBackend(BuildTargetGroup.Android, ScriptingImplementation.IL2CPP);
         PlayerSettings.SetManagedStrippingLevel(BuildTargetGroup.Android, stripping);
         PlayerSettings.Android.targetArchitectures = arch;
         PlayerSettings.Android.forceInternetPermission = true;
         PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, "com.turbohttp.devicetests");
         Debug.Log("TURBOHTTP_DEVICE_BUILD stripping=" + stripping + " arch=" + arch);
+        // --serial: build the APK only; the script installs it on the chosen device. Without AutoRunPlayer the
+        // test runner never starts its player-connection timeout and a batchmode editor would wait forever,
+        // so quit on the first editor update after the build (exit 2 when no APK was written).
+        var apk = Environment.GetEnvironmentVariable("TURBOHTTP_DEVICE_APK");
+        if (!string.IsNullOrEmpty(apk))
+        {
+            options.options &= ~BuildOptions.AutoRunPlayer;
+            options.locationPathName = apk;
+            EditorApplication.delayCall += () => EditorApplication.Exit(File.Exists(apk) ? 0 : 2);
+        }
         return options;
     }
 }
@@ -234,12 +262,21 @@ public class TurboHttpDeviceResults : ITestRunCallback
     }
 }
 CS
+fi
 
 ts="$(date +%Y%m%d-%H%M%S)"
-xml="$cache/results-Android-$stripping-$arch-$ts.xml"; log="$cache/unity-Android-$stripping-$arch-$ts.log"
-export TURBOHTTP_DEVICE_STRIPPING="$stripping" TURBOHTTP_DEVICE_ARCH="$arch"
+sdk="$(adbr shell getprop ro.build.version.sdk || true)"
+tag="$stripping-$arch-api${sdk:-unknown}${serial:+-$(printf '%s' "$serial" | tr -c 'A-Za-z0-9._-' _)}"
+xml="$cache/results-Android-$tag-$ts.xml"; log="$cache/unity-Android-$tag-$ts.log"
+apk=""
+if [ -n "$serial" ]; then
+  apk="$cache/device-tests-$stripping-$arch.apk"
+  if [ "$skip_build" = 0 ]; then rm -f "$apk"
+  elif [ ! -s "$apk" ]; then echo "run-device-tests: --skip-build: no $apk from an earlier --serial build" >&2; exit 2; fi
+fi
+export TURBOHTTP_DEVICE_STRIPPING="$stripping" TURBOHTTP_DEVICE_ARCH="$arch" TURBOHTTP_DEVICE_APK="${apk:+$(topath "$apk")}"
 # A Windows Unity.exe started from WSL sees only the variables listed in WSLENV.
-export WSLENV="${WSLENV:+$WSLENV:}TURBOHTTP_DEVICE_STRIPPING:TURBOHTTP_DEVICE_ARCH"
+export WSLENV="${WSLENV:+$WSLENV:}TURBOHTTP_DEVICE_STRIPPING:TURBOHTTP_DEVICE_ARCH:TURBOHTTP_DEVICE_APK"
 args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform Android -buildTarget Android
       -testResults "$(topath "$xml")" -logFile "$(topath "$log")")
 [ -n "$filter" ] && args+=(-testFilter "$filter")
@@ -251,10 +288,32 @@ pull_results() { if [ "$(adbr shell "[ -s $device_file ] && echo y || true")" = 
 adbr shell rm -f "$device_file" >/dev/null || true
 adbr logcat -c >/dev/null || true
 
-set +e
-"$unity" "${args[@]}"
-code=$?
-set -e
+code=0
+if [ "$skip_build" = 0 ]; then
+  set +e
+  "$unity" "${args[@]}"
+  code=$?
+  set -e
+fi
+
+# --serial: Unity only built the APK; install it on the chosen device and launch it. The test player runs
+# the suite on start and quits when it is done.
+if [ -n "$serial" ]; then
+  if [ "$code" != 0 ] || [ ! -s "$apk" ]; then
+    echo "run-device-tests: the player build failed (Unity exit $code); see $log"
+    grep -E "error CS[0-9]+" "$log" | head -20 || true
+    exit 2
+  fi
+  adbr install -r "$(topath "$apk")" >/dev/null || { echo "run-device-tests: adb install on $serial failed" >&2; exit 2; }
+  adbr shell monkey -p "$pkg_id" -c android.intent.category.LAUNCHER 1 >/dev/null \
+    || { echo "run-device-tests: launching $pkg_id on $serial failed" >&2; exit 2; }
+  # Give the process time to appear before the wait below treats a missing pid as a finished player.
+  for _ in $(seq 1 30); do
+    [ -n "$(adbr shell "pidof $pkg_id || true" || true)" ] && break
+    sleep 2
+  done
+  echo "run-device-tests: installed and launched on $serial"
+fi
 
 # The player keeps running when the editor gives up on the player connection: wait for the device-side
 # marker and pull the XML it wrote. The wait ends early when the player process is gone (never installed

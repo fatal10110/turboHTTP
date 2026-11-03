@@ -127,6 +127,14 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. Install
    `build-player.sh`'s Android APK and read `TURBOHTTP_SMOKE` from logcat for the player smoke. Never
    stop a running device run from the shell: killing Unity's process tree also kills its adb server.
+   With the phone and an emulator (or several) attached, pass `--serial <id>`: Unity only builds the APK
+   and the script installs and launches it on that device; `--skip-build` reinstalls the last such APK.
+   `'./Tools~/unity/run-emulator-tests.sh' [--api 23,26,29,33,36] [--jobs 2]` boots one x86_64 AVD per API
+   level (`turbohttp-api<N>`, wiped each boot), builds the x86_64 player once and runs the suite on each.
+   It needs an SDK with `emulator` and the `default;x86_64` system images (`TURBOHTTP_EMULATOR_SDK`,
+   default `%LOCALAPPDATA%\turbohttp\android-sdk`, filled with the editor's `cmdline-tools\6.0`
+   sdkmanager) and WHPX/KVM. Emulator results cover API-level behavior only: x86_64, no radio, no vendor
+   stack, so ARM/IL2CPP and network rows still need the phone.
 
 From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
 Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and
