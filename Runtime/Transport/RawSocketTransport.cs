@@ -27,7 +27,6 @@ namespace TurboHTTP.Transport
     /// </summary>
     public sealed class RawSocketTransport : IHttpTransport
     {
-        private static readonly string[] s_connectTunnelAlpnProtocols = { "h2", "http/1.1" };
         private readonly TcpConnectionPool _pool;
         private readonly Http2ConnectionManager _h2Manager;
         private readonly TlsBackend _tlsBackend;
@@ -1239,7 +1238,7 @@ namespace TurboHTTP.Transport
                     var tlsResult = await tlsProvider.WrapAsync(
                         proxyStream,
                         targetHost,
-                        s_connectTunnelAlpnProtocols,
+                        AlpnProtocols.H2AndHttp11,
                         ct).ConfigureAwait(false);
 
                     MarkSslStreamViableIfAuto(_tlsBackend, tlsResult);

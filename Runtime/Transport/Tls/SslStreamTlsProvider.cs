@@ -7,6 +7,7 @@ using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Tls
 {
@@ -49,6 +50,21 @@ namespace TurboHTTP.Transport.Tls
         internal SslStreamTlsProvider(bool simulateNoAlpn)
         {
             _alpnDisabled = simulateNoAlpn;
+        }
+
+        // Test seam (#171, #172): replaces the authentication call (ALPN or plain) so a test can
+        // drive a handshake that throws or never completes. Non-null also counts as ALPN support.
+        private readonly Func<SslStream, CancellationToken, Task> _handshakeOverride;
+
+        /// <summary>
+        /// Test-only constructor. <paramref name="handshakeOverride"/> runs instead of the single
+        /// <c>AuthenticateAsClientAsync</c> call: on the ALPN path unless
+        /// <paramref name="simulateNoAlpn"/> selects the plain path.
+        /// </summary>
+        internal SslStreamTlsProvider(bool simulateNoAlpn, Func<SslStream, CancellationToken, Task> handshakeOverride)
+        {
+            _alpnDisabled = simulateNoAlpn;
+            _handshakeOverride = handshakeOverride ?? throw new ArgumentNullException(nameof(handshakeOverride));
         }
 
         // Cached static delegate — eliminates per-WrapAsync delegate allocation since
@@ -110,7 +126,7 @@ namespace TurboHTTP.Transport.Tls
                     catch (PlatformNotSupportedException)
                     {
                         // IL2CPP does not support dynamic method compilation.
-                        // Fall back to ConstructorInfo.Invoke in AuthenticateWithAlpnAsync.
+                        // Fall back to ConstructorInfo.Invoke in CreateAlpnOptions.
                     }
                     catch (NotSupportedException)
                     {
@@ -149,7 +165,7 @@ namespace TurboHTTP.Transport.Tls
             }
         }
 
-        public bool IsAlpnSupported() => _alpnSupported && !_alpnDisabled;
+        public bool IsAlpnSupported() => (_alpnSupported || _handshakeOverride != null) && !_alpnDisabled;
 
         public async Task<TlsResult> WrapAsync(
             Stream innerStream,
@@ -174,6 +190,30 @@ namespace TurboHTTP.Transport.Tls
             bool http11Offered = OffersProtocol(alpnProtocols, Http11Protocol);
             bool useAlpn = ShouldNegotiateAlpn(alpnProtocols, alpnSupported);
 
+            // The ALPN decision is final before the SslStream exists (#171). The options are built
+            // by reflection only, so a failure here (AOT/stripping edge case) happens before any
+            // byte reaches the wire: with http/1.1 offered the handshake runs without ALPN
+            // (RFC 7301 section 3.1), otherwise the requested protocol cannot be negotiated.
+            object alpnOptions = null;
+            if (useAlpn && _handshakeOverride == null)
+            {
+                try
+                {
+                    alpnOptions = CreateAlpnOptions(host, alpnProtocols);
+                }
+                catch (Exception ex) when (IsAlpnSetupFailure(ex))
+                {
+                    if (!http11Offered)
+                    {
+                        throw new PlatformNotSupportedException(
+                            "SslStream ALPN negotiation failed on this runtime and the caller " +
+                            "did not offer http/1.1, so the requested protocol cannot be negotiated.", ex);
+                    }
+
+                    useAlpn = false;
+                }
+            }
+
             var sslStream = new SslStream(
                 innerStream,
                 leaveInnerStreamOpen: false,
@@ -181,74 +221,16 @@ namespace TurboHTTP.Transport.Tls
 
             try
             {
-                bool alpnAttempted = false;
-
-                // Authenticate as client
-                if (useAlpn)
-                {
-                    try
-                    {
-                        await AuthenticateWithAlpnAsync(sslStream, host, alpnProtocols, ct).ConfigureAwait(false);
-                        alpnAttempted = true;
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex) when (
-                        ex is System.Reflection.TargetInvocationException
-                        || ex is MemberAccessException
-                        || ex is InvalidOperationException
-                        || ex is TypeLoadException
-                        || ex is MissingMethodException
-                        || ex is PlatformNotSupportedException)
-                    {
-                        // ALPN reflection failed (e.g. AOT/stripping edge case).
-                        // Only catch reflection-related exceptions here. Security exceptions
-                        // (AuthenticationException, IOException) must propagate — they indicate
-                        // real TLS errors (bad cert, network down), not platform limitations.
-                        if (!http11Offered)
-                        {
-                            throw new PlatformNotSupportedException(
-                                "SslStream ALPN negotiation failed on this runtime and the caller " +
-                                "did not offer http/1.1, so the requested protocol cannot be negotiated.", ex);
-                        }
-
-                        // ALPN is optional when http/1.1 is offered (RFC 7301 section 3.1):
-                        // continue with a plain handshake, which yields HTTP/1.1.
-                        alpnAttempted = false;
-                    }
-                }
-
-                if (!alpnAttempted)
-                {
-                    // Non-ALPN path. The 4-param AuthenticateAsClientAsync overload does NOT
-                    // accept a CancellationToken. We use Task.WhenAny with a cancellation-
-                    // aware delay to abandon the await when the outer timeout fires.
-                    // The underlying handshake may continue to completion on its thread,
-                    // but the SslStream will be disposed by the caller (catch block below).
-                    //
-                    // checkCertificateRevocation: false — intentional design choice.
-                    // OCSP/CRL revocation checks are unreliable on mobile networks (servers
-                    // frequently unreachable) and add 50–200 ms per fresh handshake. The
-                    // BCL default for SslClientAuthenticationOptions is also false.
-                    var authTask = sslStream.AuthenticateAsClientAsync(
-                        host,
-                        clientCertificates: null,
-                        enabledSslProtocols: HandshakeProtocols,
-                        checkCertificateRevocation: false);
-
-                    var cancelTask = Task.Delay(Timeout.Infinite, ct);
-                    var completed = await Task.WhenAny(authTask, cancelTask).ConfigureAwait(false);
-
-                    if (completed == cancelTask || ct.IsCancellationRequested)
-                    {
-                        ct.ThrowIfCancellationRequested();
-                    }
-
-                    // Observe auth result (propagate exceptions)
-                    await authTask.ConfigureAwait(false);
-                }
+                // Exactly one authentication call per SslStream (#171): whatever the handshake
+                // throws (AuthenticationException, IOException, InvalidOperationException for a
+                // stream-state error) propagates, and the catch below disposes the stream. A
+                // second ClientHello on a used stream is not a TLS retry (RFC 8446, RFC 5246).
+                //
+                // The plain overload takes no CancellationToken, and a runtime may ignore the token
+                // of the ALPN overload. AbandonableTask returns as soon as ct fires and observes the
+                // abandoned handshake, which ends when the catch below disposes the stream (#172).
+                Task authTask = StartAuthentication(sslStream, host, useAlpn, alpnOptions, ct);
+                await AbandonableTask.WaitAsync(authTask, ct).ConfigureAwait(false);
 
                 // TLS 1.2 floor: the handshake let the OS choose the version, so verify it here.
                 // Throws inside the try so the catch below disposes the SslStream.
@@ -261,7 +243,7 @@ namespace TurboHTTP.Transport.Tls
 
                 // Extract ALPN result
                 string negotiatedAlpn = null;
-                if (alpnAttempted)
+                if (useAlpn)
                 {
                     negotiatedAlpn = ExtractAlpnResult(sslStream);
                 }
@@ -280,11 +262,47 @@ namespace TurboHTTP.Transport.Tls
             }
         }
 
-        private async Task AuthenticateWithAlpnAsync(
+        /// <summary>
+        /// Exception filter for building the ALPN options by reflection (#171). These types can
+        /// only come from metadata or member access that AOT/stripping removed, before the
+        /// handshake starts. <see cref="InvalidOperationException"/> is deliberately absent: from
+        /// <c>AuthenticateAsClientAsync</c> it is an SslStream state error (already authenticated,
+        /// handshake in progress), never a missing ALPN capability, and it propagates.
+        /// </summary>
+        internal static bool IsAlpnSetupFailure(Exception ex)
+        {
+            return ex is TargetInvocationException
+                || ex is MemberAccessException
+                || ex is TypeLoadException
+                || ex is MissingMethodException
+                || ex is PlatformNotSupportedException;
+        }
+
+        private Task StartAuthentication(
             SslStream sslStream,
             string host,
-            string[] alpnProtocols,
+            bool useAlpn,
+            object alpnOptions,
             CancellationToken ct)
+        {
+            if (_handshakeOverride != null)
+                return _handshakeOverride(sslStream, ct);
+
+            if (useAlpn)
+                return StartAlpnAuthentication(sslStream, alpnOptions, ct);
+
+            // checkCertificateRevocation: false — intentional design choice.
+            // OCSP/CRL revocation checks are unreliable on mobile networks (servers
+            // frequently unreachable) and add 50–200 ms per fresh handshake. The
+            // BCL default for SslClientAuthenticationOptions is also false.
+            return sslStream.AuthenticateAsClientAsync(
+                host,
+                clientCertificates: null,
+                enabledSslProtocols: HandshakeProtocols,
+                checkCertificateRevocation: false);
+        }
+
+        private static object CreateAlpnOptions(string host, string[] alpnProtocols)
         {
             // All reflection results are cached in static fields (see static ctor).
             // Option instance creation prefers cached delegate to avoid Activator overhead.
@@ -307,7 +325,7 @@ namespace TurboHTTP.Transport.Tls
 
             // Set ApplicationProtocols (List<SslApplicationProtocol>)
             // NOTE: Cached reflection metadata can still be unavailable under IL2CPP/AOT
-            // stripping. In that case this path is skipped and caller fallback applies.
+            // stripping. In that case this path is skipped and the handshake carries no ALPN.
             if (_alpnProtocolType != null && _alpnProtocolListCtor != null && _alpnProtocolListAddMethod != null)
             {
                 var alpnList = _alpnProtocolListCtor.Invoke(null);
@@ -329,12 +347,16 @@ namespace TurboHTTP.Transport.Tls
                 _alpnOptionsProperty.SetValue(options, alpnList);
             }
 
-            Task task;
+            return options;
+        }
+
+        private static Task StartAlpnAuthentication(SslStream sslStream, object options, CancellationToken ct)
+        {
             try
             {
-                task = (Task)_authWithOptionsMethod.Invoke(sslStream, new[] { options, ct });
+                return (Task)_authWithOptionsMethod.Invoke(sslStream, new[] { options, ct });
             }
-            catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException != null)
+            catch (TargetInvocationException tie) when (tie.InnerException != null)
             {
                 // MethodInfo.Invoke wraps all target exceptions in TargetInvocationException.
                 // Unwrap so the caller sees the real exception (AuthenticationException,
@@ -342,8 +364,6 @@ namespace TurboHTTP.Transport.Tls
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
                 throw; // unreachable, satisfies compiler
             }
-
-            await task.ConfigureAwait(false);
         }
 
         private string ExtractAlpnResult(SslStream sslStream)
