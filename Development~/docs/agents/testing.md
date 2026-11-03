@@ -116,6 +116,17 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    `--bouncycastle`, and IL2CPP Win64 when the Visual Studio C++ toolchain is present, runs the Windows
    players and checks the linker output (BouncyCastle assemblies absent without the opt-in). iOS and
    device rows stay `needs-device-validation` (#99).
+4. **Android device run (#99).** With one Android device on `adb` (unlocked, screen kept on:
+   Developer options → Stay awake), `'./Tools~/unity/run-device-tests.sh' [--stripping Low|High]
+   [--arch arm64|armv7] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
+   installs it and runs it on the device. Results come back over the player connection when it works;
+   otherwise (LAN or firewall: the Editor needs an inbound rule for the Private profile) the script waits
+   for the XML the player writes on the device and pulls it over adb. That wait ends when the player
+   finishes or its process is gone, and is capped by `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120).
+   The device-only test project (`UNITY_DEVICE_TEST_PROJECT`, never `run-tests.sh`'s `UNITY_TEST_PROJECT`)
+   opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. Install
+   `build-player.sh`'s Android APK and read `TURBOHTTP_SMOKE` from logcat for the player smoke. Never
+   stop a running device run from the shell: killing Unity's process tree also kills its adb server.
 
 From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
 Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and
