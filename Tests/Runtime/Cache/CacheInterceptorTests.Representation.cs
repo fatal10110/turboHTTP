@@ -367,10 +367,15 @@ namespace TurboHTTP.Tests.Cache
         }
 
         // Bounds the wait so a store that never happens fails the test instead of hanging it.
-        private static async Task AwaitStoredAsync(SignalingCacheStorage storage)
+        private static Task AwaitStoredAsync(SignalingCacheStorage storage)
         {
-            var completed = await Task.WhenAny(storage.FirstSet, Task.Delay(TimeSpan.FromSeconds(10))).ConfigureAwait(false);
-            Assert.AreSame(storage.FirstSet, completed, "The response was never stored.");
+            return AwaitSignalAsync(storage.FirstSet, "The response was never stored.");
+        }
+
+        private static async Task AwaitSignalAsync(Task signal, string message)
+        {
+            var completed = await Task.WhenAny(signal, Task.Delay(TimeSpan.FromSeconds(10))).ConfigureAwait(false);
+            Assert.AreSame(signal, completed, message);
         }
 
         private static void AssertStoredRepresentation(UHttpResponse response, string storedLength)
@@ -420,14 +425,20 @@ namespace TurboHTTP.Tests.Cache
             }
         }
 
-        // Completes FirstSet when the background store hands its first entry to storage.
+        // Completes FirstSet (SecondSet) when the background store hands its first (second) entry to storage.
         private sealed class SignalingCacheStorage : ICacheStorage
         {
             private readonly MemoryCacheStorage _inner = new MemoryCacheStorage();
             private readonly TaskCompletionSource<bool> _firstSet =
                 new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+            private readonly TaskCompletionSource<bool> _secondSet =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _setCount;
+
             internal Task FirstSet => _firstSet.Task;
+
+            internal Task SecondSet => _secondSet.Task;
 
             public Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default)
             {
@@ -437,7 +448,10 @@ namespace TurboHTTP.Tests.Cache
             public async Task SetAsync(string key, CacheEntry entry, CancellationToken cancellationToken = default)
             {
                 await _inner.SetAsync(key, entry, cancellationToken).ConfigureAwait(false);
+                var count = Interlocked.Increment(ref _setCount);
                 _firstSet.TrySetResult(true);
+                if (count >= 2)
+                    _secondSet.TrySetResult(true);
             }
 
             public Task RemoveAsync(string key, CancellationToken cancellationToken = default)

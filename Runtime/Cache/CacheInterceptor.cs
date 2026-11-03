@@ -682,6 +682,11 @@ namespace TurboHTTP.Cache
                 if (IsNotModifiedMergeExcluded(name))
                     continue;
 
+                // A cookie the policy keeps out of storage stays out when a 304 carries it; the revalidating
+                // consumer still receives it (ServeCachedEntryAsync), later hits never replay it.
+                if (!_policy.AllowSetCookieResponses && string.Equals(name, "Set-Cookie", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 mergedHeaders.Remove(name);
                 var values = notModifiedHeaders.GetValues(name);
                 for (int j = 0; j < values.Count; j++)
@@ -752,12 +757,22 @@ namespace TurboHTTP.Cache
             CacheEntry entry,
             UHttpRequest request,
             RequestContext context,
-            string provenance)
+            string provenance,
+            IReadOnlyList<string> responseSetCookies = null)
         {
             var headers = entry.Headers.Clone();
             var ageSeconds = ComputeCurrentAgeSeconds(entry, _utcNow());
             headers.Set("Age", ageSeconds.ToString(CultureInfo.InvariantCulture));
             headers.Set("X-Cache", provenance);
+
+            // A revalidating 304's own Set-Cookie belongs to this response only (never merged into storage when the
+            // policy refuses Set-Cookie responses).
+            if (responseSetCookies != null && responseSetCookies.Count > 0)
+            {
+                headers.Remove("Set-Cookie");
+                for (int i = 0; i < responseSetCookies.Count; i++)
+                    headers.Add("Set-Cookie", responseSetCookies[i]);
+            }
 
             // Cache hits synthesize the same handler lifecycle as a network response.
             // OnRequestStart here means "response delivery begins", not "socket dispatch started".

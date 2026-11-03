@@ -147,8 +147,10 @@ namespace TurboHTTP.Cache
                 if (expiresValue == "0" || expiresValue == "-1")
                     return nowUtc.AddSeconds(-1);
 
+                // RFC 9111 Section 5.3: an invalid Expires date MUST be treated as already expired, so it never
+                // falls through to heuristic freshness.
                 if (!TryParseHttpDate(expiresValue, out var expiresUtc))
-                    return null;
+                    return nowUtc.AddSeconds(-1);
 
                 // RFC 9111 Section 4.2.1: freshness_lifetime = Expires - Date, both from the origin's clock, so the
                 // device clock's offset from the origin does not move the expiry. Callers ensure Date is present
