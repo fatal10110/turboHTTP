@@ -74,7 +74,7 @@ in `tooling.md`.
 - A journal or PR that says "Unity not run" or "isolated .NET harness only" is unverified. Record
   exactly which lane ran: EditMode, PlayMode, IL2CPP player, device.
 
-## Host-editor gates
+## Host-editor gates (periodic host-editor runs)
 
 CI never runs Unity: the repository has no `UNITY_LICENSE` and will not get one (owner decision
 2026-11-02, #188), so ci.yml has no `unity-tests` job and the required check `ci` covers `lint`,
