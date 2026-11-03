@@ -546,7 +546,16 @@ namespace TurboHTTP.Transport.Http2
         {
             // Cancelling _cts makes IsAlive and AcceptsNewStreams false; queued requests are refused
             // as not sent (retryable), streams in flight fail with ex.
-            _cts.Cancel();
+            try
+            {
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // A body consumer's WINDOW_UPDATE failed after the connection finished disposing:
+                // Dispose cancelled _cts before it disposed it, so there is nothing left to cancel.
+            }
+
             lock (_streamCreateLock)
                 PumpAdmissionWaitersLocked();
 

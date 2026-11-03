@@ -734,7 +734,11 @@ namespace TurboHTTP.Transport.Http1
             if (_trailersSource == null || exception == null)
                 return;
 
-            _trailersSource.TrySetException(exception);
+            // Marked observed: most callers never ask for trailers, and an unobserved faulted task raises
+            // TaskScheduler.UnobservedTaskException when it is collected (Unity logs it as an error).
+            // GetTrailersAsync still throws the exception.
+            if (_trailersSource.TrySetException(exception))
+                _ = _trailersSource.Task.Exception;
         }
 
         private static ObjectDisposedException CreateDisposedTrailersException()

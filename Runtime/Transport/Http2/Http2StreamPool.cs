@@ -44,5 +44,11 @@ namespace TurboHTTP.Transport.Http2
         /// and returns the pooled body buffer (if any) to <see cref="System.Buffers.ArrayPool{T}"/>.
         /// </summary>
         public static void Return(Http2Stream stream) => s_pool.Return(stream);
+
+        /// <summary>
+        /// Counters of the process-wide stream pool, for leak checks (tests, the soak harness):
+        /// <see cref="ObjectPoolDiagnostics.ActiveCount"/> is the number of streams not yet returned.
+        /// </summary>
+        internal static ObjectPoolDiagnostics GetDiagnostics() => s_pool.GetDiagnostics();
     }
 }

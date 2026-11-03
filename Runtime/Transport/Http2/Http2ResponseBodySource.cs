@@ -366,12 +366,23 @@ namespace TurboHTTP.Transport.Http2
                     TerminalStateFaulted,
                     TerminalStateActive) != TerminalStateActive)
             {
-                _trailersSource.TrySetException(error);
+                FaultTrailers(error);
                 return;
             }
 
             _queue.Complete(error);
-            _trailersSource.TrySetException(error);
+            FaultTrailers(error);
+        }
+
+        /// <summary>
+        /// Faults the trailers task and marks its exception observed: most callers never ask for trailers,
+        /// and an unobserved faulted task raises <see cref="TaskScheduler.UnobservedTaskException"/> when it
+        /// is collected (Unity logs it as an error). <see cref="GetTrailersAsync"/> still throws it.
+        /// </summary>
+        private void FaultTrailers(Exception error)
+        {
+            if (_trailersSource.TrySetException(error))
+                _ = _trailersSource.Task.Exception;
         }
 
         internal bool IsStalled(long nowTick, long stallTimeoutMs)
@@ -442,7 +453,7 @@ namespace TurboHTTP.Transport.Http2
                     _connection.OnResponseBytesReleased(released.FlowControlledBytes);
 
                 if (disposedError != null && !_trailersSource.Task.IsCompleted)
-                    _trailersSource.TrySetException(disposedError);
+                    FaultTrailers(disposedError);
 
                 if (sendRst)
                     await _connection.AbortStreamFromBodySourceAsync(_stream).ConfigureAwait(false);

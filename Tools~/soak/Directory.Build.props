@@ -1,0 +1,7 @@
+<Project>
+  <!-- Keep bin/obj out of the source tree (Tools~/soak) and inside the ignored .build folder. -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../.build/soak/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../../.build/soak/bin/</BaseOutputPath>
+  </PropertyGroup>
+</Project>
