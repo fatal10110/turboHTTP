@@ -687,6 +687,13 @@ namespace TurboHTTP.Transport
                 throw new UHttpException(new UHttpError(
                     UHttpErrorType.CertificateError, ex.Message, ex));
             }
+            catch (HttpFieldValidationException ex)
+            {
+                // A header or trailer field the caller set cannot be sent (RFC 9110 Sections 5.1
+                // and 5.5): the same non-retryable InvalidRequest HTTP/2 reports (#243).
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest, ex.Message, ex));
+            }
             catch (Exception ex)
             {
                 throw new UHttpException(new UHttpError(
@@ -1330,11 +1337,10 @@ namespace TurboHTTP.Transport
             return sb.ToString();
         }
 
+        // RFC 9110 Section 9.3.6 authority-form: the same ASCII host as Host / :authority (#46).
         private static string BuildAuthority(string host, int port)
         {
-            if (host.Contains(":") && !host.StartsWith("[", StringComparison.Ordinal))
-                return "[" + host + "]:" + port;
-            return host + ":" + port;
+            return HttpAuthority.FormatHost(host) + ":" + port.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
 
         private static string BuildProxyAuthorizationHeaderValue(ProxySettings proxy)

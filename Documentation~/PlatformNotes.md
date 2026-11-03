@@ -41,6 +41,19 @@ To override connection concurrency, configure the connection pool:
 options.ConnectionPool.MaxConnectionsPerHost = 4;
 ```
 
+## Known limitation: TLS server name for IP-address hosts
+
+For `https://` requests to an IP address (for example `https://127.0.0.1/` or `https://[::1]/`),
+RFC 6066 section 3 says the client sends no `server_name` (SNI) extension. The BouncyCastle
+provider follows that. Unity's own `SslStream` (Mono with UnityTls, used in the Editor and in
+players) sends the address as `server_name` anyway. It derives SNI from the TLS target host, and
+the same target host is the name the server certificate is checked against (its iPAddress entries),
+so TurboHTTP cannot leave it out without weakening certificate validation. Certificate checks still
+apply in full; only the extra extension goes out.
+
+Most servers ignore an IP address in SNI. If yours rejects it, connect through a DNS name, or define
+`TURBOHTTP_BOUNCYCASTLE` and select `TlsBackend.BouncyCastle` for that client.
+
 ## Cleartext traffic
 
 TurboHTTP opens raw sockets, so the operating system's cleartext rules (iOS App Transport

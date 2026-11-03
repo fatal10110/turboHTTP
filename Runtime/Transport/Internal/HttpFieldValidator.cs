@@ -21,7 +21,7 @@ namespace TurboHTTP.Transport.Internal
     internal static class HttpFieldValidator
     {
         /// <summary>
-        /// Throws <see cref="ArgumentException"/> when <paramref name="name"/> or
+        /// Throws <see cref="HttpFieldValidationException"/> (an <see cref="ArgumentException"/>) when <paramref name="name"/> or
         /// <paramref name="value"/> may not be sent as a request header or trailer field.
         /// A null value is treated as empty (an empty field value is valid).
         /// </summary>
@@ -52,11 +52,11 @@ namespace TurboHTTP.Transport.Internal
         private static void ValidateName(string name)
         {
             if (string.IsNullOrEmpty(name))
-                throw new ArgumentException("Header name cannot be null or empty");
+                throw new HttpFieldValidationException("Header name cannot be null or empty");
 
             if (name[0] == ':')
             {
-                throw new ArgumentException(
+                throw new HttpFieldValidationException(
                     "Header names starting with ':' are reserved for pseudo-header fields, " +
                     "which the transport generates (RFC 9113 Section 8.3)");
             }
@@ -66,7 +66,7 @@ namespace TurboHTTP.Transport.Internal
                 char c = name[i];
                 if (!EncodingHelper.IsRfc9110TChar(c))
                 {
-                    throw new ArgumentException(
+                    throw new HttpFieldValidationException(
                         $"Header name contains invalid characters (U+{(int)c:X4} at index {i}); " +
                         "field names must be RFC 9110 tokens");
                 }
@@ -82,17 +82,17 @@ namespace TurboHTTP.Transport.Internal
             {
                 char c = value[i];
                 if (c == '\r' || c == '\n')
-                    throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
+                    throw new HttpFieldValidationException($"Header value for '{name}' contains CRLF characters");
 
                 if ((c < 0x20 && c != '\t') || c == 0x7F)
                 {
-                    throw new ArgumentException(
+                    throw new HttpFieldValidationException(
                         $"Header value for '{name}' contains control character 0x{(int)c:X2} at index {i}");
                 }
 
                 if (c > 0xFF)
                 {
-                    throw new ArgumentException(
+                    throw new HttpFieldValidationException(
                         $"Header value for '{name}' contains non-Latin-1 character U+{(int)c:X4} at index {i}. " +
                         "Encode the value (e.g., percent-encode) before setting the header.");
                 }
@@ -100,7 +100,7 @@ namespace TurboHTTP.Transport.Internal
 
             if (IsWhitespace(value[0]) || IsWhitespace(value[value.Length - 1]))
             {
-                throw new ArgumentException(
+                throw new HttpFieldValidationException(
                     $"Header value for '{name}' has leading or trailing whitespace, " +
                     "which is not part of a field value (RFC 9110 Section 5.5)");
             }

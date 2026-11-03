@@ -305,28 +305,11 @@ namespace TurboHTTP.Transport.Http1
             headerWriter.Append(GetRequestTarget(request));
             headerWriter.Append(" HTTP/1.1\r\n");
 
-            // 2. Host header (required by HTTP/1.1)
+            // 2. Host header (required by HTTP/1.1; RFC 9112 Section 3.2): the A-label form of
+            // an IDN host and a single-bracketed IPv6 literal (#46).
             if (!request.Headers.Contains("Host"))
             {
-                string hostValue;
-                if (request.Uri.HostNameType == UriHostNameType.IPv6)
-                {
-                    // Mono/Unity can already return bracketed IPv6 hosts.
-                    var host = request.Uri.Host;
-                    hostValue = host.Length > 1 && host[0] == '[' && host[host.Length - 1] == ']'
-                        ? host
-                        : "[" + host + "]";
-                }
-                else
-                {
-                    hostValue = request.Uri.Host;
-                }
-
-                bool isDefaultPort = (request.Uri.Scheme == "https" && request.Uri.Port == 443)
-                                  || (request.Uri.Scheme == "http" && request.Uri.Port == 80);
-                if (!isDefaultPort)
-                    hostValue = hostValue + ":" + request.Uri.Port;
-
+                var hostValue = HttpAuthority.FromUri(request.Uri);
                 ValidateHeader("Host", hostValue);
                 headerWriter.Append("Host: ");
                 headerWriter.Append(hostValue);
@@ -541,11 +524,10 @@ namespace TurboHTTP.Transport.Http1
                 absoluteFormObj is bool useAbsoluteForm &&
                 useAbsoluteForm)
             {
-                var absolute = request.Uri.GetComponents(
-                    UriComponents.SchemeAndServer | UriComponents.PathAndQuery,
-                    UriFormat.UriEscaped);
-                if (!string.IsNullOrEmpty(absolute))
-                    return absolute;
+                // RFC 9112 Section 3.2.2: the absolute URI, with the same ASCII authority as Host.
+                var pathAndQuery = request.Uri.PathAndQuery;
+                return request.Uri.Scheme + "://" + HttpAuthority.FromUri(request.Uri) +
+                       (string.IsNullOrEmpty(pathAndQuery) ? "/" : pathAndQuery);
             }
 
             var path = request.Uri.PathAndQuery;

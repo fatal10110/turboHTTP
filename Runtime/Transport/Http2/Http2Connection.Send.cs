@@ -541,16 +541,8 @@ namespace TurboHTTP.Transport.Http2
             Interlocked.Exchange(ref _sendWindowSignal, null)?.TrySetResult(true);
         }
 
-        private static string BuildAuthorityValue(Uri uri)
-        {
-            var host = uri.Host;
-            if (uri.HostNameType == UriHostNameType.IPv6)
-                host = $"[{host}]";
-
-            bool isDefaultPort = (uri.Scheme == "https" && uri.Port == 443)
-                              || (uri.Scheme == "http" && uri.Port == 80);
-            return isDefaultPort ? host : $"{host}:{uri.Port}";
-        }
+        // RFC 9113 Section 8.3.1: the same authority as the HTTP/1.1 Host header (#46).
+        private static string BuildAuthorityValue(Uri uri) => HttpAuthority.FromUri(uri);
 
         private static bool IsHttp2ForbiddenHeader(string name)
         {
