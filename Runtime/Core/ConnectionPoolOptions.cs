@@ -60,6 +60,10 @@ namespace TurboHTTP.Core
         private HappyEyeballsOptions _happyEyeballs = new HappyEyeballsOptions();
         private SocketIoMode _socketIoMode = SocketIoMode.NetworkStream;
 
+        // Set by every setter, even when it assigns the default value (#184), so IsDefault()
+        // means "never configured", not "equal to the defaults".
+        private bool _explicitlySet;
+
         /// <summary>
         /// Maximum concurrent connections per host. Defaults to platform recommendation
         /// (e.g., 6 on Desktop, 8 on Mobile).
@@ -72,6 +76,7 @@ namespace TurboHTTP.Core
                 if (value <= 0)
                     throw new ArgumentOutOfRangeException(nameof(value), "Must be greater than 0.");
                 _maxConnectionsPerHost = value;
+                _explicitlySet = true;
             }
         }
 
@@ -86,6 +91,7 @@ namespace TurboHTTP.Core
                 if (value <= TimeSpan.Zero)
                     throw new ArgumentOutOfRangeException(nameof(value), "Must be positive.");
                 _connectionIdleTimeout = value;
+                _explicitlySet = true;
             }
         }
 
@@ -100,6 +106,7 @@ namespace TurboHTTP.Core
                 if (value <= 0)
                     throw new ArgumentOutOfRangeException(nameof(value), "Must be greater than 0.");
                 _dnsTimeoutMs = value;
+                _explicitlySet = true;
             }
         }
 
@@ -129,6 +136,7 @@ namespace TurboHTTP.Core
                 }
 
                 _connectTimeout = value;
+                _explicitlySet = true;
             }
         }
 
@@ -138,7 +146,11 @@ namespace TurboHTTP.Core
         public HappyEyeballsOptions HappyEyeballs
         {
             get => _happyEyeballs;
-            set => _happyEyeballs = value ?? throw new ArgumentNullException(nameof(value));
+            set
+            {
+                _happyEyeballs = value ?? throw new ArgumentNullException(nameof(value));
+                _explicitlySet = true;
+            }
         }
 
         /// <summary>
@@ -155,9 +167,11 @@ namespace TurboHTTP.Core
                 if (value != SocketIoMode.NetworkStream && value != SocketIoMode.Saea && value != SocketIoMode.PollSelect)
                     throw new ArgumentOutOfRangeException(nameof(value), "Unknown SocketIoMode value.");
                 _socketIoMode = value;
+                _explicitlySet = true;
             }
         }
 
+        /// <summary>Returns an independent copy, including whether each option was configured.</summary>
         public ConnectionPoolOptions Clone()
         {
             return new ConnectionPoolOptions
@@ -168,17 +182,18 @@ namespace TurboHTTP.Core
                 _connectTimeout = _connectTimeout,
                 _happyEyeballs = _happyEyeballs.Clone(),
                 _socketIoMode = _socketIoMode,
+                _explicitlySet = _explicitlySet,
             };
         }
 
+        /// <summary>
+        /// True when no option (including a nested <see cref="HappyEyeballs"/> option) was ever
+        /// assigned. Assigning a value equal to its default still counts as configured, so the
+        /// client then builds a dedicated transport from these options.
+        /// </summary>
         internal bool IsDefault()
         {
-            return _maxConnectionsPerHost == PlatformConfig.RecommendedMaxConcurrency &&
-                   _connectionIdleTimeout == TimeSpan.FromMinutes(2) &&
-                   _dnsTimeoutMs == 10000 &&
-                   _connectTimeout == DefaultConnectTimeout &&
-                   _happyEyeballs.IsDefault() &&
-                   _socketIoMode == SocketIoMode.NetworkStream;
+            return !_explicitlySet && _happyEyeballs.IsDefault();
         }
     }
 }
