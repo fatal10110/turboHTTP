@@ -369,7 +369,8 @@ mkdir -p "$(dirname "$stage")"
 
 ts="$(date +%Y%m%d-%H%M%S)"
 log="$cache/unity-iOS-sim-$stripping-$ts.log"
-export TURBOHTTP_DEVICE_STRIPPING="$stripping" TURBOHTTP_IOS_OUT="$(topath "$stage")"
+stage_path="$(topath "$stage")"
+export TURBOHTTP_DEVICE_STRIPPING="$stripping" TURBOHTTP_IOS_OUT="$stage_path"
 # A Windows Unity.exe started from WSL sees only the variables listed in WSLENV.
 export WSLENV="${WSLENV:+$WSLENV:}TURBOHTTP_DEVICE_STRIPPING:TURBOHTTP_IOS_OUT"
 args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform iOS -buildTarget iOS
@@ -388,6 +389,13 @@ if [ ! -d "$stage/Unity-iPhone.xcodeproj" ]; then
   exit 2
 fi
 
-rsync -a --delete "$stage/" "$out_dir/"
+# /mnt/c (drvfs) under memory pressure sometimes fails a write with ENOMEM: retry the copy. READY is only
+# created after a complete copy, so a failed copy never hands over a partial project.
+copied=0
+for _ in 1 2 3 4 5; do
+  if rsync -a --delete "$stage/" "$out_dir/"; then copied=1; break; fi
+  sleep 10
+done
+[ "$copied" = 1 ] || { echo "build-ios-test-player: cannot copy the Xcode project to $out_dir; READY not created" >&2; exit 2; }
 touch "$handoff/READY"
 echo "build-ios-test-player: Xcode project in $out_dir (Unity exit $code); READY created; log $log"
