@@ -10,9 +10,11 @@ namespace TurboHTTP.Files
 {
     /// <summary>
     /// Fluent builder for multipart/form-data request bodies (file uploads).
-    /// <para><b>Non-ASCII filenames:</b> Uses UTF-8 in the filename= parameter.
-    /// Strict RFC 7578 compliance requires filename*= (RFC 5987) for non-ASCII
-    /// characters. This is planned for a future release.</para>
+    /// <para><b>Non-ASCII filenames:</b> the file name is sent as UTF-8 inside the quoted
+    /// <c>filename="..."</c> parameter (backslash and double quote escaped), as RFC 7578
+    /// sections 4.2 and 5.1.1 and browsers do. No <c>filename*</c> parameter is sent: RFC 7578
+    /// section 4.2 says the RFC 5987/8187 encoding MUST NOT be used in multipart/form-data.
+    /// CR and LF are rejected in every name.</para>
     /// </summary>
     public class MultipartFormDataBuilder
     {

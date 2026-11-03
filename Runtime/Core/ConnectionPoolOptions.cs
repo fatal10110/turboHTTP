@@ -54,11 +54,16 @@ namespace TurboHTTP.Core
         internal static readonly TimeSpan DefaultConnectTimeout = TimeSpan.FromSeconds(10);
 
         private int _maxConnectionsPerHost = PlatformConfig.RecommendedMaxConcurrency;
-        private TimeSpan _connectionIdleTimeout = TimeSpan.FromMinutes(2);
+        private TimeSpan _connectionIdleTimeout = PlatformConfig.RecommendedConnectionIdleTimeout;
+        private TimeSpan _reusedConnectionFirstByteTimeout = PlatformConfig.DefaultReusedConnectionFirstByteTimeout;
         private int _dnsTimeoutMs = 10000;
         private TimeSpan _connectTimeout = DefaultConnectTimeout;
         private HappyEyeballsOptions _happyEyeballs = new HappyEyeballsOptions();
         private SocketIoMode _socketIoMode = SocketIoMode.NetworkStream;
+
+        // Set by every setter, even when it assigns the default value (#184), so IsDefault()
+        // means "never configured", not "equal to the defaults".
+        private bool _explicitlySet;
 
         /// <summary>
         /// Maximum concurrent connections per host. Defaults to platform recommendation
@@ -72,11 +77,14 @@ namespace TurboHTTP.Core
                 if (value <= 0)
                     throw new ArgumentOutOfRangeException(nameof(value), "Must be greater than 0.");
                 _maxConnectionsPerHost = value;
+                _explicitlySet = true;
             }
         }
 
         /// <summary>
-        /// How long idle connections remain pooled before being closed. Defaults to 2 minutes.
+        /// How long idle connections remain pooled before being closed. Defaults to 45 seconds on
+        /// iOS/Android players and 2 minutes in the Editor and on desktop: mobile NATs drop idle
+        /// connections sooner.
         /// </summary>
         public TimeSpan ConnectionIdleTimeout
         {
@@ -86,6 +94,7 @@ namespace TurboHTTP.Core
                 if (value <= TimeSpan.Zero)
                     throw new ArgumentOutOfRangeException(nameof(value), "Must be positive.");
                 _connectionIdleTimeout = value;
+                _explicitlySet = true;
             }
         }
 
@@ -100,6 +109,7 @@ namespace TurboHTTP.Core
                 if (value <= 0)
                     throw new ArgumentOutOfRangeException(nameof(value), "Must be greater than 0.");
                 _dnsTimeoutMs = value;
+                _explicitlySet = true;
             }
         }
 
@@ -129,6 +139,40 @@ namespace TurboHTTP.Core
                 }
 
                 _connectTimeout = value;
+                _explicitlySet = true;
+            }
+        }
+
+        /// <summary>
+        /// How long a <b>reused</b> HTTP/1.1 connection may stay silent after an idempotent request
+        /// was sent before it is treated as dead. Defaults to 10 seconds.
+        /// </summary>
+        /// <remarks>
+        /// A pooled connection can be half-dead (the peer or a NAT dropped it without a FIN or RST).
+        /// When no response byte arrives within this time, the connection is closed and the request
+        /// is sent once more on a fresh connection, like a connection the server closed while idle
+        /// (RFC 9112 section 9.3.1). It applies only to idempotent methods with a replayable body
+        /// (RFC 9110 section 9.2.2) on a reused connection; a POST, a fresh connection and HTTP/2
+        /// keep waiting until the request timeout. The request timeout still bounds the whole
+        /// request. <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> disables it. Values must
+        /// be positive and at most <see cref="int.MaxValue"/> milliseconds.
+        /// </remarks>
+        public TimeSpan ReusedConnectionFirstByteTimeout
+        {
+            get => _reusedConnectionFirstByteTimeout;
+            set
+            {
+                if (value != System.Threading.Timeout.InfiniteTimeSpan)
+                {
+                    if (value <= TimeSpan.Zero)
+                        throw new ArgumentOutOfRangeException(nameof(value), "Must be positive or Timeout.InfiniteTimeSpan.");
+                    if (value.TotalMilliseconds > int.MaxValue)
+                        throw new ArgumentOutOfRangeException(nameof(value),
+                            "Must be less than or equal to Int32.MaxValue milliseconds.");
+                }
+
+                _reusedConnectionFirstByteTimeout = value;
+                _explicitlySet = true;
             }
         }
 
@@ -138,7 +182,11 @@ namespace TurboHTTP.Core
         public HappyEyeballsOptions HappyEyeballs
         {
             get => _happyEyeballs;
-            set => _happyEyeballs = value ?? throw new ArgumentNullException(nameof(value));
+            set
+            {
+                _happyEyeballs = value ?? throw new ArgumentNullException(nameof(value));
+                _explicitlySet = true;
+            }
         }
 
         /// <summary>
@@ -155,30 +203,34 @@ namespace TurboHTTP.Core
                 if (value != SocketIoMode.NetworkStream && value != SocketIoMode.Saea && value != SocketIoMode.PollSelect)
                     throw new ArgumentOutOfRangeException(nameof(value), "Unknown SocketIoMode value.");
                 _socketIoMode = value;
+                _explicitlySet = true;
             }
         }
 
+        /// <summary>Returns an independent copy, including whether each option was configured.</summary>
         public ConnectionPoolOptions Clone()
         {
             return new ConnectionPoolOptions
             {
                 _maxConnectionsPerHost = _maxConnectionsPerHost,
                 _connectionIdleTimeout = _connectionIdleTimeout,
+                _reusedConnectionFirstByteTimeout = _reusedConnectionFirstByteTimeout,
                 _dnsTimeoutMs = _dnsTimeoutMs,
                 _connectTimeout = _connectTimeout,
                 _happyEyeballs = _happyEyeballs.Clone(),
                 _socketIoMode = _socketIoMode,
+                _explicitlySet = _explicitlySet,
             };
         }
 
+        /// <summary>
+        /// True when no option (including a nested <see cref="HappyEyeballs"/> option) was ever
+        /// assigned. Assigning a value equal to its default still counts as configured, so the
+        /// client then builds a dedicated transport from these options.
+        /// </summary>
         internal bool IsDefault()
         {
-            return _maxConnectionsPerHost == PlatformConfig.RecommendedMaxConcurrency &&
-                   _connectionIdleTimeout == TimeSpan.FromMinutes(2) &&
-                   _dnsTimeoutMs == 10000 &&
-                   _connectTimeout == DefaultConnectTimeout &&
-                   _happyEyeballs.IsDefault() &&
-                   _socketIoMode == SocketIoMode.NetworkStream;
+            return !_explicitlySet && _happyEyeballs.IsDefault();
         }
     }
 }

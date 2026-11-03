@@ -9,6 +9,17 @@ namespace TurboHTTP.Core
     {
         public Uri Address { get; set; }
         public NetworkCredential Credentials { get; set; }
+        /// <summary>
+        /// Hosts that skip the proxy. Rules (case-insensitive, optional <c>:port</c> suffix):
+        /// <list type="bullet">
+        /// <item><c>example.com</c>: that host only.</item>
+        /// <item><c>.example.com</c>: <c>example.com</c> and every subdomain (curl <c>NO_PROXY</c> semantics).</item>
+        /// <item><c>*.example.com</c>: subdomains only; the apex <c>example.com</c> is not bypassed.</item>
+        /// <item><c>10.0.0.0/8</c>, <c>fd00::/8</c>: CIDR, matched only against IP-literal hosts;
+        /// a host name is never resolved to test it (curl does the same).</item>
+        /// </list>
+        /// <c>NO_PROXY</c>/<c>no_proxy</c> entries (comma-separated) use the same rules.
+        /// </summary>
         public IReadOnlyList<string> BypassList { get; set; } = Array.Empty<string>();
         public bool UseEnvironmentVariables { get; set; } = true;
         public bool AllowHttpProxyFallbackForHttps { get; set; }
@@ -85,10 +96,16 @@ namespace TurboHTTP.Core
             if (rulePort.HasValue && rulePort.Value != port)
                 return false;
 
-            if (hostPart.StartsWith("*."))
-                hostPart = hostPart.Substring(1); // normalize to suffix match
+            if (hostPart.StartsWith("*.", StringComparison.Ordinal))
+            {
+                // Wildcard: subdomains only. "*" stands for at least one label, so the apex
+                // ("example.com" for "*.example.com") does not match (#173).
+                var suffix = hostPart.Substring(1);
+                return host.Length > suffix.Length
+                    && host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase);
+            }
 
-            if (hostPart.StartsWith("."))
+            if (hostPart.StartsWith(".", StringComparison.Ordinal))
             {
                 return host.EndsWith(hostPart, StringComparison.OrdinalIgnoreCase)
                     || string.Equals(host, hostPart.Substring(1), StringComparison.OrdinalIgnoreCase);
@@ -96,6 +113,7 @@ namespace TurboHTTP.Core
 
             if (hostPart.Contains("/"))
             {
+                // CIDR rules apply to IP-literal hosts only; host names are not resolved here.
                 return MatchesCidr(host, hostPart);
             }
 
@@ -180,7 +198,8 @@ namespace TurboHTTP.Core
 
             var envValue = ResolveEnvironmentProxy(
                 targetUri.Scheme,
-                configured?.AllowHttpProxyFallbackForHttps ?? false);
+                configured?.AllowHttpProxyFallbackForHttps ?? false,
+                out var envName);
             if (string.IsNullOrWhiteSpace(envValue))
                 return null;
 
@@ -193,6 +212,16 @@ namespace TurboHTTP.Core
             if (ProxyBypassMatcher.IsBypassed(targetUri.Host, targetUri.Port, bypassRules))
                 return null;
 
+            if (!string.Equals(proxyUri.Scheme, "http", StringComparison.OrdinalIgnoreCase))
+            {
+                // Typed failure instead of the raw ArgumentException of Validate() (#173). The
+                // value is not echoed: proxy URLs can carry user:password.
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest,
+                    "The " + envName + " environment variable names a proxy that is not http://; only http:// proxies are supported. " +
+                    "Configure UHttpClientOptions.Proxy, or set ProxySettings.UseEnvironmentVariables = false to ignore the environment."));
+            }
+
             var resolved = new ProxySettings
             {
                 Address = proxyUri,
@@ -201,26 +230,29 @@ namespace TurboHTTP.Core
                 AllowHttpProxyFallbackForHttps = configured?.AllowHttpProxyFallbackForHttps ?? false
             };
 
-            resolved.Validate();
             return resolved;
         }
 
-        private static string ResolveEnvironmentProxy(string scheme, bool allowHttpFallbackForHttps)
+        private static string ResolveEnvironmentProxy(string scheme, bool allowHttpFallbackForHttps, out string envName)
         {
             if (string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase))
             {
                 var httpsProxy = Environment.GetEnvironmentVariable("HTTPS_PROXY")
                     ?? Environment.GetEnvironmentVariable("https_proxy");
                 if (!string.IsNullOrWhiteSpace(httpsProxy))
+                {
+                    envName = "HTTPS_PROXY";
                     return httpsProxy;
+                }
 
                 if (!allowHttpFallbackForHttps)
+                {
+                    envName = null;
                     return null;
-
-                return Environment.GetEnvironmentVariable("HTTP_PROXY")
-                    ?? Environment.GetEnvironmentVariable("http_proxy");
+                }
             }
 
+            envName = "HTTP_PROXY";
             return Environment.GetEnvironmentVariable("HTTP_PROXY")
                 ?? Environment.GetEnvironmentVariable("http_proxy");
         }

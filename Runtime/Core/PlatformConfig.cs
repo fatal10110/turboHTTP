@@ -20,11 +20,28 @@ namespace TurboHTTP.Core
         // Mobile: higher tolerance for poor connectivity; conservative concurrency to preserve resources.
         private const int RecommendedTimeoutSeconds = 45;
         private const int RecommendedConcurrency = 8;
+        private const int RecommendedIdleSeconds = MobileConnectionIdleTimeoutSeconds;
 #else
         // Desktop/Editor: standard stable connection assumption; higher concurrency allowed.
         private const int RecommendedTimeoutSeconds = 30;
         private const int RecommendedConcurrency = 16;
+        private const int RecommendedIdleSeconds = DesktopConnectionIdleTimeoutSeconds;
 #endif
+
+        /// <summary>Pooled-connection idle timeout on iOS/Android players: 45 s (#47).</summary>
+        /// <remarks>
+        /// Below the 60 s bound of #47: carrier NATs and radio power states drop idle TCP mappings
+        /// silently, and a connection reused after that hangs until a timeout instead of failing.
+        /// </remarks>
+        internal const int MobileConnectionIdleTimeoutSeconds = 45;
+
+        /// <summary>Pooled-connection idle timeout in the Editor and on desktop: 120 s.</summary>
+        internal const int DesktopConnectionIdleTimeoutSeconds = 120;
+
+        /// <summary>Default time a reused HTTP/1.1 connection may stay silent after the request (#47).</summary>
+        internal static TimeSpan DefaultReusedConnectionFirstByteTimeout => TimeSpan.FromSeconds(DefaultReusedConnectionFirstByteTimeoutSeconds);
+
+        private const int DefaultReusedConnectionFirstByteTimeoutSeconds = 10;
 
         /// <summary>
         /// Recommended request timeout for the build target: 45 s on iOS/Android players,
@@ -38,6 +55,12 @@ namespace TurboHTTP.Core
         /// on desktop. Constrained on mobile to reduce thread/socket contention and battery usage.
         /// </summary>
         public static int RecommendedMaxConcurrency => RecommendedConcurrency;
+
+        /// <summary>
+        /// Recommended idle timeout of pooled connections: 45 s on iOS/Android players, 120 s in
+        /// the Editor and on desktop. The default of <c>ConnectionPoolOptions.ConnectionIdleTimeout</c>.
+        /// </summary>
+        public static TimeSpan RecommendedConnectionIdleTimeout => TimeSpan.FromSeconds(RecommendedIdleSeconds);
 
         /// <summary>
         /// Indicates if custom certificate validation is available through TurboHTTP public APIs.

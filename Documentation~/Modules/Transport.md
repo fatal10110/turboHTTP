@@ -44,6 +44,8 @@ options.Proxy = new ProxySettings
 ```
 
 *   Without `Address`, the standard environment variables are used (`HTTPS_PROXY`/`HTTP_PROXY`, `NO_PROXY`, lower-case spellings too). Set `UseEnvironmentVariables = false` to ignore them.
+    Only `http://` proxy URLs are supported: an `https://` (or other) value fails the request with `UHttpException` (`InvalidRequest`), never echoing the value.
+*   Bypass rules (`BypassList` and the comma-separated `NO_PROXY`): `example.com` matches that host only; `.example.com` matches `example.com` and every subdomain (curl semantics); `*.example.com` matches subdomains only, not the apex; CIDR rules (`10.0.0.0/8`, `fd00::/8`) match IP-literal hosts only, host names are never resolved for them. Any rule may end in `:port`.
 *   Proxy credentials are sent only to the proxy, as `Proxy-Authorization`, and only in answer to a 407 that offers `Basic`; because the proxy leg is cleartext, `AllowCleartext` and `ProxySettings.AllowPlaintextProxyAuth` must both allow it. They never reach the origin server, logs or exceptions. See PlatformNotes, "Cleartext traffic".
 *   **HTTP/2 through CONNECT.** A tunnel offers ALPN `h2` and `http/1.1` like a direct connection. This path passed Editor validation only; it has not been validated on iOS or Android devices (#103), so do not rely on HTTP/2 inside a CONNECT tunnel on devices yet. There is no switch for it in v1.0.
 

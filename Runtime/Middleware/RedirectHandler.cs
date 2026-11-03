@@ -18,6 +18,14 @@ namespace TurboHTTP.Middleware
     {
         /// <param name="hopRequestUri">Request-uri of the hop that produced the response.</param>
         void OnRedirectResponse(Uri hopRequestUri, HttpHeaders headers, RequestContext context);
+
+        /// <summary>
+        /// Called with each derived hop request before it is dispatched, after the redirect
+        /// interceptor has applied its cross-origin header stripping. The observer may adjust the
+        /// request's headers (e.g. compute the Cookie header for the hop's request-uri, RFC 6265
+        /// section 5.4).
+        /// </summary>
+        void OnRedirectRequest(UHttpRequest hopRequest, RequestContext context);
     }
 
     internal sealed class RedirectHandler : IHttpHandler
@@ -204,6 +212,8 @@ namespace TurboHTTP.Middleware
 
                     if (_options.EnforceRedirectTotalTimeout)
                         newRequest = RedirectInterceptor.ApplyTotalRedirectTimeoutBudget(newRequest, context, _totalTimeoutBudget);
+
+                    NotifyRequestObservers(newRequest, context);
                 }
                 catch (UHttpException ex)
                 {
@@ -268,6 +278,16 @@ namespace TurboHTTP.Middleware
 
             for (int i = 0; i < observers.Length; i++)
                 observers[i].OnRedirectResponse(_currentRequest.Uri, headers, context);
+        }
+
+        private void NotifyRequestObservers(UHttpRequest hopRequest, RequestContext context)
+        {
+            var observers = _responseObservers;
+            if (observers == null)
+                return;
+
+            for (int i = 0; i < observers.Length; i++)
+                observers[i].OnRedirectRequest(hopRequest, context);
         }
 
         private void CompleteWithError(UHttpException error, RequestContext context)

@@ -281,6 +281,12 @@ namespace TurboHTTP.Transport.Tcp
         private readonly Func<TlsBackend, ITlsProvider> _tlsProviderResolver;
         private readonly int _dnsTimeoutMs;
         private readonly TimeSpan _connectTimeout;
+
+        /// <summary>
+        /// Silence allowed on a reused HTTP/1.1 connection after an idempotent request before the
+        /// transport retries it on a fresh connection (#47). <see cref="Timeout.InfiniteTimeSpan"/> = off.
+        /// </summary>
+        internal TimeSpan ReusedConnectionFirstByteTimeout { get; }
         private readonly HappyEyeballsOptions _happyEyeballsOptions;
         private readonly SocketIoMode _socketIoMode;
         private readonly TimeSpan _scavengeInterval;
@@ -295,13 +301,17 @@ namespace TurboHTTP.Transport.Tcp
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
 
         /// <param name="maxConnectionsPerHost">Maximum concurrent connections per host (default 6, matches browser convention).</param>
-        /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 2 minutes).</param>
+        /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 45 s on iOS/Android players, 2 minutes elsewhere).</param>
         /// <param name="tlsBackend">TLS backend selection strategy (default Auto).</param>
         /// <param name="dnsTimeout">Timeout for DNS lookups. Default 10 seconds.</param>
         /// <param name="socketIoMode">Socket I/O implementation (default NetworkStream).</param>
         /// <param name="connectTimeout">
         /// Wall-clock deadline for the TCP connect to one host (all address attempts). Default 10 seconds;
         /// <see cref="Timeout.InfiniteTimeSpan"/> disables it. Expiry fails with <see cref="UHttpErrorType.Timeout"/>.
+        /// </param>
+        /// <param name="reusedConnectionFirstByteTimeout">
+        /// Silence allowed on a reused HTTP/1.1 connection after an idempotent request before it is
+        /// retried once on a fresh connection. Default 10 seconds; <see cref="Timeout.InfiniteTimeSpan"/> disables it.
         /// </param>
         public TcpConnectionPool(
             int maxConnectionsPerHost = 6,
@@ -310,7 +320,8 @@ namespace TurboHTTP.Transport.Tcp
             TimeSpan? dnsTimeout = null,
             HappyEyeballsOptions happyEyeballsOptions = null,
             SocketIoMode socketIoMode = SocketIoMode.NetworkStream,
-            TimeSpan? connectTimeout = null)
+            TimeSpan? connectTimeout = null,
+            TimeSpan? reusedConnectionFirstByteTimeout = null)
         {
             if (maxConnectionsPerHost <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
@@ -330,8 +341,18 @@ namespace TurboHTTP.Transport.Tcp
                         "Must be less than or equal to Int32.MaxValue milliseconds.");
             }
 
+            if (reusedConnectionFirstByteTimeout.HasValue && reusedConnectionFirstByteTimeout.Value != Timeout.InfiniteTimeSpan)
+            {
+                if (reusedConnectionFirstByteTimeout.Value <= TimeSpan.Zero)
+                    throw new ArgumentOutOfRangeException(nameof(reusedConnectionFirstByteTimeout), "Must be positive or Timeout.InfiniteTimeSpan");
+                if (reusedConnectionFirstByteTimeout.Value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(reusedConnectionFirstByteTimeout),
+                        "Must be less than or equal to Int32.MaxValue milliseconds.");
+            }
+
             _maxConnectionsPerHost = maxConnectionsPerHost;
-            _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
+            _connectionIdleTimeout = connectionIdleTimeout ?? PlatformConfig.RecommendedConnectionIdleTimeout;
+            ReusedConnectionFirstByteTimeout = reusedConnectionFirstByteTimeout ?? PlatformConfig.DefaultReusedConnectionFirstByteTimeout;
             _tlsBackend = tlsBackend;
             _dnsTimeoutMs = dnsTimeout.HasValue ? (int)dnsTimeout.Value.TotalMilliseconds : DefaultDnsTimeoutMs;
             _connectTimeout = connectTimeout ?? ConnectionPoolOptions.DefaultConnectTimeout;
@@ -382,6 +403,30 @@ namespace TurboHTTP.Transport.Tcp
             string poolKeyOverride,
             CancellationToken ct)
         {
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride, skipIdle: false, ct);
+        }
+
+        /// <summary>
+        /// Acquire a newly connected socket, bypassing the idle queue. Used for the one retry after
+        /// a reused connection failed or stayed silent (RFC 9112 section 9.3.1: "open a new
+        /// connection"): when NAT dropped every idle connection at once, the next idle one is just
+        /// as dead and <see cref="PooledConnection.IsAlive"/> cannot tell. The per-host permit is
+        /// taken as usual.
+        /// </summary>
+        internal ValueTask<ConnectionLease> GetNewConnectionAsync(
+            string host, int port, bool secure, CancellationToken ct)
+        {
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride: null, skipIdle: true, ct);
+        }
+
+        private ValueTask<ConnectionLease> GetConnectionCoreAsync(
+            string host,
+            int port,
+            bool secure,
+            string poolKeyOverride,
+            bool skipIdle,
+            CancellationToken ct)
+        {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(TcpConnectionPool));
 
@@ -399,7 +444,7 @@ namespace TurboHTTP.Transport.Tcp
             var waitTask = semaphore.WaitAsync(ct);
             if (waitTask.IsCompletedSuccessfully)
             {
-                return AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, ct);
+                return AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, skipIdle, ct);
             }
 
             return new ValueTask<ConnectionLease>(AcquireConnectionAfterWaitAsync(
@@ -409,6 +454,7 @@ namespace TurboHTTP.Transport.Tcp
                 port,
                 secure,
                 semaphore,
+                skipIdle,
                 ct));
         }
 
@@ -419,10 +465,11 @@ namespace TurboHTTP.Transport.Tcp
             int port,
             bool secure,
             SemaphoreSlim semaphore,
+            bool skipIdle,
             CancellationToken ct)
         {
             await waitTask.ConfigureAwait(false);
-            return await AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, ct).ConfigureAwait(false);
+            return await AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, skipIdle, ct).ConfigureAwait(false);
         }
 
         private ValueTask<ConnectionLease> AcquireConnectionWithOwnedPermit(
@@ -431,13 +478,14 @@ namespace TurboHTTP.Transport.Tcp
             int port,
             bool secure,
             SemaphoreSlim semaphore,
+            bool skipIdle,
             CancellationToken ct)
         {
             // From this point, the semaphore permit is owned. ALL paths must release it.
             try
             {
                 // Try to dequeue an idle connection
-                if (_idleConnections.TryGetValue(poolKey, out var queue))
+                if (!skipIdle && _idleConnections.TryGetValue(poolKey, out var queue))
                 {
                     while (queue.TryDequeue(out var candidate))
                     {
