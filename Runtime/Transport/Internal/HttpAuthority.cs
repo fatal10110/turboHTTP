@@ -47,9 +47,12 @@ namespace TurboHTTP.Transport.Internal
         /// returns it: an IPv6 literal in one pair of brackets without a zone id
         /// (<c>"::1"</c>, <c>"[::1]"</c> and <c>"fe80::1%eth0"</c> become <c>"[::1]"</c> /
         /// <c>"[fe80::1]"</c>), a non-ASCII DNS name in A-label form, anything else unchanged.
-        /// A name with no valid A-label form is returned unchanged so the field validator rejects
-        /// it as a non-Latin-1 or non-ASCII value instead of sending raw bytes.
         /// </summary>
+        /// <exception cref="HttpFieldValidationException">
+        /// A non-ASCII name with no valid A-label form (for example a label longer than 63
+        /// characters, RFC 5890 Section 2.3.2.1): it is never sent as raw bytes, and the transport
+        /// reports it as <c>InvalidRequest</c>. The message does not contain the host.
+        /// </exception>
         internal static string FormatHost(string host)
         {
             if (string.IsNullOrEmpty(host))
@@ -80,7 +83,10 @@ namespace TurboHTTP.Transport.Internal
             }
             catch (ArgumentException)
             {
-                return bare;
+                // The validator accepts Latin-1 values, so returning the Unicode name would put
+                // raw non-ASCII bytes in Host / :authority / the request target.
+                throw new HttpFieldValidationException(
+                    "The request host has no valid ASCII (A-label) form and cannot be sent.");
             }
         }
 

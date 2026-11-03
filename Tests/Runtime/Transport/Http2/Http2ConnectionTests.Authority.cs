@@ -43,5 +43,37 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual(200, (int)response.StatusCode);
             });
         }
+
+        [Test]
+        public void SendRequest_HostWithoutALabelForm_FailsWithInvalidRequest_AndTakesNoStreamId()
+        {
+            var uri = new Uri("https://" + HttpAuthorityTests.UnicodeHostWithoutALabel + "/");
+            if (HttpAuthorityTests.IsAscii(uri.IdnHost))
+                TestRequirements.IgnoreEnvironment("this runtime's Uri.IdnHost already produced an ASCII host");
+
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+
+                var bad = new UHttpRequest(HttpMethod.GET, uri);
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(
+                    async () => await conn.SendRequestAsync(bad, new RequestContext(bad), cts.Token));
+                Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type, ex.ToString());
+                Assert.IsFalse(ex.HttpError.IsRetryable());
+
+                // The next request on the connection still gets stream 1: nothing was sent or reserved.
+                var good = new UHttpRequest(HttpMethod.GET, new Uri("https://example.com/"));
+                var responseTask = conn.SendRequestAsync(good, new RequestContext(good), cts.Token).AsTask();
+                var headers = await ReadHeaderBlockAsync(serverCodec, cts.Token);
+                Assert.AreEqual(1, headers.StreamId);
+
+                await serverCodec.WriteFrameAsync(
+                    BuildResponseHeadersFrame(headers.StreamId, 200, endStream: true), cts.Token);
+                using var response = await responseTask;
+                Assert.AreEqual(200, (int)response.StatusCode);
+            });
+        }
     }
 }

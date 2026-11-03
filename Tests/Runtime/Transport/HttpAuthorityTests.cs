@@ -71,6 +71,48 @@ namespace TurboHTTP.Tests.Transport
             StringAssert.StartsWith("GET http://xn--mnchen-3ya.de:8080/a?b=1 HTTP/1.1\r\n", head);
         }
 
+        // A 70-character label exceeds the 63-octet DNS label limit, so the name has no A-label
+        // form (IdnMapping throws) and .NET's Uri.IdnHost leaves it Unicode.
+        internal static readonly string UnicodeHostWithoutALabel = new string('a', 70) + "\u00FC.de";
+
+        [Test]
+        public void FormatHost_NoALabelForm_ThrowsWithoutTheHost()
+        {
+            var ex = Assert.Throws<HttpFieldValidationException>(
+                () => HttpAuthority.FormatHost(UnicodeHostWithoutALabel));
+
+            Assert.IsInstanceOf<ArgumentException>(ex);
+            StringAssert.DoesNotContain(UnicodeHostWithoutALabel, ex.Message);
+        }
+
+        [Test]
+        public void Serialize_HostWithoutALabelForm_ThrowsInsteadOfSendingRawBytes()
+        {
+            var uri = new Uri("http://" + UnicodeHostWithoutALabel + "/");
+            if (IsAscii(uri.IdnHost))
+                TestRequirements.IgnoreEnvironment("this runtime's Uri.IdnHost already produced an ASCII host");
+
+            var request = new UHttpRequest(HttpMethod.GET, uri);
+
+            Assert.Throws<HttpFieldValidationException>(() => HttpAuthority.FromUri(uri));
+            AssertAsync.ThrowsAsync<HttpFieldValidationException>(async () =>
+            {
+                using var ms = new MemoryStream();
+                await Http11RequestSerializer.SerializeAsync(request, ms, CancellationToken.None);
+            });
+        }
+
+        internal static bool IsAscii(string value)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (value[i] > 0x7F)
+                    return false;
+            }
+
+            return true;
+        }
+
         private static string SerializeHead(UHttpRequest request)
         {
             byte[] bytes = null;

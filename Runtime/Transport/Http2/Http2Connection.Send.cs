@@ -541,8 +541,22 @@ namespace TurboHTTP.Transport.Http2
             Interlocked.Exchange(ref _sendWindowSignal, null)?.TrySetResult(true);
         }
 
-        // RFC 9113 Section 8.3.1: the same authority as the HTTP/1.1 Host header (#46).
-        private static string BuildAuthorityValue(Uri uri) => HttpAuthority.FromUri(uri);
+        /// <summary>
+        /// The request's <c>:authority</c>: the same authority as the HTTP/1.1 Host header (RFC 9113
+        /// Section 8.3.1, #46), computed before a stream slot or id is taken: a
+        /// host with no ASCII wire form is a non-retryable <see cref="UHttpErrorType.InvalidRequest"/>.
+        /// </summary>
+        private static string BuildRequestAuthority(Uri uri)
+        {
+            try
+            {
+                return HttpAuthority.FromUri(uri);
+            }
+            catch (HttpFieldValidationException ex)
+            {
+                throw CreateInvalidFieldException(ex);
+            }
+        }
 
         private static bool IsHttp2ForbiddenHeader(string name)
         {
