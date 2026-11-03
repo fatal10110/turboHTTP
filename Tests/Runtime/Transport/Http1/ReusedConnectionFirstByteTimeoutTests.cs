@@ -75,6 +75,29 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
+        public void TwoSilentIdleConnections_IdempotentGet_RetriesOnNewlyConnectedSocket()
+        {
+            AssertAsync.Run(async () =>
+            {
+                // NAT dropped every idle connection at once: the retry must not take the second
+                // dead idle socket (its lease is not armed and would hang until the request timeout).
+                using var server = new SilentThenOkServer(silentConnections: 2);
+                var pool = new TcpConnectionPool(maxConnectionsPerHost: 2, reusedConnectionFirstByteTimeout: ShortFirstByte);
+                using var client = CreateClient(new RawSocketTransport(pool));
+                await InjectIdleConnectionAsync(pool, server.Port);
+                await InjectIdleConnectionAsync(pool, server.Port);
+
+                using var response = await client.Get(server.Url("/"))
+                    .WithTimeout(TimeSpan.FromSeconds(5))
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                // Accepts 1 and 2 are the injected silent connections, accept 3 the new retry socket.
+                Assert.AreEqual(3, server.AcceptCount, "the retry must open a new connection");
+            });
+        }
+
+        [Test]
         public void SilentReusedConnection_Post_IsNotRetried()
         {
             AssertAsync.Run(async () =>
@@ -151,19 +174,21 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         /// <summary>
-        /// Connection 1 reads the request and never answers (a half-dead pooled connection);
-        /// later connections answer 200 and close.
+        /// The first <c>silentConnections</c> connections read the request and never answer
+        /// (half-dead pooled connections); later connections answer 200 and close.
         /// </summary>
         private sealed class SilentThenOkServer : IDisposable
         {
             private readonly TcpListener _listener;
             private readonly List<TcpClient> _clients = new List<TcpClient>();
             private readonly object _lock = new object();
+            private readonly int _silentConnections;
             private int _acceptCount;
             private volatile bool _disposed;
 
-            public SilentThenOkServer()
+            public SilentThenOkServer(int silentConnections = 1)
             {
+                _silentConnections = silentConnections;
                 _listener = new TcpListener(IPAddress.Loopback, 0);
                 _listener.Start();
                 _ = AcceptLoopAsync();
@@ -207,7 +232,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 {
                     var stream = client.GetStream();
                     await ReadHeadAsync(stream);
-                    if (index == 1)
+                    if (index <= _silentConnections)
                         return; // keep the connection open and silent
 
                     var response = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");

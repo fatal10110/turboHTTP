@@ -43,7 +43,10 @@ Wave w1102, lane small-fixes, milestone v1.1. One commit per issue.
   `ConnectionPoolOptions.ReusedConnectionFirstByteTimeout` (default 10 s, `InfiniteTimeSpan` = off). On a reused
   HTTP/1.1 connection, for an idempotent replayable request without `Expect: 100-continue`, the transport waits for
   the first response byte under a watchdog; expiry disposes the connection (Mono/IL2CPP ignore read tokens) and
-  raises an `IOException`, which the existing stale-connection path retries once on a fresh connection. Tests:
+  raises an `IOException`, which the existing stale-connection path retries once. The retry takes a newly connected
+  socket (`TcpConnectionPool.GetNewConnectionAsync`, skips the idle queue; RFC 9112 section 9.3.1 "open a new
+  connection"), because a NAT drop kills every idle connection to the host and `IsAlive` (`Socket.Poll`) cannot tell
+  (review r1). Tests:
   `Tests/Runtime/Transport/Http1/ReusedConnectionFirstByteTimeoutTests.cs`, `Tests/Runtime/Platform/PlatformConnectionIdleTimeoutTests.cs`.
 
 ## Decisions

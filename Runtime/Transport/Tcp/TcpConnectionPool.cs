@@ -403,6 +403,30 @@ namespace TurboHTTP.Transport.Tcp
             string poolKeyOverride,
             CancellationToken ct)
         {
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride, skipIdle: false, ct);
+        }
+
+        /// <summary>
+        /// Acquire a newly connected socket, bypassing the idle queue. Used for the one retry after
+        /// a reused connection failed or stayed silent (RFC 9112 section 9.3.1: "open a new
+        /// connection"): when NAT dropped every idle connection at once, the next idle one is just
+        /// as dead and <see cref="PooledConnection.IsAlive"/> cannot tell. The per-host permit is
+        /// taken as usual.
+        /// </summary>
+        internal ValueTask<ConnectionLease> GetNewConnectionAsync(
+            string host, int port, bool secure, CancellationToken ct)
+        {
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride: null, skipIdle: true, ct);
+        }
+
+        private ValueTask<ConnectionLease> GetConnectionCoreAsync(
+            string host,
+            int port,
+            bool secure,
+            string poolKeyOverride,
+            bool skipIdle,
+            CancellationToken ct)
+        {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(TcpConnectionPool));
 
@@ -420,7 +444,7 @@ namespace TurboHTTP.Transport.Tcp
             var waitTask = semaphore.WaitAsync(ct);
             if (waitTask.IsCompletedSuccessfully)
             {
-                return AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, ct);
+                return AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, skipIdle, ct);
             }
 
             return new ValueTask<ConnectionLease>(AcquireConnectionAfterWaitAsync(
@@ -430,6 +454,7 @@ namespace TurboHTTP.Transport.Tcp
                 port,
                 secure,
                 semaphore,
+                skipIdle,
                 ct));
         }
 
@@ -440,10 +465,11 @@ namespace TurboHTTP.Transport.Tcp
             int port,
             bool secure,
             SemaphoreSlim semaphore,
+            bool skipIdle,
             CancellationToken ct)
         {
             await waitTask.ConfigureAwait(false);
-            return await AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, ct).ConfigureAwait(false);
+            return await AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, skipIdle, ct).ConfigureAwait(false);
         }
 
         private ValueTask<ConnectionLease> AcquireConnectionWithOwnedPermit(
@@ -452,13 +478,14 @@ namespace TurboHTTP.Transport.Tcp
             int port,
             bool secure,
             SemaphoreSlim semaphore,
+            bool skipIdle,
             CancellationToken ct)
         {
             // From this point, the semaphore permit is owned. ALL paths must release it.
             try
             {
                 // Try to dequeue an idle connection
-                if (_idleConnections.TryGetValue(poolKey, out var queue))
+                if (!skipIdle && _idleConnections.TryGetValue(poolKey, out var queue))
                 {
                     while (queue.TryDequeue(out var candidate))
                     {

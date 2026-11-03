@@ -556,7 +556,9 @@ namespace TurboHTTP.Transport
                         ConnectionLease freshLease = null;
                         try
                         {
-                            freshLease = await _pool.GetConnectionAsync(host, port, secure, ct)
+                            // A newly connected socket, not the next idle one: a NAT drop kills every
+                            // idle connection to the host at once, and this lease is not armed (#47).
+                            freshLease = await _pool.GetNewConnectionAsync(host, port, secure, ct)
                                 .ConfigureAwait(false);
 
                             if (freshLease.Connection.NegotiatedAlpnProtocol == "h2")
