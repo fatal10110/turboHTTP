@@ -145,6 +145,27 @@ namespace TurboHTTP.Tests.UniTaskAdapter
                 Assert.That(response.Body.Length, Is.EqualTo(3));
             }).GetAwaiter().GetResult();
         }
+        [Test]
+        public void WithTimeout_BeyondCancelAfterRange_ThrowsBeforeTakingTheRequest()
+        {
+            Task.Run(async () =>
+            {
+                using var client = NewClient(new MockTransport(HttpStatusCode.OK, body: new byte[] { 1, 2, 3 }));
+                var source = new UniTaskCompletionSource<UHttpResponse>();
+
+                Assert.Throws<ArgumentOutOfRangeException>(() => source.Task.WithTimeout(TimeSpan.MaxValue));
+                Assert.Throws<ArgumentOutOfRangeException>(
+                    () => source.Task.WithTimeout(TimeSpan.FromMilliseconds((double)int.MaxValue + 1)));
+
+                var raced = source.Task.WithTimeout(TimeSpan.FromMilliseconds(int.MaxValue));
+                var expected = await client.Get(Url).AsUniTask();
+                source.TrySetResult(expected);
+                using var response = await raced;
+
+                Assert.That(response, Is.SameAs(expected), "the largest CancelAfter value is accepted");
+                Assert.That(response.Body.Length, Is.EqualTo(3), "the caller still owns an undisposed response");
+            }).GetAwaiter().GetResult();
+        }
 #pragma warning restore CS0618
 
         private static UHttpClient NewClient(IHttpTransport transport)

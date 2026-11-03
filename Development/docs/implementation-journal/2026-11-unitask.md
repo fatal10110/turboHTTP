@@ -41,6 +41,9 @@
 - CHANGELOG not edited: `check_repo` requires the top entry to match `package.json`'s version, so the release
   owner adds the user-visible note (WebSocket adapters need `TurboHTTP.UniTask.WebSocket`) when cutting the next version.
 - `Development/docs/agents/architecture.md` is not edited here (agent-docs lanes only): #312.
+- Review round 1: the late-response owner is an `async Task DisposeLateAsync` that awaits and observes the
+  failure (the earlier `ContinueWith` read the banned `Task<T>.Result`). `WithTimeout` rejects values above
+  `int.MaxValue` ms (the `CancelAfter` limit) before it consumes the request task, so the caller still owns it.
 
 ## Deferred
 - #311: no gate compiles the UniTask assemblies or runs `UniTaskCancellationTests`.

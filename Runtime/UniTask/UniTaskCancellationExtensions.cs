@@ -29,8 +29,11 @@ namespace TurboHTTP.UniTask
         /// Waits for <paramref name="requestTask"/> for at most <paramref name="timeout"/>.
         /// </summary>
         /// <param name="requestTask">The started request.</param>
-        /// <param name="timeout">How long to wait (wall-clock), or <see cref="Timeout.InfiniteTimeSpan"/>.</param>
+        /// <param name="timeout">How long to wait (wall-clock), from zero to <see cref="int.MaxValue"/>
+        /// milliseconds, or <see cref="Timeout.InfiniteTimeSpan"/>.</param>
         /// <returns>The response, which the caller owns and disposes.</returns>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="timeout"/> is out of range. Thrown
+        /// before <paramref name="requestTask"/> is consumed, so the caller still owns it.</exception>
         /// <exception cref="TimeoutException">The request did not complete in time. A response that
         /// completes later is disposed by this wrapper; the request itself is not cancelled.</exception>
         [Obsolete(AbandonsRequestMessage)]
@@ -38,8 +41,14 @@ namespace TurboHTTP.UniTask
             this UniTask<UHttpResponse> requestTask,
             TimeSpan timeout)
         {
-            if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
-                throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be >= 0 or Timeout.InfiniteTimeSpan.");
+            // Validated here, before RaceAsync consumes requestTask: CancelAfter rejects more than
+            // int.MaxValue ms, and throwing there would strand the late response.
+            if (timeout != Timeout.InfiniteTimeSpan &&
+                (timeout < TimeSpan.Zero || timeout.TotalMilliseconds > int.MaxValue))
+            {
+                throw new ArgumentOutOfRangeException(nameof(timeout),
+                    "Timeout must be between 0 and int.MaxValue milliseconds, or Timeout.InfiniteTimeSpan.");
+            }
             return RaceAsync(requestTask, timeout, CancellationToken.None);
         }
 
@@ -80,11 +89,11 @@ namespace TurboHTTP.UniTask
                     }
                 }
 
-                // A source that has completed by now goes to the caller; otherwise the continuation in
-                // DisposeWhenCompleted becomes the single owner of whatever it produces later.
+                // A source that has completed by now goes to the caller; otherwise DisposeLateAsync
+                // becomes the single owner of whatever it produces later.
                 if (!source.IsCompleted)
                 {
-                    DisposeWhenCompleted(source);
+                    _ = DisposeLateAsync(source);
                     cancellationToken.ThrowIfCancellationRequested();
                     throw new TimeoutException(
                         "The request did not complete within " + timeout + ". It was not cancelled; " +
@@ -95,19 +104,19 @@ namespace TurboHTTP.UniTask
             return await source;
         }
 
-        private static void DisposeWhenCompleted(Task<UHttpResponse> source)
+        // Owns a response that arrives after the caller stopped waiting: disposes it, and observes a
+        // late failure (the caller already got its own exception). The returned task never faults.
+        private static async Task DisposeLateAsync(Task<UHttpResponse> source)
         {
-            _ = source.ContinueWith(
-                static completed =>
-                {
-                    if (completed.Status == TaskStatus.RanToCompletion)
-                        completed.Result?.Dispose();
-                    else
-                        _ = completed.Exception; // observed: the caller already got its own exception
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            try
+            {
+                var late = await source.ConfigureAwait(false);
+                late?.Dispose();
+            }
+            catch (Exception)
+            {
+                // Observed on purpose; nothing is waiting for this outcome.
+            }
         }
     }
 }
