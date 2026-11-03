@@ -42,6 +42,8 @@
 | 1 | main 466935d | none | n/a | n/a | 86 before the hang | n/a | hang, no XML (pre-instrumentation) |
 | 2 | main 466935d | PollSelect FullDuplex | 2309 | 2202 | 96 | 11 | hang: `WebSocketBouncyCastleTlsTests.Wss_BouncyCastleBackend_EchoesText` |
 | 3 | + #326 (first commit) | + that test | 2309 | 2282 | 16 | 11 | hang: `WebSocketBouncyCastleTlsTests.Wss_BouncyCastleBackend_ThroughConnectProxy_EchoesText` |
+| 4 | + #326 (both commits) | PollSelect FullDuplex, whole `WebSocketBouncyCastleTlsTests` | 1242 | 1235 | 5 | 2 | hang: `ReusedConnectionFirstByteTimeoutTests.InfiniteFirstByteTimeout_DisablesTheRetry` (passed in run 3) |
+| 5 | same | + that test | 1925 | 1915 | 6 | 4 | hang: `BouncyCastleHandshakeTimeoutTests.ServerTricklingRecords_FailsAtTheHandshakeBound` (passed in run 3) |
 
 Findings and where they are tracked:
 - **Hangs (#322).** `PollSelectSocketChannelTests.FullDuplex_LargeConcurrentSendAndReceive_CompletesWithoutDeadlock`:
@@ -59,8 +61,14 @@ Findings and where they are tracked:
   `CoreSurfaceTests` type lookup (2), the stripped `MaxPendingOutputBytes` setter (1), the Phase19 baseline
   file (1), and `FileDownloaderResumeSafetyTests.Restart200_PartLocked...` (1, file locking).
 - **#317**: `StressTests.ConcurrencyMiddleware_OwnedLimiter_DisposedWithClient`, as in the Editor.
+- **Intermittent IL2CPP read hangs (#293, #322).** Runs 4 and 5 each hung in a test that had passed in run 3:
+  the HTTP/1.1 head read on a reused connection with an infinite first-byte timeout (#293), and the BouncyCastle
+  handshake bound against a trickling peer (#322). Every hang so far is a socket read that the
+  cancellation or `Dispose` meant to end it does not end. Excluding one test per run only reaches the
+  next one. The rest of the suite (the remaining `Transport.Tls` fixtures, including `ServerCertificateVerifierTests`,
+  then everything after them) ran fully only in runs 2-3.
 
 ## Not run
-- The ~173 tests after `WebSocketBouncyCastleTlsTests` (next run: exclude the whole fixture).
+- A complete run: the ~173 tests after `WebSocketBouncyCastleTlsTests` have not run on iOS, because every run so far ended on an intermittent hang.
 - 2021.3.45f2 on a simulator (no x86_64 runtime on the Mac); an iOS device; Stripping Low.
 - Device-only rows stay `needs-device-validation`: ATS, NAT64, ALPN, suspension.
