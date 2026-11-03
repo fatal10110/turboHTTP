@@ -18,12 +18,16 @@ namespace TurboHTTP.Tests.WebSocket
     {
         private static readonly byte[] Tail = { 0x00, 0x00, 0xFF, 0xFF };
 
-        [Test]
-        public void TransformOutbound_WithoutClientNoContextTakeover_InflatesWithOneRetainedServerStream()
+        // false: the runtime's DeflateStream (sync flush on .NET, the managed encoder where Flush is not one,
+        // as on Unity Mono). true: the managed encoder on every runtime (#270).
+        [TestCase(false)]
+        [TestCase(true)]
+        public void TransformOutbound_WithoutClientNoContextTakeover_InflatesWithOneRetainedServerStream(bool forceSyncFlushDeflater)
         {
             var extension = new PerMessageDeflateExtension(
                 new PerMessageDeflateOptions(compressionThreshold: 0),
                 maxMessageSize: 1024 * 1024);
+            extension.ForceSyncFlushDeflater = forceSyncFlushDeflater;
             try
             {
                 // The response Autobahn 12.x/13.1.x sends: no client_no_context_takeover.
@@ -38,20 +42,14 @@ namespace TurboHTTP.Tests.WebSocket
                 };
 
                 // What a context-takeover server does: append the tail to each compressed payload and feed
-                // all of them to one inflater. A message sent uncompressed (RSV1 unset, where the runtime's
-                // DeflateStream cannot sync-flush) is read as is and never reaches the inflater.
+                // all of them to one inflater. Every message is compressed on every runtime (#270).
                 using var wire = new MemoryStream();
                 var expected = new StringBuilder();
                 foreach (string text in messages)
                 {
                     byte[] plain = Encoding.UTF8.GetBytes(text);
                     using var compressed = extension.TransformOutbound(plain, WebSocketOpcode.Text, out byte rsvBits);
-                    if (compressed == null)
-                    {
-                        Assert.AreEqual(0, rsvBits);
-                        continue;
-                    }
-
+                    Assert.IsNotNull(compressed, "A message above the threshold is compressed on every runtime.");
                     Assert.AreEqual(0x40, rsvBits);
                     byte[] payload = compressed.Memory.ToArray();
                     Assert.IsFalse(EndsWithTail(payload), "The 00 00 FF FF tail must be removed (RFC 7692 7.2.1 step 3).");

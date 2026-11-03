@@ -23,6 +23,11 @@ Phase 18 was intentionally scoped to the RFC 6455 baseline. The following featur
 
 ## Pre-Implementation Spikes
 
+> [!NOTE]
+> Results (2026-11, #104): `Development/docs/implementation-journal/2026-11-ws-deflate-18a.md`.
+> Spike 1 failed on Unity Mono (no sync flush); the fallback is a managed sync-flush encoder
+> (`SyncFlushDeflater`, #270), not native zlib. IL2CPP rows need device validation (#99).
+
 > [!CAUTION]
 > These spikes **must** be completed and passed before the corresponding sub-phase begins implementation.
 
@@ -133,7 +138,7 @@ Phase 18 (done — core WebSocket)
 
 ## Future Considerations (Out of Scope for 18a)
 
-1. **Full context takeover** — pending Spike 1 & 2 results. If `DeflateStream.Flush()` produces correct `Z_SYNC_FLUSH` on Unity Mono, implement in a follow-up. Otherwise, evaluate native zlib P/Invoke.
+1. **Full context takeover** — client side done: messages always end at a sync flush, so a server may keep its inflater (#217, #270; Unity Mono uses the managed `SyncFlushDeflater`). Inbound context takeover (a retained inflater, no `server_no_context_takeover` in the offer) is still out of scope.
 2. **HTTP/2 WebSocket (RFC 8441)** — CONNECT method with `:protocol` pseudo-header. Requires deep HTTP/2 stream multiplexing changes. Recommend separate Phase 18b.
 3. **WebSocket over HTTP/3 (RFC 9220)** — depends on QUIC transport (not yet in TurboHTTP).
 4. **Native zlib bindings** — for better compression performance on Mono/Unity. Evaluate after benchmarking.

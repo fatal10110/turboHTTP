@@ -10,7 +10,9 @@ using TurboHTTP.Core.Internal;
 namespace TurboHTTP.WebSocket
 {
     /// <summary>
-    /// RFC 7692 permessage-deflate extension (v1 no_context_takeover-only mode).
+    /// RFC 7692 permessage-deflate extension. Inbound messages are inflated with a fresh inflater each
+    /// (the offer always asks for <c>server_no_context_takeover</c>); outbound messages end at a sync flush,
+    /// so a server may keep its inflater across messages unless <c>client_no_context_takeover</c> is agreed.
     /// </summary>
     public sealed class PerMessageDeflateExtension : IWebSocketExtension
     {
@@ -26,6 +28,12 @@ namespace TurboHTTP.WebSocket
         private bool _disposed;
         private bool _isNegotiated;
         private bool _clientNoContextTakeover;
+
+        /// <summary>
+        /// Test hook: compress messages without client_no_context_takeover with
+        /// <see cref="SyncFlushDeflater"/>, as on runtimes whose DeflateStream cannot sync-flush.
+        /// </summary>
+        internal bool ForceSyncFlushDeflater { get; set; }
 
         public PerMessageDeflateExtension(
             PerMessageDeflateOptions options = null,
@@ -149,17 +157,21 @@ namespace TurboHTTP.WebSocket
 
             // Without client_no_context_takeover in the agreed parameters the server may inflate all
             // messages with one retained stream (RFC 7692 section 7.2.2), which cannot continue past a
-            // final block. Where Flush cannot end a message without one, such messages go uncompressed
-            // (RSV1 unset, RFC 7692 section 6).
+            // final block. Where DeflateStream.Flush cannot end a message without one (Unity Mono, #270),
+            // the managed encoder writes it, ending at a sync flush (RFC 7692 section 7.2.1).
             bool finalBlockAllowed = _clientNoContextTakeover;
-            if (!finalBlockAllowed && Volatile.Read(ref s_flushIsNotSyncFlush) != 0)
-                return null;
+            bool useSyncFlushDeflater = !finalBlockAllowed
+                && (ForceSyncFlushDeflater || Volatile.Read(ref s_flushIsNotSyncFlush) != 0);
 
             try
             {
-                var compressedOwner = Compress(payload, finalBlockAllowed);
+                IMemoryOwner<byte> compressedOwner = useSyncFlushDeflater
+                    ? null
+                    : Compress(payload, finalBlockAllowed);
+
+                // Compress returns null only when this message would need a final block.
                 if (compressedOwner == null)
-                    return null;
+                    compressedOwner = SyncFlushDeflater.Compress(payload.Span, _options.CompressionLevel);
 
                 rsvBits = RsvBitMask;
                 return compressedOwner;
@@ -226,7 +238,8 @@ namespace TurboHTTP.WebSocket
 
         public void Reset()
         {
-            // v1 no_context_takeover mode has no retained state between messages.
+            // No state is retained between messages: each outbound message gets a fresh encoder (its
+            // matches never reach into earlier messages) and each inbound message a fresh inflater.
         }
 
         public void Dispose()
