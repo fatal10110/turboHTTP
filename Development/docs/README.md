@@ -12,69 +12,67 @@ This directory contains the complete implementation plan for TurboHTTP, a produc
 
 All detailed phase documents are in the [`phases/`](phases/) directory:
 
-#### Foundation (M0 Spike)
+Each phase doc carries a `**Milestone:**` header with its GitHub milestone (`v1.0-alpha: Release blockers`, `v1.0-beta: Protocol & correctness hardening`, `v1.0 GA: Docs, validation & release`, `v1.1: Post-release hardening`, `v1.2: Features & performance`, `v2.0: Advanced protocols`). See [00-overview.md](00-overview.md#development-milestones) for the mapping and the 2026-11-02 re-baseline (feature freeze until v1.0 GA).
+
+#### Foundation (v1.0, shipped)
 1. **[Project Foundation](phases/phase-01-project-foundation.md)** - Package structure, assembly definitions
 2. **[Core Type System](phases/phase-02-core-types.md)** - Request/Response types, error handling
 3. **[Client API & Raw Socket Transport](phases/phase-03-client-api.md)** - UHttpClient, fluent API, TCP/TLS, HTTP/1.1 transport
 3B. **[HTTP/2 Protocol](phases/phase-03b-http2.md)** - Binary framing, HPACK, stream multiplexing, flow control, ALPN
+3C. **[BouncyCastle TLS Fallback](phases/phase-03c-bouncy-castle-tls.md)** - opt-in TLS fallback (`TURBOHTTP_BOUNCYCASTLE`)
+3D. **[JSON Fallback](phases/phase-03d-json-fallback.md)** - deprecated stub; plans in `phases/phase3d/`
 
-#### Core Features (M1 Usable)
-4. **[Pipeline Infrastructure](phases/phase-04-pipeline.md)** - Middleware system, basic middlewares
+#### Core Features (v1.0, shipped)
+4. **[Pipeline Infrastructure](phases/phase-04-pipeline.md)** - Middleware system, basic middlewares (rewritten as interceptors in Phase 22)
 5. **[Content Handlers](phases/phase-05-content-handlers.md)** - JSON, file downloads
 
-#### Hardening (M2 Gate)
+#### Hardening (v1.0)
 6. **[Performance & Hardening](phases/phase-06-performance.md)** - Memory pooling, concurrency
 7. **[Testing Infrastructure](phases/phase-07-testing.md)** - Unit/integration tests, record/replay
 8. **[Documentation & Samples](phases/phase-08-documentation.md)** - QuickStart, API docs, samples
-9. **[Platform Compatibility](phases/phase-09-platform-compat.md)** - iOS/Android testing, IL2CPP
+9. **[Platform Compatibility](phases/phase-09-platform-compat.md)** - iOS/Android testing, IL2CPP (device matrix #99 open)
 
-#### Feature Complete (M3)
+#### Feature Expansion (v1.0, shipped)
 10. **[Advanced Middleware](phases/phase-10-advanced-middleware.md)** - Caching, rate limiting
 11. **[Unity Integration](phases/phase-11-unity-integration.md)** - Texture2D, AudioClip, main thread sync
 12. **[Editor Tooling](phases/phase-12-editor-tools.md)** - HTTP Monitor window
 
-#### Expansion Track (M4 pre-release)
-14. **[Post-v1.0 Roadmap](phases/phase-14-future.md)** - transport resilience, mobile reliability, extensibility
+#### Expansion Track
+14. **[Post-v1.0 Roadmap](phases/phase-14-future.md)** - transport resilience, mobile reliability, extensibility (shipped; background networking experimental and opt-in)
 15. **[Unity Runtime Hardening](phases/phase-15-unity-runtime-hardening.md)** - advanced correctness/performance hardening for Unity asset workflows
-16. **[Platform, Protocol, and Security Expansion](phases/phase-16-platform-protocol-security.md)** - WebGL, WebSocket, GraphQL, security/privacy hardening
+16. **[Extended Capabilities](phases/phase-16-advanced-capabilities.md)** - rate limiting, WebGL, security/privacy, GraphQL, parallel helpers (post-1.0: v1.1, v1.2, v2.0)
 
-#### Deferred Release (M5)
-17. **[CI/CD & Release](phases/phase-17-release.md)** - Asset Store submission (execute after phases 14-16)
+#### Release
+17. **[CI/CD & Release](phases/phase-17-release.md)** - CI done; `1.0.0-pre.N` tags, then Asset Store submission (#101)
+
+#### Protocol and Runtime Rewrites
+18. **[WebSocket Client](phases/phase-18-websocket-client.md)** and **[18a Advanced WebSocket](phases/phase-18a-websocket-advanced.md)** (experimental until #104)
+19. **[Async Runtime Refactor](phases/phase-19-async-runtime-refactor.md)**, **[19a Zero-Allocation](phases/phase-19a-zero-allocation.md)**, 19b unified pipeline (`phases/phase19b/`), **[19c Body Zero-Copy](phases/phase-19c-body-zerocopy-transport.md)** (post-1.0, v1.2)
+22. Interceptor rewrite (`phases/phase22/`), **[22a Streaming](phases/phase-22a-end-to-end-streaming.md)**, **[22b Streaming Extensions](phases/phase-22b-streaming-extensions.md)**, **[22c HTTP/2 through CONNECT](phases/phase-22c-proxy-http2-alpn.md)** (off by default until #103), 22d proxy HTTP/2 (post-1.0, v2.0; plan docs pending, #160)
+
+#### Post-1.0 Plans (feature freeze until GA)
+23. **[API Configuration Review](phases/phase-23-api-config-extensions.md)** (v1.2)
+24. **[Advanced Content Handlers](phases/phase-24-advanced-content-handlers.md)** (decompression shipped; the rest v1.2)
+25. **[gRPC Client](phases/phase-25-grpc-client.md)** (v2.0)
+
+Phase 13 has no plan document.
 
 ## Project Configuration
 
-- **Licensing:** Closed source, Unity Asset Store (per-seat)
+- **Licensing:** MIT (`LICENSE.md`)
 - **Unity Version:** 2021.3 LTS minimum (.NET Standard 2.1)
 - **Platforms (v1.0):** Editor, Standalone (Win/Mac/Linux), iOS, Android
-- **JSON:** System.Text.Json (built-in)
-- **Transport:** Raw TCP sockets with HTTP/1.1 and HTTP/2 (no UnityWebRequest dependency)
-- **Architecture:** Modular - Core + Transport + 8 optional runtime modules (+ optional Editor module)
-
-## Module Structure
-
-### Core Modules (Required)
-- `TurboHTTP.Core` - Client, request/response, pipeline, JSON
-- `TurboHTTP.Transport` - Raw TCP sockets, HTTP/1.1, HTTP/2, TLS/SslStream, connection pooling
-
-### Optional Runtime Modules
-- `TurboHTTP.Retry` - Advanced retry with idempotency
-- `TurboHTTP.Cache` - HTTP caching with ETag
-- `TurboHTTP.Auth` - Authentication middleware
-- `TurboHTTP.RateLimit` - Rate limiting and concurrency controls
-- `TurboHTTP.Observability` - Timeline tracing
-- `TurboHTTP.Files` - File downloads with resume
-- `TurboHTTP.Unity` - Unity asset handlers
-- `TurboHTTP.Testing` - Record/replay, mocking
-
-### Optional Editor Module
-- `TurboHTTP.Editor` - HTTP Monitor window (Editor-only)
+- **JSON:** built-in LiteJson by default; `System.Text.Json` is opt-in (`TURBOHTTP_USE_SYSTEM_TEXT_JSON`)
+- **Transport:** Raw TCP sockets with HTTP/1.1 and HTTP/2 (no UnityWebRequest dependency); TLS via `SslStream`, BouncyCastle opt-in
+- **Architecture:** Modular - Core + Transport + optional runtime modules (+ optional Editor module); the full list is in [00-overview.md](00-overview.md#module-structure)
+- **Distribution:** `1.0.0-pre.N` (Git URL / OpenUPM preview), then Unity Asset Store (#101)
 
 ## Implementation Workflow
 
 1. **Read** [00-overview.md](00-overview.md) to understand the architecture
-2. **Follow** phases in this order: 1-12, 14-16, then 17
-3. **Validate** each phase before moving to next
-4. **Milestone** gates: Complete M0, M1, M2, M3, M4 before M5 (release)
+2. **Follow** the open issues by milestone: v1.0-alpha, v1.0-beta, v1.0 GA (bug fixes, validation and docs only until GA), then v1.1, v1.2, v2.0
+3. **Validate** each change with `Tools~/ci/check.sh`; Unity suites run in the host editor (`Development/docs/agents/testing.md`)
+4. **Release:** `1.0.0-pre.N` tags from `main`; `1.0.0` GA after the device matrix (#99) and a green full host-editor run
 
 ## Key Differentiators
 
@@ -103,4 +101,4 @@ For questions or issues during implementation:
 - Next steps
 - Implementation notes
 
-**Start with Phase 1 and follow the planned order (1-12, 14-16, then 17).**
+**Start with [00-overview.md](00-overview.md); the phase plans are the background for the open issues.**

@@ -1,6 +1,6 @@
 # Phase 3B: HTTP/2 Protocol Implementation
 
-**Milestone:** M0 (Spike)
+**Milestone:** v1.0 (shipped); hardening in v1.0-beta
 **Dependencies:** Phase 3 (Client API & HTTP/1.1 Raw Socket Transport)
 **Estimated Complexity:** Very High
 **Critical:** Yes - Key differentiator over UnityWebRequest and competitors

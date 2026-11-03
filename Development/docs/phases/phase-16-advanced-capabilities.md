@@ -1,6 +1,6 @@
 # Phase 16: Extended Capabilities and Resilience
 
-**Milestone:** M4 (v1.x "differentiators")
+**Milestone:** post-1.0, feature freeze: 16.3 in v1.1: Post-release hardening (#117); 16.1 and 16.5 in v1.2: Features & performance (#118, #119); 16.2 and 16.4 in v2.0: Advanced protocols (#130, #131)
 **Dependencies:** Phase 14 prioritization
 **Estimated Complexity:** Medium
 **Critical:** No - Future enhancements

@@ -1,6 +1,6 @@
 # Phase 8: Documentation & Samples
 
-**Milestone:** M2 (v0.5 "hardening gate")
+**Milestone:** v1.0 GA: Docs, validation & release (rewritten against the interceptor API; #98 open)
 **Dependencies:** Phase 7 (Testing Infrastructure)
 **Estimated Complexity:** Medium
 **Critical:** Yes - User experience
@@ -913,7 +913,7 @@ Once Phase 8 is complete and validated:
 1. Move to [Phase 9: Platform Compatibility](phase-09-platform-compat.md)
 2. Test all target platforms and IL2CPP builds
 3. Document platform-specific limitations
-4. M2 milestone complete
+4. Documentation and samples are complete (see the milestone header for open items)
 
 ## Notes
 

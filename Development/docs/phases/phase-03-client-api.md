@@ -8,7 +8,7 @@
 
 # Phase 3: Client API, Request Builder & HTTP/1.1 Raw Socket Transport (DEPRECATED)
 
-**Milestone:** M0 (Spike)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 2 (Core Type System)
 **Estimated Complexity:** High
 **Critical:** Yes - Primary API for end users + transport foundation

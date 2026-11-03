@@ -1,6 +1,6 @@
 # Phase 4: Pipeline Infrastructure
 
-**Milestone:** M1 (v0.1 "usable")
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 3 (Client API)
 **Estimated Complexity:** High
 **Critical:** Yes - Core architecture pattern
@@ -883,7 +883,7 @@ Once Phase 4 is complete and validated:
 - Order matters: Retry should be early, Logging should be first/last
 - Each middleware is self-contained and testable
 - Phase 6 will add more advanced middleware (Cache, RateLimit)
-- M1 milestone is reached after this phase
+- The Phase 4-5 content pipeline is complete after this phase
 
 ## Review Notes
 

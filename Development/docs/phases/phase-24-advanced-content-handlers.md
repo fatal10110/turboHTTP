@@ -1,6 +1,6 @@
 # Phase 24: Advanced Content Handlers
 
-**Milestone:** M4 (v1.2+)
+**Milestone:** decompression shipped (v1.0); 24.2-24.4 in v1.2: Features & performance (post-1.0, feature freeze; #122, #123, #124)
 **Dependencies:** Phase 4 (Pipeline Infrastructure), Phase 5 (Content Helpers), Phase 15 (Decoder Provider Matrix, Pipeline Hardening)
 **Estimated Complexity:** Medium (per handler), Medium-High (aggregate)
 **Estimated Effort:** 7-10 weeks total (incremental)

@@ -1,6 +1,6 @@
 # Phase 22c: HTTP/2 Through CONNECT Proxy Tunnels
 
-**Milestone:** M4 (v2.0 follow-up)
+**Milestone:** v1.0 GA: Docs, validation & release (shipped, HTTP/2 through CONNECT off by default until #103)
 **Dependencies:** Phase 22a (end-to-end streaming), Phase 22b.2 (streaming through proxy connections)
 **Estimated Complexity:** High
 **Critical:** No — HTTP/2 through proxies is a performance optimization, not a correctness fix. HTTP/1.1 through CONNECT tunnels works correctly today.

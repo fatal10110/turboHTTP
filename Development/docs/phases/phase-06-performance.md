@@ -1,6 +1,6 @@
 # Phase 6: Performance & Hardening
 
-**Milestone:** M2 (v0.5 "hardening gate")
+**Milestone:** v1.0 (shipped); soak test #114
 **Dependencies:** Phase 5 (Content Handlers)
 **Estimated Complexity:** High
 **Critical:** Yes - Production performance

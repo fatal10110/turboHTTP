@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); third-party notices are in
 `Third-Party Notices.md`.
 
+### Release status
+- Feature freeze until 1.0.0 GA: bug fixes, validation and docs only (#10). Phases 16, 19c, 22d, 23, 24
+  (except decompression, already shipped) and 25 are post-1.0 and not in this package.
+- Gated in 1.0: HTTP/2 through a CONNECT proxy tunnel is off by default until device validation (#103);
+  WebSocket permessage-deflate is experimental until its verification gates close (#104); background
+  networking is experimental and opt-in (#265); BouncyCastle TLS is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
+- `1.0.0-pre.N` tags are cut from `main` while the physical-device matrix (#99) waits for hardware;
+  `1.0.0` follows #99 and a green full host-editor run. Unity tests run only in the host editor (#188).
+- The roadmap and milestone mapping are in `Development/docs/00-overview.md`.
+
 ### Modules
 Assemblies shipped in this package: `TurboHTTP.Core`, `TurboHTTP.Transport` (raw-socket HTTP/1.1 and
 HTTP/2 over `SslStream`), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol`
@@ -24,18 +34,20 @@ authentication and rate limiting are interceptors on `UHttpClientOptions.Interce
 
 
 ### Added
-- **Phase 14 Features**:
-  - Happy Eyeballs support for fast IPv4/IPv6 dual-stack connections.
-  - Proxy Support with authenticated HTTP/HTTPS proxies.
-  - Background Networking for native iOS/Android seamless connection persistence.
-  - Adaptive Networking for dynamic timeouts based on network quality.
-  - OAuth 2.0 & OIDC integration with automated token refresh and PKCE flow.
-  - Interceptor pipeline (`IHttpInterceptor`) for request/response mutation.
+- Initial feature set (this is the first release, so these are the shipped features rather than changes
+  since an earlier one):
+  - Happy Eyeballs (RFC 8305) dual-stack connection racing (`HappyEyeballsOptions`).
+  - Proxy support: HTTP/HTTPS proxies with `Proxy-Authorization` and CONNECT tunnels; HTTP/2 through
+    CONNECT is off by default (#103).
+  - Adaptive networking (`UseAdaptiveNetworking`): timeouts adapted to measured network quality
+    (`TurboHTTP.Unity`).
+  - Background networking (`UseBackgroundNetworking`): experimental and opt-in with
+    `TURBOHTTP_BACKGROUND_NETWORKING`; iOS and Android device validation is pending (#99, #265).
+  - OAuth 2.0 and OIDC token acquisition and refresh with PKCE (`TurboHTTP.Auth`).
+  - Interceptor pipeline (`IHttpInterceptor`) for request and response mutation.
   - `MockTransport` and `RecordReplayTransport` for offline unit and integration testing.
-  - Plugin System for zero-overhead, modular extensions.
-- Initial project structure
-- Modular assembly definitions
-- **Documentation Rework**: Restructured documentation, added contributing guidelines, and polished user guides.
+  - Plugin hooks (`IHttpPlugin`, `PluginContext`) for modular extensions.
+  - Modular assembly definitions, documentation (`Documentation~/`), samples and contributing guidelines.
 - `UHttpClientOptions.UseAdaptiveNetworking(...)` and `UseBackgroundNetworking(...)` extension methods
   (`TurboHTTP.Unity.Mobile`, `TurboHTTP.Unity` module) replace the removed options properties.
 - `BouncyCastleModuleRegistration.EnsureRegistered()` (`TurboHTTP.Transport.BouncyCastle`, only with

@@ -1,6 +1,6 @@
 # Phase 14: Post-v1.0 Roadmap
 
-**Milestone:** M4 (v1.x "differentiators")
+**Milestone:** v1.0 GA: Docs, validation & release (shipped; background networking experimental and opt-in, #265; device validation #99)
 **Dependencies:** Phase 12 (Editor Tooling)
 **Estimated Complexity:** Varies
 **Critical:** No - Future enhancements

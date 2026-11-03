@@ -1,6 +1,6 @@
 # Phase 12: Editor Tooling
 
-**Milestone:** M3 (v1.0 "feature-complete + release")
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 11 (Unity Integration)
 **Estimated Complexity:** Medium
 **Critical:** High - Major differentiator
@@ -1081,7 +1081,7 @@ Once Phase 12 is complete and validated:
 1. Move to [Phase 14: Post-v1.0 Roadmap](phase-14-future.md)
 2. Continue through Phases 15 and 16
 3. Finish with [Phase 17: CI/CD & Release](phase-17-release.md)
-4. M3 milestone complete; proceed toward M4/M5
+4. Feature phases complete; proceed to the expansion phases and the release
 
 ## Notes
 

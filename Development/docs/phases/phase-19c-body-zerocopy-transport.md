@@ -1,6 +1,6 @@
 # Phase 19c: Zero-Allocation Hot Path Completion
 
-**Milestone:** M4 (v1.2)
+**Milestone:** v1.2: Features & performance (post-1.0, feature freeze; #120)
 **Dependencies:** Phase 19b (API Modernization), Phase 19a.2 (Buffer-Writer Serialization), Phase 19a.3 (Segmented Sequences)
 **Estimated Complexity:** Medium–High
 **Estimated Effort:** 1–2 weeks

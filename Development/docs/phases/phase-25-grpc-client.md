@@ -1,6 +1,6 @@
 # Phase 25: gRPC Client
 
-**Milestone:** v2.0
+**Milestone:** v2.0: Advanced protocols (post-1.0, feature freeze; #132)
 **Dependencies:** Phase 3B (HTTP/2), Phase 3C (TLS), Phase 19 (Async Runtime Refactor)
 **Estimated Complexity:** Very High
 **Estimated Effort:** 5-7 weeks

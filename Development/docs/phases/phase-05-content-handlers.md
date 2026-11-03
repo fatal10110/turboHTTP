@@ -1,6 +1,6 @@
 # Phase 5: Content Handlers
 
-**Milestone:** M1 (v0.1 "usable")
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 4 (Pipeline Infrastructure)
 **Estimated Complexity:** Medium
 **Critical:** Yes - Essential for common use cases
@@ -745,7 +745,7 @@ Once Phase 5 is complete and validated:
 1. Move to [Phase 6: Performance & Hardening](phase-06-performance.md)
 2. Implement memory pooling and request queuing
 3. Add backpressure and concurrency control
-4. M1 milestone is reached
+4. The Phase 4-5 content pipeline is complete
 
 ## Notes
 

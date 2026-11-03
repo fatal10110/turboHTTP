@@ -1,6 +1,6 @@
 # Phase 2: Core Type System
 
-**Milestone:** M0 (Spike)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 1 (Project Foundation)
 **Estimated Complexity:** Medium
 **Critical:** Yes - Foundation types for all modules

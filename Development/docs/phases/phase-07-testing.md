@@ -1,6 +1,6 @@
 # Phase 7: Testing Infrastructure
 
-**Milestone:** M2 (v0.5 "hardening gate")
+**Milestone:** v1.0 (shipped); Unity tests run in the host editor only (#188)
 **Dependencies:** Phase 6 (Performance & Hardening)
 **Estimated Complexity:** High
 **Critical:** Yes - Production readiness

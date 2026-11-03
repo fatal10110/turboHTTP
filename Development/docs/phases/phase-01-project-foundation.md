@@ -1,6 +1,6 @@
 # Phase 1: Project Foundation & Structure
 
-**Milestone:** M0 (Spike)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** None
 **Estimated Complexity:** Low
 **Critical:** Yes - Foundation for everything else

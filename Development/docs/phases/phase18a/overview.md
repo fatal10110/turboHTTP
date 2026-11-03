@@ -2,7 +2,7 @@
 
 Phase 18a is split into 7 sub-phases. Each can be implemented and shipped independently after Phase 18, so teams can prioritize based on their use cases. The extension framework and compression (18a.1) should be prioritized first, followed by test suite (18a.7) as the final gate.
 
-**Milestone:** M4 (v1.2)
+**Milestone:** v1.0 GA: Docs, validation & release (shipped, experimental until #104)
 **Dependencies:** Phase 18 (all sub-phases — core WebSocket fully implemented)
 **Estimated Complexity:** High
 **Estimated Effort:** 4-6 weeks

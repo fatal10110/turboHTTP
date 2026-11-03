@@ -1,6 +1,6 @@
 # Phase 22a: End-to-End Request/Response Streaming — Overview
 
-**Milestone:** M4 (v2.0 follow-up)
+**Milestone:** v1.0 GA: Docs, validation & release (22a.1-22a.5 shipped; 22a.6 validation #102)
 **Dependencies:** Phase 19a-19c, Phase 22.1-22.4
 **Estimated Complexity:** Very High
 **Critical:** Yes — this is the phase that removes the remaining buffered-body constraints from the client/transport stack.
