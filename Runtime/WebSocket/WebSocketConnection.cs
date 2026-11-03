@@ -23,7 +23,14 @@ namespace TurboHTTP.WebSocket
 
         private static readonly double StopwatchFrequency = System.Diagnostics.Stopwatch.Frequency;
 
+        // Frame-level lock: serialises every frame written through the shared, non-thread-safe frame writer.
+        // Data messages take it per fragment so ping/pong frames can go between fragments (RFC 6455 5.4,
+        // #86). Never disposed: a racing holder or waiter must still be able to release or acquire it (#84).
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
+
+        // Message-level lock, taken before _sendLock: one data message at a time (fragments of two messages
+        // must not interleave, RFC 6455 5.4), and the Close frame never splits a message (5.5.1).
+        private readonly SemaphoreSlim _messageLock = new SemaphoreSlim(1, 1);
         private readonly TaskCompletionSource<WebSocketCloseStatus> _remoteCloseTcs =
             new TaskCompletionSource<WebSocketCloseStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -31,6 +38,13 @@ namespace TurboHTTP.WebSocket
         private int _disposed;
         private int _closeFrameSent;
         private int _finalized;
+
+        // #84: the frame writer, the extensions and the message assembler are used by the send funnel and
+        // the receive loop while FinalizeClose can run on any thread (Abort, pong timeout, a failed send).
+        // The connection holds one reference until FinalizeClose; each user holds one while it works, and
+        // the last release disposes them (TryAcquireResources / ReleaseResources).
+        private int _resourceRefCount = 1;
+        private int _controlFramesWaiting;
 
         private Stream _stream;
         private IWebSocketTransport _transport;
@@ -300,7 +314,18 @@ namespace TurboHTTP.WebSocket
                 disposeOnCancel.Dispose();
                 DisposeExtensions(configuredExtensions);
                 WebSocketException mapped;
-                if (handshakeToken.IsCancellationRequested)
+                if (ex is WebSocketHandshakeException handshakeEx)
+                {
+                    // The server answered: its status is the outcome even if the timer fired while the
+                    // error body was read (#83).
+                    int statusCode = handshakeEx.Result?.StatusCode ?? 0;
+                    mapped = new WebSocketException(
+                        WebSocketError.HandshakeFailed,
+                        ex.Message,
+                        ex,
+                        statusCode > 0 ? statusCode : (int?)null);
+                }
+                else if (handshakeToken.IsCancellationRequested)
                 {
                     // HandshakeTimeout expired (the caller token did not fire): the connect phase,
                     // CONNECT tunnel, TLS or the upgrade exchange did not finish in time.
@@ -313,10 +338,6 @@ namespace TurboHTTP.WebSocket
                 else if (ex is WebSocketException wsEx)
                 {
                     mapped = wsEx;
-                }
-                else if (ex is WebSocketHandshakeException)
-                {
-                    mapped = new WebSocketException(WebSocketError.HandshakeFailed, ex.Message, ex);
                 }
                 else
                 {

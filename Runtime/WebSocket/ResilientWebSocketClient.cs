@@ -129,7 +129,14 @@ namespace TurboHTTP.WebSocket
                 throw new ArgumentNullException(nameof(message));
 
             var client = RequireOpenClient();
-            await client.SendAsync(message, ct).ConfigureAwait(false);
+            try
+            {
+                await client.SendAsync(message, ct).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException ex)
+            {
+                throw CreateReplacedClientException(ex);
+            }
         }
 
         public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
@@ -137,7 +144,14 @@ namespace TurboHTTP.WebSocket
             ThrowIfDisposed();
 
             var client = RequireOpenClient();
-            await client.SendAsync(data, ct).ConfigureAwait(false);
+            try
+            {
+                await client.SendAsync(data, ct).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException ex)
+            {
+                throw CreateReplacedClientException(ex);
+            }
         }
 
         public Task SendAsync(byte[] data, CancellationToken ct = default)
@@ -510,6 +524,9 @@ namespace TurboHTTP.WebSocket
                         RaiseError(terminalError);
                         attempt++;
                         Interlocked.Exchange(ref _nextReconnectAttempt, attempt);
+
+                        if (IsPermanentConnectFailure(terminalError))
+                            break;
                     }
                 }
 
@@ -537,6 +554,36 @@ namespace TurboHTTP.WebSocket
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// A 4xx rejection of the opening handshake, other than 408 Request Timeout and 429 Too Many
+        /// Requests, and a 407 from the proxy repeat on every attempt (RFC 9110 section 15.5): reconnecting
+        /// would only replay the failure (#83).
+        /// </summary>
+        internal static bool IsPermanentConnectFailure(WebSocketException error)
+        {
+            if (error == null)
+                return false;
+
+            if (error.Error == WebSocketError.ProxyAuthenticationRequired)
+                return true;
+
+            if (error.Error != WebSocketError.HandshakeFailed || !error.HandshakeStatusCode.HasValue)
+                return false;
+
+            int status = error.HandshakeStatusCode.Value;
+            return status >= 400 && status < 500 && status != 408 && status != 429;
+        }
+
+        private Exception CreateReplacedClientException(ObjectDisposedException ex)
+        {
+            // R5-N2 (#84): a reconnect disposed the child client while this send was using it.
+            ThrowIfDisposed();
+            return new WebSocketException(
+                WebSocketError.ConnectionClosed,
+                "The WebSocket connection was closed or replaced during the send.",
+                ex);
         }
 
         private IWebSocketClient RequireOpenClient()
