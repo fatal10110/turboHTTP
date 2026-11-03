@@ -44,11 +44,13 @@ ALLOWED_REFS = {
     "TurboHTTP.SecureProtocol": set(),  # vendored BouncyCastle (Runtime/Transport/BouncyCastle/Lib), self-contained
     "TurboHTTP.WebSocket.Transport": {"TurboHTTP.Core", "TurboHTTP.WebSocket", "TurboHTTP.Transport"},
     "TurboHTTP.Unity.WebSocket": {"TurboHTTP.Core", "TurboHTTP.WebSocket", "TurboHTTP.Unity"},
-    "TurboHTTP.UniTask": {"TurboHTTP.Core", "TurboHTTP.WebSocket", "UniTask"},
+    "TurboHTTP.UniTask": {"TurboHTTP.Core", "UniTask"},
+    "TurboHTTP.UniTask.WebSocket": {"TurboHTTP.Core", "TurboHTTP.WebSocket", "UniTask"},  # split out of TurboHTTP.UniTask (#116)
     "TurboHTTP.Editor": {"TurboHTTP.Core", "TurboHTTP.Observability"},
     "TurboHTTP.Complete": None,  # aggregation assembly: any TurboHTTP.* runtime module
     "TurboHTTP.Tests.Runtime": None,
     "TurboHTTP.Tests.Editor": None,
+    "TurboHTTP.Tests.UniTask": None,  # compiled only with com.cysharp.unitask installed
 }
 UNSAFE_ALLOWED = {"TurboHTTP.Transport"}
 ENGINE_FREE = {"TurboHTTP.Transport", "TurboHTTP.SecureProtocol", "TurboHTTP.JSON", "TurboHTTP.WebSocket", "TurboHTTP.WebSocket.Transport"}

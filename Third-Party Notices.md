@@ -82,7 +82,8 @@ no third-party code.
 
 ## UniTask
 
-`Runtime/UniTask/` (assembly `TurboHTTP.UniTask`) is TurboHTTP-owned glue that compiles only when the
+`Runtime/UniTask/` (assembly `TurboHTTP.UniTask`) and `Runtime/UniTask.WebSocket/` (assembly
+`TurboHTTP.UniTask.WebSocket`) are TurboHTTP-owned glue that compiles only when the
 application has the `com.cysharp.unitask` package (version 2.0.0 or newer; it defines
 `TURBOHTTP_UNITASK`). UniTask is not bundled; install it from https://github.com/Cysharp/UniTask and
 see its repository for its licence.

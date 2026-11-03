@@ -1,0 +1,30 @@
+{
+  "name": "TurboHTTP.Tests.UniTask",
+  "rootNamespace": "TurboHTTP.Tests.UniTaskAdapter",
+  "references": [
+    "TurboHTTP.Core",
+    "TurboHTTP.Testing",
+    "TurboHTTP.UniTask",
+    "TurboHTTP.UniTask.WebSocket",
+    "UniTask",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": ["WebGL"],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS", "TURBOHTTP_UNITASK"],
+  "versionDefines": [
+    {
+      "name": "com.cysharp.unitask",
+      "expression": "2.0.0",
+      "define": "TURBOHTTP_UNITASK"
+    }
+  ],
+  "noEngineReferences": false
+}

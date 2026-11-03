@@ -21,6 +21,16 @@ namespace TurboHTTP.Tests.Editor
             public string name;
             public bool autoReferenced;
             public string[] defineConstraints;
+            public string[] references;
+            public VersionDefine[] versionDefines;
+        }
+
+        [Serializable]
+        internal sealed class VersionDefine
+        {
+            public string name;
+            public string expression;
+            public string define;
         }
 
         private string _packageRoot;
@@ -54,6 +64,7 @@ namespace TurboHTTP.Tests.Editor
 
         [TestCase("Testing/TurboHTTP.Testing.asmdef")]
         [TestCase("UniTask/TurboHTTP.UniTask.asmdef")]
+        [TestCase("UniTask.WebSocket/TurboHTTP.UniTask.WebSocket.asmdef")]
         [TestCase("Transport/BouncyCastle/TurboHTTP.Transport.BouncyCastle.asmdef")]
         public void OptInModule_StaysExplicit(string relativePath)
         {
@@ -67,6 +78,22 @@ namespace TurboHTTP.Tests.Editor
             // vendored library and neither assembly reaches a player's linker output (#196).
             var fields = Read("Transport/BouncyCastle/TurboHTTP.Transport.BouncyCastle.asmdef");
             Assert.That(fields.defineConstraints, Is.EquivalentTo(new[] { "TURBOHTTP_BOUNCYCASTLE" }));
+        }
+
+        [TestCase("UniTask/TurboHTTP.UniTask.asmdef", new[] { "TurboHTTP.Core", "UniTask" })]
+        [TestCase("UniTask.WebSocket/TurboHTTP.UniTask.WebSocket.asmdef",
+            new[] { "TurboHTTP.Core", "TurboHTTP.WebSocket", "UniTask" })]
+        public void UniTaskAdapters_SplitSoHttpOnlyUsersSkipWebSocket(string relativePath, string[] expectedReferences)
+        {
+            // HTTP-only UniTask users reference TurboHTTP.UniTask without compiling TurboHTTP.WebSocket;
+            // the WebSocket adapters live in TurboHTTP.UniTask.WebSocket (#116). Both compile only with UniTask.
+            var fields = Read(relativePath);
+            Assert.That(fields.references, Is.EquivalentTo(expectedReferences), relativePath);
+            Assert.That(fields.defineConstraints, Is.EquivalentTo(new[] { "TURBOHTTP_UNITASK" }), relativePath);
+            Assert.That(fields.versionDefines, Has.Length.EqualTo(1), relativePath);
+            Assert.That(fields.versionDefines[0].name, Is.EqualTo("com.cysharp.unitask"), relativePath);
+            Assert.That(fields.versionDefines[0].expression, Is.EqualTo("2.0.0"), relativePath);
+            Assert.That(fields.versionDefines[0].define, Is.EqualTo("TURBOHTTP_UNITASK"), relativePath);
         }
 
         private AsmdefFields Read(string relativePath)

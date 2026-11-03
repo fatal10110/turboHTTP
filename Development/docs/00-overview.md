@@ -48,7 +48,7 @@ Each depends only on `TurboHTTP.Core` unless `Development/docs/agents/architectu
 11. `TurboHTTP.WebSocket` - WebSocket client (RFC 6455, permessage-deflate RFC 7692)
 12. `TurboHTTP.WebSocket.Transport` - WebSocket transport over the raw-socket stack
 13. `TurboHTTP.Unity.WebSocket` - Unity bridge for the WebSocket client
-14. `TurboHTTP.UniTask` - UniTask adapters (needs the UniTask package)
+14. `TurboHTTP.UniTask` - UniTask adapters for HTTP (needs the UniTask package); `TurboHTTP.UniTask.WebSocket` holds the WebSocket adapters (#116)
 15. `TurboHTTP.Transport.BouncyCastle` - Opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol` library (`TURBOHTTP_BOUNCYCASTLE`)
 16. `TurboHTTP.Complete` - Aggregation assembly holding the startup registration (`Runtime/Bootstrap`, `TurboHttpBootstrap`) and `JsonUtilitySerializer`
 
@@ -218,7 +218,8 @@ turboHTTP/
 │   ├── WebSocket/                 # WebSocket client
 │   ├── WebSocket.Transport/       # WebSocket transport
 │   ├── Unity.WebSocket/           # Unity WebSocket bridge
-│   ├── UniTask/                   # UniTask adapters
+│   ├── UniTask/                   # UniTask adapters (HTTP)
+│   ├── UniTask.WebSocket/         # UniTask adapters (WebSocket)
 │   ├── Bootstrap/                 # Startup registration (TurboHTTP.Complete)
 │   └── TurboHTTP.Complete.asmdef  # Aggregation assembly
 ├── Editor/                        # Editor module

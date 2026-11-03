@@ -3,7 +3,6 @@
   "rootNamespace": "TurboHTTP.UniTask",
   "references": [
     "TurboHTTP.Core",
-    "TurboHTTP.WebSocket",
     "UniTask"
   ],
   "includePlatforms": [],
