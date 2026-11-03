@@ -51,6 +51,15 @@ Run w1102, lane host-authority, branch `wf/host-authority`.
 - UnityTls SNI for IP literals: documented limitation, no provider change (conservative option;
   also keeps the `sslstream-provider` lane's file untouched).
 
+- Review round 1: a Unicode host with no A-label form (a label over 63 characters, where
+  `IdnMapping.GetAscii` throws and .NET's `Uri.IdnHost` stays Unicode) is no longer returned
+  unchanged, because the field validator accepts Latin-1 and raw 0xFC would reach the wire.
+  `HttpAuthority.FormatHost` throws `HttpFieldValidationException` (no host in the message):
+  InvalidRequest on HTTP/1.1, and HTTP/2 builds `:authority` before taking a stream slot or id
+  and maps it to InvalidRequest. The Uri-level tests skip as `[env]` on Unity Mono, whose
+  `Uri.IdnHost` already returns ASCII for that host; `FormatHost_NoALabelForm_ThrowsWithoutTheHost`
+  runs everywhere.
+
 ## Deferred
 
 - #309 (v1.1): WebSocket handshake Host and WebSocket proxy CONNECT authority.
