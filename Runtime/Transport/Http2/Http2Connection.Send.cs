@@ -541,15 +541,21 @@ namespace TurboHTTP.Transport.Http2
             Interlocked.Exchange(ref _sendWindowSignal, null)?.TrySetResult(true);
         }
 
-        private static string BuildAuthorityValue(Uri uri)
+        /// <summary>
+        /// The request's <c>:authority</c>: the same authority as the HTTP/1.1 Host header (RFC 9113
+        /// Section 8.3.1, #46), computed before a stream slot or id is taken: a
+        /// host with no ASCII wire form is a non-retryable <see cref="UHttpErrorType.InvalidRequest"/>.
+        /// </summary>
+        private static string BuildRequestAuthority(Uri uri)
         {
-            var host = uri.Host;
-            if (uri.HostNameType == UriHostNameType.IPv6)
-                host = $"[{host}]";
-
-            bool isDefaultPort = (uri.Scheme == "https" && uri.Port == 443)
-                              || (uri.Scheme == "http" && uri.Port == 80);
-            return isDefaultPort ? host : $"{host}:{uri.Port}";
+            try
+            {
+                return HttpAuthority.FromUri(uri);
+            }
+            catch (HttpFieldValidationException ex)
+            {
+                throw CreateInvalidFieldException(ex);
+            }
         }
 
         private static bool IsHttp2ForbiddenHeader(string name)

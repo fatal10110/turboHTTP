@@ -32,7 +32,7 @@ namespace TurboHTTP.Tests.Transport
         [TestCase("trailing\t", "whitespace")]
         public void ValidateField_InvalidValue_Throws(string value, string expectedInMessage)
         {
-            var ex = Assert.Throws<ArgumentException>(() => HttpFieldValidator.ValidateField("X-Test", value));
+            var ex = Assert.Throws<HttpFieldValidationException>(() => HttpFieldValidator.ValidateField("X-Test", value));
             StringAssert.Contains(expectedInMessage, ex.Message);
             StringAssert.Contains("X-Test", ex.Message);
         }
@@ -48,13 +48,13 @@ namespace TurboHTTP.Tests.Transport
         [TestCase(null)]
         public void ValidateField_InvalidName_Throws(string name)
         {
-            Assert.Throws<ArgumentException>(() => HttpFieldValidator.ValidateField(name, "ok"));
+            Assert.Throws<HttpFieldValidationException>(() => HttpFieldValidator.ValidateField(name, "ok"));
         }
 
         [Test]
         public void ValidateField_InvalidName_DoesNotEchoTheName()
         {
-            var ex = Assert.Throws<ArgumentException>(
+            var ex = Assert.Throws<HttpFieldValidationException>(
                 () => HttpFieldValidator.ValidateField("X-Test\r\nAuthorization: Bearer secret", "ok"));
             StringAssert.DoesNotContain("secret", ex.Message);
         }
@@ -80,7 +80,7 @@ namespace TurboHTTP.Tests.Transport
             headers.Add("X-Multi", "fine");
             headers.Add("X-Multi", "bad\0");
 
-            var ex = Assert.Throws<ArgumentException>(() => HttpFieldValidator.ValidateFields(headers));
+            var ex = Assert.Throws<HttpFieldValidationException>(() => HttpFieldValidator.ValidateFields(headers));
             StringAssert.Contains("0x00", ex.Message);
             Assert.DoesNotThrow(() => HttpFieldValidator.ValidateFields(null));
         }

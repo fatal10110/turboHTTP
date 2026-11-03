@@ -289,6 +289,7 @@ namespace TurboHTTP.Transport.Http2
             // NUL/CR/LF/CTL or surrounding whitespace in a value) fails the request here, before a stream
             // slot or id is taken and before any frame is written. Not replayable: InvalidRequest.
             ValidateRequestFields(request.Headers);
+            var authority = BuildRequestAuthority(request.Uri);
 
             Http2Stream stream = null;
             int streamId = -1;
@@ -350,7 +351,7 @@ namespace TurboHTTP.Transport.Http2
                     _headerListScratch.Clear();
                     _headerListScratch.Add((":method", request.Method.ToUpperString()));
                     _headerListScratch.Add((":scheme", _schemeHeader));
-                    _headerListScratch.Add((":authority", BuildAuthorityValue(request.Uri)));
+                    _headerListScratch.Add((":authority", authority));
                     _headerListScratch.Add((":path", request.Uri.PathAndQuery ?? "/"));
 
                     foreach (var name in request.Headers.Names)
