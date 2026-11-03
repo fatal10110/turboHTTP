@@ -164,6 +164,18 @@ public class TurboHttpDeviceTestBuild : ITestPlayerBuildModifier
         PlayerSettings.SetManagedStrippingLevel(BuildTargetGroup.Android, stripping);
         PlayerSettings.Android.targetArchitectures = arch;
         PlayerSettings.Android.forceInternetPermission = true;
+        // x86_64 is for the emulators: API 23-25 images offer only GLES 2.0 (a GLES3-only player stops at
+        // Unity's "wait for debugger" dialog), and Vulkan froze the headless emulator. Phones keep the default.
+        if (arch == AndroidArchitecture.X86_64)
+        {
+            PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+            PlayerSettings.SetGraphicsAPIs(BuildTarget.Android,
+                new[] { UnityEngine.Rendering.GraphicsDeviceType.OpenGLES3, UnityEngine.Rendering.GraphicsDeviceType.OpenGLES2 });
+        }
+        else
+        {
+            PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, true);
+        }
         PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, "com.turbohttp.devicetests");
         Debug.Log("TURBOHTTP_DEVICE_BUILD stripping=" + stripping + " arch=" + arch);
         // --serial: build the APK only; the script installs it on the chosen device. Without AutoRunPlayer the
@@ -284,6 +296,13 @@ args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform Androi
 
 pkg_id=com.turbohttp.devicetests
 device_file=/sdcard/Android/data/$pkg_id/files/turbohttp-results.xml
+# Prints y while the player process exists and n when it does not; fails when adb fails. pidof is missing
+# before API 24 and lists every pid on Android 6, so this reads ps: toybox needs -A (API 26+), toolbox lists all.
+player_running() {
+  local ps_out
+  ps_out="$(adbr shell "ps -A 2>/dev/null; ps 2>/dev/null")" || return 1
+  if printf '%s\n' "$ps_out" | grep -q "[[:space:]]$pkg_id\$"; then echo y; else echo n; fi
+}
 pull_results() { if [ "$(adbr shell "[ -s $device_file ] && echo y || true")" = y ]; then adbr exec-out cat "$device_file" > "$xml" || true; fi; }
 adbr shell rm -f "$device_file" >/dev/null || true
 adbr logcat -c >/dev/null || true
@@ -309,7 +328,7 @@ if [ -n "$serial" ]; then
     || { echo "run-device-tests: launching $pkg_id on $serial failed" >&2; exit 2; }
   # Give the process time to appear before the wait below treats a missing pid as a finished player.
   for _ in $(seq 1 30); do
-    [ -n "$(adbr shell "pidof $pkg_id || true" || true)" ] && break
+    [ "$(player_running || true)" = y ] && break
     sleep 2
   done
   echo "run-device-tests: installed and launched on $serial"
@@ -327,10 +346,9 @@ if [ ! -f "$xml" ]; then
       pull_results
       break
     fi
-    # Only an adb call that succeeded with no pid means the player is gone; a failed call, or a device
-    # without pidof, keeps waiting until the deadline.
-    if pid="$(adbr shell "if command -v pidof >/dev/null; then pidof $pkg_id || true; else echo unknown; fi")" \
-      && [ -z "$pid" ]; then
+    # Only an adb call that succeeded without the process means the player is gone; a failed call keeps
+    # waiting until the deadline.
+    if [ "$(player_running || true)" = n ]; then
       echo "run-device-tests: the player ($pkg_id) is not running"
       pull_results
       break
