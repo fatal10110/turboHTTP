@@ -3,7 +3,10 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Cache
 {
@@ -109,6 +112,43 @@ namespace TurboHTTP.Cache
             return baseKey + "|" + (string.IsNullOrEmpty(varyKey) ? EmptyVaryKeyToken : varyKey);
         }
 
+        // Index cap when the storage's entry limit is unknown (custom ICacheStorage).
+        internal const int DefaultVariantIndexCapacity = 4096;
+
+        /// <summary>Number of base keys in the variant index. For tests.</summary>
+        internal int VariantIndexCount
+        {
+            get
+            {
+                lock (_indexLock)
+                {
+                    return _variantIndex.Count;
+                }
+            }
+        }
+
+        /// <summary>Variant index bound. Test hook: set before the first request.</summary>
+        internal int VariantIndexCapacity
+        {
+            get
+            {
+                lock (_indexLock)
+                {
+                    return _variantIndexCapacity;
+                }
+            }
+            set
+            {
+                if (value <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), value, "Must be greater than 0.");
+
+                lock (_indexLock)
+                {
+                    _variantIndexCapacity = value;
+                }
+            }
+        }
+
         private string[] GetSignatureSnapshot(string baseKey)
         {
             lock (_indexLock)
@@ -116,18 +156,26 @@ namespace TurboHTTP.Cache
                 if (!_variantIndex.TryGetValue(baseKey, out var bucket) || bucket.Signatures.Count == 0)
                     return Array.Empty<string>();
 
+                TouchVariantBucketUnsafe(bucket);
                 return bucket.Signatures.OrderBy(s => s, StringComparer.Ordinal).ToArray();
             }
         }
 
         private void RegisterStoredVariant(string baseKey, string signature, string storageKey)
         {
+            string evictedBaseKey = null;
+            string[] evictedStorageKeys = null;
             lock (_indexLock)
             {
                 if (!_variantIndex.TryGetValue(baseKey, out var bucket))
                 {
                     bucket = new VariantBucket();
+                    bucket.LruNode = _variantLru.AddLast(baseKey);
                     _variantIndex[baseKey] = bucket;
+                }
+                else
+                {
+                    TouchVariantBucketUnsafe(bucket);
                 }
 
                 var normalizedSignature = signature ?? string.Empty;
@@ -137,6 +185,99 @@ namespace TurboHTTP.Cache
                 bucket.SignatureByStorageKey[storageKey] = normalizedSignature;
                 AddSignatureRefUnsafe(bucket, normalizedSignature);
                 bucket.StorageKeys.Add(storageKey);
+
+                // Each register adds at most one bucket, so one eviction keeps the bound. The
+                // just-registered bucket is the most recent one and never the victim.
+                if (_variantIndex.Count > _variantIndexCapacity)
+                    evictedStorageKeys = EvictLeastRecentBucketUnsafe(out evictedBaseKey);
+            }
+
+            if (evictedStorageKeys != null)
+                QueueEvictedVariantRemoval(evictedBaseKey, evictedStorageKeys);
+        }
+
+        private void TouchVariantBucketUnsafe(VariantBucket bucket)
+        {
+            var node = bucket.LruNode;
+            if (node == null || ReferenceEquals(node, _variantLru.Last))
+                return;
+
+            _variantLru.Remove(node);
+            _variantLru.AddLast(node);
+        }
+
+        private void RemoveVariantBucketUnsafe(string baseKey, VariantBucket bucket)
+        {
+            _variantIndex.Remove(baseKey);
+            if (bucket.LruNode != null)
+            {
+                _variantLru.Remove(bucket.LruNode);
+                bucket.LruNode = null;
+            }
+        }
+
+        // Drops the least recently used bucket. Returns the storage keys that only the index can
+        // reach (Vary variants), or null. The no-Vary key is looked up and invalidated without the
+        // index, so it stays in storage.
+        private string[] EvictLeastRecentBucketUnsafe(out string baseKey)
+        {
+            var node = _variantLru.First;
+            baseKey = node.Value;
+            var bucket = _variantIndex[baseKey];
+            RemoveVariantBucketUnsafe(baseKey, bucket);
+
+            var unvariedKey = BuildStorageKey(baseKey, string.Empty);
+            List<string> varied = null;
+            foreach (var key in bucket.StorageKeys)
+            {
+                if (string.Equals(key, unvariedKey, StringComparison.Ordinal))
+                    continue;
+
+                (varied ??= new List<string>()).Add(key);
+            }
+
+            return varied?.ToArray();
+        }
+
+        // A Vary entry the index no longer tracks would be invisible to unsafe-method invalidation
+        // (RFC 9111 section 4.4) and could be served again once its signature is re-registered, so
+        // it is removed from storage. Runs as a mutation of its base key, after any in-flight store.
+        private void QueueEvictedVariantRemoval(string baseKey, string[] storageKeys)
+        {
+            QueueBackgroundWork(
+                QueueMutationAsync(
+                    baseKey,
+                    static (owner, key, token, state) =>
+                        owner.RemoveEvictedVariantsCoreAsync(key, (string[])state, token),
+                    _backgroundWorkToken,
+                    storageKeys),
+                "variant index eviction");
+        }
+
+        private async Task RemoveEvictedVariantsCoreAsync(
+            string baseKey,
+            string[] storageKeys,
+            CancellationToken cancellationToken)
+        {
+            // QueueMutationAsync starts mutations inline under _pendingMutationLock; leave it first.
+            await new ThreadPoolHop();
+
+            for (int i = 0; i < storageKeys.Length; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsStorageKeyRegistered(baseKey, storageKeys[i]))
+                    continue;
+
+                await _policy.Storage.RemoveAsync(storageKeys[i], cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private bool IsStorageKeyRegistered(string baseKey, string storageKey)
+        {
+            lock (_indexLock)
+            {
+                return _variantIndex.TryGetValue(baseKey, out var bucket)
+                       && bucket.StorageKeys.Contains(storageKey);
             }
         }
 
@@ -157,7 +298,7 @@ namespace TurboHTTP.Cache
                 }
 
                 if (bucket.StorageKeys.Count == 0)
-                    _variantIndex.Remove(baseKey);
+                    RemoveVariantBucketUnsafe(baseKey, bucket);
             }
         }
 
@@ -168,7 +309,7 @@ namespace TurboHTTP.Cache
                 if (!_variantIndex.TryGetValue(baseKey, out var bucket))
                     return Array.Empty<string>();
 
-                _variantIndex.Remove(baseKey);
+                RemoveVariantBucketUnsafe(baseKey, bucket);
                 return bucket.StorageKeys.ToArray();
             }
         }

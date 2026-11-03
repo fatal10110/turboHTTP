@@ -94,10 +94,17 @@ namespace TurboHTTP.Cache
         // Variant index is an in-memory accelerator only. Entries are ref-counted per
         // signature and cleaned up as storage keys are removed or invalidated.
         // This index is intentionally not persisted across process restarts in v1.
+        // Storage evicts silently, so the index is also bounded LRU-style by
+        // _variantIndexCapacity (#60); _variantLru orders the buckets (head = least recent).
+        // All three are guarded by _indexLock.
         private readonly Dictionary<string, VariantBucket> _variantIndex = new Dictionary<string, VariantBucket>(StringComparer.Ordinal);
+        private readonly LinkedList<string> _variantLru = new LinkedList<string>();
+        private int _variantIndexCapacity;
         private readonly object _pendingMutationLock = new object();
         private readonly Dictionary<string, Task> _pendingMutations = new Dictionary<string, Task>(StringComparer.Ordinal);
         private readonly CancellationTokenSource _backgroundWorkCancellation = new CancellationTokenSource();
+        // Captured once: CancellationTokenSource.Token throws after Dispose, the captured token does not.
+        private readonly CancellationToken _backgroundWorkToken;
         private Func<IStreamingCacheAccumulator> _streamingAccumulatorFactory =
             static () => new SegmentedBufferStreamingCacheAccumulator();
         private int _disposed;
@@ -108,6 +115,7 @@ namespace TurboHTTP.Cache
             public readonly HashSet<string> StorageKeys = new HashSet<string>(StringComparer.Ordinal);
             public readonly Dictionary<string, string> SignatureByStorageKey = new Dictionary<string, string>(StringComparer.Ordinal);
             public readonly Dictionary<string, int> SignatureRefCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            public LinkedListNode<string> LruNode;
         }
 
         private sealed class PendingMutationState
@@ -122,7 +130,9 @@ namespace TurboHTTP.Cache
             }
         }
 
-        private sealed class StoreResponseState
+        // Owns the pooled body until StoreResponseAsync takes it over; disposed by
+        // RunQueuedMutationAsync when the store is skipped (#71).
+        private sealed class StoreResponseState : IDisposable
         {
             public readonly HttpMethod RequestMethod;
             public readonly Uri RequestUri;
@@ -145,6 +155,11 @@ namespace TurboHTTP.Cache
                 StatusCode = statusCode;
                 ResponseHeaders = responseHeaders;
                 Body = body;
+            }
+
+            public void Dispose()
+            {
+                Body?.Dispose();
             }
         }
 
@@ -246,6 +261,13 @@ namespace TurboHTTP.Cache
 
             if (_policy.Storage == null)
                 throw new ArgumentNullException(nameof(policy), "CachePolicy.Storage cannot be null.");
+
+            _backgroundWorkToken = _backgroundWorkCancellation.Token;
+            // Every live bucket holds at least one storage entry, so the storage entry limit bounds
+            // the live index; storages with no known limit get a fixed cap.
+            _variantIndexCapacity = _policy.Storage is MemoryCacheStorage memoryStorage
+                ? memoryStorage.MaxEntries
+                : DefaultVariantIndexCapacity;
         }
 
         public DispatchFunc Wrap(DispatchFunc next)
@@ -419,7 +441,7 @@ namespace TurboHTTP.Cache
                     next,
                     baseKey,
                     lookup,
-                    _backgroundWorkCancellation.Token),
+                    _backgroundWorkToken),
                 "revalidation");
         }
 
@@ -765,7 +787,15 @@ namespace TurboHTTP.Cache
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            _backgroundWorkCancellation.Cancel();
+            try
+            {
+                _backgroundWorkCancellation.Cancel();
+            }
+            finally
+            {
+                // Background work holds _backgroundWorkToken, which stays readable (and cancelled).
+                _backgroundWorkCancellation.Dispose();
+            }
 
             if (_ownsStorage && _policy.Storage is IDisposable disposableStorage)
                 disposableStorage.Dispose();
@@ -802,7 +832,7 @@ namespace TurboHTTP.Cache
                             storeState.Body,
                             token);
                     },
-                    _backgroundWorkCancellation.Token,
+                    _backgroundWorkToken,
                     new StoreResponseState(
                         requestMethod,
                         requestUri,
@@ -1086,7 +1116,13 @@ namespace TurboHTTP.Cache
                 }
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // The mutation never runs, so release what its state owns (the pooled store body, #71).
+                (state as IDisposable)?.Dispose();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             await mutation(this, baseKey, cancellationToken, state).ConfigureAwait(false);
         }
 
@@ -1118,6 +1154,20 @@ namespace TurboHTTP.Cache
         }
 
         internal long MaxCacheableResponseBodyBytes => _policy.MaxCacheableResponseBodyBytes;
+
+        /// <summary>Background token; stays cancelled (not throwing) after <see cref="Dispose"/>. For tests.</summary>
+        internal CancellationToken BackgroundWorkToken => _backgroundWorkToken;
+
+        internal int PendingMutationCount
+        {
+            get
+            {
+                lock (_pendingMutationLock)
+                {
+                    return _pendingMutations.Count;
+                }
+            }
+        }
 
         internal Func<IStreamingCacheAccumulator> StreamingAccumulatorFactory
         {

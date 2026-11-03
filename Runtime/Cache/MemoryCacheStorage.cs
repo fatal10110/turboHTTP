@@ -44,6 +44,9 @@ namespace TurboHTTP.Cache
             _maxSizeBytes = maxSizeBytes;
         }
 
+        /// <summary>Entry limit; bounds the interceptor's in-memory variant index (#60).</summary>
+        internal int MaxEntries => _maxEntries;
+
         public async Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();

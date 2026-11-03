@@ -16,7 +16,7 @@ namespace TurboHTTP.Tests.Cache
     public partial class CacheInterceptorTests
     {
         [Test]
-        public void CacheInterceptor_NormalizesQueryParameterOrder()
+        public void CacheInterceptor_KeyNormalization_QueryParameterOrderIsSignificant()
         {
             Task.Run(async () =>
             {
@@ -36,10 +36,12 @@ namespace TurboHTTP.Tests.Cache
                 var requestB = new UHttpRequest(HttpMethod.GET, new Uri("https://example.test/data?a=1&b=2"));
 
                 await pipeline.ExecuteAsync(requestA, new RequestContext(requestA));
-                var cached = await pipeline.ExecuteAsync(requestB, new RequestContext(requestB));
+                var second = await pipeline.ExecuteAsync(requestB, new RequestContext(requestB));
 
-                Assert.AreEqual(1, transport.RequestCount);
-                Assert.AreEqual("HIT", cached.Headers.Get("X-Cache"));
+                // RFC 9111 section 2: the key is the target URI; reordering the query is not a
+                // syntax-based equivalence (RFC 3986 section 6.2.2), so each order is its own entry.
+                Assert.AreEqual(2, transport.RequestCount);
+                Assert.AreNotEqual("HIT", second.Headers.Get("X-Cache"));
             }).GetAwaiter().GetResult();
         }
 

@@ -8,6 +8,11 @@ namespace TurboHTTP.Cache
 {
     public sealed partial class CacheInterceptor
     {
+        // RFC 9111 section 2: the primary cache key is the target URI. Only equivalences that
+        // RFC 3986 sections 6.2.2 (case, percent-encoding, dot segments) and 6.2.3 (default port)
+        // define are applied. Empty path segments, empty query parameters and query parameter
+        // order are significant to the origin (signed URLs), so they are kept as sent (#72).
+        // The fragment is never part of the key (Uri.Query/AbsolutePath exclude it).
         internal static string NormalizeUri(Uri uri)
         {
             if (uri == null)
@@ -23,7 +28,7 @@ namespace TurboHTTP.Cache
 
             var rawQuery = uri.Query;
             var query = NeedsQueryNormalization(rawQuery)
-                ? NormalizeQuery(rawQuery)
+                ? NormalizePercentEncoding(NormalizeQueryFastPath(rawQuery))
                 : NormalizeQueryFastPath(rawQuery);
 
             var result = new StringBuilder(scheme.Length + host.Length + portPart.Length + path.Length + query.Length + 3);
@@ -65,9 +70,6 @@ namespace TurboHTTP.Cache
             if (path.IndexOf('%') >= 0)
                 return true;
 
-            if (path.IndexOf("//", StringComparison.Ordinal) >= 0)
-                return true;
-
             if (path.IndexOf("/./", StringComparison.Ordinal) >= 0
                 || path.IndexOf("/../", StringComparison.Ordinal) >= 0
                 || path.EndsWith("/.", StringComparison.Ordinal)
@@ -81,23 +83,14 @@ namespace TurboHTTP.Cache
 
         private static bool NeedsQueryNormalization(string query)
         {
-            if (string.IsNullOrEmpty(query) || query == "?")
-                return false;
-
-            int start = query[0] == '?' ? 1 : 0;
-            for (int i = start; i < query.Length; i++)
-            {
-                var c = query[i];
-                if (c == '&' || c == '%')
-                    return true;
-            }
-
-            return false;
+            return !string.IsNullOrEmpty(query) && query.IndexOf('%') >= 0;
         }
 
+        // An empty query ("?") is kept: RFC 3986 section 6.2.3 does not license removing the
+        // delimiter of an empty component for http(s).
         private static string NormalizeQueryFastPath(string query)
         {
-            if (string.IsNullOrEmpty(query) || query == "?")
+            if (string.IsNullOrEmpty(query))
                 return string.Empty;
 
             if (query[0] == '?')
@@ -106,103 +99,46 @@ namespace TurboHTTP.Cache
             return "?" + query;
         }
 
+        // RFC 3986 section 5.2.4 remove_dot_segments, then percent-encoding normalization per
+        // segment. Only literal "." and ".." are dot segments; an encoded "%2E%2E" stays a
+        // segment, so the key never aliases a path the origin may treat literally. Empty
+        // segments ("/a//b") are kept: they are not equivalent to "/a/b".
         private static string NormalizePath(string path)
         {
             if (string.IsNullOrEmpty(path))
                 return "/";
 
-            var hadTrailingSlash = path.Length > 1 && path.EndsWith("/", StringComparison.Ordinal);
             var segments = path.Split('/');
             var stack = new List<string>(segments.Length);
 
-            for (int i = 0; i < segments.Length; i++)
+            // segments[0] is the empty string before the leading '/'; a rootless path keeps its
+            // first segment.
+            int first = path[0] == '/' ? 1 : 0;
+            for (int i = first; i < segments.Length; i++)
             {
                 var segment = segments[i];
-                if (segment.Length == 0 || segment == ".")
+                bool isLast = i == segments.Length - 1;
+
+                if (segment == ".")
+                {
+                    if (isLast)
+                        stack.Add(string.Empty);
                     continue;
+                }
 
                 if (segment == "..")
                 {
                     if (stack.Count > 0)
                         stack.RemoveAt(stack.Count - 1);
+                    if (isLast)
+                        stack.Add(string.Empty);
                     continue;
                 }
 
                 stack.Add(NormalizePercentEncoding(segment));
             }
 
-            var normalized = "/" + string.Join("/", stack);
-            if (normalized.Length == 0)
-                normalized = "/";
-
-            if (hadTrailingSlash && normalized != "/")
-                normalized += "/";
-
-            return normalized;
-        }
-
-        private static string NormalizeQuery(string query)
-        {
-            if (string.IsNullOrEmpty(query) || query == "?")
-                return string.Empty;
-
-            var raw = query[0] == '?' ? query.Substring(1) : query;
-            if (raw.Length == 0)
-                return string.Empty;
-
-            var items = new List<QueryPart>();
-            var segments = raw.Split('&');
-            for (int i = 0; i < segments.Length; i++)
-            {
-                var segment = segments[i];
-                if (segment.Length == 0)
-                    continue;
-
-                int eq = segment.IndexOf('=');
-                if (eq < 0)
-                {
-                    items.Add(new QueryPart(NormalizePercentEncoding(segment), string.Empty, false, items.Count));
-                    continue;
-                }
-
-                var name = segment.Substring(0, eq);
-                var value = segment.Substring(eq + 1);
-                items.Add(new QueryPart(
-                    NormalizePercentEncoding(name),
-                    NormalizePercentEncoding(value),
-                    hasEquals: true,
-                    ordinal: items.Count));
-            }
-
-            items.Sort((a, b) =>
-            {
-                int byName = string.CompareOrdinal(a.Name, b.Name);
-                if (byName != 0)
-                    return byName;
-
-                // Preserve duplicate key order to avoid changing semantics for repeated parameters.
-                return a.Ordinal.CompareTo(b.Ordinal);
-            });
-
-            if (items.Count == 0)
-                return string.Empty;
-
-            var sb = new StringBuilder(raw.Length + 1);
-            sb.Append('?');
-            for (int i = 0; i < items.Count; i++)
-            {
-                if (i > 0)
-                    sb.Append('&');
-
-                sb.Append(items[i].Name);
-                if (items[i].HasEquals)
-                {
-                    sb.Append('=');
-                    sb.Append(items[i].Value);
-                }
-            }
-
-            return sb.ToString();
+            return "/" + string.Join("/", stack);
         }
 
         private static string NormalizePercentEncoding(string input)
@@ -268,21 +204,6 @@ namespace TurboHTTP.Cache
             if (c >= 'a' && c <= 'f')
                 return 10 + (c - 'a');
             return 10 + (c - 'A');
-        }
-        private readonly struct QueryPart
-        {
-            public readonly string Name;
-            public readonly string Value;
-            public readonly bool HasEquals;
-            public readonly int Ordinal;
-
-            public QueryPart(string name, string value, bool hasEquals, int ordinal)
-            {
-                Name = name;
-                Value = value;
-                HasEquals = hasEquals;
-                Ordinal = ordinal;
-            }
         }
     }
 }
