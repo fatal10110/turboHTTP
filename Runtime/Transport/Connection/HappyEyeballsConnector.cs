@@ -389,6 +389,24 @@ namespace TurboHTTP.Transport.Connection
             return (preferred, alternate);
         }
 
+        /// <summary>
+        /// Enables SO_KEEPALIVE (RFC 1122 section 4.2.3.6) so the OS probes idle pooled
+        /// connections. The probe timing keeps the OS defaults: Unity's .NET Standard 2.1 profile
+        /// has no TcpKeepAliveTime/TcpKeepAliveInterval options (configurable socket tuning is
+        /// planned with Phase 23). A target that rejects the option keeps working without it
+        /// (#47; device behavior is needs-device-validation under #99).
+        /// </summary>
+        internal static void ConfigureKeepAlive(Socket socket)
+        {
+            try
+            {
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            }
+            catch (SocketException) { }
+            catch (PlatformNotSupportedException) { }
+            catch (NotSupportedException) { }
+        }
+
         private static async Task<Socket> ConnectEndpointAsync(
             IPAddress address,
             int port,
@@ -401,6 +419,7 @@ namespace TurboHTTP.Transport.Connection
                 {
                     NoDelay = true
                 };
+                ConfigureKeepAlive(socket);
 
                 // Socket.ConnectAsync(EndPoint) takes no token. On cancellation the wait is
                 // abandoned with the connect task observed, and the catch below disposes the

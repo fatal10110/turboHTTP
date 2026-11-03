@@ -281,6 +281,12 @@ namespace TurboHTTP.Transport.Tcp
         private readonly Func<TlsBackend, ITlsProvider> _tlsProviderResolver;
         private readonly int _dnsTimeoutMs;
         private readonly TimeSpan _connectTimeout;
+
+        /// <summary>
+        /// Silence allowed on a reused HTTP/1.1 connection after an idempotent request before the
+        /// transport retries it on a fresh connection (#47). <see cref="Timeout.InfiniteTimeSpan"/> = off.
+        /// </summary>
+        internal TimeSpan ReusedConnectionFirstByteTimeout { get; }
         private readonly HappyEyeballsOptions _happyEyeballsOptions;
         private readonly SocketIoMode _socketIoMode;
         private readonly TimeSpan _scavengeInterval;
@@ -295,13 +301,17 @@ namespace TurboHTTP.Transport.Tcp
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
 
         /// <param name="maxConnectionsPerHost">Maximum concurrent connections per host (default 6, matches browser convention).</param>
-        /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 2 minutes).</param>
+        /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 45 s on iOS/Android players, 2 minutes elsewhere).</param>
         /// <param name="tlsBackend">TLS backend selection strategy (default Auto).</param>
         /// <param name="dnsTimeout">Timeout for DNS lookups. Default 10 seconds.</param>
         /// <param name="socketIoMode">Socket I/O implementation (default NetworkStream).</param>
         /// <param name="connectTimeout">
         /// Wall-clock deadline for the TCP connect to one host (all address attempts). Default 10 seconds;
         /// <see cref="Timeout.InfiniteTimeSpan"/> disables it. Expiry fails with <see cref="UHttpErrorType.Timeout"/>.
+        /// </param>
+        /// <param name="reusedConnectionFirstByteTimeout">
+        /// Silence allowed on a reused HTTP/1.1 connection after an idempotent request before it is
+        /// retried once on a fresh connection. Default 10 seconds; <see cref="Timeout.InfiniteTimeSpan"/> disables it.
         /// </param>
         public TcpConnectionPool(
             int maxConnectionsPerHost = 6,
@@ -310,7 +320,8 @@ namespace TurboHTTP.Transport.Tcp
             TimeSpan? dnsTimeout = null,
             HappyEyeballsOptions happyEyeballsOptions = null,
             SocketIoMode socketIoMode = SocketIoMode.NetworkStream,
-            TimeSpan? connectTimeout = null)
+            TimeSpan? connectTimeout = null,
+            TimeSpan? reusedConnectionFirstByteTimeout = null)
         {
             if (maxConnectionsPerHost <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
@@ -330,8 +341,18 @@ namespace TurboHTTP.Transport.Tcp
                         "Must be less than or equal to Int32.MaxValue milliseconds.");
             }
 
+            if (reusedConnectionFirstByteTimeout.HasValue && reusedConnectionFirstByteTimeout.Value != Timeout.InfiniteTimeSpan)
+            {
+                if (reusedConnectionFirstByteTimeout.Value <= TimeSpan.Zero)
+                    throw new ArgumentOutOfRangeException(nameof(reusedConnectionFirstByteTimeout), "Must be positive or Timeout.InfiniteTimeSpan");
+                if (reusedConnectionFirstByteTimeout.Value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(reusedConnectionFirstByteTimeout),
+                        "Must be less than or equal to Int32.MaxValue milliseconds.");
+            }
+
             _maxConnectionsPerHost = maxConnectionsPerHost;
-            _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
+            _connectionIdleTimeout = connectionIdleTimeout ?? PlatformConfig.RecommendedConnectionIdleTimeout;
+            ReusedConnectionFirstByteTimeout = reusedConnectionFirstByteTimeout ?? PlatformConfig.DefaultReusedConnectionFirstByteTimeout;
             _tlsBackend = tlsBackend;
             _dnsTimeoutMs = dnsTimeout.HasValue ? (int)dnsTimeout.Value.TotalMilliseconds : DefaultDnsTimeoutMs;
             _connectTimeout = connectTimeout ?? ConnectionPoolOptions.DefaultConnectTimeout;

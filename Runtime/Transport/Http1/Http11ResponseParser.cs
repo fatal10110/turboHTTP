@@ -1060,6 +1060,17 @@ namespace TurboHTTP.Transport.Http1
             }
 
             /// <summary>
+            /// Waits until at least one byte is buffered. Returns false when the stream ended first.
+            /// </summary>
+            public async Task<bool> EnsureBufferedAsync(CancellationToken ct)
+            {
+                if (_end > _start)
+                    return true;
+
+                return await FillBufferAsync(ct).ConfigureAwait(false) > 0;
+            }
+
+            /// <summary>
             /// Reads one CRLF- (or bare LF-) terminated line without the terminator.
             /// Returns <c>""</c> for an empty line, <c>null</c> when the stream ended before any
             /// byte of the line, and throws <see cref="IOException"/> when it ended mid-line.

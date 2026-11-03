@@ -110,7 +110,8 @@ namespace TurboHTTP.Transport
                             dnsTimeout: TimeSpan.FromMilliseconds(poolOptions.DnsTimeoutMs),
                             happyEyeballsOptions: poolOptions.HappyEyeballs,
                             socketIoMode: poolOptions.SocketIoMode,
-                            connectTimeout: poolOptions.ConnectTimeout),
+                            connectTimeout: poolOptions.ConnectTimeout,
+                            reusedConnectionFirstByteTimeout: poolOptions.ReusedConnectionFirstByteTimeout),
                         tlsBackend: tlsBackend,
                         http2Options: http2Options,
                         streamingOptions: streamingOptions);
@@ -279,6 +280,23 @@ namespace TurboHTTP.Transport
         private static bool IsFailureFromCancellation(Exception ex, CancellationToken ct)
         {
             return ct.IsCancellationRequested && !(ex is OperationCanceledException);
+        }
+
+        /// <summary>
+        /// The first-byte watchdog for an HTTP/1.1 attempt (#47): armed only on a reused connection
+        /// for an idempotent, replayable request, where a silent connection is retried once on a
+        /// fresh one. <see cref="Timeout.InfiniteTimeSpan"/> = not armed.
+        /// </summary>
+        private TimeSpan GetReusedConnectionFirstByteTimeout(ConnectionLease lease, UHttpRequest request)
+        {
+            if (!lease.Connection.IsReused ||
+                !request.Method.IsIdempotent() ||
+                request.Content.Replayability == RequestBodyReplayability.NonReplayable)
+            {
+                return Timeout.InfiniteTimeSpan;
+            }
+
+            return _pool.ReusedConnectionFirstByteTimeout;
         }
 
         private static bool IsStaleReusedConnectionFailure(Exception ex)
@@ -516,7 +534,8 @@ namespace TurboHTTP.Transport
                                 handler,
                                 context,
                                 requestWriteState,
-                                ct)
+                                ct,
+                                firstByteTimeout: GetReusedConnectionFirstByteTimeout(lease, request))
                             .ConfigureAwait(false);
                         lease = null;
 
@@ -1516,14 +1535,15 @@ namespace TurboHTTP.Transport
             RequestContext context,
             Http11RequestWriteState requestWriteState,
             CancellationToken ct,
-            bool interceptBasicProxyChallenge = false)
+            bool interceptBasicProxyChallenge = false,
+            TimeSpan firstByteTimeout = default)
         {
             ParsedResponseHead parsedHead;
             using (RegisterDisposeOnCancel(lease.Connection, ct))
             {
                 try
                 {
-                    parsedHead = await SendOnLeaseAsync(lease, request, context, requestWriteState, ct)
+                    parsedHead = await SendOnLeaseAsync(lease, request, context, requestWriteState, ct, firstByteTimeout)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
@@ -1642,7 +1662,8 @@ namespace TurboHTTP.Transport
             UHttpRequest request,
             RequestContext context,
             Http11RequestWriteState requestWriteState,
-            CancellationToken ct)
+            CancellationToken ct,
+            TimeSpan firstByteTimeout = default)
         {
             context.RecordEvent("TransportSending");
             if (ExpectContinueHelper.ShouldAwaitExpectContinue(request))
@@ -1672,14 +1693,65 @@ namespace TurboHTTP.Transport
             }
 
             context.RecordEvent("TransportReceiving");
-            var parsed = await Http11ResponseParser.ParseHeadAsync(
-                    lease.Connection.Stream,
-                    request.Method,
-                    ct,
-                    context)
-                .ConfigureAwait(false);
+            if (firstByteTimeout <= TimeSpan.Zero || firstByteTimeout == Timeout.InfiniteTimeSpan)
+            {
+                return await Http11ResponseParser.ParseHeadAsync(
+                        lease.Connection.Stream,
+                        request.Method,
+                        ct,
+                        context)
+                    .ConfigureAwait(false);
+            }
 
-            return parsed;
+            var reader = new Http11ResponseParser.BufferedStreamReader(lease.Connection.Stream);
+            try
+            {
+                await AwaitFirstResponseByteAsync(lease.Connection, reader, firstByteTimeout, ct).ConfigureAwait(false);
+                var head = await Http11ResponseParser.ParseHeadAsync(reader, request.Method, ct, context)
+                    .ConfigureAwait(false);
+                reader = null; // the head owns the reader now
+                return head;
+            }
+            finally
+            {
+                reader?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Waits for the first response byte on a reused connection (#47). Mono and IL2CPP ignore a
+        /// read token once the read is pending, so expiry disposes the connection (as
+        /// <see cref="RegisterDisposeOnCancel"/> does) and surfaces as an <see cref="IOException"/>,
+        /// which the stale-connection retry treats like a connection the server closed while idle.
+        /// Caller cancellation and the request timeout keep their own handling.
+        /// </summary>
+        private static async Task AwaitFirstResponseByteAsync(
+            PooledConnection connection,
+            Http11ResponseParser.BufferedStreamReader reader,
+            TimeSpan firstByteTimeout,
+            CancellationToken ct)
+        {
+            using var watchdog = new CancellationTokenSource(firstByteTimeout);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
+            try
+            {
+                using (RegisterDisposeOnCancel(connection, watchdog.Token))
+                {
+                    // false = EOF: ParseHeadAsync then reports the "Empty HTTP status line" stale case.
+                    await reader.EnsureBufferedAsync(linked.Token).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex) when (watchdog.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                throw new IOException(
+                    "Reused connection sent no response byte within " +
+                    firstByteTimeout.TotalMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ms.",
+                    ex);
+            }
+
+            // The watchdog may have fired (and disposed the connection) just after the first byte.
+            if (watchdog.IsCancellationRequested && !ct.IsCancellationRequested)
+                throw new IOException("Reused connection was closed by the first-byte timeout.");
         }
 
         private async Task<ParsedResponseHead> SendOnLeaseWithExpectContinueAsync(

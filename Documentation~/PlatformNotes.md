@@ -22,6 +22,9 @@ TurboHTTP automatically allows the runtime platform to determine optimal default
 | :--- | :--- | :--- |
 | **Request Timeout** | 30 seconds | 45 seconds |
 | **Max Concurrency** | 16 requests | 8 requests |
+| **Pooled connection idle timeout** (`ConnectionPoolOptions.ConnectionIdleTimeout`) | 120 seconds | 45 seconds (needs device validation, #99) |
+| **Reused-connection first-byte timeout** (`ConnectionPoolOptions.ReusedConnectionFirstByteTimeout`) | 10 seconds | 10 seconds |
+| **TCP keepalive** (`SO_KEEPALIVE`) | on, OS probe timing (Unity's .NET profile exposes no timing options) | on, OS probe timing (needs device validation, #99) |
 | **TLS Provider** | SslStream (an explicit `TlsBackend.BouncyCastle` verifies chains with crypt32 on Windows and SecTrust on macOS; unsupported on Linux, where it rejects every certificate) | SslStream (Auto never falls back to BouncyCastle; define `TURBOHTTP_BOUNCYCASTLE` and select `TlsBackend.BouncyCastle` explicitly to use it; on devices it verifies chains with SecTrust / the Android trust manager; device validation pending) |
 
 ### Overriding Defaults
@@ -40,6 +43,11 @@ To override connection concurrency, configure the connection pool:
 ```csharp
 options.ConnectionPool.MaxConnectionsPerHost = 4;
 ```
+
+A reused HTTP/1.1 connection that sends no response byte within `ReusedConnectionFirstByteTimeout` after an
+idempotent request (GET, HEAD, PUT, DELETE, OPTIONS, TRACE with a replayable body) is closed and the request is
+sent once more on a fresh connection; a POST is never replayed and keeps waiting until the request timeout.
+`Timeout.InfiniteTimeSpan` turns this off.
 
 ## Known limitation: TLS server name for IP-address hosts
 
