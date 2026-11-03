@@ -45,7 +45,7 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// certificate, so its case does fail under the mutation), and the SslStream/Auto
     /// <c>ip-host-without-ip-san</c> case, which the provider's own post-handshake check
     /// (<c>SubjectAltNameIpAddresses</c>) also rejects. The check was performed for #113 and is recorded in
-    /// <c>Development/docs/implementation-journal/2026-11-tls-interop-suite.md</c>; repeat it when
+    /// <c>Development~/docs/implementation-journal/2026-11-tls-interop-suite.md</c>; repeat it when
     /// this suite or a provider's validation changes.
     /// </para>
     /// </remarks>

@@ -6,7 +6,7 @@
 #   Tools~/ci/check.sh --fix      apply whitespace formatting instead of verifying it
 #
 # Needs: python3, dotnet 8 SDK, and Unity managed DLLs (Tools~/ci/fetch-unity-dlls.sh, once).
-# Optional (--full): actionlint, shellcheck. See Development/docs/agents/tooling.md.
+# Optional (--full): actionlint, shellcheck. See Development~/docs/agents/tooling.md.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 

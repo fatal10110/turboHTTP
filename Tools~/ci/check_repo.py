@@ -3,7 +3,7 @@
 
 Checks (all on git-tracked files):
   meta      every asset Unity imports has a sibling .meta; no orphan .meta; GUIDs unique
-  asmdef    assembly dependency graph follows the module rules in Development/docs/agents/architecture.md
+  asmdef    assembly dependency graph follows the module rules in Development~/docs/agents/architecture.md
   json      every .json/.asmdef parses; package.json has the required UPM fields
   unitynunit  tests use only what Unity 2021.3's NUnit (com.unity.ext.nunit 1.0.6) provides; PR CI
             cannot compile the Unity test assemblies without a license, so this is the only guard
@@ -32,11 +32,11 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Top-level entries Unity would import but that are not meant to ship. Remove an entry
-# once the folder is renamed with a `~` suffix or moved out (issue REL-06).
-META_EXEMPT_TOP = {"Development"}
+# Top-level entries Unity would import but that are not meant to ship. Empty since #6 renamed
+# the internal docs folder to `Development~` (hidden from Unity like every `~` or dot folder).
+META_EXEMPT_TOP = set()
 
-# Allowed references per assembly (Development/docs/agents/architecture.md, "Assemblies and allowed references"). Anything not listed here may
+# Allowed references per assembly (Development~/docs/agents/architecture.md, "Assemblies and allowed references"). Anything not listed here may
 # reference only TurboHTTP.Core. Expanding an entry needs a documented architecture decision.
 ALLOWED_REFS = {
     "TurboHTTP.Core": set(),
@@ -121,7 +121,7 @@ def check_asmdef(files):
             for r in refs:
                 if r not in allowed and r not in {"UnityEngine.TestRunner", "UnityEditor.TestRunner"}:
                     errors.append(f"asmdef: {name} must not reference {r} (allowed: {sorted(allowed) or 'nothing'}; "
-                                  "see Development/docs/agents/architecture.md)")
+                                  "see Development~/docs/agents/architecture.md)")
         if a.get("allowUnsafeCode") and name not in UNSAFE_ALLOWED:
             errors.append(f"asmdef: {name} enables allowUnsafeCode; only {sorted(UNSAFE_ALLOWED)} may")
         if name in ENGINE_FREE and not a.get("noEngineReferences"):

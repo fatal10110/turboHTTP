@@ -100,7 +100,7 @@ synced=0
 for _ in 1 2 3; do
   if rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --exclude='Library/' \
        --exclude='Temp/' --exclude='Logs/' --exclude='.DS_Store' --exclude='.claude/' --exclude='Tools~/' \
-       --exclude='Development/' "$repo/" "$pkg/"; then
+       --exclude='Development~/' "$repo/" "$pkg/"; then
     synced=1; break
   fi
   sleep 5

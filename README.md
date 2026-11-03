@@ -22,16 +22,58 @@
 
 ## Installation
 
-### via Unity Package Manager (UPM)
+TurboHTTP is a UPM package (`com.turbohttp.complete`, Unity 2021.3+). Install a tagged release; the
+[releases](https://github.com/fatal10110/turboHTTP/releases) and [CHANGELOG.md](CHANGELOG.md) list the versions.
+Until 1.0.0 the tags are pre-releases (`v1.0.0-pre.N`).
 
-1.  Open **Window** -> **Package Manager**.
-2.  Click the **+** button in the top-left corner.
-3.  Select **Add package from disk...**.
-4.  Navigate to the `TurboHTTP` folder and select `package.json`.
+### Git URL
 
-Alternatively, if you are using a git URL:
-1.  Select **Add package from git URL...**.
-2.  Enter the git URL for this repository.
+In **Window > Package Manager**, click **+**, select **Add package from git URL...** and enter:
+
+```text
+https://github.com/fatal10110/turboHTTP.git#v1.0.0-pre.1
+```
+
+Or add it to `Packages/manifest.json`:
+
+```json
+{
+  "dependencies": {
+    "com.turbohttp.complete": "https://github.com/fatal10110/turboHTTP.git#v1.0.0-pre.1"
+  }
+}
+```
+
+Keep the `#v...` tag: without it Unity tracks the moving `main` branch.
+
+### OpenUPM
+
+Once the package is listed on [OpenUPM](https://openupm.com), install it with the CLI:
+
+```text
+openupm add com.turbohttp.complete
+```
+
+Or add the scoped registry to `Packages/manifest.json`:
+
+```json
+{
+  "scopedRegistries": [
+    {
+      "name": "package.openupm.com",
+      "url": "https://package.openupm.com",
+      "scopes": ["com.turbohttp"]
+    }
+  ],
+  "dependencies": {
+    "com.turbohttp.complete": "1.0.0-pre.1"
+  }
+}
+```
+
+### From disk
+
+For a local checkout, use **Add package from disk...** and select the repository's `package.json`.
 
 ## Quick Start
 
@@ -127,7 +169,8 @@ Comprehensive documentation is available in the `Documentation~` folder (visible
 
 ## Development
 
-For internal development documentation and implementation details, please refer to the [Development](Development/docs/README.md) directory.
+Contributor documentation (roadmap, phase plans, implementation journal, agent guides) lives in
+[`Development~/docs`](Development~/docs/README.md). Unity ignores folders ending in `~`, so it is not imported into your project.
 
 ## Contributing
 

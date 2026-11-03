@@ -226,7 +226,7 @@ BODY = textwrap.dedent('''\
     - [ ] decode every block
 
     ## Context
-    See #13 and #12; plan in `Development/docs/phases/phase-03b-http2.md`.
+    See #13 and #12; plan in `Development/docs/phases/phase-03b-http2.md`, journal `Development~/docs/implementation-journal/2026-11-x.md`.
 ''')
 
 
@@ -245,7 +245,9 @@ class IssueSlice(Base):
         self.assertNotIn("seed-key", out)
         self.assertIn("- [ ] decode every block", out)
         self.assertIn("still open on main", out)
+        # Bodies written before #6 name `Development/...`; newer ones name `Development~/...`.
         self.assertIn("Development/docs/phases/phase-03b-http2.md", out)
+        self.assertIn("Development~/docs/implementation-journal/2026-11-x.md", out)
         self.assertIn("#12 [OPEN] [HTTP/2] trailers", out)
         self.assertIn("#13 [CLOSED] [HTTP/2] stream ids", out)
 

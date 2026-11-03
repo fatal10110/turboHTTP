@@ -41,9 +41,5 @@ Tests/Benchmarks/*.observed.json
 .build/
 .tools/
 
-# Unity-generated metas for the internal docs folder (not shipped; see issue #6 for the Development~ rename)
-Development.meta
-Development/**/*.meta
-
 # Python bytecode from the agent tools
 __pycache__/

@@ -88,7 +88,7 @@ def referenced(body, own):
 
 
 def doc_paths(body):
-    return sorted(set(re.findall(r"`((?:Development|Runtime|Tests|Editor|Documentation~|Samples~|Plugins)/[^`\s:]+)", body)))
+    return sorted(set(re.findall(r"`((?:Development~?|Runtime|Tests|Editor|Documentation~|Samples~|Plugins)/[^`\s:]+)", body)))
 
 
 def main(argv=None):

@@ -166,7 +166,7 @@ them). Load only the issues the user put in scope. Rules:
   uncommitted work, or are trackers. Put them in `exclusions` and list them for the user.
 - A lane may be audit-only (close already-fixed issues, file follow-ups): say so in `note`; the
   implementation agent returns `no_change` with no PR.
-- CLAUDE.md and the guides in Development/docs/agents/ are shared: lanes do not edit them unless the note says so (then give
+- CLAUDE.md and the guides in Development~/docs/agents/ are shared: lanes do not edit them unless the note says so (then give
   those lanes a `claude-md` hot group).
 
 Plan file (`turboHTTP-worktrees/.waves/<run>/plan.json`). Shape, also in `plan.example.json`:
@@ -291,7 +291,7 @@ When all workflows have returned:
   merge, with the reason and what is left (open PR, worktree kept).
 - Check that each "Closes" issue is closed, that the milestone's `[Tracking]` issue checkboxes are
   ticked for merged lanes (tick them), and that no `wf-<slug>` worktree remains for a merged lane.
-- If phase status changed, update `Development/docs/agents/project-status.md` in one follow-up
+- If phase status changed, update `Development~/docs/agents/project-status.md` in one follow-up
   commit/PR (lanes never edit them).
 - Run the full Unity suites in the host editor on the new `origin/main` (testing.md, "Periodic
   host-editor runs"): PR CI skips Unity tests without a license, so this is the first time the

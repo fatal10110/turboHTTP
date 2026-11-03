@@ -19,7 +19,10 @@ First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); t
   networking is experimental and opt-in (#265); BouncyCastle TLS is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
 - `1.0.0-pre.N` tags are cut from `main` while the physical-device matrix (#99) waits for hardware;
   `1.0.0` follows #99 and a green full host-editor run. Unity tests run only in the host editor (#188).
-- The roadmap and milestone mapping are in `Development/docs/00-overview.md`.
+- Distribution: Git URL with a release tag (`https://github.com/fatal10110/turboHTTP.git#v1.0.0-pre.1`) and
+  OpenUPM (`com.turbohttp.complete`). There is no `.unitypackage` or Asset Store listing for 1.0 (#6, #101).
+  Internal docs moved to `Development~/`, so Unity no longer imports them into projects.
+- The roadmap and milestone mapping are in `Development~/docs/00-overview.md`.
 
 ### Modules
 Assemblies shipped in this package: `TurboHTTP.Core`, `TurboHTTP.Transport` (raw-socket HTTP/1.1 and
