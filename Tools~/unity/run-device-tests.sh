@@ -306,6 +306,8 @@ player_running() {
 pull_results() { if [ "$(adbr shell "[ -s $device_file ] && echo y || true")" = y ]; then adbr exec-out cat "$device_file" > "$xml" || true; fi; }
 adbr shell rm -f "$device_file" >/dev/null || true
 adbr logcat -c >/dev/null || true
+# Emulator logcat buffers hold 256 KB, far less than a full run logs; a larger one keeps a crash readable.
+adbr logcat -G 16M >/dev/null || true
 
 code=0
 if [ "$skip_build" = 0 ]; then
@@ -346,16 +348,28 @@ if [ ! -f "$xml" ]; then
       pull_results
       break
     fi
-    # Only an adb call that succeeded without the process means the player is gone; a failed call keeps
-    # waiting until the deadline.
+    # Only adb calls that succeeded without the process mean the player is gone, twice in a row (one
+    # missing ps line ended an Android 16 run early); a failed call keeps waiting until the deadline.
     if [ "$(player_running || true)" = n ]; then
-      echo "run-device-tests: the player ($pkg_id) is not running"
-      pull_results
-      break
+      gone=$(( ${gone:-0} + 1 ))
+      if [ "$gone" -ge 2 ]; then
+        echo "run-device-tests: the player ($pkg_id) is not running"
+        pull_results
+        break
+      fi
+    else
+      gone=0
     fi
     sleep 20
   done
   adbr logcat -d -s Unity:V | grep -E "TURBOHTTP_DEVICE_(RUN|FAIL)" | sed 's/^/  device: /' | head -60 || true
+  if [ ! -s "$xml" ]; then
+    # Keep the device log for a player that died or hung: the device (an emulator) may be gone afterwards.
+    devlog="$cache/logcat-Android-$tag-$ts.txt"
+    adbr logcat -d -b main -b system -b crash -b events > "$devlog" || true
+    echo "run-device-tests: device log $devlog"
+    grep -E "Fatal signal|FATAL EXCEPTION|DEBUG +: |lowmemorykiller|lmkd|am_proc_died|am_kill|Process $pkg_id .*died" "$devlog" | head -20 || true
+  fi
   if [ -s "$xml" ]; then
     code="$(python3 -c 'import sys, xml.etree.ElementTree as ET; print(0 if ET.parse(sys.argv[1]).getroot().get("failed") == "0" else 1)' "$xml" 2>/dev/null || echo 2)"
   else
