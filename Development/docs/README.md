@@ -48,7 +48,7 @@ Each phase doc carries a `**Milestone:**` header with its GitHub milestone (`v1.
 #### Protocol and Runtime Rewrites
 18. **[WebSocket Client](phases/phase-18-websocket-client.md)** and **[18a Advanced WebSocket](phases/phase-18a-websocket-advanced.md)** (experimental until #104)
 19. **[Async Runtime Refactor](phases/phase-19-async-runtime-refactor.md)**, **[19a Zero-Allocation](phases/phase-19a-zero-allocation.md)**, 19b unified pipeline (`phases/phase19b/`), **[19c Body Zero-Copy](phases/phase-19c-body-zerocopy-transport.md)** (post-1.0, v1.2)
-22. Interceptor rewrite (`phases/phase22/`), **[22a Streaming](phases/phase-22a-end-to-end-streaming.md)**, **[22b Streaming Extensions](phases/phase-22b-streaming-extensions.md)**, **[22c HTTP/2 through CONNECT](phases/phase-22c-proxy-http2-alpn.md)** (off by default until #103), 22d proxy HTTP/2 (post-1.0, v2.0; plan docs pending, #160)
+22. Interceptor rewrite (`phases/phase22/`), **[22a Streaming](phases/phase-22a-end-to-end-streaming.md)**, **[22b Streaming Extensions](phases/phase-22b-streaming-extensions.md)**, **[22c HTTP/2 through CONNECT](phases/phase-22c-proxy-http2-alpn.md)** (negotiated today; must ship off by default, #103), 22d proxy HTTP/2 (post-1.0, v2.0; plan docs pending, #160)
 
 #### Post-1.0 Plans (feature freeze until GA)
 23. **[API Configuration Review](phases/phase-23-api-config-extensions.md)** (v1.2)

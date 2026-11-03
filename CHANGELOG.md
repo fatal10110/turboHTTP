@@ -13,7 +13,8 @@ First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); t
 ### Release status
 - Feature freeze until 1.0.0 GA: bug fixes, validation and docs only (#10). Phases 16, 19c, 22d, 23, 24
   (except decompression, already shipped) and 25 are post-1.0 and not in this package.
-- Gated in 1.0: HTTP/2 through a CONNECT proxy tunnel is off by default until device validation (#103);
+- Gated in 1.0: HTTP/2 through a CONNECT proxy tunnel is negotiated today (ALPN `h2, http/1.1` inside tunnels);
+  it must ship off by default until device validation (#103, required before 1.0.0);
   WebSocket permessage-deflate is experimental until its verification gates close (#104); background
   networking is experimental and opt-in (#265); BouncyCastle TLS is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
 - `1.0.0-pre.N` tags are cut from `main` while the physical-device matrix (#99) waits for hardware;
@@ -38,7 +39,7 @@ authentication and rate limiting are interceptors on `UHttpClientOptions.Interce
   since an earlier one):
   - Happy Eyeballs (RFC 8305) dual-stack connection racing (`HappyEyeballsOptions`).
   - Proxy support: HTTP/HTTPS proxies with `Proxy-Authorization` and CONNECT tunnels; HTTP/2 through
-    CONNECT is off by default (#103).
+    CONNECT is negotiated today; the default-off option is tracked in #103 (required before 1.0.0).
   - Adaptive networking (`UseAdaptiveNetworking`): timeouts adapted to measured network quality
     (`TurboHTTP.Unity`).
   - Background networking (`UseBackgroundNetworking`): experimental and opt-in with

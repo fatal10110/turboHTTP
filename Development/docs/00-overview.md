@@ -71,7 +71,7 @@ The early review notes on this page (connectivity, platform networking, security
 
 | Topic | State |
 | --- | --- |
-| Proxy support (HTTP/HTTPS, CONNECT) | Shipped (Phase 14, 22b); HTTP/2 through CONNECT is off by default until #103 |
+| Proxy support (HTTP/HTTPS, CONNECT) | Shipped (Phase 14, 22b); HTTP/2 through CONNECT is negotiated today; must ship off by default (#103, required before 1.0.0) |
 | IPv6 dual-stack | Shipped (Happy Eyeballs, Phase 14); NAT64 on device is part of #99 |
 | iOS ATS, Android Network Security Config | Documented in `Documentation~/`; device checks in #99 |
 | Decompression (gzip, deflate), cookies, multipart | Shipped (`TurboHTTP.Middleware`, `TurboHTTP.Files` multipart builder); Brotli not implemented, tracked in #121 |
@@ -81,7 +81,7 @@ The early review notes on this page (connectivity, platform networking, security
 | Certificate pinning | Post-1.0: TLS pinning hooks in #117 (v1.1) |
 | Background/suspend handling | Experimental and opt-in (`TURBOHTTP_BACKGROUND_NETWORKING`, #265); device validation #99 |
 
-**Memory target:** less than 500 B GC per request on the buffered fast path (Phase 6 goal), enforced by the allocation gates in `Tests/Runtime/Performance/`.
+**Memory target:** less than 500 B GC per request on the buffered fast path (Phase 6 goal). This is a target, not a gate: the allocation gates in `Tests/Runtime/Performance/` are regression guardrails at 32 KB per warm request (`Tests/Benchmarks/phase19-allocation-baselines.json`).
 
 ## Implementation Phases
 
@@ -135,7 +135,7 @@ The plan is organized into numbered phases; the list below covers every phase an
 - **Phase 22:** Interceptor rewrite (plans in `phases/phase22/`)
 - **[Phase 22a](phases/phase-22a-end-to-end-streaming.md):** End-to-End Streaming
 - **[Phase 22b](phases/phase-22b-streaming-extensions.md):** Streaming Extensions (Expect: 100-continue, proxy streaming, trailers)
-- **[Phase 22c](phases/phase-22c-proxy-http2-alpn.md):** HTTP/2 through CONNECT (off by default until #103)
+- **[Phase 22c](phases/phase-22c-proxy-http2-alpn.md):** HTTP/2 through CONNECT (negotiated today; must ship off by default, #103)
 - **Phase 22d:** HTTP/2 proxy leg and proxy-aware pooling (post-1.0, v2.0; plan docs pending, #160, plan fix #125)
 
 ### Post-1.0 Plans (feature freeze until GA)
@@ -161,7 +161,7 @@ The roadmap uses the GitHub milestones; the old `M0`-`M5` labels are retired. A 
 
 - **Feature freeze until v1.0 GA:** bug fixes, validation and docs only. Phases 16, 19c, 22d, 23, 24 (except decompression, already shipped) and 25 stay post-1.0 (v1.1/v1.2/v2.0).
 - **v1.0 ships everything in the repository today, with these gates:**
-  - HTTP/2 through CONNECT (Phase 22c) is off by default until #103.
+  - HTTP/2 through CONNECT (Phase 22c) is negotiated today (`Runtime/Transport/RawSocketTransport.cs`, `s_connectTunnelAlpnProtocols`); it must ship off by default (#103, required before 1.0.0).
   - Advanced WebSocket (Phase 18a, permessage-deflate) is experimental until #104.
   - Background networking (Phase 14.3) is experimental and opt-in (`TURBOHTTP_BACKGROUND_NETWORKING`, #265).
   - BouncyCastle is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
@@ -245,12 +245,12 @@ v1.0 GA is ready when:
 - ✓ Editor module (HTTP Monitor) functional in supported Unity versions
 - ✓ Full EditMode and PlayMode suites green in a host editor (Editor, Standalone); iOS and Android device runs per #99
 - ✓ IL2CPP builds work on all platforms (SslStream validated, #99)
-- ✓ Performance benchmarks met (< 500 B GC per request on the buffered fast path, enforced by the allocation gates in `Tests/Runtime/Performance/`)
+- ✓ Allocation regression gates green (`Tests/Runtime/Performance/`, 32 KB per warm request guardrail); < 500 B GC per request on the buffered fast path remains the target
 - ✓ Documentation complete (README quick start, `Documentation~/`, platform notes)
 - ✓ 5 working samples (`Samples~/01-BasicUsage` to `05-AdvancedFeatures`)
 - ✓ Record/replay mode working
 - ✓ No open release blockers (milestones v1.0-alpha, v1.0-beta and v1.0 GA)
-- ✓ Gated features (22c, 18a, background networking, BouncyCastle) default-off or labelled experimental as described above
+- ✓ Gated features (22c, 18a, background networking, BouncyCastle) default-off or labelled experimental as described above (22c default-off is #103)
 - ✓ Release package ready (`1.0.0-pre.N` train, then GA and Asset Store submission, #101)
 
 Code coverage is not a gate; the deterministic suites and the allocation gates are.

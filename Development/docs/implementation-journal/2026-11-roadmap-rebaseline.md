@@ -5,7 +5,7 @@ Docs-only lane of waves run w1102. No C#, tests, asmdefs or scripts changed.
 ## What
 
 - Applied the owner re-baseline recorded on #10 (2026-11-02): feature freeze until v1.0 GA, the v1.0
-  gates (22c off by default until #103, 18a experimental until #104, 14.3 experimental and opt-in,
+  gates (22c negotiated today, must ship off by default per #103, 18a experimental until #104, 14.3 experimental and opt-in,
   BouncyCastle opt-in), the `1.0.0-pre.N` release train, host-only Unity tests.
 - `Development/docs/00-overview.md` rewritten against the repository:
   - config block: MIT license, LiteJson default JSON (STJ opt-in, `JsonUtilitySerializer` after
