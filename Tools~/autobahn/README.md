@@ -73,5 +73,6 @@ are actually declined are the ones that need `client_max_window_bits`.
 
 Defects this gate found and fixed (#217): the Sec-WebSocket-Accept GUID was wrong (no handshake with
 a real server succeeded); messages ahead of the peer's close frame were lost; compressed messages
-ended with a final DEFLATE block, which a server that keeps context cannot continue past. The
-Mono/IL2CPP flush limitation is tracked in #270.
+ended with a final DEFLATE block, which a server that keeps context cannot continue past. Where
+`DeflateStream.Flush` is not a sync flush (Unity Mono), such messages are written by the managed
+`SyncFlushDeflater` (#270); the harness runs on .NET, so it exercises the `DeflateStream` path.
