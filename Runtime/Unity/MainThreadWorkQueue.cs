@@ -21,7 +21,9 @@ namespace TurboHTTP.Unity
         Wait = 1,
 
         /// <summary>
-        /// Drop the oldest queued user work and accept the new one.
+        /// Drop the oldest queued user work and accept the new one. The dropped item's task faults
+        /// with <see cref="MainThreadDispatchRejectedException"/>
+        /// (<see cref="MainThreadDispatchRejectionReason.DroppedOldest"/>).
         /// Control-plane work is never dropped.
         /// </summary>
         DropOldest = 2
@@ -278,7 +280,8 @@ namespace TurboHTTP.Unity
             if (dropped == null || dropped.Count == 0)
                 return;
 
-            var dropException = new OperationCanceledException(
+            var dropException = new MainThreadDispatchRejectedException(
+                MainThreadDispatchRejectionReason.DroppedOldest,
                 "MainThreadDispatcher queue was resized and dropped oldest queued work.");
 
             for (var i = 0; i < dropped.Count; i++)
@@ -344,7 +347,8 @@ namespace TurboHTTP.Unity
                     {
                         case MainThreadBackpressurePolicy.Reject:
                             _rejectedItems++;
-                            throw new InvalidOperationException(
+                            throw new MainThreadDispatchRejectedException(
+                                MainThreadDispatchRejectionReason.QueueFull,
                                 "MainThreadDispatcher queue is full and rejected new user work.");
 
                         case MainThreadBackpressurePolicy.DropOldest:
@@ -366,7 +370,8 @@ namespace TurboHTTP.Unity
                             if (_spaceWaiters.Count >= _maxPendingWaiters)
                             {
                                 _rejectedItems++;
-                                throw new InvalidOperationException(
+                                throw new MainThreadDispatchRejectedException(
+                                    MainThreadDispatchRejectionReason.WaiterLimitReached,
                                     "MainThreadDispatcher queue is full and waiter limit was reached.");
                             }
 
@@ -382,7 +387,8 @@ namespace TurboHTTP.Unity
                 {
                     TryFailWorkItem(
                         droppedWorkItem,
-                        new OperationCanceledException(
+                        new MainThreadDispatchRejectedException(
+                            MainThreadDispatchRejectionReason.DroppedOldest,
                             "MainThreadDispatcher dropped oldest queued user work due to backpressure."));
                     return;
                 }
@@ -448,14 +454,16 @@ namespace TurboHTTP.Unity
 
                     case MainThreadBackpressurePolicy.Wait:
                         _rejectedItems++;
-                        rejection = new InvalidOperationException(
+                        rejection = new MainThreadDispatchRejectedException(
+                            MainThreadDispatchRejectionReason.QueueFull,
                             "MainThreadDispatcher queue is full. Immediate enqueue cannot wait.");
                         return false;
 
                     case MainThreadBackpressurePolicy.Reject:
                     default:
                         _rejectedItems++;
-                        rejection = new InvalidOperationException(
+                        rejection = new MainThreadDispatchRejectedException(
+                            MainThreadDispatchRejectionReason.QueueFull,
                             "MainThreadDispatcher queue is full and rejected new user work.");
                         return false;
                 }
@@ -465,7 +473,8 @@ namespace TurboHTTP.Unity
             {
                 TryFailWorkItem(
                     dropped,
-                    new OperationCanceledException(
+                    new MainThreadDispatchRejectedException(
+                        MainThreadDispatchRejectionReason.DroppedOldest,
                         "MainThreadDispatcher dropped oldest queued user work due to backpressure."));
             }
 
@@ -621,8 +630,12 @@ namespace TurboHTTP.Unity
                 var completed = await Task.WhenAny(waiter.Task, timeoutTask).ConfigureAwait(false);
                 if (!ReferenceEquals(completed, waiter.Task))
                 {
-                    waiter.TrySetException(new TimeoutException(
-                        $"Timed out waiting {_waitTimeout.TotalMilliseconds:F0}ms for MainThreadDispatcher queue space."));
+                    var timeout = new TimeoutException(
+                        $"Timed out waiting {_waitTimeout.TotalMilliseconds:F0}ms for MainThreadDispatcher queue space.");
+                    waiter.TrySetException(new MainThreadDispatchRejectedException(
+                        MainThreadDispatchRejectionReason.WaitTimedOut,
+                        timeout.Message,
+                        timeout));
                 }
 
                 await waiter.Task.ConfigureAwait(false);

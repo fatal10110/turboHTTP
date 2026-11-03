@@ -28,6 +28,28 @@ IWebSocketClient ws = await httpClient.WebSocket("wss://echo.websocket.events");
 ws.OnMessage += message => Debug.Log(message.Text);
 ```
 
+### Main-thread delivery under load
+
+`UnityWebSocketBridge` (and so `UnityWebSocketClient`) posts each event to `MainThreadDispatcher`.
+When its user queue is full (`MainThreadDispatcherSettings.UserQueueCapacity`, policy
+`BackpressurePolicy`), message, metrics, quality and reconnect callbacks are dropped: a dropped
+message is disposed, `OnMessageDropped` is raised on the thread that saw the drop, and one warning is
+logged per saturation episode. `OnConnected` and `OnClosed` are never dropped: they queue behind the
+messages already waiting and move to the dispatcher's control lane when the user queue rejects or
+evicts them, so under saturation they can arrive before older queued messages. `OnError` takes the
+same path, with at most 32 errors waiting on the control lane at once. Work the
+user queue does not run fails with `MainThreadDispatchRejectedException` (its `Reason` says why),
+including work evicted by `DropOldest`.
+
+`UnityWebSocketClient` raises `OnDisconnectedEvent` exactly once per connection, also when the close
+fails or times out (code 1006). `Connect` while a `Disconnect` is still closing the previous
+connection (for example pause, then resume) waits for that close; `Disconnect` during a connect
+cancels it. No UnityEvent is raised after the component is destroyed.
+
+`ReceiveAsCoroutine` returns a `UnityWebSocketReceiveCoroutine`. Unity does not dispose a coroutine
+it stops, so call `Dispose()` on the handle when you `StopCoroutine` it; destroying the callback owner
+or canceling the token ends it without that call.
+
 ### Cleartext (`ws://`)
 
 `ws://` URIs and `http://` proxies are cleartext. They are refused before any socket is opened

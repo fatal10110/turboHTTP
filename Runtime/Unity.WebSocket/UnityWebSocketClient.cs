@@ -63,18 +63,40 @@ namespace TurboHTTP.Unity.WebSocket
         public UnityWebSocketIntEvent OnDisconnectedEvent = new UnityWebSocketIntEvent();
         public UnityWebSocketStringEvent OnErrorEvent = new UnityWebSocketStringEvent();
 
-        private IWebSocketClient _client;
-        private UnityWebSocketBridge _bridge;
+        // Guards the connection/lifecycle fields below. Unity messages run on the main thread; connect and
+        // disconnect continuations run on the thread pool (#91).
+        private readonly object _stateGate = new object();
+        private Connection _connection;
+        private Task _connectTask;
+        private int _connectGeneration;
+        private Task _disconnectTask;
+        private int _generation;
         private LifecycleCancellationBinding _lifecycleBinding;
         private CancellationTokenSource _componentCts;
-        private Task _connectTask;
+
         private int _disposed;
-        private int _closing;
+
+        // Main thread only (Unity messages).
         private bool _pauseDisconnected;
 
-        public bool IsConnected => _client != null && _client.State == WebSocketState.Open;
+        /// <summary>
+        /// Test seam: creates the client for each connect. <see langword="null"/> uses
+        /// <see cref="WebSocketClient.Create(WebSocketConnectionOptions)"/>.
+        /// </summary>
+        internal Func<WebSocketConnectionOptions, IWebSocketClient> ClientFactory { get; set; }
 
-        public WebSocketState ConnectionState => _client?.State ?? WebSocketState.None;
+        /// <summary>
+        /// Test seam: the serialized URI.
+        /// </summary>
+        internal string ConfiguredUri
+        {
+            get => _uri;
+            set => _uri = value;
+        }
+
+        public bool IsConnected => Volatile.Read(ref _connection)?.Client.State == WebSocketState.Open;
+
+        public WebSocketState ConnectionState => Volatile.Read(ref _connection)?.Client.State ?? WebSocketState.None;
 
         /// <summary>
         /// Whether the next connect may use cleartext (<c>ws://</c> or an <c>http://</c> proxy leg)
@@ -121,7 +143,8 @@ namespace TurboHTTP.Unity.WebSocket
                 ActiveClients.Remove(this);
             }
 
-            if (IsConnected)
+            // Also supersedes a connect still in flight, so a disabled component never ends up connected.
+            if (IsConnected || IsConnectInFlight())
                 Disconnect();
         }
 
@@ -135,12 +158,33 @@ namespace TurboHTTP.Unity.WebSocket
                 ActiveClients.Remove(this);
             }
 
-            _componentCts?.Cancel();
-            _lifecycleBinding?.Dispose();
-            _lifecycleBinding = null;
+            Connection connection;
+            CancellationTokenSource componentCts;
+            LifecycleCancellationBinding lifecycleBinding;
+            lock (_stateGate)
+            {
+                _generation++;
+                connection = _connection;
+                Volatile.Write(ref _connection, null);
+                componentCts = _componentCts;
+                _componentCts = null;
+                lifecycleBinding = _lifecycleBinding;
+                _lifecycleBinding = null;
+            }
 
-            TryAbortAndDispose();
-            CleanupClientReferences();
+            // Cancel first: an in-flight connect or graceful close (OnDisable in the previous frame) stops
+            // and aborts its own client. Linked tokens are only created under _stateGate, which now sees
+            // no source, so disposing the sources after the cancel cannot race a reader (#177).
+            CancelQuietly(componentCts);
+
+            if (connection != null)
+            {
+                connection.Unwire(this);
+                AbortAndDispose(connection);
+            }
+
+            lifecycleBinding?.Dispose();
+            componentCts?.Dispose();
         }
 
         private void OnApplicationPause(bool pauseStatus)
@@ -150,7 +194,7 @@ namespace TurboHTTP.Unity.WebSocket
 
             if (pauseStatus)
             {
-                if (IsConnected)
+                if (IsConnected || IsConnectInFlight())
                 {
                     _pauseDisconnected = true;
                     Disconnect();
@@ -168,26 +212,42 @@ namespace TurboHTTP.Unity.WebSocket
             ObserveTask(ConnectAsync(), "connect");
         }
 
-        public async Task ConnectAsync(CancellationToken ct = default)
+        /// <summary>
+        /// Connects to the configured URI. A connect issued while a disconnect is closing the previous
+        /// connection waits for that close to finish first, so the new client is never torn down by it
+        /// (#91). A <see cref="Disconnect"/> (or destroy) issued while this connect is in flight cancels it.
+        /// </summary>
+        public Task ConnectAsync(CancellationToken ct = default)
         {
             ThrowIfDisposed();
-            EnsureLifecycleScope();
 
-            if (_connectTask != null && !_connectTask.IsCompleted)
+            var completion = new TaskCompletionSource<bool>();
+            Task supersededConnect = null;
+            Task pendingDisconnect;
+            int generation;
+            lock (_stateGate)
             {
-                await _connectTask.ConfigureAwait(false);
-                return;
+                EnsureLifecycleScope_NoLock();
+
+                if (_connectTask != null && !_connectTask.IsCompleted)
+                {
+                    if (_connectGeneration == _generation)
+                        return _connectTask;
+
+                    // A disconnect superseded that connect; it tears down its own client. Start a new one
+                    // after it so the two connections' events stay ordered.
+                    supersededConnect = _connectTask;
+                }
+
+                pendingDisconnect = _disconnectTask;
+                generation = _generation;
+                _connectTask = completion.Task;
+                _connectGeneration = generation;
             }
 
-            _connectTask = ConnectCoreAsync(ct);
-            try
-            {
-                await _connectTask.ConfigureAwait(false);
-            }
-            finally
-            {
-                _connectTask = null;
-            }
+            // Published first, started outside the lock (synchronously up to its first await).
+            CompleteFrom(ConnectCoreAsync(supersededConnect, pendingDisconnect, generation, ct), completion);
+            return completion.Task;
         }
 
         public void Disconnect()
@@ -195,55 +255,32 @@ namespace TurboHTTP.Unity.WebSocket
             ObserveTask(DisconnectAsync(), "disconnect");
         }
 
-        public async Task DisconnectAsync(CancellationToken ct = default)
+        /// <summary>
+        /// Closes the current connection with <see cref="WebSocketCloseCode.GoingAway"/> and cancels a
+        /// connect still in flight. Concurrent calls share one close. <see cref="OnDisconnectedEvent"/> is
+        /// raised exactly once per connection.
+        /// </summary>
+        public Task DisconnectAsync(CancellationToken ct = default)
         {
-            if (Interlocked.CompareExchange(ref _closing, 1, 0) != 0)
-                return;
-
-            try
+            TaskCompletionSource<bool> completion;
+            Connection connection;
+            lock (_stateGate)
             {
-                var client = _client;
-                if (client == null)
-                    return;
+                _generation++;
 
-                using var linked = CreateLinkedToken(ct);
-                await client.CloseAsync(
-                    WebSocketCloseCode.GoingAway,
-                    "Unity component disabled.",
-                    linked.Token).ConfigureAwait(false);
+                if (_disconnectTask != null && !_disconnectTask.IsCompleted)
+                    return _disconnectTask;
+
+                connection = _connection;
+                if (connection == null)
+                    return Task.CompletedTask;
+
+                completion = new TaskCompletionSource<bool>();
+                _disconnectTask = completion.Task;
             }
-            catch (Exception ex)
-            {
-                Debug.LogError("[TurboHTTP] WebSocket disconnect failed: " + ex.Message);
-                _client?.Abort();
-            }
-            finally
-            {
-                var client = _client;
-                _client = null;
 
-                var bridge = _bridge;
-                _bridge = null;
-
-                if (bridge != null)
-                    UnwireBridgeEvents(bridge);
-
-                if (client != null)
-                {
-                    try
-                    {
-                        await client.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        client.Dispose();
-                    }
-                }
-
-                bridge?.Dispose();
-
-                Interlocked.Exchange(ref _closing, 0);
-            }
+            CompleteFrom(DisconnectCoreAsync(connection, ct), completion);
+            return completion.Task;
         }
 
         public void Send(string message)
@@ -258,71 +295,221 @@ namespace TurboHTTP.Unity.WebSocket
 
         public async Task SendAsync(string message, CancellationToken ct = default)
         {
-            ThrowIfDisposed();
-            if (_client == null)
-                throw new InvalidOperationException("WebSocket client is not connected.");
-
+            var client = RequireClient();
             using var linked = CreateLinkedToken(ct);
-            await _client.SendAsync(message, linked.Token).ConfigureAwait(false);
+            await client.SendAsync(message, linked.Token).ConfigureAwait(false);
         }
 
         public async Task SendAsync(byte[] data, CancellationToken ct = default)
         {
-            ThrowIfDisposed();
-            if (_client == null)
-                throw new InvalidOperationException("WebSocket client is not connected.");
-
+            var client = RequireClient();
             using var linked = CreateLinkedToken(ct);
-            await _client.SendAsync(data, linked.Token).ConfigureAwait(false);
+            await client.SendAsync(data, linked.Token).ConfigureAwait(false);
         }
 
-        private async Task ConnectCoreAsync(CancellationToken ct)
+        private IWebSocketClient RequireClient()
         {
-            if (_client != null && (_client.State == WebSocketState.Open || _client.State == WebSocketState.Connecting))
-                return;
+            ThrowIfDisposed();
+            var connection = Volatile.Read(ref _connection);
+            if (connection == null)
+                throw new InvalidOperationException("WebSocket client is not connected.");
 
-            if (_client != null)
+            return connection.Client;
+        }
+
+        private bool IsConnectInFlight()
+        {
+            lock (_stateGate)
             {
-                try
-                {
-                    await _client.DisposeAsync().ConfigureAwait(false);
-                }
-                catch
-                {
-                    _client.Dispose();
-                }
+                return _connectTask != null && !_connectTask.IsCompleted;
+            }
+        }
 
-                _client = null;
-                if (_bridge != null)
+        private async Task ConnectCoreAsync(
+            Task supersededConnect,
+            Task pendingDisconnect,
+            int generation,
+            CancellationToken ct)
+        {
+            await AwaitQuietly(supersededConnect).ConfigureAwait(false);
+            await AwaitQuietly(pendingDisconnect).ConfigureAwait(false);
+
+            Connection stale = null;
+            lock (_stateGate)
+            {
+                ThrowIfSuperseded_NoLock(generation);
+
+                var current = _connection;
+                if (current != null)
                 {
-                    UnwireBridgeEvents(_bridge);
-                    _bridge.Dispose();
-                    _bridge = null;
+                    var state = current.Client.State;
+                    if (state == WebSocketState.Open || state == WebSocketState.Connecting)
+                        return;
+
+                    // Closed by the peer or failed: replace it.
+                    stale = current;
+                    Volatile.Write(ref _connection, null);
                 }
             }
+
+            if (stale != null)
+                await ReleaseConnectionAsync(stale, WebSocketCloseCode.AbnormalClosure).ConfigureAwait(false);
 
             if (!Uri.TryCreate(_uri, UriKind.Absolute, out var targetUri))
                 throw new InvalidOperationException("WebSocket URI is invalid.");
 
             var options = BuildConnectionOptions();
-            var client = WebSocketClient.Create(options);
-            var bridge = new UnityWebSocketBridge(client);
+            var factory = ClientFactory;
+            var client = factory != null ? factory(options) : WebSocketClient.Create(options);
+            var connection = new Connection(client, new UnityWebSocketBridge(client), this);
 
-            WireBridgeEvents(bridge);
+            connection.Wire(this);
             try
             {
                 using var linked = CreateLinkedToken(ct);
-                await bridge.ConnectAsync(targetUri, options, linked.Token).ConfigureAwait(false);
-
-                _client = client;
-                _bridge = bridge;
+                await connection.Bridge.ConnectAsync(targetUri, options, linked.Token).ConfigureAwait(false);
             }
             catch
             {
-                UnwireBridgeEvents(bridge);
-                await bridge.DisposeAsync().ConfigureAwait(false);
+                connection.Unwire(this);
+                await connection.Bridge.DisposeAsync().ConfigureAwait(false);
                 throw;
             }
+
+            bool published;
+            lock (_stateGate)
+            {
+                published = generation == _generation && _connection == null && Volatile.Read(ref _disposed) == 0;
+                if (published)
+                    Volatile.Write(ref _connection, connection);
+            }
+
+            if (published)
+                return;
+
+            // A Disconnect or destroy ran while the handshake was in flight: close the client it never saw.
+            await CloseConnectionAsync(connection, CancellationToken.None).ConfigureAwait(false);
+            throw new OperationCanceledException("The WebSocket connect was superseded by a disconnect.");
+        }
+
+        private static void CompleteFrom(Task source, TaskCompletionSource<bool> target)
+        {
+            _ = source.ContinueWith(
+                static (t, state) =>
+                {
+                    var tcs = (TaskCompletionSource<bool>)state;
+                    if (t.IsCanceled)
+                        tcs.TrySetCanceled();
+                    else if (t.IsFaulted)
+                        tcs.TrySetException(t.Exception.InnerExceptions);
+                    else
+                        tcs.TrySetResult(true);
+                },
+                target,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private static async Task AwaitQuietly(Task task)
+        {
+            if (task == null)
+                return;
+
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch
+            {
+                // That operation reports its own failure.
+            }
+        }
+
+        private async Task DisconnectCoreAsync(Connection connection, CancellationToken ct)
+        {
+            try
+            {
+                await CloseConnectionAsync(connection, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_stateGate)
+                {
+                    // Only the connection this disconnect owns; a newer one is never touched (#91).
+                    if (ReferenceEquals(_connection, connection))
+                        Volatile.Write(ref _connection, null);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Graceful close of one connection, then release. Never throws.
+        /// </summary>
+        private async Task CloseConnectionAsync(Connection connection, CancellationToken ct)
+        {
+            var closeCode = WebSocketCloseCode.GoingAway;
+            try
+            {
+                using var linked = CreateLinkedToken(ct);
+                await connection.Client.CloseAsync(
+                    WebSocketCloseCode.GoingAway,
+                    "Unity component disabled.",
+                    linked.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                closeCode = WebSocketCloseCode.AbnormalClosure;
+
+                // OnDestroy cancels and aborts an in-flight close on purpose; that is not a failure.
+                if (Volatile.Read(ref _disposed) == 0)
+                    Debug.LogError("[TurboHTTP] WebSocket disconnect failed: " + ex.Message);
+
+                try
+                {
+                    connection.Client.Abort();
+                }
+                catch
+                {
+                    // Best effort teardown.
+                }
+            }
+
+            await ReleaseConnectionAsync(connection, closeCode).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Unwires and disposes one connection, then raises its <see cref="OnDisconnectedEvent"/> if the
+        /// client's own close event has not (an aborted or failed close raises none).
+        /// </summary>
+        private async Task ReleaseConnectionAsync(Connection connection, WebSocketCloseCode fallbackCode)
+        {
+            connection.Unwire(this);
+
+            try
+            {
+                await connection.Client.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                try
+                {
+                    connection.Client.Dispose();
+                }
+                catch
+                {
+                    // Best effort teardown.
+                }
+            }
+
+            connection.Bridge.Dispose();
+
+            // Queued behind the close event the client raised before CloseAsync completed, so that one
+            // wins when it exists.
+            if (!connection.DisconnectRaised)
+                UnityWebSocketBridge.DispatchLifecycle(
+                    () => RaiseDisconnected(connection, fallbackCode),
+                    "OnDisconnected");
         }
 
         private WebSocketConnectionOptions BuildConnectionOptions()
@@ -351,27 +538,11 @@ namespace TurboHTTP.Unity.WebSocket
             return options;
         }
 
-        private void WireBridgeEvents(UnityWebSocketBridge bridge)
-        {
-            bridge.OnConnected += HandleConnected;
-            bridge.OnMessage += HandleMessage;
-            bridge.OnError += HandleError;
-            bridge.OnClosed += HandleClosed;
-        }
-
-        private void UnwireBridgeEvents(UnityWebSocketBridge bridge)
-        {
-            if (bridge == null)
-                return;
-
-            bridge.OnConnected -= HandleConnected;
-            bridge.OnMessage -= HandleMessage;
-            bridge.OnError -= HandleError;
-            bridge.OnClosed -= HandleClosed;
-        }
-
         private void HandleConnected()
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             OnConnectedEvent?.Invoke();
         }
 
@@ -382,6 +553,9 @@ namespace TurboHTTP.Unity.WebSocket
 
             try
             {
+                if (Volatile.Read(ref _disposed) != 0)
+                    return;
+
                 if (message.IsText)
                 {
                     OnMessageReceivedEvent?.Invoke(message.Text ?? string.Empty);
@@ -399,68 +573,80 @@ namespace TurboHTTP.Unity.WebSocket
 
         private void HandleError(WebSocketException error)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             OnErrorEvent?.Invoke(error?.Message ?? "WebSocket error.");
         }
 
-        private void HandleClosed(WebSocketCloseCode code, string reason)
+        private void RaiseDisconnected(Connection connection, WebSocketCloseCode code)
         {
+            if (!connection.TryMarkDisconnected())
+                return;
+
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             OnDisconnectedEvent?.Invoke((int)code);
         }
 
-        private void TryAbortAndDispose()
+        private static void AbortAndDispose(Connection connection)
         {
-            var client = _client;
-            if (client == null)
-                return;
+            // Destroy and quit raise no events after this point.
+            connection.TryMarkDisconnected();
 
             try
             {
-                client.Abort();
+                connection.Client.Abort();
             }
             catch
             {
                 // Best effort teardown.
             }
-            finally
+
+            try
             {
-                try
-                {
-                    client.Dispose();
-                }
-                catch
-                {
-                    // Best effort teardown.
-                }
+                connection.Bridge.Dispose();
             }
-        }
-
-        private void CleanupClientReferences()
-        {
-            var bridge = _bridge;
-            _bridge = null;
-
-            if (bridge != null)
+            catch
             {
-                UnwireBridgeEvents(bridge);
-                bridge.Dispose();
+                // Best effort teardown.
             }
-
-            _client = null;
-            _componentCts?.Dispose();
-            _componentCts = null;
         }
 
         private CancellationTokenSource CreateLinkedToken(CancellationToken external)
         {
-            EnsureLifecycleScope();
-            return CancellationTokenSource.CreateLinkedTokenSource(
-                external,
-                _componentCts.Token,
-                _lifecycleBinding.Token);
+            lock (_stateGate)
+            {
+                if (Volatile.Read(ref _disposed) == 0)
+                {
+                    EnsureLifecycleScope_NoLock();
+                    return CancellationTokenSource.CreateLinkedTokenSource(
+                        external,
+                        _componentCts.Token,
+                        _lifecycleBinding.Token);
+                }
+            }
+
+            // Destroyed: the component's sources are gone, so hand out an already canceled one.
+            var canceled = new CancellationTokenSource();
+            canceled.Cancel();
+            return canceled;
         }
 
         private void EnsureLifecycleScope()
         {
+            lock (_stateGate)
+            {
+                EnsureLifecycleScope_NoLock();
+            }
+        }
+
+        private void EnsureLifecycleScope_NoLock()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
             if (_componentCts == null)
                 _componentCts = new CancellationTokenSource();
 
@@ -470,6 +656,27 @@ namespace TurboHTTP.Unity.WebSocket
                     owner: this,
                     externalToken: _componentCts.Token,
                     cancelOnOwnerInactive: false);
+            }
+        }
+
+        private void ThrowIfSuperseded_NoLock(int generation)
+        {
+            if (generation != _generation || Volatile.Read(ref _disposed) != 0)
+                throw new OperationCanceledException("The WebSocket connect was superseded by a disconnect.");
+        }
+
+        private static void CancelQuietly(CancellationTokenSource cts)
+        {
+            if (cts == null)
+                return;
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch (AggregateException ex)
+            {
+                Debug.LogException(ex);
             }
         }
 
@@ -495,16 +702,25 @@ namespace TurboHTTP.Unity.WebSocket
                 if (client == null)
                     continue;
 
-                client._client?.Abort();
-                client._client?.Dispose();
-                client._client = null;
-                if (client._bridge != null)
-                {
-                    client.UnwireBridgeEvents(client._bridge);
-                    client._bridge.Dispose();
-                }
-                client._bridge = null;
+                client.AbortForQuit();
             }
+        }
+
+        private void AbortForQuit()
+        {
+            Connection connection;
+            lock (_stateGate)
+            {
+                _generation++;
+                connection = _connection;
+                Volatile.Write(ref _connection, null);
+            }
+
+            if (connection == null)
+                return;
+
+            connection.Unwire(this);
+            AbortAndDispose(connection);
         }
 
         private void ObserveTask(Task task, string operationName)
@@ -516,6 +732,10 @@ namespace TurboHTTP.Unity.WebSocket
                 t =>
                 {
                     if (t.IsCanceled || t.IsCompletedSuccessfully)
+                        return;
+
+                    // Teardown after OnDestroy cancels and aborts on purpose.
+                    if (Volatile.Read(ref _disposed) != 0)
                         return;
 
                     var ex = t.Exception?.GetBaseException() ?? t.Exception;
@@ -530,6 +750,49 @@ namespace TurboHTTP.Unity.WebSocket
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(UnityWebSocketClient));
+        }
+
+        /// <summary>
+        /// One connect attempt's client and bridge, with the once-only disconnect flag (#91).
+        /// </summary>
+        private sealed class Connection
+        {
+            private readonly Action<WebSocketCloseCode, string> _closedHandler;
+            private int _disconnectRaised;
+
+            public Connection(IWebSocketClient client, UnityWebSocketBridge bridge, UnityWebSocketClient owner)
+            {
+                Client = client;
+                Bridge = bridge;
+                _closedHandler = (code, reason) => owner.RaiseDisconnected(this, code);
+            }
+
+            public IWebSocketClient Client { get; }
+
+            public UnityWebSocketBridge Bridge { get; }
+
+            public bool DisconnectRaised => Volatile.Read(ref _disconnectRaised) != 0;
+
+            public bool TryMarkDisconnected()
+            {
+                return Interlocked.Exchange(ref _disconnectRaised, 1) == 0;
+            }
+
+            public void Wire(UnityWebSocketClient owner)
+            {
+                Bridge.OnConnected += owner.HandleConnected;
+                Bridge.OnMessage += owner.HandleMessage;
+                Bridge.OnError += owner.HandleError;
+                Bridge.OnClosed += _closedHandler;
+            }
+
+            public void Unwire(UnityWebSocketClient owner)
+            {
+                Bridge.OnConnected -= owner.HandleConnected;
+                Bridge.OnMessage -= owner.HandleMessage;
+                Bridge.OnError -= owner.HandleError;
+                Bridge.OnClosed -= _closedHandler;
+            }
         }
     }
 }

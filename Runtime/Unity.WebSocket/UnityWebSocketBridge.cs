@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Collections;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Unity;
@@ -17,6 +16,13 @@ namespace TurboHTTP.Unity.WebSocket
         private readonly IWebSocketClient _client;
         private readonly ResilientWebSocketClient _resilientClient;
         private int _disposed;
+        private int _dropWarningActive;
+        private int _pendingErrorFallbacks;
+
+        // OnError can repeat (for example once per failing reconnect attempt), so its control-lane fallback is
+        // bounded; past the bound an error callback is dropped like a message. OnConnected/OnClosed are not
+        // bounded: there is one of each per connection.
+        private const int MaxPendingErrorFallbacks = 32;
 
         public event Action OnConnected;
         public event Action<WebSocketMessage> OnMessage;
@@ -26,6 +32,14 @@ namespace TurboHTTP.Unity.WebSocket
         public event Action<ConnectionQuality> OnConnectionQualityChanged;
         public event Action<int, TimeSpan> OnReconnecting;
         public event Action OnReconnected;
+
+        /// <summary>
+        /// Raised when main-thread dispatcher backpressure (<see cref="MainThreadBackpressurePolicy"/>) drops a
+        /// message, metrics, quality or reconnect callback; a dropped message is disposed. Raised synchronously
+        /// on the thread that observed the drop (often the WebSocket receive thread), so keep the handler short
+        /// and thread-safe. Connected and closed callbacks are never dropped: under backpressure they move to the
+        /// dispatcher's control lane. Error callbacks move there too, up to 32 pending at once.
+        /// </summary>
         public event Action OnMessageDropped;
 
         public UnityWebSocketBridge(IWebSocketClient client)
@@ -114,51 +128,39 @@ namespace TurboHTTP.Unity.WebSocket
             _client.Abort();
         }
 
-        public IEnumerator ReceiveAsCoroutine(
+        /// <summary>
+        /// Receives messages from a Unity coroutine and invokes <paramref name="onMessage"/> on the
+        /// main thread with a detached copy of each message.
+        /// </summary>
+        /// <remarks>
+        /// Unity does not dispose a coroutine's enumerator when the coroutine is stopped
+        /// (<c>StopCoroutine</c>, <c>StopAllCoroutines</c>) or its host is destroyed, so the returned handle
+        /// owns the lifecycle binding and the pending receive: call <see cref="UnityWebSocketReceiveCoroutine.Dispose"/>
+        /// when you stop the coroutine yourself. Destroying (or, with <paramref name="cancelOnOwnerInactive"/>,
+        /// deactivating) <paramref name="callbackOwner"/> or canceling <paramref name="cancellationToken"/>
+        /// cancels the pending receive without a call to <c>Dispose</c>.
+        /// </remarks>
+        /// <param name="onMessage">Called on the main thread with a detached copy of each message.</param>
+        /// <param name="onError">Called on the main thread when the receive fails; the coroutine then ends.</param>
+        /// <param name="cancellationToken">Ends the coroutine and cancels the pending receive.</param>
+        /// <param name="callbackOwner">Unity object whose destruction ends the coroutine.</param>
+        /// <param name="cancelOnOwnerInactive">Also end the coroutine when the owner becomes inactive.</param>
+        /// <returns>A coroutine enumerator for <c>StartCoroutine</c> that is also the disposable handle.</returns>
+        public UnityWebSocketReceiveCoroutine ReceiveAsCoroutine(
             Action<WebSocketMessage> onMessage,
             Action<Exception> onError = null,
             CancellationToken cancellationToken = default,
             UnityEngine.Object callbackOwner = null,
             bool cancelOnOwnerInactive = false)
         {
-            var lifecycle = LifecycleCancellation.Bind(
-                callbackOwner,
+            ThrowIfDisposed();
+            return new UnityWebSocketReceiveCoroutine(
+                _client,
+                onMessage,
+                onError,
                 cancellationToken,
+                callbackOwner,
                 cancelOnOwnerInactive);
-
-            try
-            {
-                while (!lifecycle.IsCancellationRequested)
-                {
-                    var receiveTask = _client.ReceiveAsync(lifecycle.Token).AsTask();
-
-                    while (!receiveTask.IsCompleted)
-                    {
-                        if (lifecycle.IsCancellationRequested)
-                            yield break;
-
-                        yield return null;
-                    }
-
-                    if (receiveTask.IsCanceled || lifecycle.IsCancellationRequested)
-                        yield break;
-
-                    if (receiveTask.IsFaulted)
-                    {
-                        onError?.Invoke(receiveTask.Exception?.GetBaseException() ?? receiveTask.Exception);
-                        yield break;
-                    }
-
-                    var message = receiveTask.Result;
-                    var detached = WebSocketMessage.CreateDetachedCopy(message);
-                    message.Dispose();
-                    onMessage?.Invoke(detached);
-                }
-            }
-            finally
-            {
-                lifecycle.Dispose();
-            }
         }
 
         public void Dispose()
@@ -201,9 +203,7 @@ namespace TurboHTTP.Unity.WebSocket
             if (handler == null)
                 return;
 
-            Dispatch(
-                () => handler(),
-                "OnConnected");
+            DispatchCore(new DispatchItem(this, () => handler(), "OnConnected", onDropped: null, DispatchKind.Lifecycle));
         }
 
         private void HandleMessage(WebSocketMessage message)
@@ -233,9 +233,7 @@ namespace TurboHTTP.Unity.WebSocket
             if (handler == null)
                 return;
 
-            Dispatch(
-                () => handler(error),
-                "OnError");
+            DispatchCore(new DispatchItem(this, () => handler(error), "OnError", onDropped: null, DispatchKind.BoundedLifecycle));
         }
 
         private void HandleClosed(WebSocketCloseCode code, string reason)
@@ -244,9 +242,7 @@ namespace TurboHTTP.Unity.WebSocket
             if (handler == null)
                 return;
 
-            Dispatch(
-                () => handler(code, reason),
-                "OnClosed");
+            DispatchCore(new DispatchItem(this, () => handler(code, reason), "OnClosed", onDropped: null, DispatchKind.Lifecycle));
         }
 
         private void HandleMetricsUpdated(WebSocketMetrics metrics)
@@ -298,78 +294,244 @@ namespace TurboHTTP.Unity.WebSocket
             if (action == null)
                 return;
 
+            DispatchCore(new DispatchItem(this, action, callbackName, onDropped, DispatchKind.Droppable));
+        }
+
+        /// <summary>
+        /// Dispatches a lifecycle callback (connected, closed, disconnected) to the main thread. It takes the
+        /// user lane so it stays ordered after the messages already queued; when user-lane backpressure
+        /// rejects or evicts it, it is re-dispatched on the control lane, which never drops (#90).
+        /// The callback runs at most once.
+        /// </summary>
+        internal static void DispatchLifecycle(Action action, string callbackName)
+        {
+            if (action == null)
+                return;
+
+            DispatchCore(new DispatchItem(null, action, callbackName, onDropped: null, DispatchKind.Lifecycle));
+        }
+
+        private static void DispatchCore(DispatchItem item)
+        {
             Task dispatchTask;
             try
             {
-                dispatchTask = MainThreadDispatcher.ExecuteAsync(action);
+                dispatchTask = MainThreadDispatcher.ExecuteAsync(item.RunAction);
             }
             catch (Exception ex)
             {
-                HandleDispatchFailure(ex, callbackName, onDropped);
+                item.OnUserLaneFailed(ex);
                 return;
             }
 
+            Observe(dispatchTask, item);
+        }
+
+        private static void Observe(Task dispatchTask, DispatchItem item)
+        {
             if (dispatchTask.IsCompleted)
             {
-                ObserveDispatchResult(dispatchTask, callbackName, onDropped);
+                ObserveDispatchResult(dispatchTask, item);
                 return;
             }
 
             _ = dispatchTask.ContinueWith(
-                t => ObserveDispatchResult(t, callbackName, onDropped),
+                static (t, state) => ObserveDispatchResult(t, (DispatchItem)state),
+                item,
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
         }
 
-        private void ObserveDispatchResult(Task task, string callbackName, Action onDropped)
+        private static void ObserveDispatchResult(Task task, DispatchItem item)
         {
             if (task == null || task.Status == TaskStatus.RanToCompletion)
                 return;
 
             if (task.IsCanceled)
             {
-                HandleDispatchFailure(
-                    new OperationCanceledException("MainThread dispatch canceled for " + callbackName + "."),
-                    callbackName,
-                    onDropped);
+                item.OnUserLaneFailed(
+                    new OperationCanceledException("MainThread dispatch canceled for " + item.CallbackName + "."));
                 return;
             }
 
-            HandleDispatchFailure(task.Exception?.GetBaseException(), callbackName, onDropped);
+            item.OnUserLaneFailed(task.Exception?.GetBaseException());
         }
 
-        private void HandleDispatchFailure(Exception exception, string callbackName, Action onDropped)
+        private void HandleDispatchDropped(string callbackName)
         {
-            if (IsDroppedDispatch(exception))
+            NotifyMessageDropped();
+
+            // One warning per saturation episode, not one per dropped message: the flag is cleared
+            // when a message callback runs again (#90).
+            if (Interlocked.Exchange(ref _dropWarningActive, 1) == 0)
             {
-                onDropped?.Invoke();
-                NotifyMessageDropped();
                 Debug.LogWarning(
-                    "[TurboHTTP] Dropped Unity WebSocket callback due to dispatcher backpressure: " +
-                    callbackName + ".");
-                return;
+                    "[TurboHTTP] Dropping Unity WebSocket callbacks due to main-thread dispatcher backpressure (first: " +
+                    callbackName + "). Further drops raise OnMessageDropped without a log until delivery resumes.");
             }
-
-            onDropped?.Invoke();
-
-            if (exception != null)
-                Debug.LogException(exception);
-        }
-
-        private static bool IsDroppedDispatch(Exception exception)
-        {
-            if (exception == null)
-                return false;
-
-            string message = exception.Message ?? string.Empty;
-            return message.IndexOf("dropped", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void NotifyMessageDropped()
         {
             var droppedHandler = OnMessageDropped;
-            droppedHandler?.Invoke();
+            if (droppedHandler == null)
+                return;
+
+            try
+            {
+                droppedHandler();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+            }
+        }
+
+        private void OnDispatchedCallbackRan()
+        {
+            if (Volatile.Read(ref _dropWarningActive) != 0)
+                Interlocked.Exchange(ref _dropWarningActive, 0);
+        }
+
+        private bool TryReserveErrorFallback()
+        {
+            if (Interlocked.Increment(ref _pendingErrorFallbacks) <= MaxPendingErrorFallbacks)
+                return true;
+
+            Interlocked.Decrement(ref _pendingErrorFallbacks);
+            return false;
+        }
+
+        private void ReleaseErrorFallback()
+        {
+            Interlocked.Decrement(ref _pendingErrorFallbacks);
+        }
+
+        private static void DispatchOnControlLane(DispatchItem item)
+        {
+            Task controlTask;
+            try
+            {
+                controlTask = MainThreadDispatcher.ExecuteControlAsync(item.RunAction);
+            }
+            catch (Exception ex)
+            {
+                item.OnControlLaneCompleted();
+                Debug.LogException(ex);
+                return;
+            }
+
+            if (controlTask.IsCompleted)
+            {
+                OnControlTaskCompleted(controlTask, item);
+                return;
+            }
+
+            _ = controlTask.ContinueWith(
+                static (t, state) => OnControlTaskCompleted(t, (DispatchItem)state),
+                item,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private static void OnControlTaskCompleted(Task task, DispatchItem item)
+        {
+            item.OnControlLaneCompleted();
+            if (task.IsFaulted)
+                Debug.LogException(task.Exception?.GetBaseException() ?? task.Exception);
+        }
+
+        private enum DispatchKind
+        {
+            /// <summary>Messages, metrics, quality, reconnect: dropped under backpressure.</summary>
+            Droppable = 0,
+
+            /// <summary>Connected/closed: falls back to the control lane, never dropped.</summary>
+            Lifecycle = 1,
+
+            /// <summary>Error: falls back to the control lane up to <see cref="MaxPendingErrorFallbacks"/>.</summary>
+            BoundedLifecycle = 2
+        }
+
+        /// <summary>
+        /// One dispatched callback. <see cref="Started"/> tells a backpressure drop (the callback never
+        /// ran) from a fault thrown by the callback itself, and keeps a lifecycle callback that is
+        /// re-dispatched on the control lane from running twice.
+        /// </summary>
+        private sealed class DispatchItem
+        {
+            private readonly UnityWebSocketBridge _owner;
+            private readonly Action _action;
+            private readonly Action _onDropped;
+            private readonly DispatchKind _kind;
+            private int _started;
+            private int _reservedFallback;
+
+            public DispatchItem(
+                UnityWebSocketBridge owner,
+                Action action,
+                string callbackName,
+                Action onDropped,
+                DispatchKind kind)
+            {
+                _owner = owner;
+                _action = action;
+                CallbackName = callbackName;
+                _onDropped = onDropped;
+                _kind = kind;
+                RunAction = Run;
+            }
+
+            public string CallbackName { get; }
+
+            public Action RunAction { get; }
+
+            private bool Started => Volatile.Read(ref _started) != 0;
+
+            private void Run()
+            {
+                if (Interlocked.Exchange(ref _started, 1) != 0)
+                    return;
+
+                _action();
+                _owner?.OnDispatchedCallbackRan();
+            }
+
+            public void OnControlLaneCompleted()
+            {
+                if (Interlocked.Exchange(ref _reservedFallback, 0) != 0)
+                    _owner?.ReleaseErrorFallback();
+            }
+
+            public void OnUserLaneFailed(Exception exception)
+            {
+                if (exception is MainThreadDispatchRejectedException && !Started)
+                {
+                    if (_kind == DispatchKind.Lifecycle)
+                    {
+                        DispatchOnControlLane(this);
+                        return;
+                    }
+
+                    if (_kind == DispatchKind.BoundedLifecycle && _owner != null && _owner.TryReserveErrorFallback())
+                    {
+                        Volatile.Write(ref _reservedFallback, 1);
+                        DispatchOnControlLane(this);
+                        return;
+                    }
+
+                    _onDropped?.Invoke();
+                    _owner?.HandleDispatchDropped(CallbackName);
+                    return;
+                }
+
+                _onDropped?.Invoke();
+
+                if (exception != null)
+                    Debug.LogException(exception);
+            }
         }
 
         private void ThrowIfDisposed()
