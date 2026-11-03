@@ -155,9 +155,11 @@ it is rejected. `PerMessageDeflateOptions` therefore only accepts `serverNoConte
 `clientMaxWindowBits: 15`.
 
 When the server's response does not include `client_no_context_takeover`, the server may keep one
-inflater for all client messages (RFC 7692 section 7.2.2). On runtimes whose `DeflateStream` cannot
-end a message with a sync flush (Unity Mono, and IL2CPP with the same class libraries), the client
-then sends its messages uncompressed, which the extension allows. Incoming messages are always
+inflater for all client messages (RFC 7692 section 7.2.2). Every compressed client message therefore
+ends at a sync flush (RFC 7692 section 7.2.1), so such a server can keep its inflater. On runtimes
+whose `DeflateStream` cannot write a sync flush (Unity Mono, and IL2CPP with the same class libraries
+expected to behave the same), a built-in managed encoder with fixed Huffman codes compresses those
+messages instead; its ratio is somewhat lower than `DeflateStream`'s. Incoming messages are always
 decompressed.
 
 The handshake fails (`WebSocketError.ExtensionNegotiationFailed`, close code 1002) whenever the server

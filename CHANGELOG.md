@@ -60,6 +60,9 @@ authentication and rate limiting are interceptors on `UHttpClientOptions.Interce
 - `DecompressionInterceptor`: buffered responses are decoded into pooled 16 KB segments that the
   response takes over, instead of a growing `MemoryStream` and a final copy (about half the peak
   memory) (#74).
+- WebSocket permessage-deflate: on Unity Mono (and IL2CPP) client messages to a server that keeps
+  its inflater context (no `client_no_context_takeover`) are now compressed by a managed sync-flush
+  encoder instead of being sent uncompressed (#270).
 
 ### Fixed
 - Background networking (experimental): Android builds no longer break on the Kotlin plugin's missing
