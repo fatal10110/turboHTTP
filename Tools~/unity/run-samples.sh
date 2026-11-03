@@ -83,6 +83,8 @@ grep -E "SAMPLES_IMPORT|error CS[0-9]+" "$cache/samples-import-$ts.log" | head -
 if [ "$icode" != 0 ]; then echo "run-samples: sample import failed (Unity exit $icode), see $cache/samples-import-$ts.log"; exit 2; fi
 rm -rf "$proj/Assets/SamplesImport" "$proj/Assets/SamplesImport.meta"
 cp -r "$repo/Tools~/unity/samples-run" "$proj/Assets/SamplesRun"
+# committed as .asmdef.json so the repo asmdef rules (it references the sample assemblies) do not scan it
+mv "$proj/Assets/SamplesRun/SamplesRun.asmdef.json" "$proj/Assets/SamplesRun/SamplesRun.asmdef"
 xml="$cache/samples-results-$ts.xml"; log="$cache/samples-unity-$ts.log"
 set +e
 "$unity" -batchmode -nographics -projectPath "$(topath "$proj")" -runTests -testPlatform PlayMode \
