@@ -23,7 +23,8 @@
 
 ## Files
 - Runtime/Cache/CacheEntry.cs, CacheInterceptor.cs, CacheInterceptor.Parsing.cs, CacheStoringHandler.cs, MemoryCacheStorage.cs
-- Tests/Runtime/Cache/CacheInterceptorTests.Representation.cs (+ .meta)
+- Tests/Runtime/Cache/CacheInterceptorTests.Representation.cs, CacheInterceptorTests.RepresentationDates.cs (+ .meta)
+- Runtime/Cache/CacheInterceptor.StreamingDispatch.cs (review round 1: a 304's Set-Cookie reaches the revalidating consumer)
 
 ## Decisions
 - #155: persist rather than skip. RFC 9111 section 3.1 allows storing trailers separately, and replaying them keeps
@@ -34,6 +35,10 @@
 - #68 age: corrected_initial_age = corrected_age_value (the Age field). The conservative `max(apparent_age, ...)`
   would bring the device clock skew back, and RFC 9111 section 4.2.3 says the corrected_age_value "MAY be used".
   response_delay is still 0 because request_time is not recorded: follow-up #306.
+- Review round 1: an Expires that does not parse is already expired (RFC 9111 section 5.3 MUST), so it no longer
+  falls through to heuristic freshness. A 304's Set-Cookie is not merged into storage when
+  `AllowSetCookieResponses` is false (it used to bypass the policy that keeps Set-Cookie responses out of the
+  cache); the revalidating response still carries it, later hits do not.
 
 ## Verified
 - `'./Tools~/ci/check.sh'`: OK.
@@ -41,4 +46,7 @@
   75/75 passed, including the cache allocation gate. EditMode finds 0 tests for TurboHTTP.Tests.Runtime (expected).
 - The 7 new tests failed against the origin/main `Runtime/Cache`, given only a no-op `UtcNowProvider` so they
   compile: 7/7 failed.
+- Review round 1: the same PlayMode filter passed 80/80. The 5 new tests (receive-time Date on a 200 and a 304,
+  clamped Expires - Date, invalid Expires, 304 Set-Cookie) failed 5/5 with the four guards mutated back
+  (EnsureDateHeader a no-op, AddClamped as `utc.Add`, invalid Expires -> null, Set-Cookie merged).
 - Not run: the full Unity suites (periodic host-editor run), IL2CPP player, device.
