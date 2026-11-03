@@ -206,9 +206,34 @@ namespace TurboHTTP.Unity
                 .GetTextureAsync(url, options, cancellationToken)
                 .ConfigureAwait(false);
 
-            return await MainThreadDispatcher.ExecuteAsync(
-                () => CreateSprite(texture, pivot, pixelsPerUnit),
+            return await CreateSpriteOwningTextureAsync(
+                texture,
+                t => CreateSprite(t, pivot, pixelsPerUnit),
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Creates a sprite over <paramref name="texture"/> on the main thread. The texture belongs to
+        /// the sprite on success; on failure or cancellation nobody receives either object, so both
+        /// are destroyed (#94).
+        /// </summary>
+        internal static async Task<Sprite> CreateSpriteOwningTextureAsync(
+            Texture2D texture,
+            Func<Texture2D, Sprite> createSprite,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await MainThreadDispatcher.ExecuteAsync(
+                    () => createSprite(texture),
+                    UnityObjects.Destroy,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                await DestroyOnMainThreadAsync(texture).ConfigureAwait(false);
+                throw;
+            }
         }
 
         private static async Task<Texture2D> DecodeScheduledAsync(
@@ -237,6 +262,7 @@ namespace TurboHTTP.Unity
             decodeInput.LastDecodeUsedThreaded = false;
             return await MainThreadDispatcher.ExecuteAsync(
                 () => DecodeTexture(decodeInput),
+                UnityObjects.Destroy,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -300,6 +326,7 @@ namespace TurboHTTP.Unity
 
                 return await MainThreadDispatcher.ExecuteAsync(
                     () => CreateTextureFromDecodedImage(decoded, decodeInput.Options),
+                    UnityObjects.Destroy,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -343,7 +370,7 @@ namespace TurboHTTP.Unity
             }
             catch
             {
-                DestroyUnityObject(texture);
+                UnityObjects.Destroy(texture);
                 throw;
             }
         }
@@ -514,12 +541,12 @@ namespace TurboHTTP.Unity
             }
             catch (InvalidOperationException)
             {
-                DestroyUnityObject(texture);
+                UnityObjects.Destroy(texture);
                 throw;
             }
             catch (Exception ex)
             {
-                DestroyUnityObject(texture);
+                UnityObjects.Destroy(texture);
                 throw new InvalidOperationException(
                     "Failed to decode image bytes into Texture2D.",
                     ex);
@@ -658,15 +685,22 @@ namespace TurboHTTP.Unity
             return Sprite.Create(texture, rect, spritePivot, pixelsPerUnit);
         }
 
-        private static void DestroyUnityObject(UnityEngine.Object unityObject)
+        private static async Task DestroyOnMainThreadAsync(UnityEngine.Object unityObject)
         {
-            if (unityObject == null)
+            if (ReferenceEquals(unityObject, null))
                 return;
 
-            if (Application.isPlaying)
-                UnityEngine.Object.Destroy(unityObject);
-            else
-                UnityEngine.Object.DestroyImmediate(unityObject);
+            try
+            {
+                await MainThreadDispatcher.ExecuteControlAsync(
+                    () => UnityObjects.Destroy(unityObject),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Dispatcher shutting down: the object goes with the player; keep the original error.
+                Debug.LogWarning("[TurboHTTP] Could not destroy an abandoned texture: " + ex.Message);
+            }
         }
 
         private sealed class DecodeInput

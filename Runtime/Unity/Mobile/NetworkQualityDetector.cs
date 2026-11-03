@@ -55,6 +55,22 @@ namespace TurboHTTP.Unity.Mobile
             }
         }
 
+        /// <summary>The most recently added sample, for diagnostics and tests.</summary>
+        internal bool TryGetLatestSample(out NetworkQualitySample sample)
+        {
+            lock (_gate)
+            {
+                if (_count == 0)
+                {
+                    sample = default;
+                    return false;
+                }
+
+                sample = _samples[(_nextIndex - 1 + _samples.Length) % _samples.Length];
+                return true;
+            }
+        }
+
         public NetworkQualitySnapshot GetSnapshot()
         {
             return new NetworkQualitySnapshot(

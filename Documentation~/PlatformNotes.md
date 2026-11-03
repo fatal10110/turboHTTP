@@ -127,9 +127,13 @@ With the Android Player Settings define `TURBOHTTP_BACKGROUND_NETWORKING`, the b
 `Plugins/Android/TurboHttpBackground.androidlib`, a Gradle library that declares its own
 `androidx.work:work-runtime` dependency (no Gradle template edits; WorkManager's manifest entries are
 merged only then). `options.UseBackgroundNetworking()` then holds an in-process guard per request.
-Android scopes have no expiry signal yet, so requests are not queued or handed to WorkManager
-automatically (#267). Without the define the library is left out of the build and requests keep
-foreground semantics. Device validation is pending (#266).
+When the app has been paused for `AndroidBackgroundWorkConfig.BackgroundBudgetMilliseconds`
+(default 5000; Android has no `backgroundTimeRemaining`, so the budget is yours to choose) the
+scopes expire: in-flight requests are cancelled, a replayable one (GET/HEAD, or a replayable body)
+is queued and handed to WorkManager, and a non-replayable one fails as it would in the foreground.
+The budget starts at `OnApplicationPause` and is timed off the player loop. Without the define the
+library is left out of the build and requests keep foreground semantics. Device validation is
+pending (#266).
 
 #### Background networking opt-in
 1. Add `TURBOHTTP_BACKGROUND_NETWORKING` to **Player Settings > Other Settings > Scripting Define
