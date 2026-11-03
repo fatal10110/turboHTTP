@@ -13,19 +13,30 @@ namespace TurboHTTP.Middleware
     /// Set-Cookie is stored against the request-uri of the hop that returned it, in either order
     /// relative to <see cref="RedirectInterceptor"/>: inside it the interceptor runs per hop; outside
     /// it, the redirect interceptor hands each consumed 3xx response back to the jar and the final
-    /// response is attributed to the last hop's request. Outside the redirect interceptor the
-    /// Cookie header is computed once, for the first request only.
+    /// response is attributed to the last hop's request. The Cookie header is computed for every
+    /// request sent (RFC 6265 section 5.4) in either order as well: outside the redirect
+    /// interceptor, each derived hop request gets the jar cookies for its own request-uri, merged
+    /// with the caller's own Cookie header while the redirect interceptor keeps that header
+    /// (same-origin hops); cross-origin hops carry jar cookies only.
     /// </remarks>
     public sealed class CookieInterceptor : IHttpInterceptor, IDisposable, IRedirectResponseObserver
     {
+        private static int s_instanceCounter;
+
         private readonly CookieJar _jar;
         private readonly bool _ownsJar;
+        // Per-instance context state key holding the caller's own Cookie header (before the jar
+        // merge), so a hop can rebuild its header without carrying the previous hop's jar cookies.
+        private readonly string _callerCookieStateKey;
         private int _disposed;
 
         public CookieJar Jar => _jar;
 
         public CookieInterceptor(CookieJar jar = null)
         {
+            _callerCookieStateKey = "TurboHTTP.Middleware.CookieCallerHeader." +
+                                    Interlocked.Increment(ref s_instanceCounter).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
             if (jar == null)
             {
                 _jar = new CookieJar();
@@ -48,16 +59,9 @@ namespace TurboHTTP.Middleware
                 ThrowIfDisposed();
 
                 var requestForNext = request;
-                if (request.Uri.IsAbsoluteUri &&
-                    (string.Equals(request.Uri.Scheme, "http", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(request.Uri.Scheme, "https", StringComparison.OrdinalIgnoreCase)))
+                if (IsHttpUri(request.Uri))
                 {
-                    var isCrossSite = request.Metadata != null &&
-                                      request.Metadata.TryGetValue(RequestMetadataKeys.IsCrossSiteRequest, out var crossSiteRaw) &&
-                                      crossSiteRaw is bool crossSiteBool &&
-                                      crossSiteBool;
-
-                    var jarCookieHeader = _jar.GetCookieHeader(request.Uri, request.Method, isCrossSite);
+                    var jarCookieHeader = _jar.GetCookieHeader(request.Uri, request.Method, IsCrossSite(request));
                     if (!string.IsNullOrEmpty(jarCookieHeader))
                     {
                         requestForNext = request.CopyWithSharedContent();
@@ -69,7 +73,10 @@ namespace TurboHTTP.Middleware
                 }
 
                 // Redirect interceptors that run after this one (inner) consume 3xx responses; let
-                // them hand those hop responses back so their Set-Cookie is stored per hop.
+                // them hand those hop responses back so their Set-Cookie is stored per hop, and
+                // their hop requests so each gets its own Cookie header.
+                if (context.GetState(RedirectHandler.ActiveScopeDepthStateKey, 0) == 0)
+                    context.SetState(_callerCookieStateKey, request.Headers.Get("Cookie"));
                 RedirectHandler.AddResponseObserver(context, this);
 
                 Task dispatchTask;
@@ -94,6 +101,21 @@ namespace TurboHTTP.Middleware
 
                 await dispatchTask.ConfigureAwait(false);
             };
+        }
+
+        private static bool IsHttpUri(Uri uri)
+        {
+            return uri != null && uri.IsAbsoluteUri &&
+                   (string.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsCrossSite(UHttpRequest request)
+        {
+            return request.Metadata != null &&
+                   request.Metadata.TryGetValue(RequestMetadataKeys.IsCrossSiteRequest, out var crossSiteRaw) &&
+                   crossSiteRaw is bool crossSiteBool &&
+                   crossSiteBool;
         }
 
         private static string MergeCookieHeaders(string existingCookieHeader, string jarCookieHeader)
@@ -191,6 +213,45 @@ namespace TurboHTTP.Middleware
                 // Interceptor or jar disposed while the request was in flight: drop the cookies
                 // rather than failing the redirect hop.
             }
+        }
+
+        void IRedirectResponseObserver.OnRedirectRequest(UHttpRequest hopRequest, RequestContext context)
+        {
+            if (Volatile.Read(ref _disposed) != 0 || hopRequest == null)
+                return;
+
+            // The redirect interceptor copies Cookie on same-origin hops (the previous hop's
+            // caller + jar value) and strips it on cross-origin hops. Keep the caller's part only
+            // while it survives, and recompute the jar part for this hop's request-uri.
+            string callerCookie = null;
+            if (hopRequest.Headers.Get("Cookie") != null)
+                callerCookie = context.GetState<string>(_callerCookieStateKey);
+            else
+                context.SetState(_callerCookieStateKey, null);
+
+            string jarCookieHeader = null;
+            if (IsHttpUri(hopRequest.Uri))
+            {
+                try
+                {
+                    jarCookieHeader = _jar.GetCookieHeader(hopRequest.Uri, hopRequest.Method, IsCrossSite(hopRequest));
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Jar disposed while the request was in flight: send no jar cookies.
+                }
+            }
+
+            var merged = MergeCookieHeaders(callerCookie, jarCookieHeader);
+            if (string.IsNullOrEmpty(merged))
+            {
+                hopRequest.Headers.Remove("Cookie");
+                return;
+            }
+
+            hopRequest.WithHeader("Cookie", merged);
+            if (!string.IsNullOrEmpty(jarCookieHeader))
+                context.RecordEvent("CookieAttached");
         }
 
         public void Dispose()
