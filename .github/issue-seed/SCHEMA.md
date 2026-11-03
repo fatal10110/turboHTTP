@@ -50,7 +50,7 @@ Concrete steps.
 - [ ] regression test that fails before the fix
 
 ## Context
-Source: 2026-10 full review (`Development/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed | Plausible (needs device/runtime confirmation).
+Source: 2026-10 full review (`Development~/docs/review-2026-10-full-library-review.md`). Confidence: Confirmed | Plausible (needs device/runtime confirmation).
 ```
 
 ## Project derivation (done by script)

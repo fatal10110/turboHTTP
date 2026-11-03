@@ -47,7 +47,7 @@ Every change answers three questions in the PR body, from evidence:
 1. **Scope.** Read the issue live (`'Tools~/agent-tools/issue_slice.py' <n>`, or `gh issue view <n>
    -R fatal10110/turboHTTP --comments`): Summary, Location, Problem, Spec reference, Suggested fix,
    Acceptance criteria. Copy the acceptance criteria into your worklog — they are the contract.
-   Read the matching entry in `Development/docs/review-2026-10-full-library-review.md` and the phase
+   Read the matching entry in `Development~/docs/review-2026-10-full-library-review.md` and the phase
    doc the issue's Context names. Verify the defect still exists on `origin/main` at the cited
    file:line (line numbers drift; find the current ones). Already fixed → comment with evidence
    (main SHA, file:line, PR), close it, stop.
@@ -57,7 +57,7 @@ Every change answers three questions in the PR body, from evidence:
    tracked.
 3. **Research.** Read the RFC section(s) yourself (https://www.rfc-editor.org/rfc/rfcNNNN.txt) —
    never act on a citation you have not read. Read the newest implementation-journal entries that
-   touch these files (`rg -l '<FileName>' Development/docs/implementation-journal | tail -5`) so
+   touch these files (`rg -l '<FileName>' Development~/docs/implementation-journal | tail -5`) so
    you do not undo an earlier decision. Map every caller of each method you will change.
 4. **Worktree.** Never write in the primary checkout:
 
@@ -77,7 +77,7 @@ Every change answers three questions in the PR body, from evidence:
    mid-headers) and assert the bound holds. New files and folders need a `.meta`:
    `python3 'Tools~/ci/gen_meta.py' <path>...` (CI fails on a missing or orphan `.meta`).
 6. **Implement.** The smallest complete fix in the owning assembly. No new asmdef references
-   outside the documented exceptions (`Development/docs/agents/architecture.md`), no Unity engine types in Transport/JSON/WebSocket
+   outside the documented exceptions (`Development~/docs/agents/architecture.md`), no Unity engine types in Transport/JSON/WebSocket
    cores, no unsafe code outside Transport, no new public API unless the issue asks for it (then
    XML-document it). Keep hot paths allocation-free where they already are (pooled buffers,
    `ValueTask`, no LINQ/closures in per-frame code). Never edit
@@ -98,9 +98,9 @@ Every change answers three questions in the PR body, from evidence:
    `.claude/agents/unity-network-architect.md` to your diff (spawn them as subagents when you can;
    otherwise read both files and work their checklists yourself). Fix findings, re-run the gates,
    and record any deliberate deferral with rationale and target milestone (and a follow-up issue).
-9. **Journal.** Add one new file `Development/docs/implementation-journal/YYYY-MM-<issue-slug>.md`
-   (what, files, decisions, deferred items, how verified) with its `.meta`. Update CLAUDE.md or
-   the guides in `Development/docs/agents/` only when phase status, architecture or conventions
+9. **Journal.** Add one new file `Development~/docs/implementation-journal/YYYY-MM-<issue-slug>.md`
+   (what, files, decisions, deferred items, how verified). Update CLAUDE.md or
+   the guides in `Development~/docs/agents/` only when phase status, architecture or conventions
    change and you are not in a turbohttp-waves lane (lanes leave them alone).
 10. **Deliver.**
     - Audit the final diff (`git diff origin/main...`): only in-scope files; no debug code; every

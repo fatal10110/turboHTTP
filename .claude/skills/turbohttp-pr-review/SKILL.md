@@ -47,7 +47,7 @@ gh api repos/fatal10110/turboHTTP/pulls/<N>/comments --paginate      # existing 
 - Linked issues: every `Closes/Fixes/Resolves #X`, cross-checked with `closingIssuesReferences`.
   For each, `'Tools~/agent-tools/issue_slice.py' <X>` and copy its **Acceptance criteria** into
   your checklist before reading the diff. Read its entry in
-  `Development/docs/review-2026-10-full-library-review.md` and the phase doc it names.
+  `Development~/docs/review-2026-10-full-library-review.md` and the phase doc it names.
 - Check out the head without touching the author's branch:
 
   ```bash

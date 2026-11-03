@@ -141,7 +141,7 @@ jobs:
 
   # The ruleset requires this single check; it passes only when every job above does.
   # CI never runs Unity (no license, #188): the Unity gates are the host-editor runs in
-  # Development/docs/agents/testing.md ("Host-editor gates"), not a job here.
+  # Development~/docs/agents/testing.md ("Host-editor gates"), not a job here.
   ci:
     if: always()
     needs: [lint, tls-interop, h2-interop]
