@@ -716,7 +716,7 @@ namespace TurboHTTP.Core
             bool isPlaying;
             try
             {
-                isPlaying = UnityEngine.Application.isPlaying;
+                isPlaying = ReadApplicationIsPlaying();
             }
             catch
             {
@@ -730,6 +730,12 @@ namespace TurboHTTP.Core
             // without that module this is a no-op.
             EditorMonitorHook.TryAppend(interceptors);
         }
+
+        // Its own non-inlined method: outside a Unity runtime (the Tools~ harnesses on plain .NET link the
+        // editor build) binding the engine call fails when this method is compiled, which the caller's
+        // catch only sees when the call sits in a separate method.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static bool ReadApplicationIsPlaying() => UnityEngine.Application.isPlaying;
 #endif
     }
 }

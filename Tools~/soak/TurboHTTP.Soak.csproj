@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Soak and lossy-network harness (#114). Not a Unity assembly: Tools~ is ignored by Unity. It links the
+    shadow-build DLLs (Tools~/ci/shadow_build.py, editor variant) so it exercises the netstandard2.1
+    assemblies the analyzers checked. The assembly name matches the InternalsVisibleTo grants in
+    Runtime/Core/AssemblyInfo.cs and Runtime/Transport/AssemblyInfo.cs (pool counters only).
+
+    One executable, two processes: `run` (the TurboHTTP client under test) starts `serve` (Kestrel from the
+    ASP.NET Core shared framework, the independent HTTP/1.1, HTTP/2 and WebSocket peer, plus the
+    fault-injecting proxies), so the client's heap and socket count hold nothing but the client.
+    Run it through Tools~/soak/run.sh (README.md).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>TurboHTTP.Soak</AssemblyName>
+    <RootNamespace>TurboHTTP.Tools.Soak</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Workstation GC: the heap numbers compare like a game client's, not a server's. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepoRoot>
+    <ShadowBin Condition="'$(ShadowBin)' == ''">$(RepoRoot).build/shadow/editor/bin/Debug/netstandard2.1/</ShadowBin>
+    <UnityManaged Condition="'$(UnityManaged)' == ''">$(RepoRoot).tools/unity-managed/$([System.IO.File]::ReadAllText('$(RepoRoot)Tools~/ci/unity-version').Trim())/</UnityManaged>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="TurboHTTP.Core" HintPath="$(ShadowBin)TurboHTTP.Core.dll" />
+    <Reference Include="TurboHTTP.Transport" HintPath="$(ShadowBin)TurboHTTP.Transport.dll" />
+    <Reference Include="TurboHTTP.WebSocket" HintPath="$(ShadowBin)TurboHTTP.WebSocket.dll" />
+    <Reference Include="TurboHTTP.WebSocket.Transport" HintPath="$(ShadowBin)TurboHTTP.WebSocket.Transport.dll" />
+    <!-- TurboHTTP.Core links UnityEngine (PlatformInfo/PlatformConfig); the client paths never call it. -->
+    <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
+  </ItemGroup>
+</Project>

@@ -18,27 +18,37 @@ namespace TurboHTTP.Core.Internal
         public readonly long RentCount;
         /// <summary>
         /// Total <see cref="ObjectPool{T}.Return"/> calls where the item was successfully stored
-        /// back in the pool since last reset. Full-pool discards and reset-thrown items are not counted.
+        /// back in the pool since last reset. Full-pool discards (<see cref="DiscardCount"/>) and
+        /// reset-thrown items are not counted.
         /// </summary>
         public readonly long ReturnCount;
+        /// <summary>
+        /// Total <see cref="ObjectPool{T}.Return"/> calls whose item was reset and then dropped because
+        /// the pool was full, since last reset. The item came back from its owner, so it is not active.
+        /// </summary>
+        public readonly long DiscardCount;
         /// <summary>
         /// Number of times <see cref="ObjectPool{T}.Rent"/> called the factory because
         /// the pool was empty (cache miss).
         /// </summary>
         public readonly long MissCount;
-        /// <summary>Estimated number of objects currently outstanding (RentCount - ReturnCount).</summary>
+        /// <summary>
+        /// Estimated number of objects currently outstanding (RentCount - ReturnCount - DiscardCount):
+        /// rented and not yet handed back. A steady non-zero value after all work has finished is a leak.
+        /// </summary>
         public readonly long ActiveCount;
 
-        internal ObjectPoolDiagnostics(long rent, long ret, long miss)
+        internal ObjectPoolDiagnostics(long rent, long ret, long miss, long discard)
         {
             RentCount = rent;
             ReturnCount = ret;
             MissCount = miss;
-            ActiveCount = rent - ret;
+            DiscardCount = discard;
+            ActiveCount = rent - ret - discard;
         }
 
         public override string ToString() =>
-            $"ObjectPool — Rent={RentCount}, Return={ReturnCount}, Active={ActiveCount}, Miss={MissCount}";
+            $"ObjectPool — Rent={RentCount}, Return={ReturnCount}, Discard={DiscardCount}, Active={ActiveCount}, Miss={MissCount}";
     }
 
     /// <summary>
@@ -58,6 +68,7 @@ namespace TurboHTTP.Core.Internal
         private long _rentCount;
         private long _returnCount;
         private long _missCount;
+        private long _discardCount;
 
         /// <summary>
         /// Number of items currently available in the pool at the moment of the call.
@@ -136,7 +147,8 @@ namespace TurboHTTP.Core.Internal
         }
 
         /// <summary>
-        /// Return an object to the pool. If the pool is full, the item is discarded.
+        /// Return an object to the pool. If the pool is full, the item is discarded (counted in
+        /// <see cref="ObjectPoolDiagnostics.DiscardCount"/>).
         /// The reset callback (if provided) is invoked before storing the item.
         /// If reset throws, the exception propagates and the item is not returned.
         /// </summary>
@@ -147,17 +159,24 @@ namespace TurboHTTP.Core.Internal
                 return;
 
             // Run reset outside the lock and before touching counters.
-            // If reset throws the item is not stored and ReturnCount is not incremented,
-            // keeping ActiveCount accurate.
+            // If reset throws the item is not stored and neither counter is incremented.
             _reset?.Invoke(item);
 
             lock (_lock)
             {
-                if (_count >= _capacity)
-                    return; // Pool is full — discard item (not counted as returned).
+                if (_count < _capacity)
+                {
+                    _items[_count] = item;
+                    _count++;
+                    item = null;
+                }
+            }
 
-                _items[_count] = item;
-                _count++;
+            if (item != null)
+            {
+                // Pool is full: the item is dropped, but its owner gave it back, so it is no longer active.
+                Interlocked.Increment(ref _discardCount);
+                return;
             }
 
             // Only increment after item is confirmed stored.
@@ -173,7 +192,8 @@ namespace TurboHTTP.Core.Internal
             new ObjectPoolDiagnostics(
                 Interlocked.Read(ref _rentCount),
                 Interlocked.Read(ref _returnCount),
-                Interlocked.Read(ref _missCount));
+                Interlocked.Read(ref _missCount),
+                Interlocked.Read(ref _discardCount));
 
         /// <summary>
         /// Resets all diagnostic counters to zero.
@@ -184,6 +204,7 @@ namespace TurboHTTP.Core.Internal
             Interlocked.Exchange(ref _rentCount, 0);
             Interlocked.Exchange(ref _returnCount, 0);
             Interlocked.Exchange(ref _missCount, 0);
+            Interlocked.Exchange(ref _discardCount, 0);
         }
     }
 }

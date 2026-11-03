@@ -22,6 +22,8 @@ MemoryCaptures/
 !Tools~/h2-interop/*.csproj
 # The parser fuzz harness (Tools~/fuzz, #112) is a committed plain .NET project.
 !Tools~/fuzz/*.csproj
+# The soak and lossy-network harness (Tools~/soak, #114) is a committed plain .NET project.
+!Tools~/soak/*.csproj
 *.sln
 *.suo
 *.user

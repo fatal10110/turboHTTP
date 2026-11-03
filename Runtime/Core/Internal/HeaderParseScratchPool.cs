@@ -40,5 +40,11 @@ namespace TurboHTTP.Core.Internal
         public static HeaderParseScratch Rent() => s_pool.Rent();
 
         public static void Return(HeaderParseScratch scratch) => s_pool.Return(scratch);
+
+        /// <summary>
+        /// Counters of the process-wide pool, for leak checks (tests, the soak harness):
+        /// <see cref="ObjectPoolDiagnostics.ActiveCount"/> is the number of instances not yet returned.
+        /// </summary>
+        internal static ObjectPoolDiagnostics GetDiagnostics() => s_pool.GetDiagnostics();
     }
 }
