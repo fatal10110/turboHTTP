@@ -41,6 +41,16 @@ namespace TurboHTTP.WebSocket
             CloseReason = closeReason;
         }
 
+        internal WebSocketException(
+            WebSocketError error,
+            string message,
+            Exception innerException,
+            int? handshakeStatusCode)
+            : this(error, message, innerException)
+        {
+            HandshakeStatusCode = handshakeStatusCode;
+        }
+
         /// <summary> Gets the specific WebSocket error categorization. </summary>
         public WebSocketError Error { get; }
 
@@ -49,6 +59,13 @@ namespace TurboHTTP.WebSocket
 
         /// <summary> Gets the closure reason provided by the remote endpoint, if applicable. </summary>
         public string CloseReason { get; }
+
+        /// <summary>
+        /// Gets the HTTP status code of the server's response when the opening handshake failed after a
+        /// status line was received (for example 401 or 403; RFC 6455 section 4.1: any status other than
+        /// 101 fails the handshake), or <c>null</c> when no response status is involved.
+        /// </summary>
+        public int? HandshakeStatusCode { get; }
 
         /// <summary> Determines if the error represents a potentially transient state that can be retried. </summary>
         public bool IsRetryable()

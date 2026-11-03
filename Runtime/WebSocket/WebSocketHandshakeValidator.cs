@@ -169,7 +169,8 @@ namespace TurboHTTP.WebSocket
                     responseHeaders: headers,
                     negotiatedSubProtocol: null,
                     negotiatedExtensions: Array.Empty<string>(),
-                    errorBody: await ReadErrorBodyAsync(stream, raw.TrailingBytes, maxErrorBodyBytes, ct).ConfigureAwait(false),
+                    // The head is malformed, so its framing cannot be trusted: keep only what was read.
+                    errorBody: CopyPrefetchedBody(raw.TrailingBytes, maxErrorBodyBytes),
                     errorMessage: parseError,
                     prefetchedBytes: raw.TrailingBytes);
             }
@@ -183,7 +184,13 @@ namespace TurboHTTP.WebSocket
                     responseHeaders: headers,
                     negotiatedSubProtocol: null,
                     negotiatedExtensions: Array.Empty<string>(),
-                    errorBody: await ReadErrorBodyAsync(stream, raw.TrailingBytes, maxErrorBodyBytes, ct).ConfigureAwait(false),
+                    errorBody: await ReadErrorBodyAsync(
+                        stream,
+                        statusCode,
+                        headers,
+                        raw.TrailingBytes,
+                        maxErrorBodyBytes,
+                        ct).ConfigureAwait(false),
                     errorMessage: "Expected status 101 Switching Protocols.",
                     prefetchedBytes: raw.TrailingBytes);
             }
@@ -542,58 +549,335 @@ namespace TurboHTTP.WebSocket
             return diff == 0 && nonAscii == 0;
         }
 
+        /// <summary>
+        /// Reads the body of a non-101 response with the framing its headers declare (RFC 9112 section 6.3),
+        /// so a server that keeps the connection open after a 401/403 does not hold the handshake until
+        /// <c>HandshakeTimeout</c> (#83). Reading stops at the end of the declared body, at
+        /// <paramref name="maxBytes"/>, or at the first error; the status code decides the outcome, so a
+        /// reset, malformed chunk or cancellation after the status line keeps whatever was read.
+        /// </summary>
         private static async Task<byte[]> ReadErrorBodyAsync(
             Stream stream,
+            int statusCode,
+            HttpHeaders headers,
             byte[] prefetched,
             int maxBytes,
             CancellationToken ct)
         {
-            if (maxBytes <= 0)
+            if (maxBytes <= 0 || !ResponseCanHaveBody(statusCode))
                 return Array.Empty<byte>();
 
-            int prefetchedCount = 0;
-            if (prefetched != null && prefetched.Length > 0)
-                prefetchedCount = Math.Min(prefetched.Length, maxBytes);
+            var framing = DetermineErrorBodyFraming(headers, out long contentLength);
+            if (framing == ErrorBodyFraming.None)
+                return Array.Empty<byte>();
 
-            if (prefetchedCount >= maxBytes)
-            {
-                var prefetchedBody = new byte[prefetchedCount];
-                Buffer.BlockCopy(prefetched, 0, prefetchedBody, 0, prefetchedCount);
-                return prefetchedBody;
-            }
-
-            int readChunkSize = Math.Min(1024, Math.Max(1, maxBytes - prefetchedCount));
-            var readBuffer = ArrayPool<byte>.Shared.Rent(readChunkSize);
+            using var output = new MemoryStream();
+            var source = new ErrorBodySource(stream, prefetched);
             try
             {
-                using var output = new MemoryStream(prefetchedCount);
-
-                if (prefetchedCount > 0)
+                switch (framing)
                 {
-                    output.Write(prefetched, 0, prefetchedCount);
-                }
-
-                while (output.Length < maxBytes)
-                {
-                    int remaining = maxBytes - (int)output.Length;
-                    int toRead = Math.Min(remaining, readBuffer.Length);
-                    int read = await stream.ReadAsync(readBuffer, 0, toRead, ct).ConfigureAwait(false);
-                    if (read == 0)
+                    case ErrorBodyFraming.ContentLength:
+                        await CopyBodyBytesAsync(source, output, Math.Min(contentLength, maxBytes), ct)
+                            .ConfigureAwait(false);
                         break;
 
-                    output.Write(readBuffer, 0, read);
+                    case ErrorBodyFraming.Chunked:
+                        await CopyChunkedBodyAsync(source, output, maxBytes, ct).ConfigureAwait(false);
+                        break;
+
+                    default:
+                        // Close-delimited (RFC 9112 section 6.3, items 4 and 8): until EOF or the limit.
+                        await CopyBodyBytesAsync(source, output, maxBytes, ct).ConfigureAwait(false);
+                        break;
                 }
-
-                if (output.Length == 0)
-                    return Array.Empty<byte>();
-
-                return output.ToArray();
+            }
+            catch (Exception)
+            {
+                // Best effort: the error body is diagnostic only.
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(readBuffer);
+                source.Dispose();
+            }
+
+            return output.Length == 0 ? Array.Empty<byte>() : output.ToArray();
+        }
+
+        private static byte[] CopyPrefetchedBody(byte[] prefetched, int maxBytes)
+        {
+            if (maxBytes <= 0 || prefetched == null || prefetched.Length == 0)
+                return Array.Empty<byte>();
+
+            int count = Math.Min(prefetched.Length, maxBytes);
+            var body = new byte[count];
+            Buffer.BlockCopy(prefetched, 0, body, 0, count);
+            return body;
+        }
+
+        private static bool ResponseCanHaveBody(int statusCode)
+        {
+            // RFC 9112 section 6.3, item 1.
+            return statusCode >= 200 && statusCode != 204 && statusCode != 304;
+        }
+
+        private static ErrorBodyFraming DetermineErrorBodyFraming(HttpHeaders headers, out long contentLength)
+        {
+            contentLength = 0;
+            if (headers == null)
+                return ErrorBodyFraming.CloseDelimited;
+
+            var transferEncoding = headers.GetValues("Transfer-Encoding");
+            if (transferEncoding != null && transferEncoding.Count > 0)
+            {
+                // Transfer-Encoding overrides Content-Length; without chunked as the final coding the body
+                // is close-delimited (RFC 9112 section 6.3, items 3 and 4).
+                return IsChunkedFinalCoding(transferEncoding)
+                    ? ErrorBodyFraming.Chunked
+                    : ErrorBodyFraming.CloseDelimited;
+            }
+
+            var lengthValues = headers.GetValues("Content-Length");
+            if (lengthValues != null && lengthValues.Count > 0)
+            {
+                // An invalid Content-Length is unrecoverable framing (RFC 9112 section 6.3, item 5): skip
+                // the body rather than guess its end.
+                if (!TryParseContentLength(lengthValues, out contentLength))
+                    return ErrorBodyFraming.None;
+
+                return contentLength == 0 ? ErrorBodyFraming.None : ErrorBodyFraming.ContentLength;
+            }
+
+            return ErrorBodyFraming.CloseDelimited;
+        }
+
+        private static bool IsChunkedFinalCoding(IReadOnlyList<string> values)
+        {
+            string last = null;
+            for (int i = 0; i < values.Count; i++)
+            {
+                var value = values[i];
+                if (string.IsNullOrEmpty(value))
+                    continue;
+
+                var parts = value.Split(',');
+                for (int j = 0; j < parts.Length; j++)
+                {
+                    var token = parts[j].Trim();
+                    int parameters = token.IndexOf(';');
+                    if (parameters >= 0)
+                        token = token.Substring(0, parameters).Trim();
+
+                    if (token.Length > 0)
+                        last = token;
+                }
+            }
+
+            return last != null && string.Equals(last, "chunked", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryParseContentLength(IReadOnlyList<string> values, out long length)
+        {
+            // A list of identical values is one length (RFC 9110 section 8.6); anything else is invalid.
+            length = -1;
+            for (int i = 0; i < values.Count; i++)
+            {
+                var parts = (values[i] ?? string.Empty).Split(',');
+                for (int j = 0; j < parts.Length; j++)
+                {
+                    var token = parts[j].Trim();
+                    if (token.Length == 0 || token.Length > 18)
+                        return false;
+
+                    long parsed = 0;
+                    for (int k = 0; k < token.Length; k++)
+                    {
+                        char c = token[k];
+                        if (c < '0' || c > '9')
+                            return false;
+                        parsed = parsed * 10 + (c - '0');
+                    }
+
+                    if (length >= 0 && parsed != length)
+                        return false;
+                    length = parsed;
+                }
+            }
+
+            return length >= 0;
+        }
+
+        private static async Task<bool> CopyBodyBytesAsync(
+            ErrorBodySource source,
+            MemoryStream output,
+            long count,
+            CancellationToken ct)
+        {
+            long remaining = count;
+            while (remaining > 0)
+            {
+                var segment = await source.ReadAsync((int)Math.Min(remaining, int.MaxValue), ct).ConfigureAwait(false);
+                if (segment.Count == 0)
+                    return false;
+
+                output.Write(segment.Array, segment.Offset, segment.Count);
+                remaining -= segment.Count;
+            }
+
+            return true;
+        }
+
+        private static async Task CopyChunkedBodyAsync(
+            ErrorBodySource source,
+            MemoryStream output,
+            int maxBytes,
+            CancellationToken ct)
+        {
+            // RFC 9112 section 7.1: chunk-size [ chunk-ext ] CRLF chunk-data CRLF ... last-chunk. Trailers are
+            // not read: the connection is never reused after a failed upgrade.
+            var line = new byte[MaxChunkLineBytes];
+            while (output.Length < maxBytes)
+            {
+                int lineLength = await source.ReadLineAsync(line, ct).ConfigureAwait(false);
+                if (lineLength < 0 || !TryParseChunkSize(line, lineLength, out long chunkSize) || chunkSize == 0)
+                    return;
+
+                long take = Math.Min(chunkSize, maxBytes - output.Length);
+                if (!await CopyBodyBytesAsync(source, output, take, ct).ConfigureAwait(false) || take < chunkSize)
+                    return;
+
+                if (await source.ReadLineAsync(line, ct).ConfigureAwait(false) != 0)
+                    return;
             }
         }
+
+        private static bool TryParseChunkSize(byte[] line, int length, out long size)
+        {
+            size = 0;
+            int digits = 0;
+            for (int i = 0; i < length; i++)
+            {
+                byte b = line[i];
+                int value;
+                if (b >= '0' && b <= '9')
+                    value = b - '0';
+                else if (b >= 'a' && b <= 'f')
+                    value = b - 'a' + 10;
+                else if (b >= 'A' && b <= 'F')
+                    value = b - 'A' + 10;
+                else if (b == ';' || b == ' ' || b == '\t')
+                    break;
+                else
+                    return false;
+
+                if (++digits > 15)
+                    return false;
+
+                size = (size << 4) | (long)value;
+            }
+
+            return digits > 0;
+        }
+
+        private const int MaxChunkLineBytes = 1024;
+
+        private enum ErrorBodyFraming
+        {
+            None,
+            ContentLength,
+            Chunked,
+            CloseDelimited
+        }
+
+        /// <summary>
+        /// Serves the bytes read past the response head first, then the stream, through one pooled buffer.
+        /// </summary>
+        private sealed class ErrorBodySource : IDisposable
+        {
+            private readonly Stream _stream;
+            private byte[] _prefetched;
+            private int _prefetchedOffset;
+            private byte[] _buffer;
+            private int _bufferOffset;
+            private int _bufferCount;
+
+            public ErrorBodySource(Stream stream, byte[] prefetched)
+            {
+                _stream = stream;
+                _prefetched = prefetched ?? Array.Empty<byte>();
+            }
+
+            public async ValueTask<ArraySegment<byte>> ReadAsync(int maxCount, CancellationToken ct)
+            {
+                if (maxCount <= 0)
+                    return new ArraySegment<byte>(Array.Empty<byte>());
+
+                if (_prefetchedOffset < _prefetched.Length)
+                {
+                    int count = Math.Min(maxCount, _prefetched.Length - _prefetchedOffset);
+                    var segment = new ArraySegment<byte>(_prefetched, _prefetchedOffset, count);
+                    _prefetchedOffset += count;
+                    return segment;
+                }
+
+                if (_bufferOffset >= _bufferCount)
+                {
+                    if (_buffer == null)
+                        _buffer = ArrayPool<byte>.Shared.Rent(1024);
+
+                    _bufferOffset = 0;
+                    _bufferCount = await _stream.ReadAsync(_buffer, 0, _buffer.Length, ct).ConfigureAwait(false);
+                    if (_bufferCount <= 0)
+                    {
+                        _bufferCount = 0;
+                        return new ArraySegment<byte>(Array.Empty<byte>());
+                    }
+                }
+
+                int fromBuffer = Math.Min(maxCount, _bufferCount - _bufferOffset);
+                var result = new ArraySegment<byte>(_buffer, _bufferOffset, fromBuffer);
+                _bufferOffset += fromBuffer;
+                return result;
+            }
+
+            /// <summary>
+            /// Reads one LF-terminated line (a trailing CR is dropped) into <paramref name="line"/>; returns its
+            /// length, or -1 at EOF or when the line does not fit.
+            /// </summary>
+            public async ValueTask<int> ReadLineAsync(byte[] line, CancellationToken ct)
+            {
+                int length = 0;
+                while (true)
+                {
+                    var segment = await ReadAsync(1, ct).ConfigureAwait(false);
+                    if (segment.Count == 0)
+                        return -1;
+
+                    byte b = segment.Array[segment.Offset];
+                    if (b == (byte)'\n')
+                    {
+                        if (length > 0 && line[length - 1] == (byte)'\r')
+                            length--;
+                        return length;
+                    }
+
+                    if (length == line.Length)
+                        return -1;
+
+                    line[length++] = b;
+                }
+            }
+
+            public void Dispose()
+            {
+                var buffer = _buffer;
+                _buffer = null;
+                _prefetched = Array.Empty<byte>();
+                if (buffer != null)
+                    ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
 
         private static WebSocketHandshakeResult Fail(
             int statusCode,

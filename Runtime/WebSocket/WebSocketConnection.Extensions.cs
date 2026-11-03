@@ -11,7 +11,6 @@ namespace TurboHTTP.WebSocket
     public sealed partial class WebSocketConnection
     {
         private async Task WriteMessageWithExtensionsAsync(
-            Stream stream,
             WebSocketOpcode opcode,
             ReadOnlyMemory<byte> payload,
             CancellationToken ct)
@@ -54,8 +53,7 @@ namespace TurboHTTP.WebSocket
                     transformedPayload = transformed.Memory;
                 }
 
-                await _frameWriter.WriteMessageAsync(stream, opcode, transformedPayload, ct, rsvBits)
-                    .ConfigureAwait(false);
+                await WriteMessageFramesAsync(opcode, transformedPayload, rsvBits, ct).ConfigureAwait(false);
 
                 CalculateMessageWireStats(
                     transformedPayload.Length,

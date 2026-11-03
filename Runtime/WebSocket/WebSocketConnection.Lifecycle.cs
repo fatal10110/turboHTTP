@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,9 +18,10 @@ namespace TurboHTTP.WebSocket
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
+            // The send locks are not disposed: a send racing Dispose must still release or acquire them
+            // and then fail with WebSocketException, not ObjectDisposed/SemaphoreFull (#84). SemaphoreSlim
+            // holds no unmanaged resource unless AvailableWaitHandle is used, which it never is here.
             AbortCore(validateDisposed: false);
-
-            _sendLock.Dispose();
         }
 
         public async ValueTask DisposeAsync()
@@ -43,10 +45,6 @@ namespace TurboHTTP.WebSocket
             catch
             {
                 AbortCore(validateDisposed: false);
-            }
-            finally
-            {
-                _sendLock.Dispose();
             }
         }
 
@@ -98,7 +96,6 @@ namespace TurboHTTP.WebSocket
             CancelAndDisposeAfterTaskCompletion(ref _lifecycleCts, _receiveLoopTask);
             Interlocked.Exchange(ref _pongWaiter, null)?.TrySetCanceled();
 
-            _messageAssembler?.Reset();
             _receiveQueue?.Complete(terminalError);
 
             var state = State;
@@ -132,14 +129,10 @@ namespace TurboHTTP.WebSocket
                 state = State;
             }
 
-            SafeDispose(_stream);
-            _stream = null;
-
-            SafeDispose(_frameWriter);
-            _frameWriter = null;
-
-            DisposeExtensions(_activeExtensions);
-            _activeExtensions = Array.Empty<IWebSocketExtension>();
+            // Disposing the stream faults any pending read or write, so the receive loop and an in-flight
+            // send finish; the writer, extensions and assembler go when the last of them releases (#84).
+            SafeDispose(Interlocked.Exchange(ref _stream, null));
+            ReleaseResources();
 
             if (_healthMonitor != null)
             {
@@ -147,6 +140,34 @@ namespace TurboHTTP.WebSocket
                 _healthMonitor = null;
             }
         }
+
+        private bool TryAcquireResources()
+        {
+            while (true)
+            {
+                int count = Volatile.Read(ref _resourceRefCount);
+                if (count <= 0)
+                    return false;
+
+                if (Interlocked.CompareExchange(ref _resourceRefCount, count + 1, count) == count)
+                    return true;
+            }
+        }
+
+        private void ReleaseResources()
+        {
+            if (Interlocked.Decrement(ref _resourceRefCount) != 0)
+                return;
+
+            SafeDispose(Interlocked.Exchange(ref _frameWriter, null));
+            DisposeExtensions(Interlocked.Exchange(
+                ref _activeExtensions,
+                (IReadOnlyList<IWebSocketExtension>)Array.Empty<IWebSocketExtension>()));
+            _messageAssembler?.Reset();
+        }
+
+        /// <summary>Number of control frames waiting for the frame lock (test observation, #86).</summary>
+        internal int ControlFramesWaitingForSendLock => Volatile.Read(ref _controlFramesWaiting);
 
         private static void SafeDispose(IDisposable disposable)
         {
