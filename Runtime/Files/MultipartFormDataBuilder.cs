@@ -10,12 +10,11 @@ namespace TurboHTTP.Files
 {
     /// <summary>
     /// Fluent builder for multipart/form-data request bodies (file uploads).
-    /// <para><b>Non-ASCII filenames:</b> an ASCII file name is sent as a quoted
-    /// <c>filename="..."</c> parameter. A file name containing non-ASCII characters is sent as
-    /// an ASCII fallback <c>filename="..."</c> (each non-ASCII character replaced by <c>_</c>)
-    /// followed by <c>filename*=UTF-8''&lt;percent-encoded UTF-8&gt;</c> (RFC 8187 section 3.2.1);
-    /// recipients that understand <c>filename*</c> prefer it. CR and LF are rejected in every
-    /// name.</para>
+    /// <para><b>Non-ASCII filenames:</b> the file name is sent as UTF-8 inside the quoted
+    /// <c>filename="..."</c> parameter (backslash and double quote escaped), as RFC 7578
+    /// sections 4.2 and 5.1.1 and browsers do. No <c>filename*</c> parameter is sent: RFC 7578
+    /// section 4.2 says the RFC 5987/8187 encoding MUST NOT be used in multipart/form-data.
+    /// CR and LF are rejected in every name.</para>
     /// </summary>
     public class MultipartFormDataBuilder
     {
@@ -186,94 +185,6 @@ namespace TurboHTTP.Files
         }
 
         /// <summary>
-        /// Builds the <c>filename</c> parameter(s) of a Content-Disposition header: the quoted
-        /// <c>filename="..."</c> alone for ASCII names, plus an RFC 8187 <c>filename*</c>
-        /// ext-value when the name contains non-ASCII characters.
-        /// </summary>
-        private static string FormatFilenameParameters(string filename)
-        {
-            if (!ContainsNonAscii(filename))
-                return "filename=\"" + EscapeQuotedString(filename) + "\"";
-
-            var fallback = new StringBuilder(filename.Length);
-            for (int i = 0; i < filename.Length; i++)
-            {
-                char c = filename[i];
-                if (c < 0x80)
-                {
-                    fallback.Append(c);
-                    continue;
-                }
-
-                // One replacement per code point: a surrogate pair is a single character.
-                if (char.IsHighSurrogate(c) && i + 1 < filename.Length && char.IsLowSurrogate(filename[i + 1]))
-                    i++;
-                fallback.Append('_');
-            }
-
-            var utf8 = Encoding.UTF8.GetBytes(filename);
-            var encoded = new StringBuilder(utf8.Length * 3);
-            for (int i = 0; i < utf8.Length; i++)
-            {
-                byte b = utf8[i];
-                if (IsRfc8187AttrChar(b))
-                {
-                    encoded.Append((char)b);
-                }
-                else
-                {
-                    encoded.Append('%');
-                    encoded.Append(HexUpper[b >> 4]);
-                    encoded.Append(HexUpper[b & 0x0F]);
-                }
-            }
-
-            return "filename=\"" + EscapeQuotedString(fallback.ToString()) + "\"; filename*=UTF-8''" + encoded;
-        }
-
-        private const string HexUpper = "0123456789ABCDEF";
-
-        private static bool ContainsNonAscii(string value)
-        {
-            for (int i = 0; i < value.Length; i++)
-            {
-                if (value[i] >= 0x80)
-                    return true;
-            }
-
-            return false;
-        }
-
-        /// <summary>
-        /// RFC 8187 section 3.2.1 attr-char: ALPHA / DIGIT / "!" / "#" / "$" / "&amp;" / "+" / "-"
-        /// / "." / "^" / "_" / "`" / "|" / "~".
-        /// </summary>
-        private static bool IsRfc8187AttrChar(byte b)
-        {
-            if ((b >= (byte)'a' && b <= (byte)'z') || (b >= (byte)'A' && b <= (byte)'Z') || (b >= (byte)'0' && b <= (byte)'9'))
-                return true;
-
-            switch ((char)b)
-            {
-                case '!':
-                case '#':
-                case '$':
-                case '&':
-                case '+':
-                case '-':
-                case '.':
-                case '^':
-                case '_':
-                case '`':
-                case '|':
-                case '~':
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        /// <summary>
         /// Validate that a value does not contain CR or LF (header injection prevention).
         /// </summary>
         private static void ValidateNoCrLf(string value, string paramName)
@@ -351,7 +262,7 @@ namespace TurboHTTP.Files
             public void WriteTo(Stream stream)
             {
                 var header = Encoding.UTF8.GetBytes(
-                    $"Content-Disposition: form-data; name=\"{EscapeQuotedString(_name)}\"; {FormatFilenameParameters(_filename)}\r\n" +
+                    $"Content-Disposition: form-data; name=\"{EscapeQuotedString(_name)}\"; filename=\"{EscapeQuotedString(_filename)}\"\r\n" +
                     $"Content-Type: {_contentType}\r\n\r\n");
                 stream.Write(header, 0, header.Length);
                 stream.Write(_data, 0, _data.Length);

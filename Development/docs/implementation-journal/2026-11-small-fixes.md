@@ -4,10 +4,11 @@ Wave w1102, lane small-fixes, milestone v1.1. One commit per issue.
 
 ## What changed
 
-- **#154 multipart filename\*** (`Runtime/Files/MultipartFormDataBuilder.cs`): an ASCII file name is sent as
-  `filename="..."` only; a non-ASCII name as an ASCII fallback (`_` per non-ASCII code point, quoted-string
-  escaped) followed by `filename*=UTF-8''<pct-encoded>` (RFC 8187 section 3.2.1 attr-char set). CR/LF are still
-  rejected. The "planned for a future release" note is gone. Tests: `Tests/Runtime/Files/MultipartFilenameEncodingTests.cs`.
+- **#154 multipart filename** (`Runtime/Files/MultipartFormDataBuilder.cs`): no wire change. Every file name,
+  ASCII or not, is sent as UTF-8 inside the quoted `filename="..."` (quoted-string escaped), which RFC 7578
+  sections 4.2 and 5.1.1 permit; `filename*` is never sent. The XML doc no longer calls this non-compliant or
+  promises `filename*`. CR/LF are still rejected. Tests pin the UTF-8 bytes for Latin-1, CJK and surrogate-pair
+  names and that `filename*` is absent: `Tests/Runtime/Files/MultipartFilenameEncodingTests.cs`.
 - **#153 AdaptivePolicy** (`Runtime/Unity/Mobile/AdaptivePolicy.cs`): the no-op `AllowConcurrencyAdjustment` and
   `AllowRetryAdjustment` were removed (public API removal in `TurboHTTP.Unity.Mobile`); the type is documented as
   timeout-only. Tests: `Tests/Runtime/Mobile/AdaptivePolicySurfaceTests.cs`.
@@ -55,8 +56,11 @@ Wave w1102, lane small-fixes, milestone v1.1. One commit per issue.
 - #173: typed exception rather than ignoring the env proxy: silently going direct when the environment names a
   proxy would hide the misconfiguration. CIDR is literal-only (curl does the same; resolving would add DNS to the
   bypass decision).
-- #154: RFC 7578 section 4.2 says `filename*` MUST NOT be used in multipart/form-data; the issue asks for it. Sent
-  after an ASCII `filename=` fallback, so recipients that follow 7578 still get a usable name.
+- #154: the issue asks for `filename*` (RFC 8187); RFC 7578 section 4.2 says it MUST NOT be used in
+  multipart/form-data, and CLAUDE.md ranks the RFC above issue text. A first revision sent an ASCII `_` fallback
+  plus `filename*`; review r1 showed that 7578 receivers (e.g. PHP `$_FILES`) then lose the real name. The final
+  change keeps UTF-8 in `filename=` (what main and browsers send) and only corrects the doc and adds the tests the
+  AC asks for.
 - #212: observer hook rather than enforcing Redirect-outer ordering; both orders stay supported (#55 model).
 - #47: keepalive probe timing stays at OS defaults: Unity's .NET Standard 2.1 profile has no
   `TcpKeepAliveTime/Interval` (the shadow build rejects them). Configurable socket tuning is Phase 23. The

@@ -6,58 +6,79 @@ using TurboHTTP.Files;
 namespace TurboHTTP.Tests.Files
 {
     /// <summary>
-    /// #154: non-ASCII file names get an ASCII filename= fallback plus an RFC 8187 filename*.
+    /// #154: non-ASCII file names are sent as UTF-8 inside the quoted filename= parameter
+    /// (RFC 7578 sections 4.2 and 5.1.1); filename* is never sent (RFC 7578 section 4.2: MUST NOT).
     /// </summary>
     public class MultipartFilenameEncodingTests
     {
-        private static string BuildWithFile(string filename)
+        private static byte[] BuildWithFile(string filename)
         {
             var builder = new MultipartFormDataBuilder("enc");
             builder.AddFile("f", filename, new byte[] { 1 });
-            return Encoding.UTF8.GetString(builder.Build());
+            return builder.Build();
+        }
+
+        private static void AssertContainsBytes(byte[] haystack, byte[] needle)
+        {
+            for (int i = 0; i + needle.Length <= haystack.Length; i++)
+            {
+                int j = 0;
+                while (j < needle.Length && haystack[i + j] == needle[j])
+                    j++;
+                if (j == needle.Length)
+                    return;
+            }
+
+            Assert.Fail("expected byte sequence not found: " + Encoding.UTF8.GetString(needle));
+        }
+
+        private static void AssertUtf8Filename(string filename, string expectedQuotedValue)
+        {
+            var body = BuildWithFile(filename);
+            AssertContainsBytes(body, Encoding.UTF8.GetBytes(
+                "Content-Disposition: form-data; name=\"f\"; filename=\"" + expectedQuotedValue + "\"\r\n"));
+            Assert.That(Encoding.UTF8.GetString(body), Does.Not.Contain("filename*"));
         }
 
         [Test]
         public void AsciiFilename_EmitsQuotedFilenameOnly()
         {
-            var text = BuildWithFile("report 1.txt");
-
-            Assert.That(text, Does.Contain("Content-Disposition: form-data; name=\"f\"; filename=\"report 1.txt\"\r\n"));
-            Assert.That(text, Does.Not.Contain("filename*"));
+            AssertUtf8Filename("report 1.txt", "report 1.txt");
         }
 
         [Test]
-        public void Latin1Filename_EmitsAsciiFallbackAndUtf8ExtValue()
+        public void Latin1Filename_IsSentAsUtf8InQuotedFilename()
         {
-            var text = BuildWithFile("café résumé.pdf");
+            AssertUtf8Filename("café résumé.pdf", "café résumé.pdf");
 
-            Assert.That(text, Does.Contain(
-                "name=\"f\"; filename=\"caf_ r_sum_.pdf\"; filename*=UTF-8''caf%C3%A9%20r%C3%A9sum%C3%A9.pdf\r\n"));
+            // é is the two UTF-8 bytes C3 A9, not a single Latin-1 byte or a replacement.
+            AssertContainsBytes(BuildWithFile("café.pdf"), new byte[] { (byte)'f', 0xC3, 0xA9, (byte)'.' });
         }
 
         [Test]
-        public void CjkFilename_EmitsAsciiFallbackAndUtf8ExtValue()
+        public void CjkFilename_IsSentAsUtf8InQuotedFilename()
         {
-            var text = BuildWithFile("日本語.txt");
-
-            Assert.That(text, Does.Contain(
-                "filename=\"___.txt\"; filename*=UTF-8''%E6%97%A5%E6%9C%AC%E8%AA%9E.txt\r\n"));
+            AssertUtf8Filename("日本語.txt", "日本語.txt");
+            AssertContainsBytes(BuildWithFile("日本語.txt"), new byte[]
+            {
+                (byte)'"', 0xE6, 0x97, 0xA5, 0xE6, 0x9C, 0xAC, 0xE8, 0xAA, 0x9E, (byte)'.'
+            });
         }
 
         [Test]
-        public void SurrogatePair_IsOneFallbackCharacter_AndFourUtf8Bytes()
+        public void SurrogatePair_IsFourUtf8Bytes()
         {
-            var text = BuildWithFile("a\U0001F600.png");
-
-            Assert.That(text, Does.Contain("filename=\"a_.png\"; filename*=UTF-8''a%F0%9F%98%80.png\r\n"));
+            AssertUtf8Filename("a\U0001F600.png", "a\U0001F600.png");
+            AssertContainsBytes(BuildWithFile("a\U0001F600.png"), new byte[]
+            {
+                (byte)'a', 0xF0, 0x9F, 0x98, 0x80, (byte)'.'
+            });
         }
 
         [Test]
-        public void NonAsciiFilename_WithQuoteAndBackslash_EscapesFallbackAndPercentEncodesExtValue()
+        public void NonAsciiFilename_WithQuoteAndBackslash_IsQuotedStringEscaped()
         {
-            var text = BuildWithFile("é\"x\\y.txt");
-
-            Assert.That(text, Does.Contain("filename=\"_\\\"x\\\\y.txt\"; filename*=UTF-8''%C3%A9%22x%5Cy.txt\r\n"));
+            AssertUtf8Filename("é\"x\\y.txt", "é\\\"x\\\\y.txt");
         }
 
         [Test]
