@@ -39,7 +39,9 @@ namespace TurboHTTP.Core
         internal const int DesktopConnectionIdleTimeoutSeconds = 120;
 
         /// <summary>Default time a reused HTTP/1.1 connection may stay silent after the request (#47).</summary>
-        internal static readonly TimeSpan DefaultReusedConnectionFirstByteTimeout = TimeSpan.FromSeconds(10);
+        internal static TimeSpan DefaultReusedConnectionFirstByteTimeout => TimeSpan.FromSeconds(DefaultReusedConnectionFirstByteTimeoutSeconds);
+
+        private const int DefaultReusedConnectionFirstByteTimeoutSeconds = 10;
 
         /// <summary>
         /// Recommended request timeout for the build target: 45 s on iOS/Android players,
