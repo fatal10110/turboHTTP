@@ -121,7 +121,9 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    [--arch arm64|armv7] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
    installs it and runs it on the device. Results come back over the player connection when it works;
    otherwise (LAN or firewall: the Editor needs an inbound rule for the Private profile) the script waits
-   for the XML the player writes on the device and pulls it over adb. The device-only test project
+   for the XML the player writes on the device and pulls it over adb. That wait ends when the player
+   finishes or its process is gone, and is capped by `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120).
+   The device-only test project (`UNITY_DEVICE_TEST_PROJECT`, never `run-tests.sh`'s `UNITY_TEST_PROJECT`)
    opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. Install
    `build-player.sh`'s Android APK and read `TURBOHTTP_SMOKE` from logcat for the player smoke. Never
    stop a running device run from the shell: killing Unity's process tree also kills its adb server.

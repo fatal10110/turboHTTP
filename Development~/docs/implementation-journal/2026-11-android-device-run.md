@@ -17,7 +17,13 @@
 - **Device-side result file.** The Editor never connected to the player on this LAN: the player tries
   `127.0.0.1:34998`, the LAN IP and the WSL vEthernet IP, and the Editor timed out after 600 s every time,
   even with a Private-profile firewall rule. The tests ran on the device each time, so the script
-  collects the XML from the device instead of depending on the connection.
+  collects the XML from the device instead of depending on the connection. The wait ends when the
+  `finished` marker appears or the player process is gone (compile/build error, crash), and is capped at
+  `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120 min: the full suite took 70). adb comes from the editor's
+  Android SDK (macOS layout as in `build-player.sh`) or PATH; no adb or no ready device exits 2 up front.
+- **Own project variables.** `UNITY_DEVICE_TEST_PROJECT` / `UNITY_DEVICE_PACKAGE_COPY`, so a lane's
+  exported `UNITY_TEST_PROJECT` never receives the device-only files (the `TMPDIR` hook and result callback
+  also run in Editor PlayMode).
 - **Changes stay in the test project.** Cleartext and `TMPDIR` are test-player settings, not package
   changes. The product's mobile cleartext default (false) is correct; the tests that rely on the Editor
   default are #321.

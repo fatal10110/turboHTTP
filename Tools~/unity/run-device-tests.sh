@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Runs TurboHTTP's PlayMode suite ON A CONNECTED ANDROID DEVICE (#99): the Unity Test Runner builds an
 # IL2CPP player of a throwaway test project that consumes a synced copy of this package, deploys it over
-# adb and collects the results through the player connection.
+# adb and collects the results through the player connection, or, when that connection never comes up,
+# from the NUnit XML the player writes on the device (pulled over adb).
 #
 #   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe \
 #     Tools~/unity/run-device-tests.sh [--stripping Low|High] [--arch arm64|armv7] [--filter <regex>] [--category <name>] [--integration]
 #
-# One device must be attached (adb devices). Defaults: Stripping High, arm64. The build settings come from
+# One device must be attached (adb devices). Defaults: Stripping High, arm64. The player settings come from
 # Assets/Editor/TurboHttpDeviceTestBuild.cs (written into the test project): IL2CPP, the stripping level,
-# the target architecture, INTERNET permission and TURBOHTTP_BOUNCYCASTLE for the Android group.
+# the target architecture and INTERNET permission; TURBOHTTP_BOUNCYCASTLE is set for the Android group in
+# ProjectSettings.asset. Env: UNITY_DEVICE_TEST_PROJECT (default <cache>/device-testproj),
+# UNITY_DEVICE_PACKAGE_COPY (default <cache>/device-package): never run-tests.sh's project, which must not
+# get the device-only files; TURBOHTTP_DEVICE_TEST_WAIT_MIN (default 120) bounds the device-side wait.
 # Exit codes as run-tests.sh: 0 pass, 1 failures, 2 setup error, 3 Unity unavailable, 4 skip gate.
 set -euo pipefail
 
@@ -53,14 +57,25 @@ if [ "$win" = 1 ]; then
   done
   wincache=""
   if [ -n "$localappdata" ]; then wincache="$(wslpath -u "$localappdata" 2>/dev/null || true)"; fi
-  [ -n "$wincache" ] || { echo "run-tests: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
+  [ -n "$wincache" ] || { echo "run-device-tests: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
   cache="$wincache/turbohttp"
 else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi
-proj="${UNITY_TEST_PROJECT:-$cache/device-testproj}"
-pkg="${UNITY_PACKAGE_COPY:-$cache/device-package}"
+proj="${UNITY_DEVICE_TEST_PROJECT:-$cache/device-testproj}"
+pkg="${UNITY_DEVICE_PACKAGE_COPY:-$cache/device-package}"
 mkdir -p "$cache"
+
+# adb from the editor's Android SDK (macOS keeps PlaybackEngines beside Unity.app, as in build-player.sh),
+# else the one on PATH. A Windows adb.exe from WSL can fail to start, so adbr retries.
+engines="$(dirname "$unity")/Data/PlaybackEngines"
+case "$(uname -s)" in Darwin) engines="$(cd "$(dirname "$unity")/../../.." && pwd)/PlaybackEngines" ;; esac
+adb_exe="$engines/AndroidPlayer/SDK/platform-tools/adb.exe"
+[ -x "$adb_exe" ] || adb_exe="$engines/AndroidPlayer/SDK/platform-tools/adb"
+[ -x "$adb_exe" ] || adb_exe="$(command -v adb || true)"
+[ -n "$adb_exe" ] || { echo "run-device-tests: no adb (editor Android SDK under $engines, or PATH)" >&2; exit 2; }
+adbr() { local out; for _ in 1 2 3 4 5; do if out="$("$adb_exe" "$@" 2>/dev/null)"; then printf '%s' "$out" | tr -d '\r'; return 0; fi; sleep 2; done; return 1; }
+[ "$(adbr get-state || true)" = device ] || { echo "run-device-tests: no Android device ready on adb ($adb_exe devices)" >&2; exit 2; }
 
 rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --exclude='Library/' \
   --exclude='Temp/' --exclude='Logs/' --exclude='.DS_Store' --exclude='.claude/' --exclude='Tools~/' \
@@ -92,7 +107,7 @@ wanted = {always} | ({optional} if optional else set())
 text = open(path, encoding="utf-8").read()
 m = re.search(r"^  scriptingDefineSymbols:(.*)\n((?:    .*\n)*)", text, re.M)
 if not m:
-    print("run-tests: no scriptingDefineSymbols in " + path, file=sys.stderr)
+    print("run-device-tests: no scriptingDefineSymbols in " + path, file=sys.stderr)
     sys.exit(2)
 entries = [] if m.group(1).strip() == "{}" else m.group(2).splitlines()
 for i, line in enumerate(entries):
@@ -230,12 +245,9 @@ args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform Androi
 [ -n "$filter" ] && args+=(-testFilter "$filter")
 [ -n "$category" ] && args+=(-testCategory "$category")
 
-# adb from the editor's Android SDK; a Windows adb.exe from WSL can fail to start, so retry.
-adb_exe="$(dirname "$unity")/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb.exe"
-[ -x "$adb_exe" ] || adb_exe="$(dirname "$unity")/Data/PlaybackEngines/AndroidPlayer/SDK/platform-tools/adb"
 pkg_id=com.turbohttp.devicetests
 device_file=/sdcard/Android/data/$pkg_id/files/turbohttp-results.xml
-adbr() { local out; for _ in 1 2 3 4 5; do if out="$("$adb_exe" "$@" 2>/dev/null)"; then printf '%s' "$out" | tr -d '\r'; return 0; fi; sleep 2; done; return 1; }
+pull_results() { if [ "$(adbr shell "[ -s $device_file ] && echo y || true")" = y ]; then adbr exec-out cat "$device_file" > "$xml" || true; fi; }
 adbr shell rm -f "$device_file" >/dev/null || true
 adbr logcat -c >/dev/null || true
 
@@ -245,13 +257,23 @@ code=$?
 set -e
 
 # The player keeps running when the editor gives up on the player connection: wait for the device-side
-# marker (TURBOHTTP_DEVICE_TEST_WAIT_MIN, default 60 minutes) and pull the XML it wrote.
+# marker and pull the XML it wrote. The wait ends early when the player process is gone (never installed
+# after a compile or build error, or crashed); TURBOHTTP_DEVICE_TEST_WAIT_MIN (default 120 minutes, the
+# full suite took 70 on a OnePlus 7) only bounds a player that hangs.
 if [ ! -f "$xml" ]; then
   echo "run-device-tests: no results over the player connection; waiting for the device-side result file"
-  deadline=$(( $(date +%s) + ${TURBOHTTP_DEVICE_TEST_WAIT_MIN:-60} * 60 ))
+  deadline=$(( $(date +%s) + ${TURBOHTTP_DEVICE_TEST_WAIT_MIN:-120} * 60 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if adbr logcat -d -s Unity:V | grep -q "TURBOHTTP_DEVICE_RUN finished"; then
-      adbr exec-out cat "$device_file" > "$xml" || true
+      pull_results
+      break
+    fi
+    # Only an adb call that succeeded with no pid means the player is gone; a failed call, or a device
+    # without pidof, keeps waiting until the deadline.
+    if pid="$(adbr shell "if command -v pidof >/dev/null; then pidof $pkg_id || true; else echo unknown; fi")" \
+      && [ -z "$pid" ]; then
+      echo "run-device-tests: the player ($pkg_id) is not running"
+      pull_results
       break
     fi
     sleep 20
@@ -265,7 +287,7 @@ if [ ! -f "$xml" ]; then
 fi
 
 if [ ! -f "$xml" ]; then
-  echo "run-tests: no results (Unity exit $code); compile errors? see $log"
+  echo "run-device-tests: no results (Unity exit $code; compile or build error, player crash, or wait timeout); see $log"
   grep -E "error CS[0-9]+" "$log" | head -20 || true
   exit 2
 fi
@@ -277,7 +299,7 @@ set +e
 python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$platform" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"
 gate=$?
 set -e
-echo "run-tests: results $xml, log $log"
+echo "run-device-tests: results $xml, log $log"
 if [ "$code" != 0 ]; then exit 1; fi
 if [ "$gate" != 0 ]; then exit "$gate"; fi
 exit 0
