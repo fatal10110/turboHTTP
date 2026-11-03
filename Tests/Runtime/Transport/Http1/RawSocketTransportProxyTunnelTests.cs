@@ -476,13 +476,8 @@ namespace TurboHTTP.Tests.Transport.Http1
         [Test]
         public void ConnectTunnelAlpnProtocols_AdvertisesH2BeforeHttp11()
         {
-            var field = typeof(RawSocketTransport).GetField(
-                "s_connectTunnelAlpnProtocols",
-                BindingFlags.NonPublic | BindingFlags.Static);
-            Assert.IsNotNull(field);
-
-            var protocols = (string[])field.GetValue(null);
-            CollectionAssert.AreEqual(new[] { "h2", "http/1.1" }, protocols);
+            // The CONNECT tunnel and the direct pool share one list (#175).
+            CollectionAssert.AreEqual(new[] { "h2", "http/1.1" }, AlpnProtocols.H2AndHttp11);
         }
 
         [TestCase("h2")]

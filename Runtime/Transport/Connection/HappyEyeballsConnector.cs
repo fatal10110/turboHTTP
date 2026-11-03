@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Connection
 {
@@ -401,26 +402,11 @@ namespace TurboHTTP.Transport.Connection
                     NoDelay = true
                 };
 
+                // Socket.ConnectAsync(EndPoint) takes no token. On cancellation the wait is
+                // abandoned with the connect task observed, and the catch below disposes the
+                // socket, which ends the connect; its fault is never unobserved (#172).
                 var connectTask = socket.ConnectAsync(new IPEndPoint(address, port));
-                if (!cancellationToken.CanBeCanceled)
-                {
-                    await connectTask.ConfigureAwait(false);
-                }
-                else
-                {
-                    var cancelSignal = new TaskCompletionSource<bool>(
-                        TaskCreationOptions.RunContinuationsAsynchronously);
-                    using var registration = cancellationToken.Register(
-                        () => cancelSignal.TrySetResult(true));
-                    var completed = await Task.WhenAny(connectTask, cancelSignal.Task).ConfigureAwait(false);
-                    if (!ReferenceEquals(completed, connectTask))
-                    {
-                        try { socket.Dispose(); } catch { }
-                        throw new OperationCanceledException(cancellationToken);
-                    }
-
-                    await connectTask.ConfigureAwait(false);
-                }
+                await AbandonableTask.WaitAsync(connectTask, cancellationToken).ConfigureAwait(false);
 
                 return socket;
             }

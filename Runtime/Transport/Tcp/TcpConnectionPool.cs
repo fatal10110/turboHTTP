@@ -614,7 +614,7 @@ namespace TurboHTTP.Transport.Tcp
                         ? _tlsProviderResolver(_tlsBackend)
                         : TlsProviderSelector.GetProvider(_tlsBackend);
                     var tlsResult = await tlsProvider.WrapAsync(
-                        stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
+                        stream, host, AlpnProtocols.H2AndHttp11, ct).ConfigureAwait(false);
 
                     // Only mark SslStream as viable when it was actually used.
                     if (_tlsBackend == TlsBackend.Auto && tlsResult.ProviderName == "SslStream")
