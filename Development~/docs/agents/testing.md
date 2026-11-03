@@ -127,6 +127,17 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. Install
    `build-player.sh`'s Android APK and read `TURBOHTTP_SMOKE` from logcat for the player smoke. Never
    stop a running device run from the shell: killing Unity's process tree also kills its adb server.
+5. **iOS simulator run (#99).** `'./Tools~/unity/build-ios-test-player.sh' [--out <dir>] [--stripping
+   Low|High] [--filter ...]` builds the PlayMode suite as an IL2CPP Simulator SDK player and exports the
+   Xcode project (a Windows editor cannot run it); a Mac builds it with `xcodebuild`, runs it on a
+   simulator and reads `results.xml` from the app's data container. The script removes `READY`, `DONE`
+   and `out/` next to `--out` before the build and creates `READY` after the copy. The player logs
+   `TURBOHTTP_DEVICE_TEST`/`_FAIL`/`_HANG` markers, rewrites `results.xml` after every fixture
+   (`partial="true"`) so a hang still leaves results, and quits when the run ends. Unity 2021.3 ships an
+   x86_64-only simulator player, which Apple Silicon runtimes (iOS 26+) cannot run; use a Unity 6 editor
+   with iOS Build Support there (the script sets the ARM64 simulator architecture) and record the editor
+   version with the results, since it is not the 2021.3 baseline. A simulator run does not replace the
+   device rows (ATS, NAT64, ALPN, suspension stay `needs-device-validation`).
 
 From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
 Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and
