@@ -158,14 +158,56 @@ jobs:
           name: tls-interop-logs
           path: .build/tls-interop/run
 
+  # HTTP/2 adversarial server and interop (#111): the scripted adversarial-server scenarios
+  # (Tests/Runtime/Transport/Http2/Adversarial, compiled into a plain .NET harness against the
+  # shadow-built DLLs) and the production RawSocketTransport over TLS + ALPN h2 against Kestrel,
+  # nghttpd and nginx (docker, pinned images). Unity is not needed (Tools~/h2-interop/run.sh).
+  h2-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Unity version
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v6
+        with:
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
+
+      - name: HTTP/2 adversarial and interop rows
+        run: '"Tools~/h2-interop/run.sh"'
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: h2-interop-logs
+          path: .build/h2-interop/run
+
   # The ruleset requires this single check; it passes only when every job above does.
   ci:
     if: always()
-    needs: [lint, tls-interop, unity-tests]
+    needs: [lint, tls-interop, h2-interop, unity-tests]
     runs-on: ubuntu-latest
     steps:
       - env:
           LINT: ${{ needs.lint.result }}
           TLS_INTEROP: ${{ needs.tls-interop.result }}
+          H2_INTEROP: ${{ needs.h2-interop.result }}
           UNITY: ${{ needs.unity-tests.result }}
-        run: '[ "$LINT" = success ] && [ "$TLS_INTEROP" = success ] && [ "$UNITY" = success ]'
+        run: '[ "$LINT" = success ] && [ "$TLS_INTEROP" = success ] && [ "$H2_INTEROP" = success ] && [ "$UNITY" = success ]'
