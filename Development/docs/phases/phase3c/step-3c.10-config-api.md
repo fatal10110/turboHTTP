@@ -1,5 +1,7 @@
 # Step 3C.10: Configuration API
 
+> **Superseded (#34, #110, 2026-11):** Auto mode no longer falls back to BouncyCastle at runtime. The Auto description below ("fall back to BouncyCastle if ALPN unavailable") describes the original design. See the TLS fallback rule in `phase22c/overview.md` (principle 6): Auto picks the provider before the handshake, never picks one without full certificate chain validation, and a failed handshake propagates to the caller; BouncyCastle is selected only explicitly (`TlsBackend.BouncyCastle`).
+
 **File:** `Runtime/Core/HttpClientOptions.cs` (MODIFY)  
 **Depends on:** Step 3C.8  
 **Spec:** Public Configuration API
