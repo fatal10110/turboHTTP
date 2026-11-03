@@ -1,6 +1,6 @@
 # Phase 15: Unity Runtime Hardening and Advanced Asset Pipeline
 
-**Milestone:** M4 (v1.x "correctness + scale")
+**Milestone:** v1.0 GA: Docs, validation & release (implemented; certification matrix #105)
 **Dependencies:** Phase 11 (Unity Integration — completed), Phase 12 (Editor Tools), Phase 14 (completed — informs prioritization of decode paths and handler scope)
 **Estimated Complexity:** High
 **Critical:** Yes - Production stability for high-load Unity projects

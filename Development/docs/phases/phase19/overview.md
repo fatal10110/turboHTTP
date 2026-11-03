@@ -2,7 +2,7 @@
 
 Phase 19 is split into 5 sub-phases. The ValueTask migration is the foundation — all interfaces, delegates, middleware, transport, and public API surface are migrated to `ValueTask`-first patterns. Pipeline & transport and HTTP/2 hot-path refactors build on top in parallel. The UniTask adapter module depends on pipeline completion, and the benchmark/validation suite is the final gate.
 
-**Milestone:** M4 (v1.2)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 4 (Pipeline), Phase 3B (HTTP/2), Phase 6 (Performance), Phase 15 (Runtime Hardening)
 **Estimated Complexity:** High
 **Estimated Effort:** 3-4 weeks

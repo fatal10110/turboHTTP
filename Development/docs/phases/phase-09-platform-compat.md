@@ -1,6 +1,6 @@
 # Phase 9: Platform Compatibility
 
-**Milestone:** M2 (v0.5 "hardening gate")
+**Milestone:** v1.0 GA: Docs, validation & release (partial: detection and config shipped; the physical-device matrix #99 is open)
 **Dependencies:** Phase 8 (Documentation & Samples)
 **Estimated Complexity:** Medium
 **Critical:** Yes - Platform support validation
@@ -624,7 +624,7 @@ Once Phase 9 is complete and validated:
 1. Move to [Phase 10: Advanced Middleware](phase-10-advanced-middleware.md)
 2. Implement cache middleware with ETag support
 3. Implement rate limiting middleware
-4. Begin M3 feature-complete phase
+4. Continue with the feature phases (10-12)
 
 ## Notes
 

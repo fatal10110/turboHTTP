@@ -1,6 +1,6 @@
 # Phase 11: Unity Integration
 
-**Milestone:** M3 (v1.0 "feature-complete")
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 10 (Advanced Middleware)
 **Estimated Complexity:** Medium
 **Critical:** Yes - Unity-specific features
@@ -703,7 +703,7 @@ Once Phase 11 is complete and validated:
 1. Move to [Phase 12: Editor Tooling](phase-12-editor-tools.md)
 2. Implement HTTP Monitor window
 3. Add request/response inspection UI
-4. M3 milestone near completion
+4. Continue with Phase 12
 
 ## Notes
 

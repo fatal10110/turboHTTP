@@ -1,6 +1,6 @@
 # Phase 18: WebSocket Client
 
-**Milestone:** M4 (v1.2)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 3/3B (raw socket transport, HTTP/2), Phase 3C (TLS), Phase 15 (main-thread dispatcher)
 **Estimated Complexity:** High
 **Estimated Effort:** 3-4 weeks

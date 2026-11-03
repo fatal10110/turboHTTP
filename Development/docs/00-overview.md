@@ -6,14 +6,13 @@
 
 ## Project Configuration
 
-- **Licensing:** Closed source, commercial package for Unity Asset Store (per-seat licensing)
+- **Licensing:** MIT (`LICENSE.md`); third-party notices in `Third-Party Notices.md`
 - **Minimum Unity Version:** Unity 2021.3 LTS (.NET Standard 2.1)
-- **Target Platforms (v1.0):** Editor, Standalone (Windows/Mac/Linux), Mobile (iOS/Android)
-- **WebGL Support:** Planned in [Phase 16](phases/phase-16-platform-protocol-security.md) (browser `fetch()` API via `.jslib` interop)
+- **Target Platforms (v1.0):** Editor, Standalone (Windows/Mac/Linux), Mobile (iOS/Android). WebGL is not supported by the socket transport; browser `fetch()` support is [Phase 16.2](phases/phase-16-advanced-capabilities.md) (v2.0, #130)
 - **Transport Layer:** Raw TCP sockets with custom HTTP/1.1 and HTTP/2 implementation (no UnityWebRequest dependency)
-- **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation
-- **JSON Library:** System.Text.Json (built-in for Unity 2021.3+)
-- **Distribution:** Unity Asset Store
+- **TLS:** `System.Net.Security.SslStream` with ALPN for HTTP/2 negotiation; the vendored BouncyCastle provider is an opt-in fallback (`TURBOHTTP_BOUNCYCASTLE`, [Phase 3C](phases/phase-03c-bouncy-castle-tls.md)) and never a bypass for certificate failures
+- **JSON Library:** the built-in LiteJson reader/writer (`TurboHTTP.JSON`) by default; `System.Text.Json` is opt-in via `TURBOHTTP_USE_SYSTEM_TEXT_JSON`. With `TurboHTTP.Complete` in the project, `JsonUtilitySerializer` (Unity `JsonUtility`) is installed over LiteJson after startup (#271)
+- **Distribution:** `1.0.0-pre.N` tags from `main` (Git URL / OpenUPM preview) while the device matrix waits for hardware; `1.0.0` GA comes after the device matrix (#99) and a green full host-editor run, then Unity Asset Store submission (#101)
 
 ## Architecture Philosophy
 
@@ -29,19 +28,29 @@ TurboHTTP is built on a **modular architecture** with a required core and option
 
 ### Core Module (Required)
 
-- `TurboHTTP.Core` - Client, request/response types, basic pipeline, JSON support
-- `TurboHTTP.Transport` - Raw socket transport: TCP connection pool, HTTP/1.1 serializer/parser, HTTP/2 framing + HPACK + multiplexing, TLS via SslStream with ALPN
+- `TurboHTTP.Core` - Client, request/response types, interceptor pipeline
+- `TurboHTTP.Transport` - Raw socket transport: TCP connection pool, HTTP/1.1 serializer/parser, HTTP/2 framing + HPACK + multiplexing, TLS via SslStream with ALPN, proxy and CONNECT tunnels
 
 ### Optional Runtime Modules
 
-1. `TurboHTTP.Retry` - Advanced retry logic with idempotency awareness
-2. `TurboHTTP.Cache` - HTTP caching with ETag support
-3. `TurboHTTP.Auth` - Authentication middleware
-4. `TurboHTTP.RateLimit` - Rate limiting and concurrency control
-5. `TurboHTTP.Observability` - Timeline tracing and metrics
-6. `TurboHTTP.Files` - File downloads with resume support
-7. `TurboHTTP.Unity` - Unity asset handlers (Texture2D, AudioClip, etc.)
-8. `TurboHTTP.Testing` - Record/replay and mock transports
+Each depends only on `TurboHTTP.Core` unless `Development/docs/agents/architecture.md` documents an exception.
+
+1. `TurboHTTP.Middleware` - Redirect, cookie, decompression and default-header interceptors
+2. `TurboHTTP.Retry` - Retry logic with idempotency awareness
+3. `TurboHTTP.Cache` - HTTP caching with validators (RFC 9111)
+4. `TurboHTTP.Auth` - Authentication interceptors, OAuth 2.0, OIDC, PKCE
+5. `TurboHTTP.RateLimit` - Rate limiting and concurrency control
+6. `TurboHTTP.Observability` - Timeline tracing, metrics, redaction
+7. `TurboHTTP.Files` - File downloads with resume support
+8. `TurboHTTP.JSON` - JSON serializer abstraction with the built-in LiteJson default
+9. `TurboHTTP.Testing` - Record/replay and mock transports
+10. `TurboHTTP.Unity` - Unity asset handlers (Texture2D, AudioClip, etc.), main-thread helpers, mobile networking (adaptive and, experimental and opt-in, background)
+11. `TurboHTTP.WebSocket` - WebSocket client (RFC 6455, permessage-deflate RFC 7692)
+12. `TurboHTTP.WebSocket.Transport` - WebSocket transport over the raw-socket stack
+13. `TurboHTTP.Unity.WebSocket` - Unity bridge for the WebSocket client
+14. `TurboHTTP.UniTask` - UniTask adapters (needs the UniTask package)
+15. `TurboHTTP.Transport.BouncyCastle` - Opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol` library (`TURBOHTTP_BOUNCYCASTLE`)
+16. `TurboHTTP.Complete` - Aggregation assembly holding the startup registration (`Runtime/Bootstrap`, `TurboHttpBootstrap`) and `JsonUtilitySerializer`
 
 ### Optional Editor Module
 
@@ -51,109 +60,41 @@ TurboHTTP is built on a **modular architecture** with a required core and option
 
 These are the easiest "false assumptions" to make early and the most expensive to fix late:
 
-1. **JSON + IL2CPP/AOT reality check:** Verify `System.Text.Json` behavior under IL2CPP on target platforms. If it's painful, introduce a small serialization abstraction so the implementation can be swapped without rewriting the client.
-2. **SslStream + ALPN under IL2CPP (CRITICAL):** Validate that `System.Net.Security.SslStream` with ALPN protocol negotiation works on physical iOS and Android devices with IL2CPP enabled. This is the single biggest failure point. If the underlying Mono/IL2CPP runtime doesn't expose ALPN correctly to C#, HTTP/2 negotiation will fail. **Do not proceed past Phase 3B without validating this on a physical iOS device.** If it fails, a native TLS plugin or BouncyCastle fallback is required.
+1. **JSON + IL2CPP/AOT reality check:** The default JSON path is the built-in LiteJson reader/writer, which needs no reflection and is stripping-safe; `System.Text.Json` is opt-in (`TURBOHTTP_USE_SYSTEM_TEXT_JSON`). The serializer abstraction (`IJsonSerializer`, `JsonSerializer.SetDefault`) exists so an implementation can be swapped without rewriting the client (Phase 3D, deprecated stub; plans in `phases/phase3d/`).
+2. **SslStream + ALPN under IL2CPP (CRITICAL):** Validate that `System.Net.Security.SslStream` with ALPN protocol negotiation works on physical iOS and Android devices with IL2CPP enabled. This is the single biggest failure point. If the underlying Mono/IL2CPP runtime doesn't expose ALPN correctly to C#, HTTP/2 negotiation will fail. The original rule was "do not proceed past Phase 3B without validating this on a physical iOS device"; that gate was never met before the later phases were built, and it now maps to the physical-device matrix **#99 (v1.0 GA)**, pending hardware. BouncyCastle (Phase 3C) is the opt-in fallback.
 3. **HTTP/2 flow control correctness:** Getting stream multiplexing, window updates, and HPACK right is subtle. **Suggestion:** Evaluate porting internal HTTP/2 logic from Kestrel or dotnet/runtime (MIT licensed) rather than writing from spec. Build a compliance test suite against known HTTP/2 servers (e.g., `nghttp2`, httpbin.org) early. Broken flow control causes silent failures under load.
 4. **Deterministic testing feasibility:** Confirm record/replay can be done safely (see Phase 9) without leaking secrets and without adding too much friction to the workflow.
 
-## Review Notes
+## Review Notes (resolved or tracked)
 
-> **TODO: Missing Offline/Connectivity Handling** - The current plan lacks explicit handling for offline scenarios and network connectivity detection:
->
-> - **Network reachability detection**: No utility to check device connectivity before making requests (Unity's `Application.internetReachability` is unreliable and doesn't detect captive portals)
-> - **Graceful offline behavior**: No strategy for queuing requests when offline or returning cached responses automatically in offline-first patterns
-> - **Connection quality awareness**: No mechanism to detect poor connectivity and adjust timeouts/retry behavior accordingly
->
-> Consider adding to Phase 7 (Unity Integration) or creating a dedicated `TurboHTTP.Connectivity` module that provides:
->
-> - `IConnectivityMonitor` interface with platform-specific implementations
-> - Offline request queuing with automatic retry when connectivity returns
-> - Integration with `CacheMiddleware` for offline-first patterns
-> - Network quality estimation for adaptive timeout/retry policies
+The early review notes on this page (connectivity, platform networking, security/enterprise features, memory management, testing strategy, quality of life) are resolved or tracked by issues:
 
-> **TODO: Platform-Specific Networking Requirements** - Phase 11 (Platform Compatibility) needs expanded validation criteria for platform-specific networking constraints:
->
-> - **iOS App Transport Security (ATS)**: Cleartext HTTP blocked by default, requires Info.plist exceptions or HTTPS enforcement
-> - **iOS IPv6 Requirement**: App Store requires IPv6 support on cellular networks (NAT64/DNS64)
-> - **Android Network Security Config**: Android 9+ blocks cleartext traffic by default, requires network_security_config.xml
-> - **Mobile Background Limitations**: iOS/Android aggressively suspend background network tasks, need handling for app pause/resume
-> - **Certificate Validation Differences**: Each platform has different root CA stores and validation behaviors
->
-> Add to Phase 11 validation:
->
-> - Test ATS compliance on iOS, document cleartext workarounds
-> - Verify IPv6-only network functionality (use iOS simulator IPv6 mode)
-> - Test Android Network Security Config scenarios
-> - Implement connection draining on application pause/resume events
-> - Document platform-specific certificate trust behavior
+| Topic | State |
+| --- | --- |
+| Proxy support (HTTP/HTTPS, CONNECT) | Shipped (Phase 14, 22b); HTTP/2 through CONNECT is negotiated today; must ship off by default (#103, required before 1.0.0) |
+| IPv6 dual-stack | Shipped (Happy Eyeballs, Phase 14); NAT64 on device is part of #99 |
+| iOS ATS, Android Network Security Config | Documented in `Documentation~/`; device checks in #99 |
+| Decompression (gzip, deflate), cookies, multipart | Shipped (`TurboHTTP.Middleware`, `TurboHTTP.Files` multipart builder); Brotli not implemented, tracked in #121 |
+| Memory strategy (pooling from day one) | Shipped (Phase 6, 19a); target below |
+| Load, concurrency and chaos testing | Partly shipped (concurrency, adversarial and TLS interop suites); soak test #114 |
+| Offline/connectivity monitor (`IConnectivityMonitor`) | Not planned for 1.0 (feature freeze); adaptive networking in `TurboHTTP.Unity` covers quality-based timeouts |
+| Certificate pinning | Post-1.0: TLS pinning hooks in #117 (v1.1) |
+| Background/suspend handling | Experimental and opt-in (`TURBOHTTP_BACKGROUND_NETWORKING`, #265); device validation #99 |
 
-> **TODO: Missing Critical Security & Enterprise Features** - Several features essential for production games and enterprise customers are not in scope:
->
-> - **Certificate Pinning**: No strategy for pinning server certificates (critical for games handling payments or sensitive data)
-> - **Proxy Support**: No HTTP/HTTPS/SOCKS proxy support (required for enterprise networks and some testing scenarios)
-> - **IPv6 Support**: Not explicitly addressed (iOS App Store requirement)
-> - **Connection Draining**: No graceful shutdown strategy when app suspends or closes
->
-> Consider adding:
->
-> - `TurboHTTP.Security` module with certificate pinning (Phase 6 or 7)
-> - Proxy configuration in Transport layer (Phase 3 or defer to v1.1)
-> - IPv6 dual-stack support in TCP connection pool (Phase 3)
-> - Connection lifecycle management for app suspend/resume (Phase 7)
-
-> **TODO: Memory Management Strategy Needs Earlier Definition** - Phase 10 (Performance & Hardening) defers memory pooling too late. Buffer management is architectural and affects Phase 3 (Transport) design:
->
-> - **ArrayPool vs MemoryPool**: Need decision on buffer pooling strategy before implementing HTTP/1.1 parser and HTTP/2 framing
-> - **HPACK Dynamic Table**: HTTP/2 compression state can consume significant memory (default 4KB per connection)
-> - **Stream Buffer Management**: HTTP/2 multiplexing requires per-stream buffers, needs pooling strategy
-> - **GC Target**: "<1KB GC per request" is achievable but requires pooling from day one, not as a Phase 10 optimization
->
-> Recommendation:
->
-> - Move memory architecture spike to Phase 3 (before transport implementation)
-> - Define pooling abstractions (`IBufferPool`, `IObjectPool`) in Core module
-> - Implement basic `ArrayPool<byte>` integration in Phase 3
-> - Phase 10 can then optimize pool sizing and add advanced features (pre-warming, metrics)
-
-> **TODO: Testing Strategy Gaps - Load, Concurrency, and Chaos Testing** - Phase 9 (Testing Infrastructure) focuses on record/replay and unit tests but lacks:
->
-> - **Concurrency Testing**: HTTP/2 multiplexing with 100+ concurrent streams needs validation
-> - **Connection Pool Testing**: Race conditions, connection reuse, timeout edge cases
-> - **Load Testing**: Sustained request rates, memory stability over time
-> - **Chaos Testing**: Network failures, partial responses, slow servers, connection drops mid-stream
-> - **HTTP/2 Flow Control**: Deadlock scenarios, window exhaustion, priority starvation
->
-> Consider adding Phase 9B (Load & Stress Testing) or expanding Phase 9:
->
-> - Load test harness using realistic game traffic patterns (burst requests, background downloads)
-> - HTTP/2 stream concurrency tests (spawn 200 streams, verify flow control, measure memory)
-> - Chaos test suite with network failure injection (drop connections, delay packets, corrupt frames)
-> - Soak tests for memory leak detection (run 10K+ requests, verify GC stability)
-> - Add to M3 success criteria: "Passes 1 hour soak test with <10MB memory growth"
-
-> **TODO: Missing Quality of Life Features** - The plan lacks several standard features expected in a commercial library:
->
-> - **Decompression**: No automatic handling of Gzip/Brotli content encoding (essential for JSON APIs).
-> - **Multipart/Form-Data**: Ensure there is a first-class builder + examples + tests for file uploads (covered in Phase 5, but should be treated as a v1.0 expectation).
-> - **Cookie Management**: No "Cookie Jar" middleware for persisting session cookies (stateless by default).
->
-> Recommendation:
->
-> - Add `DecompressionMiddleware` to Phase 4 (Pipeline).
-> - Keep `MultipartFormDataBuilder` in Phase 5 (Content Handlers) and add validation + sample coverage; optionally add a thin convenience API in Phase 3.
-> - Add `CookieMiddleware` to Phase 4 or 6.
+**Memory target:** less than 500 B GC per request on the buffered fast path (Phase 6 goal). This is a target, not a gate: the allocation gates in `Tests/Runtime/Performance/` are regression guardrails at 32 KB per warm request (`Tests/Benchmarks/phase19-allocation-baselines.json`).
 
 ## Implementation Phases
 
-The implementation is organized into 17 numbered phases. Execution order is:
-1-12, then 14-16, then deferred release Phase 17.
+The plan is organized into numbered phases; the list below covers every phase and sub-phase plan in `phases/`. Each phase doc carries a `**Milestone:**` header with its GitHub milestone (see [Development Milestones](#development-milestones)). Phase 13 has no plan document. `Development/docs/agents/project-status.md` holds the live status map; GitHub issues win over both.
 
-### Foundation (Phases 1-3B)
+### Foundation (Phases 1-3D)
 
 - **[Phase 1](phases/phase-01-project-foundation.md):** Project Foundation & Structure
 - **[Phase 2](phases/phase-02-core-types.md):** Core Type System
 - **[Phase 3](phases/phase-03-client-api.md):** Client API, Request Builder & HTTP/1.1 Raw Socket Transport
 - **[Phase 3B](phases/phase-03b-http2.md):** HTTP/2 Protocol Implementation
+- **[Phase 3C](phases/phase-03c-bouncy-castle-tls.md):** BouncyCastle TLS Fallback (opt-in)
+- **[Phase 3D](phases/phase-03d-json-fallback.md):** Internal JSON Parser Fallback (deprecated stub; plans in `phases/phase3d/`)
 
 ### Core Features (Phases 4-5)
 
@@ -165,7 +106,7 @@ The implementation is organized into 17 numbered phases. Execution order is:
 - **[Phase 6](phases/phase-06-performance.md):** Performance & Hardening
 - **[Phase 7](phases/phase-07-testing.md):** Testing Infrastructure
 - **[Phase 8](phases/phase-08-documentation.md):** Documentation & Samples
-- **[Phase 9](phases/phase-09-platform-compat.md):** Platform Compatibility
+- **[Phase 9](phases/phase-09-platform-compat.md):** Platform Compatibility (device matrix #99 open)
 
 ### Feature Expansion (Phases 10-12)
 
@@ -173,41 +114,59 @@ The implementation is organized into 17 numbered phases. Execution order is:
 - **[Phase 11](phases/phase-11-unity-integration.md):** Unity Integration
 - **[Phase 12](phases/phase-12-editor-tools.md):** Editor Tooling
 
-### Expansion Track (Phases 14-16, before release)
+### Expansion Track (Phases 14-16)
 
-- **[Phase 14](phases/phase-14-future.md):** Post-v1.0 Roadmap
+- **[Phase 14](phases/phase-14-future.md):** Post-v1.0 Roadmap (shipped; background networking experimental and opt-in)
 - **[Phase 15](phases/phase-15-unity-runtime-hardening.md):** Unity Runtime Hardening and Advanced Asset Pipeline
-- **[Phase 16](phases/phase-16-platform-protocol-security.md):** Platform, Protocol, and Security Expansion
+- **[Phase 16](phases/phase-16-advanced-capabilities.md):** Rate limiting, WebGL, security/privacy, GraphQL, parallel helpers (post-1.0)
 
-### Deferred Release (Phase 17, executed last)
+### Release (Phase 17)
 
 - **[Phase 17](phases/phase-17-release.md):** CI/CD & Release
 
+### Protocol and Runtime Rewrites (Phases 18-22c)
+
+- **[Phase 18](phases/phase-18-websocket-client.md):** WebSocket Client
+- **[Phase 18a](phases/phase-18a-websocket-advanced.md):** Advanced WebSocket (permessage-deflate; experimental until #104)
+- **[Phase 19](phases/phase-19-async-runtime-refactor.md):** Async Runtime Refactor
+- **[Phase 19a](phases/phase-19a-zero-allocation.md):** Zero-Allocation Hot Path
+- **Phase 19b:** Unified pipeline (plan in `phases/phase19b/`)
+- **[Phase 19c](phases/phase-19c-body-zerocopy-transport.md):** Body Zero-Copy Transport (post-1.0, v1.2)
+- **Phase 22:** Interceptor rewrite (plans in `phases/phase22/`)
+- **[Phase 22a](phases/phase-22a-end-to-end-streaming.md):** End-to-End Streaming
+- **[Phase 22b](phases/phase-22b-streaming-extensions.md):** Streaming Extensions (Expect: 100-continue, proxy streaming, trailers)
+- **[Phase 22c](phases/phase-22c-proxy-http2-alpn.md):** HTTP/2 through CONNECT (negotiated today; must ship off by default, #103)
+- **Phase 22d:** HTTP/2 proxy leg and proxy-aware pooling (post-1.0, v2.0; plan docs pending, #160, plan fix #125)
+
+### Post-1.0 Plans (feature freeze until GA)
+
+- **[Phase 23](phases/phase-23-api-config-extensions.md):** API Configuration & Extension Review (v1.2)
+- **[Phase 24](phases/phase-24-advanced-content-handlers.md):** Advanced Content Handlers (decompression shipped; the rest v1.2)
+- **[Phase 25](phases/phase-25-grpc-client.md):** gRPC Client (v2.0)
+
 ## Development Milestones
 
-### M0 — Spike (Phases 1-3B)
+The roadmap uses the GitHub milestones; the old `M0`-`M5` labels are retired. A "v1.0" phase header means the code ships in the repository today and its remaining hardening or validation sits in the three v1.0 milestones below. Issue state on GitHub is the authority; one tracking issue per milestone (#134-#139) lists its content.
 
-Core types, raw TCP socket transport, HTTP/1.1 serializer/parser, TLS via SslStream, HTTP/2 framing + HPACK + stream multiplexing, ALPN negotiation, connection pooling, simple GET/POST
+| # | GitHub milestone | Content |
+| --- | --- | --- |
+| 1 | `v1.0-alpha: Release blockers` | Packaging, license, defects that block a first preview |
+| 2 | `v1.0-beta: Protocol & correctness hardening` | RFC conformance, security, ownership and concurrency fixes for the shipped transport and modules |
+| 3 | `v1.0 GA: Docs, validation & release` | Docs and samples (#98), device matrix (#99), IL2CPP/CI (#100), Asset Store release (#101), validation gates #102 (22a.6), #103 (22c), #104 (18a), #105 (Phase 15) |
+| 4 | `v1.1: Post-release hardening` | 16.3 security and privacy hardening (#117) |
+| 5 | `v1.2: Features & performance` | 16.1 rate limiting (#118), 16.5 parallel helpers (#119), 19c (#120), 23 (#121), 24.2-24.4 (#122-#124) |
+| 6 | `v2.0: Advanced protocols` | 16.2 WebGL (#130), 16.4 GraphQL (#131), 25 gRPC (#132), 22d (#125-#129) |
 
-### M1 — v0.1 "usable" (Phases 4-5)
+### Re-baseline (2026-11-02, #10)
 
-Middleware pipeline, retry + logging + metrics, JSON helper, file download
-
-### M2 — v0.5 "hardening gate" (Phases 6-9)
-
-Performance optimization, testing infrastructure, documentation, platform validation
-
-### M3 — v1.0 "feature-complete core" (Phases 10-12)
-
-Advanced middleware, Unity integration, editor tooling
-
-### M4 — pre-release expansion (Phases 14-16)
-
-Adaptive network policies, WebGL support (browser fetch API via .jslib), WebSocket support, security hardening, and more content handlers
-
-### M5 — v1.0 "release hardening + launch" (Deferred Phase 17)
-
-CI/CD pipeline, release automation, Unity Asset Store submission
+- **Feature freeze until v1.0 GA:** bug fixes, validation and docs only. Phases 16, 19c, 22d, 23, 24 (except decompression, already shipped) and 25 stay post-1.0 (v1.1/v1.2/v2.0).
+- **v1.0 ships everything in the repository today, with these gates:**
+  - HTTP/2 through CONNECT (Phase 22c) is negotiated today (`Runtime/Transport/RawSocketTransport.cs`, `s_connectTunnelAlpnProtocols`); it must ship off by default (#103, required before 1.0.0).
+  - Advanced WebSocket (Phase 18a, permessage-deflate) is experimental until #104.
+  - Background networking (Phase 14.3) is experimental and opt-in (`TURBOHTTP_BACKGROUND_NETWORKING`, #265).
+  - BouncyCastle is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
+- **Release train:** `1.0.0-pre.N` tags from `main` (Git URL / OpenUPM preview) while the device matrix waits for hardware. `1.0.0` GA comes after #99 and a green full host-editor run.
+- **Unity tests run only in the local host editor.** There is no CI Unity license (#188, #100); PR CI runs repo invariants, format, the shadow build with analyzers, CodeQL, the TLS interop job and the docs/samples compile checks (`Development/docs/agents/testing.md`).
 
 ## Key Differentiators
 
@@ -233,7 +192,7 @@ turboHTTP/
 │   └── phases/                    # Detailed phase documentation
 │       ├── phase-01-project-foundation.md
 │       ├── phase-02-core-types.md
-│       ├── ... (through phase 17)
+│       ├── ... (through phase 25)
 ├── package.json
 ├── README.md
 ├── CHANGELOG.md
@@ -244,17 +203,26 @@ turboHTTP/
 │   │   ├── Tcp/                   # Connection pool, socket management
 │   │   ├── Tls/                   # SslStream wrapper, ALPN, cert validation
 │   │   ├── Http1/                 # HTTP/1.1 request serializer, response parser, chunked encoding
-│   │   └── Http2/                 # HTTP/2 framing, HPACK, stream multiplexing, flow control
+│   │   ├── Http2/                 # HTTP/2 framing, HPACK, stream multiplexing, flow control
+│   │   └── BouncyCastle/          # Opt-in TLS fallback (Lib/ is vendored)
+│   ├── Middleware/                # Redirect, cookie, decompression, default-header interceptors
 │   ├── Retry/                     # Retry module
 │   ├── Cache/                     # Cache module
 │   ├── Auth/                      # Auth module
 │   ├── RateLimit/                 # Rate limit module
 │   ├── Observability/             # Observability module
 │   ├── Files/                     # Files module
-│   ├── Unity/                     # Unity handlers module
-│   ├── Testing/                   # Testing module
-│   └── Performance/               # Performance module
+│   ├── JSON/                      # JSON abstraction + LiteJson
+│   ├── Unity/                     # Unity handlers and mobile networking
+│   ├── Testing/                   # Mock and record/replay transports
+│   ├── WebSocket/                 # WebSocket client
+│   ├── WebSocket.Transport/       # WebSocket transport
+│   ├── Unity.WebSocket/           # Unity WebSocket bridge
+│   ├── UniTask/                   # UniTask adapters
+│   ├── Bootstrap/                 # Startup registration (TurboHTTP.Complete)
+│   └── TurboHTTP.Complete.asmdef  # Aggregation assembly
 ├── Editor/                        # Editor module
+├── Documentation~/                # Customer docs
 ├── Tests/
 │   ├── Runtime/
 │   └── Editor/
@@ -268,32 +236,32 @@ turboHTTP/
 
 ## Success Criteria
 
-v1.0 is ready for Unity Asset Store when:
+v1.0 GA is ready when:
 
-- ✓ Core + Transport + 9 runtime modules implemented and tested
+- ✓ Core + Transport + the optional runtime modules listed above implemented and tested
 - ✓ Raw socket transport with HTTP/1.1 and HTTP/2 support
-- ✓ TLS/SslStream with ALPN negotiation working on all target platforms
+- ✓ TLS/SslStream with ALPN negotiation working on all target platforms (device matrix #99)
 - ✓ Connection pooling with keep-alive for HTTP/1.1 and multiplexing for HTTP/2
 - ✓ Editor module (HTTP Monitor) functional in supported Unity versions
-- ✓ Integration tests pass on Editor, Standalone, iOS, Android
-- ✓ IL2CPP builds work on all platforms (SslStream validated)
-- ✓ 80%+ code coverage
-- ✓ Performance benchmarks met (<1KB GC per request)
-- ✓ Documentation complete (QuickStart, API, platform notes)
-- ✓ 5+ working samples
-- ✓ HTTP Monitor window functional
+- ✓ Full EditMode and PlayMode suites green in a host editor (Editor, Standalone); iOS and Android device runs per #99
+- ✓ IL2CPP builds work on all platforms (SslStream validated, #99)
+- ✓ Allocation regression gates green (`Tests/Runtime/Performance/`, 32 KB per warm request guardrail); < 500 B GC per request on the buffered fast path remains the target
+- ✓ Documentation complete (README quick start, `Documentation~/`, platform notes)
+- ✓ 5 working samples (`Samples~/01-BasicUsage` to `05-AdvancedFeatures`)
 - ✓ Record/replay mode working
-- ✓ No critical bugs
-- ✓ Asset Store submission package ready
+- ✓ No open release blockers (milestones v1.0-alpha, v1.0-beta and v1.0 GA)
+- ✓ Gated features (22c, 18a, background networking, BouncyCastle) default-off or labelled experimental as described above (22c default-off is #103)
+- ✓ Release package ready (`1.0.0-pre.N` train, then GA and Asset Store submission, #101)
+
+Code coverage is not a gate; the deterministic suites and the allocation gates are.
 
 ## Next Steps
 
-1. Review each phase document in the `phases/` directory
-2. Start implementation with Phase 1 (Project Foundation)
-3. Progress through phases in this order: 1-12, 14-16, 17
-4. Validate each phase before moving to the next
-5. Reach M0, M1, M2, M3, M4, M5 milestones
-6. Release v1.0 on Unity Asset Store
+1. Review each phase document in the `phases/` directory; its `**Milestone:**` header says where it lands.
+2. Work the open issues by milestone: v1.0-alpha, v1.0-beta, v1.0 GA (feature freeze: bug fixes, validation and docs only).
+3. Tag `1.0.0-pre.N` from `main` while the device matrix (#99) waits for hardware.
+4. Release `1.0.0` after #99 and a green full host-editor run, then submit to the Unity Asset Store (#101).
+5. Post-1.0: v1.1, v1.2, v2.0 as listed in [Development Milestones](#development-milestones).
 
 ---
 

@@ -1,6 +1,6 @@
 # Phase 19b: API Modernization & Refactoring
 
-**Milestone:** M4 (v1.2)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 19 (Async Runtime Refactor), Phase 19a (Extreme Performance)
 **Estimated Complexity:** High
 **Estimated Effort:** 2-3 weeks

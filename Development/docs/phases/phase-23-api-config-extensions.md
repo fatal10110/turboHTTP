@@ -1,5 +1,7 @@
 # Phase 23: API Configuration & Extension Review
 
+**Milestone:** v1.2: Features & performance (post-1.0, feature freeze; #121)
+
 ## Objective
 To extend the configuration points of the TurboHTTP library natively via `UHttpClientOptions` and improve the builder developer experience on `UHttpRequest` using extension methods without polluting the core data structures.
 

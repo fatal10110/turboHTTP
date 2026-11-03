@@ -1,6 +1,6 @@
 # Phase 18a: Advanced WebSocket Features
 
-**Milestone:** M4 (v1.2)
+**Milestone:** v1.0 GA: Docs, validation & release (shipped, experimental until #104)
 **Dependencies:** Phase 18 (all sub-phases — core WebSocket fully implemented)
 **Estimated Complexity:** High
 **Estimated Effort:** 4-6 weeks

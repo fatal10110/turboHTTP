@@ -1,6 +1,6 @@
 # Phase 17: CI/CD & Release
 
-**Milestone:** M5 (v1.0 "production release")
+**Milestone:** v1.0 GA: Docs, validation & release (CI done; Asset Store packaging and release #101; `1.0.0-pre.N` tags until GA)
 **Dependencies:** Phase 12 (Editor Tooling), completion of Phases 14-16 expansion track
 **Estimated Complexity:** Medium
 **Critical:** Yes - Release preparation
@@ -574,7 +574,7 @@ Once Phase 17 is complete and validated:
 3. Publish when approved
 4. Monitor for issues
 5. Start post-launch roadmap refresh based on production feedback
-6. M5 milestone **COMPLETE** - v1.0 shipped!
+6. v1.0 GA released
 
 ## Notes
 

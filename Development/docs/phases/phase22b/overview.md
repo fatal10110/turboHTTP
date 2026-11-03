@@ -1,6 +1,6 @@
 # Phase 22b: Streaming Extensions — Overview
 
-**Milestone:** M4 (v2.0 follow-up)
+**Milestone:** v1.0 (shipped); plan and semantics fixes #109 closed in v1.0-beta
 **Dependencies:** Phase 22a (end-to-end streaming must be complete)
 **Estimated Complexity:** Medium-High
 **Critical:** No — these are enhancements to the streaming substrate established in 22a, not blockers for core streaming functionality.

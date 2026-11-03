@@ -1,6 +1,6 @@
 # Phase 19: Async Runtime Refactor with Optional UniTask Adapters
 
-**Milestone:** M4 (v1.2)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 4 (Pipeline), Phase 3B (HTTP/2), Phase 6 (Performance), Phase 15 (Runtime Hardening)
 **Estimated Complexity:** High
 **Estimated Effort:** 3-4 weeks

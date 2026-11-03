@@ -2,7 +2,7 @@
 
 Phase 24 is split into 5 sub-phases. Task 20.1 (decompression middleware) is the highest-leverage item because it improves every response path transparently. Tasks 20.2-20.4 are Unity asset handlers that can ship independently after their dependencies are met. Task 20.5 is the final quality/documentation gate.
 
-**Milestone:** M4 (v1.2+)
+**Milestone:** decompression shipped (v1.0); 24.2-24.4 in v1.2: Features & performance (post-1.0, feature freeze; #122, #123, #124)
 **Dependencies:** Phase 4 (Pipeline Infrastructure), Phase 5 (Content Helpers), Phase 15 (Decoder Provider Matrix, Pipeline Hardening)
 **Estimated Complexity:** Medium (per handler), Medium-High (aggregate)
 **Estimated Effort:** 7-10 weeks total (incremental)

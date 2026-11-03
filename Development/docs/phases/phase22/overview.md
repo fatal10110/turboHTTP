@@ -1,6 +1,6 @@
 # Phase 22: Interceptor Architecture Redesign
 
-**Milestone:** M4 (v2.0)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 19a–19c (performance & API groundwork)
 **Estimated Complexity:** Very High
 **Critical:** Yes — replaces the core pipeline abstraction end-to-end. Clean break; no backward compatibility.

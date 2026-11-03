@@ -1,6 +1,6 @@
 # Phase 10: Advanced Middleware
 
-**Milestone:** M3 (v1.0 "feature-complete")
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 9 (Platform Compatibility)
 **Estimated Complexity:** High
 **Critical:** Yes - Key differentiators
@@ -576,7 +576,7 @@ Once Phase 10 is complete and validated:
 1. Move to [Phase 11: Unity Integration](phase-11-unity-integration.md)
 2. Implement Unity-specific content handlers (Texture2D, AudioClip)
 3. Add main thread synchronization
-4. M3 milestone progress
+4. Continue with Phase 11
 
 ## Notes
 
@@ -595,7 +595,7 @@ Once Phase 10 is complete and validated:
 >
 > Consider splitting into sub-phases:
 > 1. Phase 10a: Memory cache with basic ETag/Last-Modified support
-> 2. Phase 10b: Disk cache storage backend (defer to post-M3 if needed)
+> 2. Phase 10b: Disk cache storage backend (defer to post-1.0 if needed)
 > 3. Phase 10c: Advanced cache features (Vary headers, invalidation API, cache tags)
 
 ## Deferred Items from Phase 2

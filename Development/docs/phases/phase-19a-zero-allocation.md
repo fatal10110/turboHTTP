@@ -1,6 +1,6 @@
 # Phase 19a: Extreme Performance & Zero-Allocation Networking (Greenfield)
 
-**Milestone:** M4 (v1.2)
+**Milestone:** v1.0 (shipped)
 **Dependencies:** Phase 19 (Async Runtime Refactor)
 **Estimated Complexity:** Very High
 **Estimated Effort:** 6-8 weeks
