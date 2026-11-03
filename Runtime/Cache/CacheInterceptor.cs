@@ -88,6 +88,17 @@ namespace TurboHTTP.Cache
             "Upgrade"
         };
 
+        // RFC 9111 section 3.2: fields a 304 never writes into the stored response. Content-Length is never updated;
+        // Content-Encoding describes the processing the stored (decoded) body went through; Content-Range is
+        // processed and removed by the recipient; Transfer-Encoding is hop-by-hop framing.
+        private static readonly string[] NotModifiedMergeExcludedHeaders =
+        {
+            "Content-Length",
+            "Content-Encoding",
+            "Content-Range",
+            "Transfer-Encoding"
+        };
+
         private readonly CachePolicy _policy;
         private readonly bool _ownsStorage;
         private readonly object _indexLock = new object();
@@ -107,6 +118,8 @@ namespace TurboHTTP.Cache
         private readonly CancellationToken _backgroundWorkToken;
         private Func<IStreamingCacheAccumulator> _streamingAccumulatorFactory =
             static () => new SegmentedBufferStreamingCacheAccumulator();
+        // Clock for freshness and age (lookup, store, 304 merge, served Age). Replaced only by tests.
+        private Func<DateTime> _utcNow = static () => DateTime.UtcNow;
         private int _disposed;
 
         private sealed class VariantBucket
@@ -139,6 +152,8 @@ namespace TurboHTTP.Cache
             public readonly HttpHeaders RequestHeaders;
             public readonly int StatusCode;
             public readonly HttpHeaders ResponseHeaders;
+            public readonly HttpHeaders Trailers;
+            public readonly DateTime? ResponseTimeUtc;
             public readonly SegmentedBuffer Body;
 
             public StoreResponseState(
@@ -147,6 +162,8 @@ namespace TurboHTTP.Cache
                 HttpHeaders requestHeaders,
                 int statusCode,
                 HttpHeaders responseHeaders,
+                HttpHeaders trailers,
+                DateTime? responseTimeUtc,
                 SegmentedBuffer body)
             {
                 RequestMethod = requestMethod;
@@ -154,6 +171,8 @@ namespace TurboHTTP.Cache
                 RequestHeaders = requestHeaders;
                 StatusCode = statusCode;
                 ResponseHeaders = responseHeaders;
+                Trailers = trailers;
+                ResponseTimeUtc = responseTimeUtc;
                 Body = body;
             }
 
@@ -299,7 +318,7 @@ namespace TurboHTTP.Cache
                 var lookup = await TryLookupAsync(request, baseKey, cancellationToken).ConfigureAwait(false);
                 if (lookup.Entry != null)
                 {
-                    var nowUtc = DateTime.UtcNow;
+                    var nowUtc = _utcNow();
                     if (forceRevalidation)
                     {
                         if (_policy.EnableRevalidation && lookup.Entry.CanRevalidate())
@@ -541,6 +560,8 @@ namespace TurboHTTP.Cache
                 response.StatusCode,
                 response.Headers,
                 SnapshotBodyForCache(response.Body),
+                response.Trailers,
+                responseTimeUtc: null,
                 response.Request?.Uri ?? request.Uri,
                 baseKey);
         }
@@ -551,6 +572,8 @@ namespace TurboHTTP.Cache
             HttpStatusCode statusCode,
             HttpHeaders responseHeaders,
             ReadOnlyMemory<byte> bodySnapshot,
+            HttpHeaders trailers,
+            DateTime? responseTimeUtc,
             Uri responseUrl,
             string baseKey)
         {
@@ -589,7 +612,9 @@ namespace TurboHTTP.Cache
                     return default;
             }
 
-            var nowUtc = DateTime.UtcNow;
+            // response_time (RFC 9111 section 4.2.3): when the response arrived, not when this background store runs.
+            var nowUtc = responseTimeUtc ?? _utcNow();
+            EnsureDateHeader(responseHeadersForStorage, nowUtc);
             var expiresAtUtc = ResolveExpiry(nowUtc, responseCacheControl, responseHeadersForStorage, isSharedCache: false);
             var eTag = responseHeadersForStorage.Get("ETag");
             var lastModified = responseHeadersForStorage.Get("Last-Modified");
@@ -629,7 +654,8 @@ namespace TurboHTTP.Cache
                 varyHeaders: varyHeaders,
                 varyKey: varyKey,
                 staleWhileRevalidate: responseCacheControl.StaleWhileRevalidate,
-                mustRevalidate: mustRevalidate);
+                mustRevalidate: mustRevalidate,
+                trailers: trailers);
 
             return new PreparedCacheEntry(entry, signature);
         }
@@ -641,17 +667,19 @@ namespace TurboHTTP.Cache
             string baseKey)
         {
             var mergedHeaders = existing.Headers.Clone();
+            // The stored Age and Date describe the old response; the 304 is the new response (RFC 9111 section 4.2.3:
+            // age is counted from the last validation). Keep only the 304's own values, or the receive time as Date.
+            mergedHeaders.Remove("Age");
+            mergedHeaders.Remove("Date");
             foreach (var name in notModifiedHeaders.Names)
             {
                 if (!notModifiedHeaders.Contains(name))
                     continue;
 
-                // RFC 9111 section 3.2: Content-Length is never updated (the stored content is unchanged), and a
-                // cache that stores processed content may keep the fields describing that processing. The stored
-                // body is whatever the inner pipeline produced (e.g. decoded by Decompression), so a 304 repeating
-                // Content-Encoding must not relabel it.
-                if (string.Equals(name, "Content-Length", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(name, "Content-Encoding", StringComparison.OrdinalIgnoreCase))
+                // RFC 9111 section 3.2. The stored body is whatever the inner pipeline produced (e.g. decoded by
+                // Decompression), so a 304 repeating Content-Encoding must not relabel it. Content-Type is updated:
+                // the stored bytes are not parsed by the cache.
+                if (IsNotModifiedMergeExcluded(name))
                     continue;
 
                 mergedHeaders.Remove(name);
@@ -673,7 +701,8 @@ namespace TurboHTTP.Cache
                     return default;
             }
 
-            var nowUtc = DateTime.UtcNow;
+            var nowUtc = _utcNow();
+            EnsureDateHeader(mergedHeaders, nowUtc);
             var cacheControl = ParseCacheControl(mergedHeaders.GetValues("Cache-Control"));
             var expiresAtUtc = ResolveExpiry(nowUtc, cacheControl, mergedHeaders, isSharedCache: false);
             var eTag = mergedHeaders.Get("ETag");
@@ -712,7 +741,8 @@ namespace TurboHTTP.Cache
                 varyHeaders: varyHeaders,
                 varyKey: varyKey,
                 staleWhileRevalidate: cacheControl.StaleWhileRevalidate,
-                mustRevalidate: mustRevalidate);
+                mustRevalidate: mustRevalidate,
+                trailers: existing.Trailers);
 
             return new PreparedCacheEntry(mergedEntry, signature);
         }
@@ -725,7 +755,7 @@ namespace TurboHTTP.Cache
             string provenance)
         {
             var headers = entry.Headers.Clone();
-            var ageSeconds = ComputeCurrentAgeSeconds(entry, DateTime.UtcNow);
+            var ageSeconds = ComputeCurrentAgeSeconds(entry, _utcNow());
             headers.Set("Age", ageSeconds.ToString(CultureInfo.InvariantCulture));
             headers.Set("X-Cache", provenance);
 
@@ -735,7 +765,7 @@ namespace TurboHTTP.Cache
             await handler.OnResponseStartAsync(
                 (int)entry.StatusCode,
                 headers,
-                new BufferedResponseBodySource(entry.Body, HttpHeaders.Empty),
+                new BufferedResponseBodySource(entry.Body, entry.Trailers),
                 context).ConfigureAwait(false);
         }
 
@@ -814,7 +844,9 @@ namespace TurboHTTP.Cache
             string baseKey,
             int statusCode,
             HttpHeaders responseHeaders,
-            SegmentedBuffer body)
+            SegmentedBuffer body,
+            HttpHeaders trailers = null,
+            DateTime? responseTimeUtc = null)
         {
             QueueBackgroundWork(
                 QueueMutationAsync(
@@ -829,6 +861,8 @@ namespace TurboHTTP.Cache
                             key,
                             storeState.StatusCode,
                             storeState.ResponseHeaders,
+                            storeState.Trailers,
+                            storeState.ResponseTimeUtc,
                             storeState.Body,
                             token);
                     },
@@ -839,6 +873,8 @@ namespace TurboHTTP.Cache
                         requestHeaders,
                         statusCode,
                         responseHeaders,
+                        trailers,
+                        responseTimeUtc,
                         body)),
                 "store");
         }
@@ -850,6 +886,8 @@ namespace TurboHTTP.Cache
             string baseKey,
             int statusCode,
             HttpHeaders responseHeaders,
+            HttpHeaders trailers,
+            DateTime? responseTimeUtc,
             SegmentedBuffer body,
             CancellationToken cancellationToken)
         {
@@ -878,6 +916,8 @@ namespace TurboHTTP.Cache
                     statusCodeForStorage,
                     responseHeaders,
                     bodySnapshot,
+                    trailers,
+                    responseTimeUtc,
                     requestUri,
                     baseKey);
                 if (prepared.Entry == null)
@@ -1173,6 +1213,18 @@ namespace TurboHTTP.Cache
         {
             get => _streamingAccumulatorFactory;
             set => _streamingAccumulatorFactory = value ?? throw new ArgumentNullException(nameof(value));
+        }
+
+        /// <summary>Test seam: the clock used for freshness, age and the Date appended to stored responses.</summary>
+        internal Func<DateTime> UtcNowProvider
+        {
+            get => _utcNow;
+            set => _utcNow = value ?? throw new ArgumentNullException(nameof(value));
+        }
+
+        internal DateTime GetUtcNow()
+        {
+            return _utcNow();
         }
 
         internal IStreamingCacheAccumulator CreateStreamingAccumulator()

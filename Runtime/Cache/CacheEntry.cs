@@ -36,11 +36,17 @@ namespace TurboHTTP.Cache
         public TimeSpan? StaleWhileRevalidate { get; }
         /// <summary> Gets a value indicating whether this entry must be revalidated with the origin. </summary>
         public bool MustRevalidate { get; }
+        /// <summary>
+        /// Gets the response trailer fields, kept apart from <see cref="Headers"/> (RFC 9111 section 3.1) and replayed on
+        /// cache hits. Empty when the response had none. A custom <see cref="ICacheStorage"/> that rebuilds entries field
+        /// by field must copy this property too, or replayed responses lose their trailers.
+        /// </summary>
+        public HttpHeaders Trailers { get; }
 
         /// <summary> Gets the length of the response body. </summary>
         public int BodyLength => Body.Length;
 
-        /// <summary> Initializes a new instance of the <see cref="CacheEntry"/> class. </summary>
+        /// <summary> Initializes a new instance of the <see cref="CacheEntry"/> class without trailer fields. </summary>
         public CacheEntry(
             string key,
             HttpStatusCode statusCode,
@@ -55,6 +61,41 @@ namespace TurboHTTP.Cache
             string varyKey,
             TimeSpan? staleWhileRevalidate,
             bool mustRevalidate)
+            : this(
+                key,
+                statusCode,
+                headers,
+                body,
+                cachedAtUtc,
+                expiresAtUtc,
+                eTag,
+                lastModified,
+                responseUrl,
+                varyHeaders,
+                varyKey,
+                staleWhileRevalidate,
+                mustRevalidate,
+                trailers: null)
+        {
+        }
+
+        /// <summary> Initializes a new instance of the <see cref="CacheEntry"/> class. </summary>
+        /// <param name="trailers">The response trailer fields to replay on hits, or null for none. The entry keeps a copy.</param>
+        public CacheEntry(
+            string key,
+            HttpStatusCode statusCode,
+            HttpHeaders headers,
+            ReadOnlyMemory<byte> body,
+            DateTime cachedAtUtc,
+            DateTime? expiresAtUtc,
+            string eTag,
+            string lastModified,
+            Uri responseUrl,
+            IReadOnlyList<string> varyHeaders,
+            string varyKey,
+            TimeSpan? staleWhileRevalidate,
+            bool mustRevalidate,
+            HttpHeaders trailers)
         {
             Key = key ?? throw new ArgumentNullException(nameof(key));
             StatusCode = statusCode;
@@ -69,6 +110,7 @@ namespace TurboHTTP.Cache
             VaryKey = varyKey ?? string.Empty;
             StaleWhileRevalidate = staleWhileRevalidate;
             MustRevalidate = mustRevalidate;
+            Trailers = trailers == null || trailers.Count == 0 ? HttpHeaders.Empty : trailers.Clone();
         }
 
         /// <summary>
@@ -146,7 +188,8 @@ namespace TurboHTTP.Cache
                 varyHeaders: VaryHeaders,
                 varyKey: VaryKey,
                 staleWhileRevalidate: StaleWhileRevalidate,
-                mustRevalidate: MustRevalidate);
+                mustRevalidate: MustRevalidate,
+                trailers: Trailers);
         }
 
         private static DateTime EnsureUtc(DateTime value)
