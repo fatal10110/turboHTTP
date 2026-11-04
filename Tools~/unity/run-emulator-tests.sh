@@ -103,10 +103,13 @@ PlayStore.enabled=false
 INI
 done
 
-export ANDROID_SDK_ROOT="$(topath "$sdk")" ANDROID_AVD_HOME="$(topath "$avd_home")"
+ANDROID_SDK_ROOT="$(topath "$sdk")"
+ANDROID_AVD_HOME="$(topath "$avd_home")"
+export ANDROID_SDK_ROOT ANDROID_AVD_HOME
 export WSLENV="${WSLENV:+$WSLENV:}ANDROID_SDK_ROOT:ANDROID_AVD_HOME"
 
 started=()
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap
 cleanup() { for s in ${started[@]+"${started[@]}"}; do "$adb_exe" -s "$s" emu kill >/dev/null 2>&1 || true; done; }
 trap cleanup EXIT
 
