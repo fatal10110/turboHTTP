@@ -112,20 +112,27 @@ namespace TurboHTTP.Tests.Transport.Tls
             AssertStatus(CertificateVerificationStatus.UntrustedRoot, Verify(Certs.LeafFromRogue, Certs.RogueRoot));
         }
 
+        // The short-lived certificate (#332): Apple rejects the 100-year TestLocalhostCertificate for
+        // its validity period (-67901, Invalid) before it would report the missing anchor. Verified at
+        // a time inside its validity, so only the anchor is missing.
         [Test]
         public void SelfSignedLeaf_WithoutAnchor_IsUntrusted()
         {
-            using var localhost = TestLocalhostCertificate.TryLoad();
+            using var localhost = TestShortLivedLocalhostCertificate.TryLoad();
             if (localhost == null)
             {
-                TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                TestRequirements.IgnoreEnvironment("The committed test certificate (TestShortLivedLocalhostCertificate) could not be loaded in this runtime.");
                 return;
             }
 
-            // TryLoad registered the anchor; drop it again for this case.
+            // No test anchor is registered (SetUp cleared them; this certificate registers none).
             ServerCertificateVerifier.RestoreTestTrustAnchors(null);
+            DateTime notBefore = localhost.NotBefore.ToUniversalTime();
+            DateTime insideValidity = notBefore + TimeSpan.FromTicks((localhost.NotAfter.ToUniversalTime() - notBefore).Ticks / 2);
 
-            AssertStatus(CertificateVerificationStatus.UntrustedRoot, Verify(localhost.RawData));
+            AssertStatus(
+                CertificateVerificationStatus.UntrustedRoot,
+                ServerCertificateVerifier.Verify(new[] { localhost.RawData }, "localhost", insideValidity));
         }
 
         [Test]

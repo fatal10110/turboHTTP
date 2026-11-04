@@ -61,7 +61,9 @@ namespace TurboHTTP.Tests.WebSocket
         private readonly WebSocketTestServerOptions _options;
         private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
         private readonly List<Task> _clientTasks = new List<Task>();
+        private readonly List<TcpClient> _clients = new List<TcpClient>();
         private readonly object _clientTasksGate = new object();
+        private bool _disposed;
 
         private readonly TcpListener _listener;
         private readonly Task _acceptLoop;
@@ -105,8 +107,22 @@ namespace TurboHTTP.Tests.WebSocket
             return new Uri("wss://localhost:" + Port + path, UriKind.Absolute);
         }
 
+        /// <summary>
+        /// Stops the listener, closes every accepted socket and waits for the accept loop and the
+        /// handlers at most <see cref="BoundedShutdown.DefaultBound"/> in total; a task still running
+        /// then is abandoned with its fault observed (#349). Never blocks without a bound.
+        /// </summary>
         public void Dispose()
         {
+            TcpClient[] clients;
+            lock (_clientTasksGate)
+            {
+                if (_disposed)
+                    return;
+                _disposed = true;
+                clients = _clients.ToArray();
+            }
+
             _shutdown.Cancel();
 
             try
@@ -118,26 +134,12 @@ namespace TurboHTTP.Tests.WebSocket
                 // Best-effort listener shutdown.
             }
 
-            try
-            {
-                _acceptLoop.GetAwaiter().GetResult();
-            }
-            catch
-            {
-                // Accept loop can fail during cancellation/listener stop.
-            }
-
-            Task[] snapshot;
-            lock (_clientTasksGate)
-            {
-                snapshot = _clientTasks.ToArray();
-            }
-
-            for (int i = 0; i < snapshot.Length; i++)
+            // A handler blocked in a socket read that ignores its token ends when its socket closes.
+            for (int i = 0; i < clients.Length; i++)
             {
                 try
                 {
-                    snapshot[i].GetAwaiter().GetResult();
+                    clients[i].Dispose();
                 }
                 catch
                 {
@@ -145,7 +147,24 @@ namespace TurboHTTP.Tests.WebSocket
                 }
             }
 
-            _shutdown.Dispose();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            bool ended = BoundedShutdown.Wait(_acceptLoop, BoundedShutdown.DefaultBound, nameof(WebSocketTestServer));
+
+            Task[] snapshot;
+            lock (_clientTasksGate)
+            {
+                snapshot = _clientTasks.ToArray();
+            }
+
+            TimeSpan remaining = BoundedShutdown.DefaultBound - clock.Elapsed;
+            ended &= BoundedShutdown.WaitAll(
+                snapshot,
+                remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero,
+                nameof(WebSocketTestServer));
+
+            // An abandoned task may still read the token; leave the source to the collector then.
+            if (ended)
+                _shutdown.Dispose();
         }
 
         private async Task AcceptLoopAsync()
@@ -166,6 +185,17 @@ namespace TurboHTTP.Tests.WebSocket
                     if (_shutdown.IsCancellationRequested)
                         break;
                     continue;
+                }
+
+                lock (_clientTasksGate)
+                {
+                    if (_disposed)
+                    {
+                        client.Dispose();
+                        break;
+                    }
+
+                    _clients.Add(client);
                 }
 
                 int connectionIndex = Interlocked.Increment(ref _connectionCount);
@@ -872,6 +902,11 @@ namespace TurboHTTP.Tests.WebSocket
         private readonly bool _authChallengeConnectionClose;
         private readonly bool _authChallengeChunkedBody;
         private readonly Task _acceptLoopTask;
+        private readonly List<Task> _clientTasks = new List<Task>();
+        private readonly List<TcpClient> _clients = new List<TcpClient>();
+        private readonly object _clientsGate = new object();
+        private bool _disposed;
+        private int _connectionCount;
 
         public WebSocketTestProxyServer(
             string username = null,
@@ -905,8 +940,25 @@ namespace TurboHTTP.Tests.WebSocket
 
         public int AuthenticatedConnectCount { get; private set; }
 
+        /// <summary>Connections the accept loop has taken from the listener.</summary>
+        public int ConnectionCount => Volatile.Read(ref _connectionCount);
+
+        /// <summary>
+        /// Stops the listener, closes every accepted client socket (which ends its relay) and waits
+        /// for the accept loop and the handlers at most <see cref="BoundedShutdown.DefaultBound"/> in
+        /// total, then abandons them with their faults observed (#349).
+        /// </summary>
         public void Dispose()
         {
+            TcpClient[] clients;
+            lock (_clientsGate)
+            {
+                if (_disposed)
+                    return;
+                _disposed = true;
+                clients = _clients.ToArray();
+            }
+
             _shutdown.Cancel();
             try
             {
@@ -917,16 +969,35 @@ namespace TurboHTTP.Tests.WebSocket
                 // Best effort.
             }
 
-            try
+            for (int i = 0; i < clients.Length; i++)
             {
-                _acceptLoopTask.GetAwaiter().GetResult();
-            }
-            catch
-            {
-                // Best effort.
+                try
+                {
+                    clients[i].Dispose();
+                }
+                catch
+                {
+                    // Best effort.
+                }
             }
 
-            _shutdown.Dispose();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            bool ended = BoundedShutdown.Wait(_acceptLoopTask, BoundedShutdown.DefaultBound, nameof(WebSocketTestProxyServer));
+
+            Task[] snapshot;
+            lock (_clientsGate)
+            {
+                snapshot = _clientTasks.ToArray();
+            }
+
+            TimeSpan remaining = BoundedShutdown.DefaultBound - clock.Elapsed;
+            ended &= BoundedShutdown.WaitAll(
+                snapshot,
+                remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero,
+                nameof(WebSocketTestProxyServer));
+
+            if (ended)
+                _shutdown.Dispose();
         }
 
         private async Task AcceptLoopAsync()
@@ -945,7 +1016,23 @@ namespace TurboHTTP.Tests.WebSocket
                     continue;
                 }
 
-                _ = Task.Run(() => HandleClientAsync(client, _shutdown.Token), _shutdown.Token);
+                lock (_clientsGate)
+                {
+                    if (_disposed)
+                    {
+                        client.Dispose();
+                        break;
+                    }
+
+                    _clients.Add(client);
+                }
+
+                Interlocked.Increment(ref _connectionCount);
+                var clientTask = Task.Run(() => HandleClientAsync(client, _shutdown.Token), _shutdown.Token);
+                lock (_clientsGate)
+                {
+                    _clientTasks.Add(clientTask);
+                }
             }
         }
 
