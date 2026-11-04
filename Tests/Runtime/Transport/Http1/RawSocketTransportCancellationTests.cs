@@ -36,10 +36,10 @@ namespace TurboHTTP.Tests.Transport.Http1
                     maxConnectionsPerHost: 1,
                     socketIoMode: SocketIoMode.NetworkStream);
                 using var transport = new RawSocketTransport(pool, TlsBackend.SslStream);
-                var request = new UHttpRequest(
+                var request = TestHelpers.AllowLoopbackCleartext(new UHttpRequest(
                         HttpMethod.GET,
                         new Uri("http://127.0.0.1:" + server.Port + "/silent"))
-                    .WithTimeout(RequestTimeout);
+                    .WithTimeout(RequestTimeout));
 
                 await AssertTimesOutAsync(transport, request);
                 await AssertCompletesAsync(server.ClosedByClient(0), "connection was not disposed on timeout");
@@ -65,9 +65,10 @@ namespace TurboHTTP.Tests.Transport.Http1
                     Address = new Uri("http://127.0.0.1:" + proxy.Port),
                     UseEnvironmentVariables = false
                 };
-                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://origin.example.com/secure"))
-                    .WithTimeout(RequestTimeout)
-                    .WithMetadata(RequestMetadataKeys.ProxySettings, proxySettings);
+                var request = TestHelpers.AllowLoopbackCleartext(
+                    new UHttpRequest(HttpMethod.GET, new Uri("https://origin.example.com/secure"))
+                        .WithTimeout(RequestTimeout)
+                        .WithMetadata(RequestMetadataKeys.ProxySettings, proxySettings));
 
                 await AssertTimesOutAsync(transport, request);
                 await AssertCompletesAsync(proxy.ClosedByClient(0), "proxy connection was not disposed on timeout");

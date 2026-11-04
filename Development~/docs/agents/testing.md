@@ -47,6 +47,12 @@ in `tooling.md`.
   `GZipStream` does not throw on truncated input, `NetworkStream.ReadAsync` ignores cancellation
   tokens, duplex test streams complete synchronously, `CertificateRequest` is unavailable. Tests that
   depend on these run in the Unity jobs.
+- Tests also run as iOS/Android players (the device runs under "Host-editor gates", #99), where
+  `AllowCleartext` defaults to false (#85). A test that sends `http://` or `ws://` through
+  `RawSocketTransport` or `RawSocketWebSocketTransport` to a loopback server opts in:
+  `AllowCleartext = true` on `UHttpClientOptions` / `WebSocketConnectionOptions`, or
+  `TestHelpers.AllowLoopbackCleartext(request)` for a request dispatched straight to the transport
+  (#321). Without it the test passes only in the Editor.
 - When the transport is right and a test is wrong (e.g. an over-sending flow-control peer), fix the
   test to model a compliant peer; never relax timeouts to make a test pass.
 - Tests that need the public internet carry `[Category("ExternalNetwork")]`; very slow or

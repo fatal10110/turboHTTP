@@ -413,6 +413,7 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             return new UHttpClient(new UHttpClientOptions
             {
+                AllowCleartext = true,
                 Transport = transport,
                 DisposeTransport = true
             });

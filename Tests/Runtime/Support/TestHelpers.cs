@@ -38,6 +38,18 @@ namespace TurboHTTP.Tests
             return (new UHttpClient(options), transport);
         }
 
+        /// <summary>
+        /// Opts a request dispatched straight to a transport into cleartext. Loopback fixtures talk
+        /// http:// and ws:// to in-process servers, and <c>AllowCleartext</c> defaults to false in iOS
+        /// and Android players (true in the Editor, #85), so they opt in explicitly to behave the same
+        /// on both (#321): <c>AllowCleartext = true</c> on <see cref="UHttpClientOptions"/> or the
+        /// WebSocket connection options, or this for a request that bypasses the client.
+        /// </summary>
+        public static UHttpRequest AllowLoopbackCleartext(UHttpRequest request)
+        {
+            return request.WithMetadata(RequestMetadataKeys.AllowCleartext, true);
+        }
+
         public static UHttpRequest CreateRequest(
             HttpMethod method = HttpMethod.GET,
             string url = "https://example.test/resource",
