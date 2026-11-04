@@ -3,7 +3,7 @@
 # this package, inspects which TurboHTTP assemblies survived into the build, and (Windows targets)
 # runs the player and checks its marker line.
 #
-#   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe \
+#   UNITY_PATH=<Unity 2021.3 editor binary> \
 #     Tools~/unity/build-player.sh --target win64-mono|win64-il2cpp|android-il2cpp [--bouncycastle] [--background]
 #
 # The project gets Tools~/unity/player-smoke/ as Assets/TurboHttpSmoke/ with no .asmdef:

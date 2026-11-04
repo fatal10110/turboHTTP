@@ -4,7 +4,7 @@
 # other emulators (--skip-build). Emulators complement the phone run (#99); they are not ARM, not a real
 # radio and not real vendor TLS/network stacks, so device rows stay needs-device-validation.
 #
-#   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe \
+#   UNITY_PATH=<Unity 2021.3 editor binary> \
 #     Tools~/unity/run-emulator-tests.sh [--api 23,26,29,33,36] [--jobs 2] [--stripping Low|High]
 #       [--filter <regex>] [--category <name>] [--integration]
 #
@@ -12,11 +12,17 @@
 # (TURBOHTTP_EMULATOR_SDK, default <cache>/android-sdk; set it up with the SDK's sdkmanager) and hardware
 # acceleration (WHPX on Windows, KVM on Linux: emulator -accel-check). AVDs turbohttp-api<N> are written under
 # <cache>/emulators/avd and wiped on every boot. --jobs bounds the emulators running at once (3 GB RAM each).
+# From WSL with a Windows editor the emulators are Windows processes: each level's emulator.exe/qemu is found
+# by its AVD name and stopped with taskkill when its console does not stop it, after the level and on exit
+# (emulator-windows.sh, #353). Before a boot, a leftover turbohttp-api<N> from an earlier run is stopped; another
+# emulator holding the console port fails the level (exit 2) naming its PID.
 # Exit: the highest run-device-tests.sh exit code over the levels (0 pass, 1 failures, 2 setup, 4 skip gate),
 # 3 when Unity is unavailable.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=Tools~/unity/emulator-windows.sh
+. "$repo/Tools~/unity/emulator-windows.sh"
 apis="23,26,29,33,36"; jobs=2; pass=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -111,7 +117,7 @@ ANDROID_AVD_HOME="$(topath "$avd_home")"
 export ANDROID_SDK_ROOT ANDROID_AVD_HOME
 export WSLENV="${WSLENV:+$WSLENV:}ANDROID_SDK_ROOT:ANDROID_AVD_HOME"
 
-started=(); lane_pids=()
+started=(); started_avds=(); lane_pids=()
 # Interrupted or failed: stop the lanes first, then their emulators. Lanes run as their own process groups
 # (set -m below): without job control bash starts background jobs with SIGINT ignored, so a Ctrl-C would
 # leave run-device-tests.sh and Unity running against emulators that are gone. The group of a lane also
@@ -121,6 +127,10 @@ cleanup() {
   trap - INT TERM
   for p in ${lane_pids[@]+"${lane_pids[@]}"}; do kill -TERM -- "-$p" 2>/dev/null || true; done
   for s in ${started[@]+"${started[@]}"}; do adbs "$s" emu kill >/dev/null || true; done
+  # From WSL the TERM reaches only the interop pid of emulator.exe: find the Windows processes by AVD name.
+  if [ "$win" = 1 ]; then
+    for a in ${started_avds[@]+"${started_avds[@]}"}; do win_stop_avd "$a" 5 || true; done
+  fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -129,6 +139,7 @@ trap 'exit 143' TERM
 # Boots the AVD for one level on its own console port and waits for boot_completed (5 minutes).
 boot() {
   local api="$1" port="$2" serial="emulator-$2"
+  if [ "$win" = 1 ]; then win_free_avd "turbohttp-api$api" "$port" || return 1; fi
   # Vulkan off: the Unity player picked Vulkan on the headless gfxstream/SwiftShader backend and froze the
   # whole emulator (adbd and console); GLES works.
   "$emu" -avd "turbohttp-api$api" -port "$port" -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
@@ -154,8 +165,14 @@ boot() {
 
 # Stops the lane's emulator: the console first, the process when the console does not answer (frozen).
 stop_emulator() {
-  local serial="$1"
+  local serial="$1" avd="$2"
   adbs "$serial" emu kill >/dev/null || true
+  if [ "$win" = 1 ]; then
+    # $emu_pid is the WSL interop pid of emulator.exe: it can be gone while the Windows qemu runs on (#353).
+    win_stop_avd "$avd" 15 || true
+    [ -z "$emu_pid" ] || kill -KILL "$emu_pid" 2>/dev/null || true
+    return 0
+  fi
   [ -n "$emu_pid" ] || return 0
   for _ in $(seq 1 15); do kill -0 "$emu_pid" 2>/dev/null || return 0; sleep 2; done
   kill -KILL "$emu_pid" 2>/dev/null || true
@@ -174,7 +191,7 @@ lane() {
   else
     code=2
   fi
-  stop_emulator "$serial"
+  stop_emulator "$serial" "turbohttp-api$api"
   echo "$code" > "$out/api$api.code"
 }
 
@@ -182,14 +199,14 @@ echo "run-emulator-tests: API levels ${levels[*]}, $jobs at a time; logs in $out
 # The first level builds the APK; the others start once its run reports the install.
 port=5560
 first="${levels[0]}"
-started+=("emulator-$port")
+started+=("emulator-$port"); started_avds+=("turbohttp-api$first")
 set -m; lane "$first" "$port" 1 & lane_pids+=("$!"); set +m
 until grep -q "installed and launched" "$out/api$first.log" 2>/dev/null || [ -f "$out/api$first.code" ]; do sleep 10; done
 if grep -q "installed and launched" "$out/api$first.log" 2>/dev/null; then
   for api in "${levels[@]:1}"; do
     while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do sleep 10; done
     port=$(( port + 2 ))
-    started+=("emulator-$port")
+    started+=("emulator-$port"); started_avds+=("turbohttp-api$api")
     set -m; lane "$api" "$port" 0 & lane_pids+=("$!"); set +m
   done
 else
@@ -197,7 +214,7 @@ else
 fi
 wait || true
 # Every lane finished and stopped its emulator: nothing is left for the EXIT trap.
-lane_pids=(); started=()
+lane_pids=(); started=(); started_avds=()
 
 worst=0
 for api in "${levels[@]}"; do

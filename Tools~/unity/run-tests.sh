@@ -2,14 +2,14 @@
 # Runs TurboHTTP's Unity Test Runner suites from a throwaway Unity project that consumes
 # a synced copy of this package (keeps Library/ and .meta churn out of the repo).
 #
-#   UNITY_PATH=/Applications/Unity/Hub/Editor/2021.3.45f2/Unity.app/Contents/MacOS/Unity \
+#   UNITY_PATH=<Unity 2021.3 editor binary> \
 #     Tools~/unity/run-tests.sh --platform EditMode|PlayMode [--filter <regex>] [--category <name>] [--integration] [--with-unitask[=local]]
 #
 # WSL with a Windows editor: point UNITY_PATH at Unity.exe under /mnt/<drive>/... The package copy,
 # test project, results and log then live under %LOCALAPPDATA%\turbohttp (Unity cannot run a project
 # from a \\wsl$ path) and every path handed to Unity is converted with wslpath -m.
 #
-#   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe Tools~/unity/run-tests.sh --platform EditMode
+#   UNITY_PATH=/mnt/<drive>/<Unity 2021.3 editor>/Editor/Unity.exe Tools~/unity/run-tests.sh --platform EditMode
 #
 # --integration (implied by --category ExternalNetwork) defines TURBOHTTP_INTEGRATION_TESTS for the run so the
 # internet-facing blocks guarded by it compile (TLS integration, BouncyCastle/SslStream providers, pool tests,
