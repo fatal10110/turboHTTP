@@ -601,20 +601,24 @@ namespace TurboHTTP.WebSocket
 
                 await WriteMessageWithExtensionsAsync(opcode, payload, ct).ConfigureAwait(false);
             }
-            catch (WebSocketException ex) when (
-                ex.Error == WebSocketError.CompressionFailed ||
-                ex.Error == WebSocketError.ProtocolViolation)
-            {
-                // The outbound extension state can no longer be trusted.
-                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), ex);
-                throw;
-            }
             catch (Exception ex) when (
-                resourcesHeld &&
-                !(ex is WebSocketException) &&
-                !(ex is ArgumentException) &&
-                !(ex is OperationCanceledException))
+                (ex is WebSocketException failed &&
+                 (failed.Error == WebSocketError.CompressionFailed ||
+                  failed.Error == WebSocketError.ProtocolViolation)) ||
+                (resourcesHeld &&
+                 !(ex is WebSocketException) &&
+                 !(ex is ArgumentException) &&
+                 !(ex is OperationCanceledException)))
             {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320).
+                if (ex is WebSocketException extensionFailure)
+                {
+                    // The outbound extension state can no longer be trusted.
+                    FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), extensionFailure);
+                    throw;
+                }
+
                 var wsEx = new WebSocketException(
                     WebSocketError.SendFailed,
                     "Unexpected error while sending message; the connection was aborted.",
@@ -737,44 +741,45 @@ namespace TurboHTTP.WebSocket
                 await frame.WriteAsync(writer, stream, ct).ConfigureAwait(false);
                 TouchActivity(applicationMessage);
             }
-            catch (IOException ex)
+            catch (Exception ex) when (
+                ex is IOException ||
+                ex is SocketException ||
+                (writeStarted && !(ex is WebSocketException) && !(ex is ArgumentException)))
             {
-                var wsEx = new WebSocketException(WebSocketError.SendFailed, "I/O error while sending frame.", ex);
-                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
-                throw wsEx;
-            }
-            catch (SocketException ex)
-            {
-                var wsEx = new WebSocketException(WebSocketError.SendFailed, "Socket error while sending frame.", ex);
-                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
-                throw wsEx;
-            }
-            catch (OperationCanceledException ex) when (writeStarted)
-            {
-                var wsEx = new WebSocketException(
-                    WebSocketError.SendFailed,
-                    "Send was cancelled after the frame was started; the connection was aborted.",
-                    ex);
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one, which mapped a control-frame cancellation to SendFailed (#320).
+                // ArgumentException is argument validation before any byte is written; a stream disposed
+                // by a concurrent abort surfaces here as ObjectDisposedException and is mapped (#84).
+                WebSocketException wsEx;
+                if (ex is IOException)
+                {
+                    wsEx = new WebSocketException(WebSocketError.SendFailed, "I/O error while sending frame.", ex);
+                }
+                else if (ex is SocketException)
+                {
+                    wsEx = new WebSocketException(WebSocketError.SendFailed, "Socket error while sending frame.", ex);
+                }
+                else if (ex is OperationCanceledException)
+                {
+                    wsEx = new WebSocketException(
+                        WebSocketError.SendFailed,
+                        "Send was cancelled after the frame was started; the connection was aborted.",
+                        ex);
+                }
+                else
+                {
+                    wsEx = new WebSocketException(
+                        WebSocketError.SendFailed,
+                        "Unexpected error while sending frame; the connection was aborted.",
+                        ex);
+                }
+
                 FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
 
                 // Control-frame callers (close handshake timeout, keep-alive shutdown) handle cancellation.
-                if (!applicationMessage)
+                if (ex is OperationCanceledException && !applicationMessage)
                     throw;
 
-                throw wsEx;
-            }
-            catch (Exception ex) when (
-                writeStarted &&
-                !(ex is WebSocketException) &&
-                !(ex is ArgumentException))
-            {
-                // ArgumentException is argument validation before any byte is written; a stream disposed
-                // by a concurrent abort surfaces here as ObjectDisposedException and is mapped (#84).
-                var wsEx = new WebSocketException(
-                    WebSocketError.SendFailed,
-                    "Unexpected error while sending frame; the connection was aborted.",
-                    ex);
-                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
                 throw wsEx;
             }
             finally

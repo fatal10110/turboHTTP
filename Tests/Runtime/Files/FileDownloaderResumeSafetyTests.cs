@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -9,6 +10,7 @@ using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Files;
 using TurboHTTP.Testing;
+using TurboHTTP.Tests.Transport;
 
 namespace TurboHTTP.Tests.Files
 {
@@ -23,7 +25,7 @@ namespace TurboHTTP.Tests.Files
         [SetUp]
         public void SetUp()
         {
-            _tempDir = Path.Combine(Path.GetTempPath(), "turbohttp_resume_" + Guid.NewGuid().ToString("N"));
+            _tempDir = Path.Combine(TestTempPath.Root, "turbohttp_resume_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_tempDir);
         }
 
@@ -374,6 +376,11 @@ namespace TurboHTTP.Tests.Files
         [Test]
         public void Restart200_PartLockedWhileTruncating_NeverPairsNewValidatorWithOldBytes()
         {
+            // FileShare.None is a mandatory lock only on Windows; Linux, Android and Darwin locks are
+            // advisory, so the truncate succeeds and there is no failure to inject (#321).
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                TestRequirements.IgnoreEnvironment("Needs Windows mandatory file locking (FileShare.None) to fail the truncate.");
+
             AssertAsync.Run(async () =>
             {
                 var dest = Path.Combine(_tempDir, "restart-locked.bin");

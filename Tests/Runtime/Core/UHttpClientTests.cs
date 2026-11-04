@@ -50,22 +50,22 @@ namespace TurboHTTP.Tests.Core
                     response = await SendAsync(request, context, cancellationToken).ConfigureAwait(false);
                     EmitResponse(response, handler, context);
                 }
-                catch (OperationCanceledException)
+                catch (Exception ex) when (!(ex is OperationCanceledException))
                 {
-                    throw;
-                }
-                catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Cancelled)
-                {
-                    throw new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken);
-                }
-                catch (UHttpException ex)
-                {
-                    handler.OnResponseError(ex, context);
-                }
-                catch (Exception ex)
-                {
-                    handler.OnResponseError(new UHttpException(
-                        new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
+                    // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                    // caught by a later one, which reported a cancellation as a handler error (#320).
+                    if (ex is UHttpException httpError)
+                    {
+                        if (httpError.HttpError != null && httpError.HttpError.Type == UHttpErrorType.Cancelled)
+                            throw new OperationCanceledException(httpError.HttpError.Message, httpError, cancellationToken);
+
+                        handler.OnResponseError(httpError, context);
+                    }
+                    else
+                    {
+                        handler.OnResponseError(new UHttpException(
+                            new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
+                    }
                 }
                 finally
                 {

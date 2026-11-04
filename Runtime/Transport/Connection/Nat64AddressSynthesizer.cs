@@ -160,11 +160,7 @@ namespace TurboHTTP.Transport.Connection
             {
                 answers = await resolve(WellKnownName).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch
+            catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
             {
                 // NXDOMAIN, timeout, no resolver: synthesis is impossible (RFC 7050 section 3).
                 ct.ThrowIfCancellationRequested();

@@ -202,7 +202,7 @@ namespace TurboHTTP.Tests.Integration
             Task.Run(async () =>
             {
                 var recordingPath = Path.Combine(
-                    Path.GetTempPath(),
+                    TestTempPath.Root,
                     "turbohttp-phase7-" + Guid.NewGuid().ToString("N") + ".json");
 
                 try
@@ -271,7 +271,7 @@ namespace TurboHTTP.Tests.Integration
             Task.Run(async () =>
             {
                 var recordingPath = Path.Combine(
-                    Path.GetTempPath(),
+                    TestTempPath.Root,
                     "turbohttp-phase7-mismatch-" + Guid.NewGuid().ToString("N") + ".json");
 
                 try
@@ -338,7 +338,7 @@ namespace TurboHTTP.Tests.Integration
             Task.Run(async () =>
             {
                 var recordingPath = Path.Combine(
-                    Path.GetTempPath(),
+                    TestTempPath.Root,
                     "turbohttp-phase7-redaction-" + Guid.NewGuid().ToString("N") + ".json");
 
                 try
@@ -400,7 +400,7 @@ namespace TurboHTTP.Tests.Integration
             {
                 const int sampleCount = 20;
                 var recordingPath = Path.Combine(
-                    Path.GetTempPath(),
+                    TestTempPath.Root,
                     "turbohttp-phase7-parallel-" + Guid.NewGuid().ToString("N") + ".json");
 
                 try

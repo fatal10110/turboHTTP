@@ -101,12 +101,17 @@ namespace TurboHTTP.RateLimit
                 await hostEntry.Semaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
                 hostAcquired = true;
             }
-            catch (OperationCanceledException) when (IsDisposingOrDisposed() && !cancellationToken.IsCancellationRequested)
+            catch (Exception ex)
             {
-                throw new ObjectDisposedException(nameof(ConcurrencyLimiter));
-            }
-            catch
-            {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320).
+                if (ex is OperationCanceledException &&
+                    IsDisposingOrDisposed() &&
+                    !cancellationToken.IsCancellationRequested)
+                {
+                    throw new ObjectDisposedException(nameof(ConcurrencyLimiter));
+                }
+
                 // If per-host acquire fails/cancels after global acquire, release global permit.
                 if (globalAcquired && !hostAcquired)
                 {

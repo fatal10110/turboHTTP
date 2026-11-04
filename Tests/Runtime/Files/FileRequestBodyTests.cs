@@ -91,7 +91,7 @@ namespace TurboHTTP.Tests.Files
 
         private static string CreateTempFile(string contents)
         {
-            var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".tmp");
+            var path = System.IO.Path.Combine(TestTempPath.Root, Guid.NewGuid().ToString("N") + ".tmp");
             File.WriteAllText(path, contents, new UTF8Encoding(false));
             return path;
         }

@@ -109,12 +109,13 @@ namespace TurboHTTP.Transport.BouncyCastle
                     () => HandshakeAsync(innerStream, host, alpnProtocols, _handshakeTimeoutMillis),
                     CancellationToken.None).ConfigureAwait(false);
             }
-            catch (Exception) when (ct.IsCancellationRequested)
+            catch (Exception ex) when (ct.IsCancellationRequested || deadline.IsCancellationRequested)
             {
-                throw new OperationCanceledException("TLS handshake was canceled.", ct);
-            }
-            catch (Exception ex) when (deadline.IsCancellationRequested)
-            {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one, which turned a caller cancel into a timeout (#320).
+                if (ct.IsCancellationRequested)
+                    throw new OperationCanceledException("TLS handshake was canceled.", ct);
+
                 throw CreateHandshakeTimeout(ex);
             }
             finally

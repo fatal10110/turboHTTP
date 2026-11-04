@@ -18,10 +18,16 @@ namespace TurboHTTP.Tests.Transport.Http2
     /// </summary>
     public partial class Http2ConnectionTests
     {
+        // Built at run time: IL2CPP truncates attribute strings at a NUL (#321).
+        private static readonly object[] NulRequestHeaderCases =
+        {
+            new object[] { "X-Test", "nul" + (char)0 + "value" },
+            new object[] { "X-Bad" + (char)0, "value" },
+        };
+
         [TestCase("X-Test", "bad\r\nInjected: yes")]
         [TestCase("X-Test", "bad\nvalue")]
         [TestCase("X-Test", "bad\rvalue")]
-        [TestCase("X-Test", "nul\0value")]
         [TestCase("X-Test", "ctl\u0001value")]
         [TestCase("X-Test", "del\u007Fvalue")]
         [TestCase("X-Test", " leading")]
@@ -30,7 +36,7 @@ namespace TurboHTTP.Tests.Transport.Http2
         [TestCase(":authority", "evil.example.com")]
         [TestCase("X Bad", "value")]
         [TestCase("X-Bad\r\nInjected", "value")]
-        [TestCase("X-Bad\0", "value")]
+        [TestCaseSource(nameof(NulRequestHeaderCases))]
         public void SendRequest_WithInvalidRequestHeader_FailsBeforeAnyFrame_AndConsumesNoStreamId(
             string name, string value)
         {

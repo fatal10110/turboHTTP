@@ -136,18 +136,17 @@ namespace TurboHTTP.WebSocket
             {
                 raw = await ReadResponseHeadAsync(stream, ct, maxResponseHeaderBytes).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (!(ex is OperationCanceledException))
             {
-                throw;
-            }
-            catch (Exception ex) when (ct.IsCancellationRequested)
-            {
-                // #226: the caller disposed the stream to abort a read the platform does not cancel;
-                // that is cancellation, not a malformed or missing handshake response.
-                throw new OperationCanceledException("WebSocket handshake response read was canceled.", ex, ct);
-            }
-            catch (Exception ex)
-            {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320).
+                if (ct.IsCancellationRequested)
+                {
+                    // #226: the caller disposed the stream to abort a read the platform does not cancel;
+                    // that is cancellation, not a malformed or missing handshake response.
+                    throw new OperationCanceledException("WebSocket handshake response read was canceled.", ex, ct);
+                }
+
                 return new WebSocketHandshakeResult(
                     success: false,
                     statusCode: 0,
