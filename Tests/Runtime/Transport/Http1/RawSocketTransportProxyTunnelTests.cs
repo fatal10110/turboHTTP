@@ -694,6 +694,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = false,
                     Proxy = new ProxySettings
@@ -794,6 +795,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = false,
                     Proxy = new ProxySettings
@@ -861,6 +863,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var proxyServer = new ConnectProxyServer();
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(tlsBackend: TlsBackend.BouncyCastle),
                     DisposeTransport = true,
                     Proxy = new ProxySettings
@@ -923,6 +926,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var proxyServer = new ConnectProxyServer();
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(tlsBackend: TlsBackend.BouncyCastle),
                     DisposeTransport = true,
                     Proxy = new ProxySettings
@@ -997,6 +1001,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var proxyServer = new ConnectProxyServer();
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = new RawSocketTransport(tlsBackend: TlsBackend.BouncyCastle),
                     DisposeTransport = true,
                     Proxy = new ProxySettings
@@ -1084,6 +1089,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = new UHttpClient(new UHttpClientOptions
                 {
+                    AllowCleartext = true,
                     Transport = transport,
                     DisposeTransport = true,
                     Proxy = new ProxySettings
