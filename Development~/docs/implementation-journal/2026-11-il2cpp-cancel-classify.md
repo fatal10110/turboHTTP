@@ -53,5 +53,19 @@
 - `'./Tools~/ci/check.sh'`: pass (il2cppfilter: 0 problems).
 - New tests: `Tests/Runtime/Pipeline/DispatchBridgeCancellationClassificationTests.cs`,
   `Tests/Runtime/Transport/RawSocketTransportFailureMappingTests.cs`, `Tools~/ci/test_il2cpp_filter_check.py`.
-- Host-editor and device/emulator results: see the PR body (filled in from the runs).
-- Not run: the full Unity suites (periodic host-editor run), iOS.
+- Host editor (Unity 2021.3.45f2, Mono), PlayMode scoped filter (bridges, HTTP/2, WebSocket, client, cache,
+  observability, limiter, transport fixtures): 591 passed, 0 failed, 1 skipped (baseline skip).
+- Host editor PlayMode `--filter 'Http2AdversarialServerTests'`, three separate runs at 707c924: 15/15 each (#318).
+- IL2CPP, x86_64 emulator API 33, Unity 2021.3.45f2, Stripping High, at 707c924,
+  `--filter 'UHttpClientTests|MockHttpServerTests.InjectedDelay_RespectsCancellation|RedirectInterceptorTests|BackgroundNetworkingTests|StressTests.CancellationStorm|Http2ConnectionTests|Http2AdversarialServerTests|RawSocketTransportHttp2ConnectionManagementTests|WebSocketConnectCancellationTests|DispatchBridgeCancellationClassificationTests|RawSocketTransportFailureMappingTests|RecordReplayTransportTests'`:
+  335 total, 333 passed, 1 failed, 1 skipped. Every #320 test (including the 2026-11-03 comment's
+  WebSocketConnectCancellationTests.Upgrade_* and RawSocketTransportHttp2ConnectionManagementTests) passes. The failure is
+  `SendRequest_WithInvalidRequestHeader_*("X-Bad\0","value")`: IL2CPP truncates the attribute string at the NUL, so the
+  request is valid and waits for a response until the test's 10 s token fires. That is the test-data defect #321 item 5
+  (player-ready-tests lane), not this change.
+- A second emulator run with a narrower filter (`Http2ConnectionTests|Http2AdversarialServerTests|RawSocketTransportHttp2ConnectionManagementTests`)
+  stalled: from `SendRequest_Authority_*` on, every test failed after about 20 s with the player at 0% CPU. The same fixtures
+  passed in the first run at the same head. This matches the starved-pool/hang pattern of #330, but the cause was not
+  determined; the run was stopped to free the shared lock.
+- Not run: the phone (OnePlus 7, 80917dd4) re-run: the Family Link lock screen holds focus, so the player never starts
+  (needs-device-validation; #320 stays open for it). Also not run: the full Unity suites (periodic host-editor run), iOS.
