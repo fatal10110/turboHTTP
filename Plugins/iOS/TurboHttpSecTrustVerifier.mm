@@ -61,9 +61,12 @@ namespace
             case errSecCertificateNotValidYet:
                 return kTurboTrustNotTimeValid;
             case errSecNotTrusted:
+            case errSecCreateChainFailed: // -25318: no chain to a trusted anchor (iOS 26, #239)
                 return kTurboTrustUntrustedRoot;
             default:
-                // Host-name mismatch (errSecHostNameMismatch), usage, constraints, signatures.
+                // Host-name mismatch (errSecHostNameMismatch), usage, constraints, signatures,
+                // validity period too long (errSecCertificateValidityPeriodTooLong).
+                // Keep in sync with AppleTrustVerifier.MapEvaluationError in C#.
                 return kTurboTrustInvalid;
         }
     }

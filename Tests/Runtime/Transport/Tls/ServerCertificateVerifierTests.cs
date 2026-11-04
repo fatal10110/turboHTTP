@@ -49,9 +49,25 @@ namespace TurboHTTP.Tests.Transport.Tls
             Assert.AreEqual(expected, result.Status, "Detail: " + result.Detail);
         }
 
+        /// <summary>
+        /// Cases that register a test anchor and expect a path-validation verdict. Only the desktop
+        /// verifiers take test anchors; elsewhere (Android/iOS players) the anchors go to the
+        /// managed X509Chain, which Mono/IL2CPP cannot evaluate for these ECDSA chains
+        /// (NotSupportedException, #321). Production on those platforms uses the native
+        /// TrustManager/SecTrust verifiers (#253), which the device-only fixtures cover.
+        /// </summary>
+        private static void RequireTestAnchorVerifier()
+        {
+            if (!ServerCertificateVerifier.PlatformVerifierTrustsTestAnchors)
+                TestRequirements.IgnoreEnvironment(
+                    "Test anchors need the Windows or macOS desktop verifier; this platform evaluates them with " +
+                    "the managed X509Chain, which cannot validate the ECDSA test chains (#321).");
+        }
+
         [Test]
         public void P256Chain_ToTestAnchor_IsTrusted_AndPathEndsAtAnchor()
         {
+            RequireTestAnchorVerifier();
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
 
             var result = Verify(Certs.LeafLocalhost);
@@ -65,6 +81,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void P384Chain_ToTestAnchor_IsTrusted()
         {
+            RequireTestAnchorVerifier();
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootB);
 
             AssertStatus(CertificateVerificationStatus.Trusted, Verify(Certs.LeafP384));
@@ -87,6 +104,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void RogueRoot_WithOtherAnchorRegistered_IsUntrusted()
         {
+            RequireTestAnchorVerifier();
             // AllowUnknownCertificateAuthority is set while an anchor exists; the root still has to
             // be that anchor.
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
@@ -113,6 +131,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void ExpiredLeaf_IsNotTimeValid()
         {
+            RequireTestAnchorVerifier();
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
 
             AssertStatus(CertificateVerificationStatus.NotTimeValid, Verify(Certs.LeafExpired));
@@ -121,6 +140,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void NotYetValidLeaf_IsNotTimeValid()
         {
+            RequireTestAnchorVerifier();
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
 
             AssertStatus(CertificateVerificationStatus.NotTimeValid, Verify(Certs.LeafNotYetValid));
@@ -129,6 +149,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void NameConstraints_PermittedLeaf_IsTrusted()
         {
+            RequireTestAnchorVerifier();
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
 
             AssertStatus(CertificateVerificationStatus.Trusted,
@@ -138,6 +159,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void NameConstraints_ExcludedLeaf_IsInvalid()
         {
+            RequireTestAnchorVerifier();
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
 
             var result = VerifyFor("www.forbidden.test", Certs.LeafExcluded, Certs.ConstrainedCa);
@@ -150,6 +172,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void ServerAuthLeaf_UnderClientAuthOnlyIntermediate_IsInvalid()
         {
+            RequireTestAnchorVerifier();
             // EKU is chained: SslStream would reject this path, so the BC path must too.
             ServerCertificateVerifier.AddTestTrustAnchor(Certs.RootA);
 

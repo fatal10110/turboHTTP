@@ -20,7 +20,7 @@ namespace TurboHTTP.Tests.Files
         [SetUp]
         public void SetUp()
         {
-            _tempDir = Path.Combine(Path.GetTempPath(), "turbohttp_test_" + Guid.NewGuid().ToString("N"));
+            _tempDir = Path.Combine(TestTempPath.Root, "turbohttp_test_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_tempDir);
         }
 

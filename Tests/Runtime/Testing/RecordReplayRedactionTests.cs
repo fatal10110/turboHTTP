@@ -41,7 +41,7 @@ namespace TurboHTTP.Tests.Testing
         public void SetUp()
         {
             JsonModuleRegistration.EnsureRegistered();
-            _path = Path.Combine(Path.GetTempPath(), "turbohttp-rr-redaction-" + Guid.NewGuid().ToString("N") + ".json");
+            _path = Path.Combine(TestTempPath.Root, "turbohttp-rr-redaction-" + Guid.NewGuid().ToString("N") + ".json");
         }
 
         [TearDown]

@@ -18,10 +18,16 @@ namespace TurboHTTP.Tests.Transport.Http1
     [TestFixture]
     public class RawSocketTransportInvalidFieldTests
     {
+        // Built at run time: IL2CPP truncates attribute strings at a NUL (#321).
+        private static readonly object[] NulHeaderCases =
+        {
+            new object[] { "X-Bad", "nul" + (char)0 + "value" },
+        };
+
         [TestCase("X-Bad", "a\u0001b")]
-        [TestCase("X-Bad", "nul\0value")]
         [TestCase("X-Bad", " leading")]
         [TestCase("X Bad", "value")]
+        [TestCaseSource(nameof(NulHeaderCases))]
         public void InvalidRequestHeader_FailsWithInvalidRequest_AndSendsNoBytes(string name, string value)
         {
             AssertAsync.Run(async () =>

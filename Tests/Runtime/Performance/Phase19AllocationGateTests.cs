@@ -6,9 +6,11 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using UnityEngine;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
 using TurboHTTP.Testing;
+using TurboHTTP.Tests.Transport;
 using TurboHTTP.Transport.Http2;
 
 namespace TurboHTTP.Tests.Performance
@@ -26,6 +28,12 @@ namespace TurboHTTP.Tests.Performance
         [Test]
         public void AllocationScenarios_RespectBaselineBudget()
         {
+            // The budgets are calibrated on the Editor's Mono GC and the baseline JSON is read from
+            // the project tree, which a player does not have (#321).
+            if (!Application.isEditor)
+                TestRequirements.IgnoreEnvironment(
+                    "The allocation budgets are Editor (Mono GC) baselines read from Tests/Benchmarks; a player has neither.");
+
             Task.Run(async () =>
             {
                 var baselinePath = ResolveBaselinePath();

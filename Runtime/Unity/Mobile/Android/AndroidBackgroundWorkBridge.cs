@@ -17,9 +17,10 @@ namespace TurboHTTP.Unity.Mobile.Android
     /// deferred-work queue is tracked in memory only.
     /// </summary>
     /// <remarks>
-    /// Every plugin call is made through JNI on the calling thread (attached to the VM first), never
-    /// through <see cref="MainThreadDispatcher"/>, so nothing waits on the player loop and no worker
-    /// blocks on the main thread (#88, #181). The expiry budget is timed on the thread pool from the
+    /// Every plugin call is made synchronously through JNI on TurboHTTP's attached JNI thread (the
+    /// Unity main thread calls inline), never through <see cref="MainThreadDispatcher"/>, so nothing
+    /// waits on the player loop, no worker blocks on the main thread (#88, #181) and no pool thread
+    /// is left attached to the Java VM (#328). The expiry budget is timed on the thread pool from the
     /// player's pause notification, so it fires while the player loop is paused; the bridge owns the
     /// expiration token every scope carries and cancels it when the budget is spent. Returning to the
     /// foreground gives later scopes a fresh token. The bridge listens to the signal only while it
