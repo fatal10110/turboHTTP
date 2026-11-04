@@ -186,6 +186,49 @@ namespace TurboHTTP.Tests.WebSocket
             }
         }
 
+        // A custom IWebSocketTransport gets no ConnectAsync call for an invalid host: the connection
+        // refuses it first, with a non-retryable HandshakeFailed, and finalizes its state.
+        [Test]
+        public void ConnectionConnect_HostWithoutWireForm_FailsBeforeCustomTransport(
+            [ValueSource(nameof(InvalidUriHosts))] string host)
+        {
+            var uri = ParseOrPass("ws://" + host + "/socket");
+            var transport = new CountingTransport();
+            var connection = new WebSocketConnection();
+            try
+            {
+                // Safety bound only: the refusal happens before the token is observed.
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var ex = AssertAsync.ThrowsAsync<WebSocketException>(
+                    () => connection.ConnectAsync(uri, transport, new WebSocketConnectionOptions(), cts.Token));
+
+                Assert.AreEqual(WebSocketError.HandshakeFailed, ex.Error, ex.ToString());
+                Assert.IsFalse(ex.IsRetryable());
+                StringAssert.DoesNotContain(host, ex.Message);
+                Assert.AreEqual(0, transport.ConnectCalls, "the transport is never asked to connect");
+                Assert.AreEqual(WebSocketState.Closed, connection.State);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        private sealed class CountingTransport : IWebSocketTransport
+        {
+            public int ConnectCalls;
+
+            public Task<Stream> ConnectAsync(Uri uri, WebSocketConnectionOptions options, CancellationToken ct)
+            {
+                Interlocked.Increment(ref ConnectCalls);
+                return Task.FromResult<Stream>(new MemoryStream());
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+
         private static readonly WebSocketProxySettings Proxy =
             new WebSocketProxySettings(new Uri("http://127.0.0.1:3128"));
 
