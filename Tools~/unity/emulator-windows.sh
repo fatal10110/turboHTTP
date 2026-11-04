@@ -10,18 +10,24 @@
 emu_poll_s="${emu_poll_s:-2}"
 
 # Prints "<pid>|<avd>|<port>" for every Windows emulator*/qemu-system* process ("-" when the command line
-# names none). Returns 1 when Windows cannot be asked: powershell.exe from WSL fails now and then (empty
-# output, "UtilAcceptVsock ... accept4 failed"), so a lookup counts only when its end marker arrived.
+# names none). Returns 1 when Windows cannot be asked: WSL interop calls fail now and then, sometimes for a
+# minute or more (empty output, "UtilAcceptVsock ... accept4 failed 110"), so a lookup counts only when its
+# end marker arrived, and it is tried $1 times (default 8, about two minutes of back-off).
 win_emulator_procs() {
-  local query out="" pid cmd avd port
+  local tries="${1:-8}" try pause query out="" pid cmd avd port bound=()
+  if command -v timeout >/dev/null 2>&1; then bound=(timeout 60); fi
   query="\$ErrorActionPreference='Stop'; Get-CimInstance -ClassName Win32_Process"
   query+=" -Filter 'Name like ''qemu-system%'' or Name like ''emulator%'''"
   query+=" | ForEach-Object { '{0}|{1}' -f \$_.ProcessId, \$_.CommandLine }; 'end-of-list'"
-  for _ in 1 2 3; do
-    out="$(powershell.exe -NoProfile -NonInteractive -Command "$query" 2>/dev/null | tr -d '\r' || true)"
+  for ((try = 1; try <= tries; try++)); do
+    out="$(${bound[@]+"${bound[@]}"} powershell.exe -NoProfile -NonInteractive -Command "$query" 2>/dev/null \
+      | tr -d '\r' || true)"
     case "$out" in *end-of-list*) break ;; esac
     out=""
-    sleep "$emu_poll_s"
+    if [ "$try" -lt "$tries" ]; then
+      pause=$((emu_poll_s * try * 2)); [ "$pause" -le 30 ] || pause=30
+      sleep "$pause"
+    fi
   done
   [ -n "$out" ] || return 1
   while IFS='|' read -r pid cmd; do
@@ -33,10 +39,11 @@ win_emulator_procs() {
   done <<< "$out"
 }
 
-# Prints the pids of the Windows processes running AVD $1, one per line; returns 1 when Windows cannot be asked.
+# Prints the pids of the Windows processes running AVD $1, one per line; returns 1 when Windows cannot be asked
+# ($2 lookup tries, see win_emulator_procs).
 win_avd_pids() {
   local list pid avd port
-  list="$(win_emulator_procs)" || return 1
+  list="$(win_emulator_procs "${2:-8}")" || return 1
   while IFS='|' read -r pid avd port; do
     if [ -n "$pid" ] && [ "$avd" = "$1" ]; then printf '%s\n' "$pid"; fi
   done <<< "$list"
@@ -48,7 +55,7 @@ win_avd_pids() {
 win_stop_avd() {
   local avd="$1" polls="$2" pids="" pid i
   for ((i = 0; i < polls; i++)); do
-    pids="$(win_avd_pids "$avd")" || pids="?"
+    pids="$(win_avd_pids "$avd" 1)" || pids="?"
     [ -n "$pids" ] || return 0
     sleep "$emu_poll_s"
   done
@@ -62,7 +69,7 @@ win_stop_avd() {
     taskkill.exe /PID "$pid" /T /F >/dev/null 2>&1 || true
   done
   for ((i = 0; i < 5; i++)); do
-    pids="$(win_avd_pids "$avd")" || pids="?"
+    pids="$(win_avd_pids "$avd" 1)" || pids="?"
     [ -n "$pids" ] || return 0
     sleep "$emu_poll_s"
   done

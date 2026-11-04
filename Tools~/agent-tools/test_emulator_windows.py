@@ -97,14 +97,14 @@ class EmulatorWindowsTests(unittest.TestCase):
 
     def test_lookup_retries_a_failed_interop_call(self):
         self.procs((33104, f"{QEMU} -avd turbohttp-api33 -port 5560"))
-        pathlib.Path(f"{self.state}.fail").write_text("2")
+        pathlib.Path(f"{self.state}.fail").write_text("7")
         result = self.run_lib("win_avd_pids turbohttp-api33")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.split(), ["33104"])
 
     def test_lookup_failure_is_not_read_as_no_process(self):
         self.procs((33104, f"{QEMU} -avd turbohttp-api33 -port 5560"))
-        pathlib.Path(f"{self.state}.fail").write_text("9")
+        pathlib.Path(f"{self.state}.fail").write_text("99")
         result = self.run_lib("win_stop_avd turbohttp-api33 0")
         self.assertEqual(result.returncode, 1)
         self.assertIn("cannot list Windows processes", result.stderr)
