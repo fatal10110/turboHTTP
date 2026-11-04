@@ -157,7 +157,9 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
 5. **iOS simulator run (#99).** `'./Tools~/unity/build-ios-test-player.sh' [--out <dir>] [--stripping
    Low|High] [--filter ...]` builds the PlayMode suite as an IL2CPP Simulator SDK player and exports the
    Xcode project (a Windows editor cannot run it); a Mac builds it with `xcodebuild`, runs it on a
-   simulator and reads `results.xml` from the app's data container. The script removes `READY`, `DONE`
+   simulator and reads `results.xml` from the app's data container. The handoff folder is local: pass
+   `--out <handoff>/xcode` or export `UNITY_IOS_HANDOFF_OUT`, and keep machine paths out of the repo,
+   issues and PRs. The script removes `READY`, `DONE`
    and `out/` next to `--out` before the build and creates `READY` after the copy. The player logs
    `TURBOHTTP_DEVICE_TEST`/`_FAIL`/`_HANG` markers, rewrites `results.xml` after every fixture
    (`partial="true"`) so a hang still leaves results, and quits when the run ends. Unity 2021.3 ships an

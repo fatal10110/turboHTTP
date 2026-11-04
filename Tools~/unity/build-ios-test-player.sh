@@ -3,12 +3,14 @@
 # IL2CPP player of a throwaway test project that consumes a synced copy of this package and exports the
 # Xcode project WITHOUT running it (a Windows editor cannot), so a Mac can build and run it on a simulator.
 #
-#   UNITY_PATH=/mnt/e/Unity/Hub/6000.3.26f1/Editor/Unity.exe UNITY_IOS_TEST_PROJECT=<cache>/ios-testproj-6000.3 \
+#   UNITY_PATH=<Unity 6 editor binary> UNITY_IOS_TEST_PROJECT=<cache>/ios-testproj-<version> \
 #     Tools~/unity/build-ios-test-player.sh [--out <dir>] [--stripping Low|High] [--filter <regex>] [--category <name>] [--integration]
 #
-# --out (default /mnt/c/turbo-ios/xcode) receives the Xcode project (Unity-iPhone.xcodeproj at its root)
-# after a successful build (editor exit 0 and "Build Finished, Result: Success" in the log);
-# <out>/../READY is created only after the copy finishes, and stale READY, DONE and out/ in that folder
+# --out, or UNITY_IOS_HANDOFF_OUT when --out is not given, receives the Xcode project
+# (Unity-iPhone.xcodeproj at its root). It is the xcode/ folder inside the handoff folder the Mac mounts.
+# The handoff folder is local configuration with no default here: set it in your shell, not in the repo.
+# The project is written there after a successful build (editor exit 0 and "Build Finished, Result: Success"
+# in the log); <out>/../READY is created only after the copy finishes, and stale READY, DONE and out/ in that folder
 # are removed before the build. The player runs standalone (no ConnectToHost),
 # logs TURBOHTTP_DEVICE_TEST per test, TURBOHTTP_DEVICE_FAIL with message and stack, TURBOHTTP_DEVICE_HANG
 # for a test running over 3 minutes, rewrites Application.persistentDataPath/results.xml after every
@@ -21,7 +23,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-out_dir=/mnt/c/turbo-ios/xcode; stripping=High; filter=""; category=""; integration=0
+out_dir="${UNITY_IOS_HANDOFF_OUT:-}"; stripping=High; filter=""; category=""; integration=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out_dir="$2"; shift 2 ;;
@@ -33,6 +35,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$stripping" in Low|High) ;; *) echo "build-ios-test-player: --stripping Low|High" >&2; exit 2 ;; esac
+[ -n "$out_dir" ] || { echo "build-ios-test-player: pass --out <handoff folder>/xcode or set UNITY_IOS_HANDOFF_OUT" >&2; exit 2; }
 if [ "$category" = ExternalNetwork ]; then integration=1; fi
 
 unity="${UNITY_PATH:-}"
