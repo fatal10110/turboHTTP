@@ -374,10 +374,13 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
+                // The handler runs after the accept loop counted the connection (#359, #370).
+                var failingConnectionCounted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 using var server = new HttpServer(async (client, index) =>
                 {
                     if (index == 1)
                     {
+                        failingConnectionCounted.TrySetResult(true);
                         return;
                     }
 
@@ -407,6 +410,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 var key = $"127.0.0.1:{server.Port}:";
                 var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
                 queue.Enqueue(failingConn);
+                await failingConnectionCounted.Task;
 
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                     await client.Post($"http://127.0.0.1:{server.Port}/").WithBody("test").SendBufferedAsync());
@@ -2164,10 +2168,13 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
+                // The handler runs after the accept loop counted the connection (#359, #370).
+                var failingConnectionCounted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 using var proxyServer = new HttpServer(async (client, index) =>
                 {
                     if (index == 1)
                     {
+                        failingConnectionCounted.TrySetResult(true);
                         return;
                     }
 
@@ -2197,6 +2204,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 var key = "127.0.0.1:" + proxyServer.Port + ":";
                 var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
                 queue.Enqueue(failingConn);
+                await failingConnectionCounted.Task;
 
                 var proxySettings = new ProxySettings
                 {
