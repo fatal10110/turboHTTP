@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Transport.Tcp;
 using LoopbackPair = TurboHTTP.Tests.Transport.SocketChannelLifecycleTests.LoopbackPair;
+using Send = TurboHTTP.Tests.Transport.PollSelectSocketChannelSendTests;
 
 namespace TurboHTTP.Tests.Transport
 {
@@ -67,72 +68,65 @@ namespace TurboHTTP.Tests.Transport
             AssertAsync.Run(async () =>
             {
                 const int payload = 4 * 1024 * 1024;
-                using var pair = await LoopbackPair.CreateAsync(bufferSize: 32 * 1024);
-                using var channel = new PollSelectSocketChannel(pair.Client);
 
-                var outgoing = Pattern(payload, 7);
-                var incomingExpected = Pattern(payload, 13);
-
-                // The peer writes its whole payload before it reads anything. If the client stops
-                // servicing receives while its own send is blocked on a full kernel buffer, both
-                // sides wait on each other forever.
-                var peer = Task.Run(() =>
+                // The watchdog covers the whole body. The send call itself runs on its own thread,
+                // so a SendAsync that does not return (#329) fails here instead of stalling the run.
+                var watchdog = Task.Delay(TimeSpan.FromSeconds(30));
+                LoopbackPair pair = null;
+                PollSelectSocketChannel channel = null;
+                try
                 {
-                    pair.Server.Blocking = true;
-                    int sent = 0;
-                    while (sent < payload)
-                        sent += pair.Server.Send(incomingExpected, sent, payload - sent, SocketFlags.None);
+                    pair = await Send.Within(LoopbackPair.CreateAsync(bufferSize: 32 * 1024), watchdog,
+                        "loopback connect");
+                    channel = new PollSelectSocketChannel(pair.Client);
+                    var ch = channel;
+                    var server = pair.Server;
 
-                    var received = new byte[payload];
-                    int read = 0;
-                    while (read < payload)
+                    var outgoing = Send.Pattern(payload, 7);
+                    var incomingExpected = Send.Pattern(payload, 13);
+
+                    // The receive loop starts first, as a full-duplex HTTP/2 connection's would.
+                    var receive = Task.Run(async () =>
                     {
-                        int n = pair.Server.Receive(received, read, payload - read, SocketFlags.None);
-                        if (n == 0) throw new InvalidOperationException("client closed early");
-                        read += n;
-                    }
+                        var received = new byte[payload];
+                        int read = 0;
+                        while (read < payload)
+                        {
+                            int n = await ch.ReceiveAsync(received, read, Math.Min(16 * 1024, payload - read),
+                                CancellationToken.None);
+                            if (n == 0) throw new InvalidOperationException("peer closed early");
+                            read += n;
+                        }
 
-                    return received;
-                });
+                        return received;
+                    });
 
-                var send = channel.SendAsync(outgoing, CancellationToken.None).AsTask();
-                var receive = Task.Run(async () =>
-                {
-                    var received = new byte[payload];
-                    int read = 0;
-                    while (read < payload)
+                    // The peer writes its whole payload before it reads anything. If the client stops
+                    // servicing receives while its own send is blocked on a full kernel buffer, both
+                    // sides wait on each other forever.
+                    var peer = Send.StartThread(() =>
                     {
-                        int n = await channel.ReceiveAsync(received, read, Math.Min(16 * 1024, payload - read),
-                            CancellationToken.None);
-                        if (n == 0) throw new InvalidOperationException("peer closed early");
-                        read += n;
-                    }
+                        server.Blocking = true;
+                        int sent = 0;
+                        while (sent < payload)
+                            sent += server.Send(incomingExpected, sent, payload - sent, SocketFlags.None);
+                        return Send.ReadExactly(server, payload);
+                    });
 
-                    return received;
-                });
+                    var send = Send.StartThread(() => ch.SendAsync(outgoing, CancellationToken.None).AsTask())
+                        .Unwrap();
 
-                var all = Task.WhenAll(send, receive, peer);
-                var finished = await Task.WhenAny(all, Task.Delay(TimeSpan.FromSeconds(30)));
-                if (!ReferenceEquals(all, finished))
-                {
-                    // Unblock the stuck tasks before failing.
-                    channel.Dispose();
-                    pair.Dispose();
-                    Assert.Fail("full-duplex transfer deadlocked");
+                    await Send.Within(Task.WhenAll(send, receive, peer), watchdog, "full-duplex transfer");
+                    Send.AssertBytes(incomingExpected, await receive);
+                    Send.AssertBytes(outgoing, await peer);
                 }
-
-                await all;
-                CollectionAssert.AreEqual(incomingExpected, await receive);
-                CollectionAssert.AreEqual(outgoing, await peer);
+                finally
+                {
+                    // Also unblocks any stuck task after a watchdog failure.
+                    channel?.Dispose();
+                    pair?.Dispose();
+                }
             });
-        }
-
-        private static byte[] Pattern(int length, int seed)
-        {
-            var data = new byte[length];
-            for (int i = 0; i < length; i++)
-                data[i] = (byte)((i * seed + (i >> 10)) & 0xFF);
-            return data;
         }
     }
 }
