@@ -34,13 +34,15 @@ jobs:
         id: unity
         run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
 
-      # 34 MB of managed DLLs extracted from the ~4 GB unityci/editor image; the
-      # image is only pulled when the cache misses (new Unity version).
-      - name: Cache Unity managed DLLs
+      # 34 MB of managed DLLs plus Unity's NUnit and Test Framework package tarballs (1 MB, for the
+      # Tests/ shadow build, #297) extracted from the ~4 GB unityci/editor image; the image is only
+      # pulled when the cache misses (new Unity version). Its own key: the interop jobs cache the
+      # DLLs without the packages (shadow_build.py --no-tests).
+      - name: Cache Unity managed DLLs and test packages
         uses: actions/cache@v6
         with:
           path: .tools/unity-managed
-          key: unity-managed-${{ steps.unity.outputs.version }}
+          key: unity-managed-tests-${{ steps.unity.outputs.version }}
 
       - name: Cache NuGet packages
         uses: actions/cache@v6
