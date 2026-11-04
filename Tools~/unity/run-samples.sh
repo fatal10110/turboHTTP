@@ -3,7 +3,7 @@
 # per-sample console logs (#268). Public network (httpbin.org, jsonplaceholder.typicode.com):
 # a manual / host-editor tool, never PR CI, never part of the package's own test suites.
 #
-#   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe Tools~/unity/run-samples.sh
+#   UNITY_PATH=<Unity 2021.3 editor binary> Tools~/unity/run-samples.sh
 #
 # The samples are imported with the Package Manager API behind the "Import" button
 # (Sample.Import, Tools~/unity/samples-import/ImportSamples.cs) into

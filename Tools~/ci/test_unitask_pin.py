@@ -103,7 +103,7 @@ class Lock(unittest.TestCase):
         self.assertEqual(cli("check-lock", self.path, "file:C:/cache/unitask"), 2)
 
     def test_the_local_copy_passes_only_when_named(self):
-        copy = "file:C:/Users/u/AppData/Local/turbohttp/unitask-" + unitask_pin.SHA
+        copy = "file:C:/home/u/AppData/Local/turbohttp/unitask-" + unitask_pin.SHA
         # Unity may write the path with backslashes or another drive-letter case.
         self.lock({"version": copy.replace("/", "\\").replace("file:C", "file:c"), "depth": 0,
                    "source": "local", "dependencies": {}})
