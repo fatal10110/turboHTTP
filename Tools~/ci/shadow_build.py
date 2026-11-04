@@ -14,10 +14,16 @@ The Tests/ asmdefs (#297) compile with UNITY_INCLUDE_TESTS against the NUnit and
 packages Unity 2021.3 bundles (fetch-unity-dlls.sh copies them next to the DLLs), so a compile
 error or an NUnit API Unity's NUnit lacks fails here. Tests are outside the analyzer ratchet.
 
+With the tests, the UniTask adapters (TurboHTTP.UniTask, TurboHTTP.UniTask.WebSocket and
+TurboHTTP.Tests.UniTask, #311) compile against UniTask's runtime asmdef at the commit pinned in
+unitask_pin.py, fetched once with git into .tools/unitask/ and verified against the SHA. Their
+TURBOHTTP_UNITASK comes from their versionDefines, as in Unity. UniTask itself is external: no analyzers.
+
 Usage:
   Tools~/ci/shadow_build.py                     # editor variant
   Tools~/ci/shadow_build.py --variant all       # editor + ios + android
   Tools~/ci/shadow_build.py --no-tests          # runtime assemblies only (tools that need the DLLs)
+  Tools~/ci/shadow_build.py --no-unitask        # offline: skip the UniTask fetch (adapters not built)
   Tools~/ci/shadow_build.py --update-baseline
 """
 import argparse
@@ -33,6 +39,7 @@ from xml.sax.saxutils import escape
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import doc_snippets  # noqa: E402
+import unitask_pin  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CI = os.path.join(ROOT, "Tools~", "ci")
@@ -175,6 +182,49 @@ def test_framework(dlls):
     return asmdefs, {"nunit.framework.dll": nunit}
 
 
+def unitask_package(package_dir):
+    """UniTask's runtime asmdef from a fetched package directory, as an external assembly."""
+    path = os.path.join(package_dir, "Runtime", "UniTask.asmdef")
+    with open(path, encoding="utf-8-sig") as fh:
+        data = json.load(fh)
+    if data.get("name") != "UniTask":
+        sys.exit(f"shadow_build: {path} is {data.get('name')!r}, expected the 'UniTask' assembly")
+    data["_dir"] = os.path.dirname(path)
+    data["_external"] = True
+    return {"UniTask": data}
+
+
+def _version(text):
+    parts = [int(p) for p in re.findall(r"\d+", text.split("-", 1)[0])[:3]]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def version_matches(version, expression):
+    """Unity versionDefines expression: "x.y.z" (>= x.y.z) or an interval like "[1.0,2.0)"."""
+    expression = expression.strip()
+    if not expression:
+        return True
+    if expression[0] not in "[(":
+        return _version(version) >= _version(expression)
+    lo, _, hi = expression[1:-1].partition(",")
+    if "," not in expression:  # "[x]": exactly x
+        return _version(version) == _version(lo)
+    v = _version(version)
+    if lo.strip() and not (v >= _version(lo) if expression[0] == "[" else v > _version(lo)):
+        return False
+    if hi.strip() and not (v <= _version(hi) if expression[-1] == "]" else v < _version(hi)):
+        return False
+    return True
+
+
+def asmdef_defines(asm, defines, packages):
+    """The variant defines plus the asmdef's versionDefines whose package is installed (Unity applies
+    versionDefines to their own asmdef only)."""
+    extra = {v["define"] for v in asm.get("versionDefines") or []
+             if v.get("name") in packages and version_matches(packages[v["name"]], v.get("expression", ""))}
+    return defines | extra
+
+
 def sources(asmdef_dir):
     files = []
     for dirpath, dirnames, filenames in os.walk(asmdef_dir):
@@ -200,17 +250,19 @@ def included(asm, platform, defines):
     return platform_ok(asm, platform) and all(constraint_ok(c, defines) for c in asm.get("defineConstraints") or [])
 
 
-def generate(variant, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs=True):
+def generate(variant, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs=True, packages=None):
     """Writes <out>/<variant>/All.csproj; returns (path, projects, skipped, dropped).
 
-    dropped lists (name, missing references) for asmdefs that pass their platform and define
-    constraints but reference an assembly the build cannot provide; main() fails on them.
+    packages maps an installed UPM package name to its version for versionDefines (com.cysharp.unitask
+    when UniTask was fetched). dropped lists (name, missing references) for asmdefs that pass their
+    platform and define constraints but reference an assembly the build cannot provide; main() fails on them.
     """
     platform, extra, editor_visible = VARIANTS[variant]
     precompiled = precompiled or {}
+    packages = packages or {}
     defines = set(COMMON_DEFINES + extra + (["UNITY_INCLUDE_TESTS"] if tests else []))
     candidates = {n: a for n, a in asmdefs.items() if tests or not (a.get("_tests") or a.get("_external"))}
-    chosen = {n: a for n, a in candidates.items() if included(a, platform, defines)}
+    chosen = {n: a for n, a in candidates.items() if included(a, platform, asmdef_defines(a, defines, packages))}
 
     # Like Unity, ignore a reference to an assembly that is not built for this platform (the runtime
     # tests' UnityEditor.TestRunner reference in a player build). Any other unsatisfied reference drops
@@ -249,7 +301,7 @@ def generate(variant, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs
             "  <PropertyGroup>",
             f"    <AssemblyName>{name}</AssemblyName>",
             f"    <AllowUnsafeBlocks>{'true' if a.get('allowUnsafeCode') else 'false'}</AllowUnsafeBlocks>",
-            f"    <DefineConstants>$(DefineConstants);{';'.join(sorted(defines))}</DefineConstants>",
+            f"    <DefineConstants>$(DefineConstants);{';'.join(sorted(asmdef_defines(a, defines, packages)))}</DefineConstants>",
         ]
         if a.get("_tests") or a.get("_external"):
             # Tests and Unity's Test Framework source: compiler errors only, no analyzer policy.
@@ -326,13 +378,13 @@ def baseline_key(d):
     return f"{d['rule']}|{path}|{text}"
 
 
-def run_variants(variants, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs=True):
+def run_variants(variants, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs=True, packages=None):
     """Generates and builds each variant; returns (failed, ratchet warning keys, errors)."""
     found = collections.Counter()
     failed = False
     all_errors = []
     for v in variants:
-        project, projects, skipped, dropped = generate(v, asmdefs, dlls, out, precompiled, tests, docs)
+        project, projects, skipped, dropped = generate(v, asmdefs, dlls, out, precompiled, tests, docs, packages)
         print(f"shadow_build[{v}]: {len(projects)} assemblies (skipped: {', '.join(skipped) or 'none'})")
         for name, missing in dropped:
             # A silently skipped assembly would hide every error in it (e.g. all of Tests/Runtime).
@@ -353,7 +405,7 @@ def run_variants(variants, asmdefs, dlls, out=OUT, precompiled=None, tests=True,
             if d["kind"] != "warning":
                 continue
             rel = os.path.relpath(os.path.abspath(d["file"]), ROOT)
-            if rel.startswith("..") or rel.startswith(VENDORED) or rel.startswith(".build") or rel.endswith(".md"):
+            if rel.startswith(("..", ".build", ".tools")) or rel.startswith(VENDORED) or rel.endswith(".md"):
                 continue
             if rel.startswith(tuple(t + os.sep for t in TEST_DIRS)):
                 continue  # tests: compile errors only (#297), no warning ratchet
@@ -374,6 +426,8 @@ def main():
     ap.add_argument("--update-baseline", action="store_true")
     ap.add_argument("--no-tests", action="store_true",
                     help="skip the Tests/ asmdefs (for tools that only need the runtime assemblies)")
+    ap.add_argument("--no-unitask", action="store_true",
+                    help="do not fetch UniTask (offline); the UniTask adapters are then not built")
     args = ap.parse_args()
 
     dlls = unity_dlls()
@@ -386,8 +440,22 @@ def main():
                      f"{' or '.join(package_tarball_dirs(dlls))}; run Tools~/ci/fetch-unity-dlls.sh "
                      "(it completes an older cache), or pass --no-tests")
         asmdefs.update(framework)
+    packages = {}
+    # The UniTask adapters (#311) build with the tests: --no-tests (interop, soak, fuzz) stays network-free.
+    if not args.no_tests and not args.no_unitask:
+        try:
+            package_dir = unitask_pin.fetch()
+        except unitask_pin.PinError as e:
+            sys.exit(f"shadow_build: UniTask {unitask_pin.TAG}: {e}\n"
+                     "  (offline: pass --no-unitask; the UniTask adapters are then not compiled)")
+        asmdefs.update(unitask_package(package_dir))
+        packages[unitask_pin.PACKAGE] = unitask_pin.TAG
+    elif not args.no_tests:
+        print("shadow_build: --no-unitask: TurboHTTP.UniTask, TurboHTTP.UniTask.WebSocket and "
+              "TurboHTTP.Tests.UniTask are not compiled")
     variants = list(VARIANTS) if args.variant == "all" else [args.variant]
-    failed, found, _ = run_variants(variants, asmdefs, dlls, precompiled=precompiled, tests=not args.no_tests)
+    failed, found, _ = run_variants(variants, asmdefs, dlls, precompiled=precompiled, tests=not args.no_tests,
+                                    packages=packages)
 
     if args.update_baseline:
         with open(BASELINE, "w") as f:

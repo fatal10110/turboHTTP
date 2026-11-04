@@ -87,6 +87,20 @@ in `tooling.md`.
   `Task`/`ValueTask` overload ambiguity, new constructor parameters), then re-run: hidden failures
   show up only after the compile fix.
 - Runtime tests run in PlayMode; an EditMode run against `TurboHTTP.Tests.Runtime` discovers 0 tests.
+- **UniTask adapters (#311).** `TurboHTTP.Tests.UniTask` (`UniTaskCancellationTests`) compiles only
+  when the project has `com.cysharp.unitask`, which the test project does not install by default.
+  Run it with `--with-unitask`, which adds UniTask from the Cysharp git repository at the tag pinned
+  in `Tools~/ci/unitask_pin.py` (needs git and github.com):
+  `'./Tools~/unity/run-tests.sh' --platform PlayMode --with-unitask --filter 'UniTaskCancellationTests'`.
+  These are PlayMode tests. The script exits 2 when `Packages/packages-lock.json` resolved a commit
+  other than the pinned SHA, and 4 when no `TurboHTTP.Tests.UniTaskAdapter` test ran (an EditMode run,
+  or a filter that matches none). A run without the flag removes the package again. Unity resolves git
+  packages only when git is on the editor host's PATH (it says "No 'git' executable was found"; the
+  Windows host editor has none today). Without git, pass `--with-unitask=local`: it installs the same
+  pinned commit from the SHA-verified checkout the shadow build fetches (git in WSL), copied next to the
+  test project as a `file:` package, and the lock must then name that copy. The shadow build
+  in `check.sh` compiles the same commit, so a compile error in the adapters already fails there
+  (`tooling.md`, "UniTask pin", also for bumping the version).
 - Read the skipped count in the result XML: a skip is not a pass (CONNECT tunnel tests skip today, #151).
 - A journal or PR that says "Unity not run" or "isolated .NET harness only" is unverified. Record
   exactly which lane ran: EditMode, PlayMode, IL2CPP player, device.
@@ -110,6 +124,7 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
 './Tools~/unity/run-tests.sh' --platform EditMode                       # 1. full suites + skip gate
 './Tools~/unity/run-tests.sh' --platform PlayMode
 './Tools~/unity/run-tests.sh' --platform PlayMode --category ExternalNetwork   # 2. internet tests
+'./Tools~/unity/run-tests.sh' --platform PlayMode --with-unitask --filter 'UniTaskCancellationTests'  # 2b. UniTask adapters
 './Tools~/unity/build-player.sh' --target win64-mono                    # 3. player builds
 './Tools~/unity/build-player.sh' --target android-il2cpp                #    (+ --bouncycastle; win64-il2cpp when the SDK is installed)
 ```
@@ -157,7 +172,10 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
 5. **iOS simulator run (#99).** `'./Tools~/unity/build-ios-test-player.sh' [--out <dir>] [--stripping
    Low|High] [--filter ...]` builds the PlayMode suite as an IL2CPP Simulator SDK player and exports the
    Xcode project (a Windows editor cannot run it); a Mac builds it with `xcodebuild`, runs it on a
-   simulator and reads `results.xml` from the app's data container. The script removes `READY`, `DONE`
+   simulator and reads `results.xml` from the app's data container. The handoff folder is local: pass
+   `--out <handoff>/xcode` or export `UNITY_IOS_HANDOFF_OUT=<handoff>/xcode` (the `xcode/` folder, not the
+   handoff folder itself; any other last component exits 2), and keep machine paths out of the repo,
+   issues and PRs. The script removes `READY`, `DONE`
    and `out/` next to `--out` before the build and creates `READY` after the copy. The player logs
    `TURBOHTTP_DEVICE_TEST`/`_FAIL`/`_HANG` markers, rewrites `results.xml` after every fixture
    (`partial="true"`) so a hang still leaves results, and quits when the run ends. Unity 2021.3 ships an

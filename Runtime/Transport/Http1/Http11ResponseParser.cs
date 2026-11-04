@@ -112,6 +112,7 @@ namespace TurboHTTP.Transport.Http1
         internal ParsedResponseHead(Http11ResponseParser.BufferedStreamReader reader)
         {
             _reader = reader ?? throw new ArgumentNullException(nameof(reader));
+            _reader.MarkHeadComplete();
         }
 
         public HttpStatusCode StatusCode { get; internal set; }
@@ -1041,6 +1042,8 @@ namespace TurboHTTP.Transport.Http1
             private int _start;
             private int _end;
             private volatile bool _disposed;
+            private bool _headComplete;
+            private Task<int> _raceRead;
 
             public BufferedStreamReader(Stream stream, int bufferSize = DefaultBufferSize)
             {
@@ -1056,7 +1059,23 @@ namespace TurboHTTP.Transport.Http1
                     return;
 
                 _disposed = true;
+
+                // A head read abandoned on cancellation (#293) may still write into the buffer:
+                // it goes to the GC instead of the pool.
+                var raceRead = _raceRead;
+                if (raceRead != null && !raceRead.IsCompleted)
+                    return;
+
                 ArrayPool<byte>.Shared.Return(_buffer);
+            }
+
+            /// <summary>
+            /// Called when a <see cref="ParsedResponseHead"/> takes the reader: from here on the body
+            /// source owns it, and its reads keep their own cancellation handling (no per-read race).
+            /// </summary>
+            internal void MarkHeadComplete()
+            {
+                _headComplete = true;
             }
 
             /// <summary>
@@ -1291,7 +1310,23 @@ namespace TurboHTTP.Transport.Http1
                 _start = 0;
                 _end = 0;
 
-                int read = await _stream.ReadAsync(_buffer, 0, _buffer.Length, ct).ConfigureAwait(false);
+                var pending = _stream.ReadAsync(_buffer, 0, _buffer.Length, ct);
+                int read;
+                if (_headComplete || !ct.CanBeCanceled || pending.IsCompleted)
+                {
+                    read = await pending.ConfigureAwait(false);
+                }
+                else
+                {
+                    // Head phase (#293): Mono and IL2CPP may never end a pending socket read after
+                    // the token fired and the transport disposed the connection, so the token wins
+                    // the race and the read is abandoned. The abandoned read keeps the buffer
+                    // (Dispose leaves it to the GC) and its end disposes the stream.
+                    _raceRead = pending;
+                    read = await AbandonableTask.WaitAsync(pending, ct, _stream).ConfigureAwait(false);
+                    _raceRead = null;
+                }
+
                 if (read > 0)
                     _end = read;
 

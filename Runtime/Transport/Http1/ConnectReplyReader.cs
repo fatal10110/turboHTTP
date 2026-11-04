@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Http1
 {
@@ -85,11 +86,21 @@ namespace TurboHTTP.Transport.Http1
         /// <see cref="UHttpErrorType.NetworkError"/> on EOF before the header block ends, a malformed
         /// status line, or input beyond <see cref="MaxLineBytes"/> / <see cref="MaxHeaderBytes"/>.
         /// </exception>
-        public static async Task<ConnectReply> ReadAsync(Stream stream, CancellationToken ct)
+        /// <remarks>
+        /// Cancellation ends the call at once even when the platform read ignores the token and the
+        /// disposal of its socket (#293): the pending read is abandoned with its pooled buffers (they
+        /// are returned only after it ends) and its end disposes <paramref name="stream"/>.
+        /// </remarks>
+        public static Task<ConnectReply> ReadAsync(Stream stream, CancellationToken ct)
         {
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
+            return AbandonableTask.WaitAsync(ReadCoreAsync(stream, ct), ct, stream);
+        }
+
+        private static async Task<ConnectReply> ReadCoreAsync(Stream stream, CancellationToken ct)
+        {
             using var reader = new LineReader(
                 stream,
                 MaxHeaderBytes,
@@ -132,14 +143,21 @@ namespace TurboHTTP.Transport.Http1
         /// <see cref="UHttpErrorType.NetworkError"/> on EOF inside the body, invalid framing, a
         /// non-chunked Transfer-Encoding, or a body larger than <see cref="MaxDrainBytes"/>.
         /// </exception>
-        public static async Task DrainBodyAsync(Stream stream, ConnectReply reply, CancellationToken ct)
+        /// <remarks>Cancellation abandons a pending read as <see cref="ReadAsync"/> does (#293).</remarks>
+        public static Task DrainBodyAsync(Stream stream, ConnectReply reply, CancellationToken ct)
         {
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
             if (reply == null)
                 throw new ArgumentNullException(nameof(reply));
             if (reply.IsTunnelEstablished)
-                return;
+                return Task.CompletedTask;
+
+            return AbandonableTask.WaitAsync(DrainBodyCoreAsync(stream, reply, ct), ct, stream);
+        }
+
+        private static async Task DrainBodyCoreAsync(Stream stream, ConnectReply reply, CancellationToken ct)
+        {
 
             const string drainLimitMessage = "Proxy CONNECT response body is too large to drain.";
             var transferEncoding = reply.Headers.Get("Transfer-Encoding");

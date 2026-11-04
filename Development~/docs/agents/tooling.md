@@ -56,12 +56,22 @@ The `Tests/` asmdefs are compiled too (#297), with `UNITY_INCLUDE_TESTS` defined
   in shipped code.
 - **No silent drops.** An asmdef that passes its platform and define constraints but references an
   assembly the build cannot provide fails the build (`DROPPED`). Before, it was skipped silently.
-  `TurboHTTP.Tests.UniTask` and the UniTask modules are still skipped by their `TURBOHTTP_UNITASK`
-  constraint (#311).
-- **Opting out.** `shadow_build.py --no-tests` builds only the shipped assemblies. The interop, soak,
-  fuzz and Autobahn `run.sh` scripts use it.
+- **UniTask adapters (#311).** With the tests, the build fetches UniTask at the commit pinned in
+  `Tools~/ci/unitask_pin.py` (see "UniTask pin" below) into `.tools/unitask/<sha>/` with git, once,
+  and compiles its runtime asmdef (`UniTask`, external: no analyzers, outside the ratchet; its own
+  `Linq`/`External/*` asmdefs are not built). `TurboHTTP.UniTask`, `TurboHTTP.UniTask.WebSocket` and
+  `TurboHTTP.Tests.UniTask` then get `TURBOHTTP_UNITASK` from their `versionDefines`, scoped to those
+  asmdefs as in Unity, and compile in every variant. UniTask's own `versionDefines` on
+  `com.unity.modules.*` are not applied, so its module-specific code (physics, UI, …) is not built.
+  The first build needs git and access to github.com; offline, `--no-unitask` (on `shadow_build.py`
+  or `check.sh`) skips the fetch and prints that the adapters were not compiled.
+- **Opting out.** `shadow_build.py --no-tests` builds only the shipped assemblies, without the UniTask
+  fetch, so it never needs the network. The interop, soak, fuzz and Autobahn `run.sh` scripts use it.
 - **Proof.** `Tools~/ci/test_shadow_build_tests.py` (in `check.sh --full`) proves that a compile
   error, `Assert.Multiple`, `Assert.ThrowsAsync` and an unresolved reference each fail the build.
+  `Tools~/ci/test_unitask_pin.py` (also `--full`, no network) covers the pin: the fetch against a
+  local git remote (wrong commit, moved tag), the `packages-lock.json` check, the result check and the
+  `versionDefines` wiring.
 
 `check_repo.py unitynunit` and `ignores` stay: they also catch tests that compile but that Unity
 does not run (`async Task` test methods).
@@ -222,3 +232,31 @@ gh api repos/fatal10110/turboHTTP/rulesets --jq '.[] | "\(.id) \(.name) \(.enfor
    `fetch-unity-dlls.sh` if GameCI moved on.
 4. Re-run `"Tools~/ci/check.sh" --full`; update `COMMON_DEFINES` in `shadow_build.py` if the new
    Unity defines more `UNITY_*_OR_NEWER` symbols.
+
+## UniTask pin
+
+The UniTask adapters (`TurboHTTP.UniTask`, `TurboHTTP.UniTask.WebSocket`, `TurboHTTP.Tests.UniTask`)
+are compiled against one UniTask release, from the Cysharp git repository (owner decision on #311,
+2026-11-04: the git URL customers use, pinned by tag and commit; no OpenUPM, never UniTask source in
+this repository). `TAG` and `SHA` in `Tools~/ci/unitask_pin.py` are the only copy of the pin:
+
+- the shadow build fetches exactly `SHA` (git checks the object ids) and, on the first fetch, checks
+  that `TAG` still points at it;
+- `'./Tools~/unity/run-tests.sh' --with-unitask` installs
+  `https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask#<TAG>` and exits 2
+  when `Packages/packages-lock.json` resolved another commit. `--with-unitask=local` (an editor host
+  without git) installs a copy of the shadow build's verified checkout of `SHA` as a `file:` package
+  instead, and the lock must name that copy.
+
+To bump:
+
+1. `git ls-remote https://github.com/Cysharp/UniTask.git 'refs/tags/<tag>' 'refs/tags/<tag>^{}'`; the
+   commit is the `^{}` line for an annotated tag, else the only line.
+2. Change `TAG` and `SHA` together in `Tools~/ci/unitask_pin.py`.
+3. `"Tools~/ci/check.sh"` (fetches the new commit into `.tools/unitask/<sha>/`; fix any adapter
+   compile error, remembering that the build has Unity 2021.3's defines: no `UNITASK_NETCORE`, no
+   `UNITY_2022_3_OR_NEWER`).
+4. Host editor: `'./Tools~/unity/run-tests.sh' --platform PlayMode --with-unitask --filter
+   'UniTaskCancellationTests'` (`testing.md`, "Running Unity tests"); `--with-unitask=local` when the
+   editor host has no git.
+5. Update the version customers are told to install in `Documentation~/Modules/UniTask.md` if it names one.
