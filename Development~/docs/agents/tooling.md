@@ -244,7 +244,9 @@ this repository). `TAG` and `SHA` in `Tools~/ci/unitask_pin.py` are the only cop
   that `TAG` still points at it;
 - `'./Tools~/unity/run-tests.sh' --with-unitask` installs
   `https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask#<TAG>` and exits 2
-  when `Packages/packages-lock.json` resolved another commit.
+  when `Packages/packages-lock.json` resolved another commit. `--with-unitask=local` (an editor host
+  without git) installs a copy of the shadow build's verified checkout of `SHA` as a `file:` package
+  instead, and the lock must name that copy.
 
 To bump:
 
@@ -255,5 +257,6 @@ To bump:
    compile error, remembering that the build has Unity 2021.3's defines: no `UNITASK_NETCORE`, no
    `UNITY_2022_3_OR_NEWER`).
 4. Host editor: `'./Tools~/unity/run-tests.sh' --platform PlayMode --with-unitask --filter
-   'UniTaskCancellationTests'` (`testing.md`, "Running Unity tests").
+   'UniTaskCancellationTests'` (`testing.md`, "Running Unity tests"); `--with-unitask=local` when the
+   editor host has no git.
 5. Update the version customers are told to install in `Documentation~/Modules/UniTask.md` if it names one.

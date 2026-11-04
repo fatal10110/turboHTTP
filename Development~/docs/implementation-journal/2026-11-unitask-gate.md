@@ -25,6 +25,14 @@ in the adapters by hand. Two gates now compile them, both from one pin (owner de
   After Unity runs, it fails with exit 2 unless `Packages/packages-lock.json` resolved the pinned
   commit, and with exit 4 when no `TurboHTTP.Tests.UniTaskAdapter` test ran. Without the flag the
   manifest entry is removed, so later runs are unchanged.
+- **Local mode (review round 1).** The Windows host editor has no git, so Unity cannot resolve any git
+  package ("No 'git' executable was found"). Installing Git on the host is the owner's call, not this
+  lane's. `--with-unitask=local` installs the same pinned commit from the checkout `unitask_pin.fetch()`
+  verified (git in WSL, as for the shadow build), rsynced to `%LOCALAPPDATA%/turbohttp/unitask-<sha>`
+  and referenced as `file:`. `check-lock` then requires `source: local` and that path. The git URL
+  stays the default and the documented customer install; when its lock check fails and the Unity log
+  names the missing git, `run-tests.sh` prints the hint. `check.sh --no-unitask` passes through to the
+  shadow build (offline use).
 
 ## Files
 
@@ -60,11 +68,20 @@ in the adapters by hand. Two gates now compile them, both from one pin (owner de
   `TurboHTTP.Tests.UniTask`, with 0 errors. The ios and android variants build 30 each.
 - Regression proof: a probe file in `Runtime/UniTask` that uses the bare `UniTask` type name (one of
   the #313 errors) fails the shadow build with CS0118. The probe was removed afterwards.
-- `Tools~/ci/test_unitask_pin.py`: 15 tests, no network. They cover the fetch from a local `file://`
+- `Tools~/ci/test_unitask_pin.py`: 16 tests, no network. They cover the fetch from a local `file://`
   git remote (cached reuse, moved tag, unknown commit, short SHA), the lock check (pinned, other
-  commit, missing entry, registry source, CLI exit codes), the results count, the version
+  commit, missing entry, registry source, local copy, CLI exit codes), the results count, the version
   expressions and `generate()` with and without the package.
-- `check.sh --full` and the host-editor run are recorded in the PR body ("Local gates").
+- `check.sh --full`: OK (recorded with the pushed head in the PR body, "Local gates").
+- Host editor (Unity 2021.3.45f2, Windows host, serialized under the Unity lock), on snapshot 0c88d95:
+  - `run-tests.sh --platform PlayMode --with-unitask=local --filter 'UniTaskCancellationTests'`: exit 0,
+    6 of 6 adapter tests passed. `TurboHTTP.UniTask`, `TurboHTTP.UniTask.WebSocket` and
+    `TurboHTTP.Tests.UniTask` compiled. The lock check confirmed the local copy of 2e993ff.
+  - The same with `--platform EditMode`: exit 4, 0 adapter tests (they are PlayMode tests).
+  - `--with-unitask` (git URL): exit 2. Unity: "No 'git' executable was found"; the hint printed.
+  - No flag: the manifest has no `com.cysharp.unitask`, exit 0.
+- The git-URL resolution itself (lock `source: git`, `hash` == SHA) has not run in a Unity editor,
+  because no host here has git for Unity. Its check is covered by the unit tests only.
 
 ## Not run
 

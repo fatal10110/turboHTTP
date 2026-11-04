@@ -94,7 +94,11 @@ in `tooling.md`.
   `'./Tools~/unity/run-tests.sh' --platform PlayMode --with-unitask --filter 'UniTaskCancellationTests'`.
   These are PlayMode tests. The script exits 2 when `Packages/packages-lock.json` resolved a commit
   other than the pinned SHA, and 4 when no `TurboHTTP.Tests.UniTaskAdapter` test ran (an EditMode run,
-  or a filter that matches none). A run without the flag removes the package again. The shadow build
+  or a filter that matches none). A run without the flag removes the package again. Unity resolves git
+  packages only when git is on the editor host's PATH (it says "No 'git' executable was found"; the
+  Windows host editor has none today). Without git, pass `--with-unitask=local`: it installs the same
+  pinned commit from the SHA-verified checkout the shadow build fetches (git in WSL), copied next to the
+  test project as a `file:` package, and the lock must then name that copy. The shadow build
   in `check.sh` compiles the same commit, so a compile error in the adapters already fails there
   (`tooling.md`, "UniTask pin", also for bumping the version).
 - Read the skipped count in the result XML: a skip is not a pass (CONNECT tunnel tests skip today, #151).
