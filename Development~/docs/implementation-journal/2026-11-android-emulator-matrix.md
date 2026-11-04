@@ -3,7 +3,10 @@
 ## What
 - New `Tools~/unity/run-emulator-tests.sh`: boots one x86_64 AVD per API level (`turbohttp-api<N>`, wiped on
   every boot, Vulkan off, `--jobs` at a time), builds the IL2CPP x86_64 test player once and runs the
-  PlayMode suite on each level. AVDs are written as plain ini files under `%LOCALAPPDATA%\turbohttp\emulators`.
+  PlayMode suite on each level. AVDs are written as plain ini files under `<cache>/emulators`
+  (`%LOCALAPPDATA%\turbohttp` from WSL). Its own adb calls (boot poll, `emu kill`) are bounded by
+  `timeout 30`; an emulator whose console does not answer `emu kill` is killed by pid. Each lane runs as
+  its own process group, and Ctrl-C/TERM stops the lanes (run-device-tests.sh, Unity) before the emulators.
 - `run-device-tests.sh`:
   - `--arch x86_64` (emulator images);
   - `--serial <id>`: Unity only builds the APK (the build modifier drops `AutoRunPlayer` and quits the
@@ -11,7 +14,9 @@
     script installs and launches it with `adb -s`. The phone and emulators can stay attached together;
   - `--skip-build` reinstalls that APK on another device;
   - x86_64 players get GLES3+GLES2 (phones keep the default graphics APIs);
-  - result files carry the API level; every adb call is bounded by `timeout 120`;
+  - result files carry the API level; every adb call of this script is bounded by `timeout 120`;
+  - with `--serial`, the wait for results ends when the serial has left `adb devices` twice in a row
+    (an emulator that was stopped or died), instead of polling until the 120-minute cap;
   - player liveness via `ps` instead of `pidof`;
   - a 16 MB logcat buffer per run, and the full logcat (main, system, crash) is saved when a run ends
     without results.
@@ -89,6 +94,13 @@ host RAM; API 29 ran 107 min against 46-60 for the others):
   before any ClientHello, so the skip condition was never reached (#330).
 
 
+- **Interrupting the matrix (review of #331).** Without job control bash starts `lane &` with SIGINT
+  ignored, so a Ctrl-C left every lane's run-device-tests.sh (and Unity) polling a stopped emulator for up
+  to 120 minutes. Lanes now start under `set -m` (own process group, SIGINT not ignored; foreground
+  commands keep running without job control so Ctrl-C still reaches the script) and the EXIT/INT/TERM
+  trap sends TERM to each lane group, then `emu kill` to each emulator. The lane's emulator is in the
+  lane's group, so it stops even when its console is frozen.
+
 ## Follow-ups
 - #328 (P1): JNI attach without detach aborts Android 6 (cleartext policy, background plugin).
 - #329 (P1): PollSelect inline send does not return on a full buffer; the full-duplex test hangs a run.
@@ -100,3 +112,8 @@ host RAM; API 29 ran 107 min against 46-60 for the others):
 - Stripping Low; arm64 images (ARM translation on API 30+ x86_64 images was not used).
 - Emulator rows are not device validation: every #99 row stays `needs-device-validation`.
 - Unity EditMode/PlayMode in the Editor were not rerun (tooling-only change); `check.sh` passed.
+- The interrupt and frozen-console paths were smoke-tested on Linux with stub emulator/adb/run-device-tests
+  scripts (Ctrl-C through a pty: exit 130, no lane or emulator process left; frozen `emu kill`: timed out
+  and the emulator was killed by pid, lane finished in 62 s). Not rerun with real emulators or Unity, and
+  not from WSL: whether a TERM/KILL of the Linux side of `emulator.exe`/`Unity.exe` stops the Windows
+  processes (qemu child included) is unverified; `emu kill` stays the primary stop.

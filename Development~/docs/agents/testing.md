@@ -118,7 +118,7 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    device rows stay `needs-device-validation` (#99).
 4. **Android device run (#99).** With one Android device on `adb` (unlocked, screen kept on:
    Developer options → Stay awake), `'./Tools~/unity/run-device-tests.sh' [--stripping Low|High]
-   [--arch arm64|armv7] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
+   [--arch arm64|armv7|x86_64] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
    installs it and runs it on the device. Results come back over the player connection when it works;
    otherwise (LAN or firewall: the Editor needs an inbound rule for the Private profile) the script waits
    for the XML the player writes on the device and pulls it over adb. That wait ends when the player
@@ -132,9 +132,10 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    `'./Tools~/unity/run-emulator-tests.sh' [--api 23,26,29,33,36] [--jobs 2]` boots one x86_64 AVD per API
    level (`turbohttp-api<N>`, wiped each boot), builds the x86_64 player once and runs the suite on each.
    It needs an SDK with `emulator` and the `default;x86_64` system images (`TURBOHTTP_EMULATOR_SDK`,
-   default `%LOCALAPPDATA%\turbohttp\android-sdk`, filled with the editor's `cmdline-tools\6.0`
-   sdkmanager) and WHPX/KVM. Emulator results cover API-level behavior only: x86_64, no radio, no vendor
-   stack, so ARM/IL2CPP and network rows still need the phone.
+   default `<cache>/android-sdk`: `${XDG_CACHE_HOME:-~/.cache}/turbohttp`, or `%LOCALAPPDATA%\turbohttp`
+   from WSL; filled with the editor's `cmdline-tools` 6.0 sdkmanager) and WHPX/KVM. Ctrl-C stops every
+   lane (its run-device-tests.sh and Unity) and then the emulators. Emulator results cover API-level
+   behavior only: x86_64, no radio, no vendor stack, so ARM/IL2CPP and network rows still need the phone.
 
 From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
 Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and

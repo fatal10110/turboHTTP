@@ -303,6 +303,12 @@ player_running() {
   ps_out="$(adbr shell "ps -A 2>/dev/null; ps 2>/dev/null")" || return 1
   if printf '%s\n' "$ps_out" | grep -q "[[:space:]]$pkg_id\$"; then echo y; else echo n; fi
 }
+# With --serial: prints y while adb devices lists the serial and n when it does not; fails when adb fails.
+serial_listed() {
+  local list
+  list="$(${adb_timeout[@]+"${adb_timeout[@]}"} "$adb_exe" devices 2>/dev/null | tr -d '\r')" || return 1
+  printf '%s\n' "$list" | awk -v s="$serial" '$1 == s { f = 1 } END { print (f ? "y" : "n") }'
+}
 pull_results() { if [ "$(adbr shell "[ -s $device_file ] && echo y || true")" = y ]; then adbr exec-out cat "$device_file" > "$xml" || true; fi; }
 adbr shell rm -f "$device_file" >/dev/null || true
 adbr logcat -c >/dev/null || true
@@ -343,7 +349,20 @@ fi
 if [ ! -f "$xml" ]; then
   echo "run-device-tests: no results over the player connection; waiting for the device-side result file"
   deadline=$(( $(date +%s) + ${TURBOHTTP_DEVICE_TEST_WAIT_MIN:-120} * 60 ))
+  left=0
   while [ "$(date +%s)" -lt "$deadline" ]; do
+    # A --serial device that left adb twice in a row (an emulator that was stopped or died) cannot finish
+    # the run; a failed adb call is not counted.
+    if [ -n "$serial" ] && [ "$(serial_listed || true)" = n ]; then
+      left=$(( left + 1 ))
+      if [ "$left" -ge 2 ]; then
+        echo "run-device-tests: $serial is no longer on adb"
+        break
+      fi
+      sleep 20
+      continue
+    fi
+    left=0
     if adbr logcat -d -s Unity:V | grep -q "TURBOHTTP_DEVICE_RUN finished"; then
       pull_results
       break
@@ -362,8 +381,10 @@ if [ ! -f "$xml" ]; then
     fi
     sleep 20
   done
-  adbr logcat -d -s Unity:V | grep -E "TURBOHTTP_DEVICE_(RUN|FAIL)" | sed 's/^/  device: /' | head -60 || true
-  if [ ! -s "$xml" ]; then
+  if [ "$left" -lt 2 ]; then
+    adbr logcat -d -s Unity:V | grep -E "TURBOHTTP_DEVICE_(RUN|FAIL)" | sed 's/^/  device: /' | head -60 || true
+  fi
+  if [ ! -s "$xml" ] && [ "$left" -lt 2 ]; then
     # Keep the device log for a player that died or hung: the device (an emulator) may be gone afterwards.
     devlog="$cache/logcat-Android-$tag-$ts.txt"
     adbr logcat -d -b main -b system -b crash -b events > "$devlog" || true
