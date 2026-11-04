@@ -15,6 +15,7 @@ using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport;
+using TurboHTTP.Transport.Connection;
 using TurboHTTP.Transport.Http2;
 using TurboHTTP.Transport.Tcp;
 using TurboHTTP.Transport.Tls;
@@ -82,7 +83,12 @@ namespace TurboHTTP.Tests.Transport.Http1
                     var authority = ParseConnectAuthority(request.RequestLine);
 
                     originClient = new TcpClient();
-                    await originClient.ConnectAsync(authority.host, authority.port);
+                    // The origin servers listen on IPv4 loopback; the platform resolver may not map
+                    // "localhost" there (Android IL2CPP answers with the interface addresses, #322).
+                    if (LocalhostNames.IsLocalhostName(authority.host))
+                        await originClient.ConnectAsync(IPAddress.Loopback, authority.port);
+                    else
+                        await originClient.ConnectAsync(authority.host, authority.port);
 
                     using var originStream = originClient.GetStream();
                     await WriteResponseAsync(

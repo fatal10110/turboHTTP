@@ -295,6 +295,10 @@ namespace TurboHTTP.WebSocket.Transport
 
         private static async Task<IPAddress[]> ResolveDnsAsync(string host, int timeoutMs, CancellationToken ct)
         {
+            // Localhost names are loopback without asking the resolver (RFC 6761 section 6.3, #322).
+            if (LocalhostNames.IsLocalhostName(host))
+                return LocalhostNames.GetLoopbackAddresses();
+
             var dnsTask = Dns.GetHostAddressesAsync(host);
             var timeoutTask = Task.Delay(timeoutMs, ct);
 

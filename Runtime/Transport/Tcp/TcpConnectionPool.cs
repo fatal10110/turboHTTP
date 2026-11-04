@@ -695,6 +695,10 @@ namespace TurboHTTP.Transport.Tcp
 
         private async Task<IPAddress[]> ResolveDnsAsync(string host, CancellationToken ct)
         {
+            // Localhost names are loopback without asking the resolver (RFC 6761 section 6.3, #322).
+            if (LocalhostNames.IsLocalhostName(host))
+                return LocalhostNames.GetLoopbackAddresses();
+
             // Dns.GetHostAddressesAsync has no CancellationToken in .NET Standard 2.1.
             // Wrap with a timeout to prevent 30+ second hangs on mobile networks.
             var dnsTask = Dns.GetHostAddressesAsync(host);
