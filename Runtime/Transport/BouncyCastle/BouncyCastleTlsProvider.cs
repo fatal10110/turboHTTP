@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto.Impl.BC;
+using TurboHTTP.Transport.Internal;
 using TurboHTTP.Transport.Tls;
 using UnityEngine.Scripting;
 
@@ -56,13 +57,17 @@ namespace TurboHTTP.Transport.BouncyCastle
         /// The returned stream is full duplex: a pending read never delays a write.
         /// </para>
         /// <para>
-        /// Cancellation disposes <paramref name="innerStream"/>, which fails any pending I/O, and
-        /// surfaces as <see cref="OperationCanceledException"/>. On any failure the inner stream
-        /// is disposed.
+        /// Cancellation disposes <paramref name="innerStream"/>, which normally fails any pending
+        /// I/O, and surfaces as <see cref="OperationCanceledException"/>. On any failure the inner
+        /// stream is disposed. The call does not wait for the handshake to notice the dispose: Mono
+        /// and IL2CPP may never end a pending read after its stream was disposed (#344), so the
+        /// handshake is raced against the token and the deadline and abandoned when either fires.
+        /// The abandoned handshake keeps running on the disposed stream until its pending I/O ends;
+        /// its outcome is observed and discarded, and the stream is never handed to the caller.
         /// </para>
         /// <para>
         /// The whole handshake is bounded by <see cref="TurboTlsClient.GetHandshakeTimeoutMillis"/>
-        /// (30 s by default, #142): at the deadline the inner stream is disposed the same way, so a
+        /// (30 s by default, #142): at the deadline the handshake is abandoned the same way, so a
         /// peer that never answers or trickles records cannot hold the connection, and the failure
         /// surfaces as a retryable <see cref="IOException"/> whose inner exception is a
         /// <see cref="TimeoutException"/>. BouncyCastle checks its own handshake timeout only in
@@ -95,6 +100,8 @@ namespace TurboHTTP.Transport.BouncyCastle
             // Disposing the inner stream fails a pending read/write inside the handshake, both on
             // cancellation and at the handshake deadline.
             using var deadline = new CancellationTokenSource();
+            // Fires on either; the catch below tells them apart (caller cancel first).
+            using var abandon = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
             var cancelRegistration = ct.Register(DisposeStream, innerStream);
             var deadlineRegistration = deadline.Token.Register(DisposeStream, innerStream);
 
@@ -105,14 +112,22 @@ namespace TurboHTTP.Transport.BouncyCastle
 
                 // Start on a pool thread: Connect() generates key shares (CPU work) before the
                 // first await, and the caller may be a thread that must not run it.
-                result = await Task.Run(
+                Task<TlsResult> handshake = Task.Run(
                     () => HandshakeAsync(innerStream, host, alpnProtocols, _handshakeTimeoutMillis),
-                    CancellationToken.None).ConfigureAwait(false);
+                    CancellationToken.None);
+
+                // The dispose above may never end the pending read on Mono and IL2CPP (#344): do
+                // not wait for the handshake to notice it. An abandoned handshake is observed (a
+                // late fault never goes unobserved) and its result, if any, is discarded.
+                result = await AbandonableTask.WaitAsync(handshake, abandon.Token, innerStream)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex) when (ct.IsCancellationRequested || deadline.IsCancellationRequested)
             {
                 // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
                 // caught by a later one, which turned a caller cancel into a timeout (#320).
+                // The registration's dispose may not have run yet when the race was abandoned.
+                DisposeStream(innerStream);
                 if (ct.IsCancellationRequested)
                     throw new OperationCanceledException("TLS handshake was canceled.", ct);
 
