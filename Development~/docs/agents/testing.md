@@ -133,8 +133,8 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    when a skipped test has no `#issue` or `[env]` reason, or when an unfiltered run skips more tests
    than `Tools~/unity/skip-baseline.txt` allows for its run target (`EditMode 0`, `PlayMode 3`: the
    permanent host skips, #319; `Player-Android` for `run-device-tests.sh`/`run-emulator-tests.sh`, whose
-   players skip more platform-scoped `[env]` tests, #341; the file lists each skip with its issue or
-   platform reason); a filtered or category run does not apply the baseline. Lower the baseline in the same PR that removes skips; never raise it to make a
+   players skip more platform-scoped `[env]` tests, #341; `Player-iOS` records the iOS simulator run, which
+   no script gates yet, #365; the file lists each skip with its issue or platform reason); a filtered or category run does not apply the baseline. Lower the baseline in the same PR that removes skips; never raise it to make a
    run pass, and list any justified raise in the file with its test and reason. `check.sh` enforces the static half (`ignores`: an `Ignore` needs an
    `#issue` or `[env]` reason).
 2. **ExternalNetwork run (#115, #263).** Needs the public internet. `--category ExternalNetwork` implies
@@ -194,6 +194,15 @@ Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT
 `UNITY_PACKAGE_COPY` per lane so two runs never share a project. The Editor must be licensed on that
 machine (a Unity Personal license activated through the Hub is enough). Agents working on one change
 never run the whole suite.
+
+WSL-to-Windows interop fails now and then, sometimes for a minute or more (`cmd.exe`, `adb.exe` and
+`Unity.exe` do not start; stderr shows `UtilAcceptVsock ... accept4 failed 110`). `run-tests.sh`,
+`run-device-tests.sh`, `run-emulator-tests.sh`, `build-player.sh` and `run-samples.sh` source
+`Tools~/unity/wsl-interop.sh` (#355): the `%LOCALAPPDATA%` lookup, a Unity start that wrote no log and an
+`adb.exe` call that failed while `cmd.exe` does not answer either are retried with a growing pause (about
+two minutes). A longer outage prints `WSL interop unavailable` and exits **5**: not a test, compile or
+device result, so rerun once `cmd.exe /c ver` answers. `build-ios-test-player.sh` does not use the helper
+yet.
 
 Afterwards:
 

@@ -12,6 +12,7 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[1].parent
 LIB = REPO / "Tools~" / "unity" / "emulator-windows.sh"
+WSL_LIB = REPO / "Tools~" / "unity" / "wsl-interop.sh"
 GATE = REPO / "Development~" / "scripts" / "phase19" / "run-allocation-gate.sh"
 
 QEMU = '"C:\\sdk\\emulator\\qemu\\windows-x86_64\\qemu-system-x86_64-headless.exe"'
@@ -139,16 +140,16 @@ class EmulatorWindowsTests(unittest.TestCase):
         emulator stubbed: adbs and $emu append their arguments to <state>.adb and <state>.emu."""
         text = (REPO / "Tools~" / "unity" / "run-emulator-tests.sh").read_text()
         funcs = "".join(name + "() {" + text.split("\n" + name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
-                        for name in ("cleanup", "boot", "stop_emulator", "lane"))
+                        for name in ("cleanup", "boot_failed", "boot", "stop_emulator", "lane"))
         out = pathlib.Path(self.tmp.name) / "out"
         out.mkdir(exist_ok=True)
-        script = (f'set -euo pipefail; . "$1"; emu_poll_s=0; win=1; out="$2"; repo=/nonexistent; pass=(); '
+        script = (f'set -euo pipefail; . "$1"; . "$4"; emu_poll_s=0; wsl_poll_s=0; win=1; out="$2"; repo=/nonexistent; pass=(); '
                   f'emu_pid=""; started=(); started_avds=(); lane_pids=(); '
                   f'adbs() {{ echo "$*" >> "$FAKE_WIN_STATE.adb"; }}; emu="$3"; {funcs}{call}')
         emu = pathlib.Path(self.tmp.name) / "bin" / "emulator.exe"
         emu.write_text('#!/usr/bin/env bash\necho "$*" >> "$FAKE_WIN_STATE.emu"\n')
         emu.chmod(0o755)
-        result = subprocess.run(["bash", "-c", script, "_", str(LIB), str(out), str(emu)], env=self.env,
+        result = subprocess.run(["bash", "-c", script, "_", str(LIB), str(out), str(emu), str(WSL_LIB)], env=self.env,
                                 capture_output=True, text=True, timeout=60)
         adb = pathlib.Path(f"{self.state}.adb")
         return result, out, adb.read_text().splitlines() if adb.exists() else []
