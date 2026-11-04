@@ -47,6 +47,13 @@ namespace TurboHTTP.Tests.WebSocket
         public PerMessageDeflateOptions PerMessageDeflateOptions { get; set; }
 
         /// <summary>
+        /// Test hook (#349): every connection handler awaits this task, ignoring cancellation and its
+        /// socket, before it reads the handshake. It stands in for an IL2CPP socket read that neither
+        /// the token nor a closed socket ends. The caller completes it.
+        /// </summary>
+        public Task HandlerStall { get; set; }
+
+        /// <summary>
         /// When set, every connection is a TLS 1.2 <see cref="SslStream"/> server with this
         /// certificate (wss); use <see cref="WebSocketTestServer.CreateSecureUri"/>. The caller owns it.
         /// </summary>
@@ -224,6 +231,9 @@ namespace TurboHTTP.Tests.WebSocket
             using (tcpClient)
             using (Stream stream = CreateServerStream(tcpClient))
             {
+                if (_options.HandlerStall != null)
+                    await _options.HandlerStall.ConfigureAwait(false);
+
                 string requestHead;
                 try
                 {

@@ -38,6 +38,28 @@ namespace TurboHTTP.Tests.WebSocket
         }
 
         [Test]
+        public void WebSocketTestServer_HandlerThatNeverEnds_DisposeReturnsAfterTheBound()
+        {
+            var stall = new TaskCompletionSource<bool>();
+            try
+            {
+                AssertAsync.Run(async () =>
+                {
+                    var server = new WebSocketTestServer(new WebSocketTestServerOptions { HandlerStall = stall.Task });
+                    using var client = await ConnectPartialHeadAsync(server.Port, "GET / HTTP/1.1\r\n").ConfigureAwait(false);
+                    await WaitForConnectionAsync(() => server.ConnectionCount).ConfigureAwait(false);
+
+                    // Neither the token nor the closed socket ends this handler: only the bound does.
+                    await AssertDisposeReturnsAsync(server.Dispose).ConfigureAwait(false);
+                });
+            }
+            finally
+            {
+                stall.TrySetResult(true);
+            }
+        }
+
+        [Test]
         public void WebSocketTestProxyServer_HandlerWaitingForConnectHead_DisposeReturns()
         {
             AssertAsync.Run(async () =>
