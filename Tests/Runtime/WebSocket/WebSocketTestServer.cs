@@ -11,6 +11,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Transport.Connection;
 using TurboHTTP.WebSocket;
 
 namespace TurboHTTP.Tests.WebSocket
@@ -1025,7 +1026,12 @@ namespace TurboHTTP.Tests.WebSocket
                         return;
 
                     using var upstream = new TcpClient();
-                    await upstream.ConnectAsync(host, port).ConfigureAwait(false);
+                    // The test servers listen on IPv4 loopback; the platform resolver may not map
+                    // "localhost" there (Android IL2CPP answers with the interface addresses, #322).
+                    if (LocalhostNames.IsLocalhostName(host))
+                        await upstream.ConnectAsync(IPAddress.Loopback, port).ConfigureAwait(false);
+                    else
+                        await upstream.ConnectAsync(host, port).ConfigureAwait(false);
                     using var upstreamStream = upstream.GetStream();
 
                     var pumpToUpstream = PumpAsync(clientStream, upstreamStream, ct);
