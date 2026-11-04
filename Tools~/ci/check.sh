@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local quality gate. CI runs the same steps (.github/workflows/ci.yml).
 #
-#   Tools~/ci/check.sh            fast: repo invariants, format, shadow build (editor variant)
+#   Tools~/ci/check.sh            fast: repo invariants, format, shadow build incl. Tests/ (editor variant)
 #   Tools~/ci/check.sh --full     also iOS/Android shadow builds, workflow/shell/python linters
 #   Tools~/ci/check.sh --fix      apply whitespace formatting instead of verifying it
 #
@@ -33,7 +33,8 @@ else "${fmt[@]}" --verify-no-changes || fail "format (run: Tools~/ci/check.sh --
 
 step "shadow build + analyzers"
 if [ "$full" = 1 ]; then variant=all; else variant=editor; fi
-if [ -z "${UNITY_DLLS:-}${UNITY_PATH:-}" ] && [ ! -f ".tools/unity-managed/$(cat Tools~/ci/unity-version)/UnityEngine.dll" ]; then
+# The fetch script returns at once when the DLLs and the test packages (#297) are already there.
+if [ -z "${UNITY_DLLS:-}${UNITY_PATH:-}" ]; then
   "Tools~/ci/fetch-unity-dlls.sh" >/dev/null || fail "fetch Unity DLLs"
 fi
 python3 "Tools~/ci/shadow_build.py" --variant "$variant" || fail "shadow build"
@@ -51,6 +52,7 @@ if [ "$full" = 1 ]; then
   fi
   python3 "Tools~/ci/test_doc_snippets.py" -q || fail "doc snippet harness tests"
   python3 "Tools~/ci/test_banned_symbols.py" -q || fail "banned-symbol (sync-over-async) gate test"
+  python3 "Tools~/ci/test_shadow_build_tests.py" -q || fail "shadow build of Tests/ (Unity NUnit) gate test"
   python3 "Tools~/ci/test_il2cpp_filter_check.py" -q || fail "il2cppfilter invariant test"
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"
   step "waves orchestration simulation"

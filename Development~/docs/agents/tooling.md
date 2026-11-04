@@ -10,7 +10,7 @@ cloud agent containers).
 | --- | --- | --- | --- |
 | Repo invariants: every imported asset has a `.meta`, no orphan/duplicate GUIDs, asmdef dependency graph follows `architecture.md`, JSON/asmdef/package.json valid | `python3 "Tools~/ci/check_repo.py"` | `lint` | yes |
 | Whitespace format (`.editorconfig`, `dotnet format whitespace`) | `"Tools~/ci/check.sh"` (`--fix` to apply) | `lint` | yes |
-| Shadow build: every runtime/editor asmdef compiled by the .NET SDK for the Editor, iOS and Android define sets, with Roslyn analyzers and banned APIs (`Tools~/ci/BannedSymbols.txt`), warnings ratcheted by `Tools~/ci/analyzer-baseline.txt` | `"Tools~/ci/check.sh"` (editor) / `--full` (all) | `lint` | yes |
+| Shadow build: every runtime/editor/sample asmdef compiled by the .NET SDK for the Editor, iOS and Android define sets, with Roslyn analyzers and banned APIs (`Tools~/ci/BannedSymbols.txt`), warnings ratcheted by `Tools~/ci/analyzer-baseline.txt`; the `Tests/` asmdefs compiled against Unity's own NUnit (compile errors only, #297) | `"Tools~/ci/check.sh"` (editor) / `--full` (all) | `lint` | yes |
 | actionlint, shellcheck, Python tool tests, issue-seed validation | `"Tools~/ci/check.sh" --full` | `lint` | yes |
 | Unity Test Runner, EditMode + PlayMode (Unity 2021.3.45f2); skip baseline `Tools~/unity/skip-baseline.txt` | `"Tools~/unity/run-tests.sh" --platform EditMode\|PlayMode [--filter X]` (full runs only in the host editor) | none: CI has no Unity license (#188) | no; host-editor gate, `testing.md` "Host-editor gates" |
 | Internet-facing tests (`ExternalNetwork`, incl. the `TURBOHTTP_INTEGRATION_TESTS` blocks, #263) | `"Tools~/unity/run-tests.sh" --platform PlayMode --category ExternalNetwork` | none | no; host-editor gate |
@@ -34,9 +34,37 @@ and analyzers without a Unity install or license. `Tools~/ci/shadow_build.py` ge
 `.csproj` per asmdef (references, `allowUnsafeCode`, `noEngineReferences`, define constraints,
 include/exclude platforms) under `.build/shadow/<variant>/`, references Unity's managed DLLs,
 and mirrors Unity 2021.3's compiler setup (.NET Standard 2.1, C# 9, `NETSTANDARD2_1` without the
-SDK's `*_OR_GREATER` symbols). Test assemblies are not part of it (they need Unity's
-test-framework package); they compile in the host-editor run (`check_repo.py unitynunit` and `ignores`
-catch the common failures statically; compiling `Tests/` in the shadow build is #297).
+SDK's `*_OR_GREATER` symbols).
+
+The `Tests/` asmdefs are compiled too (#297), with `UNITY_INCLUDE_TESTS` defined, in every variant:
+
+- **NUnit is Unity's.** It is `nunit.framework.dll` from `com.unity.ext.nunit-1.0.6.tgz`, not a
+  NuGet NUnit, so an API Unity's NUnit lacks (`Assert.Multiple`, `Assert.ThrowsAsync`, …) is a
+  compile error (CS0117).
+- **TestRunner comes from source.** `UnityEngine.TestRunner` and `UnityEditor.TestRunner` are
+  generated as projects from the source of `com.unity.test-framework-1.1.33.tgz`, the same versions
+  that `Tools~/unity/*.sh` pins.
+- **Where the packages come from.** Unity 2021.3 bundles both tarballs in
+  `Editor/Data/Resources/PackageManager/Editor`. `fetch-unity-dlls.sh` copies them into
+  `.tools/unity-managed/<ver>/packages/`; with `UNITY_PATH`, the build reads them from the editor.
+  They are extracted into `.build/unity-packages/`.
+- **Platforms.** In the iOS/Android variants, the editor-only `UnityEditor.TestRunner` reference of
+  `TurboHTTP.Tests.Runtime` is ignored, as Unity does in a player build, so these variants compile the
+  tests as the device and emulator runs build them.
+- **No analyzers.** Test projects build with `RunAnalyzers=false` and their warnings are outside the
+  ratchet. Compiler errors fail. Tests may still use `AssertAsync`'s `GetResult()`, which is banned
+  in shipped code.
+- **No silent drops.** An asmdef that passes its platform and define constraints but references an
+  assembly the build cannot provide fails the build (`DROPPED`). Before, it was skipped silently.
+  `TurboHTTP.Tests.UniTask` and the UniTask modules are still skipped by their `TURBOHTTP_UNITASK`
+  constraint (#311).
+- **Opting out.** `shadow_build.py --no-tests` builds only the shipped assemblies. The interop, soak,
+  fuzz and Autobahn `run.sh` scripts use it.
+- **Proof.** `Tools~/ci/test_shadow_build_tests.py` (in `check.sh --full`) proves that a compile
+  error, `Assert.Multiple`, `Assert.ThrowsAsync` and an unresolved reference each fail the build.
+
+`check_repo.py unitynunit` and `ignores` stay: they also catch tests that compile but that Unity
+does not run (`async Task` test methods).
 
 ## Required tools
 
@@ -45,7 +73,7 @@ catch the common failures statically; compiling `Tests/` in the shadow build is 
 | git | any recent | everything |
 | Python | 3.9+ (stdlib only) | `check_repo.py`, `shadow_build.py`, agent tools, issue seed |
 | .NET SDK | 8.0.x | `dotnet format`, shadow build |
-| Docker | any (daemon running) | `fetch-unity-dlls.sh` (one-time, pulls `unityci/editor:ubuntu-<ver>-base-3.2.2`, ~4 GB, keeps 34 MB) |
+| Docker | any (daemon running) | `fetch-unity-dlls.sh` (one-time, pulls `unityci/editor:ubuntu-<ver>-base-3.2.2`, ~4 GB, keeps 35 MB: managed DLLs plus the NUnit and Test Framework package tarballs; an older cache without `packages/` is completed in place) |
 | GitHub CLI `gh` | 2.40+ | agent workflows, issue seed, PR handling |
 | ripgrep `rg` | any | agent tools |
 | actionlint | 1.7+ | `check.sh --full` |
@@ -95,7 +123,9 @@ The shadow build needs Unity's managed DLLs once. Any of:
 - `UNITY_PATH=<Unity editor binary>`: the DLLs are read from that install;
 - `UNITY_DLLS=<dir containing UnityEngine.dll>`: e.g. a copy of `.tools/unity-managed/<ver>` from
   a machine that has Docker (the directory is not committed: Unity's DLLs are not
-  redistributable);
+  redistributable). The `Tests/` compile also needs that copy's `packages/` subdirectory, which
+  holds the NUnit and Test Framework tarballs. Without it, pass `--no-tests` to `shadow_build.py`
+  and say so in the PR body;
 - without either, run only `python3 "Tools~/ci/check_repo.py"` and the format check, and let PR
   CI run the shadow build. Say so in the PR body.
 
@@ -103,7 +133,7 @@ The shadow build needs Unity's managed DLLs once. Any of:
 
 ```bash
 git config core.hooksPath .githooks          # pre-commit: invariants, format, shadow build
-"Tools~/ci/fetch-unity-dlls.sh"              # Unity managed DLLs -> .tools/unity-managed/<ver>
+"Tools~/ci/fetch-unity-dlls.sh"              # Unity managed DLLs + test packages -> .tools/unity-managed/<ver>
 "Tools~/ci/check.sh" --full                  # should print "check.sh: OK"
 gh auth login                                # repo + project scopes for agent workflows
 ```
@@ -131,7 +161,8 @@ Unity needs an activated license (Personal is fine) in the Hub once.
 ### Analyzer ratchet
 
 Every analyzer warning in TurboHTTP sources fails the shadow build unless it is listed in
-`Tools~/ci/analyzer-baseline.txt` (`rule|file|source line`, so line moves don't matter).
+`Tools~/ci/analyzer-baseline.txt` (`rule|file|source line`, so line moves don't matter). `Tests/` is
+outside the ratchet: test projects build without analyzers and only their compile errors fail.
 
 - New warning: fix it. The rule's reason is in `.editorconfig` or `BannedSymbols.txt`.
 - Deliberate exception (rare): run `python3 "Tools~/ci/shadow_build.py" --variant all --update-baseline`
