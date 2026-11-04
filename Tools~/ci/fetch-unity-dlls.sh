@@ -14,7 +14,7 @@ version="${UNITY_VERSION:-$(cat "$root/Tools~/ci/unity-version")}"
 out="${UNITY_DLLS:-$root/.tools/unity-managed/$version}"
 image="unityci/editor:ubuntu-${version}-base-3.2.2"
 # The versions Unity 2021.3 bundles (Editor/Data/Resources/PackageManager/Editor); keep in sync with
-# TEST_PACKAGES in shadow_build.py and the com.unity.test-framework pin in Tools~/unity/*.sh.
+# NUNIT_PACKAGE / TEST_FRAMEWORK_PACKAGE in shadow_build.py and the com.unity.test-framework pin in Tools~/unity/*.sh.
 packages=(com.unity.ext.nunit-1.0.6.tgz com.unity.test-framework-1.1.33.tgz)
 
 missing=()
