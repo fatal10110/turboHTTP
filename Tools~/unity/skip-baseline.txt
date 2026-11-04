@@ -31,14 +31,21 @@
 #   15   FileDownloaderResumeSafetyTests.Restart200_PartLockedWhileTruncating_NeverPairsNewValidatorWithOldBytes
 #        [env] needs Windows mandatory file locking
 #   16   Phase19AllocationGateTests.AllocationScenarios_RespectBaselineBudget  [env] Editor allocation baselines
+# Checked for #365 on main e0a5bf7 (API 29 x86_64 emulator, Stripping High, 2026-11-04): 2628 cases, 16 skipped,
+# exactly 1-16. The 5 "unobserved faulted task" cases that skip on iOS (below) run and pass on Android.
 #
-# Player-iOS 18: no script reads this key yet (the iOS simulator handoff summarises its own results);
-# recorded from the iOS 26.4 simulator run of #341 (IL2CPP High) minus the SoakShortTests skip fixed by
-# #293. The Player-Android list plus 2 [env] cases where the runtime reports no unobserved faulted task:
-# AbandonableTaskTests.WaitAsync_CancelledThenTaskFaults_FaultIsObserved and
-# SslStreamSingleHandshakeTests.WrapAsync_CancelledPlainHandshakeFaultsLater_FaultIsObserved.
+# Player-iOS 21: no script reads this key yet (the iOS simulator handoff summarises its own results);
+# recorded from iOS simulator run 7 (#99: main 2ec74e2, iOS 26.4, Unity 6000.3.26f1, IL2CPP High), all 21
+# skips [env]. The Player-Android list plus 5 [env] cases where the runtime reports no unobserved faulted
+# task ("This runtime did not report a known unobserved faulted task."):
+#   17 AbandonableTaskTests.WaitAsync_CancelledThenTaskFaults_FaultIsObserved
+#   18 SslStreamSingleHandshakeTests.WrapAsync_CancelledPlainHandshakeFaultsLater_FaultIsObserved
+#   19 BodyReadCancellationTests.BodyRead_AbandonedReadFaultsLater_FaultIsObserved
+#   20 HeadReadCancellationTests.EnsureBuffered_AbandonedReadFaultsLater_FaultIsObserved
+#   21 WebSocketHandshakeReadCancellationTests.Upgrade_AbandonedReadFaultsLater_FaultIsObserved
+# Raised from 18 to 21 (#365): 19-21 are new tests from #346 and #357, not tests that stopped running.
 # <run target> <max skipped>
 EditMode 0
 PlayMode 3
 Player-Android 16
-Player-iOS 18
+Player-iOS 21

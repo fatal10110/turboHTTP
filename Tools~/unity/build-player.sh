@@ -24,13 +24,17 @@
 # (device rows: #99). CI never builds players (no Unity license, #188, #100): this script, run in a host editor, is the player-build gate (testing.md, "Host-editor gates").
 #
 # Exit codes: 0 pass, 1 build or check failure, 2 usage/setup error, 3 Unity, a build module or the
-# native toolchain is not installed (prints UNITY_UNAVAILABLE or TOOLCHAIN_UNAVAILABLE). Env:
+# native toolchain is not installed (prints UNITY_UNAVAILABLE or TOOLCHAIN_UNAVAILABLE), 5 WSL interop unavailable
+# (a Windows editor driven from WSL: cmd.exe or Unity.exe did not start through about two minutes of retries,
+# wsl-interop.sh, #355). Env:
 # UNITY_SMOKE_DIR (default <cache>/player-smoke; holds testproj/, package/ and builds/<run>/ with the
 # logs, the TurboHTTP.link.xml UnityLinker received and the build), where <cache> is ~/.cache/turbohttp,
 # or %LOCALAPPDATA%\turbohttp for a Windows editor driven from WSL. One Unity process at a time.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=Tools~/unity/wsl-interop.sh
+. "$repo/Tools~/unity/wsl-interop.sh"
 target=""; bouncycastle=0; background=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -74,16 +78,8 @@ topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi;
 if [ -n "${UNITY_SMOKE_DIR:-}" ]; then
   cache="$(dirname "$UNITY_SMOKE_DIR")"
 elif [ "$win" = 1 ]; then
-  localappdata=""
-  for _ in 1 2 3; do
-    localappdata="$( (cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%') 2>/dev/null | tr -d '\r' || true)"
-    [ -n "$localappdata" ] && break
-    sleep 1
-  done
-  wincache=""
-  if [ -n "$localappdata" ]; then wincache="$(wslpath -u "$localappdata" 2>/dev/null || true)"; fi
-  [ -n "$wincache" ] || { echo "build-player: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
-  cache="$wincache/turbohttp"
+  wsl_resolve_localappdata build-player
+  cache="$wsl_localappdata/turbohttp"
 else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi
@@ -108,7 +104,9 @@ done
 [ "$synced" = 1 ] || { echo "build-player: cannot sync the package to $pkg" >&2; exit 2; }
 
 if [ ! -d "$proj/ProjectSettings" ]; then
-  "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$work/create.log")"
+  wsl_unity_launch build-player "$work/create.log" \
+    "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$work/create.log")"
+  [ "$unity_code" = 0 ] || { echo "build-player: creating $proj failed (Unity exit $unity_code); see $work/create.log" >&2; exit 2; }
 fi
 mkdir -p "$proj/Assets/TurboHttpSmoke"
 rsync -a --delete --exclude='*.meta' --exclude='Smoke.unity' "$repo/Tools~/unity/player-smoke/" "$proj/Assets/TurboHttpSmoke/"
@@ -156,22 +154,12 @@ rm -rf "$stripped"
 
 log="$out/build.log"
 echo "build-player: $variant -> $out"
-# WSL interop occasionally fails to start a Windows process (no log written): retry those starts.
-code=0
-for _ in 1 2 3; do
-  set +e
+# A Unity.exe that did not start from WSL (no log written) is retried, then exit 5 (wsl-interop.sh, #355).
+wsl_unity_launch build-player "$log" \
   "$unity" -batchmode -nographics -projectPath "$(topath "$proj")" -buildTarget "$buildtarget" \
-    -executeMethod TurboHttpPlayerBuild.Build -smokeTarget "$target" -smokeOutput "$(topath "$out/$product")" \
-    -smokeBouncyCastle "$bouncycastle" -logFile "$(topath "$log")"
-  code=$?
-  set -e
-  [ -f "$log" ] && break
-  sleep 5
-done
-if [ ! -f "$log" ]; then
-  echo "build-player: Unity wrote no log (exit $code): it did not start (WSL interop failure?); rerun" >&2
-  exit 2
-fi
+  -executeMethod TurboHttpPlayerBuild.Build -smokeTarget "$target" -smokeOutput "$(topath "$out/$product")" \
+  -smokeBouncyCastle "$bouncycastle" -logFile "$(topath "$log")"
+code="$unity_code"
 grep -E "TURBOHTTP_BUILD|error CS[0-9]+" "$log" | head -20 || true
 
 # Assemblies that reached the player: the stripped linker output for IL2CPP, <name>_Data/Managed for Mono.
