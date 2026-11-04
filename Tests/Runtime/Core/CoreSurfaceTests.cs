@@ -16,20 +16,29 @@ namespace TurboHTTP.Tests.Core
     {
         private static readonly Assembly CoreAssembly = typeof(UHttpClient).Assembly;
 
-        [TestCase("TurboHTTP.Core.Internal.ObjectPool`1")]
-        [TestCase("TurboHTTP.Core.Internal.ObjectPoolDiagnostics")]
-        [TestCase("TurboHTTP.Core.Internal.ByteArrayPool")]
-        [TestCase("TurboHTTP.Core.Internal.ByteArrayPoolDiagnostics")]
-        [TestCase("TurboHTTP.Core.Internal.SegmentedBuffer")]
-        [TestCase("TurboHTTP.Core.Internal.SegmentedReadStream")]
-        [TestCase("TurboHTTP.Core.PlatformConfig")]
-        [TestCase("TurboHTTP.Core.PlatformInfo")]
-        [TestCase("TurboHTTP.Core.IL2CPPCompatibility")]
-        [TestCase("TurboHTTP.Core.ProjectJsonBridge")]
-        [TestCase("TurboHTTP.Core.IJsonBridge")]
-        public void PlumbingType_IsInternal(string typeName)
+        // typeof, not a name lookup: High stripping removes internal types nothing references, so
+        // CoreAssembly.GetType(name) threw TypeLoadException in an IL2CPP player for the types only
+        // their own file names (#321). The name still pins the namespace the surface rule is about.
+        private static readonly object[] PlumbingTypes =
         {
-            var type = CoreAssembly.GetType(typeName, throwOnError: true);
+            new object[] { typeof(global::TurboHTTP.Core.Internal.ObjectPool<>), "TurboHTTP.Core.Internal.ObjectPool`1" },
+            new object[] { typeof(global::TurboHTTP.Core.Internal.ObjectPoolDiagnostics), "TurboHTTP.Core.Internal.ObjectPoolDiagnostics" },
+            new object[] { typeof(global::TurboHTTP.Core.Internal.ByteArrayPool), "TurboHTTP.Core.Internal.ByteArrayPool" },
+            new object[] { typeof(global::TurboHTTP.Core.Internal.ByteArrayPoolDiagnostics), "TurboHTTP.Core.Internal.ByteArrayPoolDiagnostics" },
+            new object[] { typeof(global::TurboHTTP.Core.Internal.SegmentedBuffer), "TurboHTTP.Core.Internal.SegmentedBuffer" },
+            new object[] { typeof(global::TurboHTTP.Core.Internal.SegmentedReadStream), "TurboHTTP.Core.Internal.SegmentedReadStream" },
+            new object[] { typeof(global::TurboHTTP.Core.PlatformConfig), "TurboHTTP.Core.PlatformConfig" },
+            new object[] { typeof(global::TurboHTTP.Core.PlatformInfo), "TurboHTTP.Core.PlatformInfo" },
+            new object[] { typeof(global::TurboHTTP.Core.IL2CPPCompatibility), "TurboHTTP.Core.IL2CPPCompatibility" },
+            new object[] { typeof(global::TurboHTTP.Core.ProjectJsonBridge), "TurboHTTP.Core.ProjectJsonBridge" },
+            new object[] { typeof(global::TurboHTTP.Core.IJsonBridge), "TurboHTTP.Core.IJsonBridge" },
+        };
+
+        [TestCaseSource(nameof(PlumbingTypes))]
+        public void PlumbingType_IsInternal(Type type, string typeName)
+        {
+            Assert.AreEqual(typeName, type.FullName);
+            Assert.AreSame(CoreAssembly, type.Assembly, typeName + " must live in Core");
             Assert.IsFalse(type.IsVisible, typeName + " must not be public");
         }
 

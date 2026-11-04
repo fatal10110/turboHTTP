@@ -69,8 +69,11 @@ namespace TurboHTTP.Transport.BouncyCastle
         /// <summary>
         /// Output bytes the engine may hold after the read path tried to flush; above it the read
         /// fails and the connection is aborted. Settable for tests; set before the first read.
+        /// Preserved because the tests set it by reflection (their assembly does not reference this
+        /// one) and High stripping removes the otherwise unused setter (#321).
         /// </summary>
-        internal int MaxPendingOutputBytes { get; set; } = DefaultMaxPendingOutputBytes;
+        [UnityEngine.Scripting.Preserve]
+        internal int MaxPendingOutputBytes { get; [UnityEngine.Scripting.Preserve] set; } = DefaultMaxPendingOutputBytes;
 
         internal BouncyCastleTlsStream(Stream inner)
         {

@@ -53,6 +53,17 @@ in `tooling.md`.
   `AllowCleartext = true` on `UHttpClientOptions` / `WebSocketConnectionOptions`, or
   `TestHelpers.AllowLoopbackCleartext(request)` for a request dispatched straight to the transport
   (#321). Without it the test passes only in the Editor.
+- Player-safe test data (#321): write files under `TestTempPath.Root` or `TestTempPath.NewDirectory`
+  (`Tests/Runtime/Support/TestTempPath.cs`), never `Path.GetTempPath()`, which is the unwritable
+  `/data/local/tmp` in an Android player. Build NUL-containing strings at run time
+  (`TestCaseSource`): IL2CPP truncates attribute strings at a NUL. A member a test reaches by
+  reflection needs `[Preserve]` in its runtime assembly (a `link.xml` under `Tests/` is not read).
+  Gate a test on a platform with `TestRequirements.IgnoreEnvironment` (`[env]` prefix), never by
+  letting it fail.
+- `AssertAsync.Run`/`ThrowsAsync` wait for the body with a bound (`AssertAsync.DefaultBound`,
+  5 minutes; overloads take a shorter one) and fail with `AssertAsyncTimeoutException`, so a hung
+  body fails one test instead of freezing the player run (#330). Direct
+  `Task.Run(...).GetAwaiter().GetResult()` has no bound: use `AssertAsync`.
 - When the transport is right and a test is wrong (e.g. an over-sending flow-control peer), fix the
   test to model a compliant peer; never relax timeouts to make a test pass.
 - Tests that need the public internet carry `[Category("ExternalNetwork")]`; very slow or
