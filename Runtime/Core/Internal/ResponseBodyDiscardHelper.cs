@@ -31,16 +31,14 @@ namespace TurboHTTP.Core.Internal
                     await body.DrainAsync(discardTimeoutCts.Token).ConfigureAwait(false);
                     drained = true;
                 }
-                catch (OperationCanceledException) when (dispatchCancellationToken.IsCancellationRequested)
+                catch (Exception ex)
                 {
+                    // One clause: under IL2CPP a rethrow from an earlier clause of a filtered try is
+                    // caught by a later one, which here swallowed the caller's cancellation (#320).
                     body.Abort();
                     aborted = true;
-                    throw;
-                }
-                catch
-                {
-                    body.Abort();
-                    aborted = true;
+                    if (ex is OperationCanceledException && dispatchCancellationToken.IsCancellationRequested)
+                        throw;
                 }
             }
             finally

@@ -22,7 +22,7 @@ namespace TurboHTTP.Core
 
             context.SetState(Internal.TransportBehaviorFlags.StreamingResponseRequested, true);
 
-            var collector = new StreamingResponseCaptureHandler(request, context);
+            var collector = new StreamingResponseCaptureHandler(request, context, cancellationToken);
             var safeCollector = HandlerCallbackSafetyWrapper.Wrap(collector, context);
             Task dispatchTask;
             try
@@ -105,10 +105,15 @@ namespace TurboHTTP.Core
             private readonly TaskCompletionSource<UHttpStreamingResponse> _tcs =
                 new TaskCompletionSource<UHttpStreamingResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+            private readonly CancellationToken _cancellationToken;
             private UHttpRequest _request;
 
-            internal StreamingResponseCaptureHandler(UHttpRequest request, RequestContext context)
+            internal StreamingResponseCaptureHandler(
+                UHttpRequest request,
+                RequestContext context,
+                CancellationToken cancellationToken)
             {
+                _cancellationToken = cancellationToken;
                 _request = request;
                 _ = context ?? throw new ArgumentNullException(nameof(context));
             }
@@ -178,6 +183,13 @@ namespace TurboHTTP.Core
                     new UHttpError(
                         UHttpErrorType.Unknown,
                         "IHttpHandler.OnResponseError received a null error."));
+                if (Internal.CancellationClassification.TryGetCallerCancellation(
+                        responseError, _cancellationToken, out var canceled))
+                {
+                    _tcs.TrySetException(canceled);
+                    return;
+                }
+
                 _tcs.TrySetException(responseError);
             }
 
@@ -189,6 +201,12 @@ namespace TurboHTTP.Core
                 if (ex is OperationCanceledException operationCanceledException)
                 {
                     _tcs.TrySetException(operationCanceledException);
+                    return;
+                }
+
+                if (Internal.CancellationClassification.TryGetCallerCancellation(ex, _cancellationToken, out var canceled))
+                {
+                    _tcs.TrySetException(canceled);
                     return;
                 }
 

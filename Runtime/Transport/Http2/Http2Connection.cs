@@ -453,11 +453,12 @@ namespace TurboHTTP.Transport.Http2
                 await AwaitResponseCompletionOrCancellationAsync(stream)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested || !_cts.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
+            // A request cancellation (or a cancel while the connection still runs) passes through the
+            // filter instead of a `catch (OperationCanceledException) { throw; }` clause: under IL2CPP a
+            // rethrow from an earlier clause of a filtered try is caught by the next clause (#320).
+            catch (Exception ex) when (
+                !(ex is OperationCanceledException &&
+                  (ct.IsCancellationRequested || !_cts.IsCancellationRequested)))
             {
                 // Includes an OperationCanceledException raised by the connection token (the
                 // connection was failed or disposed): mapped to a network error below.

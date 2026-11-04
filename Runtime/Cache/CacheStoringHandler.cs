@@ -239,11 +239,7 @@ namespace TurboHTTP.Cache
                 Accumulate(destination.Slice(0, read).Span);
                 return read;
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch
+            catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
             {
                 Abort();
                 throw;
@@ -290,11 +286,7 @@ namespace TurboHTTP.Cache
                 SetLoadedTrailers(await _inner.GetTrailersAsync(ct).ConfigureAwait(false));
                 return _trailers ?? HttpHeaders.Empty;
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch
+            catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
             {
                 Abort();
                 throw;

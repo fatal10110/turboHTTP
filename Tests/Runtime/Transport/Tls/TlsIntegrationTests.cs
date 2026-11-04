@@ -154,14 +154,15 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 return await requestTask;
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (
+                ex is OperationCanceledException ||
+                (ex is UHttpException timeout && timeout.HttpError.Type == UHttpErrorType.Timeout))
             {
-                Assert.Fail($"Integration request to {url} timed out or was canceled in this environment.");
-                throw;
-            }
-            catch (UHttpException ex) when (ex.HttpError.Type == UHttpErrorType.Timeout)
-            {
-                Assert.Fail($"Integration request to {url} timed out in this environment.");
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320).
+                Assert.Fail(ex is OperationCanceledException
+                    ? $"Integration request to {url} timed out or was canceled in this environment."
+                    : $"Integration request to {url} timed out in this environment.");
                 throw;
             }
         }

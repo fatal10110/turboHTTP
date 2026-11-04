@@ -102,12 +102,15 @@ namespace TurboHTTP.WebSocket.Transport
                     name => ResolveDnsAsync(name, options.DnsTimeoutMs, ct),
                     ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
+            catch (Exception ex) when (
+                IsFailureFromCancellation(ex, ct) ||
+                (useProxy && !(ex is WebSocketException) && !(ex is OperationCanceledException)))
             {
-                throw new OperationCanceledException("WebSocket connect was canceled.", ex, ct);
-            }
-            catch (Exception ex) when (useProxy && !(ex is WebSocketException) && !(ex is OperationCanceledException))
-            {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320).
+                if (IsFailureFromCancellation(ex, ct))
+                    throw new OperationCanceledException("WebSocket connect was canceled.", ex, ct);
+
                 throw new WebSocketException(
                     WebSocketError.ProxyConnectionFailed,
                     "Failed to connect to configured proxy endpoint '" + proxySettings.ProxyUri + "'.",
@@ -174,20 +177,22 @@ namespace TurboHTTP.WebSocket.Transport
                             stream, uri, proxySettings, options.AllowCleartext, ct)
                         .ConfigureAwait(false);
                 }
-                catch (Exception ex) when (!(ex is WebSocketException) &&
-                                           !(ex is OperationCanceledException) &&
-                                           !ct.IsCancellationRequested)
+                catch (Exception ex)
                 {
+                    // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try
+                    // is caught by a later one (#320).
                     stream.Dispose();
-                    throw new WebSocketException(
-                        WebSocketError.ProxyTunnelFailed,
-                        "Failed to establish HTTP CONNECT tunnel through proxy.",
-                        ex);
-                }
-                catch
-                {
+                    if (!(ex is WebSocketException) &&
+                        !(ex is OperationCanceledException) &&
+                        !ct.IsCancellationRequested)
+                    {
+                        throw new WebSocketException(
+                            WebSocketError.ProxyTunnelFailed,
+                            "Failed to establish HTTP CONNECT tunnel through proxy.",
+                            ex);
+                    }
+
                     // WebSocketException keeps its own error; cancellation is mapped by the caller.
-                    stream.Dispose();
                     throw;
                 }
             }

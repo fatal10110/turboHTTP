@@ -749,15 +749,20 @@ namespace TurboHTTP.Transport.Tcp
                     ct,
                     connector).ConfigureAwait(false);
             }
-            catch (TimeoutException ex) when (!ct.IsCancellationRequested)
+            catch (Exception ex) when (
+                (ex is TimeoutException && !ct.IsCancellationRequested) ||
+                (ex is AggregateException wrapped && wrapped.InnerExceptions.Count > 0))
             {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320).
+                if (ex is AggregateException aggregate)
+                {
+                    ExceptionDispatchInfo.Capture(aggregate.InnerExceptions[0]).Throw();
+                    throw;
+                }
+
                 throw new UHttpException(new UHttpError(UHttpErrorType.Timeout,
                     $"TCP connect timed out after {(long)connectTimeout.TotalMilliseconds}ms", ex));
-            }
-            catch (AggregateException aggregate) when (aggregate.InnerExceptions.Count > 0)
-            {
-                ExceptionDispatchInfo.Capture(aggregate.InnerExceptions[0]).Throw();
-                throw;
             }
         }
 

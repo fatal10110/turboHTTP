@@ -563,15 +563,7 @@ namespace TurboHTTP.Transport.Http1
             {
                 return await pending.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (effectiveToken.IsCancellationRequested)
-            {
-                throw CreateCanceledReadException(effectiveToken, callerToken);
-            }
-            catch (ObjectDisposedException) when (effectiveToken.IsCancellationRequested)
-            {
-                throw CreateCanceledReadException(effectiveToken, callerToken);
-            }
-            catch (IOException) when (effectiveToken.IsCancellationRequested)
+            catch (Exception ex) when (IsCanceledRead(ex, effectiveToken))
             {
                 throw CreateCanceledReadException(effectiveToken, callerToken);
             }
@@ -596,19 +588,17 @@ namespace TurboHTTP.Transport.Http1
             {
                 await pending.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (effectiveToken.IsCancellationRequested)
-            {
-                throw CreateCanceledReadException(effectiveToken, callerToken);
-            }
-            catch (ObjectDisposedException) when (effectiveToken.IsCancellationRequested)
-            {
-                throw CreateCanceledReadException(effectiveToken, callerToken);
-            }
-            catch (IOException) when (effectiveToken.IsCancellationRequested)
+            catch (Exception ex) when (IsCanceledRead(ex, effectiveToken))
             {
                 throw CreateCanceledReadException(effectiveToken, callerToken);
             }
         }
+
+        // One filtered clause, not one per exception type: under IL2CPP an exception thrown by an
+        // earlier clause of a filtered try is caught by a later one (#320).
+        private static bool IsCanceledRead(Exception ex, CancellationToken effectiveToken) =>
+            effectiveToken.IsCancellationRequested &&
+            (ex is OperationCanceledException || ex is ObjectDisposedException || ex is IOException);
 
         private static OperationCanceledException CreateCanceledReadException(
             CancellationToken effectiveToken,

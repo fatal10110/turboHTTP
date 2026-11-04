@@ -17,12 +17,16 @@ Checks (all on git-tracked files):
             the request-level SendAsync()), their fenced csharp blocks parse (snippet directives), and every
             Samples~ folder ships an asmdef that package.json lists (#232, #98); the snippets and samples
             compile in the shadow build
+  il2cppfilter  in a try statement with an exception filter (`catch ... when`), only the last catch clause
+            throws: IL2CPP (Unity 2021.3) emits the clauses of such a try as nested C++ try blocks, so an
+            exception thrown or rethrown by an earlier clause is caught by a later clause of the same try (#320).
+            A clause whose body awaits is exempt (the compiler runs its body after the try)
   native    every DllImport("__Internal") resolves to a native plugin under Plugins/, and on each player
             platform the plugin importer (platforms + define constraints) includes the plugin exactly when
             the managed #if guard compiles its callers (#176): a caller without the plugin fails the
             Xcode link, a plugin without a caller ships dead native code
 
-Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|ignores|reflect|coreapi|native|docs ...]   (default: all)
+Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|ignores|reflect|il2cppfilter|coreapi|native|docs ...]   (default: all)
 """
 import json
 import os
@@ -290,6 +294,134 @@ def check_reflect(files):
     return errors
 
 
+def _blank_cs_literals(src):
+    """Blanks comments, string and char literals (keeping newlines and offsets) so brace matching and
+    keyword searches only see code."""
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            out.append(" " * (j - i))
+            i = j
+            continue
+        if src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append(re.sub(r"[^\n]", " ", src[i:j]))
+            i = j
+            continue
+        verbatim = re.match(r'\$?@\$?"', src[i:i + 3])
+        if verbatim:
+            j = i + len(verbatim.group(0))
+            while j < n and not (src[j] == '"' and src[j + 1:j + 2] != '"'):
+                j += 2 if src[j] == '"' else 1
+            out.append(re.sub(r"[^\n]", " ", src[i:j + 1]))
+            i = j + 1
+            continue
+        if c == '"' or (c == "$" and src[i + 1:i + 2] == '"'):
+            interpolated = c == "$"
+            j, depth = i + (2 if interpolated else 1), 0
+            while j < n:
+                if src[j] == "\\":
+                    j += 2
+                    continue
+                if interpolated and src[j] == "{":
+                    if src[j + 1:j + 2] == "{":
+                        j += 2
+                        continue
+                    depth += 1
+                elif interpolated and src[j] == "}" and depth:
+                    depth -= 1
+                elif src[j] == '"' and not depth:
+                    break
+                j += 1
+            out.append(" " * (j + 1 - i))
+            i = j + 1
+            continue
+        if c == "'":
+            char = re.match(r"'(\\u[0-9a-fA-F]{4}|\\.|[^\\'])'", src[i:i + 8])
+            if char:
+                out.append(" " * len(char.group(0)))
+                i += len(char.group(0))
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _closing(code, i, open_ch, close_ch):
+    depth = 0
+    for j in range(i, len(code)):
+        if code[j] == open_ch:
+            depth += 1
+        elif code[j] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return j
+    return -1
+
+
+def _skip_ws(code, i):
+    while i < len(code) and code[i].isspace():
+        i += 1
+    return i
+
+
+_THROWS = re.compile(r"\bthrow\b|\.Throw\(\)")
+_AWAITS = re.compile(r"\bawait\b")
+
+
+def il2cpp_filter_hazards(src):
+    """(line, clause) of every catch clause that throws while a later clause of the same try statement
+    can catch it under IL2CPP: the try has a `when` filter and the clause is not the last one."""
+    code, hazards = _blank_cs_literals(src), []
+    for m in re.finditer(r"\btry\b", code):
+        i = _skip_ws(code, m.end())
+        if i >= len(code) or code[i] != "{":
+            continue
+        k = _skip_ws(code, _closing(code, i, "{", "}") + 1)
+        clauses = []
+        while code.startswith("catch", k) and not re.match(r"\w", code[k + 5:k + 6]):
+            start, k, filtered = k, _skip_ws(code, k + 5), False
+            if code[k] == "(":
+                k = _skip_ws(code, _closing(code, k, "(", ")") + 1)
+            if code.startswith("when", k) and not re.match(r"\w", code[k + 4:k + 5]):
+                k = _skip_ws(code, k + 4)
+                k = _skip_ws(code, _closing(code, k, "(", ")") + 1)
+                filtered = True
+            if k >= len(code) or code[k] != "{":
+                break
+            end = _closing(code, k, "{", "}")
+            if end < 0:
+                break
+            clauses.append((start, code[k:end + 1], filtered))
+            k = _skip_ws(code, end + 1)
+        if not any(filtered for _, _, filtered in clauses):
+            continue
+        for start, body, _ in clauses[:-1]:
+            if _THROWS.search(body) and not _AWAITS.search(body):
+                hazards.append((src.count("\n", 0, start) + 1, " ".join(src[start:src.find("{", start)].split())))
+    return hazards
+
+
+def check_il2cpp_filters(files):
+    errors = []
+    for f in files:
+        if not (f.startswith(("Runtime/", "Tests/", "Editor/", "Samples~/")) and f.endswith(".cs")) or \
+                f.startswith("Runtime/Transport/BouncyCastle/Lib/"):
+            continue
+        path = os.path.join(ROOT, f)
+        if not os.path.exists(path):
+            continue
+        for line, clause in il2cpp_filter_hazards(open(path, encoding="utf-8-sig").read()):
+            errors.append(f"il2cppfilter: {f}:{line}: `{clause}` throws, but its try has a `when` filter and a "
+                          "later catch clause, which catches that exception under IL2CPP (#320); use one catch "
+                          "clause (dispatch with if) or fold the pass-through into the next clause's filter")
+    return errors
+
+
 CORE_API_BASELINE = "Tools~/ci/api-baseline/core-public-types.txt"
 CORE_PUBLIC_TYPE_CAP = 60  # #77 acceptance criterion; raising it needs an architecture decision
 _PUBLIC_TYPE = re.compile(
@@ -529,11 +661,12 @@ def check_docs(files):
 
 
 def main():
-    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "ignores", "reflect", "coreapi", "native", "docs"]
+    wanted = sys.argv[1:] or ["meta", "asmdef", "json", "unitynunit", "ignores", "reflect", "il2cppfilter", "coreapi",
+                              "native", "docs"]
     files = tracked()
     checks = {"meta": check_meta, "asmdef": check_asmdef, "json": check_json, "unitynunit": check_unity_nunit,
               "ignores": check_ignores,
-              "reflect": check_reflect, "coreapi": check_core_api, "native": check_native, "docs": check_docs}
+              "reflect": check_reflect, "il2cppfilter": check_il2cpp_filters, "coreapi": check_core_api, "native": check_native, "docs": check_docs}
     errors = []
     for w in wanted:
         errors += checks[w](files)
