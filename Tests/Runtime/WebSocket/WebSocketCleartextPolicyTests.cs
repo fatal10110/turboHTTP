@@ -16,6 +16,22 @@ namespace TurboHTTP.Tests.WebSocket
     [TestFixture]
     public sealed class WebSocketCleartextPolicyTests
     {
+        private Func<string, bool> _savedPlatformPolicy;
+
+        // CleartextTrafficPolicy.PlatformPolicy is process-wide: restore it even when a test body
+        // timed out and was abandoned (#349).
+        [SetUp]
+        public void SetUp()
+        {
+            _savedPlatformPolicy = CleartextTrafficPolicy.PlatformPolicy;
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            CleartextTrafficPolicy.PlatformPolicy = _savedPlatformPolicy;
+        }
+
         [Test]
         public void WsUri_AllowCleartextFalse_ThrowsBeforeAnySocket()
         {
@@ -79,34 +95,42 @@ namespace TurboHTTP.Tests.WebSocket
         [Test]
         public void PlatformPolicyRefusingHost_ThrowsBeforeAnySocketEvenWithAllowCleartext()
         {
-            using var server = new WebSocketTestServer();
-            using var transport = new RawSocketWebSocketTransport();
-            var options = CreateOptions();
-            options.AllowCleartext = true;
             var askedHosts = new List<string>();
-
-            var previous = CleartextTrafficPolicy.PlatformPolicy;
             CleartextTrafficPolicy.PlatformPolicy = host =>
             {
                 lock (askedHosts)
                     askedHosts.Add(host);
                 return false;
             };
-            try
+
+            // Server and transport live inside the bounded body: their construction and disposal
+            // can never stall the run (#349). TearDown restores the policy.
+            AssertAsync.Run(async () =>
             {
+                using var server = new WebSocketTestServer();
+                using var transport = new RawSocketWebSocketTransport();
+                var options = CreateOptions();
+                options.AllowCleartext = true;
+
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                var ex = AssertAsync.ThrowsAsync<WebSocketException>(
-                    () => transport.ConnectAsync(server.CreateUri("/policy"), options, cts.Token));
+                WebSocketException refused = null;
+                try
+                {
+                    using var stream = await transport.ConnectAsync(server.CreateUri("/policy"), options, cts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (WebSocketException ex)
+                {
+                    refused = ex;
+                }
 
-                Assert.AreEqual(WebSocketError.CleartextNotPermitted, ex.Error);
-            }
-            finally
-            {
-                CleartextTrafficPolicy.PlatformPolicy = previous;
-            }
+                Assert.IsNotNull(refused, "the platform policy refused the host; the connect must throw");
+                Assert.AreEqual(WebSocketError.CleartextNotPermitted, refused.Error);
+                Assert.AreEqual(0, server.ConnectionCount);
+            });
 
-            CollectionAssert.AreEqual(new[] { "127.0.0.1" }, askedHosts);
-            Assert.AreEqual(0, server.ConnectionCount);
+            lock (askedHosts)
+                CollectionAssert.AreEqual(new[] { "127.0.0.1" }, askedHosts);
         }
 
         [Test]
@@ -119,17 +143,9 @@ namespace TurboHTTP.Tests.WebSocket
                 var options = CreateOptions();
                 options.AllowCleartext = true;
 
-                var previous = CleartextTrafficPolicy.PlatformPolicy;
                 CleartextTrafficPolicy.PlatformPolicy = host => host == "127.0.0.1";
-                try
-                {
-                    await client.ConnectAsync(server.CreateUri("/policy-ok"), options, CancellationToken.None)
-                        .ConfigureAwait(false);
-                }
-                finally
-                {
-                    CleartextTrafficPolicy.PlatformPolicy = previous;
-                }
+                await client.ConnectAsync(server.CreateUri("/policy-ok"), options, CancellationToken.None)
+                    .ConfigureAwait(false);
 
                 Assert.AreEqual(WebSocketState.Open, client.State);
             });

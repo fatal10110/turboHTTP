@@ -5,11 +5,16 @@ Prints the totals, the failed cases and every skipped/ignored case with its reas
 skip gates:
   * every skipped case must carry a reason with an issue reference (#123) or the [env] marker that
     TestRequirements.IgnoreEnvironment adds; anything else is an unexplained skip;
-  * an unfiltered run (the whole platform suite) may not skip more cases than the platform's entry in
-    the baseline file (Tools~/unity/skip-baseline.txt). A filtered run covers part of the suite, so the
+  * an unfiltered run (the whole suite) may not skip more cases than the run target's entry in the
+    baseline file (Tools~/unity/skip-baseline.txt). A filtered run covers part of the suite, so the
     count is only listed.
 
-Usage: summarize_results.py <results.xml> <EditMode|PlayMode> <filtered:0|1> <baseline-file>
+The baseline key names the run target, because a player skips more platform-scoped [env] tests than
+the host editor (#341): EditMode and PlayMode for the host editor (run-tests.sh), Player-Android for
+an Android player (run-device-tests.sh, run-emulator-tests.sh). A key without an entry fails an
+unfiltered run.
+
+Usage: summarize_results.py <results.xml> <baseline key: EditMode|PlayMode|Player-Android|...> <filtered:0|1> <baseline-file>
 Exit: 0 gates pass, 4 a skip gate failed. (Test failures are reported by the caller via Unity's exit code.)
 """
 import re
@@ -21,7 +26,7 @@ REASON_OK = re.compile(r"#\d+|\[env\]")
 
 
 def read_baseline(path, platform):
-    """Max allowed skipped cases for the platform, or None when the file has no entry."""
+    """Max allowed skipped cases for the baseline key (run target), or None when the file has no entry."""
     try:
         with open(path, encoding="utf-8") as fh:
             for line in fh:

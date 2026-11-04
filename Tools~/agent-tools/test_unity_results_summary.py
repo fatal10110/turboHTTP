@@ -89,9 +89,39 @@ class SummarizeResultsTest(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertIn("FAIL N.T.Bad: boom", out)
 
-    def test_committed_baseline_covers_both_platforms(self):
-        self.assertIsNotNone(self.module.read_baseline(str(BASELINE), "EditMode"))
-        self.assertIsNotNone(self.module.read_baseline(str(BASELINE), "PlayMode"))
+    def test_committed_baseline_covers_every_run_target(self):
+        for key in ("EditMode", "PlayMode", "Player-Android", "Player-iOS"):
+            self.assertIsNotNone(self.module.read_baseline(str(BASELINE), key), key)
+
+    def test_baseline_key_selects_the_run_target_entry(self):
+        self.baseline.write_text("EditMode 0\nPlayMode 2\nPlayer-Android 4  # player [env] skips\n", encoding="utf-8")
+        self.assertEqual(2, self.module.read_baseline(str(self.baseline), "PlayMode"))
+        self.assertEqual(4, self.module.read_baseline(str(self.baseline), "Player-Android"))
+        four = results_xml("[env] a", "[env] b", "[env] c", "[env] d")
+        code, out = self.run_summary(four, platform="Player-Android")
+        self.assertEqual(0, code)
+        self.assertIn("within baseline 4 for Player-Android", out)
+        # The same player-only skips do not fit the host PlayMode number (#341).
+        code, out = self.run_summary(four, platform="PlayMode")
+        self.assertEqual(4, code)
+        self.assertIn("4 skipped > baseline 2 for PlayMode", out)
+
+    def test_unknown_run_target_fails_unfiltered_run(self):
+        code, out = self.run_summary(results_xml(), platform="Player-WebGL")
+        self.assertEqual(4, code)
+        self.assertIn("no Player-WebGL entry", out)
+        code, _ = self.run_summary(results_xml(), platform="Player-WebGL", filtered=True)
+        self.assertEqual(0, code)
+
+    def test_committed_player_baselines_do_not_raise_the_host_numbers(self):
+        read = lambda key: self.module.read_baseline(str(BASELINE), key)
+        self.assertLessEqual(read("PlayMode"), read("Player-Android"))
+        self.assertLessEqual(read("PlayMode"), read("Player-iOS"))
+
+    def test_device_script_uses_the_player_android_key(self):
+        script = SCRIPT.with_name("run-device-tests.sh").read_text(encoding="utf-8")
+        self.assertIn("baseline_key=Player-Android", script)
+        self.assertIn('summarize_results.py" "$xml" "$baseline_key"', script)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,10 @@
-# Maximum skipped/ignored tests in an unfiltered host-editor run, per platform (run-tests.sh, #151).
-# run-tests.sh exits 4 when an unfiltered run skips more. Each counted skip is listed below with its
-# issue or platform reason; any other skip means a test silently stopped executing, so investigate
-# before raising a number, and list every raise here with its test and reason (#319).
+# Maximum skipped/ignored tests in an unfiltered run, per run target (#151, #341). The key is chosen by
+# the script that runs the suite: EditMode and PlayMode by run-tests.sh (host editor), Player-Android by
+# run-device-tests.sh (and run-emulator-tests.sh through it). A player skips more platform-scoped [env]
+# tests than the host editor, so each target has its own number and a player-only skip never raises the
+# host numbers. An unfiltered run that skips more than its entry exits 4. Each counted skip is listed
+# below with its issue or platform reason; any other skip means a test silently stopped executing, so
+# investigate before raising a number, and list every raise here with its test and reason (#319).
 #
 # PlayMode 3, all permanent on the Windows host editor (Unity 2021.3, Mono):
 #   1 SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("127.0.0.1")
@@ -9,10 +12,33 @@
 #     [env] UnityTls SslStream sends an IP literal as server_name (known limitation, #46)
 #   3 VerificationFailClosedTests.Linux_ProductionConfiguration_RejectsWithNoVerifier
 #     [env] runs only in a Linux Editor or player
-# Device and emulator runs (run-device-tests.sh) read this file too but skip more [env] tests
-# (desktop-verifier tests); they are not covered by these numbers (#341).
 # Lowered from 4 to 3: SoakShortTests.Http11_MixedWorkloadWithInFlightCancel_EveryCancelledRequestEnds
 # runs again since the head read no longer waits for the platform read after cancellation (#293).
-# <platform> <max skipped>
+#
+# Player-Android 16, IL2CPP player on Android (API 29 x86_64 emulator, Stripping High, #341):
+#   1-2  SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("127.0.0.1", "[::1]")
+#        [env] UnityTls sends an IP literal as server_name (#46)
+#   3    VerificationFailClosedTests.Linux_ProductionConfiguration_RejectsWithNoVerifier  [env] Linux only
+#   4-6  DesktopCertificateVerifierTests: DesktopVerifier_AppliesThePlatformHostPolicy,
+#        DesktopVerifier_IpLiteralHost_MatchesIpAddressSan, Windows_TestAnchorsAreTheOnlyRoots
+#        [env] Windows/macOS desktop verifier only
+#   7-14 ServerCertificateVerifierTests test-anchor cases: ExpiredLeaf_IsNotTimeValid,
+#        NameConstraints_ExcludedLeaf_IsInvalid, NameConstraints_PermittedLeaf_IsTrusted,
+#        NotYetValidLeaf_IsNotTimeValid, P256Chain_ToTestAnchor_IsTrusted_AndPathEndsAtAnchor,
+#        P384Chain_ToTestAnchor_IsTrusted, RogueRoot_WithOtherAnchorRegistered_IsUntrusted,
+#        ServerAuthLeaf_UnderClientAuthOnlyIntermediate_IsInvalid
+#        [env] test anchors go to the managed X509Chain on players, which cannot evaluate them (#321)
+#   15   FileDownloaderResumeSafetyTests.Restart200_PartLockedWhileTruncating_NeverPairsNewValidatorWithOldBytes
+#        [env] needs Windows mandatory file locking
+#   16   Phase19AllocationGateTests.AllocationScenarios_RespectBaselineBudget  [env] Editor allocation baselines
+#
+# Player-iOS 18: no script reads this key yet (the iOS simulator handoff summarises its own results);
+# recorded from the iOS 26.4 simulator run of #341 (IL2CPP High) minus the SoakShortTests skip fixed by
+# #293. The Player-Android list plus 2 [env] cases where the runtime reports no unobserved faulted task:
+# AbandonableTaskTests.WaitAsync_CancelledThenTaskFaults_FaultIsObserved and
+# SslStreamSingleHandshakeTests.WrapAsync_CancelledPlainHandshakeFaultsLater_FaultIsObserved.
+# <run target> <max skipped>
 EditMode 0
 PlayMode 3
+Player-Android 16
+Player-iOS 18
