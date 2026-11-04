@@ -80,7 +80,12 @@ namespace TurboHTTP.Tests.Transport
                     await Within(call, Task.Delay(CallBound), "SendAsync on a full send buffer");
                     var send = await call;
                     if (send.IsCompleted)
-                        Assert.Inconclusive("the kernel accepted the whole payload; nothing left to cancel");
+                    {
+                        // Winsock (Editor on Windows) may buffer the whole payload: nothing is left
+                        // to cancel, and the non-blocking property already held.
+                        await send;
+                        return;
+                    }
 
                     cts.Cancel();
                     await Within(Swallow(send), watchdog, "cancelled send");
