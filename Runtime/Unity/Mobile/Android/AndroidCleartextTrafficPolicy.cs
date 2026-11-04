@@ -13,18 +13,18 @@ namespace TurboHTTP.Unity.Mobile.Android
     /// Installed automatically on Android players before the first scene loads, unless the app has
     /// already installed its own policy. Raw sockets are not covered by that configuration, so
     /// TurboHTTP applies it itself. The answer is cached per host (bounded) because the
-    /// configuration cannot change while the process runs. Any JNI failure propagates, and
-    /// <see cref="CleartextTrafficPolicy"/> treats it as "not permitted". Needs device validation
-    /// (#99).
+    /// configuration cannot change while the process runs. The JNI query runs on
+    /// <see cref="AndroidJniThread"/>, so the transport thread asking is never attached to the Java
+    /// VM (#328). Any JNI failure propagates, and <see cref="CleartextTrafficPolicy"/> treats it as
+    /// "not permitted". Needs device validation (#99).
     /// </remarks>
     internal static class AndroidCleartextTrafficPolicy
     {
         private const int MaxCachedHosts = 64;
 
-        private static readonly ConcurrentDictionary<string, bool> s_cache =
-            new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-
 #if UNITY_ANDROID && !UNITY_EDITOR
+        private static readonly ConcurrentDictionary<string, bool> s_cache = NewCache();
+
         [UnityEngine.RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void Install()
         {
@@ -40,15 +40,45 @@ namespace TurboHTTP.Unity.Mobile.Android
         /// </summary>
         internal static bool IsCleartextTrafficPermitted(string host)
         {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            return Resolve(host, s_cache, AndroidJniThread.Shared, QueryPlatform);
+#else
+            return true;
+#endif
+        }
+
+        internal static ConcurrentDictionary<string, bool> NewCache() =>
+            new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Answers from <paramref name="cache"/>, or runs <paramref name="query"/> on
+        /// <paramref name="jni"/> and caches its answer. Callers that miss together queue on the JNI
+        /// thread, and only the first of them asks Java. A full cache is dropped rather than left
+        /// full, so new hosts keep being cached; the configuration is fixed for the process, so
+        /// dropping it only costs re-queries.
+        /// </summary>
+        internal static bool Resolve(
+            string host,
+            ConcurrentDictionary<string, bool> cache,
+            AndroidJniThread jni,
+            Func<string, bool> query)
+        {
             string normalized = NormalizeHost(host);
-            if (s_cache.TryGetValue(normalized, out bool cached))
+            if (cache.TryGetValue(normalized, out bool cached))
                 return cached;
 
-            bool permitted = QueryPlatform(normalized);
-            if (s_cache.Count < MaxCachedHosts)
-                s_cache.TryAdd(normalized, permitted);
+            return jni.Invoke(() =>
+            {
+                if (cache.TryGetValue(normalized, out bool answered))
+                    return answered;
 
-            return permitted;
+                bool permitted = query(normalized);
+                if (cache.Count >= MaxCachedHosts)
+                    cache.Clear();
+
+                cache.TryAdd(normalized, permitted);
+                return permitted;
+            });
         }
 
         private static string NormalizeHost(string host)
@@ -62,13 +92,11 @@ namespace TurboHTTP.Unity.Mobile.Android
                 : host;
         }
 
+#if UNITY_ANDROID && !UNITY_EDITOR
+        // Runs on AndroidJniThread (attached, inside a local-reference frame); the Java objects are
+        // released before it returns.
         private static bool QueryPlatform(string host)
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
-            // Called from transport threads, which the JVM may not know yet; attaching an attached
-            // thread is a no-op.
-            UnityEngine.AndroidJNI.AttachCurrentThread();
-
             using var version = new UnityEngine.AndroidJavaClass("android.os.Build$VERSION");
             int sdk = version.GetStatic<int>("SDK_INT");
 
@@ -83,9 +111,7 @@ namespace TurboHTTP.Unity.Mobile.Android
             return sdk >= 24
                 ? policy.Call<bool>("isCleartextTrafficPermitted", host)
                 : policy.Call<bool>("isCleartextTrafficPermitted");
-#else
-            return true;
-#endif
         }
+#endif
     }
 }
