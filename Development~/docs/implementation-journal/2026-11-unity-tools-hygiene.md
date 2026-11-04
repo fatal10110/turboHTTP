@@ -74,7 +74,20 @@
 
   All 10 failed with the old scripts restored and pass with the change.
 - `shellcheck` is clean on the changed scripts.
-- Real API 29 emulator run: see the PR body for the result and the `Get-Process qemu*` check afterwards.
+- Real API 29 runs on the host editor (`run-emulator-tests.sh --api 29 --jobs 1 --stripping High --filter
+  'HttpMethodTests|BackoffJitterTests'`):
+  1. The first run, with three quick lookup tries, booted the emulator. Then every WSL interop call
+     (adb.exe, powershell.exe) failed with `UtilAcceptVsock ... accept4 failed 110` for about a minute.
+     The device run found no device, the stop lookup gave up ("cannot list Windows processes"), and the
+     qemu of `turbohttp-api29` stayed. After that run, lookups back off for about two minutes before they
+     give up.
+  2. The second run stopped at the existing `%LOCALAPPDATA%` lookup during the same kind of outage.
+  3. The third run found the leftover from run 1, stopped it before the boot ("a previous run left
+     turbohttp-api29 running; stopping it", taskkill on its PID), and passed 5/5 tests (exit 0).
+     Afterwards only the emulator's own `emulator -kill <pid> -sleep 20` helper was listed, and it
+     exited by itself 20 s later. `Get-Process qemu*,emulator*` then printed nothing.
+- Interop outages also break adb and `cmd.exe` calls elsewhere in the scripts. Hardening those is not part of
+  this change.
 - Not run: Unity EditMode/PlayMode (no runtime code changed), IL2CPP beyond the emulator run's player
   build, the phone, a Linux/KVM host, and the Ctrl-C and frozen-emulator paths against a real emulator (they
   are covered only by the stubs).
