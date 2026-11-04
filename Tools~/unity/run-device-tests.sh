@@ -4,7 +4,7 @@
 # adb and collects the results through the player connection, or, when that connection never comes up,
 # from the NUnit XML the player writes on the device (pulled over adb).
 #
-#   UNITY_PATH=/mnt/e/Unity/Hub/2021.3.45f2/Editor/Unity.exe \
+#   UNITY_PATH=<Unity 2021.3 editor binary> \
 #     Tools~/unity/run-device-tests.sh [--stripping Low|High] [--arch arm64|armv7|x86_64] [--serial <adb serial>]
 #       [--skip-build] [--filter <regex>] [--category <name>] [--integration]
 #

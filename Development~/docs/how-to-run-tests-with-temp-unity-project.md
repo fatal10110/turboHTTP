@@ -13,10 +13,10 @@ This document describes the exact workflow used in this repository to:
 
 ## Paths Used
 
-- Package repo (this workspace): `/Users/arturkoshtei/workspace/turboHTTP`
+- Package repo (this workspace): `<repo>` (the checkout root)
 - Synced package copy: `/tmp/turboHTTP-package`
-- Unity test project: `/Users/arturkoshtei/workspace/turboHTTP-testproj`
-- Unity binary: `/Applications/Unity/Hub/Editor/2021.3.45f2/Unity.app/Contents/MacOS/Unity`
+- Unity test project: `<test-project>` (any folder outside the repo)
+- Unity binary: `<unity>` (the Unity 2021.3 editor binary)
 
 ## One-Time Setup (Temp Unity Project)
 
@@ -48,17 +48,17 @@ rsync -a --delete \
   --exclude='Logs/' \
   --exclude='Obj/' \
   --exclude='.DS_Store' \
-  /Users/arturkoshtei/workspace/turboHTTP/ /tmp/turboHTTP-package/
+  <repo>/ /tmp/turboHTTP-package/
 ```
 
 ## Step 2: Run PlayMode Tests
 
 ```bash
 TS=$(date +%Y%m%d-%H%M%S)
-UNITY="/Applications/Unity/Hub/Editor/2021.3.45f2/Unity.app/Contents/MacOS/Unity"
-PROJ="/Users/arturkoshtei/workspace/turboHTTP-testproj"
-LOG="/Users/arturkoshtei/workspace/turboHTTP-testproj/unity-test-all-playmode-sync-${TS}.log"
-XML="/Users/arturkoshtei/workspace/turboHTTP-testproj/test-results-all-playmode-sync-${TS}.xml"
+UNITY="<unity>"
+PROJ="<test-project>"
+LOG="<test-project>/unity-test-all-playmode-sync-${TS}.log"
+XML="<test-project>/test-results-all-playmode-sync-${TS}.xml"
 
 "$UNITY" -batchmode -nographics \
   -projectPath "$PROJ" \
@@ -73,10 +73,10 @@ Important: run EditMode **without** `-nographics` if editor-window tests exist.
 
 ```bash
 TS=$(date +%Y%m%d-%H%M%S)
-UNITY="/Applications/Unity/Hub/Editor/2021.3.45f2/Unity.app/Contents/MacOS/Unity"
-PROJ="/Users/arturkoshtei/workspace/turboHTTP-testproj"
-LOG="/Users/arturkoshtei/workspace/turboHTTP-testproj/unity-test-all-editmode-sync-${TS}.log"
-XML="/Users/arturkoshtei/workspace/turboHTTP-testproj/test-results-all-editmode-sync-${TS}.xml"
+UNITY="<unity>"
+PROJ="<test-project>"
+LOG="<test-project>/unity-test-all-editmode-sync-${TS}.log"
+XML="<test-project>/test-results-all-editmode-sync-${TS}.xml"
 
 "$UNITY" -batchmode \
   -projectPath "$PROJ" \
@@ -131,20 +131,23 @@ PY
 Run the dedicated Phase 19 allocation/throughput benchmark gate (PlayMode default):
 
 ```bash
-/Users/arturkoshtei/workspace/turboHTTP/Development~/scripts/phase19/run-allocation-gate.sh gate
+PROJECT_PATH=<test-project> UNITY_BIN=<unity> \
+  <repo>/Development~/scripts/phase19/run-allocation-gate.sh gate
 ```
 
 Optional threshold override (default is `10` percent over baseline):
 
 ```bash
 TURBOHTTP_ALLOCATION_REGRESSION_THRESHOLD_PERCENT=15 \
-  /Users/arturkoshtei/workspace/turboHTTP/Development~/scripts/phase19/run-allocation-gate.sh gate
+  PROJECT_PATH=<test-project> UNITY_BIN=<unity> \
+  <repo>/Development~/scripts/phase19/run-allocation-gate.sh gate
 ```
 
 Record observed measurements to an output baseline artifact (does not enforce regression checks):
 
 ```bash
-/Users/arturkoshtei/workspace/turboHTTP/Development~/scripts/phase19/run-allocation-gate.sh record
+PROJECT_PATH=<test-project> UNITY_BIN=<unity> \
+  <repo>/Development~/scripts/phase19/run-allocation-gate.sh record
 ```
 
 Baseline source of truth:
