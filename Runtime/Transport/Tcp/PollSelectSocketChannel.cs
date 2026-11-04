@@ -51,10 +51,7 @@ namespace TurboHTTP.Transport.Tcp
     /// other direction, a cancellation or a dispose is noticed within that bound. An idle
     /// connection with no pending operation does not wake at all; an HTTP/2 connection whose
     /// receive is always pending wakes about 50 times per second (#38 replaced the former
-    /// 1 ms spin, documented at 2-10% of a core per idle connection). Right after a receive
-    /// completes while a send is stalled, the write-only wait uses 1 ms slices for at most one
-    /// full slice, so the receiver's next receive is picked up promptly (#329); that costs at
-    /// most 20 extra wake-ups per completed receive, none while the connection is idle.
+    /// 1 ms spin, documented at 2-10% of a core per idle connection).
     /// </para>
     /// <para>
     /// <b>Cancellation:</b> Cancelling an operation disposes the socket, so the next poll throws
@@ -68,15 +65,6 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>Upper bound of one readiness wait, in microseconds (20 ms).</summary>
         internal const int PollSliceUs = 20_000;
-
-        /// <summary>
-        /// Write-only wait right after a receive completed (1 ms), for at most
-        /// <see cref="RearmSlices"/> waits: the receiver usually issues its next receive at once,
-        /// and a full slice spent waiting on a stalled send alone would leave it unserviced (#329).
-        /// </summary>
-        private const int RearmSliceUs = 1_000;
-
-        private const int RearmSlices = PollSliceUs / RearmSliceUs;
 
         private static int s_threadCounter;
 
@@ -235,8 +223,6 @@ namespace TurboHTTP.Transport.Tcp
             // Reused for Socket.Select (only when both directions are pending).
             var readList = new List<Socket>(1);
             var writeList = new List<Socket>(1);
-            // Short write-only waits left after the last delivered receive (see RearmSliceUs).
-            int rearm = 0;
 
             try
             {
@@ -279,14 +265,7 @@ namespace TurboHTTP.Transport.Tcp
                         }
                         else
                         {
-                            int slice = PollSliceUs;
-                            if (rearm > 0)
-                            {
-                                rearm--;
-                                slice = RearmSliceUs;
-                            }
-
-                            writable = _socket.Poll(slice, SelectMode.SelectWrite);
+                            writable = _socket.Poll(PollSliceUs, SelectMode.SelectWrite);
                         }
                     }
                     catch (Exception ex)
@@ -297,8 +276,7 @@ namespace TurboHTTP.Transport.Tcp
                         continue;
                     }
 
-                    if (readable && ServiceRecv())
-                        rearm = RearmSlices;
+                    if (readable) ServiceRecv();
                     if (writable) ServiceSend();
                 }
             }
@@ -309,8 +287,7 @@ namespace TurboHTTP.Transport.Tcp
             }
         }
 
-        /// <summary>Services a readable socket; returns true when a receive was completed with data.</summary>
-        private bool ServiceRecv()
+        private void ServiceRecv()
         {
             PollSelectSource src;
             byte[] target;
@@ -318,7 +295,7 @@ namespace TurboHTTP.Transport.Tcp
 
             lock (_recvLock)
             {
-                if (!_recvPending) return false;
+                if (!_recvPending) return;
                 src = _recvSource;
                 target = _recvTarget;
                 offset = _recvOffset;
@@ -334,7 +311,7 @@ namespace TurboHTTP.Transport.Tcp
                 {
                     // Spurious readiness (TOCTOU on non-blocking socket) — loop back.
                     // Do NOT deliver 0 bytes, which would falsely signal EOF to the parser.
-                    return false;
+                    return;
                 }
 
                 if (err != SocketError.Success)
@@ -346,12 +323,11 @@ namespace TurboHTTP.Transport.Tcp
             catch (Exception ex)
             {
                 FailRecv(ex);
-                return false;
+                return;
             }
 
             lock (_recvLock) { _recvPending = false; }
             src.SetResult(received);
-            return received > 0;
         }
 
         private void ServiceSend()

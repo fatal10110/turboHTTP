@@ -17,12 +17,6 @@
     `ArraySegment<byte>[]`.
   - This covers both callers: the inline attempt on the caller's thread and the poll thread's `ServiceSend`.
   - The inline fast path stays. It is now non-blocking on every runtime.
-- Follow-on fix in `RunPollLoop`:
-  - Once a stalled send is pending on the poll thread, the loop could wait a full 20 ms write-only slice right after it
-    delivered a receive, before the receiver had issued its next receive.
-  - Effect on the phone: the full-duplex test took 13.4 s, against 1.0 s before the fix.
-  - After a receive delivers data, write-only waits now use 1 ms slices for at most 20 waits (`RearmSliceUs`,
-    `RearmSlices`; `ServiceRecv` returns whether it delivered data).
 - Tests:
   - New `Tests/Runtime/Transport/PollSelectSocketChannelSendTests.cs`:
     - `SendAsync_PeerNotReading_ReturnsWithoutBlocking`: 4 MB to a loopback peer that does not read. The call must
@@ -64,12 +58,25 @@
   - Both `SendAsync` tests did not return within 5 s.
   - `ListSend` returned in 48 ms.
   - The finding is posted on #329.
-- After the list-overload fix, before the rearm change:
-  - Phone, filter `PollSelectSocketChannel|SocketChannelLifecycleTests`: 15/15 passed. Full-duplex took 13.4 s.
+- After the fix, at the pushed head:
+  - Phone, filter `PollSelectSocketChannel|SocketChannelLifecycleTests`: 15/15 passed.
   - Emulator API 36 x86_64 (`run-emulator-tests.sh --api 36 --jobs 1`), filter `PollSelectSocketChannel`: 6/6 passed,
-    3.9 s total.
-- Final code (with the rearm change): see the PR body. During this lane, Windows interop from WSL failed
-  intermittently (`UtilAcceptVsock: accept4 failed 110`), and two Editor runs could not start because of it.
+    3.8 s total.
+  - Editor PlayMode: see the PR body. During this lane, Windows interop from WSL failed intermittently
+    (`UtilAcceptVsock: accept4 failed 110`), so some Editor runs could not start.
+- Full-duplex test duration on the phone: 13.4-13.8 s after the fix, against 1.0 s before it.
+  - A temporary timing diagnostic, not committed, split the time:
+    - The receive phase (4 MB from the peer) finished in 58 ms.
+    - The send phase, which runs after the peer starts reading, took 13.2 s over about 710 poll iterations: about
+      18.6 ms and 6 KB per iteration.
+  - So with the test's 32 KB `SO_SNDBUF`/`SO_RCVBUF` on loopback, the kernel signals write readiness only once about
+    a third of the send buffer is free. That takes about one 20 ms slice (delayed ACKs with tiny windows).
+  - The old code reached 1.0 s only because it spun on `send()` and pushed every freed byte at once.
+  - The product never sets socket buffer sizes (no `SendBufferSize`/`ReceiveBufferSize` in `Runtime/Transport`), so
+    real connections keep kernel auto-tuning. The slowdown is specific to the test's buffers and stays well inside the
+    30 s watchdog.
+  - A tried change used 1 ms write-only slices after each delivered receive. It made no measurable difference
+    (13.8 s), because the receive phase was never the bottleneck, so it was reverted.
 
 ## Not run
 - The full Unity EditMode and PlayMode suites: host editor (periodic).
