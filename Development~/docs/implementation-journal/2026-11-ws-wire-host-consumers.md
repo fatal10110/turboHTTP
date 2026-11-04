@@ -53,5 +53,5 @@ for an IDN) to proxy bypass, the cleartext policy and DNS. Now:
 - `'./Tools~/ci/check.sh'`: OK.
 - Host Editor PlayMode `--filter 'WebSocketWireHostConsumers|WebSocketHostAuthority|WebSocketCleartextPolicy|WebSocketProxy|ProxyTunnelConnector|LocalhostResolution|Nat64AddressSynthesizer|WebSocketConnect'`:
   161/161 passed (31 new cases).
-- API 29 emulator (x86_64 IL2CPP, High stripping) `--filter 'WebSocketWireHostConsumers|WebSocketHostAuthority|WebSocketCleartextPolicy|WebSocketProxy|LocalhostResolution'`: EMU_RESULT
+- API 29 emulator (x86_64 IL2CPP, High stripping) `--filter 'WebSocketWireHostConsumers|WebSocketHostAuthority|WebSocketCleartextPolicy|WebSocketProxy|LocalhostResolution'`: 112/112 passed (31 new cases), first attempt; no qemu process left afterwards.
 - Not run: full EditMode/PlayMode suites (periodic host-editor run), iOS, physical devices.
