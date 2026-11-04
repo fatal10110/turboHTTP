@@ -42,5 +42,6 @@ IPv6 literal in one pair of brackets without a zone id, and the #340 rejections 
 - Host Editor (Unity 2021.3.45f2, Mono) PlayMode `--filter 'WebSocketHandshakeTests|WebSocketHostAuthority|ProxyTunnelConnectorTests|WebSocketProxyTests|WebSocketCleartextPolicyTests|HttpAuthority'`:
   135 passed, 0 failed, 0 skipped (43 new). The EditMode run with the same filter matched 0 tests (the
   runtime tests run under PlayMode).
-- API 29 emulator (x86_64 IL2CPP, High stripping): see the PR body.
+- API 29 emulator (x86_64 IL2CPP, High stripping) `--filter 'WebSocketHostAuthority|WebSocketHandshakeTests|ProxyTunnelConnectorTests'`:
+  60 passed, 0 failed, 0 skipped (the first attempt hit the WSL interop failure #355 before the build; rerun once).
 - Not run: iOS, devices, macOS, the full Unity suites (host editor, periodic).
