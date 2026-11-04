@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -267,6 +268,7 @@ namespace TurboHTTP.WebSocket
         {
             var headerBuffer = ArrayPool<byte>.Shared.Rent(maxResponseHeaderBytes);
             var readBuffer = ArrayPool<byte>.Shared.Rent(Math.Min(1024, maxResponseHeaderBytes));
+            Task<int> abandonedRead = null;
 
             try
             {
@@ -281,7 +283,23 @@ namespace TurboHTTP.WebSocket
                     }
 
                     int toRead = Math.Min(remaining, readBuffer.Length);
-                    int read = await stream.ReadAsync(readBuffer, 0, toRead, ct).ConfigureAwait(false);
+                    var pending = stream.ReadAsync(readBuffer, 0, toRead, ct);
+                    int read;
+                    if (!ct.CanBeCanceled || pending.IsCompleted)
+                    {
+                        read = await pending.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        // #226/#345: Mono and IL2CPP may never end a pending socket read after the token
+                        // fired and the connection disposed the stream, so the token wins the race.
+                        // The abandoned read keeps readBuffer (see finally) and its end disposes the
+                        // stream, which can no longer be read in order.
+                        abandonedRead = pending;
+                        read = await AbandonOnCancel.WaitAsync(pending, ct, stream).ConfigureAwait(false);
+                        abandonedRead = null;
+                    }
+
                     if (read == 0)
                     {
                         throw new IOException("Unexpected end of stream while reading handshake response headers.");
@@ -307,7 +325,9 @@ namespace TurboHTTP.WebSocket
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(readBuffer);
+                // An abandoned read may still write into readBuffer: it goes to the GC, not the pool.
+                if (abandonedRead == null || abandonedRead.IsCompleted)
+                    ArrayPool<byte>.Shared.Return(readBuffer);
                 ArrayPool<byte>.Shared.Return(headerBuffer);
             }
         }
@@ -799,6 +819,7 @@ namespace TurboHTTP.WebSocket
             private byte[] _buffer;
             private int _bufferOffset;
             private int _bufferCount;
+            private Task<int> _abandonedRead;
 
             public ErrorBodySource(Stream stream, byte[] prefetched)
             {
@@ -825,7 +846,21 @@ namespace TurboHTTP.WebSocket
                         _buffer = ArrayPool<byte>.Shared.Rent(1024);
 
                     _bufferOffset = 0;
-                    _bufferCount = await _stream.ReadAsync(_buffer, 0, _buffer.Length, ct).ConfigureAwait(false);
+                    _bufferCount = 0;
+                    var pending = _stream.ReadAsync(_buffer, 0, _buffer.Length, ct);
+                    if (!ct.CanBeCanceled || pending.IsCompleted)
+                    {
+                        _bufferCount = await pending.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        // #345: as the head read, the token wins over a read the platform never ends;
+                        // the abandoned read keeps _buffer (Dispose) and its end disposes the stream.
+                        _abandonedRead = pending;
+                        _bufferCount = await AbandonOnCancel.WaitAsync(pending, ct, _stream).ConfigureAwait(false);
+                        _abandonedRead = null;
+                    }
+
                     if (_bufferCount <= 0)
                     {
                         _bufferCount = 0;
@@ -872,7 +907,8 @@ namespace TurboHTTP.WebSocket
                 var buffer = _buffer;
                 _buffer = null;
                 _prefetched = Array.Empty<byte>();
-                if (buffer != null)
+                var abandonedRead = _abandonedRead;
+                if (buffer != null && (abandonedRead == null || abandonedRead.IsCompleted))
                     ArrayPool<byte>.Shared.Return(buffer);
             }
         }

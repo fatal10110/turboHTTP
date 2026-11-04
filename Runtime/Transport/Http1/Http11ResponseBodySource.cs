@@ -555,16 +555,16 @@ namespace TurboHTTP.Transport.Http1
             if (!effectiveToken.CanBeCanceled || pending.IsCompleted)
                 return await pending.ConfigureAwait(false);
 
-            using var registration = effectiveToken.Register(
-                static state => ((Http11ResponseBodySource)state).CloseBody(),
-                this);
-
+            // The reader races a pending read against effectiveToken itself (#345): Mono and IL2CPP
+            // may never end a socket read after the connection is closed, so closing the body on
+            // the token is no longer what ends the wait. The body is closed once the read gave up.
             try
             {
                 return await pending.ConfigureAwait(false);
             }
             catch (Exception ex) when (IsCanceledRead(ex, effectiveToken))
             {
+                CloseBody();
                 throw CreateCanceledReadException(effectiveToken, callerToken);
             }
         }
@@ -580,16 +580,16 @@ namespace TurboHTTP.Transport.Http1
                 return;
             }
 
-            using var registration = effectiveToken.Register(
-                static state => ((Http11ResponseBodySource)state).CloseBody(),
-                this);
-
+            // The reader races a pending read against effectiveToken itself (#345): Mono and IL2CPP
+            // may never end a socket read after the connection is closed, so closing the body on
+            // the token is no longer what ends the wait. The body is closed once the read gave up.
             try
             {
                 await pending.ConfigureAwait(false);
             }
             catch (Exception ex) when (IsCanceledRead(ex, effectiveToken))
             {
+                CloseBody();
                 throw CreateCanceledReadException(effectiveToken, callerToken);
             }
         }
