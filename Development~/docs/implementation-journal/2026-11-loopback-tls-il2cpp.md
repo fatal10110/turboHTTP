@@ -63,4 +63,9 @@
   the same AVD") because an orphaned `turbohttp-api33` qemu process was holding the AVD. That process was
   started at 10:25 outside this lane, and adb did not list it. It was left alone. The PR records the
   result once the run is possible.
+  - Rechecked in review round 1: Windows `Get-Process` still lists PID 33104
+    (`qemu-system-x86_64-headless -avd turbohttp-api33 -port 5560`, started 10:25:42). Its parent process is
+    gone and the run that started it (`emulators/run-20261104-102542`) finished with exit 0 at 10:34 without
+    stopping it. WSL `ps` cannot see Windows processes, so a WSL-side check reports 0 processes. Stopping
+    another run's process needs the owner, so the API 33 run waits for the owner to stop it.
 - Not run: the phone (arm64), the iOS simulator, unfiltered suites (host-editor periodic run).
