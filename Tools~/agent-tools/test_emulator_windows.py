@@ -134,6 +134,44 @@ class EmulatorWindowsTests(unittest.TestCase):
         self.assertIn('win_stop_avd "$avd" 15', text)
         self.assertIn('win_stop_avd "$a" 5', text.split("cleanup() {", 1)[1].split("\n}\n", 1)[0])
 
+    def run_script_functions(self, call):
+        """Runs the boot/stop_emulator/lane/cleanup functions of run-emulator-tests.sh with adb and the
+        emulator stubbed: adbs and $emu append their arguments to <state>.adb and <state>.emu."""
+        text = (REPO / "Tools~" / "unity" / "run-emulator-tests.sh").read_text()
+        funcs = "".join(name + "() {" + text.split("\n" + name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+                        for name in ("cleanup", "boot", "stop_emulator", "lane"))
+        out = pathlib.Path(self.tmp.name) / "out"
+        out.mkdir(exist_ok=True)
+        script = (f'set -euo pipefail; . "$1"; emu_poll_s=0; win=1; out="$2"; repo=/nonexistent; pass=(); '
+                  f'emu_pid=""; started=(); started_avds=(); lane_pids=(); '
+                  f'adbs() {{ echo "$*" >> "$FAKE_WIN_STATE.adb"; }}; emu="$3"; {funcs}{call}')
+        emu = pathlib.Path(self.tmp.name) / "bin" / "emulator.exe"
+        emu.write_text('#!/usr/bin/env bash\necho "$*" >> "$FAKE_WIN_STATE.emu"\n')
+        emu.chmod(0o755)
+        result = subprocess.run(["bash", "-c", script, "_", str(LIB), str(out), str(emu)], env=self.env,
+                                capture_output=True, text=True, timeout=60)
+        adb = pathlib.Path(f"{self.state}.adb")
+        return result, out, adb.read_text().splitlines() if adb.exists() else []
+
+    def test_refused_preboot_sends_no_console_kill_to_the_foreign_emulator(self):
+        self.procs((5150, f"{QEMU} -avd Pixel_7_API_34 -port 5560"))
+        result, out, adb = self.run_script_functions(
+            'started+=(emulator-5560); started_avds+=(turbohttp-api33); lane 33 5560 1; cleanup')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("5150", result.stderr)
+        self.assertEqual((out / "api33.code").read_text().strip(), "2")
+        self.assertEqual([c for c in adb if "emu kill" in c], [])
+        self.assertFalse(pathlib.Path(f"{self.state}.emu").exists())
+        self.assertEqual(self.kills(), [])
+        self.assertIn("5150|", self.state.read_text())
+
+    def test_cleanup_sends_a_console_kill_to_a_launched_serial(self):
+        self.procs()
+        result, out, adb = self.run_script_functions(
+            ': > "$out/emulator-5560.launched"; started+=(emulator-5560 emulator-5562); cleanup')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([c for c in adb if "emu kill" in c], ["emulator-5560 emu kill"])
+
 
 class AllocationGateTests(unittest.TestCase):
     def test_requires_project_path(self):

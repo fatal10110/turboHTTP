@@ -35,6 +35,10 @@
   (Android Studio's, say) on the console port this level needs. That emulator would also take the adb serial
   `emulator-<port>` that the script drives. The script stops only command lines whose AVD matches
   `^turbohttp-api[0-9]+$`.
+- **A refused level sends no console kill (review round 1).** When the pre-boot check refuses a foreign
+  emulator, the level's serial `emulator-<port>` is that emulator's console. `boot` writes
+  `<out>/emulator-<port>.launched` only after the check passes; `stop_emulator` does nothing when the lane
+  launched no emulator, and the EXIT trap sends `emu kill` only to serials with that marker.
 - **A `turbohttp-api*` process is assumed to be a leftover.** Runs are serialized by `flock` on the host
   editor, so a running `turbohttp-api*` emulator that a level's boot needs is a leftover of an earlier run.
 - **Root cause.** The intermittent leak itself (the console sometimes does not answer before the serial
@@ -59,7 +63,7 @@
 
 ## Verification
 
-- `Tools~/agent-tools/test_emulator_windows.py` (auto-discovered by `check.sh --full`) has 10 tests. Stub
+- `Tools~/agent-tools/test_emulator_windows.py` (auto-discovered by `check.sh --full`) has 12 tests. Stub
   `powershell.exe`/`taskkill.exe` on PATH edit a fake process table and cover these cases:
   - the stop path kills only `-avd turbohttp-api33` (it ignores `turbohttp-api3` and a foreign AVD)
   - an emulator that already exited needs no taskkill
@@ -68,11 +72,13 @@
   - a failed lookup is not read as "no process"
   - a pre-boot leftover (same AVD, or another `turbohttp-api*` on the port) is stopped
   - a foreign emulator on the port fails with its PID
+  - with a foreign emulator on the port, the script's own `lane` and `cleanup` functions (adb and the
+    emulator stubbed) send no `emu kill`, launch nothing and record exit 2; the trap kills only marked serials
   - the run script calls the helpers on the Windows path and in the trap
   - the allocation gate exits 2 with usage when `PROJECT_PATH` is unset
   - no `/mnt/<x>/` or `/Users/` path is left outside the journal and reviews
 
-  All 10 failed with the old scripts restored and pass with the change.
+  All 12 failed with the old scripts restored and pass with the change.
 - `shellcheck` is clean on the changed scripts.
 - Real API 29 runs on the host editor (`run-emulator-tests.sh --api 29 --jobs 1 --stripping High --filter
   'HttpMethodTests|BackoffJitterTests'`):

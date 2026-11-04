@@ -126,7 +126,12 @@ started=(); started_avds=(); lane_pids=()
 cleanup() {
   trap - INT TERM
   for p in ${lane_pids[@]+"${lane_pids[@]}"}; do kill -TERM -- "-$p" 2>/dev/null || true; done
-  for s in ${started[@]+"${started[@]}"}; do adbs "$s" emu kill >/dev/null || true; done
+  # Console kill only where this run launched an emulator: a serial whose pre-boot check refused a foreign
+  # emulator on its port must not reach that emulator's console (#353).
+  for s in ${started[@]+"${started[@]}"}; do
+    [ -f "$out/$s.launched" ] || continue
+    adbs "$s" emu kill >/dev/null || true
+  done
   # From WSL the TERM reaches only the interop pid of emulator.exe: find the Windows processes by AVD name.
   if [ "$win" = 1 ]; then
     for a in ${started_avds[@]+"${started_avds[@]}"}; do win_stop_avd "$a" 5 || true; done
@@ -140,6 +145,8 @@ trap 'exit 143' TERM
 boot() {
   local api="$1" port="$2" serial="emulator-$2"
   if [ "$win" = 1 ]; then win_free_avd "turbohttp-api$api" "$port" || return 1; fi
+  # From here on the serial is ours: the EXIT trap may send it a console kill.
+  : > "$out/$serial.launched"
   # Vulkan off: the Unity player picked Vulkan on the headless gfxstream/SwiftShader backend and froze the
   # whole emulator (adbd and console); GLES works.
   "$emu" -avd "turbohttp-api$api" -port "$port" -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
@@ -164,8 +171,11 @@ boot() {
 }
 
 # Stops the lane's emulator: the console first, the process when the console does not answer (frozen).
+# Does nothing when the lane launched no emulator (the pre-boot check refused): the serial may then be
+# another emulator's console, which this script must not stop.
 stop_emulator() {
   local serial="$1" avd="$2"
+  [ -n "$emu_pid" ] || return 0
   adbs "$serial" emu kill >/dev/null || true
   if [ "$win" = 1 ]; then
     # $emu_pid is the WSL interop pid of emulator.exe: it can be gone while the Windows qemu runs on (#353).
@@ -173,7 +183,6 @@ stop_emulator() {
     [ -z "$emu_pid" ] || kill -KILL "$emu_pid" 2>/dev/null || true
     return 0
   fi
-  [ -n "$emu_pid" ] || return 0
   for _ in $(seq 1 15); do kill -0 "$emu_pid" 2>/dev/null || return 0; sleep 2; done
   kill -KILL "$emu_pid" 2>/dev/null || true
 }
