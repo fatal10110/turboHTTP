@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Connection
@@ -476,6 +477,12 @@ namespace TurboHTTP.Transport.Connection
             int port,
             CancellationToken cancellationToken)
         {
+            // #369: a socket abandoned with a pending read, handshake or connect may still have a job
+            // in IL2CPP's I/O selector under its descriptor number; a socket created now could get
+            // that number and lose its own receive. Wait (bounded, honoring the connect deadline in
+            // the token) until those operations ended. One volatile read when nothing was abandoned.
+            await AbandonedSocketIo.WaitForSettledAsync(cancellationToken).ConfigureAwait(false);
+
             Socket socket = null;
             try
             {
