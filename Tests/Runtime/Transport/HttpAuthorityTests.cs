@@ -72,7 +72,8 @@ namespace TurboHTTP.Tests.Transport
         }
 
         // A 70-character label exceeds the 63-octet DNS label limit, so the name has no A-label
-        // form (IdnMapping throws) and .NET's Uri.IdnHost leaves it Unicode.
+        // form and IdnMapping throws. Only FormatHost takes it: as a Uri host it is not portable
+        // (.NET's Uri.IdnHost leaves it Unicode, Unity Mono parses it as an empty host).
         internal static readonly string UnicodeHostWithoutALabel = new string('a', 70) + "\u00FC.de";
 
         [Test]
@@ -85,32 +86,28 @@ namespace TurboHTTP.Tests.Transport
             StringAssert.DoesNotContain(UnicodeHostWithoutALabel, ex.Message);
         }
 
+        // ü followed by U+FDD0, a permanent Unicode noncharacter that IDNA disallows (RFC 5892
+        // Section 2.6 and Appendix B.1, DISALLOWED): the name has no A-label form. .NET and Unity
+        // Mono both parse it as a DNS host and both throw UriFormatException from Uri.IdnHost, so the
+        // Uri-level tests run on every runtime (#319).
+        internal static readonly string UnicodeHostRejectedByIdna =
+            new string(new[] { (char)0x00FC, (char)0xFDD0 }) + ".de";
+
         [Test]
         public void Serialize_HostWithoutALabelForm_ThrowsInsteadOfSendingRawBytes()
         {
-            var uri = new Uri("http://" + UnicodeHostWithoutALabel + "/");
-            if (IsAscii(uri.IdnHost))
-                TestRequirements.IgnoreEnvironment("this runtime's Uri.IdnHost already produced an ASCII host");
+            var uri = new Uri("http://" + UnicodeHostRejectedByIdna + "/");
+            Assert.AreEqual(UriHostNameType.Dns, uri.HostNameType);
 
             var request = new UHttpRequest(HttpMethod.GET, uri);
 
-            Assert.Throws<HttpFieldValidationException>(() => HttpAuthority.FromUri(uri));
+            var ex = Assert.Throws<HttpFieldValidationException>(() => HttpAuthority.FromUri(uri));
+            StringAssert.DoesNotContain(UnicodeHostRejectedByIdna, ex.Message);
             AssertAsync.ThrowsAsync<HttpFieldValidationException>(async () =>
             {
                 using var ms = new MemoryStream();
                 await Http11RequestSerializer.SerializeAsync(request, ms, CancellationToken.None);
             });
-        }
-
-        internal static bool IsAscii(string value)
-        {
-            for (int i = 0; i < value.Length; i++)
-            {
-                if (value[i] > 0x7F)
-                    return false;
-            }
-
-            return true;
         }
 
         private static string SerializeHead(UHttpRequest request)

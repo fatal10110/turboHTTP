@@ -549,6 +549,8 @@ namespace TurboHTTP.Tests.Performance
                 {
                     Transport = transport,
                     DisposeTransport = false,
+                    // #63/#281: a client disposes configured interceptors only when it owns them.
+                    DisposeInterceptors = true,
                     Interceptors = new List<IHttpInterceptor> { middleware }
                 });
 
@@ -574,6 +576,45 @@ namespace TurboHTTP.Tests.Performance
 
                 Assert.AreEqual(UHttpErrorType.Unknown, ex.HttpError.Type);
                 Assert.IsInstanceOf<ObjectDisposedException>(ex.HttpError.InnerException);
+            });
+        }
+
+        [Test]
+        public void ConcurrencyMiddleware_NotOwnedByDefault_StaysUsableAfterClientDispose()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var middleware = new ConcurrencyInterceptor(maxConnectionsPerHost: 1, maxTotalConnections: 1);
+
+                var transport = new MockTransport(HttpStatusCode.OK);
+                var client = new UHttpClient(new UHttpClientOptions
+                {
+                    Transport = transport,
+                    DisposeTransport = false,
+                    Interceptors = new List<IHttpInterceptor> { middleware }
+                });
+
+                // DisposeInterceptors defaults to false: the caller keeps ownership of the limiter.
+                client.Dispose();
+
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
+                var context = new RequestContext(request);
+
+                var dispatch = middleware.Wrap((req, handler, ctx, ct) =>
+                {
+                    handler.OnRequestStart(req, ctx);
+                    handler.OnResponseStart((int)HttpStatusCode.OK, new HttpHeaders(), ctx);
+                    handler.OnResponseEnd(HttpHeaders.Empty, ctx);
+                    return Task.CompletedTask;
+                });
+
+                using var response = await DispatchBridge.CollectResponseAsync(
+                    dispatch,
+                    request,
+                    context,
+                    CancellationToken.None);
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
             });
         }
 

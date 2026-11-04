@@ -47,9 +47,7 @@ namespace TurboHTTP.Tests.Transport.Http2
         [Test]
         public void SendRequest_HostWithoutALabelForm_FailsWithInvalidRequest_AndTakesNoStreamId()
         {
-            var uri = new Uri("https://" + HttpAuthorityTests.UnicodeHostWithoutALabel + "/");
-            if (HttpAuthorityTests.IsAscii(uri.IdnHost))
-                TestRequirements.IgnoreEnvironment("this runtime's Uri.IdnHost already produced an ASCII host");
+            var uri = new Uri("https://" + HttpAuthorityTests.UnicodeHostRejectedByIdna + "/");
 
             AssertAsync.Run(async () =>
             {

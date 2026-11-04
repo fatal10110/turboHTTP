@@ -116,9 +116,10 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
 
 1. **Full suites and the skip gate.** Only this run may omit `--filter`. `summarize_results.py` exits 4
    when a skipped test has no `#issue` or `[env]` reason, or when an unfiltered run skips more tests
-   than `Tools~/unity/skip-baseline.txt` allows (`EditMode 0`, `PlayMode 0`); a filtered or category
-   run does not apply the baseline. Lower the baseline in the same PR that removes skips; never raise
-   it to make a run pass. `check.sh` enforces the static half (`ignores`: an `Ignore` needs an
+   than `Tools~/unity/skip-baseline.txt` allows (`EditMode 0`, `PlayMode 4`: the permanent host skips
+   the file lists, each with its issue or platform reason, #319); a filtered or category run does not
+   apply the baseline. Lower the baseline in the same PR that removes skips; never raise it to make a
+   run pass, and list any justified raise in the file with its test and reason. `check.sh` enforces the static half (`ignores`: an `Ignore` needs an
    `#issue` or `[env]` reason).
 2. **ExternalNetwork run (#115, #263).** Needs the public internet. `--category ExternalNetwork` implies
    `--integration`: the script defines `TURBOHTTP_INTEGRATION_TESTS` in the test project for that run
