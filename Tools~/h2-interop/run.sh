@@ -41,7 +41,7 @@ if [ -z "${UNITY_DLLS:-}${UNITY_PATH:-}" ] && [ ! -f ".tools/unity-managed/$(cat
   "Tools~/ci/fetch-unity-dlls.sh" >/dev/null
 fi
 if [ "$shadow" = 1 ] || [ ! -f .build/shadow/editor/bin/Debug/netstandard2.1/TurboHTTP.Transport.dll ]; then
-  python3 "Tools~/ci/shadow_build.py" --variant editor
+  python3 "Tools~/ci/shadow_build.py" --variant editor --no-tests
 fi
 dotnet build "Tools~/h2-interop/TurboHTTP.H2Interop.csproj" -c Release -nologo -v q
 
