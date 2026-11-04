@@ -31,6 +31,13 @@
   the test scene and the run settings, including `-testFilter`, are embedded. The cleanup hook exits the
   editor once the export is done. `-testFilter '!<full name>;!<full name>'` excludes tests (UTF
   `RuntimeTestRunnerFilter`), which is how runs 2-3 got past the hangs.
+- **The handoff depends on the build result.** The Test Runner calls `IPostBuildCleanup` whether or not
+  `BuildPipeline.BuildPlayer` succeeded (UTF `PlayerLauncher`: cleanup, then the `success` check), so an
+  unconditional `Exit(0)` hid failures. The hook's last `IPostprocessBuildWithReport` step
+  (`callbackOrder = int.MaxValue`) sets a flag, the cleanup exits 1 without it, and the script creates
+  `READY` only for exit 0 plus `Build Finished, Result: Success` in the log plus the `.xcodeproj`. Both
+  2021.3.45f2 and 6000.3.26f1 logs print that line on success (checked in the earlier logs); the changed
+  hook itself has not been run in Unity yet.
 - **Own environment variables** (`UNITY_IOS_TEST_PROJECT` / `UNITY_IOS_PACKAGE_COPY`), as
   `run-device-tests.sh`, so `run-tests.sh`'s project never receives the player-only callback.
 - **No cleartext or ATS setting in the test player.** `AllowCleartext` defaults to false in iOS players, and

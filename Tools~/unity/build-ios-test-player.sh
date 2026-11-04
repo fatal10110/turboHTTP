@@ -7,8 +7,9 @@
 #     Tools~/unity/build-ios-test-player.sh [--out <dir>] [--stripping Low|High] [--filter <regex>] [--category <name>] [--integration]
 #
 # --out (default /mnt/c/turbo-ios/xcode) receives the Xcode project (Unity-iPhone.xcodeproj at its root)
-# after a successful build; <out>/../READY is created only after the copy finishes, and stale READY, DONE
-# and out/ in that folder are removed before the build. The player runs standalone (no ConnectToHost),
+# after a successful build (editor exit 0 and "Build Finished, Result: Success" in the log);
+# <out>/../READY is created only after the copy finishes, and stale READY, DONE and out/ in that folder
+# are removed before the build. The player runs standalone (no ConnectToHost),
 # logs TURBOHTTP_DEVICE_TEST per test, TURBOHTTP_DEVICE_FAIL with message and stack, TURBOHTTP_DEVICE_HANG
 # for a test running over 3 minutes, rewrites Application.persistentDataPath/results.xml after every
 # fixture (partial="true") and at the end, and quits. --filter '!<full test name>' excludes a test;
@@ -36,7 +37,8 @@ if [ "$category" = ExternalNetwork ]; then integration=1; fi
 
 unity="${UNITY_PATH:-}"
 if [ -z "$unity" ] || [ ! -x "$unity" ]; then
-  echo "UNITY_UNAVAILABLE: set UNITY_PATH to a Unity $(cat "$repo/Tools~/ci/unity-version") editor binary"
+  echo "UNITY_UNAVAILABLE: set UNITY_PATH to a Unity editor binary with iOS Build Support (Unity 6 for the arm64" \
+    "simulator Apple Silicon needs; $(cat "$repo/Tools~/ci/unity-version") builds an x86_64-only simulator player)"
   exit 3
 fi
 if [ ! -d "$(dirname "$unity")/Data/PlaybackEngines/iOSSupport" ]; then
@@ -120,10 +122,13 @@ PY
 mkdir -p "$proj/Assets/Editor"
 cat > "$proj/Assets/Editor/TurboHttpIosTestBuild.cs" <<'CS'
 // Written by Tools~/unity/build-ios-test-player.sh. Simulator test-player settings for the Unity Test
-// Runner (#99): export the Xcode project to TURBOHTTP_IOS_OUT without running it, then exit the editor.
+// Runner (#99): export the Xcode project to TURBOHTTP_IOS_OUT without running it, then exit the editor
+// with 0 only if the build reached the last post-process step (the shell script also requires the
+// "Build Finished, Result: Success" log line before it hands the project over).
 using System;
 using UnityEditor;
 using UnityEditor.Build;
+using UnityEditor.Build.Reporting;
 using UnityEditor.TestTools;
 using UnityEngine;
 using UnityEngine.TestTools;
@@ -131,9 +136,19 @@ using UnityEngine.TestTools;
 [assembly: TestPlayerBuildModifier(typeof(TurboHttpIosTestBuild))]
 [assembly: PostBuildCleanup(typeof(TurboHttpIosTestBuild))]
 
-public class TurboHttpIosTestBuild : ITestPlayerBuildModifier, IPostBuildCleanup
+public class TurboHttpIosTestBuild : ITestPlayerBuildModifier, IPostBuildCleanup, IPostprocessBuildWithReport
 {
-    static bool s_Built;
+    static bool s_Built, s_PostProcessed;
+
+    // Last, so a post-process step that throws first leaves s_PostProcessed false.
+    public int callbackOrder => int.MaxValue;
+
+    public void OnPostprocessBuild(BuildReport report)
+    {
+        if (!s_Built || report.summary.platform != BuildTarget.iOS) return;
+        s_PostProcessed = true;
+        Debug.Log("TURBOHTTP_DEVICE_BUILD_POSTPROCESSED out=" + report.summary.outputPath);
+    }
 
     public BuildPlayerOptions ModifyOptions(BuildPlayerOptions options)
     {
@@ -153,6 +168,7 @@ public class TurboHttpIosTestBuild : ITestPlayerBuildModifier, IPostBuildCleanup
         options.options &= ~(BuildOptions.AutoRunPlayer | BuildOptions.ConnectToHost);
         options.locationPathName = Environment.GetEnvironmentVariable("TURBOHTTP_IOS_OUT");
         s_Built = true;
+        s_PostProcessed = false;
         Debug.Log("TURBOHTTP_DEVICE_BUILD target=iOS sdk=Simulator arch=" + simArch + " unity=" + Application.unityVersion
             + " stripping=" + stripping + " out=" + options.locationPathName);
         return options;
@@ -160,9 +176,10 @@ public class TurboHttpIosTestBuild : ITestPlayerBuildModifier, IPostBuildCleanup
 
     public void Cleanup()
     {
-        // Nothing runs the player here, so the Test Runner would wait for results forever.
+        // Nothing runs the player here, so the Test Runner would wait for results forever. The Test Runner
+        // calls this whether or not BuildPlayer succeeded, so the exit code carries the outcome.
         if (s_Built && Array.IndexOf(Environment.GetCommandLineArgs(), "-runTests") >= 0)
-            EditorApplication.Exit(0);
+            EditorApplication.Exit(s_PostProcessed ? 0 : 1);
     }
 }
 CS
@@ -384,8 +401,12 @@ set +e
 code=$?
 set -e
 grep -E "TURBOHTTP_DEVICE_BUILD|error CS[0-9]+|Build Finished, Result|BuildFailedException" "$log" | head -20 || true
-if [ ! -d "$stage/Unity-iPhone.xcodeproj" ]; then
-  echo "build-ios-test-player: no Xcode project (Unity exit $code); see $log"
+# The handoff needs all three: the editor hook exits 0 only after the last post-process step, BuildPlayer
+# logs the overall result, and the exported project must exist. A build that fails after the Xcode skeleton
+# is written would otherwise be handed over and only fail later in xcodebuild on the Mac.
+if [ "$code" != 0 ] || ! grep -qF "Build Finished, Result: Success" "$log" || [ ! -d "$stage/Unity-iPhone.xcodeproj" ]; then
+  echo "build-ios-test-player: player build failed (Unity exit $code; needs exit 0, 'Build Finished, Result: Success'" \
+    "in the log and Unity-iPhone.xcodeproj in $stage); READY not created; see $log"
   exit 2
 fi
 
@@ -398,4 +419,4 @@ for _ in 1 2 3 4 5; do
 done
 [ "$copied" = 1 ] || { echo "build-ios-test-player: cannot copy the Xcode project to $out_dir; READY not created" >&2; exit 2; }
 touch "$handoff/READY"
-echo "build-ios-test-player: Xcode project in $out_dir (Unity exit $code); READY created; log $log"
+echo "build-ios-test-player: build succeeded; Xcode project in $out_dir; READY created; log $log"
