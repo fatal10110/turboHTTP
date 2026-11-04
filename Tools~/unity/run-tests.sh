@@ -3,7 +3,7 @@
 # a synced copy of this package (keeps Library/ and .meta churn out of the repo).
 #
 #   UNITY_PATH=/Applications/Unity/Hub/Editor/2021.3.45f2/Unity.app/Contents/MacOS/Unity \
-#     Tools~/unity/run-tests.sh --platform EditMode|PlayMode [--filter <regex>] [--category <name>] [--integration] [--with-unitask]
+#     Tools~/unity/run-tests.sh --platform EditMode|PlayMode [--filter <regex>] [--category <name>] [--integration] [--with-unitask[=local]]
 #
 # WSL with a Windows editor: point UNITY_PATH at Unity.exe under /mnt/<drive>/... The package copy,
 # test project, results and log then live under %LOCALAPPDATA%\turbohttp (Unity cannot run a project
@@ -25,6 +25,9 @@
 # UniTask adapter test must have run (else exit 4; they are PlayMode tests). Without the flag the entry is
 # removed again, so a later run never compiles them. Needs git and GitHub access for the package fetch:
 #   Tools~/unity/run-tests.sh --platform PlayMode --with-unitask --filter 'UniTaskCancellationTests'
+# Unity resolves git packages only with git on the editor host's PATH. --with-unitask=local installs the
+# same pinned commit from the SHA-verified checkout the shadow build uses (unitask_pin.py fetch, git in
+# WSL), copied next to the test project as a file: package; the lock must then name that copy.
 #
 # Without --filter/--category the whole suite runs; do that only for the periodic host-editor run
 # (testing.md, "Host-editor gates"), never per change.
@@ -45,8 +48,9 @@ while [ $# -gt 0 ]; do
     --filter) filter="$2"; shift 2 ;;
     --category) category="$2"; shift 2 ;;
     --integration) integration=1; shift ;;
-    --with-unitask) unitask=1; shift ;;
-    *) echo "usage: $0 --platform EditMode|PlayMode [--filter regex] [--category name] [--integration] [--with-unitask]" >&2; exit 2 ;;
+    --with-unitask) unitask=git; shift ;;
+    --with-unitask=local) unitask=local; shift ;;
+    *) echo "usage: $0 --platform EditMode|PlayMode [--filter regex] [--category name] [--integration] [--with-unitask[=local]]" >&2; exit 2 ;;
   esac
 done
 case "$platform" in EditMode|PlayMode) ;; *) echo "run-tests: --platform EditMode|PlayMode required" >&2; exit 2 ;; esac
@@ -94,8 +98,15 @@ if [ ! -d "$proj/ProjectSettings" ]; then
   "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$cache/create.log")"
 fi
 # com.cysharp.unitask (#311) only for --with-unitask; removed otherwise, like TURBOHTTP_INTEGRATION_TESTS below.
-unitask_url=""
-if [ "$unitask" = 1 ]; then unitask_url="$(python3 "$repo/Tools~/ci/unitask_pin.py" url)"; fi
+unitask_url=""; lock_args=()
+if [ "$unitask" = git ]; then unitask_url="$(python3 "$repo/Tools~/ci/unitask_pin.py" url)"; fi
+if [ "$unitask" = local ]; then
+  unitask_src="$(python3 "$repo/Tools~/ci/unitask_pin.py" fetch)" || { echo "run-tests: UniTask fetch failed" >&2; exit 2; }
+  unitask_copy="$cache/unitask-$(python3 "$repo/Tools~/ci/unitask_pin.py" sha)"
+  rsync -a --delete "$unitask_src/" "$unitask_copy/"
+  unitask_url="file:$(topath "$unitask_copy")"
+  lock_args=("$unitask_url")
+fi
 python3 - "$proj/Packages/manifest.json" "$(topath "$pkg")" "$unitask_url" <<'PY'
 import json, sys
 path, pkg, unitask = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -155,8 +166,11 @@ code=$?
 set -e
 
 # Unity wrote the resolved packages before compiling: a moved tag or stale pin voids the run (#311).
-if [ "$unitask" = 1 ] && ! python3 "$repo/Tools~/ci/unitask_pin.py" check-lock "$proj/Packages/packages-lock.json"; then
+if [ "$unitask" != 0 ] && ! python3 "$repo/Tools~/ci/unitask_pin.py" check-lock "$proj/Packages/packages-lock.json" "${lock_args[@]}"; then
   echo "run-tests: com.cysharp.unitask did not resolve to the pinned commit; see $log" >&2
+  if grep -q "No 'git' executable" "$log" 2>/dev/null; then
+    echo "run-tests: Unity found no git on the editor host; install Git there, or pass --with-unitask=local" >&2
+  fi
   exit 2
 fi
 
@@ -173,7 +187,7 @@ set +e
 python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$platform" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"
 gate=$?
 # --with-unitask is the UniTask adapter gate: a run in which none of those tests ran proves nothing.
-if [ "$unitask" = 1 ] && ! python3 "$repo/Tools~/ci/unitask_pin.py" check-results "$xml" && [ "$gate" = 0 ]; then
+if [ "$unitask" != 0 ] && ! python3 "$repo/Tools~/ci/unitask_pin.py" check-results "$xml" && [ "$gate" = 0 ]; then
   gate=4
 fi
 set -e

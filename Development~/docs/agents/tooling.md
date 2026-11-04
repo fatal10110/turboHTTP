@@ -63,8 +63,8 @@ The `Tests/` asmdefs are compiled too (#297), with `UNITY_INCLUDE_TESTS` defined
   `TurboHTTP.Tests.UniTask` then get `TURBOHTTP_UNITASK` from their `versionDefines`, scoped to those
   asmdefs as in Unity, and compile in every variant. UniTask's own `versionDefines` on
   `com.unity.modules.*` are not applied, so its module-specific code (physics, UI, …) is not built.
-  The first build needs git and access to github.com; offline, `--no-unitask` skips the fetch and
-  prints that the adapters were not compiled.
+  The first build needs git and access to github.com; offline, `--no-unitask` (on `shadow_build.py`
+  or `check.sh`) skips the fetch and prints that the adapters were not compiled.
 - **Opting out.** `shadow_build.py --no-tests` builds only the shipped assemblies, without the UniTask
   fetch, so it never needs the network. The interop, soak, fuzz and Autobahn `run.sh` scripts use it.
 - **Proof.** `Tools~/ci/test_shadow_build_tests.py` (in `check.sh --full`) proves that a compile

@@ -7,7 +7,9 @@ customer project has com.cysharp.unitask. Two gates provide it, both from the on
   * the shadow build (shadow_build.py, so check.sh and CI) fetches the pinned commit's source with
     git, checks the commit id, and compiles UniTask's runtime asmdef as an external assembly;
   * Tools~/unity/run-tests.sh --with-unitask adds the git URL to the throwaway test project's
-    manifest and fails when Unity's packages-lock.json resolved any other commit.
+    manifest and fails when Unity's packages-lock.json resolved any other commit;
+    --with-unitask=local installs the same commit from the checkout fetch() verified, for an editor
+    host without git (Unity resolves git packages only with git on the host's PATH).
 
 Bump: change TAG and SHA together (the SHA is the commit the tag points at:
 `git ls-remote https://github.com/Cysharp/UniTask.git refs/tags/<tag>`), then run check.sh and the
@@ -16,7 +18,8 @@ committed to this repository; it is fetched into .tools/unitask/ (git-ignored).
 
 CLI (used by run-tests.sh):
   unitask_pin.py url                        manifest value for com.cysharp.unitask
-  unitask_pin.py check-lock <packages-lock.json>
+  unitask_pin.py sha                        the pinned commit
+  unitask_pin.py check-lock <packages-lock.json> [<file: manifest value of the local copy>]
   unitask_pin.py check-results <results.xml>
   unitask_pin.py fetch                      fetch/verify the source, print the package directory
 """
@@ -50,8 +53,17 @@ def manifest_url(tag=TAG):
     return f"{REPO}?path={PACKAGE_PATH}#{tag}"
 
 
-def check_lock(path, sha=SHA, tag=TAG):
-    """Raises PinError unless packages-lock.json resolved com.cysharp.unitask to the pinned commit."""
+def _same_file_url(a, b):
+    norm = lambda v: str(v).replace("\\", "/").rstrip("/").casefold()
+    return norm(a) == norm(b)
+
+
+def check_lock(path, sha=SHA, tag=TAG, local=None):
+    """Raises PinError unless packages-lock.json resolved com.cysharp.unitask to the pinned commit.
+
+    local: the "file:" manifest value of a copy of fetch()'s verified checkout (--with-unitask=local);
+    the lock must then name that copy (source "local") instead of the git URL.
+    """
     try:
         with open(path, encoding="utf-8-sig") as fh:
             lock = json.load(fh)
@@ -60,6 +72,11 @@ def check_lock(path, sha=SHA, tag=TAG):
     entry = (lock.get("dependencies") or {}).get(PACKAGE)
     if not isinstance(entry, dict):
         raise PinError(f"{path}: no {PACKAGE} entry (did the package resolve?)")
+    if local is not None:
+        if entry.get("source") != "local" or not _same_file_url(entry.get("version"), local):
+            raise PinError(f"{path}: {PACKAGE} is {entry.get('source')!r} {entry.get('version')!r}, "
+                           f"expected the local copy {local!r} of {sha}")
+        return entry
     if entry.get("source") != "git":
         raise PinError(f"{path}: {PACKAGE} source is {entry.get('source')!r}, expected 'git'")
     if entry.get("version") != manifest_url(tag):
@@ -127,13 +144,15 @@ def fetch(cache=CACHE, repo=REPO, sha=SHA, tag=TAG, check_tag=True):
 
 
 def main(argv):
-    if len(argv) == 2 and argv[1] == "url":
-        print(manifest_url())
+    if len(argv) == 2 and argv[1] in ("url", "sha"):
+        print(manifest_url() if argv[1] == "url" else SHA)
         return 0
     try:
-        if len(argv) == 3 and argv[1] == "check-lock":
-            entry = check_lock(argv[2])
-            print(f"unitask_pin: {PACKAGE} {TAG} resolved to {entry['hash']}")
+        if len(argv) in (3, 4) and argv[1] == "check-lock":
+            local = argv[3] if len(argv) == 4 else None
+            entry = check_lock(argv[2], local=local)
+            print(f"unitask_pin: {PACKAGE} {TAG} resolved to "
+                  f"{entry['hash'] if local is None else 'the verified local copy of ' + SHA}")
             return 0
         if len(argv) == 3 and argv[1] == "check-results":
             executed, total = adapter_cases(argv[2])

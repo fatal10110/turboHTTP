@@ -4,18 +4,20 @@
 #   Tools~/ci/check.sh            fast: repo invariants, format, shadow build incl. Tests/ (editor variant)
 #   Tools~/ci/check.sh --full     also iOS/Android shadow builds, workflow/shell/python linters
 #   Tools~/ci/check.sh --fix      apply whitespace formatting instead of verifying it
+#   Tools~/ci/check.sh --no-unitask  offline: skip the pinned UniTask fetch (the UniTask adapters are not built)
 #
 # Needs: python3, dotnet 8 SDK, and Unity managed DLLs (Tools~/ci/fetch-unity-dlls.sh, once).
 # Optional (--full): actionlint, shellcheck. See Development~/docs/agents/tooling.md.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
-full=0; fix=0
+full=0; fix=0; shadow_args=()
 for a in "$@"; do
   case "$a" in
     --full) full=1 ;;
     --fix) fix=1 ;;
-    *) echo "usage: $0 [--full] [--fix]" >&2; exit 2 ;;
+    --no-unitask) shadow_args+=(--no-unitask) ;;
+    *) echo "usage: $0 [--full] [--fix] [--no-unitask]" >&2; exit 2 ;;
   esac
 done
 
@@ -37,7 +39,7 @@ if [ "$full" = 1 ]; then variant=all; else variant=editor; fi
 if [ -z "${UNITY_DLLS:-}${UNITY_PATH:-}" ]; then
   "Tools~/ci/fetch-unity-dlls.sh" >/dev/null || fail "fetch Unity DLLs"
 fi
-python3 "Tools~/ci/shadow_build.py" --variant "$variant" || fail "shadow build"
+python3 "Tools~/ci/shadow_build.py" --variant "$variant" "${shadow_args[@]}" || fail "shadow build"
 
 if [ "$full" = 1 ]; then
   step "workflow lint (actionlint)"

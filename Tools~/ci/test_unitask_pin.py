@@ -100,6 +100,23 @@ class Lock(unittest.TestCase):
         self.assertEqual(cli("check-lock", self.path), 2)
         self.lock(self.entry())
         self.assertEqual(cli("check-lock", self.path), 0)
+        self.assertEqual(cli("check-lock", self.path, "file:C:/cache/unitask"), 2)
+
+    def test_the_local_copy_passes_only_when_named(self):
+        copy = "file:C:/Users/u/AppData/Local/turbohttp/unitask-" + unitask_pin.SHA
+        # Unity may write the path with backslashes or another drive-letter case.
+        self.lock({"version": copy.replace("/", "\\").replace("file:C", "file:c"), "depth": 0,
+                   "source": "local", "dependencies": {}})
+        self.assertEqual(unitask_pin.check_lock(self.path, local=copy)["source"], "local")
+        self.assertEqual(cli("check-lock", self.path, copy), 0)
+        with self.assertRaisesRegex(unitask_pin.PinError, "local copy"):
+            unitask_pin.check_lock(self.path, local="file:C:/elsewhere/unitask")
+        # A git install does not pass the local check, nor a local install the git check.
+        with self.assertRaisesRegex(unitask_pin.PinError, "source"):
+            unitask_pin.check_lock(self.path)
+        self.lock(self.entry())
+        with self.assertRaisesRegex(unitask_pin.PinError, "local copy"):
+            unitask_pin.check_lock(self.path, local=copy)
 
 
 class Results(unittest.TestCase):
