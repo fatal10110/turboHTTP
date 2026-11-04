@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -26,10 +25,29 @@ namespace TurboHTTP.Tests.Transport
             private readonly CancellationTokenSource _cts = new CancellationTokenSource();
             private readonly List<TcpClient> _clients = new List<TcpClient>();
             private readonly object _lock = new object();
+            private readonly List<KeyValuePair<int, TaskCompletionSource<bool>>> _acceptWaiters =
+                new List<KeyValuePair<int, TaskCompletionSource<bool>>>();
             private int _acceptCount;
 
             public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
             public int AcceptCount => Volatile.Read(ref _acceptCount);
+
+            /// <summary>
+            /// Completes once the accept loop counted <paramref name="count"/> connections. A client connect
+            /// completes when the kernel queues the connection, before the count (#370).
+            /// </summary>
+            public Task WaitForAcceptCountAsync(int count)
+            {
+                lock (_lock)
+                {
+                    if (_acceptCount >= count)
+                        return Task.CompletedTask;
+
+                    var waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _acceptWaiters.Add(new KeyValuePair<int, TaskCompletionSource<bool>>(count, waiter));
+                    return waiter.Task;
+                }
+            }
 
             public PassiveServer()
             {
@@ -61,9 +79,15 @@ namespace TurboHTTP.Tests.Transport
                     lock (_lock)
                     {
                         _clients.Add(client);
+                        int accepted = Interlocked.Increment(ref _acceptCount);
+                        for (int i = _acceptWaiters.Count - 1; i >= 0; i--)
+                        {
+                            if (_acceptWaiters[i].Key > accepted)
+                                continue;
+                            _acceptWaiters[i].Value.TrySetResult(true);
+                            _acceptWaiters.RemoveAt(i);
+                        }
                     }
-
-                    Interlocked.Increment(ref _acceptCount);
                 }
             }
 
@@ -149,13 +173,13 @@ namespace TurboHTTP.Tests.Transport
             }
         }
 
-        private static async Task WaitForAcceptCountAsync(PassiveServer server, int expectedCount, int timeoutMs = 1000)
+        private static async Task WaitForAcceptCountAsync(PassiveServer server, int expectedCount)
         {
-            var stopwatch = Stopwatch.StartNew();
-            while (server.AcceptCount < expectedCount && stopwatch.ElapsedMilliseconds < timeoutMs)
-            {
-                await Task.Delay(10);
-            }
+            // Event-driven: completes when the accept loop counts the connection. The delay is only a hang guard.
+            var accepted = server.WaitForAcceptCountAsync(expectedCount);
+            if (await Task.WhenAny(accepted, Task.Delay(TimeSpan.FromSeconds(10))) != accepted)
+                Assert.Fail($"Server did not count {expectedCount} connection(s) within the test guard.");
+            await accepted;
         }
 
         private static string BuildTunnelPoolKey(PassiveServer server, string targetHost, int targetPort)
