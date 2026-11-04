@@ -27,7 +27,7 @@ step "repo invariants"
 python3 "Tools~/ci/check_repo.py" || fail "repo invariants"
 
 step "format (dotnet format whitespace)"
-fmt=(dotnet format whitespace --folder --exclude Runtime/Transport/BouncyCastle/Lib --exclude .build -v q)
+fmt=(dotnet format whitespace --folder --exclude Runtime/Transport/BouncyCastle/Lib --exclude .build --exclude .tools -v q)
 if [ "$fix" = 1 ]; then "${fmt[@]}" || fail "format"
 else "${fmt[@]}" --verify-no-changes || fail "format (run: Tools~/ci/check.sh --fix)"; fi
 
@@ -54,6 +54,7 @@ if [ "$full" = 1 ]; then
   python3 "Tools~/ci/test_banned_symbols.py" -q || fail "banned-symbol (sync-over-async) gate test"
   python3 "Tools~/ci/test_shadow_build_tests.py" -q || fail "shadow build of Tests/ (Unity NUnit) gate test"
   python3 "Tools~/ci/test_il2cpp_filter_check.py" -q || fail "il2cppfilter invariant test"
+  python3 "Tools~/ci/test_unitask_pin.py" -q || fail "UniTask pin gate test"
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"
   step "waves orchestration simulation"
   if command -v node >/dev/null; then node .claude/skills/turbohttp-waves/waves_sim.mjs >/dev/null || fail "waves_sim"

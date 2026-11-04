@@ -10,7 +10,7 @@ Both assemblies compile only when the `com.cysharp.unitask` package (2.0.0 or ne
 
 `GetAsync`, `PostAsync`, `PutAsync`, `PatchAsync`, `DeleteAsync`, `HeadAsync` and `OptionsAsync` on `UHttpClient` return `UniTask<UHttpResponse>` (buffered), and `AsUniTask()` converts any request. Continuations resume on the main thread by UniTask's rules.
 
-<!-- snippet: skip needs the UniTask package, which the shadow build does not have -->
+<!-- snippet: skip needs UniTask: the shadow build compiles the adapters against it (#311) but keeps it out of the documentation build, which also runs offline (--no-unitask) -->
 ```csharp
 using Cysharp.Threading.Tasks;
 using TurboHTTP.Core;
@@ -36,7 +36,7 @@ public class DataService : MonoBehaviour
 
 Cancel or time out the request itself, not the `UniTask` that waits for it. The `CancellationToken` you pass to `GetAsync`/`AsUniTask` reaches the transport, so cancelling it aborts the request and releases its connection. A deadline set with `UHttpRequest.WithTimeout` is enforced by the transport and fails with `UHttpErrorType.Timeout`:
 
-<!-- snippet: skip needs the UniTask package, which the shadow build does not have -->
+<!-- snippet: skip needs UniTask: the shadow build compiles the adapters against it (#311) but keeps it out of the documentation build, which also runs offline (--no-unitask) -->
 ```csharp
 // Deadline enforced by the transport.
 using var response = await _client.Get(url).WithTimeout(TimeSpan.FromSeconds(5)).AsUniTask(ct);
@@ -53,7 +53,7 @@ UniTask's `Timeout()` and `AttachExternalCancellation()` operators only stop wai
 
 The WebSocket adapters are in the `TurboHTTP.UniTask.WebSocket` assembly; add it to your `.asmdef` references. `ConnectAsUniTask` connects an `IWebSocketClient` as a `UniTask`.
 
-<!-- snippet: skip needs the UniTask package, which the shadow build does not have -->
+<!-- snippet: skip needs UniTask: the shadow build compiles the adapters against it (#311) but keeps it out of the documentation build, which also runs offline (--no-unitask) -->
 ```csharp
 using System;
 using System.Threading;
