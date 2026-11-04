@@ -55,7 +55,9 @@
   `Tests/Runtime/Transport/RawSocketTransportFailureMappingTests.cs`, `Tools~/ci/test_il2cpp_filter_check.py`.
 - Host editor (Unity 2021.3.45f2, Mono), PlayMode scoped filter (bridges, HTTP/2, WebSocket, client, cache,
   observability, limiter, transport fixtures): 591 passed, 0 failed, 1 skipped (baseline skip).
-- Host editor PlayMode `--filter 'Http2AdversarialServerTests'`, three separate runs at 707c924: 15/15 each (#318).
+- Host editor PlayMode `--filter 'Http2AdversarialServerTests'`, three separate runs at 707c924: 15/15 each. These are
+  filtered runs; #318 asks for three full host-editor PlayMode runs (the failure was only seen there), which the
+  periodic full host-editor run provides, so #318 stays open until then.
 - IL2CPP, x86_64 emulator API 33, Unity 2021.3.45f2, Stripping High, at 707c924,
   `--filter 'UHttpClientTests|MockHttpServerTests.InjectedDelay_RespectsCancellation|RedirectInterceptorTests|BackgroundNetworkingTests|StressTests.CancellationStorm|Http2ConnectionTests|Http2AdversarialServerTests|RawSocketTransportHttp2ConnectionManagementTests|WebSocketConnectCancellationTests|DispatchBridgeCancellationClassificationTests|RawSocketTransportFailureMappingTests|RecordReplayTransportTests'`:
   335 total, 333 passed, 1 failed, 1 skipped. Every #320 test (including the 2026-11-03 comment's
