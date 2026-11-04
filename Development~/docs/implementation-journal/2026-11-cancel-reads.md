@@ -87,6 +87,13 @@ entry closes the remaining read sites:
   `TaskAwaiter`).
 - New tests fail on the old code. Without the race the reads hang until the 15 s guard, and the
   large-read test sees the caller's array as the read target.
-- Unity PlayMode, host editor, filtered: see the PR "Local gates".
-- Not run: full EditMode/PlayMode suites (host editor, periodic), IL2CPP on a device. The Mono and
-  IL2CPP read behavior is `needs-device-validation`; the #99 matrix rows belong to other lanes.
+- Filter used for both Unity runs below:
+  `BodyReadCancellationTests|WebSocketHandshakeReadCancellationTests|HeadReadCancellationTests|AbandonableTaskTests|Http11ResponseBodySourceTests|WebSocketConnectCancellationTests|ProxyTunnelConnectorTests|StreamingAllocationGateTests|Phase19AllocationGateTests|WebSocketHandshakeValidatorTests|Http11ResponseParserTests|ProxyAuth`.
+- Unity PlayMode, host editor (2021.3.45f2), filtered: 129 passed, 0 failed, 0 skipped.
+- Android emulator, API 29 x86_64, IL2CPP, stripping High, same filter
+  (`'./Tools~/unity/run-emulator-tests.sh' --api 29 --jobs 1 --stripping High`): 128 passed,
+  1 skipped (environment skip of a Phase19 allocation budget), all 13 new tests passed. Recorded on #99.
+- Leftover emulator check (`Get-Process qemu*` on the Windows host): no qemu process left
+  (confirmed by the reviewer; the lane's own check hit a transient WSL interop error).
+- Not run: full EditMode/PlayMode suites (host editor, periodic), IL2CPP on a physical device. iOS
+  and physical Android rows of #99 stay open (`needs-device-validation`).
