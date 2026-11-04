@@ -158,17 +158,9 @@ namespace TurboHTTP.Tests.WebSocket
                 SafeDispose(_clientStream);
                 SafeDispose(_serverStream);
 
+                // Bounded like the loopback servers (#349); a late fault is observed.
                 if (_serverTask != null)
-                {
-                    try
-                    {
-                        _serverTask.GetAwaiter().GetResult();
-                    }
-                    catch
-                    {
-                        // Best-effort test transport shutdown.
-                    }
-                }
+                    BoundedShutdown.Wait(_serverTask, BoundedShutdown.DefaultBound, nameof(LoopbackWebSocketTransport));
 
                 _serverCts.Dispose();
             }

@@ -4,9 +4,11 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Sources;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Internal;
@@ -1033,9 +1035,20 @@ namespace TurboHTTP.Transport.Http1
             }
         }
 
-        internal sealed class BufferedStreamReader : IDisposable
+        internal sealed class BufferedStreamReader : IDisposable, IValueTaskSource<int>
         {
             private const int DefaultBufferSize = 4096;
+            private const int MaxBodyReadBufferBytes = 64 * 1024;
+
+            private const int BodyReadIdle = 0;
+            private const int BodyReadPending = 1;
+            private const int BodyReadAbandoned = 2;
+
+            private static readonly Action<object> s_abandonBodyRead =
+                static state => ((BufferedStreamReader)state).AbandonBodyRead();
+
+            private static readonly WaitCallback s_failAbandonedBodyRead =
+                static state => ((BufferedStreamReader)state).FailAbandonedBodyRead();
 
             private readonly Stream _stream;
             private readonly byte[] _buffer;
@@ -1044,6 +1057,22 @@ namespace TurboHTTP.Transport.Http1
             private volatile bool _disposed;
             private bool _headComplete;
             private Task<int> _raceRead;
+
+            // Body phase (#345): a pending read raced against its token without a per-read Task,
+            // closure or TaskCompletionSource. This reader is the IValueTaskSource of the race; the
+            // read loop owns _bodyReadAwaiter/_bodyReadToken/_bodyReadRegistration between the start of a
+            // read and its completion, and _bodyReadState (Interlocked) decides whether the read's
+            // completion or the token wins.
+            private ManualResetValueTaskSourceCore<int> _bodyReadCore;
+            private ConfiguredTaskAwaitable<int>.ConfiguredTaskAwaiter _bodyReadAwaiter;
+            private CancellationToken _bodyReadToken;
+            private CancellationTokenRegistration _bodyReadRegistration;
+            private Action _onBodyReadCompleted;
+            private int _bodyReadState;
+
+            // Reader-owned target for large body reads that can be abandoned: an abandoned read must
+            // never write into caller memory (often a pooled buffer the caller returns on cancel).
+            private byte[] _bodyBuffer;
 
             public BufferedStreamReader(Stream stream, int bufferSize = DefaultBufferSize)
             {
@@ -1060,18 +1089,23 @@ namespace TurboHTTP.Transport.Http1
 
                 _disposed = true;
 
-                // A head read abandoned on cancellation (#293) may still write into the buffer:
-                // it goes to the GC instead of the pool.
+                // A head read (#293) or body read (#345) abandoned on cancellation may still write
+                // into the reader's buffers: they go to the GC instead of the pool.
                 var raceRead = _raceRead;
                 if (raceRead != null && !raceRead.IsCompleted)
                     return;
+                if (Volatile.Read(ref _bodyReadState) != BodyReadIdle)
+                    return;
 
                 ArrayPool<byte>.Shared.Return(_buffer);
+                if (_bodyBuffer != null)
+                    ArrayPool<byte>.Shared.Return(_bodyBuffer);
             }
 
             /// <summary>
-            /// Called when a <see cref="ParsedResponseHead"/> takes the reader: from here on the body
-            /// source owns it, and its reads keep their own cancellation handling (no per-read race).
+            /// Called when a <see cref="ParsedResponseHead"/> takes the reader: from here on reads are
+            /// body reads, raced against a cancellable token without a per-read allocation
+            /// (<see cref="ReadBodyAsync"/>) instead of the head-phase <see cref="AbandonableTask"/>.
             /// </summary>
             internal void MarkHeadComplete()
             {
@@ -1270,7 +1304,21 @@ namespace TurboHTTP.Transport.Http1
                 }
 
                 if (destination.Length >= _buffer.Length)
-                    return await _stream.ReadAsync(destination, ct).ConfigureAwait(false);
+                {
+                    if (!_headComplete || !ct.CanBeCanceled)
+                        return await _stream.ReadAsync(destination, ct).ConfigureAwait(false);
+
+                    // A read that can be abandoned targets reader-owned memory, never the caller's.
+                    var bodyBuffer = _bodyBuffer ??= ArrayPool<byte>.Shared.Rent(
+                        Math.Min(destination.Length, MaxBodyReadBufferBytes));
+                    int direct = await ReadBodyAsync(
+                        bodyBuffer,
+                        Math.Min(destination.Length, bodyBuffer.Length),
+                        ct).ConfigureAwait(false);
+                    if (direct > 0)
+                        new ReadOnlySpan<byte>(bodyBuffer, 0, direct).CopyTo(destination.Span);
+                    return direct;
+                }
 
                 int read = await FillBufferAsync(ct).ConfigureAwait(false);
                 if (read == 0)
@@ -1310,9 +1358,18 @@ namespace TurboHTTP.Transport.Http1
                 _start = 0;
                 _end = 0;
 
-                var pending = _stream.ReadAsync(_buffer, 0, _buffer.Length, ct);
                 int read;
-                if (_headComplete || !ct.CanBeCanceled || pending.IsCompleted)
+                if (_headComplete)
+                {
+                    read = await ReadBodyAsync(_buffer, _buffer.Length, ct).ConfigureAwait(false);
+                    if (read > 0)
+                        _end = read;
+
+                    return read;
+                }
+
+                var pending = _stream.ReadAsync(_buffer, 0, _buffer.Length, ct);
+                if (!ct.CanBeCanceled || pending.IsCompleted)
                 {
                     read = await pending.ConfigureAwait(false);
                 }
@@ -1332,6 +1389,110 @@ namespace TurboHTTP.Transport.Http1
 
                 return read;
             }
+
+            /// <summary>
+            /// One body-phase read into reader-owned <paramref name="buffer"/> (#345). A read that
+            /// completes synchronously, or whose token cannot fire, is returned as is. A pending read
+            /// with a cancellable token is raced against it: Mono and IL2CPP may never end a pending
+            /// socket read after the token fired and the connection was disposed (#293), so the token
+            /// wins and the read is abandoned. The abandoned read keeps the reader's buffers out of
+            /// the pool (<see cref="Dispose"/>), its fault is observed and its end disposes the stream.
+            /// No allocation beyond the token registration the body source used to make per read.
+            /// </summary>
+            private ValueTask<int> ReadBodyAsync(byte[] buffer, int count, CancellationToken ct)
+            {
+                if (Volatile.Read(ref _bodyReadState) == BodyReadAbandoned)
+                    throw new ObjectDisposedException(nameof(BufferedStreamReader), "A body read was abandoned on cancellation.");
+
+                var pending = _stream.ReadAsync(buffer, 0, count, ct);
+                if (!ct.CanBeCanceled || pending.IsCompleted)
+                    return new ValueTask<int>(pending);
+
+                _bodyReadCore.Reset();
+                _bodyReadAwaiter = pending.ConfigureAwait(false).GetAwaiter();
+                _bodyReadToken = ct;
+                Volatile.Write(ref _bodyReadState, BodyReadPending);
+
+                // A token that already fired runs AbandonBodyRead inline here.
+                _bodyReadRegistration = ct.Register(s_abandonBodyRead, this);
+                _bodyReadAwaiter.UnsafeOnCompleted(_onBodyReadCompleted ??= OnBodyReadCompleted);
+                return new ValueTask<int>(this, _bodyReadCore.Version);
+            }
+
+            // Runs as the read's continuation, so GetResult never blocks (the awaiter pattern `await` uses).
+            private void OnBodyReadCompleted()
+            {
+                var read = _bodyReadAwaiter;
+                if (Interlocked.CompareExchange(ref _bodyReadState, BodyReadIdle, BodyReadPending) == BodyReadPending)
+                {
+                    // Waits only for a token callback that is running right now and lost the race.
+                    _bodyReadRegistration.Dispose();
+                    _bodyReadRegistration = default;
+                    _bodyReadAwaiter = default;
+                    _bodyReadToken = default;
+
+                    int result;
+                    try
+                    {
+                        result = read.GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        _bodyReadCore.SetException(ex);
+                        return;
+                    }
+
+                    _bodyReadCore.SetResult(result);
+                    return;
+                }
+
+                // Abandoned: the caller already saw the cancellation. Observe the outcome and drop
+                // the stream, which can no longer be read in order.
+                try
+                {
+                    read.GetResult();
+                }
+                catch
+                {
+                    // Observed: the result of an abandoned read is discarded.
+                }
+
+                try
+                {
+                    _stream.Dispose();
+                }
+                catch
+                {
+                    // Best effort.
+                }
+            }
+
+            private void AbandonBodyRead()
+            {
+                if (Interlocked.CompareExchange(ref _bodyReadState, BodyReadAbandoned, BodyReadPending) != BodyReadPending)
+                    return;
+
+                // Not inline: the caller's continuation must not run inside CancellationTokenSource.Cancel.
+                ThreadPool.QueueUserWorkItem(s_failAbandonedBodyRead, this);
+            }
+
+            private void FailAbandonedBodyRead()
+            {
+                _bodyReadCore.SetException(new OperationCanceledException(
+                    "HTTP/1.1 body read was cancelled.",
+                    _bodyReadToken));
+            }
+
+            int IValueTaskSource<int>.GetResult(short token) => _bodyReadCore.GetResult(token);
+
+            ValueTaskSourceStatus IValueTaskSource<int>.GetStatus(short token) => _bodyReadCore.GetStatus(token);
+
+            void IValueTaskSource<int>.OnCompleted(
+                Action<object> continuation,
+                object state,
+                short token,
+                ValueTaskSourceOnCompletedFlags flags) =>
+                _bodyReadCore.OnCompleted(continuation, state, token, flags);
 
             private static string DecodeLineFromBuffer(byte[] source, int offset, int length, int maxLength)
             {

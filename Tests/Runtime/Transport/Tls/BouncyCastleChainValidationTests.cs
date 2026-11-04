@@ -106,11 +106,11 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void Loopback_SelfSignedWithoutAnchor_FailsWithAuthenticationException()
         {
             var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
-            using var server = StartServer();
+            using var server = StartShortLivedServer();
             if (server == null)
                 return;
 
-            // Starting the server registered the test anchor; the production configuration has none.
+            // The production configuration has no test anchor.
             ServerCertificateVerifier.RestoreTestTrustAnchors(null);
 
             var ex = AssertAsync.ThrowsAsync<AuthenticationException>(() => HandshakeAsync(provider, server.Port, "localhost"));
@@ -121,7 +121,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void Loopback_SelfSignedWithoutAnchor_IsCertificateErrorThroughTransport()
         {
             BouncyCastleLoopbackServer.GetProviderOrFail();
-            using var server = StartServer();
+            using var server = StartShortLivedServer();
             if (server == null)
                 return;
 
@@ -172,6 +172,21 @@ namespace TurboHTTP.Tests.Transport.Tls
             if (server == null)
                 TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
             return server;
+        }
+
+        // Self-signed with a validity period Apple accepts (#332): on Apple the 100-year
+        // TestLocalhostCertificate fails with bad_certificate (-67901) before the anchor check, so
+        // the "no anchor" cases use this one to reach unknown_ca on every platform.
+        private static BouncyCastleLoopbackServer StartShortLivedServer()
+        {
+            var certificate = TestShortLivedLocalhostCertificate.TryLoad();
+            if (certificate == null)
+            {
+                TestRequirements.IgnoreEnvironment("The committed test certificate (TestShortLivedLocalhostCertificate) could not be loaded in this runtime.");
+                return null;
+            }
+
+            return BouncyCastleLoopbackServer.StartTls(certificate, BouncyCastleLoopbackServer.DrainUntilClosed);
         }
 
         private static async Task HandshakeAsync(ITlsProvider provider, int port, string host)

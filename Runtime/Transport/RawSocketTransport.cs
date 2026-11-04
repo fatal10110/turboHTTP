@@ -1522,9 +1522,12 @@ namespace TurboHTTP.Transport
         /// Consumes a forward-proxy 407 body so the connection can carry the authenticated retry.
         /// Returns <c>false</c> when the connection must be closed instead: not keep-alive, a body
         /// that is chunked, runs to close or exceeds <see cref="MaxProxyChallengeDrainBytes"/>, or
-        /// a read failure (cancellation included; the caller checks the token).
+        /// a read failure (cancellation included; the caller checks the token). A pending read
+        /// ends as soon as <paramref name="ct"/> fires even when the platform never ends it (#345):
+        /// the reader races it into reader-owned memory, so <c>buffer</c> is never a read target
+        /// that outlives this call.
         /// </summary>
-        private static async Task<bool> TryDrainProxyChallengeBodyAsync(ParsedResponseHead head, CancellationToken ct)
+        internal static async Task<bool> TryDrainProxyChallengeBodyAsync(ParsedResponseHead head, CancellationToken ct)
         {
             if (!head.KeepAlive)
                 return false;

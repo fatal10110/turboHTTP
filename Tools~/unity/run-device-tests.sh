@@ -19,11 +19,12 @@
 # ProjectSettings.asset. Env: UNITY_DEVICE_TEST_PROJECT (default <cache>/device-testproj),
 # UNITY_DEVICE_PACKAGE_COPY (default <cache>/device-package): never run-tests.sh's project, which must not
 # get the device-only files; TURBOHTTP_DEVICE_TEST_WAIT_MIN (default 120) bounds the device-side wait.
-# Exit codes as run-tests.sh: 0 pass, 1 failures, 2 setup error, 3 Unity unavailable, 4 skip gate.
+# Exit codes as run-tests.sh: 0 pass, 1 failures, 2 setup error, 3 Unity unavailable, 4 skip gate (an unfiltered
+# run is held to the Player-Android entry of Tools~/unity/skip-baseline.txt, #341).
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-platform=PlayMode; filter=""; category=""; integration=0; stripping=High; arch=arm64; serial=""; skip_build=0
+baseline_key=Player-Android; filter=""; category=""; integration=0; stripping=High; arch=arm64; serial=""; skip_build=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --stripping) stripping="$2"; shift 2 ;;
@@ -408,7 +409,8 @@ if [ -n "$filter" ] || [ -n "$category" ]; then is_filtered=1; fi
 # Failures keep exit 1; the skip gates (an unexplained skip, or more skips than Tools~/unity/skip-baseline.txt
 # allows for an unfiltered run, #151) exit 4 so a vanished test cannot pass silently.
 set +e
-python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$platform" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"
+# A player skips more platform-scoped [env] tests than the host editor: its own baseline key (#341).
+python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$baseline_key" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"
 gate=$?
 set -e
 echo "run-device-tests: results $xml, log $log"
