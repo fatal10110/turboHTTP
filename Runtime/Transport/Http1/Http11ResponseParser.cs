@@ -1113,6 +1113,13 @@ namespace TurboHTTP.Transport.Http1
             }
 
             /// <summary>
+            /// The last head-phase read that went through the race (#293): still pending when the
+            /// token abandoned it, completed when it faulted. Null when no read was raced or the
+            /// last raced read returned normally. Read by the reader's owner after the failed call.
+            /// </summary>
+            internal Task AbandonedHeadRead => _raceRead;
+
+            /// <summary>
             /// Waits until at least one byte is buffered. Returns false when the stream ended first.
             /// </summary>
             public async Task<bool> EnsureBufferedAsync(CancellationToken ct)

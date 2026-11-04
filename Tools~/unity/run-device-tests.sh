@@ -20,10 +20,13 @@
 # UNITY_DEVICE_PACKAGE_COPY (default <cache>/device-package): never run-tests.sh's project, which must not
 # get the device-only files; TURBOHTTP_DEVICE_TEST_WAIT_MIN (default 120) bounds the device-side wait.
 # Exit codes as run-tests.sh: 0 pass, 1 failures, 2 setup error, 3 Unity unavailable, 4 skip gate (an unfiltered
-# run is held to the Player-Android entry of Tools~/unity/skip-baseline.txt, #341).
+# run is held to the Player-Android entry of Tools~/unity/skip-baseline.txt, #341), 5 WSL interop unavailable
+# (from WSL: cmd.exe, adb.exe or Unity.exe did not start through about two minutes of retries, wsl-interop.sh, #355).
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=Tools~/unity/wsl-interop.sh
+. "$repo/Tools~/unity/wsl-interop.sh"
 baseline_key=Player-Android; filter=""; category=""; integration=0; stripping=High; arch=arm64; serial=""; skip_build=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -57,18 +60,9 @@ esac
 topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
 
 if [ "$win" = 1 ]; then
-  # set -e must not turn a failed probe into exit 1 ("test failures"): every failure here is exit 2.
-  # WSL interop occasionally fails to start cmd.exe; try a few times before giving up.
-  localappdata=""
-  for _ in 1 2 3; do
-    localappdata="$( (cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%') 2>/dev/null | tr -d '\r' || true)"
-    [ -n "$localappdata" ] && break
-    sleep 1
-  done
-  wincache=""
-  if [ -n "$localappdata" ]; then wincache="$(wslpath -u "$localappdata" 2>/dev/null || true)"; fi
-  [ -n "$wincache" ] || { echo "run-device-tests: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
-  cache="$wincache/turbohttp"
+  # A failed lookup is never exit 1 ("test failures"): exit 5 for an interop outage, else 2 (wsl-interop.sh).
+  wsl_resolve_localappdata run-device-tests
+  cache="$wsl_localappdata/turbohttp"
 else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi
@@ -89,8 +83,34 @@ if [ -n "$serial" ]; then adb_target=(-s "$serial"); fi
 # Each call is bounded (where timeout exists): a frozen device or emulator otherwise blocks adb forever.
 adb_timeout=()
 if command -v timeout >/dev/null 2>&1; then adb_timeout=(timeout 120); fi
-adbr() { local out; for _ in 1 2 3 4 5; do if out="$(${adb_timeout[@]+"${adb_timeout[@]}"} "$adb_exe" ${adb_target[@]+"${adb_target[@]}"} "$@" 2>/dev/null)"; then printf '%s' "$out" | tr -d '\r'; return 0; fi; sleep 2; done; return 1; }
-[ "$(adbr get-state || true)" = device ] || { echo "run-device-tests: no Android device ${serial:+$serial }ready on adb ($adb_exe devices)" >&2; exit 2; }
+# A failed call is tried 5 times, wsl_poll_s (2 s) apart, then returns 1. From WSL a failure while cmd.exe does not
+# answer either is an interop outage (#355): those tries do not count and wait with the wsl-interop.sh back-off,
+# and after wsl_tries of them adbr returns wsl_interop_exit (5).
+adbr() {
+  local out tries=0 outages=0
+  while :; do
+    if out="$(${adb_timeout[@]+"${adb_timeout[@]}"} "$adb_exe" ${adb_target[@]+"${adb_target[@]}"} "$@" 2>/dev/null)"; then
+      printf '%s' "$out" | tr -d '\r'
+      return 0
+    fi
+    if [ "$win" = 1 ] && ! wsl_interop_up; then
+      outages=$((outages + 1))
+      [ "$outages" -lt "$wsl_tries" ] || return "$wsl_interop_exit"
+      wsl_backoff "$outages"
+      continue
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -lt 5 ] || return 1
+    sleep "$wsl_poll_s"
+  done
+}
+adb_rc=0
+adb_state="$(adbr get-state)" || adb_rc=$?
+if [ "$adb_state" != device ]; then
+  wsl_exit_if_interop "$adb_rc" run-device-tests "adb.exe did not start (adb get-state)"
+  echo "run-device-tests: no Android device ${serial:+$serial }ready on adb ($adb_exe devices)" >&2
+  exit 2
+fi
 
 # The test project and the build are skipped with --skip-build (the APK is reused).
 if [ "$skip_build" = 0 ]; then
@@ -99,7 +119,9 @@ rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --ex
   "$repo/" "$pkg/"
 
 if [ ! -d "$proj/ProjectSettings" ]; then
-  "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$cache/create.log")"
+  wsl_unity_launch run-device-tests "$cache/create.log" \
+    "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$cache/create.log")"
+  [ "$unity_code" = 0 ] || { echo "run-device-tests: creating $proj failed (Unity exit $unity_code); see $cache/create.log" >&2; exit 2; }
 fi
 python3 - "$proj/Packages/manifest.json" "$(topath "$pkg")" <<'PY'
 import json, sys
@@ -318,10 +340,9 @@ adbr logcat -G 16M >/dev/null || true
 
 code=0
 if [ "$skip_build" = 0 ]; then
-  set +e
-  "$unity" "${args[@]}"
-  code=$?
-  set -e
+  # A Unity.exe that did not start (no log) is retried, then exit 5: never reported as a build error (#355).
+  wsl_unity_launch run-device-tests "$log" "$unity" "${args[@]}"
+  code="$unity_code"
 fi
 
 # --serial: Unity only built the APK; install it on the chosen device and launch it. The test player runs
@@ -332,9 +353,14 @@ if [ -n "$serial" ]; then
     grep -E "error CS[0-9]+" "$log" | head -20 || true
     exit 2
   fi
-  adbr install -r "$(topath "$apk")" >/dev/null || { echo "run-device-tests: adb install on $serial failed" >&2; exit 2; }
-  adbr shell monkey -p "$pkg_id" -c android.intent.category.LAUNCHER 1 >/dev/null \
-    || { echo "run-device-tests: launching $pkg_id on $serial failed" >&2; exit 2; }
+  adbr install -r "$(topath "$apk")" >/dev/null || {
+    rc=$?; wsl_exit_if_interop "$rc" run-device-tests "adb.exe did not start (adb install)"
+    echo "run-device-tests: adb install on $serial failed" >&2; exit 2
+  }
+  adbr shell monkey -p "$pkg_id" -c android.intent.category.LAUNCHER 1 >/dev/null || {
+    rc=$?; wsl_exit_if_interop "$rc" run-device-tests "adb.exe did not start (launching $pkg_id)"
+    echo "run-device-tests: launching $pkg_id on $serial failed" >&2; exit 2
+  }
   # Give the process time to appear before the wait below treats a missing pid as a finished player.
   for _ in $(seq 1 30); do
     [ "$(player_running || true)" = y ] && break
