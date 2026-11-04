@@ -18,14 +18,28 @@ namespace TurboHTTP.WebSocket.Transport
     {
         private readonly TlsBackend _tlsBackend;
         private readonly HappyEyeballsOptions _happyEyeballsOptions;
+        private readonly Func<string, Task<IPAddress[]>> _dnsResolver;
         private int _disposed;
 
         public RawSocketWebSocketTransport(
             TlsBackend tlsBackend = TlsBackend.Auto,
             HappyEyeballsOptions happyEyeballsOptions = null)
+            : this(tlsBackend, happyEyeballsOptions, null)
+        {
+        }
+
+        /// <summary>
+        /// Test seam: <paramref name="dnsResolver"/> replaces <see cref="Dns.GetHostAddressesAsync(string)"/>
+        /// (null keeps it). Localhost names still never reach it (RFC 6761 Section 6.3).
+        /// </summary>
+        internal RawSocketWebSocketTransport(
+            TlsBackend tlsBackend,
+            HappyEyeballsOptions happyEyeballsOptions,
+            Func<string, Task<IPAddress[]>> dnsResolver)
         {
             _tlsBackend = tlsBackend;
             _happyEyeballsOptions = happyEyeballsOptions?.Clone() ?? new HappyEyeballsOptions();
+            _dnsResolver = dnsResolver;
         }
 
         /// <summary>
@@ -54,18 +68,22 @@ namespace TurboHTTP.WebSocket.Transport
             options = options?.Clone() ?? new WebSocketConnectionOptions();
             options.Validate();
 
-            ValidateUri(uri);
+            string wireHost = ValidateUri(uri);
 
+            // #368: proxy bypass, the cleartext policy and DNS use the wire host (A-label for an IDN,
+            // RFC 5890 Section 2.3.2.1; lookups use the A-label, RFC 5891 Section 5) without IPv6
+            // brackets. The TLS server name keeps Uri.Host: the TLS providers normalise it (TlsHostName).
             string host = uri.Host;
+            string lookupHost = GetLookupHost(uri, wireHost);
             bool secure = string.Equals(uri.Scheme, "wss", StringComparison.OrdinalIgnoreCase);
             int port = uri.IsDefaultPort
                 ? (secure ? 443 : 80)
                 : uri.Port;
 
             var proxySettings = options.ProxySettings ?? WebSocketProxySettings.None;
-            bool useProxy = proxySettings.IsConfigured && !proxySettings.ShouldBypass(host);
+            bool useProxy = proxySettings.IsConfigured && !proxySettings.ShouldBypass(lookupHost);
 
-            string connectHost = useProxy ? proxySettings.ProxyUri.Host : host;
+            string connectHost = useProxy ? GetProxyLookupHost(proxySettings.ProxyUri) : lookupHost;
             int connectPort = useProxy
                 ? (proxySettings.ProxyUri.IsDefaultPort ? 80 : proxySettings.ProxyUri.Port)
                 : port;
@@ -74,11 +92,12 @@ namespace TurboHTTP.WebSocket.Transport
             // cleartext policy, so the policy is applied here, before any DNS lookup or socket.
             // An http:// proxy leg is cleartext even for a wss:// target (CONNECT and
             // Proxy-Authorization travel unencrypted).
-            if (!secure && !CleartextTrafficPolicy.IsPermitted(host, options.AllowCleartext))
+            // The messages never contain the host (#309, #368).
+            if (!secure && !CleartextTrafficPolicy.IsPermitted(lookupHost, options.AllowCleartext))
             {
                 throw new WebSocketException(
                     WebSocketError.CleartextNotPermitted,
-                    "Cleartext ws:// connection to '" + host + "' is not permitted. Use wss://, or set " +
+                    "Cleartext ws:// connection is not permitted. Use wss://, or set " +
                     "WebSocketConnectionOptions.AllowCleartext = true (the platform cleartext policy must also permit the host).");
             }
 
@@ -86,11 +105,11 @@ namespace TurboHTTP.WebSocket.Transport
             {
                 throw new WebSocketException(
                     WebSocketError.CleartextNotPermitted,
-                    "Cleartext connection to http:// proxy '" + connectHost + "' is not permitted. Set " +
+                    "Cleartext connection to the http:// proxy is not permitted. Set " +
                     "WebSocketConnectionOptions.AllowCleartext = true (the platform cleartext policy must also permit the host).");
             }
 
-            var addresses = await ResolveDnsAsync(connectHost, options.DnsTimeoutMs, ct).ConfigureAwait(false);
+            var addresses = await ResolveDnsAsync(connectHost, options.DnsTimeoutMs, _dnsResolver, ct).ConfigureAwait(false);
 
             Socket socket;
             try
@@ -100,7 +119,7 @@ namespace TurboHTTP.WebSocket.Transport
                     connectHost,
                     addresses,
                     candidates => ConnectSocketAsync(candidates, connectPort, options.ConnectTimeout, ct),
-                    name => ResolveDnsAsync(name, options.DnsTimeoutMs, ct),
+                    name => ResolveDnsAsync(name, options.DnsTimeoutMs, _dnsResolver, ct),
                     ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (
@@ -114,7 +133,7 @@ namespace TurboHTTP.WebSocket.Transport
 
                 throw new WebSocketException(
                     WebSocketError.ProxyConnectionFailed,
-                    "Failed to connect to configured proxy endpoint '" + proxySettings.ProxyUri + "'.",
+                    "Failed to connect to the configured proxy endpoint.",
                     ex);
             }
 
@@ -294,13 +313,17 @@ namespace TurboHTTP.WebSocket.Transport
             }
         }
 
-        private static async Task<IPAddress[]> ResolveDnsAsync(string host, int timeoutMs, CancellationToken ct)
+        private static async Task<IPAddress[]> ResolveDnsAsync(
+            string host,
+            int timeoutMs,
+            Func<string, Task<IPAddress[]>> resolver,
+            CancellationToken ct)
         {
             // Localhost names are loopback without asking the resolver (RFC 6761 section 6.3, #322).
             if (LocalhostNames.IsLocalhostName(host))
                 return LocalhostNames.GetLoopbackAddresses();
 
-            var dnsTask = Dns.GetHostAddressesAsync(host);
+            var dnsTask = resolver != null ? resolver(host) : Dns.GetHostAddressesAsync(host);
             var timeoutTask = Task.Delay(timeoutMs, ct);
 
             var completed = await Task.WhenAny(dnsTask, timeoutTask).ConfigureAwait(false);
@@ -314,13 +337,44 @@ namespace TurboHTTP.WebSocket.Transport
 
                 ct.ThrowIfCancellationRequested();
                 throw new TimeoutException(
-                    "DNS resolution timed out after " + timeoutMs + "ms for host '" + host + "'.");
+                    "DNS resolution timed out after " + timeoutMs + "ms.");
             }
 
             return await dnsTask.ConfigureAwait(false);
         }
 
-        private static void ValidateUri(Uri uri)
+        /// <summary>
+        /// The host proxy bypass, the cleartext policy and DNS see (#368): an IPv6 literal without
+        /// brackets (as Unity Mono's <see cref="Uri.Host"/> returns it; .NET keeps the brackets),
+        /// otherwise the wire host (A-label for an IDN, an ASCII name or IPv4 literal unchanged).
+        /// </summary>
+        internal static string GetLookupHost(Uri uri, string wireHost)
+        {
+            if (uri.HostNameType == UriHostNameType.IPv6)
+                return StripBrackets(uri.Host);
+
+            return wireHost;
+        }
+
+        /// <summary>
+        /// The proxy's lookup host: its wire host like the target's, or <see cref="Uri.Host"/> when it
+        /// has none (the proxy URI is only checked for a non-blank host; DNS then fails as before).
+        /// </summary>
+        private static string GetProxyLookupHost(Uri proxyUri)
+        {
+            return WireHost.TryFromUri(proxyUri, out var proxyWireHost, out _)
+                ? GetLookupHost(proxyUri, proxyWireHost)
+                : StripBrackets(proxyUri.Host);
+        }
+
+        private static string StripBrackets(string host)
+        {
+            return host.Length > 2 && host[0] == '[' && host[host.Length - 1] == ']'
+                ? host.Substring(1, host.Length - 2)
+                : host;
+        }
+
+        private static string ValidateUri(Uri uri)
         {
             if (!uri.IsAbsoluteUri)
                 throw new ArgumentException("WebSocket URI must be absolute.", nameof(uri));
@@ -336,8 +390,10 @@ namespace TurboHTTP.WebSocket.Transport
             // no A-label form, or not an IP literal or DNS name) fails the handshake here, before
             // the cleartext policy, DNS or any socket. A WebSocketException keeps its error through
             // WebSocketConnection; the message does not contain the host.
-            if (!WireHost.TryFromUri(uri, out _, out var hostError))
+            if (!WireHost.TryFromUri(uri, out var wireHost, out var hostError))
                 throw new WebSocketException(WebSocketError.HandshakeFailed, hostError);
+
+            return wireHost;
         }
     }
 }
