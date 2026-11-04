@@ -33,10 +33,13 @@ namespace TurboHTTP.Transport.Connection
         }
 
         /// <summary>
-        /// Connects to the first reachable address (RFC 8305 Happy Eyeballs v2). Attempts start
-        /// one at a time, <see cref="HappyEyeballsOptions.AttemptSpacingDelay"/> apart within a
-        /// family and <see cref="HappyEyeballsOptions.FamilyStaggerDelay"/> after the preferred
-        /// family for the other family, so a blackholed address never blocks a later healthy one.
+        /// Connects to the first reachable address (RFC 8305 Happy Eyeballs v2). The address
+        /// families interleave (RFC 8305 section 4): the first alternate-family address starts
+        /// <see cref="HappyEyeballsOptions.FamilyStaggerDelay"/> after the first attempt and every
+        /// later attempt <see cref="HappyEyeballsOptions.AttemptSpacingDelay"/> after the previous
+        /// one, so an unroutable family never keeps the other family from being tried. When a slot
+        /// of <see cref="HappyEyeballsOptions.MaxConcurrentAttempts"/> frees up, a family with no
+        /// attempt in flight goes first.
         /// The first success wins; losing attempts are cancelled and their sockets disposed.
         /// </summary>
         /// <param name="addresses">Resolved addresses (duplicates and nulls are ignored).</param>
@@ -114,6 +117,8 @@ namespace TurboHTTP.Transport.Connection
         {
             CancellationTokenSource linkedCts = null;
             List<Task<AttemptResult>> activeTasks = null;
+            // Address of each in-flight attempt, index-aligned with activeTasks.
+            List<IPAddress> activeAddresses = null;
 
             try
             {
@@ -122,6 +127,7 @@ namespace TurboHTTP.Transport.Connection
                 var ct = linkedCts.Token;
 
                 activeTasks = new List<Task<AttemptResult>>();
+                activeAddresses = new List<IPAddress>();
                 var failures = new List<Exception>();
                 var started = Stopwatch.StartNew();
                 int scheduleIndex = 0;
@@ -134,8 +140,10 @@ namespace TurboHTTP.Transport.Connection
                            activeTasks.Count < options.MaxConcurrentAttempts &&
                            schedule[scheduleIndex].Due <= started.Elapsed)
                     {
+                        PromoteIdleFamily(schedule, scheduleIndex, activeAddresses);
                         var attempt = schedule[scheduleIndex++];
                         activeTasks.Add(AttemptAsync(attempt.Address, port, ct, connector));
+                        activeAddresses.Add(attempt.Address);
                     }
 
                     if (activeTasks.Count == 0)
@@ -172,7 +180,9 @@ namespace TurboHTTP.Transport.Connection
                         completedTask = await Task.WhenAny(activeTasks).ConfigureAwait(false);
                     }
 
-                    activeTasks.Remove(completedTask);
+                    int completedIndex = activeTasks.IndexOf(completedTask);
+                    activeTasks.RemoveAt(completedIndex);
+                    activeAddresses.RemoveAt(completedIndex);
 
                     var result = await completedTask.ConfigureAwait(false);
                     if (result.Success)
@@ -214,6 +224,46 @@ namespace TurboHTTP.Transport.Connection
 
                 try { linkedCts?.Dispose(); } catch { }
             }
+        }
+
+        /// <summary>
+        /// Picks the attempt that takes a free slot. RFC 8305 section 5 has no in-flight cap; with
+        /// <see cref="HappyEyeballsOptions.MaxConcurrentAttempts"/> a slot freed by a fast failure
+        /// must not go to another address of a family that still has a stalled attempt while the
+        /// other family has nothing in flight. Otherwise a blackholed family (IPv6 without a route)
+        /// fills every slot again and the healthy family never gets another try: v6a hangs, v4a
+        /// fails at once, v6b would join v6a and v4b would wait for the deadline. In that case the
+        /// next scheduled address of the idle family moves to <paramref name="next"/> and starts
+        /// now; the remaining order and due times are unchanged.
+        /// </summary>
+        private static void PromoteIdleFamily(List<ScheduledAttempt> schedule, int next, List<IPAddress> inFlight)
+        {
+            var family = schedule[next].Address.AddressFamily;
+            if (!HasFamilyInFlight(inFlight, family))
+                return;
+
+            for (int i = next + 1; i < schedule.Count; i++)
+            {
+                var candidate = schedule[i];
+                var candidateFamily = candidate.Address.AddressFamily;
+                if (candidateFamily == family || HasFamilyInFlight(inFlight, candidateFamily))
+                    continue;
+
+                schedule.RemoveAt(i);
+                schedule.Insert(next, candidate);
+                return;
+            }
+        }
+
+        private static bool HasFamilyInFlight(List<IPAddress> inFlight, AddressFamily family)
+        {
+            for (int i = 0; i < inFlight.Count; i++)
+            {
+                if (inFlight[i].AddressFamily == family)
+                    return true;
+            }
+
+            return false;
         }
 
         private static async Task DrainLosersAsync(List<Task<AttemptResult>> activeTasks, Socket winner)
@@ -275,22 +325,36 @@ namespace TurboHTTP.Transport.Connection
         {
             var schedule = new List<ScheduledAttempt>(preferred.Count + alternate.Count);
 
-            for (int i = 0; i < preferred.Count; i++)
+            // RFC 8305 section 4: the families interleave (First Address Family Count 1), so the
+            // first alternate address is the second attempt rather than the one after every
+            // preferred address. Listing the preferred family first let two unroutable addresses
+            // (IPv6 without an IPv6 route, SYNs dropped) fill MaxConcurrentAttempts before the first
+            // IPv4 address was due, and the connect ran into its deadline (#362).
+            // Due times: the first attempt at 0, the first alternate at FamilyStaggerDelay, each
+            // later attempt AttemptSpacingDelay after the previous one (RFC 8305 section 5).
+            int count = Math.Max(preferred.Count, alternate.Count);
+            for (int i = 0; i < count; i++)
             {
-                schedule.Add(new ScheduledAttempt(
-                    preferred[i],
-                    TimeSpan.FromTicks(options.AttemptSpacingDelay.Ticks * i)));
+                if (i < preferred.Count)
+                    schedule.Add(new ScheduledAttempt(preferred[i], NextDue(schedule, options, firstAlternate: false)));
+                if (i < alternate.Count)
+                    schedule.Add(new ScheduledAttempt(alternate[i], NextDue(schedule, options, firstAlternate: i == 0)));
             }
 
-            for (int i = 0; i < alternate.Count; i++)
-            {
-                schedule.Add(new ScheduledAttempt(
-                    alternate[i],
-                    options.FamilyStaggerDelay + TimeSpan.FromTicks(options.AttemptSpacingDelay.Ticks * i)));
-            }
-
-            schedule.Sort((a, b) => a.Due.CompareTo(b.Due));
             return schedule;
+        }
+
+        private static TimeSpan NextDue(List<ScheduledAttempt> schedule, HappyEyeballsOptions options, bool firstAlternate)
+        {
+            if (schedule.Count == 0)
+                return TimeSpan.Zero;
+
+            // The first alternate always follows the first preferred attempt (Partition keeps the
+            // preferred list non-empty whenever an alternate exists).
+            if (firstAlternate)
+                return options.FamilyStaggerDelay;
+
+            return schedule[schedule.Count - 1].Due + options.AttemptSpacingDelay;
         }
 
         private static async Task<Socket> ConnectSequentialAsync(

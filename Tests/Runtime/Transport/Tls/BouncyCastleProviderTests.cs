@@ -106,8 +106,9 @@ namespace TurboHTTP.Tests.Transport.Tls
             {
                 TestRequirements.RequireBouncyCastle();
 
-                // *.badssl.com wildcard certificate
-                var result = await WrapAsync("sha256.badssl.com", "sha256.badssl.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
+                // *.google.com wildcard certificate, chained to GlobalSign Root CA, which Android 6
+                // (API 23) trusts; the ISRG-rooted *.badssl.com wildcard fails there by design (#361).
+                var result = await WrapAsync("docs.google.com", "docs.google.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
                 Assert.IsNotNull(result.SecureStream);
                 Assert.AreEqual("BouncyCastle", result.ProviderName);
             }).GetAwaiter().GetResult();
