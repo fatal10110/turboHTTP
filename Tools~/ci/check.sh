@@ -39,7 +39,7 @@ if [ "$full" = 1 ]; then variant=all; else variant=editor; fi
 if [ -z "${UNITY_DLLS:-}${UNITY_PATH:-}" ]; then
   "Tools~/ci/fetch-unity-dlls.sh" >/dev/null || fail "fetch Unity DLLs"
 fi
-python3 "Tools~/ci/shadow_build.py" --variant "$variant" "${shadow_args[@]}" || fail "shadow build"
+python3 "Tools~/ci/shadow_build.py" --variant "$variant" ${shadow_args[@]+"${shadow_args[@]}"} || fail "shadow build"
 
 if [ "$full" = 1 ]; then
   step "workflow lint (actionlint)"

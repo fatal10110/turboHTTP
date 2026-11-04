@@ -166,7 +166,7 @@ code=$?
 set -e
 
 # Unity wrote the resolved packages before compiling: a moved tag or stale pin voids the run (#311).
-if [ "$unitask" != 0 ] && ! python3 "$repo/Tools~/ci/unitask_pin.py" check-lock "$proj/Packages/packages-lock.json" "${lock_args[@]}"; then
+if [ "$unitask" != 0 ] && ! python3 "$repo/Tools~/ci/unitask_pin.py" check-lock "$proj/Packages/packages-lock.json" ${lock_args[@]+"${lock_args[@]}"}; then
   echo "run-tests: com.cysharp.unitask did not resolve to the pinned commit; see $log" >&2
   if grep -q "No 'git' executable" "$log" 2>/dev/null; then
     echo "run-tests: Unity found no git on the editor host; install Git there, or pass --with-unitask=local" >&2
