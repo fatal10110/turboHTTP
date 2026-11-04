@@ -68,18 +68,21 @@ namespace TurboHTTP.Transport.Internal
         /// <c>"[fe80::1]"</c>), a non-ASCII DNS name in A-label form, anything else unchanged.
         /// </summary>
         /// <exception cref="HttpFieldValidationException">
-        /// A non-ASCII name with no valid A-label form (for example a label longer than 63
-        /// characters, RFC 5890 Section 2.3.2.1): it is never sent as raw bytes, and the transport
-        /// reports it as <c>InvalidRequest</c>. The message does not contain the host.
+        /// The host cannot be sent: it is empty (RFC 9110 Sections 4.2.1 and 4.2.2: an http(s) URI
+        /// with an empty host is invalid), a non-ASCII name has no valid A-label form (for example a
+        /// label longer than 63 characters, RFC 5890 Section 2.3.2.1), or the ASCII form is not an
+        /// RFC 3986 host (#340, see <see cref="IsDnsName"/>). Nothing is sent as raw bytes, and the
+        /// transport reports it as <c>InvalidRequest</c>. The message does not contain the host.
         /// </exception>
         internal static string FormatHost(string host)
         {
+            // Unity Mono parses some IDNA-invalid names (a label over 63 octets, a leading '-')
+            // as an empty host instead of rejecting them (#340).
             if (string.IsNullOrEmpty(host))
-                return host;
+                throw new HttpFieldValidationException("The request URI has an empty host and cannot be sent.");
 
-            var bare = host.Length > 2 && host[0] == '[' && host[host.Length - 1] == ']'
-                ? host.Substring(1, host.Length - 2)
-                : host;
+            bool bracketed = host.Length > 2 && host[0] == '[' && host[host.Length - 1] == ']';
+            var bare = bracketed ? host.Substring(1, host.Length - 2) : host;
 
             // A reg-name or IPv4 address never contains ':'; an IPv6 literal always does.
             if (bare.IndexOf(':') >= 0)
@@ -88,26 +91,106 @@ namespace TurboHTTP.Transport.Internal
                 int zone = bare.IndexOf('%');
                 if (zone >= 0)
                     bare = bare.Substring(0, zone);
+                if (!IsIPv6Characters(bare))
+                    throw InvalidHost();
                 return "[" + bare + "]";
             }
 
-            if (IsAscii(bare))
-                return bare;
+            // Brackets hold only an IP literal (RFC 3986 Section 3.2.2); IPvFuture is not supported.
+            if (bracketed)
+                throw InvalidHost();
 
-            try
+            string ascii;
+            if (IsAscii(bare))
             {
-                // Only reached when the runtime's IdnHost (or a caller-supplied host) is still
-                // Unicode. IdnMapping instances are not documented as thread-safe: one per call.
-                return new IdnMapping().GetAscii(bare);
+                ascii = bare;
             }
-            catch (ArgumentException)
+            else
             {
-                // The validator accepts Latin-1 values, so returning the Unicode name would put
-                // raw non-ASCII bytes in Host / :authority / the request target.
-                throw new HttpFieldValidationException(
-                    "The request host has no valid ASCII (A-label) form and cannot be sent.");
+                try
+                {
+                    // Only reached when the runtime's IdnHost (or a caller-supplied host) is still
+                    // Unicode. IdnMapping instances are not documented as thread-safe: one per call.
+                    ascii = new IdnMapping().GetAscii(bare);
+                }
+                catch (ArgumentException)
+                {
+                    // The validator accepts Latin-1 values, so returning the Unicode name would put
+                    // raw non-ASCII bytes in Host / :authority / the request target.
+                    throw new HttpFieldValidationException(
+                        "The request host has no valid ASCII (A-label) form and cannot be sent.");
+                }
             }
+
+            // IDNA2003 mapping (Uri.IdnHost, IdnMapping without UseStd3AsciiRules) can produce ASCII
+            // that is not a host, for example "xn-- -dha.de" from a no-break space (#340); the
+            // field validator accepts SP inside a value, so nothing later would catch it.
+            if (!IsDnsName(ascii))
+                throw InvalidHost();
+            return ascii;
         }
+
+        private const int MaxDnsNameLength = 253;
+        private const int MaxDnsLabelLength = 63;
+
+        /// <summary>
+        /// An ASCII reg-name or IPv4 address as a DNS name (RFC 3986 Section 3.2.2, RFC 1035
+        /// Section 2.3.4, RFC 5890 Section 2.3.2.1): labels of 1-63 letters, digits, '-' or '_'
+        /// ('_' because resolvers accept it in host names), separated by '.', at most 253
+        /// characters, optionally with one trailing '.' (an absolute name). Percent-encoding and
+        /// the other RFC 3986 sub-delims are not DNS name characters and are rejected.
+        /// </summary>
+        private static bool IsDnsName(string value)
+        {
+            int length = value.Length;
+            if (length > 0 && value[length - 1] == '.')
+                length--;
+            if (length == 0 || length > MaxDnsNameLength)
+                return false;
+
+            int labelLength = 0;
+            for (int i = 0; i < length; i++)
+            {
+                char c = value[i];
+                if (c == '.')
+                {
+                    if (labelLength == 0)
+                        return false;
+                    labelLength = 0;
+                    continue;
+                }
+
+                bool allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                               || c == '-' || c == '_';
+                if (!allowed || ++labelLength > MaxDnsLabelLength)
+                    return false;
+            }
+
+            return labelLength > 0;
+        }
+
+        // Uri has already parsed the address; this only keeps anything that is not an IPv6
+        // address character (hex digits, ':' and '.' for an embedded IPv4) off the wire.
+        private static bool IsIPv6Characters(string value)
+        {
+            if (value.Length == 0)
+                return false;
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                bool allowed = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+                               || c == ':' || c == '.';
+                if (!allowed)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static HttpFieldValidationException InvalidHost() =>
+            new HttpFieldValidationException(
+                "The request host is not a valid RFC 3986 host (an IP literal, or labels of 1-63 letters, " +
+                "digits, '-' or '_' with at most 253 characters in total) and cannot be sent.");
 
         private static bool IsAscii(string value)
         {
