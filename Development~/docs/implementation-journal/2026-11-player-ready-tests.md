@@ -43,6 +43,8 @@ the Editor, plus a bound on every `AssertAsync` body. One shipped line: `[Preser
   gives the client a longer bound than the server, so a client that never sends a ClientHello is reported
   by the server, and skips (`[env]`) the IP-literal case only when Unity's Mono SslStream sent no
   ClientHello at all; otherwise the failure message carries both the server and the client error.
+  `ClientHelloCaptureTests` drives the retry with a scripted stream: `WouldBlock`/`TimedOut` are retried
+  and the handshake message is returned; `ConnectionReset` propagates unchanged.
 - **Bounded `AssertAsync` (#330 item 3).** `Run`/`ThrowsAsync` wait with `WaitOne(DefaultBound)` (5 min)
   and throw `AssertAsyncTimeoutException`, outside the `catch (T)`, so even `ThrowsAsync<Exception>`
   fails on a hang. New overloads `Run(Func<Task>, TimeSpan)` and `ThrowsAsync<T>(Func<Task>, TimeSpan)`.
