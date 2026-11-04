@@ -57,6 +57,44 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void ManyUnroutableIpv6_FirstIpv4FailsFast_FreedSlotGoesToIpv4()
+        {
+            // v6a hangs, v4a fails at once. The schedule's next entry is v6b, which would join
+            // v6a and leave v4b waiting for a free slot until the deadline (PR #373 review).
+            var ipv6 = new List<IPAddress>();
+            var ipv4 = new List<IPAddress>();
+            for (int i = 1; i <= 8; i++)
+            {
+                ipv6.Add(IPAddress.Parse("2001:db8::" + i));
+                ipv4.Add(IPAddress.Parse("192.0.2." + i));
+            }
+
+            var addresses = new List<IPAddress>(ipv4);
+            addresses.AddRange(ipv6);
+            var dialer = new RecordingDialer(blackholed: ipv6, healthy: ipv4[1]);
+
+            AssertAsync.Run(async () =>
+            {
+                using var watchdog = new CancellationTokenSource(Watchdog);
+                using var winner = await HappyEyeballsConnector.ConnectAsync(
+                    addresses.ToArray(),
+                    443,
+                    TimeSpan.FromSeconds(5), // without the idle-family promotion this deadline fires
+                    new HappyEyeballsOptions(),
+                    watchdog.Token,
+                    dialer.DialAsync);
+
+                Assert.AreSame(dialer.HealthySocket, winner);
+                Assert.IsFalse(watchdog.IsCancellationRequested);
+            });
+
+            var order = dialer.Order;
+            Assert.AreEqual(ipv6[0], order[0]);
+            Assert.AreEqual(ipv4[0], order[1]);
+            Assert.AreEqual(ipv4[1], order[2], "the freed slot must go to IPv4, which had nothing in flight");
+        }
+
+        [Test]
         public void Schedule_AlternatesFamiliesThenDrainsTheLongerOne()
         {
             var v6a = IPAddress.Parse("2001:db8::a");

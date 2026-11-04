@@ -23,6 +23,11 @@ Run w1108, lane external-tls-rows. Date 2026-11-04.
   Count 1): preferred[0] at 0, alternate[0] at `FamilyStaggerDelay`, then preferred[1], alternate[1], …
   Each later attempt starts `AttemptSpacingDelay` after the previous one (section 5). When one
   family runs out, the rest of the other family follows.
+- **Freed slots (review round 1):** interleaving alone still starved IPv4 when the first IPv4 address
+  failed fast: v6a hangs, v4a fails, v6b (next in the schedule) took the freed slot and v4b waited
+  for the deadline. `RaceAsync` now tracks the address of every in-flight attempt; when a slot frees
+  and the next scheduled address belongs to a family that already has an attempt in flight, the
+  next address of a family with nothing in flight starts instead (`PromoteIdleFamily`).
 - **#361:** new `TlsPublicHostTests` (ExternalNetwork, `TURBOHTTP_INTEGRATION_TESTS`) sends
   `UHttpClient` requests on SslStream, BouncyCastle and Auto:
   - to self-signed, untrusted-root, expired and wrong.host badssl.com, asserting `CertificateError`;
@@ -42,10 +47,11 @@ Run w1108, lane external-tls-rows. Date 2026-11-04.
 ## Files
 
 - `Runtime/Transport/Connection/HappyEyeballsConnector.cs`: `BuildSchedule` interleaves, `NextDue`;
-  summary doc updated.
+  `RaceAsync` tracks in-flight addresses and calls `PromoteIdleFamily`; summary doc updated.
 - `Tests/Runtime/Transport/HappyEyeballsInterleaveTests.cs` (new): 8 unroutable IPv6 + 8 IPv4 with
-  default options connects over IPv4; the dial order alternates families. Both fail on the old code
-  (`TimeoutException ... 5000ms`; wrong order).
+  default options connects over IPv4; the dial order alternates families; with the first IPv4
+  address failing fast, the freed slot goes to the second IPv4 address. All three fail without the
+  fix (`TimeoutException ... 5000ms`; wrong order).
 - `Tests/Runtime/Transport/Tls/TlsPublicHostTests.cs` (new).
 - `Tests/Runtime/Transport/Tls/TlsIntegrationTests.cs`, `BouncyCastleProviderTests.cs`: hosts repointed,
   env-skip helper.
@@ -61,9 +67,10 @@ Run w1108, lane external-tls-rows. Date 2026-11-04.
   - wrong.host.badssl.com chains to ISRG Root X1, so API 23 rejects it on two grounds (name and root).
     Both are certificate errors, so the assertion holds either way.
 - `MaxConcurrentAttempts` keeps its meaning, as decided in `2026-11-transport-connect.md`. A third
-  attempt still waits while two attempts hang, but those two are now one per family, so a dead
-  family no longer blocks the other one. The connect deadline bounds the remaining case, where both
-  families are blackholed at the first address.
+  attempt still waits while two attempts hang, but the interleaved schedule and the idle-family
+  promotion keep one slot for each family, so a dead family no longer blocks the other one. The
+  connect deadline bounds the remaining case, where the stalled attempt of each family hangs
+  (both families are blackholed at the addresses in flight).
 - No platform-limitation note and no SslStream fail-fast: the bug is in our connect schedule, not in
   UnityTLS on Android 6.
 
@@ -76,6 +83,8 @@ None.
 - `./Tools~/ci/check.sh`: pass.
 - Host Editor (Windows, Unity 2021.3.45f2):
   - PlayMode `--filter HappyEyeballs`: 15/15. The 2 new tests fail on the old connector, 13/15 there.
+  - Review round 1, PlayMode `--filter HappyEyeballs`: 16/16; with the `PromoteIdleFamily` call
+    removed, `ManyUnroutableIpv6_FirstIpv4FailsFast_FreedSlotGoesToIpv4` fails (15/16).
   - PlayMode `--category ExternalNetwork --integration --filter 'TlsIntegrationTests|BouncyCastleProviderTests|TlsPublicHostTests'`:
     26/26.
 - Emulators (x86_64 IL2CPP, Stripping High), run `run-20261104-170732`, same filter plus the temporary
