@@ -50,12 +50,32 @@ CONNECT reply: those reads race the token and return the cancellation at once.
 
 ## Root cause
 
-Pending: see the #293 comment from the host-editor diagnostic run (worklog of lane h1-cancel-hang,
-wave w1105).
+Mono socket behavior, not a TurboHTTP wait
+([#293 comment](https://github.com/fatal10110/turboHTTP/issues/293#issuecomment-6625851176)).
+
+- **Repro.** Host-editor PlayMode (2021.3.45f2, Mono) on origin/main 69135eb, with temporary
+  head-read tracing and `[Repeat(80)]` on the soak test. The watchdog fired after 62 s.
+- **What the hung stream did.** It was a fresh plain-HTTP connection (`NetworkStream` over `Socket`).
+  The `NetworkStream.ReadAsync` of `FillBufferAsync` was being issued when dispose-on-cancel disposed
+  the stream on another thread. `ReadAsync` returned a pending task, the cancel callback returned, and
+  the read never completed or faulted.
+- **Not a TurboHTTP wait.** No TurboHTTP wait was involved: the only pending await was the platform
+  read.
+- **Intermittent.** Another stream in the same run had the identical interleaving and faulted correctly
+  with "The I/O operation has been aborted". So this is an intermittent race in Mono's socket async
+  path between a pending receive and `Socket.Dispose`. Hence the rule: never rely on platform read
+  completion after a cancel.
 
 ## Verification
 
 - `'./Tools~/ci/check.sh'`: pass.
+- **Host-editor PlayMode (Unity 2021.3.45f2, Mono), at 89a53c5:**
+  - `--filter 'SoakShortTests.Http11_MixedWorkloadWithInFlightCancel'` with a temporary
+    `[Repeat(100)]`: 1/1 passed. The results show `Repeat=100`, 42.9 s.
+  - Scoped
+    `RawSocketTransportCancellationTests|ReusedConnectionFirstByteTimeoutTests|HeadReadCancellationTests|Http11ResponseParser|ConnectReply|AbandonableTask|SoakShortTests.Http11_Mixed|SoakShortTests.Http11_Abandoned`
+    (the soak still at `Repeat(100)`): 150/150 passed.
+  - The same soak at `[Repeat(80)]` on origin/main hung, which was the root-cause run.
 - The new tests and `AbandonableTaskTests`, `RawSocketTransportCancellationTests`,
   `ReusedConnectionFirstByteTimeoutTests`, `ConnectReplyReaderTests`, the proxy tunnel/407 tests and
   `SoakShortTests` were run on .NET 8 through the shadow-built test assembly (not a Unity run): all
@@ -64,5 +84,6 @@ wave w1105).
 
 ## Not run
 
-Unity EditMode/PlayMode (host editor) at the time of writing, IL2CPP, Android emulator, devices.
-iOS IL2CPP behaviour stays `needs-device-validation`.
+- The full Unity suites: they run in the periodic host editor.
+- Unity EditMode: no Editor tests are affected.
+- IL2CPP, devices: iOS and Android IL2CPP behavior stays `needs-device-validation` (#322).
