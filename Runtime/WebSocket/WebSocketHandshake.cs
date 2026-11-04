@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -65,6 +67,17 @@ namespace TurboHTTP.WebSocket
         /// <summary>
         /// Builds a WebSocket upgrade request payload.
         /// </summary>
+        /// <remarks>
+        /// The <c>Host</c> header carries the wire form of the URI host (RFC 6455 Section 4.1, RFC
+        /// 9110 Section 7.2, RFC 3986 Section 3.2.2): an IDN in its A-label form, an IPv6 literal
+        /// in one pair of brackets without a zone id, and the port only when it is not the scheme's
+        /// default (80 for ws, 443 for wss).
+        /// </remarks>
+        /// <exception cref="ArgumentException">
+        /// The URI is not an absolute ws/wss URI, or its host has no valid RFC 3986 wire form (empty,
+        /// no A-label form, or not an IP literal or DNS labels of 1-63 letters, digits, '-' or '_'
+        /// with at most 253 characters). The message does not contain the host.
+        /// </exception>
         public static WebSocketHandshakeRequest BuildRequest(
             Uri uri,
             IEnumerable<string> subProtocols = null,
@@ -191,18 +204,16 @@ namespace TurboHTTP.WebSocket
 
         private static string BuildHostHeader(Uri uri)
         {
-            var host = uri.Host;
-            if (uri.HostNameType == UriHostNameType.IPv6)
-            {
-                if (!(host.Length > 1 && host[0] == '[' && host[host.Length - 1] == ']'))
-                    host = "[" + host + "]";
-            }
+            // #309: the same wire host as the HTTP Host header (#46/#340): A-label IDN, one pair of
+            // brackets around an IPv6 literal, never raw Unicode or an invalid host.
+            if (!WireHost.TryFromUri(uri, out var host, out var error))
+                throw new ArgumentException(error, nameof(uri));
 
             int defaultPort = string.Equals(uri.Scheme, "wss", StringComparison.OrdinalIgnoreCase) ? 443 : 80;
             int port = uri.IsDefaultPort ? defaultPort : uri.Port;
 
             if (port != defaultPort)
-                return host + ":" + port;
+                return host + ":" + port.ToString(CultureInfo.InvariantCulture);
 
             return host;
         }
