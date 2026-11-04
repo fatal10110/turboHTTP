@@ -33,10 +33,11 @@ namespace TurboHTTP.Transport.Connection
         }
 
         /// <summary>
-        /// Connects to the first reachable address (RFC 8305 Happy Eyeballs v2). Attempts start
-        /// one at a time, <see cref="HappyEyeballsOptions.AttemptSpacingDelay"/> apart within a
-        /// family and <see cref="HappyEyeballsOptions.FamilyStaggerDelay"/> after the preferred
-        /// family for the other family, so a blackholed address never blocks a later healthy one.
+        /// Connects to the first reachable address (RFC 8305 Happy Eyeballs v2). The address
+        /// families interleave (RFC 8305 section 4): the first alternate-family address starts
+        /// <see cref="HappyEyeballsOptions.FamilyStaggerDelay"/> after the first attempt and every
+        /// later attempt <see cref="HappyEyeballsOptions.AttemptSpacingDelay"/> after the previous
+        /// one, so an unroutable family never keeps the other family from being tried.
         /// The first success wins; losing attempts are cancelled and their sockets disposed.
         /// </summary>
         /// <param name="addresses">Resolved addresses (duplicates and nulls are ignored).</param>
@@ -275,22 +276,36 @@ namespace TurboHTTP.Transport.Connection
         {
             var schedule = new List<ScheduledAttempt>(preferred.Count + alternate.Count);
 
-            for (int i = 0; i < preferred.Count; i++)
+            // RFC 8305 section 4: the families interleave (First Address Family Count 1), so the
+            // first alternate address is the second attempt rather than the one after every
+            // preferred address. Listing the preferred family first let two unroutable addresses
+            // (IPv6 without an IPv6 route, SYNs dropped) fill MaxConcurrentAttempts before the first
+            // IPv4 address was due, and the connect ran into its deadline (#362).
+            // Due times: the first attempt at 0, the first alternate at FamilyStaggerDelay, each
+            // later attempt AttemptSpacingDelay after the previous one (RFC 8305 section 5).
+            int count = Math.Max(preferred.Count, alternate.Count);
+            for (int i = 0; i < count; i++)
             {
-                schedule.Add(new ScheduledAttempt(
-                    preferred[i],
-                    TimeSpan.FromTicks(options.AttemptSpacingDelay.Ticks * i)));
+                if (i < preferred.Count)
+                    schedule.Add(new ScheduledAttempt(preferred[i], NextDue(schedule, options, firstAlternate: false)));
+                if (i < alternate.Count)
+                    schedule.Add(new ScheduledAttempt(alternate[i], NextDue(schedule, options, firstAlternate: i == 0)));
             }
 
-            for (int i = 0; i < alternate.Count; i++)
-            {
-                schedule.Add(new ScheduledAttempt(
-                    alternate[i],
-                    options.FamilyStaggerDelay + TimeSpan.FromTicks(options.AttemptSpacingDelay.Ticks * i)));
-            }
-
-            schedule.Sort((a, b) => a.Due.CompareTo(b.Due));
             return schedule;
+        }
+
+        private static TimeSpan NextDue(List<ScheduledAttempt> schedule, HappyEyeballsOptions options, bool firstAlternate)
+        {
+            if (schedule.Count == 0)
+                return TimeSpan.Zero;
+
+            // The first alternate always follows the first preferred attempt (Partition keeps the
+            // preferred list non-empty whenever an alternate exists).
+            if (firstAlternate)
+                return options.FamilyStaggerDelay;
+
+            return schedule[schedule.Count - 1].Due + options.AttemptSpacingDelay;
         }
 
         private static async Task<Socket> ConnectSequentialAsync(

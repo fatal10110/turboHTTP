@@ -14,8 +14,13 @@ namespace TurboHTTP.Tests.Transport.Tls
     [TestFixture]
     public class TlsIntegrationTests
     {
-        private const string BouncyFetchUrl = "https://sha256.badssl.com/";
-        private const string Http2ProbeUrl = "https://httpbin.org/get";
+        // Valid-chain hosts must chain to a root every target store has: Android 6 (API 23) lacks
+        // ISRG Root X1/X2 and Amazon Root CA 1, so Let's Encrypt (sha256.badssl.com) and Amazon
+        // (httpbin.org) hosts fail there by design (#361). www.google.com chains to GlobalSign Root CA
+        // (TlsPublicHostTests documents the chain) and serves h2.
+        private const string ValidChainHost = "www.google.com";
+        private const string BouncyFetchUrl = TlsPublicHostTests.ValidChainUrl;
+        private const string Http2ProbeUrl = TlsPublicHostTests.ValidChainUrl;
 
         [SetUp]
         public void SetUp()
@@ -80,10 +85,10 @@ namespace TurboHTTP.Tests.Transport.Tls
                     DisposeTransport = true
                 });
 
-                var response = await SendWithGuardedTimeoutAsync(client, "https://httpbin.org/get");
+                var response = await SendWithGuardedTimeoutAsync(client, TlsPublicHostTests.ValidChainUrl);
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
-                var providerName = TryGetProviderName(pool, "httpbin.org");
+                var providerName = TryGetProviderName(pool, ValidChainHost);
                 Assert.IsNotNull(providerName, "Expected to capture TLS provider name from pooled connection");
 
 #if UNITY_EDITOR || UNITY_STANDALONE_WIN || UNITY_STANDALONE_OSX
@@ -119,8 +124,8 @@ namespace TurboHTTP.Tests.Transport.Tls
                 var response = await SendWithGuardedTimeoutAsync(client, Http2ProbeUrl);
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
-                bool usedHttp2 = TryHasHttp2Connection(transport, "httpbin.org", 443);
-                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "httpbin.org");
+                bool usedHttp2 = TryHasHttp2Connection(transport, ValidChainHost, 443);
+                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, ValidChainHost);
                 if (string.Equals(negotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
                 {
                     Assert.IsTrue(
@@ -149,7 +154,7 @@ namespace TurboHTTP.Tests.Transport.Tls
                 var completed = await Task.WhenAny(requestTask, Task.Delay(TimeSpan.FromSeconds(35), CancellationToken.None));
                 if (completed != requestTask)
                 {
-                    Assert.Fail($"Integration request to {url} exceeded hard timeout in this environment.");
+                    TestRequirements.IgnoreEnvironment($"Integration request to {url} exceeded the hard timeout in this environment.");
                 }
 
                 return await requestTask;
@@ -159,10 +164,10 @@ namespace TurboHTTP.Tests.Transport.Tls
                 (ex is UHttpException timeout && timeout.HttpError.Type == UHttpErrorType.Timeout))
             {
                 // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
-                // caught by a later one (#320).
-                Assert.Fail(ex is OperationCanceledException
-                    ? $"Integration request to {url} timed out or was canceled in this environment."
-                    : $"Integration request to {url} timed out in this environment.");
+                // caught by a later one (#320). An unreachable host is an environment skip, never a
+                // pass; the reason keeps the transport's message (#361).
+                TestRequirements.IgnoreEnvironment(
+                    $"Integration request to {url} timed out or was canceled in this environment: {ex.Message}");
                 throw;
             }
         }
