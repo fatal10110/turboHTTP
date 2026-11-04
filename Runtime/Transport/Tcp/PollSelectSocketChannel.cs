@@ -34,6 +34,14 @@ namespace TurboHTTP.Transport.Tcp
     /// only the part the kernel did not accept is handed to the poll thread.
     /// </para>
     /// <para>
+    /// <b>Non-blocking sends:</b> every native send goes through the
+    /// <c>Socket.Send(IList&lt;ArraySegment&lt;byte&gt;&gt;, SocketFlags, out SocketError)</c> overload,
+    /// which makes one native call and returns the count the kernel accepted. Mono's and IL2CPP's
+    /// <c>Send(byte[], int, int, SocketFlags, out SocketError)</c> (and the span overload, which
+    /// forwards to it) retries <c>WouldBlock</c> until the whole count is written, so on a
+    /// non-blocking socket whose peer does not read it never returns (#329).
+    /// </para>
+    /// <para>
     /// <b>Concurrency contract:</b> At most one concurrent <see cref="ReceiveAsync"/> and at
     /// most one concurrent <see cref="SendAsync"/> at a time. A second concurrent call to the
     /// same direction throws <see cref="InvalidOperationException"/>.
@@ -43,7 +51,10 @@ namespace TurboHTTP.Transport.Tcp
     /// other direction, a cancellation or a dispose is noticed within that bound. An idle
     /// connection with no pending operation does not wake at all; an HTTP/2 connection whose
     /// receive is always pending wakes about 50 times per second (#38 replaced the former
-    /// 1 ms spin, documented at 2-10% of a core per idle connection).
+    /// 1 ms spin, documented at 2-10% of a core per idle connection). Right after a receive
+    /// completes while a send is stalled, the write-only wait uses 1 ms slices for at most one
+    /// full slice, so the receiver's next receive is picked up promptly (#329); that costs at
+    /// most 20 extra wake-ups per completed receive, none while the connection is idle.
     /// </para>
     /// <para>
     /// <b>Cancellation:</b> Cancelling an operation disposes the socket, so the next poll throws
@@ -58,11 +69,24 @@ namespace TurboHTTP.Transport.Tcp
         /// <summary>Upper bound of one readiness wait, in microseconds (20 ms).</summary>
         internal const int PollSliceUs = 20_000;
 
+        /// <summary>
+        /// Write-only wait right after a receive completed (1 ms), for at most
+        /// <see cref="RearmSlices"/> waits: the receiver usually issues its next receive at once,
+        /// and a full slice spent waiting on a stalled send alone would leave it unserviced (#329).
+        /// </summary>
+        private const int RearmSliceUs = 1_000;
+
+        private const int RearmSlices = PollSliceUs / RearmSliceUs;
+
         private static int s_threadCounter;
 
         private readonly Socket _socket;
         private readonly byte[] _recvBuffer;
         private readonly byte[] _sendBuffer;
+        // The one-element list passed to Socket.Send (see SendOnce). Only the current owner of
+        // the send direction uses it: the SendAsync caller during the inline attempt, then the
+        // poll thread once the remainder is queued under _sendLock.
+        private readonly ArraySegment<byte>[] _sendSegment = new ArraySegment<byte>[1];
         private readonly Thread _pollThread;
         // Set by ReceiveAsync/SendAsync/Dispose; the poll thread blocks on it while idle.
         private readonly ManualResetEventSlim _workSignal = new ManualResetEventSlim(false);
@@ -211,6 +235,8 @@ namespace TurboHTTP.Transport.Tcp
             // Reused for Socket.Select (only when both directions are pending).
             var readList = new List<Socket>(1);
             var writeList = new List<Socket>(1);
+            // Short write-only waits left after the last delivered receive (see RearmSliceUs).
+            int rearm = 0;
 
             try
             {
@@ -253,7 +279,14 @@ namespace TurboHTTP.Transport.Tcp
                         }
                         else
                         {
-                            writable = _socket.Poll(PollSliceUs, SelectMode.SelectWrite);
+                            int slice = PollSliceUs;
+                            if (rearm > 0)
+                            {
+                                rearm--;
+                                slice = RearmSliceUs;
+                            }
+
+                            writable = _socket.Poll(slice, SelectMode.SelectWrite);
                         }
                     }
                     catch (Exception ex)
@@ -264,7 +297,8 @@ namespace TurboHTTP.Transport.Tcp
                         continue;
                     }
 
-                    if (readable) ServiceRecv();
+                    if (readable && ServiceRecv())
+                        rearm = RearmSlices;
                     if (writable) ServiceSend();
                 }
             }
@@ -275,7 +309,8 @@ namespace TurboHTTP.Transport.Tcp
             }
         }
 
-        private void ServiceRecv()
+        /// <summary>Services a readable socket; returns true when a receive was completed with data.</summary>
+        private bool ServiceRecv()
         {
             PollSelectSource src;
             byte[] target;
@@ -283,7 +318,7 @@ namespace TurboHTTP.Transport.Tcp
 
             lock (_recvLock)
             {
-                if (!_recvPending) return;
+                if (!_recvPending) return false;
                 src = _recvSource;
                 target = _recvTarget;
                 offset = _recvOffset;
@@ -299,7 +334,7 @@ namespace TurboHTTP.Transport.Tcp
                 {
                     // Spurious readiness (TOCTOU on non-blocking socket) — loop back.
                     // Do NOT deliver 0 bytes, which would falsely signal EOF to the parser.
-                    return;
+                    return false;
                 }
 
                 if (err != SocketError.Success)
@@ -311,11 +346,12 @@ namespace TurboHTTP.Transport.Tcp
             catch (Exception ex)
             {
                 FailRecv(ex);
-                return;
+                return false;
             }
 
             lock (_recvLock) { _recvPending = false; }
             src.SetResult(received);
+            return received > 0;
         }
 
         private void ServiceSend()
@@ -379,14 +415,13 @@ namespace TurboHTTP.Transport.Tcp
                 SocketError err;
                 if (isArray)
                 {
-                    sent = _socket.Send(segment.Array, segment.Offset + offset, data.Length - offset,
-                        SocketFlags.None, out err);
+                    sent = SendOnce(segment.Array, segment.Offset + offset, data.Length - offset, out err);
                 }
                 else
                 {
                     int toSend = Math.Min(data.Length - offset, _sendBuffer.Length);
                     data.Slice(offset, toSend).Span.CopyTo(_sendBuffer.AsSpan(0, toSend));
-                    sent = _socket.Send(_sendBuffer, 0, toSend, SocketFlags.None, out err);
+                    sent = SendOnce(_sendBuffer, 0, toSend, out err);
                 }
 
                 if (err == SocketError.WouldBlock || (err == SocketError.Success && sent == 0))
@@ -399,6 +434,26 @@ namespace TurboHTTP.Transport.Tcp
             }
 
             return offset;
+        }
+
+        /// <summary>
+        /// One native send of at most <paramref name="count"/> bytes; returns what the kernel
+        /// accepted (0 with <see cref="SocketError.WouldBlock"/> when its buffer is full). Uses the
+        /// list overload because the array overload loops on <c>WouldBlock</c> in Mono and IL2CPP
+        /// (#329). That overload allocates two one-element arrays per call there; a send that
+        /// never returns is the worse cost.
+        /// </summary>
+        private int SendOnce(byte[] array, int offset, int count, out SocketError err)
+        {
+            _sendSegment[0] = new ArraySegment<byte>(array, offset, count);
+            try
+            {
+                return _socket.Send(_sendSegment, SocketFlags.None, out err);
+            }
+            finally
+            {
+                _sendSegment[0] = default; // do not keep the caller's array alive
+            }
         }
 
         private void FailRecv(Exception ex)
