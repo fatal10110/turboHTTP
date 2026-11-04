@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -175,6 +176,12 @@ namespace TurboHTTP.WebSocket
             var disposeOnCancel = default(CancellationTokenRegistration);
             try
             {
+                // #309: a host without a wire form (Host header, CONNECT authority) fails the
+                // handshake before any transport, built-in or custom, opens a socket. The message
+                // does not contain the host.
+                if (!WireHost.TryFromUri(uri, out _, out var hostError))
+                    throw new WebSocketException(WebSocketError.HandshakeFailed, hostError);
+
                 using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 handshakeCts.CancelAfter(options.HandshakeTimeout);
 

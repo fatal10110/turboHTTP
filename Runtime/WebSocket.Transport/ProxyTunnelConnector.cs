@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -37,7 +38,13 @@ namespace TurboHTTP.WebSocket.Transport
                 ? (string.Equals(targetUri.Scheme, "wss", StringComparison.OrdinalIgnoreCase) ? 443 : 80)
                 : targetUri.Port;
 
-            string authority = targetUri.Host + ":" + targetPort;
+            // #309: authority-form uri-host ":" port (RFC 9110 Section 9.3.6) with the same wire host
+            // as the handshake Host header. ConnectAsync has already rejected an invalid host before
+            // any socket; this guards direct callers.
+            if (!WireHost.TryFromUri(targetUri, out var targetHost, out var hostError))
+                throw new WebSocketException(WebSocketError.HandshakeFailed, hostError);
+
+            string authority = targetHost + ":" + targetPort.ToString(CultureInfo.InvariantCulture);
             bool attemptedAuth = false;
 
             while (true)

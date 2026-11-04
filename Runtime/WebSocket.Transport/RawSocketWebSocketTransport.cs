@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Connection;
 using TurboHTTP.Transport.Tls;
 
@@ -330,8 +331,13 @@ namespace TurboHTTP.WebSocket.Transport
                 throw new ArgumentException("WebSocket URI scheme must be 'ws' or 'wss'.", nameof(uri));
             }
 
-            if (string.IsNullOrWhiteSpace(uri.Host))
-                throw new ArgumentException("WebSocket URI host is required.", nameof(uri));
+            // #309/#340: the handshake Host header and the CONNECT authority carry the RFC 3986 wire
+            // host. A host without one (empty, which Unity Mono returns for some IDNA-invalid names,
+            // no A-label form, or not an IP literal or DNS name) fails the handshake here, before
+            // the cleartext policy, DNS or any socket. A WebSocketException keeps its error through
+            // WebSocketConnection; the message does not contain the host.
+            if (!WireHost.TryFromUri(uri, out _, out var hostError))
+                throw new WebSocketException(WebSocketError.HandshakeFailed, hostError);
         }
     }
 }
