@@ -10,10 +10,17 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public sealed class WebSocketConnectionOptions
     {
-        /// <summary> Maximum payload size of a single frame. Default is 32KB. </summary>
+        /// <summary>
+        /// Maximum payload size of a single received frame. Default is 4 MB. Must be at most
+        /// <see cref="MaxMessageSize"/>; a larger frame fails the connection with close code 1009.
+        /// </summary>
         public int MaxFrameSize { get; set; } = WebSocketConstants.DefaultMaxFrameSize;
 
-        /// <summary> Maximum total size for a reassembled message. Default is 2MB. </summary>
+        /// <summary>
+        /// Maximum total size of a received message, single-frame or reassembled, and of its decompressed
+        /// payload. Default is 4 MB. A larger message fails the connection with close code 1009 before its
+        /// payload is buffered.
+        /// </summary>
         public int MaxMessageSize { get; set; } = WebSocketConstants.DefaultMaxMessageSize;
 
         /// <summary> Maximum number of fragments allowed for a single message. </summary>
@@ -24,6 +31,15 @@ namespace TurboHTTP.WebSocket
 
         /// <summary> Maximum number of incoming messages to buffer if not consumed fast enough. </summary>
         public int ReceiveQueueCapacity { get; set; } = WebSocketConstants.DefaultReceiveQueueCapacity;
+
+        /// <summary>
+        /// Maximum total payload bytes held by each receive delivery queue (the connection queue and the
+        /// client queue). Default is 8 MB. When the budget is reached the connection stops reading the
+        /// socket until the application consumes messages (pull consumers) or the oldest queued messages are
+        /// dropped (<c>OnMessage</c> subscribers). An empty queue always admits one message, so a message up
+        /// to <see cref="MaxMessageSize"/> is delivered even when it exceeds this budget.
+        /// </summary>
+        public int ReceiveQueueMaxBytes { get; set; } = WebSocketConstants.DefaultReceiveQueueMaxBytes;
 
         /// <summary> Timeout for completing a close handshake. </summary>
         public TimeSpan CloseHandshakeTimeout { get; set; } = WebSocketConstants.DefaultCloseHandshakeTimeout;
@@ -70,6 +86,11 @@ namespace TurboHTTP.WebSocket
 
         public IReadOnlyList<string> SubProtocols { get; set; } = Array.Empty<string>();
 
+        /// <summary>
+        /// Not supported: must stay empty. Raw extension offers have no implementation behind them, so a
+        /// server accepting one could not be honoured (RFC 6455 section 9.1). <see cref="Validate"/> rejects
+        /// any non-blank entry; use <see cref="WithExtension"/> or <see cref="WithCompression()"/> instead.
+        /// </summary>
         public IReadOnlyList<string> Extensions { get; set; } = Array.Empty<string>();
 
         public IReadOnlyList<Func<IWebSocketExtension>> ExtensionFactories { get; set; } =
@@ -92,6 +113,18 @@ namespace TurboHTTP.WebSocket
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 
         public WebSocketProxySettings ProxySettings { get; set; } = WebSocketProxySettings.None;
+
+        /// <summary>
+        /// Whether this connection may use cleartext: a <c>ws://</c> URI, or the leg to an
+        /// <c>http://</c> proxy (which also carries proxy Basic credentials in the clear).
+        /// Defaults to <see cref="CleartextTrafficPolicy.DefaultAllowCleartext"/>
+        /// (<see langword="false"/> on iOS and Android players, <see langword="true"/> in the
+        /// Editor and on desktop). When it is <see langword="false"/>, or the installed
+        /// <see cref="CleartextTrafficPolicy.PlatformPolicy"/> refuses the host, the connect throws
+        /// <see cref="WebSocketException"/> with <see cref="WebSocketError.CleartextNotPermitted"/>
+        /// before any socket is opened.
+        /// </summary>
+        public bool AllowCleartext { get; set; } = CleartextTrafficPolicy.DefaultAllowCleartext;
 
         public WebSocketReconnectPolicy ReconnectPolicy { get; set; } = WebSocketReconnectPolicy.None;
 
@@ -141,6 +174,7 @@ namespace TurboHTTP.WebSocket
                 MaxFragmentCount = MaxFragmentCount,
                 FragmentationThreshold = FragmentationThreshold,
                 ReceiveQueueCapacity = ReceiveQueueCapacity,
+                ReceiveQueueMaxBytes = ReceiveQueueMaxBytes,
                 CloseHandshakeTimeout = CloseHandshakeTimeout,
                 HandshakeTimeout = HandshakeTimeout,
                 PingInterval = PingInterval,
@@ -161,6 +195,7 @@ namespace TurboHTTP.WebSocket
                 TlsProvider = TlsProvider,
                 TlsBackend = TlsBackend,
                 ProxySettings = ProxySettings ?? WebSocketProxySettings.None,
+                AllowCleartext = AllowCleartext,
                 ReconnectPolicy = ReconnectPolicy
             };
         }
@@ -177,6 +212,8 @@ namespace TurboHTTP.WebSocket
                 throw new ArgumentOutOfRangeException(nameof(FragmentationThreshold), "Must be > 0.");
             if (ReceiveQueueCapacity < 1)
                 throw new ArgumentOutOfRangeException(nameof(ReceiveQueueCapacity), "Must be > 0.");
+            if (ReceiveQueueMaxBytes < 1)
+                throw new ArgumentOutOfRangeException(nameof(ReceiveQueueMaxBytes), "Must be > 0.");
             if (DnsTimeoutMs < 1)
                 throw new ArgumentOutOfRangeException(nameof(DnsTimeoutMs), "Must be > 0.");
             if (CloseHandshakeTimeout < TimeSpan.Zero)
@@ -199,6 +236,9 @@ namespace TurboHTTP.WebSocket
 
             if (FragmentationThreshold > MaxFrameSize)
                 throw new ArgumentException("FragmentationThreshold must be <= MaxFrameSize.");
+
+            if (MaxFrameSize > MaxMessageSize)
+                throw new ArgumentException("MaxFrameSize must be <= MaxMessageSize.");
 
             long maxMessageByFragments = (long)MaxFrameSize * MaxFragmentCount;
             if (MaxMessageSize > maxMessageByFragments)
@@ -223,6 +263,20 @@ namespace TurboHTTP.WebSocket
                         throw new ArgumentException(
                             "Sub-protocol entry is not a valid HTTP token: " + token,
                             nameof(SubProtocols));
+                    }
+                }
+            }
+
+            if (Extensions != null)
+            {
+                for (int i = 0; i < Extensions.Count; i++)
+                {
+                    if (!string.IsNullOrWhiteSpace(Extensions[i]))
+                    {
+                        throw new ArgumentException(
+                            "Raw extension offers are not supported; configure extensions with WithExtension " +
+                            "or WithCompression.",
+                            nameof(Extensions));
                     }
                 }
             }

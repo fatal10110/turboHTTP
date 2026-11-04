@@ -1,5 +1,4 @@
 using System;
-using System.Reflection;
 using UnityEngine;
 
 namespace TurboHTTP.Core
@@ -8,29 +7,60 @@ namespace TurboHTTP.Core
     /// Provides platform-specific configuration defaults and capability flags.
     /// Used to initialize <see cref="UHttpClientOptions"/> with safe, performant defaults.
     /// </summary>
-    public static class PlatformConfig
+    /// <remarks>
+    /// The recommended values are compile-time constants of the build target (iOS and Android
+    /// players get the mobile values; the Editor and every other target the desktop values), so
+    /// reading them, and constructing <see cref="UHttpClientOptions"/> or
+    /// <see cref="ConnectionPoolOptions"/>, performs no reflection and no UnityEngine call and is
+    /// safe on any thread.
+    /// </remarks>
+    internal static class PlatformConfig
     {
-        private static readonly bool _bouncyCastleAvailable = Type.GetType(
-            "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
-            throwOnError: false) != null;
+#if (UNITY_IOS || UNITY_ANDROID) && !UNITY_EDITOR
+        // Mobile: higher tolerance for poor connectivity; conservative concurrency to preserve resources.
+        private const int RecommendedTimeoutSeconds = 45;
+        private const int RecommendedConcurrency = 8;
+        private const int RecommendedIdleSeconds = MobileConnectionIdleTimeoutSeconds;
+#else
+        // Desktop/Editor: standard stable connection assumption; higher concurrency allowed.
+        private const int RecommendedTimeoutSeconds = 30;
+        private const int RecommendedConcurrency = 16;
+        private const int RecommendedIdleSeconds = DesktopConnectionIdleTimeoutSeconds;
+#endif
 
-        private static readonly bool _sslStreamAlpnApisAvailable = DetectSslStreamAlpnSupport();
+        /// <summary>Pooled-connection idle timeout on iOS/Android players: 45 s (#47).</summary>
+        /// <remarks>
+        /// Below the 60 s bound of #47: carrier NATs and radio power states drop idle TCP mappings
+        /// silently, and a connection reused after that hangs until a timeout instead of failing.
+        /// </remarks>
+        internal const int MobileConnectionIdleTimeoutSeconds = 45;
+
+        /// <summary>Pooled-connection idle timeout in the Editor and on desktop: 120 s.</summary>
+        internal const int DesktopConnectionIdleTimeoutSeconds = 120;
+
+        /// <summary>Default time a reused HTTP/1.1 connection may stay silent after the request (#47).</summary>
+        internal static TimeSpan DefaultReusedConnectionFirstByteTimeout => TimeSpan.FromSeconds(DefaultReusedConnectionFirstByteTimeoutSeconds);
+
+        private const int DefaultReusedConnectionFirstByteTimeoutSeconds = 10;
 
         /// <summary>
-        /// Recommended request timeout based on the current platform.
-        /// Mobile networks may require longer timeouts due to high latency/packet loss.
+        /// Recommended request timeout for the build target: 45 s on iOS/Android players,
+        /// 30 s in the Editor and on desktop. Mobile networks may require longer timeouts due to
+        /// high latency/packet loss.
         /// </summary>
-        public static TimeSpan RecommendedTimeout => PlatformInfo.IsMobile
-            ? TimeSpan.FromSeconds(45) // Mobile: Higher tolerance for poor connectivity
-            : TimeSpan.FromSeconds(30); // Desktop/Editor: Standard stable connection assumption
+        public static TimeSpan RecommendedTimeout => TimeSpan.FromSeconds(RecommendedTimeoutSeconds);
 
         /// <summary>
-        /// Recommended maximum concurrent requests.
-        /// Constrained on mobile to reduce thread/socket contention and battery usage.
+        /// Recommended maximum concurrent requests: 8 on iOS/Android players, 16 in the Editor and
+        /// on desktop. Constrained on mobile to reduce thread/socket contention and battery usage.
         /// </summary>
-        public static int RecommendedMaxConcurrency => PlatformInfo.IsMobile
-            ? 8  // Mobile: Conservative limit to preserve resources
-            : 16; // Desktop: Higher concurrency allowed
+        public static int RecommendedMaxConcurrency => RecommendedConcurrency;
+
+        /// <summary>
+        /// Recommended idle timeout of pooled connections: 45 s on iOS/Android players, 120 s in
+        /// the Editor and on desktop. The default of <c>ConnectionPoolOptions.ConnectionIdleTimeout</c>.
+        /// </summary>
+        public static TimeSpan RecommendedConnectionIdleTimeout => TimeSpan.FromSeconds(RecommendedIdleSeconds);
 
         /// <summary>
         /// Indicates if custom certificate validation is available through TurboHTTP public APIs.
@@ -39,50 +69,22 @@ namespace TurboHTTP.Core
         public static bool SupportsCustomCertValidation => false;
 
         /// <summary>
-        /// Indicates whether HTTP/2 negotiation support is available.
-        /// This reports capability based on bundled providers and exposed ALPN APIs.
+        /// Indicates whether the registered transport reports HTTP/2 negotiation support
+        /// (<see cref="TransportCapabilities.Http2"/> in <see cref="HttpTransportFactory.Capabilities"/>).
+        /// False when no transport is registered.
         /// </summary>
-        public static bool SupportsHttp2 => _bouncyCastleAvailable || _sslStreamAlpnApisAvailable;
+        public static bool SupportsHttp2 =>
+            (HttpTransportFactory.Capabilities & TransportCapabilities.Http2) != 0;
 
         /// <summary>
         /// Logs the detected platform and recommended configuration to the Unity console.
-        /// Intended to be called once at application startup.
+        /// Intended to be called once at application startup, from the main thread.
         /// </summary>
         public static void LogPlatformInfo()
         {
             Debug.Log($"[TurboHTTP] Initializing on {PlatformInfo.GetPlatformDescription()}\n" +
                       $"Defaults: Timeout={RecommendedTimeout.TotalSeconds}s, Concurrency={RecommendedMaxConcurrency}, " +
                       $"HTTP/2={SupportsHttp2}, CustomCertValidation={SupportsCustomCertValidation}");
-        }
-
-        private static bool DetectSslStreamAlpnSupport()
-        {
-            // Reuse Transport's SslStream ALPN capability detection to avoid
-            // duplicating reflection logic in Core.
-            var providerType = Type.GetType(
-                "TurboHTTP.Transport.Tls.SslStreamTlsProvider, TurboHTTP.Transport",
-                throwOnError: false);
-            if (providerType == null)
-                return false;
-
-            var instanceField = providerType.GetField(
-                "Instance",
-                BindingFlags.Public | BindingFlags.Static);
-            var isAlpnSupportedMethod = providerType.GetMethod(
-                "IsAlpnSupported",
-                BindingFlags.Public | BindingFlags.Instance);
-
-            if (instanceField == null || isAlpnSupportedMethod == null)
-                return false;
-
-            var instance = instanceField.GetValue(null);
-            if (instance == null)
-                return false;
-
-            if (isAlpnSupportedMethod.Invoke(instance, null) is bool supported)
-                return supported;
-
-            return false;
         }
     }
 }

@@ -7,6 +7,7 @@ Migrating from other HTTP libraries to TurboHTTP.
 ### Making a Request
 
 **UnityWebRequest:**
+<!-- snippet: skip the UnityWebRequest side of the comparison is not TurboHTTP API -->
 ```csharp
 IEnumerator GetRequest()
 {
@@ -19,13 +20,11 @@ IEnumerator GetRequest()
 ```
 
 **TurboHTTP:**
+<!-- snippet: with UHttpClient client = null; -->
 ```csharp
-async void GetRequest()
-{
-    // Re-use 'client' instance in production!
-    var response = await client.Get("https://api.example.com").SendAsync();
-    // ... Check response.IsSuccessStatusCode
-}
+// Re-use one 'client' instance in production!
+using var response = await client.Get("https://api.example.com").SendBufferedAsync();
+// ... Check response.IsSuccessStatusCode
 ```
 
 ### Key Differences
@@ -39,6 +38,7 @@ async void GetRequest()
 ### Making a Request
 
 **BestHTTP:**
+<!-- snippet: skip BestHTTP API, not TurboHTTP -->
 ```csharp
 var request = new HTTPRequest(new Uri("https://api.example.com"), HTTPMethods.Get, (req, resp) =>
 {
@@ -48,16 +48,18 @@ request.Send();
 ```
 
 **TurboHTTP:**
+<!-- snippet: with UHttpClient client = null; -->
 ```csharp
-var response = await client.Get("https://api.example.com").SendAsync();
+using var response = await client.Get("https://api.example.com").SendBufferedAsync();
 ```
 
 ### Key Differences
 *   **Client Instance:** BestHTTP uses stand-alone `HTTPRequest` objects. TurboHTTP uses a centralized `UHttpClient` (similar to .NET `HttpClient`) to manage connection pooling and configurations.
-*   **Modularity:** Features like Caching and Retries are added as **Middleware** in TurboHTTP, rather than being built-in flags on the request.
+*   **Modularity:** Features like Caching and Retries are added as **interceptors** in TurboHTTP, rather than being built-in flags on the request.
 
 ## Checklist for Migration
 
 1.  [ ] **Instantiation**: Create a single `UHttpClient` instance for your game/service lifetime.
 2.  [ ] **Disposal**: Ensure you call `client.Dispose()` when the application quits or the service is destroyed to free up sockets.
-3.  [ ] **Error Handling**: Switch from checking `.isNetworkError` strings to checking `response.IsSuccessStatusCode` or catching `UHttpException` (if using `EnsureSuccessStatusCode`).
+3.  [ ] **Error Handling**: Switch from checking `.isNetworkError` strings to checking `response.IsSuccessStatusCode` or catching `UHttpException` for network and protocol failures (and for HTTP errors if you call `EnsureSuccessStatusCode`).
+4.  [ ] **Response disposal**: dispose every `UHttpResponse` (`using var`), like a `UnityWebRequest`.

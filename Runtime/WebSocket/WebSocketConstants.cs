@@ -9,14 +9,26 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public static class WebSocketConstants
     {
-        public const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-5AB53DC52D51";
+        /// <summary>
+        /// GUID appended to Sec-WebSocket-Key to derive Sec-WebSocket-Accept (RFC 6455 Section 1.3, 4.2.2).
+        /// </summary>
+        public const string WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         public const int SupportedVersion = 13;
 
-        public const int DefaultMaxFrameSize = 16 * 1024 * 1024;
         public const int DefaultMaxMessageSize = 4 * 1024 * 1024;
+
+        /// <summary>
+        /// Default largest received frame; equal to <see cref="DefaultMaxMessageSize"/> because a frame
+        /// cannot exceed a message.
+        /// </summary>
+        public const int DefaultMaxFrameSize = DefaultMaxMessageSize;
+
         public const int DefaultMaxFragmentCount = 64;
         public const int DefaultFragmentationThreshold = 64 * 1024;
         public const int DefaultReceiveQueueCapacity = 100;
+
+        /// <summary>Default byte budget of each receive delivery queue: two default-size messages.</summary>
+        public const int DefaultReceiveQueueMaxBytes = 2 * DefaultMaxMessageSize;
 
         public static readonly TimeSpan DefaultCloseHandshakeTimeout = TimeSpan.FromSeconds(5);
         public static readonly TimeSpan DefaultHandshakeTimeout = TimeSpan.FromSeconds(10);
@@ -248,7 +260,15 @@ namespace TurboHTTP.WebSocket
         ProxyTunnelFailed,
         CompressionFailed,
         DecompressionFailed,
-        DecompressedMessageTooLarge
+        DecompressedMessageTooLarge,
+
+        /// <summary>
+        /// The connection would carry cleartext (a <c>ws://</c> URI or an <c>http://</c> proxy
+        /// leg) but <see cref="WebSocketConnectionOptions.AllowCleartext"/> is
+        /// <see langword="false"/> or the platform cleartext policy refuses the host. Raised before
+        /// any socket is opened.
+        /// </summary>
+        CleartextNotPermitted
     }
 
     /// <summary>

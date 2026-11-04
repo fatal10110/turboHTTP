@@ -48,11 +48,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct videotex string from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct videotex string from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), "obj");
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
         /**
@@ -94,7 +94,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         internal DerVideotexString(byte[] contents, bool clone)
         {
             if (null == contents)
-                throw new ArgumentNullException("contents");
+                throw new ArgumentNullException(nameof(contents));
 
             m_contents = clone ? Arrays.Clone(contents) : contents;
         }

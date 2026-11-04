@@ -14,6 +14,25 @@ namespace TurboHTTP.WebSocket
         event Action OnConnected;
 
         /// <summary> Event raised when a complete message is received. </summary>
+        /// <remarks>
+        /// <para>
+        /// Each handler receives its own detached copy of the message (disposing it is optional).
+        /// Handlers run on the receive path; a slow handler delays the following messages.
+        /// </para>
+        /// <para>
+        /// While at least one handler is subscribed, receiving never waits for <see cref="ReceiveAsync"/>:
+        /// every message is raised through this event, and the pull queue keeps only the most recent
+        /// <see cref="WebSocketConnectionOptions.ReceiveQueueCapacity"/> messages for an optional
+        /// <see cref="ReceiveAsync"/>/<see cref="ReceiveAllAsync"/> caller (older unread messages are
+        /// discarded). Event-only consumers therefore never stall, and ping/pong/close frames keep being
+        /// processed. A smaller capacity reduces the memory these retained messages hold.
+        /// </para>
+        /// <para>
+        /// With no handler subscribed, messages are queued losslessly and the puller drives backpressure:
+        /// when the queue is full, reading from the socket pauses until <see cref="ReceiveAsync"/> drains it,
+        /// and the keep-alive pong timeout is not charged while reading is paused.
+        /// </para>
+        /// </remarks>
         event Action<WebSocketMessage> OnMessage;
 
         /// <summary> Event raised when an error occurs during connection or message processing. </summary>

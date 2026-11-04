@@ -8,14 +8,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs
     public class RC2CbcParameter
         : Asn1Encodable
     {
-		public static RC2CbcParameter GetInstance(object obj)
+        public static RC2CbcParameter GetInstance(object obj)
         {
             if (obj == null)
                 return null;
             if (obj is RC2CbcParameter rc2CbcParameter)
                 return rc2CbcParameter;
             return new RC2CbcParameter(Asn1Sequence.GetInstance(obj));
-		}
+        }
 
         public static RC2CbcParameter GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit) =>
             new RC2CbcParameter(Asn1Sequence.GetInstance(taggedObject, declaredExplicit));
@@ -33,7 +33,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs
                 throw new ArgumentException("Bad sequence size: " + count, nameof(seq));
 
             m_version = Asn1Utilities.ReadOptional(seq, ref pos, DerInteger.GetOptional);
-            m_iv = Asn1OctetString.GetInstance(seq[pos++]);
+            m_iv = Asn1Utilities.Read(seq, ref pos, Asn1OctetString.GetInstance);
 
             if (pos != count)
                 throw new ArgumentException("Unexpected elements in sequence", nameof(seq));
@@ -45,7 +45,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs
             m_iv = DerOctetString.FromContents(iv);
         }
 
-		public RC2CbcParameter(int parameterVersion, byte[] iv)
+        public RC2CbcParameter(int parameterVersion, byte[] iv)
         {
             m_version = DerInteger.ValueOf(parameterVersion);
             m_iv = DerOctetString.FromContents(iv);

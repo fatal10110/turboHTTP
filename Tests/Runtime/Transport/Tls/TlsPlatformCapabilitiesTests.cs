@@ -43,8 +43,8 @@ namespace TurboHTTP.Tests.Transport.Tls
             var summary = TlsPlatformCapabilities.GetSummary();
             Assert.That(summary.RecommendedBackend,
                 Is.EqualTo(TlsBackend.Auto)
-                .Or.EqualTo(TlsBackend.SslStream)
-                .Or.EqualTo(TlsBackend.BouncyCastle));
+                .Or.EqualTo(TlsBackend.SslStream),
+                "BouncyCastle is never recommended while its chain validation is incomplete (#34)");
         }
 
         [Test]
@@ -105,9 +105,8 @@ namespace TurboHTTP.Tests.Transport.Tls
             Assert.IsTrue(summary.IsSystemTlsKnownBroken,
                 "Summary should reflect the broken probe state set via MarkSslStreamBroken");
 
-            // Recommended backend should prefer BouncyCastle when system TLS is broken.
-            if (summary.IsBouncyCastleAvailable)
-                Assert.AreEqual(TlsBackend.BouncyCastle, summary.RecommendedBackend);
+            // Never recommend a provider without full certificate chain validation (#34).
+            Assert.AreEqual(TlsBackend.Auto, summary.RecommendedBackend);
         }
 
         [Test]

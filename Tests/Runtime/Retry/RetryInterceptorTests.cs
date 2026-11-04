@@ -656,7 +656,8 @@ namespace TurboHTTP.Tests.Retry
                 {
                     MaxRetries = 1,
                     InitialDelay = TimeSpan.FromMilliseconds(1),
-                    MaxDelay = TimeSpan.FromMilliseconds(5),
+                    // Retry-After raises the delay only up to MaxDelay (#54), so MaxDelay must exceed it.
+                    MaxDelay = TimeSpan.FromSeconds(10),
                     UseJitter = false
                 });
                 var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);

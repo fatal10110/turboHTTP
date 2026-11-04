@@ -11,7 +11,7 @@ Common issues and solutions for TurboHTTP.
 **Solutions:**
 1.  **Increase Timeout:** `.WithTimeout(TimeSpan.FromSeconds(60))`
 2.  **Network Check:** Verify device connectivity.
-3.  **DNS Issues:** If DNS is slow, configure `TcpConnectionPool(dnsTimeout: ...)` with a higher value.
+3.  **DNS Issues:** If DNS is slow, raise `UHttpClientOptions.ConnectionPool.DnsTimeoutMs` (and `ConnectTimeout`).
 4.  **Mobile:** Mobile networks can be high latency; default timeout increases on mobile (45s), but you may need more.
 
 ### SSL/TLS Handshake Failures
@@ -30,21 +30,22 @@ Common issues and solutions for TurboHTTP.
 **Symptom:** Exception when calling `.AsJson<T>()`.
 
 **Solutions:**
-1.  **Public Properties:** Ideally use properties (`{ get; set; }`) for your DTOs.
-2.  **Attributes:** Use `[Serializable]` or `[JsonPropertyName]` if keys don't match.
-3.  **Structure:** Verify the JSON response matches your class structure.
-4.  **IL2CPP:** Ensure your DTO class isn't being stripped (see [Platform Notes](PlatformNotes.md)).
+1.  **DTO shape:** The default serializer is Unity's `JsonUtility`: mark the class `[Serializable]` and use public fields whose names match the JSON keys exactly. Properties (`{ get; set; }`), dictionary fields and anonymous types are not serialized.
+2.  **Top-level arrays:** Deserialize a JSON array into `T[]`, not `List<T>`.
+3.  **Other shapes:** Use `Dictionary<string, object>`, or register a full serializer with `JsonSerializer.SetDefault(...)` (see [JSON serializers](APIReference.md#json-serializers)).
+4.  **Structure:** Verify the JSON response matches your class structure.
+5.  **IL2CPP:** Ensure your DTO class isn't being stripped (see [Platform Notes](PlatformNotes.md)).
 
 ## Platform-Specific
 
 ### iOS
 
-*   **"Cleartext not permitted"**: You are trying to use HTTP. Use HTTPS or configure ATS in Info.plist.
-*   **Background Timeout**: iOS apps have very limited execution time in background (~30s). Requests may be cut off.
+*   **"Cleartext ... is not permitted"**: You are trying to use `http://`, `ws://` or an `http://` proxy. Use HTTPS/WSS, or set `AllowCleartext = true` (ATS keys in Info.plist do not apply to TurboHTTP's raw sockets; see PlatformNotes, "Cleartext traffic").
+*   **Background Timeout**: iOS apps have very limited execution time in background (~30s). Requests may be cut off. Background networking is experimental and needs the `TURBOHTTP_BACKGROUND_NETWORKING` define (PlatformNotes).
 
 ### Android
 
-*   **"java.net.UnknownServiceException: CLEARTEXT"**: You need to enable cleartext traffic in AndroidManifest.xml if using HTTP.
+*   **"Cleartext ... is not permitted"**: Set `AllowCleartext = true` and permit the host in AndroidManifest.xml (`usesCleartextTraffic`) or the network security config (see PlatformNotes, "Cleartext traffic").
 *   **Permission Denied**: Missing `android.permission.INTERNET`.
 
 ## Tools
@@ -57,8 +58,14 @@ If the HTTP Monitor (Window -> TurboHTTP -> Monitor) is empty:
 ### Logging
 Enable detailed logging to debug issues:
 
+<!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
 ```csharp
-using TurboHTTP.Middleware;
+using TurboHTTP.Observability;
 
-options.Middlewares.Add(new LoggingMiddleware(LoggingMiddleware.LogLevel.Detailed));
+options.Interceptors.Insert(0, new LoggingInterceptor(Debug.Log, LoggingInterceptor.LogLevel.Detailed));
 ```
+
+### Library warnings on devices
+Failures TurboHTTP swallows on purpose (background cache stores, dispose-time errors) appear as
+`[TurboHTTP]` warnings in the Unity console and device logs. Route them elsewhere with
+`TurboHttpDiagnostics.SetSink(...)` (see Modules/Core.md, "Diagnostics").

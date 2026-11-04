@@ -19,8 +19,11 @@ namespace TurboHTTP.Transport.Http2
 
                 // Keep one increment of headroom so _nextStreamId never wraps into negatives.
                 if (current <= 0 || current >= int.MaxValue - 1)
-                    throw new UHttpException(new UHttpError(UHttpErrorType.NetworkError,
-                        "Stream ID space exhausted, close and reopen connection"));
+                {
+                    // Not sent: the request may be replayed on a fresh connection (RFC 9113 Section 5.1.1).
+                    _streamIdsExhausted = true;
+                    throw CreateNotAcceptingException();
+                }
 
                 int next = current + 2;
                 if (Interlocked.CompareExchange(ref _nextStreamId, next, current) == current)
@@ -82,40 +85,6 @@ namespace TurboHTTP.Transport.Http2
                 }).ConfigureAwait(false);
         }
 
-        private async Task KeepAliveLoopAsync(CancellationToken ct)
-        {
-            try
-            {
-                while (!ct.IsCancellationRequested)
-                {
-                    await Task.Delay(KeepAlivePingInterval, ct).ConfigureAwait(false);
-                    await SendKeepAlivePingAsync(ct).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                // Expected during disposal.
-            }
-            catch (ObjectDisposedException)
-            {
-                // Connection is shutting down.
-            }
-            catch
-            {
-                // Keepalive must never crash the process.
-            }
-        }
-
-        private async Task SendKeepAlivePingAsync(CancellationToken ct)
-        {
-            await SendFrameWithPooledPayloadAsync(
-                Http2FrameType.Ping,
-                0,
-                8,
-                ct,
-                payload => Array.Clear(payload, 0, 8)).ConfigureAwait(false);
-        }
-
         private async Task SendFrameWithPooledPayloadAsync(
             Http2FrameType type,
             int streamId,
@@ -128,17 +97,16 @@ namespace TurboHTTP.Transport.Http2
             {
                 fillPayload?.Invoke(payload);
 
+                // ct only gates the lock; the frame itself is finished with the connection token.
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
                 {
-                    await _codec.WriteFrameAsync(new Http2Frame
-                    {
-                        Type = type,
-                        Flags = Http2FrameFlags.None,
-                        StreamId = streamId,
-                        Payload = payload,
-                        Length = payloadLength
-                    }, ct).ConfigureAwait(false);
+                    await WriteFrameLockedAsync(
+                            type,
+                            Http2FrameFlags.None,
+                            streamId,
+                            new ReadOnlyMemory<byte>(payload, 0, payloadLength))
+                        .ConfigureAwait(false);
                 }
                 finally
                 {
@@ -159,9 +127,76 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        internal void RemoveActiveStream(int streamId)
+        /// <summary>
+        /// Removes <paramref name="stream"/> only while it is still the entry for
+        /// <paramref name="streamId"/>. Returns true for the one caller that removed it: that caller owns
+        /// ending the stream on the wire (RST_STREAM), so a stream is never reset twice.
+        /// </summary>
+        internal bool RemoveActiveStream(int streamId, Http2Stream stream)
         {
-            _activeStreams.TryRemove(streamId, out _);
+            if (!((ICollection<KeyValuePair<int, Http2Stream>>)_activeStreams)
+                    .Remove(new KeyValuePair<int, Http2Stream>(streamId, stream)))
+            {
+                return false;
+            }
+
+            OnActiveStreamRemoved();
+            return true;
+        }
+
+        /// <summary>
+        /// Removes whatever stream is registered under <paramref name="streamId"/> and frees its slot.
+        /// </summary>
+        private bool TryRemoveActiveStream(int streamId, out Http2Stream stream)
+        {
+            if (!_activeStreams.TryRemove(streamId, out stream))
+                return false;
+
+            OnActiveStreamRemoved();
+            return true;
+        }
+
+        /// <summary>
+        /// Called after a frame carrying the request's END_STREAM was written. The stream leaves the
+        /// active map once the response side is closed as well (RFC 9113 Section 5.1).
+        /// </summary>
+        private void OnRequestEndStreamSent(Http2Stream stream)
+        {
+            if (stream.MarkLocalClosed())
+                RemoveActiveStream(stream.StreamId, stream);
+        }
+
+        /// <summary>
+        /// Ends a stream whose request body will not be completed with RST_STREAM, unless another path
+        /// (peer reset, request cancellation, body-source abort, a stream error) already removed and
+        /// reset it. RST_STREAM is only sent after HEADERS, never on an idle stream (RFC 9113 Section 6.4).
+        /// </summary>
+        private async Task ResetStreamIfActiveAsync(int streamId, Http2Stream stream, Http2ErrorCode errorCode)
+        {
+            if (!RemoveActiveStream(streamId, stream))
+                return;
+
+            TrackRecentlyResetStream(streamId);
+            await SendRstStreamAsync(streamId, errorCode).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Fails a stream found through a lookup (already removed by the caller) under a lease, so a
+        /// stream that was returned to the pool or re-rented in the meantime is never touched.
+        /// </summary>
+        private void FailStreamUnderLease(int streamId, Http2Stream stream, Exception error)
+        {
+            if (stream == null || !stream.TryAcquireLease(streamId, this))
+                return;
+
+            try
+            {
+                stream.Fail(error);
+            }
+            finally
+            {
+                stream.ReleaseLease();
+            }
         }
 
         internal void HandleRequestCancellation(Http2Stream stream, CancellationToken cancellationToken)
@@ -175,7 +210,7 @@ namespace TurboHTTP.Transport.Http2
             // active-stream bookkeeping already raced with completion/cleanup.
             stream.Cancel(cancellationToken);
 
-            if (_activeStreams.TryRemove(streamId, out _))
+            if (TryRemoveActiveStream(streamId, out _))
             {
                 TrackRecentlyResetStream(streamId);
                 _ = SendCancelRstAfterRequestCancellationAsync(streamId);
@@ -200,9 +235,13 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
+        /// <summary>
+        /// True when no more response frames are expected for the stream: it is no longer active, or
+        /// the peer's END_STREAM was received while the request body is still being sent.
+        /// </summary>
         internal bool IsStreamClosedForReceive(int streamId)
         {
-            return !_activeStreams.ContainsKey(streamId);
+            return !_activeStreams.TryGetValue(streamId, out var stream) || stream.IsRemoteClosed;
         }
 
         internal void TrackRecentlyResetStream(int streamId)
@@ -254,21 +293,28 @@ namespace TurboHTTP.Transport.Http2
             if (stream == null || flowControlledLength <= 0 || IsStreamClosedForReceive(stream.StreamId))
                 return;
 
+            // Credit the local receive window BEFORE the WINDOW_UPDATE is written (RFC 9113 Section 6.9).
+            // The read loop runs concurrently with this consumer: once the frame is on the wire the peer
+            // may send DATA using the new credit, and the read loop must already count it. Withdrawn
+            // again when the frame was not sent.
+            stream.AdjustRecvWindowSize(flowControlledLength);
             try
             {
                 await SendWindowUpdateAsync(stream.StreamId, flowControlledLength, ct).ConfigureAwait(false);
-                stream.AdjustRecvWindowSize(flowControlledLength);
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
             {
-                // Connection is shutting down.
+                // Connection is shutting down, or the consumer gave up before the frame was written.
+                stream.AdjustRecvWindowSize(-flowControlledLength);
             }
             catch (ObjectDisposedException)
             {
                 // Connection is shutting down.
+                stream.AdjustRecvWindowSize(-flowControlledLength);
             }
             catch (Exception ex)
             {
+                stream.AdjustRecvWindowSize(-flowControlledLength);
                 FailAllStreams(ex);
             }
         }
@@ -278,12 +324,15 @@ namespace TurboHTTP.Transport.Http2
             if (stream == null)
                 return;
 
-            RemoveActiveStream(stream.StreamId);
-            TrackRecentlyResetStream(stream.StreamId);
+            int streamId = stream.StreamId;
+            if (!RemoveActiveStream(streamId, stream))
+                return; // Another path already ended the stream (and sent its RST_STREAM).
+
+            TrackRecentlyResetStream(streamId);
 
             try
             {
-                await SendRstStreamAsync(stream.StreamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
@@ -401,6 +450,8 @@ namespace TurboHTTP.Transport.Http2
                     await Task.Delay(_maintenanceInterval, ct).ConfigureAwait(false);
                     CleanupRecentlyResetStreams();
                     ScanForStalledStreams();
+                    if (FailConnectionIfSendStalled())
+                        return;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -418,11 +469,41 @@ namespace TurboHTTP.Transport.Http2
             foreach (var kvp in _activeStreams)
             {
                 var stream = kvp.Value;
-                if (!stream.IsStalled(nowTick, stallTimeoutMs))
+                if (!stream.TryAcquireLease(kvp.Key, this))
                     continue;
 
-                stream.ResponseBodySource?.Abort();
+                try
+                {
+                    if (stream.IsStalled(nowTick, stallTimeoutMs))
+                        stream.ResponseBodySource?.Abort();
+                }
+                finally
+                {
+                    stream.ReleaseLease();
+                }
             }
+        }
+
+        /// <summary>
+        /// Send-side stall bound (#197). A started frame is finished with the connection token only,
+        /// never the request token (RFC 9113 Sections 4.1 and 6.10), so a peer that stops reading would
+        /// hold the frame write, <see cref="_writeLock"/> and every request deadline behind it with no
+        /// bound. When the frame write in flight has made no progress for the stall timeout, the
+        /// connection is failed (every stream gets a network error) and disposed: disposal closes the
+        /// transport stream, which aborts a socket write that ignores cancellation.
+        /// </summary>
+        private bool FailConnectionIfSendStalled()
+        {
+            long stallTimeoutMs = Volatile.Read(ref _stallTimeoutMs);
+            if (!_codec.IsWriteStalled(Http2MonotonicClock.GetTimestamp(), stallTimeoutMs))
+                return false;
+
+            var error = new UHttpException(new UHttpError(
+                UHttpErrorType.NetworkError,
+                $"HTTP/2 connection send stalled: a frame write made no progress for {stallTimeoutMs} ms"));
+            FailAllStreams(error);
+            Dispose();
+            return true;
         }
 
         private void CleanupRecentlyResetStreams()
@@ -463,16 +544,36 @@ namespace TurboHTTP.Transport.Http2
 
         private void FailAllStreams(Exception ex)
         {
-            _goawayReceived = true;
-            _cts.Cancel();
+            // Cancelling _cts makes IsAlive and AcceptsNewStreams false; queued requests are refused
+            // as not sent (retryable), streams in flight fail with ex.
+            try
+            {
+                _cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // A body consumer's WINDOW_UPDATE failed after the connection finished disposing:
+                // Dispose cancelled _cts before it disposed it, so there is nothing left to cancel.
+            }
 
+            lock (_streamCreateLock)
+                PumpAdmissionWaitersLocked();
+
+            // A connection failure: a request whose response has not started may be replayed on a fresh
+            // connection when it is idempotent (RawSocketTransport.ShouldRetryH2Request).
+            var streamError = new Http2RetryableRequestException(MapException(ex).HttpError, requestNotProcessed: false);
             foreach (var kvp in _activeStreams)
             {
                 if (_activeStreams.TryRemove(kvp.Key, out var stream))
-                {
-                    stream.Fail(ex);
-                }
+                    FailStreamUnderLease(kvp.Key, stream, streamError);
             }
+
+            // After _cts.Cancel(): blocked senders re-check and leave with a network error.
+            WakeSendWindowWaiters();
+
+            // A connection that dies before the SETTINGS ACK (an invalid server preface, a closed stream)
+            // fails InitializeAsync now with that error instead of at the ACK timeout.
+            TryCompleteSettingsAck(MapException(ex));
         }
 
         public void Dispose()
@@ -532,19 +633,19 @@ namespace TurboHTTP.Transport.Http2
             if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
                 return;
 
-            try
-            {
-                shutdownTasks?.GetAwaiter().GetResult();
-            }
-            catch
-            {
-                // Best effort only.
-            }
+            // Both callers pass a completed task (Dispose checks IsCompleted; the async path has awaited
+            // it), so nothing waits here: a faulted loop task only has its exception observed (#181).
+            if (shutdownTasks != null && shutdownTasks.IsFaulted)
+                _ = shutdownTasks.Exception;
 
             _cts?.Dispose();
-            _windowWaiter?.Dispose();
             _connectionRecvWindowUpdateLock?.Dispose();
-            _writeLock?.Dispose();
+            // _writeLock is deliberately not disposed. A frame write blocked past the shutdown (a
+            // socket write may ignore its token, #197) still holds it, and requests queued behind
+            // that write wait on it: SemaphoreSlim.Dispose never completes async waiters, and a
+            // Release after Dispose throws. Each holder releases it in a finally, so every waiter is
+            // granted in turn and fails on the closed connection. No AvailableWaitHandle is ever
+            // created, so the semaphore owns no unmanaged resource.
             DisposeStreamOnce();
             // Return the HpackEncoder's reusable output buffer to ArrayPool.
             _hpackEncoder?.Dispose();

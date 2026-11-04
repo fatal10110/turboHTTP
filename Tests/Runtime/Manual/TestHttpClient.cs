@@ -201,11 +201,11 @@ namespace TurboHTTP.Tests.Runtime
             try
             {
                 var transport = HttpTransportFactory.Default;
-                Debug.Log($"ModuleInitializer fired: {transport.GetType().Name}");
+                Debug.Log($"Default transport registered: {transport.GetType().Name}");
             }
             catch (Exception ex)
             {
-                Debug.LogError($"ModuleInitializer check failed: {ex.Message}");
+                Debug.LogError($"Default transport check failed: {ex.Message}");
             }
         }
 

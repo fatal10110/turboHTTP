@@ -4,15 +4,14 @@ using TurboHTTP.Core.Internal;
 namespace TurboHTTP.Transport.Http2
 {
     /// <summary>
-    /// Bounded pool of <see cref="Http2Stream"/> instances. Each pooled stream holds a
-    /// pre-allocated <see cref="System.IO.MemoryStream"/> (<see cref="Http2Stream.HeaderBlockBuffer"/>)
-    /// that is reused across requests to eliminate the per-request MemoryStream allocation.
+    /// Bounded pool of <see cref="Http2Stream"/> instances. Pooled streams hold no header-block
+    /// buffer: encoded field blocks accumulate in a connection-level buffer owned by the read loop
+    /// (rented per block and returned at END_HEADERS), so an idle slot never retains a grown buffer.
     /// </summary>
     /// <remarks>
     /// Pool capacity (128) provides headroom above the HTTP/2 default
     /// <c>SETTINGS_MAX_CONCURRENT_STREAMS</c> limit (100). Memory per idle slot is
-    /// minimal: one <see cref="System.IO.MemoryStream"/> with its initial 256-byte backing
-    /// buffer plus the stream object fields (~200 bytes total).
+    /// minimal: the stream object fields (~200 bytes).
     /// </remarks>
     internal static class Http2StreamPool
     {
@@ -45,5 +44,11 @@ namespace TurboHTTP.Transport.Http2
         /// and returns the pooled body buffer (if any) to <see cref="System.Buffers.ArrayPool{T}"/>.
         /// </summary>
         public static void Return(Http2Stream stream) => s_pool.Return(stream);
+
+        /// <summary>
+        /// Counters of the process-wide stream pool, for leak checks (tests, the soak harness):
+        /// <see cref="ObjectPoolDiagnostics.ActiveCount"/> is the number of streams not yet returned.
+        /// </summary>
+        internal static ObjectPoolDiagnostics GetDiagnostics() => s_pool.GetDiagnostics();
     }
 }

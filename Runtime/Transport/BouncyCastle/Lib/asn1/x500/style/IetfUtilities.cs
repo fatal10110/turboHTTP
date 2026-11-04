@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -7,7 +8,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Encoders;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style
 {
-    // TODO[api] static
+    // TODO[api] Make static
     public abstract class IetfUtilities
     {
         internal static string Unescape(string elt)
@@ -21,6 +22,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style
             bool escaped = false;
             bool quoted = false;
             StringBuilder buf = new StringBuilder(elt.Length);
+            // Accumulator for a run of consecutive \HH escapes. Per RFC 4514 sec. 2.4
+            // a \HH escape produces a single octet, and the resulting octet sequence
+            // is the UTF-8 encoding of the character — so a run of pairs must be
+            // decoded as UTF-8 (RFC 5280 sec. 4.1.2.4), not one Java char per pair.
+            MemoryStream hexBytes = new MemoryStream(capacity: 8);
             int start = 0;
 
             // if it's an escaped hash string and not an actual encoding in string form
@@ -35,8 +41,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style
             }
 
             bool nonWhiteSpaceEncountered = false;
-            int lastEscaped = 0;
-            char hex1 = Convert.ToChar(0);
+            int lastEscaped = -1;
+            int hex1 = -1;
 
             for (int i = start; i != elt.Length; i++)
             {
@@ -55,6 +61,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style
                     }
                     else
                     {
+                        CheckCompleteHexPair(hex1);
+                        FlushHexBytes(buf, hexBytes, ref lastEscaped);
                         buf.Append(c);
                         escaped = false;
                     }
@@ -62,40 +70,69 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style
                 else if (c == '\\' && !(escaped || quoted))
                 {
                     escaped = true;
+                    // In case hexBytes is not empty, lastEscaped will get updated when hexBytes is flushed
                     lastEscaped = buf.Length;
+                }
+                else if (c == ' ' && !escaped && !nonWhiteSpaceEncountered)
+                {
+                    // Skip leading spaces
+                }
+                else if (escaped && IsHexDigit(c))
+                {
+                    int hexDigit = ConvertHex(c);
+                    if (hex1 < 0)
+                    {
+                        hex1 = hexDigit;
+                    }
+                    else
+                    {
+                        hexBytes.WriteByte((byte)(hex1 * 16 + hexDigit));
+                        escaped = false;
+                        hex1 = -1;
+                    }
                 }
                 else
                 {
-                    if (c == ' ' && !escaped && !nonWhiteSpaceEncountered)
-                    {
-                        continue;
-                    }
-                    if (escaped && IsHexDigit(c))
-                    {
-                        if (hex1 != 0)
-                        {
-                            buf.Append(Convert.ToChar(ConvertHex(hex1) * 16 + ConvertHex(c)));
-                            escaped = false;
-                            hex1 = Convert.ToChar(0);
-                            continue;
-                        }
-                        hex1 = c;
-                        continue;
-                    }
+                    // A '\' followed by a single hex digit and then a non-hex char is an
+                    // incomplete hexpair (RFC 4514 sec. 2.4 requires two), not a literal.
+                    CheckCompleteHexPair(hex1);
+                    FlushHexBytes(buf, hexBytes, ref lastEscaped);
                     buf.Append(c);
                     escaped = false;
                 }
             }
 
+            // A '\' followed by a single hex digit at end of input is likewise incomplete.
+            CheckCompleteHexPair(hex1);
+            FlushHexBytes(buf, hexBytes, ref lastEscaped);
+
             if (buf.Length > 0)
             {
-                while (buf[buf.Length - 1] == ' ' && lastEscaped != buf.Length - 1)
+                while (buf[buf.Length - 1] == ' ' && lastEscaped < buf.Length - 1)
                 {
                     buf.Length = buf.Length - 1;
                 }
             }
 
             return buf.ToString();
+        }
+
+        private static void FlushHexBytes(StringBuilder buf, MemoryStream hexBytes, ref int lastEscaped)
+        {
+            int length = Convert.ToInt32(hexBytes.Position);
+            if (length > 0)
+            {
+                string decoded = Strings.FromUtf8ByteArray(hexBytes.ToArray());
+                hexBytes.Position = 0L;
+                buf.Append(decoded);
+                lastEscaped = buf.Length - 1;
+            }
+        }
+
+        private static void CheckCompleteHexPair(int hex1)
+        {
+            if (hex1 >= 0)
+                throw new ArgumentException("invalid hex escape in directory string");
         }
 
         private static bool IsHexDigit(char c)
@@ -114,7 +151,30 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style
             return c - 'A' + 10;
         }
 
-        public static string ValueToString(Asn1Encodable value)
+        public static void AppendTypeAndValue(StringBuilder buf, AttributeTypeAndValue typeAndValue,
+            IDictionary<DerObjectIdentifier, string> oidSymbols)
+        {
+            AppendTypeAndValue(buf, typeAndValue.Type, typeAndValue.Value, oidSymbols);
+        }
+
+        internal static void AppendTypeAndValue(StringBuilder buf, DerObjectIdentifier attrType,
+            Asn1Encodable attrValue, IDictionary<DerObjectIdentifier, string> oidSymbols)
+        {
+            if (oidSymbols.TryGetValue(attrType, out var sym))
+            {
+                buf.Append(sym);
+            }
+            else
+            {
+                buf.Append(attrType.GetID());
+            }
+
+            buf.Append('=');
+
+            AppendValue(buf, attrValue);
+        }
+
+        private static void AppendValue(StringBuilder buf, Asn1Encodable value)
         {
             StringBuilder vBuf = new StringBuilder();
 
@@ -141,59 +201,79 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style
                 }
             }
 
-            int end = vBuf.Length;
+            // Escape in a single linear pass into a fresh builder. The previous implementation escaped by
+            // inserting a backslash into the buffer it was scanning (O(n) per insert), so a value of n
+            // RFC 4514 special characters - or n leading/trailing spaces - cost ~n^2/2 character moves: a
+            // CPU-exhaustion vector for an attacker-supplied large RDN. Output is unchanged.
+
+            int len = vBuf.Length;
+
+            // A leading "\#" (produced above when the value begins with '#') is emitted verbatim and the
+            // leading-space escaping is suppressed, matching the original phase ordering.
+            bool hashPrefix = len >= 2 && vBuf[0] == '\\' && vBuf[1] == '#';
+
+            int firstNonSpace = 0;
+            while (firstNonSpace < len && vBuf[firstNonSpace] == ' ')
+            {
+                firstNonSpace++;
+            }
+            int lastNonSpace;
+            if (firstNonSpace < len)
+            {
+                lastNonSpace = len;
+                while (vBuf[--lastNonSpace] == ' ')
+                {
+                }
+            }
+            else
+            {
+                lastNonSpace = -1;
+            }
+
             int index = 0;
-
-            if (vBuf.Length >= 2 && vBuf[0] == '\\' && vBuf[1] == '#')
+            if (hashPrefix)
             {
-                index += 2;
+                buf.Append("\\#");
+                index = 2;
             }
 
-            while (index != end)
+            for (; index < len; index++)
             {
-                switch (vBuf[index])
+                char c = vBuf[index];
+                bool escape;
+                switch (c)
                 {
-                    case ',':
-                    case '"':
-                    case '\\':
-                    case '+':
-                    case '=':
-                    case '<':
-                    case '>':
-                    case ';':
-                    {
-                        vBuf.Insert(index, "\\");
-                        index += 2;
-                        ++end;
-                        break;
-                    }
-                    default:
-                    {
-                        ++index;
-                        break;
-                    }
+                case ',':
+                case '"':
+                case '\\':
+                case '+':
+                case '=':
+                case '<':
+                case '>':
+                case ';':
+                    escape = true;
+                    break;
+                case ' ':
+                    // leading spaces escaped only without a "\#" prefix; trailing spaces always escaped.
+                    escape = (!hashPrefix && index < firstNonSpace) || index > lastNonSpace;
+                    break;
+                default:
+                    escape = false;
+                    break;
                 }
-            }
-
-            int start = 0;
-            if (vBuf.Length > 0)
-            {
-                while (vBuf.Length > start && vBuf[start] == ' ')
+                if (escape)
                 {
-                    vBuf.Insert(start, "\\");
-                    start += 2;
+                    buf.Append('\\');
                 }
+                buf.Append(c);
             }
+        }
 
-            int endBuf = vBuf.Length - 1;
-
-            while (endBuf >= 0 && vBuf[endBuf] == ' ')
-            {
-                vBuf.Insert(endBuf, "\\");
-                endBuf--;
-            }
-
-            return vBuf.ToString();
+        public static string ValueToString(Asn1Encodable value)
+        {
+            StringBuilder buf = new StringBuilder(64);
+            AppendValue(buf, value);
+            return buf.ToString();
         }
 
         public static string Canonicalize(string s)
@@ -246,7 +326,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X500.Style
             }
             catch (IOException e)
             {
-                throw new InvalidOperationException("unknown encoding in name: " + e);
+                throw new InvalidOperationException("unknown encoding in name", e);
             }
         }
 

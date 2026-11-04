@@ -15,11 +15,12 @@ namespace TurboHTTP.Observability
         private readonly IHttpHandler _inner;
         private readonly Action<string> _log;
         private readonly UHttpRequest _request;
+        private readonly string _displayUrl;
         private readonly LoggingInterceptor.LogLevel _logLevel;
         private readonly bool _logHeaders;
         private readonly bool _logBody;
         private readonly bool _redactSensitiveHeaders;
-        private readonly HashSet<string> _sensitiveHeaders;
+        private readonly RedactionPolicy _redactionPolicy;
         private readonly TimeSpan _started;
 
         private byte[] _bodyPreview;
@@ -34,21 +35,23 @@ namespace TurboHTTP.Observability
             IHttpHandler inner,
             Action<string> log,
             UHttpRequest request,
+            string displayUrl,
             LoggingInterceptor.LogLevel logLevel,
             bool logHeaders,
             bool logBody,
             bool redactSensitiveHeaders,
-            HashSet<string> sensitiveHeaders,
+            RedactionPolicy redactionPolicy,
             TimeSpan started)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             _log = log ?? (_ => { });
             _request = request ?? throw new ArgumentNullException(nameof(request));
+            _displayUrl = displayUrl ?? string.Empty;
             _logLevel = logLevel;
             _logHeaders = logHeaders;
             _logBody = logBody;
             _redactSensitiveHeaders = redactSensitiveHeaders;
-            _sensitiveHeaders = sensitiveHeaders ?? throw new ArgumentNullException(nameof(sensitiveHeaders));
+            _redactionPolicy = redactionPolicy ?? throw new ArgumentNullException(nameof(redactionPolicy));
             _started = started;
         }
 
@@ -70,7 +73,7 @@ namespace TurboHTTP.Observability
             builder.Append("<- ")
                 .Append(_request.Method)
                 .Append(' ')
-                .Append(_request.Uri)
+                .Append(_displayUrl)
                 .Append(" -> ")
                 .Append(statusCode);
 
@@ -82,7 +85,7 @@ namespace TurboHTTP.Observability
                 builder.Append(LoggingInterceptor.FormatResponseHeaders(
                     headers,
                     _redactSensitiveHeaders,
-                    _sensitiveHeaders));
+                    _redactionPolicy));
             }
 
             _log(GetLogPrefix() + builder);
@@ -142,7 +145,7 @@ namespace TurboHTTP.Observability
             builder.Append("<= ")
                 .Append(_request.Method)
                 .Append(' ')
-                .Append(_request.Uri)
+                .Append(_displayUrl)
                 .Append(" completed in ")
                 .Append(elapsed.TotalMilliseconds.ToString("F0"))
                 .Append("ms")
@@ -219,7 +222,7 @@ namespace TurboHTTP.Observability
             builder.Append("X ")
                 .Append(_request.Method)
                 .Append(' ')
-                .Append(_request.Uri)
+                .Append(_displayUrl)
                 .Append(" -> ERROR (")
                 .Append(elapsed.TotalMilliseconds.ToString("F0"))
                 .Append("ms)\n  ")

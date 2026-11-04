@@ -1,0 +1,49 @@
+name: Release
+
+# One GitHub Release per semver tag (#101). The tag is the artifact: Unity installs it by Git URL
+# (`...turboHTTP.git#vX.Y.Z`) and OpenUPM builds its package from it. Cut tags only by following
+# Development~/docs/release-checklist.md.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Releases are cut from main only (the ruleset keeps main green on the `ci` check).
+      - name: Tag must point at a commit on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      # Fails when the tag is not v<semver>, differs from package.json, or has no CHANGELOG section.
+      - name: Release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 'Tools~/ci/release_notes.py' "$TAG" > "$RUNNER_TEMP/notes.md"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "TurboHTTP ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}"

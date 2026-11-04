@@ -1,0 +1,151 @@
+# Testing guide
+
+Load when writing or running tests, or when a Unity test run misbehaves. Gate commands and CI are
+in `tooling.md`.
+
+## Layout
+
+- `Tests/Runtime/` (`TurboHTTP.Tests.Runtime.asmdef`, references every runtime module) and
+  `Tests/Editor/` (`TurboHTTP.Tests.Editor.asmdef`). Both keep `defineConstraints:
+  ["UNITY_INCLUDE_TESTS"]`, `overrideReferences: true` and `precompiledReferences:
+  ["nunit.framework.dll"]`.
+- One folder per area: `Core`, `Pipeline`, `Transport` (`Http1`, `Http2`, `Tls`), `Proxy`, `Middleware`,
+  `Retry`, `Auth`, `Cache`, `Observability`, `Files`, `JSON`, `WebSocket`, `Unity`, `Mobile`,
+  `Platform`, `Performance`, `Integration`, `Compatibility`, `Extensibility`, `Testing`, `Manual`.
+- Shared helpers: `Tests/Runtime/AssertAsync.cs`, `Tests/Runtime/Support/`, `MockTransport` and
+  `RecordReplayTransport` (TurboHTTP.Testing), the HTTP/2 duplex-stream harness used by
+  `Tests/Runtime/Transport/Http2/Http2ConnectionTests*.cs`.
+- Allocation gates: `Tests/Runtime/Performance/StreamingAllocationGateTests.cs`,
+  `Phase19AllocationGateTests.cs` with baselines in `Tests/Benchmarks/`.
+
+## Writing tests
+
+- A behavior change comes with a test that fails without it. Protocol, concurrency and
+  cancellation fixes drive the hostile byte sequence or interleaving (cancel mid-frame, CONTINUATION
+  flood, window decrease, EOF mid-headers) through the real code path. Do not re-implement the logic
+  under test inside the test and assert on your own copy.
+- Deterministic only: no wall-clock sleeps as synchronization, tolerances on scheduler-dependent
+  counts (a storm test asserting ≥250 saw 249). Use `CancelAfter`, completion sources, virtual time.
+- Unity 2021.3's NUnit profile:
+  - no `async Task` test methods ("Method has non-void return value"): write `void` tests that wrap
+    the body in `AssertAsync.Run(...)`;
+  - no `Assert.ThrowsAsync`: use `AssertAsync.ThrowsAsync`; it matches the exact exception type, so
+    catch base types by hand;
+  - run async helpers through `Task.Run`; Unity's synchronization context does not pump in tests and
+    deadlocks;
+  - never call another test method from a test (it skips SetUp/TearDown).
+  - no `[NonParallelizable]`, `Assert.Multiple` or `Assert.*Async`: they are
+    missing from `com.unity.ext.nunit` 1.0.6 and break compilation of the whole test assembly
+    (`check_repo.py unitynunit` enforces this, since PR CI cannot compile Unity tests without a
+    license).
+- Code must compile against Unity's .NET Standard 2.1 profile, which lacks `Encoding.Latin1`,
+  `ReadOnlySequence<T>.ToArray()`, span-based `Encoding.GetBytes`, `Environment.TickCount64`,
+  `ValueTask.FromException<T>` (use `new ValueTask<T>(Task.FromException<T>(…))`),
+  `Assert.IsNotSame`, `out` parameters in async methods, and other .NET 5+ APIs. The shadow build
+  catches most of these before CI.
+- Unity Mono behaves differently from .NET 8, so a green .NET harness proves logic only:
+  `GZipStream` does not throw on truncated input, `NetworkStream.ReadAsync` ignores cancellation
+  tokens, duplex test streams complete synchronously, `CertificateRequest` is unavailable. Tests that
+  depend on these run in the Unity jobs.
+- When the transport is right and a test is wrong (e.g. an over-sending flow-control peer), fix the
+  test to model a compliant peer; never relax timeouts to make a test pass.
+- Tests that need the public internet carry `[Category("ExternalNetwork")]`; very slow or
+  >100 MB tests carry `[Explicit]` plus `Integration` or `Performance`. No CI job runs Unity; the
+  `ExternalNetwork` category runs in the host editor (`run-tests.sh --category ExternalNetwork`, see
+  "Host-editor gates"), never as a gate on a PR.
+- Tests are not exempt from ownership rules: dispose clients and responses (`using var`), and say so
+  in a comment when a test deliberately disposes early.
+- Do not encode a known bug as expected behavior; if a fix lands later, the test must change with it
+  (e.g. retry tests currently assert `Retry-After` may exceed `MaxDelay`, #54).
+- Renaming or removing a public type: grep `Runtime/`, `Editor/` and `Tests/` in the same change; the
+  Editor monitor and tests broke on the 22.x clean break.
+
+## Running Unity tests
+
+- `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter <regex>` syncs the package
+  into a cached temp project and runs Unity in batch mode. EditMode runs with graphics (editor-window
+  tests need them).
+- "Scripts have compiler errors" aborts the whole run and hides every test result. Fix compile errors
+  first (typical after a rewrite: missing `using System.Threading`/`.Tasks`/`.Collections.Generic`,
+  `Task`/`ValueTask` overload ambiguity, new constructor parameters), then re-run: hidden failures
+  show up only after the compile fix.
+- Runtime tests run in PlayMode; an EditMode run against `TurboHTTP.Tests.Runtime` discovers 0 tests.
+- Read the skipped count in the result XML: a skip is not a pass (CONNECT tunnel tests skip today, #151).
+- A journal or PR that says "Unity not run" or "isolated .NET harness only" is unverified. Record
+  exactly which lane ran: EditMode, PlayMode, IL2CPP player, device.
+
+## Host-editor gates (periodic host-editor runs)
+
+CI never runs Unity: the repository has no `UNITY_LICENSE` and will not get one (owner decision
+2026-11-02, #188), so ci.yml has no `unity-tests` job and the required check `ci` covers `lint`,
+`tls-interop` and `h2-interop` only. The Unity gates are these runs in a licensed local Unity 2021.3
+editor (WSL + Windows editor: `UNITY_PATH=/mnt/<drive>/.../Editor/Unity.exe`), done:
+
+- after every `turbohttp-waves` run (its Step 5), before ticking a milestone's tracking issue, and
+  before closing a milestone;
+- otherwise once in a while (about weekly while PRs are merging), and whenever a change touches
+  test infrastructure, asmdefs or `#if` platform guards.
+
+From a clean worktree of the commit under test (e.g. `origin/main`), one Unity process at a time:
+
+```bash
+export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
+'./Tools~/unity/run-tests.sh' --platform EditMode                       # 1. full suites + skip gate
+'./Tools~/unity/run-tests.sh' --platform PlayMode
+'./Tools~/unity/run-tests.sh' --platform PlayMode --category ExternalNetwork   # 2. internet tests
+'./Tools~/unity/build-player.sh' --target win64-mono                    # 3. player builds
+'./Tools~/unity/build-player.sh' --target android-il2cpp                #    (+ --bouncycastle; win64-il2cpp when the SDK is installed)
+```
+
+1. **Full suites and the skip gate.** Only this run may omit `--filter`. `summarize_results.py` exits 4
+   when a skipped test has no `#issue` or `[env]` reason, or when an unfiltered run skips more tests
+   than `Tools~/unity/skip-baseline.txt` allows (`EditMode 0`, `PlayMode 0`); a filtered or category
+   run does not apply the baseline. Lower the baseline in the same PR that removes skips; never raise
+   it to make a run pass. `check.sh` enforces the static half (`ignores`: an `Ignore` needs an
+   `#issue` or `[env]` reason).
+2. **ExternalNetwork run (#115, #263).** Needs the public internet. `--category ExternalNetwork` implies
+   `--integration`: the script defines `TURBOHTTP_INTEGRATION_TESTS` in the test project for that run
+   so the internet blocks guarded by it compile (TLS integration, BouncyCastle/SslStream provider and
+   TCP pool tests), and removes the define again on every other run, so scoped runs never compile
+   them. A failing test is fixed, or becomes `TestRequirements.IgnoreEnvironment(...)` / an
+   `Assert.Ignore("#<issue> ...")`; it is never left red. The two loopback tests behind the same define
+   (`Parse_ReadToEnd_ExceedsMaxBodySize_ThrowsIOException`, a 100 MB body, and
+   `RawSocketTransport_FreshConnection_IOException_NoRetry`) are not `ExternalNetwork`: run them with
+   `--platform PlayMode --integration --filter 'ExceedsMaxBodySize|FreshConnection_IOException_NoRetry'`.
+3. **Player builds (#273, #100).** `build-player.sh` builds Mono Win64, Android IL2CPP with and without
+   `--bouncycastle`, and IL2CPP Win64 when the Visual Studio C++ toolchain is present, runs the Windows
+   players and checks the linker output (BouncyCastle assemblies absent without the opt-in). iOS and
+   device rows stay `needs-device-validation` (#99).
+4. **Android device run (#99).** With one Android device on `adb` (unlocked, screen kept on:
+   Developer options → Stay awake), `'./Tools~/unity/run-device-tests.sh' [--stripping Low|High]
+   [--arch arm64|armv7] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
+   installs it and runs it on the device. Results come back over the player connection when it works;
+   otherwise (LAN or firewall: the Editor needs an inbound rule for the Private profile) the script waits
+   for the XML the player writes on the device and pulls it over adb. That wait ends when the player
+   finishes or its process is gone, and is capped by `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120).
+   The device-only test project (`UNITY_DEVICE_TEST_PROJECT`, never `run-tests.sh`'s `UNITY_TEST_PROJECT`)
+   opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. Install
+   `build-player.sh`'s Android APK and read `TURBOHTTP_SMOKE` from logcat for the player smoke. Never
+   stop a running device run from the shell: killing Unity's process tree also kills its adb server.
+
+From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
+Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and
+`UNITY_PACKAGE_COPY` per lane so two runs never share a project. The Editor must be licensed on that
+machine (a Unity Personal license activated through the Hub is enough). Agents working on one change
+never run the whole suite.
+
+Afterwards:
+
+- every failure, compile error or newly Ignored test becomes a fix or a `type:bug` issue in the
+  owning milestone (search for an existing one first);
+- record the run in a journal file (`implementation-journal/YYYY-MM-unity-host-run.md` is the running
+  log: append a dated section per run, or add a new dated file when your lane may not edit it):
+  commit, totals per platform (passed/failed/skipped/inconclusive) and the issues filed. A milestone
+  closes only after a green run on its final commit.
+
+## Reviews of test changes
+
+- A phase is not done until every test file its plan lists exists; check the plan's file list.
+- Re-run both specialist rubrics after each fix round; fixes have repeatedly introduced sibling bugs.
+- Verify reviewer claims against the code before acting on them; earlier reviews contained false
+  positives.

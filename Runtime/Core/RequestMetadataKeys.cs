@@ -14,6 +14,14 @@ namespace TurboHTTP.Core
         public const string ProxySettings = "turbohttp.proxy.settings";
         public const string ProxyAbsoluteForm = "turbohttp.proxy.absolute_form";
         public const string ProxyDisabled = "turbohttp.proxy.disabled";
+
+        /// <summary>
+        /// <see cref="bool"/>: whether the transport may send this request in cleartext (an
+        /// <c>http://</c> target or an <c>http://</c> proxy leg). <see cref="UHttpClient"/> sets
+        /// it from <see cref="UHttpClientOptions.AllowCleartext"/>; when absent the transport uses
+        /// <see cref="CleartextTrafficPolicy.DefaultAllowCleartext"/>.
+        /// </summary>
+        public const string AllowCleartext = "turbohttp.transport.allow_cleartext";
         public const string BackgroundReplayDedupeKey = "turbohttp.background.replay_dedupe_key";
     }
 }

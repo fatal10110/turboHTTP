@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -83,11 +83,45 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         /// <exception cref="IOException"/>
         TlsCredentials GetCredentials();
 
+        /// <summary>
+        /// This method will be called (only) if <see cref="SecurityParameters.StatusRequestVersion"/> is non-zero,
+        /// meaning the client asked for a stapled response and the server undertook to answer: up to(D)TLS 1.2, that it
+        /// echoed an extension of type "status_request" (<i>RFC 6066 sec. 8. Certificate Status Request</i>) or
+        /// "status_request_v2" (<i>RFC 6961 sec. 2.2. Multiple Certificate Status Request Record</i>) with empty
+        /// "extension_data" in the extended server hello; in TLS 1.3, simply that the client offered "status_request".
+        /// </summary>
         /// <remarks>
-        /// This method will be called (only) if the server included an extension of type "status_request" with empty
-        /// "extension_data" in the extended server hello. See <i>RFC 3546 3.6. Certificate Status Request</i>. If a
-        /// non-null <see cref="CertificateStatus"/> is returned, it is sent to the client as a handshake message of
-        /// type "certificate_status".
+        /// If a non-null <see cref="CertificateStatus"/> is returned, it is sent to the client as a handshake message
+        /// of type "certificate_status".
+        /// <para>
+        /// The status request version says which of the two shapes the client will accept; returning the other one is a
+        /// fatal alert at the client:
+        /// <list type="bullet">
+        /// <item><b>1</b> - "status_request" was echoed. Return a <see cref="CertificateStatusType.ocsp"/> status
+        /// carrying a single response, for the end-entity certificate.</item>
+        /// <item><b>2</b> - "status_request_v2" was echoed. Return a <see cref="CertificateStatusType.ocsp_multi"/>
+        /// status carrying one entry per certificate in the chain that was sent, in the same order, with a null entry
+        /// wherever no response is available.</item>
+        /// </list>
+        /// </para>
+        /// <para>
+        /// Whether either extension is echoed at all up to (D)TLS 1.2 is decided by
+        /// <see cref="AbstractTlsServer.AllowCertificateStatus"/> (defaults to <c>true</c>) and
+        /// <see cref="AbstractTlsServer.AllowMultiCertStatus"/> (defaults to <c>false</c>).
+        /// </para>
+        /// <para>
+        /// How the returned status reaches the client depends on the negotiated version. Up to (D) TLS 1.2 it is sent
+        /// as a handshake message of type "certificate_status", for the whole chain at once. In TLS 1.3 there is no
+        /// such message: the response travels in a "status_request" extension of the <see cref="CertificateEntry"/>
+        /// containing the certificate it answers for (<i>RFC 8446 sec. 4.4.2.1</i>), and the protocol distributes what
+        /// this callback returns across those entries - an <see cref="CertificateStatusType.ocsp"/> status answering
+        /// for the end-entity certificate, an <see cref="CertificateStatusType.ocsp_multi"/> status answering
+        /// positionally, entry <c>i</c> of its list for certificate <c>i</c> of the chain. So a TLS 1.3 server with a
+        /// response for more than the end-entity certificate returns the ocsp_multi shape even though the status
+        /// request version is 1. An entry the server has itself given a "status_request" extension - by attaching it to
+        /// the <see cref="Certificate"/> its credentials supply, which was previously the only way to staple in TLS 1.3
+        /// - is left as it stands.
+        /// </para>
         /// </remarks>
         /// <returns>A <see cref="CertificateStatus"/> to be sent to the client (or null for none).</returns>
         /// <exception cref="IOException"/>

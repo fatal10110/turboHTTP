@@ -67,6 +67,11 @@ namespace TurboHTTP.Core
             set => _maxConnectionBufferedBytes = ValidatePositive(value, nameof(MaxConnectionBufferedBytes));
         }
 
+        /// <summary>
+        /// Seconds an HTTP/2 connection waits without progress before it gives up: a buffered response
+        /// body the consumer stopped reading is aborted, and a frame write the peer stopped accepting
+        /// fails the whole connection with a network error. Default 60.
+        /// </summary>
         public int Http2StallTimeoutSeconds
         {
             get => _http2StallTimeoutSeconds;

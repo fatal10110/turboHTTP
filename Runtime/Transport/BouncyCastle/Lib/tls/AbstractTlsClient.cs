@@ -100,11 +100,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         public virtual TlsDHGroupVerifier GetDHGroupVerifier()
         {
+            // turbo-strip: E4 no finite-field DH (E2 denies DH, DHE and DHE_PSK key exchange)
             return null;
         }
 
         public virtual TlsSrpConfigVerifier GetSrpConfigVerifier()
         {
+            // turbo-strip: E4 no SRP (E2 denies SRP key exchange)
             return null;
         }
 
@@ -120,7 +122,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         protected virtual CertificateStatusRequest GetCertificateStatusRequest()
         {
-            return new CertificateStatusRequest(CertificateStatusType.ocsp, new OcspStatusRequest(null, null));
+            // turbo-strip: E4 no status_request (decision D: no OCSP request)
+            return null;
         }
 
         /// <returns>an <see cref="IList{T}"/> of <see cref="CertificateStatusRequestItemV2"/> (or null).</returns>
@@ -149,14 +152,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (namedGroupRoles.Contains(NamedGroupRole.ecdh))
             {
                 TlsUtilities.AddIfSupported(supportedGroups, crypto,
-                    new int[]{ NamedGroup.x25519 });
+                    new int[]{ NamedGroup.x25519, NamedGroup.x448 });
             }
 
             if (namedGroupRoles.Contains(NamedGroupRole.ecdh) ||
                 namedGroupRoles.Contains(NamedGroupRole.ecdsa))
             {
+                // turbo-strip: E4 offer secp521r1 (E1 HasNamedGroup allows it)
                 TlsUtilities.AddIfSupported(supportedGroups, crypto,
-                    new int[]{ NamedGroup.secp256r1, NamedGroup.secp384r1 });
+                    new int[]{ NamedGroup.secp256r1, NamedGroup.secp384r1, NamedGroup.secp521r1 });
+            }
+
+            if (namedGroupRoles.Contains(NamedGroupRole.dh))
+            {
+                TlsUtilities.AddIfSupported(supportedGroups, crypto,
+                    new int[]{ NamedGroup.ffdhe2048, NamedGroup.ffdhe3072, NamedGroup.ffdhe4096 });
             }
 
             return supportedGroups;

@@ -166,31 +166,52 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        public void Auto_WhenSslStreamBroken_ReturnsBouncyCastle()
+        public void Auto_WhenSslStreamMarkedBroken_StillReturnsSslStream()
         {
-            if (!TlsProviderSelector.IsBouncyCastleAvailable())
-            {
-                Assert.Ignore("BouncyCastle not available in this build");
-                return;
-            }
-
-            TlsProviderSelector.MarkSslStreamBroken();
+            // Fail closed (#34): a recorded platform failure is diagnostic only. Auto never
+            // routes to a provider without full certificate chain validation.
+            TlsProviderSelector.MarkSslStreamBroken(new PlatformNotSupportedException("simulated"));
             var provider = TlsProviderSelector.GetProvider(TlsBackend.Auto);
-            Assert.AreEqual("BouncyCastle", provider.ProviderName);
+            Assert.AreEqual("SslStream", provider.ProviderName);
         }
 
         [Test]
-        public void Auto_WhenSslStreamBroken_AndNoBouncyCastle_ThrowsPlatformNotSupported()
+        public void Auto_NeverSelectsBouncyCastle()
         {
-            if (TlsProviderSelector.IsBouncyCastleAvailable())
+            Assert.AreEqual("SslStream", TlsProviderSelector.GetProvider(TlsBackend.Auto).ProviderName);
+            TlsProviderSelector.MarkSslStreamBroken();
+            Assert.AreEqual("SslStream", TlsProviderSelector.GetProvider(TlsBackend.Auto).ProviderName);
+        }
+
+        [Test]
+        public void MarkSslStreamBroken_LogsOnceWithReason()
+        {
+            var messages = new System.Collections.Generic.List<string>();
+            var previous = TlsProviderSelector.DiagnosticLogger;
+            TlsProviderSelector.DiagnosticLogger = m => { lock (messages) messages.Add(m); };
+            try
             {
-                Assert.Ignore("BouncyCastle is available — cannot test missing-fallback path");
-                return;
+                TlsProviderSelector.MarkSslStreamBroken(new PlatformNotSupportedException("x"));
+                TlsProviderSelector.MarkSslStreamBroken(new PlatformNotSupportedException("y"));
+            }
+            finally
+            {
+                TlsProviderSelector.DiagnosticLogger = previous;
             }
 
-            TlsProviderSelector.MarkSslStreamBroken();
-            Assert.Throws<PlatformNotSupportedException>(() =>
-                TlsProviderSelector.GetProvider(TlsBackend.Auto));
+            Assert.AreEqual(1, messages.Count);
+            StringAssert.Contains("PlatformNotSupportedException", messages[0]);
+            StringAssert.DoesNotContain("will use BouncyCastle", messages[0]);
+        }
+
+        [Test]
+        public void IsPlatformTlsException_UnwrapsSingleAggregate()
+        {
+            Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(
+                new AggregateException(new PlatformNotSupportedException())));
+            Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(
+                new AggregateException(new System.Security.Authentication.AuthenticationException())));
+            Assert.IsFalse(TlsProviderSelector.IsPlatformTlsException(null));
         }
 
         [Test]
@@ -283,7 +304,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
             TlsProviderSelector.MarkSslStreamBroken(); // first transition to broken should log
             Assert.AreEqual(1, messages.Count, "Should log on first broken transition");
-            StringAssert.Contains("BouncyCastle", messages[0]);
+            StringAssert.Contains("does not switch providers", messages[0]);
 
             TlsProviderSelector.MarkSslStreamBroken(); // already 2, no second log
             Assert.AreEqual(1, messages.Count, "Should not log again if already broken");

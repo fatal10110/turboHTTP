@@ -15,6 +15,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return extensions == null ? new Dictionary<int, byte[]>() : extensions;
         }
 
+        /// <summary>
+        /// Drop the "status_request"/"status_request_v2" echoes a stored session may be carrying, for a server about to
+        /// replay that session's extensions on an abbreviated handshake.
+        /// </summary>
+        /// <remarks>
+        /// The echo announces a CertificateStatus message to follow, and an abbreviated handshake sends neither a
+        /// Certificate nor a CertificateStatus - so replaying it leaves the client with an extension that answers
+        /// nothing, and one the resuming ClientHello may not even have offered. RFC 5246 sec. 7.4.1.4 has a client
+        /// abort with unsupported_extension over an extension it did not request, so this is not something to leave to
+        /// the client's forbearance.
+        /// </remarks>
+        internal static void RemoveStatusRequestExtensions(IDictionary<int, byte[]> extensions)
+        {
+            if (extensions != null)
+            {
+                extensions.Remove(ExtensionType.status_request);
+                extensions.Remove(ExtensionType.status_request_v2);
+            }
+        }
+
         /// <param name="extensions">(Int32 -> byte[])</param>
         /// <param name="protocolNameList">an <see cref="IList{T}"/> of <see cref="ProtocolName"/>.</param>
         /// <exception cref="IOException"/>
@@ -858,6 +878,34 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return buf.ToArray();
         }
 
+        /// <summary>
+        /// The "status_request" extension a server puts on a TLS 1.3 CertificateEntry.
+        /// </summary>
+        /// <remarks>
+        /// RFC 8446 sec. 4.4.2.1: "In TLS 1.3, the server's OCSP information is carried in an extension in the
+        /// CertificateEntry containing the associated certificate", and "the body of the "status_request" extension
+        /// from the server MUST be a CertificateStatus structure as defined in [RFC6066]" - so unlike the TLS 1.2
+        /// ServerHello echo, which is empty, this one carries the response itself.
+        /// </remarks>
+        /// <param name="certificateStatus">
+        /// The status to carry, which must be of type <see cref="CertificateStatusType.ocsp"/> - the ocsp_multi form
+        /// belongs to the status_request_v2 extension RFC 8446 deprecated.
+        /// </param>
+        public static byte[] CreateStatusRequestExtension13(CertificateStatus certificateStatus)
+        {
+            if (certificateStatus == null)
+                throw new ArgumentNullException(nameof(certificateStatus));
+
+            if (CertificateStatusType.ocsp != certificateStatus.StatusType)
+                throw new TlsFatalAlert(AlertDescription.internal_error);
+
+            MemoryStream buf = new MemoryStream();
+
+            certificateStatus.Encode(buf);
+
+            return buf.ToArray();
+        }
+
         /// <exception cref="IOException"/>
         public static byte[] CreateStatusRequestV2Extension(IList<CertificateStatusRequestItemV2> statusRequestV2)
         {
@@ -1281,6 +1329,32 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             TlsProtocol.AssertEmpty(buf);
 
             return statusRequest;
+        }
+
+        /// <summary>
+        /// The counterpart of <see cref="CreateStatusRequestExtension13(CertificateStatus)"/>: the CertificateStatus a
+        /// server put on a TLS 1.3 CertificateEntry.
+        /// </summary>
+        /// <remarks>
+        /// RFC 8446 sec. 4.4.2.1 admits only the <see cref="CertificateStatusType.ocsp"/> form here, so anything else -
+        /// like the ocsp_multi of the deprecated status_request_v2 - is a decode_error rather than something to pass
+        /// on.
+        /// </remarks>
+        public static CertificateStatus ReadStatusRequestExtension13(TlsContext context, byte[] extensionData)
+        {
+            if (extensionData == null)
+                throw new ArgumentNullException(nameof(extensionData));
+
+            MemoryStream buf = new MemoryStream(extensionData, false);
+
+            CertificateStatus certificateStatus = CertificateStatus.Parse(context, buf);
+
+            TlsProtocol.AssertEmpty(buf);
+
+            if (CertificateStatusType.ocsp != certificateStatus.StatusType)
+                throw new TlsFatalAlert(AlertDescription.decode_error);
+
+            return certificateStatus;
         }
 
         /// <exception cref="IOException"/>

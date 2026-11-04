@@ -12,6 +12,5 @@
   </assembly>
   <assembly fullname="mscorlib">
     <type fullname="System.IAsyncDisposable" preserve="all" />
-    <type fullname="System.Threading.Tasks.ValueTask`1[[TurboHTTP.Core.Internal.RequestBodyReadSession, TurboHTTP.Core]]" preserve="all" />
   </assembly>
 </linker>

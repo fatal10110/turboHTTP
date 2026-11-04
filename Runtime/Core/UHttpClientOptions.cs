@@ -52,9 +52,12 @@ namespace TurboHTTP.Core
         public IHttpTransport Transport { get; set; }
 
         /// <summary>
-        /// Interceptor pipeline components.
-        /// Built-in interceptors contributed from enabled client options
+        /// Interceptor pipeline components, outermost first: index 0 sees the request first and the
+        /// response last. Built-in interceptors contributed from enabled client options
         /// (for example background networking or adaptive behavior) are prepended ahead of this list.
+        /// The client rejects orders known to be unsafe with <see cref="System.ArgumentException"/>:
+        /// a cache interceptor outside an auth interceptor, or a concurrency interceptor outside a
+        /// retry interceptor (canonical order: Documentation~/Modules/Interceptors.md).
         /// </summary>
         public List<IHttpInterceptor> Interceptors { get; set; } = new List<IHttpInterceptor>();
 
@@ -66,42 +69,65 @@ namespace TurboHTTP.Core
         public TimeSpan PluginShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
         /// <summary>
-        /// Optional adaptive network behavior policy.
-        /// </summary>
-        public AdaptivePolicy AdaptivePolicy { get; set; } = new AdaptivePolicy();
-
-        /// <summary>
         /// Optional proxy settings (or environment resolution).
         /// </summary>
         public ProxySettings Proxy { get; set; }
 
         /// <summary>
-        /// Optional background networking behavior for mobile-style pause/resume flows.
+        /// Whether this client may send cleartext traffic: <c>http://</c> requests and requests
+        /// through an <c>http://</c> proxy. Defaults to
+        /// <see cref="CleartextTrafficPolicy.DefaultAllowCleartext"/> (<see langword="false"/> on
+        /// iOS and Android players, <see langword="true"/> in the Editor and on desktop). When it is
+        /// <see langword="false"/>, or the installed <see cref="CleartextTrafficPolicy.PlatformPolicy"/>
+        /// refuses the host, the transport throws <see cref="UHttpException"/>
+        /// (<see cref="UHttpErrorType.InvalidRequest"/>) before it opens any socket. Raw sockets
+        /// are not covered by iOS App Transport Security, so this option is the opt-in for
+        /// cleartext on iOS. Proxy Basic credentials additionally require
+        /// <see cref="ProxySettings.AllowPlaintextProxyAuth"/>.
         /// </summary>
-        public BackgroundNetworkingPolicy BackgroundNetworkingPolicy { get; set; } = new BackgroundNetworkingPolicy();
+        public bool AllowCleartext { get; set; } = CleartextTrafficPolicy.DefaultAllowCleartext;
 
         /// <summary>
-        /// Optional platform bridge used by <see cref="BackgroundNetworkingInterceptor"/>
-        /// to acquire/release background execution scopes.
-        /// </summary>
-        public IBackgroundExecutionBridge BackgroundExecutionBridge { get; set; }
-
-        /// <summary>
-        /// Detector used by <see cref="AdaptiveInterceptor"/> for quality snapshots.
-        /// </summary>
-        public NetworkQualityDetector NetworkQualityDetector { get; set; }
-
-        /// <summary>
-        /// Whether to follow HTTP redirects automatically.
-        /// NOT enforced in Phase 3 — placeholder for Phase 4.
+        /// Whether to follow HTTP redirects automatically (default <c>true</c>). Applied by
+        /// <c>TurboHTTP.Middleware.RedirectInterceptor</c>, which must be in <see cref="Interceptors"/>:
+        /// without it a 3xx response is returned to the caller and the client writes a one-time
+        /// diagnostic warning. Set it to <c>false</c> to opt out (and silence the warning).
         /// </summary>
         public bool FollowRedirects { get; set; } = true;
 
         /// <summary>
-        /// Maximum number of redirects to follow.
-        /// NOT enforced in Phase 3 — placeholder for Phase 4.
+        /// Maximum number of redirects to follow (default 10). Applied by
+        /// <c>TurboHTTP.Middleware.RedirectInterceptor</c>; see <see cref="FollowRedirects"/>.
         /// </summary>
         public int MaxRedirects { get; set; } = 10;
+
+        /// <summary>
+        /// Default for <see cref="MaxBufferedResponseBodySize"/>: 100 MB.
+        /// </summary>
+        public const long DefaultMaxBufferedResponseBodySize = 100L * 1024 * 1024;
+
+        private long _maxBufferedResponseBodySize = DefaultMaxBufferedResponseBodySize;
+
+        /// <summary>
+        /// Maximum size, in bytes, of a response body that is collected into memory
+        /// (<see cref="UHttpClient.SendBufferedAsync"/> and the other buffered APIs). A larger body fails the
+        /// request with a <see cref="UHttpErrorType.NetworkError"/> and the transfer is aborted.
+        /// Defaults to 100 MB; 0 means unlimited. Streaming responses
+        /// (<see cref="UHttpClient.SendStreamingAsync"/>) are not capped by this option, because their
+        /// bytes do not accumulate in memory; <see cref="Http2Options.MaxResponseBodySize"/> is an
+        /// optional transport cap for every HTTP/2 response.
+        /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+        public long MaxBufferedResponseBodySize
+        {
+            get => _maxBufferedResponseBodySize;
+            set
+            {
+                if (value < 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Must be non-negative.");
+                _maxBufferedResponseBodySize = value;
+            }
+        }
 
         /// <summary>
         /// When true and <see cref="Transport"/> is set, the client will dispose
@@ -112,14 +138,28 @@ namespace TurboHTTP.Core
         public bool DisposeTransport { get; set; }
 
         /// <summary>
+        /// When true, the client disposes every <see cref="IDisposable"/> interceptor in
+        /// <see cref="Interceptors"/> on <see cref="UHttpClient.Dispose()"/>, last to first, before
+        /// an owned transport. Default false: the code that created the interceptors owns them.
+        /// <see cref="Clone"/> shares interceptor instances, so several clients may use one cache,
+        /// cookie or concurrency interceptor; set this only when the client is their sole user.
+        /// Interceptors contributed by plugins belong to the plugin and are never disposed through
+        /// this option.
+        /// </summary>
+        public bool DisposeInterceptors { get; set; }
+
+        /// <summary>
         /// TLS backend selection strategy.
         /// Default is Auto, which selects the best provider for the current platform.
         /// </summary>
         /// <remarks>
-        /// - Auto: Prefer SslStream; use BouncyCastle only if platform TLS is unavailable.
-        ///   The first TLS handshake probes SslStream viability; failures are cached process-wide.
+        /// - Auto: Uses SslStream. Auto never selects BouncyCastle and never switches providers
+        ///   after a handshake failure; the error is reported to the caller.
         /// - SslStream: Force use of System.Net.Security.SslStream (may not support ALPN on all platforms)
-        /// - BouncyCastle: Force use of BouncyCastle TLS (guaranteed ALPN support everywhere)
+        /// - BouncyCastle: Force use of BouncyCastle TLS (guaranteed ALPN support everywhere).
+        ///   Requires the <c>TURBOHTTP_BOUNCYCASTLE</c> scripting define symbol; without it every
+        ///   TLS connection fails with a <see cref="UHttpException"/> whose inner exception is an
+        ///   <see cref="System.InvalidOperationException"/> naming the define.
         /// 
         /// Note: Advanced security features (certificate pinning, custom validation callbacks)
         /// are planned for Phase 6 (Advanced Middleware) and not yet available.
@@ -130,7 +170,8 @@ namespace TurboHTTP.Core
         /// Creates a deep copy of these options. Headers and pipeline component lists are
         /// cloned; Transport is a shared reference (NOT snapshotted). Interceptor
         /// instances are shared references. Stateful interceptors are therefore
-        /// shared across option clones by design.
+        /// shared across option clones by design; see <see cref="DisposeInterceptors"/> for who
+        /// disposes them.
         /// </summary>
         public UHttpClientOptions Clone()
         {
@@ -142,15 +183,14 @@ namespace TurboHTTP.Core
                 Transport = Transport,
                 Interceptors = Interceptors != null ? new List<IHttpInterceptor>(Interceptors) : new List<IHttpInterceptor>(),
                 PluginShutdownTimeout = PluginShutdownTimeout,
-                AdaptivePolicy = AdaptivePolicy?.Clone() ?? new AdaptivePolicy(),
                 Proxy = Proxy?.Clone(),
-                BackgroundNetworkingPolicy = BackgroundNetworkingPolicy?.Clone() ?? new BackgroundNetworkingPolicy(),
-                BackgroundExecutionBridge = BackgroundExecutionBridge,
-                NetworkQualityDetector = NetworkQualityDetector,
+                AllowCleartext = AllowCleartext,
                 FollowRedirects = FollowRedirects,
                 MaxRedirects = MaxRedirects,
                 DisposeTransport = DisposeTransport,
+                DisposeInterceptors = DisposeInterceptors,
                 TlsBackend = TlsBackend,
+                MaxBufferedResponseBodySize = MaxBufferedResponseBodySize,
                 ConnectionPool = ConnectionPool?.Clone() ?? new ConnectionPoolOptions(),
                 Http2 = Http2?.Clone() ?? new Http2Options(),
                 Streaming = Streaming?.Clone() ?? new StreamingOptions()

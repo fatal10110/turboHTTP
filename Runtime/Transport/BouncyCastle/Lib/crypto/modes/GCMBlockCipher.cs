@@ -22,6 +22,17 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
     /// <summary>
     /// Implements the Galois/Counter mode (GCM) detailed in NIST Special Publication 800-38D.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// GCM provides both confidentiality and data origin authentication (AEAD). 
+    /// It requires a block cipher with a 128-bit block size, typically AES.
+    /// </para>
+    /// <para>
+    /// <b>CRITICAL SECURITY WARNING:</b> For encryption, a unique nonce (IV) MUST be used for every 
+    /// invocation with the same key. Reusing a nonce with the same key catastrophically compromises 
+    /// the security of the cipher, allowing an attacker to recover the authentication key or plaintext.
+    /// </para>
+    /// </remarks>
     public sealed class GcmBlockCipher
         : IAeadBlockCipher
     {
@@ -37,17 +48,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 
         internal static IGcmMultiplier CreateGcmMultiplier()
         {
-            if (BasicGcmMultiplier.IsHardwareAccelerated)
-                return new BasicGcmMultiplier();
-
-            return new Tables4kGcmMultiplier();
+            // turbo-strip: E14 always BasicGcmMultiplier (constant-time GHASH), never the Tables4k lookup tables
+            return new BasicGcmMultiplier();
         }
 
         private const int BlockSize = 16;
 
         private readonly IBlockCipher	cipher;
         private readonly IGcmMultiplier	multiplier;
-        private IGcmExponentiator exp;
+        private BasicGcmExponentiator exp;
 
         // These fields are set by Init and not modified by processing
         private bool        forEncryption;
@@ -76,6 +85,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         private ulong       atLength;
         private ulong       atLengthPre;
 
+        /// <summary>
+        /// Base constructor.
+        /// </summary>
+        /// <param name="c">The underlying block cipher to use (must have a 128-bit block size).</param>
         public GcmBlockCipher(
             IBlockCipher c)
             : this(c, null)
@@ -90,19 +103,18 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             if (c.GetBlockSize() != BlockSize)
                 throw new ArgumentException("cipher required with a block size of " + BlockSize + ".");
 
-            if (m == null)
-            {
-                m = CreateGcmMultiplier();
-            }
-
             this.cipher = c;
-            this.multiplier = m;
+            this.multiplier = m ?? CreateGcmMultiplier();
         }
 
+        /// <summary>The name of the algorithm this cipher implements (e.g., "AES/GCM").</summary>
         public string AlgorithmName => cipher.AlgorithmName + "/GCM";
 
+        /// <summary>Return the underlying block cipher being wrapped.</summary>
         public IBlockCipher UnderlyingCipher => cipher;
 
+        /// <summary>Return the block size for GCM (fixed at 16 bytes).</summary>
+        /// <returns>16.</returns>
         public int GetBlockSize()
         {
             return BlockSize;
@@ -112,13 +124,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         /// MAC sizes from 32 bits to 128 bits (must be a multiple of 8) are supported. The default is 128 bits.
         /// Sizes less than 96 are not recommended, but are supported for specialized applications.
         /// </remarks>
+        /// <summary>
+        /// Initialise the GCM cipher.
+        /// </summary>
+        /// <param name="forEncryption">True if initializing for encryption, false for decryption.</param>
+        /// <param name="parameters">The parameters required (typically <see cref="AeadParameters"/> or <see cref="ParametersWithIV"/>).</param>
+        /// <exception cref="ArgumentException">If parameters are invalid or nonce is reused for encryption.</exception>
         public void Init(bool forEncryption, ICipherParameters parameters)
         {
             this.forEncryption = forEncryption;
             this.macBlock = null;
             this.initialised = true;
 
-            KeyParameter keyParam;
+            KeyParameter keyParameter = null;
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
             ReadOnlySpan<byte> newNonce;
 #else
@@ -127,6 +145,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 
             if (parameters is AeadParameters aeadParameters)
             {
+                int macSizeBits = aeadParameters.MacSize;
+                if (macSizeBits < 32 || macSizeBits > 128 || macSizeBits % 8 != 0)
+                    throw new ArgumentException("Invalid value for MAC size: " + macSizeBits);
+
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
                 newNonce = aeadParameters.Nonce;
 #else
@@ -134,12 +156,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 #endif
                 initialAssociatedText = aeadParameters.GetAssociatedText();
 
-                int macSizeBits = aeadParameters.MacSize;
-                if (macSizeBits < 32 || macSizeBits > 128 || macSizeBits % 8 != 0)
-                    throw new ArgumentException("Invalid value for MAC size: " + macSizeBits);
-
                 macSize = macSizeBits / 8;
-                keyParam = aeadParameters.Key;
+                keyParameter = aeadParameters.Key;
             }
             else if (parameters is ParametersWithIV withIV)
             {
@@ -150,7 +168,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 #endif
                 initialAssociatedText = null;
                 macSize = 16;
-                keyParam = (KeyParameter)withIV.Parameters;
+
+                if (withIV.Parameters != null)
+                {
+                    keyParameter = withIV.Parameters as KeyParameter
+                        ?? throw new ArgumentException("invalid parameters passed to GCM");
+                }
             }
             else
             {
@@ -171,10 +194,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
                 if (nonce != null && Arrays.AreEqual(nonce, newNonce))
 #endif
                 {
-                    if (keyParam == null)
+                    if (keyParameter == null)
                         throw new ArgumentException("cannot reuse nonce for GCM encryption");
 
-                    if (lastKey != null && keyParam.FixedTimeEquals(lastKey))
+                    if (lastKey != null && keyParameter.FixedTimeEquals(lastKey))
                         throw new ArgumentException("cannot reuse nonce for GCM encryption");
                 }
             }
@@ -184,18 +207,18 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
 #else
             nonce = newNonce;
 #endif
-            if (keyParam != null)
+            if (keyParameter != null)
             {
-                lastKey = keyParam.GetKey();
+                lastKey = keyParameter.GetKey();
             }
 
             // TODO Restrict macSize to 16 if nonce length not 12?
 
             // Cipher always used in forward mode
             // if keyParam is null we're reusing the last key.
-            if (keyParam != null)
+            if (keyParameter != null)
             {
-                cipher.Init(true, keyParam);
+                cipher.Init(true, keyParameter);
 
                 this.H = new byte[BlockSize];
                 cipher.ProcessBlock(H, 0, H, 0);
@@ -212,7 +235,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
                     var H3 = GcmUtilities.Multiply(H1, H2);
                     var H4 = GcmUtilities.Square(H2);
 
-                    HPow = new Vector128<ulong>[4]{ H4, H3, H2, H1 };
+                    HPow = new[]{ H4, H3, H2, H1 };
                 }
 #endif
             }
@@ -259,11 +282,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             }
         }
 
+        /// <summary>Return the Message Authentication Code (MAC) generated or verified by the cipher.</summary>
+        /// <returns>A byte array containing the MACBlock.</returns>
         public byte[] GetMac()
         {
             return macBlock == null ? new byte[macSize] : (byte[])macBlock.Clone();
         }
 
+        /// <summary>Return the size of the output buffer required for an input of <paramref name="len"/> bytes.</summary>
+        /// <param name="len">Input length.</param>
+        /// <returns>Required output buffer size.</returns>
         public int GetOutputSize(int len)
         {
             int totalData = len + bufOff;
@@ -274,6 +302,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             return totalData < macSize ? 0 : totalData - macSize;
         }
 
+        /// <summary>Return the size of the output buffer required for a <c>ProcessBytes</c> call with <paramref name="len"/> bytes.</summary>
+        /// <param name="len">Input length.</param>
+        /// <returns>Update output size.</returns>
         public int GetUpdateOutputSize(int len)
         {
             int totalData = len + bufOff;
@@ -287,6 +318,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             return totalData - totalData % BlockSize;
         }
 
+        /// <summary>Process a single byte of Additional Authenticated Data (AAD).</summary>
+        /// <param name="input">The byte to be processed.</param>
         public void ProcessAadByte(byte input)
         {
             CheckStatus();
@@ -301,6 +334,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             }
         }
 
+        /// <summary>Process a sequence of bytes of Additional Authenticated Data (AAD).</summary>
+        /// <param name="inBytes">The input buffer containing AAD.</param>
+        /// <param name="inOff">The offset into the input buffer.</param>
+        /// <param name="len">The length of the data to process.</param>
         public void ProcessAadBytes(byte[] inBytes, int inOff, int len)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
@@ -341,6 +378,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        /// <summary>Process a span of bytes of Additional Authenticated Data (AAD).</summary>
+        /// <param name="input">The input span containing AAD.</param>
         public void ProcessAadBytes(ReadOnlySpan<byte> input)
         {
             CheckStatus();
@@ -395,6 +434,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
             }
         }
 
+        /// <summary>Process a single byte of data.</summary>
+        /// <param name="input">The input byte.</param>
+        /// <param name="output">The output buffer.</param>
+        /// <param name="outOff">The offset into the output buffer.</param>
+        /// <returns>Number of bytes written to the output buffer.</returns>
+        /// <exception cref="DataLengthException">If output buffer is too short.</exception>
         public int ProcessByte(byte	input, byte[] output, int outOff)
         {
             CheckStatus();
@@ -441,6 +486,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        /// <summary>Process a single byte of data using Spans.</summary>
+        /// <param name="input">The input byte.</param>
+        /// <param name="output">The output span.</param>
+        /// <returns>Number of bytes written to the output span.</returns>
         public int ProcessByte(byte input, Span<byte> output)
         {
             CheckStatus();
@@ -479,6 +528,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         }
 #endif
 
+        /// <summary>Process a sequence of bytes from the input buffer.</summary>
+        /// <param name="input">The input buffer.</param>
+        /// <param name="inOff">The offset into the input buffer.</param>
+        /// <param name="len">The length of data to process.</param>
+        /// <param name="output">The output buffer.</param>
+        /// <param name="outOff">The offset into the output buffer.</param>
+        /// <returns>The number of bytes written to the output buffer.</returns>
         public int ProcessBytes(byte[] input, int inOff, int len, byte[] output, int outOff)
         {
             CheckStatus();
@@ -631,6 +687,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        /// <summary>Process a span of bytes from the input.</summary>
+        /// <param name="input">The input span.</param>
+        /// <param name="output">The output span.</param>
+        /// <returns>The number of bytes written to the output span.</returns>
         public int ProcessBytes(ReadOnlySpan<byte> input, Span<byte> output)
         {
             CheckStatus();
@@ -806,6 +866,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         }
 #endif
 
+        /// <summary>Finish the operation, generating or verifying the Message Authentication Code (MAC).</summary>
+        /// <param name="output">The output buffer for remaining processed data and/or MAC.</param>
+        /// <param name="outOff">The offset into the output buffer.</param>
+        /// <returns>Number of bytes written to the output buffer.</returns>
+        /// <exception cref="InvalidCipherTextException">If the MAC check fails.</exception>
         public int DoFinal(byte[] output, int outOff)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
@@ -926,6 +991,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        /// <summary>Finish the operation using Spans, generating or verifying the MAC.</summary>
+        /// <param name="output">The output span for remaining data and/or MAC.</param>
+        /// <returns>Number of bytes written to the output span.</returns>
+        /// <exception cref="InvalidCipherTextException">If the MAC check fails.</exception>
         public int DoFinal(Span<byte> output)
         {
             CheckStatus();
@@ -1042,6 +1111,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes
         }
 #endif
 
+        /// <summary>Reset the cipher to its initial state (ready for a new message with the same key but DIFFERENT nonce).</summary>
         public void Reset()
         {
             Reset(true);

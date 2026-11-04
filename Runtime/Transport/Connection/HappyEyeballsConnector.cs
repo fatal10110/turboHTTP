@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Connection
 {
@@ -30,6 +32,23 @@ namespace TurboHTTP.Transport.Connection
             public bool Success => Socket != null;
         }
 
+        /// <summary>
+        /// Connects to the first reachable address (RFC 8305 Happy Eyeballs v2). Attempts start
+        /// one at a time, <see cref="HappyEyeballsOptions.AttemptSpacingDelay"/> apart within a
+        /// family and <see cref="HappyEyeballsOptions.FamilyStaggerDelay"/> after the preferred
+        /// family for the other family, so a blackholed address never blocks a later healthy one.
+        /// The first success wins; losing attempts are cancelled and their sockets disposed.
+        /// </summary>
+        /// <param name="addresses">Resolved addresses (duplicates and nulls are ignored).</param>
+        /// <param name="port">Remote port.</param>
+        /// <param name="connectTimeout">
+        /// Wall-clock deadline for the whole connect (every attempt, sequential mode included).
+        /// <see cref="Timeout.InfiniteTimeSpan"/>, zero or a negative value disables it.
+        /// When it expires a <see cref="TimeoutException"/> is thrown.
+        /// </param>
+        /// <param name="options">Racing options.</param>
+        /// <param name="cancellationToken">Caller cancellation; surfaces as <see cref="OperationCanceledException"/>.</param>
+        /// <param name="connector">Dialer seam for tests; defaults to a TCP connect.</param>
         public static async Task<Socket> ConnectAsync(
             IPAddress[] addresses,
             int port,
@@ -50,27 +69,56 @@ namespace TurboHTTP.Transport.Connection
             if (deduped.Count == 0)
                 throw new SocketException((int)SocketError.HostNotFound);
 
-            var familyOrder = Partition(deduped, options.PreferIpv6);
-            var preferred = familyOrder.preferred;
-            var alternate = familyOrder.alternate;
+            cancellationToken.ThrowIfCancellationRequested();
 
-            if (!options.Enable || preferred.Count == 0 || alternate.Count == 0)
-            {
-                return await ConnectSequentialAsync(deduped, port, cancellationToken, connector).ConfigureAwait(false);
-            }
-
-            var schedule = BuildSchedule(preferred, alternate, options);
+            // The deadline covers every path, including the sequential one (#163).
             CancellationTokenSource timeoutCts = connectTimeout > TimeSpan.Zero && connectTimeout != Timeout.InfiniteTimeSpan
                 ? new CancellationTokenSource(connectTimeout)
                 : null;
+            CancellationTokenSource deadlineCts = timeoutCts != null
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
+                : null;
+            var token = deadlineCts?.Token ?? cancellationToken;
+
+            try
+            {
+                if (!options.Enable)
+                    return await ConnectSequentialAsync(deduped, port, token, connector).ConfigureAwait(false);
+
+                // A single family races too: its addresses are staggered by AttemptSpacingDelay
+                // instead of waiting for each attempt to fail (RFC 8305 section 5).
+                var familyOrder = Partition(deduped, options.PreferIpv6);
+                var schedule = BuildSchedule(familyOrder.preferred, familyOrder.alternate, options);
+                return await RaceAsync(schedule, port, options, token, connector).ConfigureAwait(false);
+            }
+            catch (Exception) when (timeoutCts != null &&
+                                    timeoutCts.IsCancellationRequested &&
+                                    !cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    "Connection attempt timed out after " + (long)connectTimeout.TotalMilliseconds + "ms.");
+            }
+            finally
+            {
+                try { deadlineCts?.Dispose(); } catch { }
+                try { timeoutCts?.Dispose(); } catch { }
+            }
+        }
+
+        private static async Task<Socket> RaceAsync(
+            List<ScheduledAttempt> schedule,
+            int port,
+            HappyEyeballsOptions options,
+            CancellationToken cancellationToken,
+            Func<IPAddress, int, CancellationToken, Task<Socket>> connector)
+        {
             CancellationTokenSource linkedCts = null;
             List<Task<AttemptResult>> activeTasks = null;
 
             try
             {
-                linkedCts = timeoutCts != null
-                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
-                    : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                // Own source so the winner can cancel the losers without touching the caller.
+                linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var ct = linkedCts.Token;
 
                 activeTasks = new List<Task<AttemptResult>>();
@@ -139,13 +187,13 @@ namespace TurboHTTP.Transport.Connection
                         failures.Add(result.Exception);
                 }
 
-                if (timeoutCts != null && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                    throw new TimeoutException("Happy Eyeballs connection timed out.");
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (failures.Count == 0)
                     throw new SocketException((int)SocketError.HostUnreachable);
+
+                if (failures.Count == 1)
+                    ExceptionDispatchInfo.Capture(failures[0]).Throw();
 
                 throw new AggregateException("All Happy Eyeballs connection attempts failed.", failures);
             }
@@ -165,7 +213,6 @@ namespace TurboHTTP.Transport.Connection
                 }
 
                 try { linkedCts?.Dispose(); } catch { }
-                try { timeoutCts?.Dispose(); } catch { }
             }
         }
 
@@ -342,6 +389,24 @@ namespace TurboHTTP.Transport.Connection
             return (preferred, alternate);
         }
 
+        /// <summary>
+        /// Enables SO_KEEPALIVE (RFC 1122 section 4.2.3.6) so the OS probes idle pooled
+        /// connections. The probe timing keeps the OS defaults: Unity's .NET Standard 2.1 profile
+        /// has no TcpKeepAliveTime/TcpKeepAliveInterval options (configurable socket tuning is
+        /// planned with Phase 23). A target that rejects the option keeps working without it
+        /// (#47; device behavior is needs-device-validation under #99).
+        /// </summary>
+        internal static void ConfigureKeepAlive(Socket socket)
+        {
+            try
+            {
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            }
+            catch (SocketException) { }
+            catch (PlatformNotSupportedException) { }
+            catch (NotSupportedException) { }
+        }
+
         private static async Task<Socket> ConnectEndpointAsync(
             IPAddress address,
             int port,
@@ -354,27 +419,13 @@ namespace TurboHTTP.Transport.Connection
                 {
                     NoDelay = true
                 };
+                ConfigureKeepAlive(socket);
 
+                // Socket.ConnectAsync(EndPoint) takes no token. On cancellation the wait is
+                // abandoned with the connect task observed, and the catch below disposes the
+                // socket, which ends the connect; its fault is never unobserved (#172).
                 var connectTask = socket.ConnectAsync(new IPEndPoint(address, port));
-                if (!cancellationToken.CanBeCanceled)
-                {
-                    await connectTask.ConfigureAwait(false);
-                }
-                else
-                {
-                    var cancelSignal = new TaskCompletionSource<bool>(
-                        TaskCreationOptions.RunContinuationsAsynchronously);
-                    using var registration = cancellationToken.Register(
-                        () => cancelSignal.TrySetResult(true));
-                    var completed = await Task.WhenAny(connectTask, cancelSignal.Task).ConfigureAwait(false);
-                    if (!ReferenceEquals(completed, connectTask))
-                    {
-                        try { socket.Dispose(); } catch { }
-                        throw new OperationCanceledException(cancellationToken);
-                    }
-
-                    await connectTask.ConfigureAwait(false);
-                }
+                await AbandonableTask.WaitAsync(connectTask, cancellationToken).ConfigureAwait(false);
 
                 return socket;
             }

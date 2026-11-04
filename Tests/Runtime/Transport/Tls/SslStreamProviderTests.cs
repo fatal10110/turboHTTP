@@ -45,6 +45,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 #if TURBOHTTP_INTEGRATION_TESTS
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_ValidServer_Succeeds()        {
             Task.Run(async () =>
             {
@@ -58,6 +59,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_ExpiredCert_ThrowsAuthenticationException()
         {
             Task.Run(async () =>
@@ -76,6 +78,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_WithAlpn_NegotiatesH2()        {
             Task.Run(async () =>
             {
@@ -94,6 +97,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_WithAlpn_NegotiatesHttp11()        {
             Task.Run(async () =>
             {
@@ -111,12 +115,14 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_RealServer_SucceedsWithTls12OrHigher()        {
             WrapAsync_ValidServer_Succeeds();
         }
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_CancellationRequested_ThrowsOperationCanceledException()        {
             Task.Run(async () =>
             {
@@ -148,12 +154,12 @@ namespace TurboHTTP.Tests.Transport.Tls
             }
             catch (TimeoutException)
             {
-                Assert.Ignore($"TCP connect to {tcpHost}:443 timed out in this environment.");
+                TestRequirements.IgnoreEnvironment($"TCP connect to {tcpHost}:443 timed out in this environment.");
                 throw;
             }
             catch (SocketException ex)
             {
-                Assert.Ignore($"TCP connect to {tcpHost}:443 failed ({ex.SocketErrorCode}) in this environment.");
+                TestRequirements.IgnoreEnvironment($"TCP connect to {tcpHost}:443 failed ({ex.SocketErrorCode}) in this environment.");
                 throw;
             }
 
@@ -164,7 +170,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             var completed = await Task.WhenAny(wrapTask, Task.Delay(TimeSpan.FromSeconds(30), CancellationToken.None));
             if (completed != wrapTask)
             {
-                Assert.Ignore($"SslStream TLS handshake to {tlsHost} exceeded hard timeout in this environment.");
+                TestRequirements.IgnoreEnvironment($"SslStream TLS handshake to {tlsHost} exceeded hard timeout in this environment.");
                 throw new TimeoutException();
             }
 

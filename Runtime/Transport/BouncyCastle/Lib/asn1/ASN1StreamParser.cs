@@ -3,17 +3,20 @@ using System.IO;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 {
-	public class Asn1StreamParser
-	{
-		private readonly Stream _in;
-		private readonly int _limit;
+    public class Asn1StreamParser
+    {
+        internal static Asn1StreamParser CreateSubParser(Stream sub, int parentDepth, int limit, byte[] tmp) =>
+            new Asn1StreamParser(sub, Asn1InputStream.DecrementDepth(parentDepth), limit, tmp);
 
-        private readonly byte[][] tmpBuffers;
+        private readonly Stream m_in;
+        private readonly int m_depth;
+        private readonly int m_limit;
+        private readonly byte[] m_tmp;
 
         public Asn1StreamParser(Stream input)
-			: this(input, Asn1InputStream.FindLimit(input))
-		{
-		}
+            : this(input, Asn1InputStream.FindLimit(input))
+        {
+        }
 
         public Asn1StreamParser(byte[] encoding)
             : this(new MemoryStream(encoding, false), encoding.Length)
@@ -21,25 +24,28 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         }
 
         public Asn1StreamParser(Stream input, int limit)
-            : this(input, limit, new byte[16][])
-		{
+            : this(input, Asn1InputStream.FindDepth(), limit, tmp: new byte[16])
+        {
         }
 
-        internal Asn1StreamParser(Stream input, int limit, byte[][] tmpBuffers)
+        private Asn1StreamParser(Stream input, int depth, int limit, byte[] tmp)
         {
             if (!input.CanRead)
-                throw new ArgumentException("Expected stream to be readable", "input");
+                throw new ArgumentException("Expected stream to be readable", nameof(input));
 
-            this._in = input;
-            this._limit = limit;
-            this.tmpBuffers = tmpBuffers;
+            m_in = input;
+            m_depth = depth;
+            m_limit = limit;
+            m_tmp = tmp;
         }
 
-		public virtual IAsn1Convertible ReadObject()
-		{
-			int tagHdr = _in.ReadByte();
-			if (tagHdr < 0)
-				return null;
+        public int Limit => m_limit;
+
+        public virtual IAsn1Convertible ReadObject()
+        {
+            int tagHdr = m_in.ReadByte();
+            if (tagHdr < 0)
+                return null;
 
             return ImplParseObject(tagHdr);
         }
@@ -47,42 +53,35 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         internal IAsn1Convertible ImplParseObject(int tagHdr)
         {
             // turn off looking for "00" while we resolve the tag
-            Set00Check(false);
+            DisableParentEofDetect();
 
-			//
-			// calculate tag number
-			//
-			int tagNo = Asn1InputStream.ReadTagNumber(_in, tagHdr);
+            int tagNo = Asn1InputStream.ReadTagNumber(m_in, tagHdr);
+            int length = Asn1InputStream.ReadLength(m_in);
 
-			//
-			// calculate length
-			//
-			int length = Asn1InputStream.ReadLength(_in, _limit,
-                tagNo == Asn1Tags.BitString || tagNo == Asn1Tags.OctetString || tagNo == Asn1Tags.Sequence ||
-                tagNo == Asn1Tags.Set || tagNo == Asn1Tags.External);
-
-			if (length < 0) // indefinite-length method
-			{
+            if (length < 0) // indefinite-length method
+            {
                 if (0 == (tagHdr & Asn1Tags.Constructed))
                     throw new IOException("indefinite-length primitive encoding encountered");
 
-                IndefiniteLengthInputStream indIn = new IndefiniteLengthInputStream(_in, _limit);
-                Asn1StreamParser sp = new Asn1StreamParser(indIn, _limit, tmpBuffers);
+                IndefiniteLengthInputStream indIn = new IndefiniteLengthInputStream(m_in, m_limit);
+                Asn1StreamParser sp = CreateSubParser(indIn, m_depth, m_limit, m_tmp);
 
                 int tagClass = tagHdr & Asn1Tags.Private;
                 if (0 != tagClass)
                     return new BerTaggedObjectParser(tagClass, tagNo, sp);
 
                 return sp.ParseImplicitConstructedIL(tagNo);
-			}
-			else
-			{
-				DefiniteLengthInputStream defIn = new DefiniteLengthInputStream(_in, length, _limit);
+            }
+            else
+            {
+                // NOTE: Length can exceed the stream limit as long as we are parsing/streaming
+                int subLimit = System.Math.Min(m_limit, length);
+                DefiniteLengthInputStream defIn = new DefiniteLengthInputStream(m_in, length, subLimit);
 
                 if (0 == (tagHdr & Asn1Tags.Flags))
                     return ParseImplicitPrimitive(tagNo, defIn);
 
-                Asn1StreamParser sp = new Asn1StreamParser(defIn, defIn.Remaining, tmpBuffers);
+                Asn1StreamParser sp = CreateSubParser(defIn, m_depth, subLimit, m_tmp);
 
                 int tagClass = tagHdr & Asn1Tags.Private;
                 if (0 != tagClass)
@@ -93,14 +92,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
 
                 return sp.ParseImplicitConstructedDL(tagNo);
-			}
-		}
+            }
+        }
 
         internal Asn1Object LoadTaggedDL(int tagClass, int tagNo, bool constructed)
         {
             if (!constructed)
             {
-                byte[] contentsOctets = ((DefiniteLengthInputStream)_in).ToArray();
+                byte[] contentsOctets = ((DefiniteLengthInputStream)m_in).ToArray();
                 return Asn1TaggedObject.CreatePrimitive(tagClass, tagNo, contentsOctets);
             }
 
@@ -136,7 +135,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 // TODO[asn1] DLSequenceParser
                 return new DerSequenceParser(this);
             default:
-				throw new Asn1Exception("unknown DL object encountered: 0x" + univTagNo.ToString("X"));
+                throw new Asn1Exception("unknown DL object encountered: 0x" + univTagNo.ToString("X"));
             }
         }
 
@@ -164,7 +163,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         internal IAsn1Convertible ParseImplicitPrimitive(int univTagNo)
         {
-            return ParseImplicitPrimitive(univTagNo, (DefiniteLengthInputStream)_in);
+            return ParseImplicitPrimitive(univTagNo, (DefiniteLengthInputStream)m_in);
         }
 
         internal IAsn1Convertible ParseImplicitPrimitive(int univTagNo, DefiniteLengthInputStream defIn)
@@ -178,17 +177,27 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 throw new Asn1Exception("externals must use constructed encoding (see X.690 8.18)");
             case Asn1Tags.OctetString:
                 return new DerOctetStringParser(defIn);
-			case Asn1Tags.Set:
-				throw new Asn1Exception("sequences must use constructed encoding (see X.690 8.9.1/8.10.1)");
-			case Asn1Tags.Sequence:
-				throw new Asn1Exception("sets must use constructed encoding (see X.690 8.11.1/8.12.1)");
+            case Asn1Tags.Set:
+                throw new Asn1Exception("sequences must use constructed encoding (see X.690 8.9.1/8.10.1)");
+            case Asn1Tags.Sequence:
+                throw new Asn1Exception("sets must use constructed encoding (see X.690 8.11.1/8.12.1)");
             }
+
+            Asn1InputStream.CheckLength(defIn.Remaining, defIn.Limit);
 
             try
             {
-                return Asn1InputStream.CreatePrimitiveDerObject(univTagNo, defIn, tmpBuffers);
+                return Asn1InputStream.CreatePrimitiveDerObject(univTagNo, defIn, m_tmp);
             }
             catch (ArgumentException e)
+            {
+                throw new Asn1Exception("corrupted stream detected", e);
+            }
+            catch (InvalidOperationException e)
+            {
+                throw new Asn1Exception("corrupted stream detected", e);
+            }
+            catch (IndexOutOfRangeException e)
             {
                 throw new Asn1Exception("corrupted stream detected", e);
             }
@@ -197,9 +206,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         internal IAsn1Convertible ParseObject(int univTagNo)
         {
             if (univTagNo < 0 || univTagNo > 30)
-                throw new ArgumentException("invalid universal tag number: " + univTagNo, "univTagNo");
+                throw new ArgumentException("invalid universal tag number: " + univTagNo, nameof(univTagNo));
 
-            int tagHdr = _in.ReadByte();
+            int tagHdr = m_in.ReadByte();
             if (tagHdr < 0)
                 return null;
 
@@ -211,7 +220,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         internal Asn1TaggedObjectParser ParseTaggedObject()
         {
-            int tagHdr = _in.ReadByte();
+            int tagHdr = m_in.ReadByte();
             if (tagHdr < 0)
                 return null;
 
@@ -225,7 +234,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         // TODO[asn1] Prefer 'LoadVector'
         internal Asn1EncodableVector ReadVector()
         {
-            int tagHdr = _in.ReadByte();
+            int tagHdr = m_in.ReadByte();
             if (tagHdr < 0)
                 return new Asn1EncodableVector(0);
 
@@ -236,16 +245,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
                 v.Add(obj.ToAsn1Object());
             }
-            while ((tagHdr = _in.ReadByte()) >= 0);
+            while ((tagHdr = m_in.ReadByte()) >= 0);
             return v;
         }
 
-		private void Set00Check(bool enabled)
-		{
-			if (_in is IndefiniteLengthInputStream indef)
-			{
-				indef.SetEofOn00(enabled);
-			}
-		}
-	}
+        private void DisableParentEofDetect()
+        {
+            if (m_in is IndefiniteLengthInputStream indef)
+            {
+                indef.SetEofOn00(false);
+            }
+        }
+    }
 }

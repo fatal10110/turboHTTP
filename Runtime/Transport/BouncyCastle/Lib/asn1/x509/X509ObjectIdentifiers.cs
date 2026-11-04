@@ -23,27 +23,44 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         //   {iso(1) identified-organization(3) oiw(14) secsig(3) algorithms(2) 26 }    //
         public static readonly DerObjectIdentifier IdSha1 = new DerObjectIdentifier("1.3.14.3.2.26");
 
-		//
+        //
         // ripemd160 OBJECT IDENTIFIER ::=
         //      {iso(1) identified-organization(3) TeleTrust(36) algorithm(3) hashAlgorithm(2) RipeMD-160(1)}
         //
         public static readonly DerObjectIdentifier RipeMD160 = new DerObjectIdentifier("1.3.36.3.2.1");
 
-		//
+        //
         // ripemd160WithRSAEncryption OBJECT IDENTIFIER ::=
         //      {iso(1) identified-organization(3) TeleTrust(36) algorithm(3) signatureAlgorithm(3) rsaSignature(1) rsaSignatureWithripemd160(2) }
         //
         public static readonly DerObjectIdentifier RipeMD160WithRsaEncryption = new DerObjectIdentifier("1.3.36.3.3.1.2");
 
-		public static readonly DerObjectIdentifier IdEARsa = new DerObjectIdentifier("2.5.8.1.1");
+        public static readonly DerObjectIdentifier IdEARsa = new DerObjectIdentifier("2.5.8.1.1");
 
-		// id-pkix
-		public static readonly DerObjectIdentifier IdPkix = new DerObjectIdentifier("1.3.6.1.5.5.7");
+        // id-pkix
+        public static readonly DerObjectIdentifier IdPkix = new DerObjectIdentifier("1.3.6.1.5.5.7");
 
-		//
-		// private internet extensions
-		//
-		public static readonly DerObjectIdentifier IdPE = IdPkix.Branch("1");
+        //
+        // private internet extensions
+        //
+        public static readonly DerObjectIdentifier IdPE = IdPkix.Branch("1");
+
+        /**
+         * id-pe-relatedCert OBJECT IDENTIFIER ::= { iso(1)
+         *        identified-organization(3) dod(6) internet(1)
+         *        security(5) mechanisms(5) pkix(7) pe(1) 36 }
+         * <p>
+         * Per RFC 9763 sec. 3, the {@code RelatedCertificate} certificate
+         * extension. The extension MUST
+         * appear in an end-entity certificate only, SHOULD NOT be marked critical,
+         * and carries a digest of one previously-issued certificate (the "related
+         * certificate") that the CA is asserting belongs to the same end entity —
+         * the mechanism that lets a verifier link a classical and a post-quantum
+         * certificate during hybrid PQ migration without requiring composite
+         * signature algorithms.
+         * </p>
+         */
+        public static readonly DerObjectIdentifier id_pe_relatedCert = IdPE.Branch("36");
 
         /** 1.3.6.1.5.5.7.6 */
         public static readonly DerObjectIdentifier pkix_algorithms = IdPkix.Branch("6");
@@ -76,6 +93,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
          */
         public static readonly DerObjectIdentifier id_ecdsa_with_shake256 = pkix_algorithms.Branch("33");
 
+        public static readonly DerObjectIdentifier id_alg_noSignature = pkix_algorithms.Branch("2");
+
+        public static readonly DerObjectIdentifier id_alg_unsigned = pkix_algorithms.Branch("36");
+
         public static readonly DerObjectIdentifier id_pda = IdPkix.Branch("9");
 
         //
@@ -85,12 +106,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         public static readonly DerObjectIdentifier IdADOcsp = IdAD.Branch("1");
         public static readonly DerObjectIdentifier IdADCAIssuers = IdAD.Branch("2");
 
-		//
-		// OID for ocsp and crl uri in AuthorityInformationAccess extension
-		//
-		public static readonly DerObjectIdentifier OcspAccessMethod = IdADOcsp;
-		public static readonly DerObjectIdentifier CrlAccessMethod = IdADCAIssuers;
+        //
+        // OID for ocsp and crl uri in AuthorityInformationAccess extension
+        //
+        public static readonly DerObjectIdentifier OcspAccessMethod = IdADOcsp;
+        public static readonly DerObjectIdentifier CrlAccessMethod = IdADCAIssuers;
 
         public static readonly DerObjectIdentifier id_ce = new DerObjectIdentifier("2.5.29");
+
+        /// <summary>
+        /// Google's Certificate Transparency arc, the parent of the OIDs defined by RFC 6962.
+        /// </summary>
+        /// <remarks>
+        /// Not under the standard PKIX id-pe/id-ce trees because the values predate RFC 6962's transition to IETF
+        /// process.
+        /// </remarks>
+        public static readonly DerObjectIdentifier id_ct = new DerObjectIdentifier("1.3.6.1.4.1.11129.2.4");
     }
 }

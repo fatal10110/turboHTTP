@@ -1,5 +1,4 @@
-﻿using System;
-using System.IO;
+﻿using System.IO;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO;
 
@@ -28,10 +27,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return m_bitStream = new ConstructedBitStream(m_parser, false);
         }
 
-        public int PadBits
-        {
-            get { return m_bitStream.PadBits; }
-        }
+        public int PadBits => m_bitStream.PadBits;
 
         public Asn1Object ToAsn1Object()
         {
@@ -41,7 +37,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
             catch (IOException e)
             {
-                throw new Asn1ParsingException("IOException converting stream to byte array: " + e.Message, e);
+                throw new Asn1ParsingException("IOException converting stream to byte array", e);
             }
         }
 

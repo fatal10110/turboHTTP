@@ -10,17 +10,19 @@ namespace TurboHTTP.Transport.Tls
     /// </summary>
     public static class TlsProviderSelector
     {
-        // Lazy caching for BouncyCastle provider - avoids reflection overhead on every call
-        private static readonly Lazy<ITlsProvider> _bouncyCastleProvider =
-            new Lazy<ITlsProvider>(LoadBouncyCastleProvider, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
+        // The BouncyCastle provider, registered by the TurboHTTP.Transport.BouncyCastle assembly at
+        // startup (BouncyCastleModuleRegistration, #196). No by-name type lookup: that assembly
+        // compiles only when the project defines TURBOHTTP_BOUNCYCASTLE, and a lookup by string is
+        // invisible to UnityLinker (#186). Written with Interlocked.Exchange, read with
+        // Volatile.Read: registration runs on the main thread, reads on connection threads
+        // (ARM64 / 32-bit IL2CPP memory model).
+        private static ITlsProvider _bouncyCastleProvider;
 
-        // Thread-safe availability check cache (avoids non-atomic nullable writes on 32-bit IL2CPP).
-        private static readonly Lazy<bool> _bouncyCastleAvailable =
-            new Lazy<bool>(DetectBouncyCastleAvailability, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
+        internal const string BouncyCastleDefine = "TURBOHTTP_BOUNCYCASTLE";
 
-        // SslStream handshake viability probe state.
-        // 0 = not yet probed, 1 = viable (handshake succeeded), 2 = broken (platform exception).
-        // Written by TcpConnectionPool after the first real TLS handshake attempt.
+        // SslStream handshake viability state, diagnostics only (never changes provider routing).
+        // 0 = not yet probed, 1 = viable (handshake succeeded), 2 = platform TLS failure observed.
+        // Written by TcpConnectionPool / RawSocketTransport after real TLS handshake attempts.
         private static int _sslStreamViabilityState;
 
         // Volatile backing field ensures writes from the main thread are visible to
@@ -71,61 +73,59 @@ namespace TurboHTTP.Transport.Tls
         }
 
         /// <summary>
-        /// Check if BouncyCastle TLS provider is available without throwing.
+        /// Check if BouncyCastle TLS provider is available without throwing: true once the
+        /// TurboHTTP.Transport.BouncyCastle assembly (compiled only when the project defines
+        /// <c>TURBOHTTP_BOUNCYCASTLE</c>) has registered its provider.
         /// </summary>
         public static bool IsBouncyCastleAvailable()
         {
-            return _bouncyCastleAvailable.Value;
+            return Volatile.Read(ref _bouncyCastleProvider) != null;
         }
 
         private static ITlsProvider GetBouncyCastleProvider()
         {
-            if (!IsBouncyCastleAvailable())
+            var provider = Volatile.Read(ref _bouncyCastleProvider);
+            if (provider == null)
             {
                 throw new InvalidOperationException(
-                    "BouncyCastle TLS provider is not available. " +
-                    "Ensure TurboHTTP.Transport.BouncyCastle assembly is included in your project.");
+                    "BouncyCastle TLS provider is not available. It is opt-in: add " + BouncyCastleDefine +
+                    " to Player Settings > Scripting Define Symbols so the TurboHTTP.Transport.BouncyCastle " +
+                    "assembly compiles; it registers its provider at startup (or call " +
+                    "BouncyCastleModuleRegistration.EnsureRegistered()).");
             }
 
-            return _bouncyCastleProvider.Value;
-        }
-
-        private static ITlsProvider LoadBouncyCastleProvider()
-        {
-            // Use reflection to load BouncyCastle provider
-            // This allows the BouncyCastle module to be optional
-            // Note: Requires [Preserve] attribute on BouncyCastleTlsProvider for IL2CPP
-            var bcType = Type.GetType(
-                "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
-                throwOnError: true);
-
-            // Get singleton instance via reflection
-            // Note: Instance is a 'static readonly' field, not a property
-            var instanceField = bcType.GetField("Instance",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-
-            if (instanceField == null)
-            {
-                throw new InvalidOperationException(
-                    $"BouncyCastle TLS provider type '{bcType.FullName}' does not have a public static 'Instance' field. " +
-                    "This indicates a version mismatch or corrupted assembly.");
-            }
-
-            return (ITlsProvider)instanceField.GetValue(null);
-        }
-
-        private static bool DetectBouncyCastleAvailability()
-        {
-            var bcType = Type.GetType(
-                "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle",
-                throwOnError: false);
-
-            return bcType != null;
+            return provider;
         }
 
         /// <summary>
-        /// Returns true if a previous TLS handshake marked SslStream as broken on this platform.
-        /// Used by TcpConnectionPool to skip SslStream and go directly to BouncyCastle.
+        /// Registers the BouncyCastle provider. Called by the TurboHTTP.Transport.BouncyCastle
+        /// assembly at startup; idempotent. It only makes <see cref="TlsBackend.BouncyCastle"/>
+        /// resolvable: <see cref="TlsBackend.Auto"/> never selects it.
+        /// </summary>
+        internal static void RegisterBouncyCastleProvider(ITlsProvider provider)
+        {
+            if (provider == null)
+                throw new ArgumentNullException(nameof(provider));
+
+            if (!ReferenceEquals(Interlocked.Exchange(ref _bouncyCastleProvider, provider), provider))
+                TlsPlatformCapabilities.Invalidate();
+        }
+
+        /// <summary>
+        /// Replaces the registered BouncyCastle provider (null clears it) and returns the previous
+        /// one. Internal, for testing only.
+        /// </summary>
+        internal static ITlsProvider ExchangeBouncyCastleProviderForTesting(ITlsProvider provider)
+        {
+            var previous = Interlocked.Exchange(ref _bouncyCastleProvider, provider);
+            TlsPlatformCapabilities.Invalidate();
+            return previous;
+        }
+
+        /// <summary>
+        /// Returns true if a previous Auto-mode TLS handshake failed with a platform-level
+        /// exception. Diagnostic only (surfaced by <see cref="TlsPlatformCapabilities"/>):
+        /// Auto mode never switches providers because of it.
         /// </summary>
         internal static bool IsSslStreamKnownBroken() =>
             Volatile.Read(ref _sslStreamViabilityState) == 2;
@@ -142,17 +142,19 @@ namespace TurboHTTP.Transport.Tls
         }
 
         /// <summary>
-        /// Mark SslStream as broken after a platform-level TLS handshake failure.
-        /// Uses Exchange (not CompareExchange) so a broken result always wins,
+        /// Record a platform-level TLS handshake failure for diagnostics.
+        /// Uses Exchange (not CompareExchange) so a failure always wins,
         /// even if a concurrent connection succeeded first.
-        /// Logs on first transition to broken state.
+        /// Logs once, on the first transition, with the failure type. The failure still
+        /// propagates to the caller: Auto mode never retries on another provider.
         /// </summary>
-        internal static void MarkSslStreamBroken()
+        internal static void MarkSslStreamBroken(Exception reason = null)
         {
             int prev = Interlocked.Exchange(ref _sslStreamViabilityState, 2);
             if (prev != 2)
-                Log("[TurboHTTP TLS] SslStream: platform capability failure detected; " +
-                    "Auto mode will use BouncyCastle for all future connections.");
+                Log("[TurboHTTP TLS] SslStream: platform TLS failure (" +
+                    (reason != null ? UnwrapPlatformException(reason).GetType().Name : "unknown") +
+                    "); Auto mode does not switch providers, the error is reported to the caller.");
         }
 
         /// <summary>
@@ -165,20 +167,19 @@ namespace TurboHTTP.Transport.Tls
         /// Returns true if the given exception indicates a platform-level TLS failure
         /// (SslStream is fundamentally broken on this runtime), as opposed to a
         /// normal handshake error (bad cert, network down, timeout).
+        /// Used for diagnostics only; it never selects or switches a TLS provider.
         /// </summary>
         internal static bool IsPlatformTlsException(Exception ex)
         {
-            // Unwrap reflection-invoked exceptions (e.g., from AuthenticateWithAlpnAsync
-            // which uses MethodInfo.Invoke — platform exceptions get wrapped).
-            if (ex is System.Reflection.TargetInvocationException tie && tie.InnerException != null)
-                ex = tie.InnerException;
+            if (ex == null)
+                return false;
+
+            ex = UnwrapPlatformException(ex);
 
             // NotSupportedException is a supertype of PlatformNotSupportedException; it is included
             // because some Unity/Mono runtimes throw the base type from ALPN reflection paths.
             // Known false-positive risk: NotSupportedException from half-closed stream writes is
-            // also caught here. This is acceptable because IsPlatformTlsException is only called
-            // from WrapAsync (handshake context), where NotSupportedException reliably indicates
-            // a capability gap rather than an I/O state error.
+            // also matched. This only affects the diagnostic label, never provider routing.
             return ex is PlatformNotSupportedException
                 || ex is NotSupportedException
                 || ex is TypeLoadException
@@ -189,47 +190,41 @@ namespace TurboHTTP.Transport.Tls
                 || ex is DllNotFoundException;
         }
 
+        private static Exception UnwrapPlatformException(Exception ex)
+        {
+            // Reflection-invoked calls (MethodInfo.Invoke) wrap the real exception; a single-task
+            // AggregateException does the same for Task-based handshakes.
+            if (ex is System.Reflection.TargetInvocationException tie && tie.InnerException != null)
+                return tie.InnerException;
+            if (ex is AggregateException agg && agg.InnerExceptions.Count == 1)
+                return agg.InnerExceptions[0];
+            return ex;
+        }
+
         /// <summary>
-        /// Platform-specific auto-selection logic.
+        /// Auto-selection logic (fail closed).
         ///
-        /// Auto mode always prefers platform TLS (SslStream) for best performance.
-        /// If a prior handshake proved SslStream is broken on this runtime, returns
-        /// BouncyCastle directly (zero overhead after the first probe).
-        /// BouncyCastle is used only when SslStream cannot be initialized on this runtime.
+        /// Auto mode picks the TLS provider before the handshake and never picks one without
+        /// full certificate chain validation; a failed handshake (certificate, authentication,
+        /// network or platform capability) propagates to the caller with no runtime
+        /// catch-and-retry on another provider. BouncyCastle validates chains through
+        /// <see cref="ServerCertificateVerifier"/> with the OS verifier (Windows crypt32, macOS and
+        /// iOS SecTrust, the Android trust manager; the mobile and macOS ones are not yet
+        /// device-validated) and rejects every certificate on Linux, which has none (#33, #239,
+        /// #248). Auto therefore always returns SslStream and throws when it is unavailable;
+        /// BouncyCastle is used only when <see cref="TlsBackend.BouncyCastle"/> is selected explicitly.
         /// </summary>
         private static ITlsProvider GetAutoProvider()
         {
-            // Fast path: if a prior handshake already proved SslStream broken, skip it.
-            if (IsSslStreamKnownBroken())
-                return GetBouncyCastleFallbackOrThrow();
-
             if (TryGetSslStreamProvider(out var sslStreamProvider))
                 return sslStreamProvider;
 
-            // Platform TLS unavailable at initialization (before any real handshake).
             Log("[TurboHTTP TLS] SslStream unavailable at initialization; " +
-                "Auto mode will use BouncyCastle.");
-            return GetBouncyCastleFallbackOrThrow();
-        }
-
-        private static ITlsProvider GetBouncyCastleFallbackOrThrow()
-        {
-            if (IsBouncyCastleAvailable())
-            {
-                try
-                {
-                    return GetBouncyCastleProvider();
-                }
-                catch (InvalidOperationException ex)
-                {
-                    throw new PlatformNotSupportedException(
-                        "No usable TLS provider found. SslStream is unavailable and BouncyCastle failed to initialize.",
-                        ex);
-                }
-            }
-
+                "Auto mode does not fall back to another provider.");
             throw new PlatformNotSupportedException(
-                "No usable TLS provider found. SslStream is unavailable and BouncyCastle is not present.");
+                "No usable TLS provider for TlsBackend.Auto: SslStream is unavailable on this runtime, " +
+                "and Auto never selects a provider without full certificate chain validation. " +
+                "BouncyCastle is used only when TlsBackend.BouncyCastle is selected explicitly.");
         }
 
         private static bool TryGetSslStreamProvider(out ITlsProvider provider)

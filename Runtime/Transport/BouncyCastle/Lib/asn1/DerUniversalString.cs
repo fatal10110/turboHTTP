@@ -27,7 +27,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         private static readonly char[] table = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
 
-		/**
+        /**
          * return a universal string from the passed in object.
          *
          * @exception ArgumentException if the object cannot be converted.
@@ -53,11 +53,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct universal string from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct universal string from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj));
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
         /**
@@ -98,7 +98,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         internal DerUniversalString(byte[] contents, bool clone)
         {
             if (null == contents)
-                throw new ArgumentNullException("contents");
+                throw new ArgumentNullException(nameof(contents));
 
             m_contents = clone ? Arrays.Clone(contents) : contents;
         }

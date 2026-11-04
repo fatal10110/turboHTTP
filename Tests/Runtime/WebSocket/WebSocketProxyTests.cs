@@ -173,6 +173,10 @@ namespace TurboHTTP.Tests.WebSocket
                 listener.Stop();
 
                 var options = CreateOptions();
+                // A refused loopback connect takes about 2 s on Windows (SYN retries); the handshake
+                // timeout must not cut it, since a timeout is reported as a timeout, not as a proxy
+                // connection failure (#226).
+                options.HandshakeTimeout = TimeSpan.FromSeconds(15);
                 options.ProxySettings = new WebSocketProxySettings(
                     new Uri("http://127.0.0.1:" + closedPort));
 

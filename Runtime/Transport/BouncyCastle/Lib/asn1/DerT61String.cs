@@ -23,7 +23,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
         }
 
-		/**
+        /**
          * return a T61 string from the passed in object.
          *
          * @exception ArgumentException if the object cannot be converted.
@@ -49,11 +49,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct T61 string from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct T61 string from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj));
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
         /**
@@ -88,8 +88,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         public DerT61String(string str)
         {
-			if (str == null)
-				throw new ArgumentNullException("str");
+            if (str == null)
+                throw new ArgumentNullException("str");
 
             m_contents = Strings.ToByteArray(str);
         }
@@ -102,7 +102,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         internal DerT61String(byte[] contents, bool clone)
         {
             if (null == contents)
-                throw new ArgumentNullException("contents");
+                throw new ArgumentNullException(nameof(contents));
 
             m_contents = clone ? Arrays.Clone(contents) : contents;
         }

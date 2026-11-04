@@ -352,6 +352,19 @@ namespace TurboHTTP.Unity
             Func<T> func,
             CancellationToken cancellationToken = default)
         {
+            return ExecuteAsync(func, releaseAbandoned: null, cancellationToken);
+        }
+
+        /// <summary>
+        /// Executes value-producing work on the main thread and hands a result nobody can receive
+        /// (cancellation won while <paramref name="func"/> ran) to <paramref name="releaseAbandoned"/>
+        /// on the main thread, so a created Unity object is destroyed instead of leaked (#94).
+        /// </summary>
+        internal static Task<T> ExecuteAsync<T>(
+            Func<T> func,
+            Action<T> releaseAbandoned,
+            CancellationToken cancellationToken)
+        {
             if (func == null) throw new ArgumentNullException(nameof(func));
             if (cancellationToken.IsCancellationRequested)
                 return Task.FromCanceled<T>(cancellationToken);
@@ -372,7 +385,7 @@ namespace TurboHTTP.Unity
                 }
             }
 
-            return ExecuteQueuedAsync(func, cancellationToken, MainThreadDispatcherWorkKind.User);
+            return ExecuteQueuedAsync(func, releaseAbandoned, cancellationToken, MainThreadDispatcherWorkKind.User);
         }
 
         /// <summary>
@@ -500,6 +513,7 @@ namespace TurboHTTP.Unity
 
         private static async Task<T> ExecuteQueuedAsync<T>(
             Func<T> func,
+            Action<T> releaseAbandoned,
             CancellationToken cancellationToken,
             MainThreadDispatcherWorkKind workKind)
         {
@@ -519,18 +533,21 @@ namespace TurboHTTP.Unity
                         return;
                     }
 
+                    T result;
                     try
                     {
-                        tcs.TrySetResult(func());
+                        result = func();
                     }
                     catch (Exception ex)
                     {
-                        tcs.TrySetException(ex);
-                    }
-                    finally
-                    {
                         cancellationRegistration.Dispose();
+                        tcs.TrySetException(ex);
+                        return;
                     }
+
+                    cancellationRegistration.Dispose();
+                    if (!tcs.TrySetResult(result))
+                        ReleaseAbandonedResult(releaseAbandoned, result);
                 },
                 fail: exception =>
                 {
@@ -561,6 +578,21 @@ namespace TurboHTTP.Unity
             }
 
             return await tcs.Task.ConfigureAwait(false);
+        }
+
+        private static void ReleaseAbandonedResult<T>(Action<T> releaseAbandoned, T result)
+        {
+            if (releaseAbandoned == null)
+                return;
+
+            try
+            {
+                releaseAbandoned(result);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[TurboHTTP] Releasing an abandoned main-thread result failed: " + ex.Message);
+            }
         }
 
         private static void ObserveBackgroundTask(Task task)

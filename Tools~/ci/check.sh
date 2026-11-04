@@ -6,7 +6,7 @@
 #   Tools~/ci/check.sh --fix      apply whitespace formatting instead of verifying it
 #
 # Needs: python3, dotnet 8 SDK, and Unity managed DLLs (Tools~/ci/fetch-unity-dlls.sh, once).
-# Optional (--full): actionlint, shellcheck. See Development/docs/agents/tooling.md.
+# Optional (--full): actionlint, shellcheck. See Development~/docs/agents/tooling.md.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -27,7 +27,7 @@ step "repo invariants"
 python3 "Tools~/ci/check_repo.py" || fail "repo invariants"
 
 step "format (dotnet format whitespace)"
-fmt=(dotnet format whitespace --folder --exclude Runtime/Transport/BouncyCastle/Lib -v q)
+fmt=(dotnet format whitespace --folder --exclude Runtime/Transport/BouncyCastle/Lib --exclude .build -v q)
 if [ "$fix" = 1 ]; then "${fmt[@]}" || fail "format"
 else "${fmt[@]}" --verify-no-changes || fail "format (run: Tools~/ci/check.sh --fix)"; fi
 
@@ -49,7 +49,12 @@ if [ "$full" = 1 ]; then
   if [ -d "Tools~/agent-tools" ]; then
     python3 -m unittest discover -s "Tools~/agent-tools" -p 'test_*.py' -q || fail "agent-tools tests"
   fi
+  python3 "Tools~/ci/test_doc_snippets.py" -q || fail "doc snippet harness tests"
+  python3 "Tools~/ci/test_banned_symbols.py" -q || fail "banned-symbol (sync-over-async) gate test"
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"
+  step "waves orchestration simulation"
+  if command -v node >/dev/null; then node .claude/skills/turbohttp-waves/waves_sim.mjs >/dev/null || fail "waves_sim"
+  else echo "skip: node not installed"; fi
 fi
 
 if [ "$status" = 0 ]; then echo "check.sh: OK"; else echo "check.sh: FAILED"; fi

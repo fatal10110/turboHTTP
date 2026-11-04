@@ -66,16 +66,22 @@ namespace TurboHTTP.WebSocket
         {
             ThrowIfDisposed();
 
+            // Closed still drains (#217): FinalizeClose completes the queue before the Closed transition,
+            // so messages that arrived ahead of the peer's close frame are returned first and the
+            // completed queue then reports ConnectionClosed.
             var state = State;
-            if (state != WebSocketState.Open && state != WebSocketState.Closing)
+            var queue = _receiveQueue;
+            if (state != WebSocketState.Open &&
+                state != WebSocketState.Closing &&
+                !(state == WebSocketState.Closed && queue != null))
             {
                 throw new InvalidOperationException(
-                    "ReceiveAsync requires Open or Closing state. Current state: " + state + ".");
+                    "ReceiveAsync requires Open, Closing, or Closed state. Current state: " + state + ".");
             }
 
             try
             {
-                return await _receiveQueue.DequeueAsync(ct).ConfigureAwait(false);
+                return await queue.DequeueAsync(ct).ConfigureAwait(false);
             }
             catch (AsyncQueueCompletedException ex)
             {
@@ -123,18 +129,38 @@ namespace TurboHTTP.WebSocket
             {
                 await SendCloseFrameIfNeededAsync(code, reason, closeToken).ConfigureAwait(false);
                 await AwaitWithCancellation(_remoteCloseTcs.Task, closeToken).ConfigureAwait(false);
-                if (_receiveLoopTask != null)
-                    await AwaitWithCancellation(_receiveLoopTask, closeToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 timedOut = true;
             }
+            catch (OperationCanceledException)
+            {
+                // A canceled close must not leave the connection half-closed in Closing (#86).
+                AbortCanceledClose();
+                throw;
+            }
 
             if (timedOut)
             {
-                Abort();
+                AbortCore(validateDisposed: false);
                 return;
+            }
+
+            // The peer's Close arrived. The receive loop now waits, bounded by CloseHandshakeTimeout, for
+            // the server to close TCP first (RFC 6455 section 7.1.1) and then finalizes.
+            var receiveLoopTask = _receiveLoopTask;
+            if (receiveLoopTask != null)
+            {
+                try
+                {
+                    await AwaitWithCancellation(receiveLoopTask, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    AbortCanceledClose();
+                    throw;
+                }
             }
 
             var closeStatus = _hasCloseStatus
@@ -144,14 +170,45 @@ namespace TurboHTTP.WebSocket
             FinalizeClose(closeStatus, null);
         }
 
+        private void AbortCanceledClose()
+        {
+            FinalizeClose(
+                new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure),
+                new WebSocketException(
+                    WebSocketError.ConnectionClosed,
+                    "WebSocket close was canceled; the connection was aborted."));
+        }
+
         private async Task ReceiveLoopAsync(CancellationToken ct)
+        {
+            // The loop holds a resource reference so FinalizeClose on another thread cannot dispose the
+            // extensions or reset the assembler while a frame is being processed (#84).
+            if (!TryAcquireResources())
+                return;
+
+            try
+            {
+                await ReceiveLoopCoreAsync(ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                ReleaseResources();
+            }
+        }
+
+        private async Task ReceiveLoopCoreAsync(CancellationToken ct)
         {
             try
             {
+                bool closeFrameReceived = false;
                 while (!ct.IsCancellationRequested)
                 {
+                    var stream = Volatile.Read(ref _stream);
+                    if (stream == null)
+                        break;
+
                     var frameLease = await _frameReader.ReadAsync(
-                        _stream,
+                        stream,
                         _messageAssembler.FragmentedMessageInProgress,
                         ct).ConfigureAwait(false);
 
@@ -170,7 +227,10 @@ namespace TurboHTTP.WebSocket
                         bool shouldClose = await HandleControlFrameAsync(frameLease, ct).ConfigureAwait(false);
 
                         if (shouldClose)
+                        {
+                            closeFrameReceived = true;
                             break;
+                        }
 
                         TouchActivity(applicationMessage: false);
                         continue;
@@ -223,7 +283,8 @@ namespace TurboHTTP.WebSocket
 
                         try
                         {
-                            await _receiveQueue.EnqueueAsync(wsMessage, ct).ConfigureAwait(false);
+                            if (!_receiveQueue.TryEnqueue(wsMessage))
+                                await EnqueueWhileParkedAsync(wsMessage, ct).ConfigureAwait(false);
                         }
                         catch
                         {
@@ -240,6 +301,9 @@ namespace TurboHTTP.WebSocket
                         assembledMessage.Dispose();
                     }
                 }
+
+                if (closeFrameReceived)
+                    await AwaitServerTransportCloseAsync(ct).ConfigureAwait(false);
 
                 var finalStatus = _hasCloseStatus
                     ? _closeStatus
@@ -307,10 +371,13 @@ namespace TurboHTTP.WebSocket
 
                 if (frame.Opcode == WebSocketOpcode.Ping)
                 {
-                    await SendLockedAsync(
+                    // Takes only the frame lock, so it goes out between the fragments of a large
+                    // in-flight message instead of waiting for all of it (RFC 6455 section 5.4, #86).
+                    await WriteFrameLockedAsync(
+                        OutboundFrame.Control(WebSocketOpcode.Pong, frame.Payload),
                         allowClosingState: true,
                         applicationMessage: false,
-                        (stream, token) => _frameWriter.WritePongAsync(stream, frame.Payload, token),
+                        messageStarted: false,
                         ct).ConfigureAwait(false);
 
                     _metrics?.RecordFrameSent(CalculateFrameWireLength(frame.Payload.Length, masked: true));
@@ -355,10 +422,18 @@ namespace TurboHTTP.WebSocket
                     if (State == WebSocketState.Open)
                         _ = TryTransitionState(WebSocketState.Open, WebSocketState.Closing);
 
-                    await SendCloseFrameIfNeededAsync(
-                        WebSocketCloseCode.NormalClosure,
-                        string.Empty,
-                        ct).ConfigureAwait(false);
+                    // RFC 6455 section 5.5.1: the reply echoes the received status code; a Close without
+                    // a body (1005 locally, never sent on the wire, 7.4.1) is answered with an empty one.
+                    WebSocketCloseCode? replyCode = remoteStatus.Code == WebSocketCloseCode.NoStatusReceived
+                        ? (WebSocketCloseCode?)null
+                        : remoteStatus.Code;
+
+                    using var replyCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    if (_options.CloseHandshakeTimeout > TimeSpan.Zero)
+                        replyCts.CancelAfter(_options.CloseHandshakeTimeout);
+
+                    await SendCloseFrameIfNeededAsync(replyCode, string.Empty, replyCts.Token)
+                        .ConfigureAwait(false);
 
                     return true;
                 }
@@ -438,71 +513,228 @@ namespace TurboHTTP.WebSocket
             FinalizeClose(new WebSocketCloseStatus(ex.CloseCode), error);
         }
 
-        private async Task SendCloseFrameIfNeededAsync(WebSocketCloseCode code, string reason, CancellationToken ct)
+        /// <summary>
+        /// Waits, bounded by <c>CloseHandshakeTimeout</c>, for the server to close the TCP connection after
+        /// the Close exchange (RFC 6455 section 7.1.1: the server closes first; the client may close after a
+        /// timeout). Anything the server still sends is discarded.
+        /// </summary>
+        private async Task AwaitServerTransportCloseAsync(CancellationToken ct)
         {
-            if (Interlocked.CompareExchange(ref _closeFrameSent, 1, 0) != 0)
+            var stream = Volatile.Read(ref _stream);
+            var timeout = _options.CloseHandshakeTimeout;
+            if (stream == null || timeout <= TimeSpan.Zero)
                 return;
 
-            await SendLockedAsync(
-                allowClosingState: true,
-                applicationMessage: false,
-                (stream, token) => _frameWriter.WriteCloseAsync(stream, code, reason, token),
-                ct).ConfigureAwait(false);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(timeout);
 
-            int closePayloadLength = GetClosePayloadLength(reason);
+            // Disposing the stream faults a read the platform does not cancel (#226), so the read below
+            // always completes before its buffer is returned.
+            using var closeOnTimeout = timeoutCts.Token.Register(
+                static state => SafeDispose((Stream)state),
+                stream);
+
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(256);
+            try
+            {
+                while (await stream.ReadAsync(buffer, 0, buffer.Length, timeoutCts.Token).ConfigureAwait(false) > 0)
+                {
+                }
+            }
+            catch (Exception)
+            {
+                // Timeout, abort or reset: the close handshake itself already completed.
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private Task SendCloseFrameIfNeededAsync(WebSocketCloseCode? code, string reason, CancellationToken ct)
+        {
+            if (Interlocked.CompareExchange(ref _closeFrameSent, 1, 0) != 0)
+                return Task.CompletedTask;
+
+            return SendCloseFrameAsync(code, reason, ct);
+        }
+
+        private async Task SendCloseFrameAsync(WebSocketCloseCode? code, string reason, CancellationToken ct)
+        {
+            // The Close frame waits for an in-flight data message instead of cutting it short: no data frame
+            // may follow it (RFC 6455 section 5.5.1), and the current message may be finished first.
+            await _messageLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await WriteFrameLockedAsync(
+                    OutboundFrame.Close(code, reason),
+                    allowClosingState: true,
+                    applicationMessage: false,
+                    messageStarted: false,
+                    ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                _messageLock.Release();
+            }
+
+            int closePayloadLength = code.HasValue ? GetClosePayloadLength(reason) : 0;
             _metrics?.RecordFrameSent(CalculateFrameWireLength(closePayloadLength, masked: true));
             TryPublishMetricsUpdate();
         }
 
         private async Task SendMessageAsync(WebSocketOpcode opcode, ReadOnlyMemory<byte> payload, CancellationToken ct)
         {
-            await SendLockedAsync(
-                allowClosingState: false,
-                applicationMessage: true,
-                (stream, token) => WriteMessageWithExtensionsAsync(stream, opcode, payload, token),
-                ct).ConfigureAwait(false);
-        }
-
-        private async Task SendLockedAsync(
-            bool allowClosingState,
-            bool applicationMessage,
-            Func<Stream, CancellationToken, Task> send,
-            CancellationToken ct)
-        {
             ThrowIfDisposed();
+            ThrowIfCannotSend(allowClosingState: false);
 
-            var state = State;
-            if (state == WebSocketState.Closed || state == WebSocketState.None || state == WebSocketState.Connecting)
-            {
-                throw new InvalidOperationException("Cannot send in state " + state + ".");
-            }
-
-            if (!allowClosingState && state != WebSocketState.Open)
-            {
-                throw new InvalidOperationException("Data frames can only be sent while connection is Open.");
-            }
-
-            await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+            // The caller token may cancel the wait for the message lock and anything before the first byte.
+            await _messageLock.WaitAsync(ct).ConfigureAwait(false);
+            bool resourcesHeld = false;
             try
             {
-                state = State;
-                if (state == WebSocketState.Closed)
+                ThrowIfCannotSend(allowClosingState: false);
+
+                if (!TryAcquireResources())
+                    throw CreateClosedException();
+                resourcesHeld = true;
+
+                await WriteMessageWithExtensionsAsync(opcode, payload, ct).ConfigureAwait(false);
+            }
+            catch (WebSocketException ex) when (
+                ex.Error == WebSocketError.CompressionFailed ||
+                ex.Error == WebSocketError.ProtocolViolation)
+            {
+                // The outbound extension state can no longer be trusted.
+                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), ex);
+                throw;
+            }
+            catch (Exception ex) when (
+                resourcesHeld &&
+                !(ex is WebSocketException) &&
+                !(ex is ArgumentException) &&
+                !(ex is OperationCanceledException))
+            {
+                var wsEx = new WebSocketException(
+                    WebSocketError.SendFailed,
+                    "Unexpected error while sending message; the connection was aborted.",
+                    ex);
+                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
+                throw wsEx;
+            }
+            finally
+            {
+                if (resourcesHeld)
+                    ReleaseResources();
+
+                _messageLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Writes a (possibly extension-transformed) message as one frame or as fragments, each through the
+        /// frame lock, so control frames can be injected between fragments (RFC 6455 section 5.4, #86). The
+        /// caller holds the message lock, so no other data frame can interleave.
+        /// </summary>
+        private async Task WriteMessageFramesAsync(
+            WebSocketOpcode opcode,
+            ReadOnlyMemory<byte> payload,
+            byte rsvBits,
+            CancellationToken ct)
+        {
+            // With an extension active the outbound state (permessage-deflate context takeover, RFC 7692
+            // section 7.2.1) already includes this message, so it is committed before its first byte: a
+            // cancellation from here aborts instead of leaving the peer's decompressor out of step.
+            bool committed = _activeExtensions.Count > 0;
+
+            int threshold = _options.FragmentationThreshold;
+            if (payload.Length <= threshold)
+            {
+                await WriteFrameLockedAsync(
+                    OutboundFrame.Data(opcode, isFinal: true, payload, rsvBits),
+                    allowClosingState: true,
+                    applicationMessage: true,
+                    messageStarted: committed,
+                    ct).ConfigureAwait(false);
+                return;
+            }
+
+            int offset = 0;
+            while (offset < payload.Length)
+            {
+                int fragmentLength = Math.Min(threshold, payload.Length - offset);
+                bool first = offset == 0;
+                bool isFinal = offset + fragmentLength >= payload.Length;
+
+                await WriteFrameLockedAsync(
+                    OutboundFrame.Data(
+                        first ? opcode : WebSocketOpcode.Continuation,
+                        isFinal,
+                        payload.Slice(offset, fragmentLength),
+                        first ? rsvBits : (byte)0),
+                    allowClosingState: true,
+                    applicationMessage: true,
+                    messageStarted: committed || !first,
+                    ct).ConfigureAwait(false);
+
+                offset += fragmentLength;
+            }
+        }
+
+        /// <summary>
+        /// The single frame-write funnel: every frame goes through the frame lock and a resource reference,
+        /// so FinalizeClose on another thread never disposes the writer under it (#84).
+        /// </summary>
+        private async Task WriteFrameLockedAsync(
+            OutboundFrame frame,
+            bool allowClosingState,
+            bool applicationMessage,
+            bool messageStarted,
+            CancellationToken ct)
+        {
+            // The caller token may cancel the wait for the frame lock and anything before the first byte of a
+            // message. Once bytes are on the wire a partial frame or message cannot be recovered (RFC 6455
+            // 5.2, 5.4), so any failure from that point aborts the connection instead of leaving it Open (#79).
+            bool lockHeld = false;
+            bool resourcesHeld = false;
+            bool writeStarted = messageStarted;
+            try
+            {
+                if (applicationMessage)
                 {
-                    throw new WebSocketException(WebSocketError.ConnectionClosed, "Connection is closed.");
+                    await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    Interlocked.Increment(ref _controlFramesWaiting);
+                    try
+                    {
+                        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref _controlFramesWaiting);
+                    }
                 }
 
-                if (!allowClosingState && state != WebSocketState.Open)
-                {
-                    throw new InvalidOperationException("Data frames can only be sent while connection is Open.");
-                }
+                lockHeld = true;
 
-                var stream = _stream;
-                if (stream == null)
+                ThrowIfCannotSend(allowClosingState);
+
+                if (!TryAcquireResources())
+                    throw CreateClosedException();
+                resourcesHeld = true;
+
+                var stream = Volatile.Read(ref _stream);
+                var writer = Volatile.Read(ref _frameWriter);
+                if (stream == null || writer == null)
                 {
                     throw new WebSocketException(WebSocketError.ConnectionClosed, "WebSocket stream is unavailable.");
                 }
 
-                await send(stream, ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                writeStarted = true;
+                await frame.WriteAsync(writer, stream, ct).ConfigureAwait(false);
                 TouchActivity(applicationMessage);
             }
             catch (IOException ex)
@@ -517,17 +749,151 @@ namespace TurboHTTP.WebSocket
                 FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
                 throw wsEx;
             }
-            catch (WebSocketException ex) when (
-                ex.Error == WebSocketError.CompressionFailed ||
-                ex.Error == WebSocketError.ProtocolViolation)
+            catch (OperationCanceledException ex) when (writeStarted)
             {
-                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), ex);
-                throw;
+                var wsEx = new WebSocketException(
+                    WebSocketError.SendFailed,
+                    "Send was cancelled after the frame was started; the connection was aborted.",
+                    ex);
+                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
+
+                // Control-frame callers (close handshake timeout, keep-alive shutdown) handle cancellation.
+                if (!applicationMessage)
+                    throw;
+
+                throw wsEx;
+            }
+            catch (Exception ex) when (
+                writeStarted &&
+                !(ex is WebSocketException) &&
+                !(ex is ArgumentException))
+            {
+                // ArgumentException is argument validation before any byte is written; a stream disposed
+                // by a concurrent abort surfaces here as ObjectDisposedException and is mapped (#84).
+                var wsEx = new WebSocketException(
+                    WebSocketError.SendFailed,
+                    "Unexpected error while sending frame; the connection was aborted.",
+                    ex);
+                FinalizeClose(new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure), wsEx);
+                throw wsEx;
             }
             finally
             {
-                _sendLock.Release();
+                if (resourcesHeld)
+                    ReleaseResources();
+
+                if (lockHeld)
+                    _sendLock.Release();
             }
+        }
+
+        /// <summary>
+        /// None/Connecting is a usage error (InvalidOperationException). A connection that is closing or
+        /// closed fails sends with <see cref="WebSocketException"/>, whichever side of a concurrent abort,
+        /// pong timeout or close the send lands on (#84).
+        /// </summary>
+        private void ThrowIfCannotSend(bool allowClosingState)
+        {
+            var state = State;
+            if (state == WebSocketState.None || state == WebSocketState.Connecting)
+                throw new InvalidOperationException("Cannot send in state " + state + ".");
+
+            if (state == WebSocketState.Closed)
+                throw CreateClosedException();
+
+            if (!allowClosingState &&
+                (state != WebSocketState.Open || Volatile.Read(ref _closeFrameSent) != 0))
+            {
+                throw new WebSocketException(
+                    WebSocketError.ConnectionClosed,
+                    "Data frames can only be sent while the connection is Open.");
+            }
+        }
+
+        private WebSocketException CreateClosedException()
+        {
+            return new WebSocketException(
+                WebSocketError.ConnectionClosed,
+                "WebSocket connection is closed.",
+                null,
+                _hasCloseStatus ? _closeStatus.Code : (WebSocketCloseCode?)null,
+                _hasCloseStatus ? _closeStatus.Reason : null);
+        }
+
+        /// <summary>One frame for <see cref="WriteFrameLockedAsync"/>; no per-frame closure allocation.</summary>
+        private readonly struct OutboundFrame
+        {
+            private OutboundFrame(
+                WebSocketOpcode opcode,
+                bool isFinal,
+                ReadOnlyMemory<byte> payload,
+                byte rsvBits,
+                WebSocketCloseCode? closeCode,
+                string closeReason)
+            {
+                Opcode = opcode;
+                IsFinal = isFinal;
+                Payload = payload;
+                RsvBits = rsvBits;
+                CloseCode = closeCode;
+                CloseReason = closeReason;
+            }
+
+            public WebSocketOpcode Opcode { get; }
+            public bool IsFinal { get; }
+            public ReadOnlyMemory<byte> Payload { get; }
+            public byte RsvBits { get; }
+            public WebSocketCloseCode? CloseCode { get; }
+            public string CloseReason { get; }
+
+            public static OutboundFrame Data(WebSocketOpcode opcode, bool isFinal, ReadOnlyMemory<byte> payload, byte rsvBits)
+            {
+                return new OutboundFrame(opcode, isFinal, payload, rsvBits, null, null);
+            }
+
+            public static OutboundFrame Control(WebSocketOpcode opcode, ReadOnlyMemory<byte> payload)
+            {
+                return new OutboundFrame(opcode, isFinal: true, payload, 0, null, null);
+            }
+
+            /// <summary>A Close frame; a null code sends a Close without a body.</summary>
+            public static OutboundFrame Close(WebSocketCloseCode? code, string reason)
+            {
+                return new OutboundFrame(WebSocketOpcode.Close, isFinal: true, ReadOnlyMemory<byte>.Empty, 0, code, reason);
+            }
+
+            public Task WriteAsync(WebSocketFrameWriter writer, Stream stream, CancellationToken ct)
+            {
+                if (Opcode == WebSocketOpcode.Close && CloseCode.HasValue)
+                    return writer.WriteCloseAsync(stream, CloseCode.Value, CloseReason ?? string.Empty, ct);
+
+                return writer.WriteFrameAsync(stream, Opcode, IsFinal, Payload, ct, RsvBits);
+            }
+        }
+
+        /// <summary>
+        /// Waits for space in the delivery queue when the application is not draining it. The socket is
+        /// not read meanwhile (TCP backpressure), so the keep-alive loop must not treat the missing pong
+        /// as a dead peer; it checks <c>_receiveParked</c> and <c>_receiveUnparkedTimestamp</c>.
+        /// </summary>
+        private async ValueTask EnqueueWhileParkedAsync(WebSocketMessage message, CancellationToken ct)
+        {
+            Interlocked.Exchange(ref _receiveParked, 1);
+            try
+            {
+                await _receiveQueue.EnqueueAsync(message, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _receiveUnparkedTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
+                Interlocked.Exchange(ref _receiveParked, 0);
+            }
+        }
+
+        private bool ReceiveLoopParkedSince(long timestamp)
+        {
+            return Volatile.Read(ref _receiveParked) != 0 ||
+                Volatile.Read(ref _receiveUnparkedTimestamp) >= timestamp;
         }
 
         private async Task RunKeepAliveLoopAsync(CancellationToken ct)
@@ -543,6 +909,14 @@ namespace TurboHTTP.WebSocket
 
                     if (State != WebSocketState.Open)
                         break;
+
+                    if (Volatile.Read(ref _receiveParked) != 0)
+                    {
+                        // The application is applying backpressure; a pong could not be read anyway.
+                        Interlocked.Increment(ref _keepAliveBackpressureSkips);
+                        await Task.Delay(_options.PingInterval, ct).ConfigureAwait(false);
+                        continue;
+                    }
 
                     if (_options.IdleTimeout > TimeSpan.Zero)
                     {
@@ -571,21 +945,24 @@ namespace TurboHTTP.WebSocket
 
                         try
                         {
-                            await SendLockedAsync(
+                            await WriteFrameLockedAsync(
+                                OutboundFrame.Control(
+                                    WebSocketOpcode.Ping,
+                                    new ReadOnlyMemory<byte>(pingPayload, 0, 8)),
                                 allowClosingState: false,
                                 applicationMessage: false,
-                                (stream, token) => _frameWriter.WritePingAsync(
-                                    stream,
-                                    new ReadOnlyMemory<byte>(pingPayload, 0, 8),
-                                    token),
+                                messageStarted: false,
                                 ct).ConfigureAwait(false);
 
                             _metrics?.RecordFrameSent(CalculateFrameWireLength(8, masked: true));
                             _metrics?.RecordPingSent();
                             TryPublishMetricsUpdate();
                         }
-                        catch (InvalidOperationException) when (State != WebSocketState.Open)
+                        catch (Exception ex) when (
+                            (ex is InvalidOperationException || ex is WebSocketException) &&
+                            State != WebSocketState.Open)
                         {
+                            // Closing or closed meanwhile: not a keep-alive failure.
                             break;
                         }
                     }
@@ -600,6 +977,13 @@ namespace TurboHTTP.WebSocket
                         .ConfigureAwait(false);
                     if (!gotPong)
                     {
+                        if (ReceiveLoopParkedSince(pingTimestamp))
+                        {
+                            // The pong may sit unread behind backpressured data: not evidence of a dead peer.
+                            Interlocked.Increment(ref _keepAliveBackpressureSkips);
+                            continue;
+                        }
+
                         var timeoutEx = new WebSocketException(
                             WebSocketError.PongTimeout,
                             "Pong timeout elapsed.");

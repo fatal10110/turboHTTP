@@ -24,11 +24,17 @@ import subprocess
 import sys
 from xml.sax.saxutils import escape
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import doc_snippets  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CI = os.path.join(ROOT, "Tools~", "ci")
 OUT = os.path.join(ROOT, ".build", "shadow")
 BASELINE = os.path.join(CI, "analyzer-baseline.txt")
-SOURCE_DIRS = ["Runtime", "Editor"]
+# Samples~ is compiled like a runtime module (each sample ships its own asmdef), so a sample that no
+# longer compiles against the API fails here instead of in a customer project (#98).
+SOURCE_DIRS = ["Runtime", "Editor", "Samples~"]
+DOC_ASSEMBLY = "TurboHTTP.DocSnippets"
 # Third-party code compiled but never held to TurboHTTP's analyzer policy.
 VENDORED = ("Runtime/Transport/BouncyCastle/Lib/",)
 
@@ -36,7 +42,13 @@ UNITY_VERSIONS = ["5_3", "5_4", "5_5", "5_6", "2017_1", "2017_2", "2017_3", "201
                   "2018_3", "2018_4", "2019_1", "2019_2", "2019_3", "2019_4", "2020_1", "2020_2", "2020_3",
                   "2021_1", "2021_2", "2021_3"]
 COMMON_DEFINES = ["UNITY_" + v + "_OR_NEWER" for v in UNITY_VERSIONS] + [
-    "UNITY_2021", "UNITY_2021_3", "NET_STANDARD_2_1", "NET_STANDARD", "NETSTANDARD2_1", "NETSTANDARD", "CSHARP_7_3_OR_NEWER", "TRACE"]
+    "UNITY_2021", "UNITY_2021_3", "NET_STANDARD_2_1", "NET_STANDARD", "NETSTANDARD2_1", "NETSTANDARD", "CSHARP_7_3_OR_NEWER", "TRACE",
+    # Opt-in BouncyCastle (#196): defined so its glue and vendored library stay compiled and analyzed.
+    # Nothing else references them, so the other assemblies build the same with or without it.
+    "TURBOHTTP_BOUNCYCASTLE",
+    # Opt-in background networking (#106): defined so the iOS/Android native bridge code paths compile
+    # and are analyzed in the ios/android variants.
+    "TURBOHTTP_BACKGROUND_NETWORKING"]
 VARIANTS = {
     # name: (Unity platform name for include/excludePlatforms, extra defines, editor assemblies visible)
     "editor": ("Editor", ["UNITY_EDITOR", "UNITY_EDITOR_64", "UNITY_EDITOR_OSX", "DEBUG", "ENABLE_MONO"], True),
@@ -144,6 +156,31 @@ def generate(variant, asmdefs, dlls):
         open(os.path.join(pdir, name + ".csproj"), "w").write("\n".join(lines))
         projects.append(name)
 
+    # Documentation snippets (README.md, Documentation~): one generated file per fenced csharp block,
+    # compiled against every module so a documented API that does not exist fails the build (#232).
+    files, _, _ = doc_snippets.write_project_sources(os.path.join(vdir, DOC_ASSEMBLY, "src"))
+    pdir = os.path.join(vdir, DOC_ASSEMBLY)
+    doc_refs = sorted(n for n in chosen if not n.startswith("TurboHTTP.Samples."))
+    lines = [
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        f'  <Import Project="{escape(os.path.join(CI, "Shadow.props"))}" />',
+        "  <PropertyGroup>",
+        f"    <AssemblyName>{DOC_ASSEMBLY}</AssemblyName>",
+        f"    <DefineConstants>$(DefineConstants);{';'.join(sorted(defines))}</DefineConstants>",
+        # Snippets are illustrations: unused locals and async methods without await are fine.
+        "    <RunAnalyzers>false</RunAnalyzers>",
+        "    <NoWarn>$(NoWarn);CS0168;CS0219;CS1998;CS8321;CS0162;CS0649;CS0414</NoWarn>",
+        "  </PropertyGroup>",
+        "  <ItemGroup>",
+    ]
+    lines += [f'    <Compile Include="{escape(s)}" />' for s in files]
+    lines += [f'    <ProjectReference Include="../{r}/{r}.csproj" />' for r in doc_refs]
+    lines += [f'    <Reference Include="{escape(os.path.join(dlls, d))}" Private="false" />'
+              for d in engine + (editor if editor_visible else [])]
+    lines += ["  </ItemGroup>", "</Project>", ""]
+    open(os.path.join(pdir, DOC_ASSEMBLY + ".csproj"), "w").write("\n".join(lines))
+    projects.append(DOC_ASSEMBLY)
+
     lines = ['<Project Sdk="Microsoft.NET.Sdk">',
              "  <PropertyGroup><TargetFramework>netstandard2.1</TargetFramework>"
              "<EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>",
@@ -169,7 +206,8 @@ def build(project):
 def baseline_key(d):
     path = os.path.relpath(os.path.abspath(d["file"]), ROOT)
     try:
-        text = open(os.path.join(ROOT, path), encoding="utf-8-sig").read().splitlines()[int(d["line"]) - 1].strip()
+        with open(os.path.join(ROOT, path), encoding="utf-8-sig") as f:
+            text = f.read().splitlines()[int(d["line"]) - 1].strip()
     except (OSError, IndexError):
         text = ""
     return f"{d['rule']}|{path}|{text}"
@@ -202,7 +240,7 @@ def main():
             if d["kind"] != "warning":
                 continue
             rel = os.path.relpath(os.path.abspath(d["file"]), ROOT)
-            if rel.startswith("..") or rel.startswith(VENDORED) or rel.startswith(".build"):
+            if rel.startswith("..") or rel.startswith(VENDORED) or rel.startswith(".build") or rel.endswith(".md"):
                 continue
             # MSBuild prints each diagnostic once per project that reports it; dedupe exact repeats.
             ident = (d["file"], d["line"], d["rule"], d["msg"])

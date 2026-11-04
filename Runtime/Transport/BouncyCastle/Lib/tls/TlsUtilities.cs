@@ -7,9 +7,12 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Bsi;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Eac;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.EdEC;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.GM;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Nist;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Ocsp;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Oiw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Pkcs;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.Rosstandart;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X9;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto;
@@ -21,6 +24,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 {
+    // TODO[api] Make static
     public abstract class TlsUtilities
     {
         private static readonly byte[] DowngradeTlsV11 = Hex.DecodeStrict("444F574E47524400");
@@ -100,8 +104,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_shake_256s, SignatureAndHashAlgorithm.slhdsa_shake_256s);
             AddCertSigAlgOid(d, NistObjectIdentifiers.id_slh_dsa_shake_256f, SignatureAndHashAlgorithm.slhdsa_shake_256f);
 
-            // TODO[RFC 8998]
-            //AddCertSigAlgOid(d, GMObjectIdentifiers.sm2sign_with_sm3, HashAlgorithm.sm3, SignatureAlgorithm.sm2);
+            AddCertSigAlgOid(d, RosstandartObjectIdentifiers.id_tc26_signwithdigest_gost_3410_12_256,
+                SignatureAndHashAlgorithm.gostr34102012_256);
+            AddCertSigAlgOid(d, RosstandartObjectIdentifiers.id_tc26_signwithdigest_gost_3410_12_512,
+                SignatureAndHashAlgorithm.gostr34102012_512);
+
+            AddCertSigAlgOid(d, GMObjectIdentifiers.sm2sign_with_sm3, SignatureAndHashAlgorithm.sm2sig_sm3);
 
             return d;
         }
@@ -252,10 +260,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return (i & 0xFFFFFFFFFFFFL) == i;
         }
 
-        public static bool IsValidUint64(long i)
-        {
-            return true;
-        }
+#pragma warning disable IDE0060 // Remove unused parameter
+        public static bool IsValidUint64(long i) => true;
+#pragma warning restore IDE0060
 
         public static bool IsSsl(TlsContext context)
         {
@@ -551,7 +558,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public static byte[] DecodeOpaque8(byte[] buf, int minLength)
         {
             if (buf == null)
-                throw new ArgumentNullException("buf");
+                throw new ArgumentNullException(nameof(buf));
             if (buf.Length < 1)
                 throw new TlsFatalAlert(AlertDescription.decode_error);
 
@@ -567,7 +574,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public static byte[] DecodeOpaque16(byte[] buf, int minLength)
         {
             if (buf == null)
-                throw new ArgumentNullException("buf");
+                throw new ArgumentNullException(nameof(buf));
             if (buf.Length < 2)
                 throw new TlsFatalAlert(AlertDescription.decode_error);
 
@@ -581,7 +588,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public static short DecodeUint8(byte[] buf)
         {
             if (buf == null)
-                throw new ArgumentNullException("buf");
+                throw new ArgumentNullException(nameof(buf));
             if (buf.Length != 1)
                 throw new TlsFatalAlert(AlertDescription.decode_error);
 
@@ -591,7 +598,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public static short[] DecodeUint8ArrayWithUint8Length(byte[] buf)
         {
             if (buf == null)
-                throw new ArgumentNullException("buf");
+                throw new ArgumentNullException(nameof(buf));
             if (buf.Length < 1)
                 throw new TlsFatalAlert(AlertDescription.decode_error);
 
@@ -610,7 +617,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public static int DecodeUint16(byte[] buf)
         {
             if (buf == null)
-                throw new ArgumentNullException("buf");
+                throw new ArgumentNullException(nameof(buf));
             if (buf.Length != 2)
                 throw new TlsFatalAlert(AlertDescription.decode_error);
 
@@ -620,7 +627,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public static int[] DecodeUint16ArrayWithUint8Length(byte[] buf)
         {
             if (buf == null)
-                throw new ArgumentNullException("buf");
+                throw new ArgumentNullException(nameof(buf));
 
             int length = ReadUint8(buf, 0);
             if (buf.Length != (length + 1) || (length & 1) != 0)
@@ -639,7 +646,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public static long DecodeUint32(byte[] buf)
         {
             if (buf == null)
-                throw new ArgumentNullException("buf");
+                throw new ArgumentNullException(nameof(buf));
             if (buf.Length != 4)
                 throw new TlsFatalAlert(AlertDescription.decode_error);
 
@@ -845,6 +852,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return ((long)(hi & 0xffffffffL) << 24) | (long)(lo & 0xffffffffL);
         }
 
+        [Obsolete("Will be removed")]
         public static byte[] ReadAllOrNothing(int length, Stream input)
         {
             if (length < 1)
@@ -862,10 +870,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         {
             if (length < 1)
                 return EmptyBytes;
-            byte[] buf = new byte[length];
-            if (length != Streams.ReadFully(input, buf))
-                throw new EndOfStreamException();
-            return buf;
+
+            if (Streams.TryReadExactIncremental(input, length, out var bytes))
+                return bytes;
+
+            throw new EndOfStreamException();
         }
 
         public static void ReadFully(byte[] buf, Stream input)
@@ -1090,13 +1099,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             /*
              * RFC 5246 7.4.1.4.1. If the client does not send the signature_algorithms extension,
              * the server MUST do the following:
-             * 
+             *
              * - If the negotiated key exchange algorithm is one of (RSA, DHE_RSA, DH_RSA, RSA_PSK,
              * ECDH_RSA, ECDHE_RSA), behave as if client had sent the value {sha1,rsa}.
-             * 
+             *
              * - If the negotiated key exchange algorithm is one of (DHE_DSS, DH_DSS), behave as if
              * the client had sent the value {sha1,dsa}.
-             * 
+             *
              * - If the negotiated key exchange algorithm is one of (ECDH_ECDSA, ECDHE_ECDSA),
              * behave as if the client had sent value {sha1,ecdsa}.
              */
@@ -1141,14 +1150,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             SignatureAndHashAlgorithm signatureAndHashAlgorithm = null;
             if (IsSignatureAlgorithmsExtensionAllowed(negotiatedVersion))
             {
-                signatureAndHashAlgorithm = credentialedSigner.SignatureAndHashAlgorithm;
-                if (signatureAndHashAlgorithm == null)
-                {
-                    /*
-                     * RFC 5246 4.7. digitally-signed element needs SignatureAndHashAlgorithm from TLS 1.2
-                     */
-                    throw new TlsFatalAlert(AlertDescription.internal_error);
-                }
+                /*
+                 * RFC 5246 4.7. digitally-signed element needs SignatureAndHashAlgorithm from TLS 1.2
+                 */
+                signatureAndHashAlgorithm = credentialedSigner.SignatureAndHashAlgorithm
+                    ?? throw new TlsFatalAlert(AlertDescription.internal_error);
             }
             return signatureAndHashAlgorithm;
         }
@@ -1160,6 +1166,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             return extensionData;
         }
+
+        public static bool HasExtension(IDictionary<int, byte[]> extensions, int extensionType) =>
+             extensions != null && extensions.ContainsKey(extensionType);
 
         public static bool HasExpectedEmptyExtensionData(IDictionary<int, byte[]> extensions, int extensionType,
             short alertDescription)
@@ -1341,7 +1350,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 supportedSignatureAlgorithms.Count < 1 ||
                 supportedSignatureAlgorithms.Count >= (1 << 15))
             {
-                throw new ArgumentException("must have length from 1 to (2^15 - 1)", "supportedSignatureAlgorithms");
+                throw new ArgumentException("must have length from 1 to (2^15 - 1)", nameof(supportedSignatureAlgorithms));
             }
 
             // supported_signature_algorithms
@@ -1418,10 +1427,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (supportedSignatureAlgorithms == null || supportedSignatureAlgorithms.Count < 1
                 || supportedSignatureAlgorithms.Count >= (1 << 15))
             {
-                throw new ArgumentException("must have length from 1 to (2^15 - 1)", "supportedSignatureAlgorithms");
+                throw new ArgumentException("must have length from 1 to (2^15 - 1)", nameof(supportedSignatureAlgorithms));
             }
             if (signatureAlgorithm == null)
-                throw new ArgumentNullException("signatureAlgorithm");
+                throw new ArgumentNullException(nameof(signatureAlgorithm));
 
             if (signatureAlgorithm.Signature == SignatureAlgorithm.anonymous
                 || !ContainsSignatureAlgorithm(supportedSignatureAlgorithms, signatureAlgorithm))
@@ -1552,7 +1561,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             {
                 TlsHash hash = CreateHash(context.Crypto, hashAlgorithm);
                 if (hash != null)
-                {                
+                {
                     hash.Update(enc, encOff, encLen);
                     return hash.CalculateHash();
                 }
@@ -1568,7 +1577,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return Arrays.Concatenate(cr, sr);
 
             if (!IsValidUint16(context.Length))
-                throw new ArgumentException("must have length less than 2^16 (or be null)", "context");
+                throw new ArgumentException("must have length less than 2^16 (or be null)", nameof(context));
 
             byte[] contextLength = new byte[2];
             WriteUint16(context.Length, contextLength, 0);
@@ -1793,10 +1802,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 securityParameters.m_trafficSecretClient = Update13TrafficSecret(securityParameters, current);
             }
 
-            if (null != current)
-            {
-                current.Destroy();
-            }
+            current?.Destroy();
         }
 
         private static TlsSecret Update13TrafficSecret(SecurityParameters securityParameters, TlsSecret secret)
@@ -1821,9 +1827,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 return NistObjectIdentifiers.IdSha384;
             case HashAlgorithm.sha512:
                 return NistObjectIdentifiers.IdSha512;
-                // TODO[RFC 8998]
-            //case HashAlgorithm.sm3:
-            //    return GMObjectIdentifiers.sm3;
             default:
                 throw new ArgumentException("invalid HashAlgorithm: " + HashAlgorithm.GetText(hashAlgorithm));
             }
@@ -2057,6 +2060,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             {
                 if (isTlsV12Exactly)
                     return PrfAlgorithm.tls_prf_sha384;
+
+                throw new TlsFatalAlert(AlertDescription.illegal_parameter);
+            }
+
+            case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
+            case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
+            case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
+            {
+                if (isTlsV12Exactly)
+                    return PrfAlgorithm.tls_prf_gostr3411_2012_256;
 
                 throw new TlsFatalAlert(AlertDescription.illegal_parameter);
             }
@@ -2545,6 +2558,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         {
             switch (cipherSuite)
             {
+            case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
+                return EncryptionAlgorithm.cls_28147_CNT_IMIT;
+
             case CipherSuite.TLS_DH_anon_WITH_3DES_EDE_CBC_SHA:
             case CipherSuite.TLS_DH_DSS_WITH_3DES_EDE_CBC_SHA:
             case CipherSuite.TLS_DH_RSA_WITH_3DES_EDE_CBC_SHA:
@@ -2845,6 +2861,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_RSA_PSK_WITH_CHACHA20_POLY1305_SHA256:
                 return EncryptionAlgorithm.CHACHA20_POLY1305;
 
+            case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
+                return EncryptionAlgorithm.KUZNYECHIK_CTR_OMAC;
+
+            case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
+                return EncryptionAlgorithm.MAGMA_CTR_OMAC;
+
             case CipherSuite.TLS_DHE_PSK_WITH_NULL_SHA:
             case CipherSuite.TLS_ECDH_anon_WITH_NULL_SHA:
             case CipherSuite.TLS_ECDH_ECDSA_WITH_NULL_SHA:
@@ -2935,6 +2957,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case EncryptionAlgorithm.SM4_CBC:
                 return CipherType.block;
 
+            case EncryptionAlgorithm.cls_28147_CNT_IMIT:
+            case EncryptionAlgorithm.KUZNYECHIK_CTR_OMAC:
+            case EncryptionAlgorithm.MAGMA_CTR_OMAC:
             case EncryptionAlgorithm.NULL:
             case EncryptionAlgorithm.RC4_40:
             case EncryptionAlgorithm.RC4_128:
@@ -3181,6 +3206,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
             case CipherSuite.TLS_ECDHE_RSA_WITH_NULL_SHA:
                 return KeyExchangeAlgorithm.ECDHE_RSA;
+
+            case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
+            case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
+            case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
+                return KeyExchangeAlgorithm.GOSTR341112_256;
 
             case CipherSuite.TLS_AES_128_CCM_8_SHA256:
             case CipherSuite.TLS_AES_128_CCM_SHA256:
@@ -3767,6 +3797,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CipherSuite.TLS_ECDHE_RSA_WITH_CAMELLIA_256_CBC_SHA384:
             case CipherSuite.TLS_ECDHE_RSA_WITH_CAMELLIA_256_GCM_SHA384:
             case CipherSuite.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
+            case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
+            case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
+            case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
             case CipherSuite.TLS_PSK_DHE_WITH_AES_128_CCM_8:
             case CipherSuite.TLS_PSK_DHE_WITH_AES_256_CCM_8:
             case CipherSuite.TLS_PSK_WITH_AES_128_CCM:
@@ -3962,6 +3995,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case KeyExchangeAlgorithm.NULL:
                 return SignatureAlgorithm.anonymous != signatureAlgorithm;
 
+            case KeyExchangeAlgorithm.GOSTR341112_256:
             default:
                 return false;
             }
@@ -4221,6 +4255,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case KeyExchangeAlgorithm.SRP_RSA:
                 return crypto.HasSrpAuthentication()
                     && HasAnyRsaSigAlgs(crypto);
+
+            // TODO[RFC 9189]
+            case KeyExchangeAlgorithm.GOSTR341112_256:
 
             default:
                 return false;
@@ -4511,7 +4548,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     short signatureAlgorithm = GetLegacySignatureAlgorithmServerCert(
                         securityParameters.KeyExchangeAlgorithm);
 
-                    valid = (signatureAlgorithm == sigAndHashAlg.Signature); 
+                    valid = (signatureAlgorithm == sigAndHashAlg.Signature);
                 }
                 else
                 {
@@ -4529,35 +4566,111 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
         }
 
-        internal static void CheckTlsFeatures(Certificate serverCertificate, IDictionary<int, byte[]> clientExtensions,
-            IDictionary<int, byte[]> serverExtensions)
+        internal static void CheckTlsFeatures(TlsClientContext clientContext, TlsServerCertificate serverCertificate,
+            IDictionary<int, byte[]> clientExtensions, IDictionary<int, byte[]> serverExtensions)
         {
             /*
              * RFC 7633 4.3.3. A client MUST treat a certificate with a TLS feature extension as an
              * invalid certificate if the features offered by the server do not contain all features
              * present in both the client's ClientHello message and the TLS feature extension.
              */
-            byte[] tlsFeatures = serverCertificate.GetCertificateAt(0).GetExtension(TlsObjectIdentifiers.id_pe_tlsfeature);
-            if (tlsFeatures != null)
-            {
-                // TODO[tls] Proper ASN.1 type class for this extension?
-                Asn1Sequence tlsFeaturesSeq = ReadDerEncoding(derEncoding: tlsFeatures, Asn1Sequence.GetOptional);
 
-                for (int i = 0; i < tlsFeaturesSeq.Count; ++i)
+            var certificate = serverCertificate.Certificate;
+            if (certificate.IsEmpty)
+                throw new TlsFatalAlert(AlertDescription.internal_error);
+
+            CertificateEntry eeEntry = certificate.GetCertificateEntryAt(0);
+
+            byte[] tlsFeatures = eeEntry.Certificate.GetExtension(TlsObjectIdentifiers.id_pe_tlsfeature);
+            if (tlsFeatures == null)
+                return;
+
+            // TODO[tls] Proper ASN.1 type class for this extension?
+            Asn1Object tlsFeaturesObj = ReadAsn1Object(tlsFeatures);
+            if (!(tlsFeaturesObj is Asn1Sequence tlsFeaturesSeq))
+            {
+                throw new TlsFatalAlert(AlertDescription.bad_certificate,
+                    "Server certificate has invalid TLS Features extension");
+            }
+
+            for (int i = 0; i < tlsFeaturesSeq.Count; ++i)
+            {
+                if (!(tlsFeaturesSeq[i] is DerInteger))
                 {
-                    if (!(tlsFeaturesSeq[i] is DerInteger))
-                        throw new TlsFatalAlert(AlertDescription.bad_certificate,
-                            "Server certificate has invalid TLS Features extension");
+                    throw new TlsFatalAlert(AlertDescription.bad_certificate,
+                        "Server certificate has invalid TLS Features extension");
+                }
+            }
+
+            RequireDerEncoding(tlsFeaturesSeq, tlsFeatures);
+
+            bool isTlsV13 = IsTlsV13(clientContext);
+            bool mustStaple = false;
+            var eeExtensions = eeEntry.Extensions;
+
+            foreach (var tlsFeature in tlsFeaturesSeq)
+            {
+                if (!((DerInteger)tlsFeature).TryGetIntValueExact(out int extensionType) ||
+                    !IsValidUint16(extensionType))
+                {
+                    // Feature has invalid value - couldn't legally appear in ClientHello extensions
+                    continue;
                 }
 
-                foreach (DerInteger tlsFeature in tlsFeaturesSeq)
+                if (!HasExtension(clientExtensions, extensionType))
                 {
-                    if (tlsFeature.TryGetIntValueExact(out int extensionType) && IsValidUint16(extensionType))
+                    // Feature only in force if actually in ClientHello extensions
+                    continue;
+                }
+
+                if (isTlsV13 && ExtensionType.IsRecognized(extensionType))
+                {
+                    if (!IsPermittedExtensionType13(HandshakeType.client_hello, extensionType))
                     {
-                        if (clientExtensions.ContainsKey(extensionType) && !serverExtensions.ContainsKey(extensionType))
-                            throw new TlsFatalAlert(AlertDescription.certificate_unknown,
-                                "Server extensions missing TLS Feature " + extensionType);
+                        // Feature not in force if extension not relevant to negotiated version
+                        continue;
                     }
+
+                    // Note that no stapling extensions are skipped here
+                    if (IsPermittedExtensionType13(HandshakeType.server_hello, extensionType))
+                    {
+                        // Feature not checked for TLS 1.3 ServerHello extensions - existing permitted extensions are
+                        // either not relevant to server certificate authentication, or always added. Revisit this if
+                        // one that is relevant becomes permitted there (e.g. tls_cert_with_extern_psk, RFC 8773).
+                        continue;
+                    }
+                }
+
+                // We now consider the feature requirement to be "in force" - check it's satisfied
+
+                if (ExtensionType.status_request == extensionType || ExtensionType.status_request_v2 == extensionType)
+                {
+                    mustStaple = true;
+                }
+
+                if (HasExtension(serverExtensions, extensionType))
+                {
+                    // Feature satisfied by the ServerHello extensions (EncryptedExtensions in TLS 1.3)
+                    continue;
+                }
+
+                if (HasExtension(eeExtensions, extensionType))
+                {
+                    // Feature satisfied by the CertificateEntry extensions (only in TLS 1.3+)
+                    continue;
+                }
+
+                throw new TlsFatalAlert(AlertDescription.certificate_unknown,
+                    "Server extensions missing TLS Feature " + ExtensionType.GetText(extensionType));
+            }
+
+            if (mustStaple)
+            {
+                var certificateStatus = serverCertificate.CertificateStatus;
+                if (certificateStatus == null || !certificateStatus.HasLeafResponse())
+                {
+                    throw new TlsFatalAlert(AlertDescription.certificate_unknown,
+                        "Server failed TLS Feature 'Must-Staple'");
                 }
             }
         }
@@ -4622,15 +4735,32 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             Certificate serverCertificate = securityParameters.PeerCertificate;
 
-            CheckTlsFeatures(serverCertificate, clientExtensions, serverExtensions);
+            CertificateStatus certificateStatus;
+            CertificateStatus[] certificateStatuses;
 
-            if (!isTlsV13)
+            if (isTlsV13)
+            {
+                /*
+                 * RFC 8446 4.4.2.1: there is no "certificate_status" message - each response arrived in an extension of
+                 * the CertificateEntry carrying the certificate it answers for.
+                 */
+                certificateStatuses = Read13CertificateStatuses(clientContext, serverCertificate);
+                certificateStatus = certificateStatuses.Length < 1 ? null : certificateStatuses[0];
+            }
+            else
             {
                 keyExchange.ProcessServerCertificate(serverCertificate);
+
+                certificateStatus = serverCertificateStatus;
+                certificateStatuses = SpreadCertificateStatus(serverCertificate, serverCertificateStatus);
             }
 
-            clientAuthentication.NotifyServerCertificate(
-                new TlsServerCertificateImpl(serverCertificate, serverCertificateStatus));
+            var tlsServerCertificate = new TlsServerCertificateImpl(serverCertificate, certificateStatus,
+                certificateStatuses);
+
+            CheckTlsFeatures(clientContext, tlsServerCertificate, clientExtensions, serverExtensions);
+
+            clientAuthentication.NotifyServerCertificate(tlsServerCertificate);
         }
 
         internal static SignatureAndHashAlgorithm GetCertSigAndHashAlg(TlsCertificate subjectCert, TlsCertificate issuerCert)
@@ -4683,9 +4813,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (IsNullOrEmpty(validClientCertificateTypes))
                 throw new TlsFatalAlert(AlertDescription.unexpected_message);
 
-            certificateRequest = NormalizeCertificateRequest(certificateRequest, validClientCertificateTypes);
-            if (certificateRequest == null)
-                throw new TlsFatalAlert(AlertDescription.illegal_parameter);
+            certificateRequest = NormalizeCertificateRequest(certificateRequest, validClientCertificateTypes)
+                ?? throw new TlsFatalAlert(AlertDescription.illegal_parameter);
 
             return certificateRequest;
         }
@@ -4887,7 +5016,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         }
 
         internal static TlsAuthentication Receive13ServerCertificate(TlsClientContext clientContext, TlsClient client,
-            MemoryStream buf)
+            IDictionary<int, byte[]> clientExtensions, MemoryStream buf)
         {
             SecurityParameters securityParameters = clientContext.SecurityParameters;
             if (null != securityParameters.PeerCertificate)
@@ -4908,6 +5037,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             if (serverCertificate.IsEmpty)
                 throw new TlsFatalAlert(AlertDescription.decode_error);
+
+            Check13CertificateEntryExtensions(serverCertificate, clientExtensions);
 
             securityParameters.m_peerCertificate = serverCertificate;
             securityParameters.m_tlsServerEndPoint = null;
@@ -4994,7 +5125,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             if (clientAgreements.Count < 1 || clientShares.Count < 1)
             {
-                // NOTE: Probable cause is declaring an unsupported NamedGroup in supported_groups extension 
+                // NOTE: Probable cause is declaring an unsupported NamedGroup in supported_groups extension
                 throw new TlsFatalAlert(AlertDescription.internal_error);
             }
 
@@ -5223,6 +5354,219 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         internal static TlsCredentialedSigner Establish13ServerCredentials(TlsServer server) =>
             Validate13Credentials(server.GetCredentials());
 
+        /// <summary>
+        /// The OCSP staples a TLS 1.3 server attached to its Certificate message, read out per certificate: the inverse
+        /// of <see cref="Add13CertificateStatus(Certificate, CertificateStatus)"/>, which is how a BC server puts them
+        /// there.
+        /// </summary>
+        /// <remarks>
+        /// RFC 8446 sec. 4.4.2.1 carries each response in a "status_request" extension of the CertificateEntry holding
+        /// the certificate it answers for, so the result is positional - element <c>i</c> answers for certificate
+        /// <c>i</c> of the chain, null where that entry carried no staple.
+        /// <para>
+        /// A staple the client did not ask for is ignored rather than made a handshake failure, which is how this
+        /// library has always treated an unsolicited one: RFC 8446 sec. 4.2 has a server answer only the extensions the
+        /// client sent.
+        /// </para>
+        /// </remarks>
+        /// <param name="context">The <see cref="TlsContext"/> of the current connection.</param>
+        /// <param name="certificate">The Server Certificate message.</param>
+        /// <returns>
+        /// One element per certificate of <paramref name="certificate"/>, null where unstapled.
+        /// </returns>
+        /// <exception cref="IOException">
+        /// If an entry the client asked about carries something other than an RFC 6066 CertificateStatus of type ocsp;
+        /// RFC 8446 sec. 4.4.2.1 admits nothing else, so this is a decode_error exactly as it is for the TLS 1.2
+        /// "certificate_status" message.
+        /// </exception>
+        internal static CertificateStatus[] Read13CertificateStatuses(TlsContext context, Certificate certificate)
+        {
+            int certificateCount = certificate.Length;
+
+            CertificateStatus[] certificateStatuses = new CertificateStatus[certificateCount];
+
+            if (context.SecurityParameters.StatusRequestVersion < 1)
+                return certificateStatuses;
+
+            for (int i = 0; i<certificateCount; ++i)
+            {
+                var extensions = certificate.GetCertificateEntryAt(i).Extensions;
+
+                byte[] extensionData = GetExtensionData(extensions, ExtensionType.status_request);
+                if (null != extensionData)
+                {
+                    certificateStatuses[i] = TlsExtensionsUtilities.ReadStatusRequestExtension13(context,
+                        extensionData);
+                }
+            }
+
+            return certificateStatuses;
+        }
+
+        /// <summary>
+        /// The responses of a "certificate_status" message read out per certificate, so that a caller can pair each one
+        /// with the certificate it answers for whichever version was negotiated.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="CertificateStatusType.ocsp"/> answers for the end-entity certificate alone, and
+        /// <see cref="CertificateStatusType.ocsp_multi"/> answers positionally (RFC 6961 sec. 2.2 - the list may be
+        /// shorter than the chain, and an element may be absent where no response is held).
+        /// </remarks>
+        /// <param name="certificate">The Certificate message the server sent.</param>
+        /// <param name="certificateStatus">The status message it sent, or null for none.</param>
+        /// <returns>One element per certificate of <paramref name="certificate"/>, null where unstapled.</returns>
+        internal static CertificateStatus[] SpreadCertificateStatus(Certificate certificate,
+            CertificateStatus certificateStatus)
+        {
+            int certificateCount = certificate.Length;
+
+            CertificateStatus[] certificateStatuses = new CertificateStatus[certificateCount];
+
+            if (null != certificateStatus && certificateCount > 0)
+            {
+                switch (certificateStatus.StatusType)
+                {
+                case CertificateStatusType.ocsp:
+                {
+                    certificateStatuses[0] = certificateStatus;
+                    break;
+                }
+                case CertificateStatusType.ocsp_multi:
+                {
+                    var ocspResponseList = certificateStatus.OcspResponseList;
+                    int count = System.Math.Min(certificateCount, ocspResponseList.Count);
+
+                    for (int i = 0; i < count; ++i)
+                    {
+                        OcspResponse ocspResponse = ocspResponseList[i];
+                        if (null != ocspResponse)
+                        {
+                            certificateStatuses[i] = new CertificateStatus(CertificateStatusType.ocsp, ocspResponse);
+                        }
+                    }
+                    break;
+                }
+                }
+            }
+
+            return certificateStatuses;
+        }
+
+        /// <summary>
+        /// Attach a TLS 1.3 server's OCSP staples to the certificate they answer for. RFC 8446 sec. 4.4.2.1: "In TLS
+        /// 1.3, the server's OCSP information is carried in an extension in the CertificateEntry containing the
+        /// associated certificate", the body of that "status_request" extension being an RFC 6066 CertificateStatus -
+        /// so a single response per entry, rather than the one "certificate_status" message TLS 1.2 sends for the whole
+        /// chain.
+        /// </summary>
+        /// <remarks>
+        /// The status a <see cref="TlsServer"/> returns is taken in the shape the 1.2 callback already defines:
+        /// <see cref="CertificateStatusType.ocsp"/> answers for the end-entity certificate alone, and
+        /// <see cref="CertificateStatusType.ocsp_multi"/> answers positionally, entry <c>i</c> of its list for
+        /// certificate <c>i</c> of the chain, with a null entry wherever there is no response. An entry the server has
+        /// already given a "status_request" extension of its own is left as it stands, so an implementation that
+        /// attaches its staples to the <see cref="Certificate"/> its credentials supply - which was the only way to do
+        /// this before - keeps working unchanged.
+        /// <para>
+        /// A response too large for the entry to carry is dropped rather than attached; see
+        /// <see cref="FitsCertificateEntry(IDictionary{int, byte[]}, byte[])"/>.
+        /// </para>
+        /// </remarks>
+        /// <param name="certificate">The Certificate message the server is about to send.</param>
+        /// <param name="certificateStatus">The status to distribute across it, or null for none.</param>
+        /// <returns>
+        /// The Certificate to send, which is <paramref name="certificate"/> itself when there is nothing to add.
+        /// </returns>
+        internal static Certificate Add13CertificateStatus(Certificate certificate, CertificateStatus certificateStatus)
+        {
+            if (null == certificateStatus || null == certificate || certificate.IsEmpty)
+                return certificate;
+
+            int certificateCount = certificate.Length;
+
+            IList<OcspResponse> ocspResponseList;
+            switch (certificateStatus.StatusType)
+            {
+            case CertificateStatusType.ocsp:
+                ocspResponseList = VectorOfOne(certificateStatus.OcspResponse);
+                break;
+            case CertificateStatusType.ocsp_multi:
+                ocspResponseList = certificateStatus.OcspResponseList;
+                break;
+            default:
+                throw new TlsFatalAlert(AlertDescription.internal_error);
+            }
+
+            if (ocspResponseList.Count > certificateCount)
+            {
+                throw new TlsFatalAlert(AlertDescription.internal_error,
+                    "'certificateStatus' has more responses than the certificate chain has certificates");
+            }
+
+            CertificateEntry[] certificateEntryList = new CertificateEntry[certificateCount];
+
+            bool anyStaple = false;
+            for (int i = 0; i < certificateCount; ++i)
+            {
+                var certificateEntry = certificate.GetCertificateEntryAt(i);
+                var extensions = certificateEntry.Extensions;
+
+                OcspResponse ocspResponse = i < ocspResponseList.Count ? ocspResponseList[i] : null;
+
+                if (null != ocspResponse && !HasExtension(extensions, ExtensionType.status_request))
+                {
+                    byte[] extensionData = TlsExtensionsUtilities.CreateStatusRequestExtension13(
+                        new CertificateStatus(CertificateStatusType.ocsp, ocspResponse));
+
+                    if (FitsCertificateEntry(extensions, extensionData))
+                    {
+                        extensions = TlsExtensionsUtilities.EnsureExtensionsInitialised(
+                            null == extensions ? null : new Dictionary<int, byte[]>(extensions));
+
+                        extensions[ExtensionType.status_request] = extensionData;
+
+                        certificateEntry = new CertificateEntry(certificateEntry.Certificate, extensions);
+                        anyStaple = true;
+                    }
+                }
+
+                certificateEntryList[i] = certificateEntry;
+            }
+
+            if (!anyStaple)
+                return certificate;
+
+            return new Certificate(certificate.CertificateType, certificate.GetCertificateRequestContext(),
+                certificateEntryList);
+        }
+
+        /// <summary>
+        /// Whether a "status_request" extension with this body can still be added to a CertificateEntry carrying
+        /// <paramref name="extensions"/>. <see cref="Certificate.Encode(TlsContext, Stream, Stream)"/> writes an
+        /// entry's whole extensions block with <see cref="WriteOpaque16(byte[], Stream)"/>, and each extension costs
+        /// its body plus four bytes of type and length, so a large enough OCSP response overflows it.
+        /// </summary>
+        /// <remarks>
+        /// Nothing bounds an OCSP response to a size that would rule this out - the responder chooses what it sends,
+        /// and it may carry a certificate chain of its own - so the one that does not fit is a staple to drop rather
+        /// than a handshake to fail. Stapling is an optimisation; a handshake proceeds without it, and failing at
+        /// encode time would turn an oversized response into a dead connection.
+        /// </remarks>
+        private static bool FitsCertificateEntry(IDictionary<int, byte[]> extensions, byte[] extensionData)
+        {
+            long length = 4L + extensionData.Length;
+
+            if (null != extensions)
+            {
+                foreach (var extension in extensions)
+                {
+                    length += 4L + extension.Value.Length;
+                }
+            }
+
+            return IsValidUint16(length);
+        }
+
         internal static void EstablishServerSigAlgs(SecurityParameters securityParameters,
             CertificateRequest certificateRequest)
         {
@@ -5303,7 +5647,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
             else
             {
-                securityParameters.m_verifyDataLength = 12;
+                /*
+                 * RFC 9189 4.2.6. The verify_data_length value is equal to 32 for the CTR_OMAC cipher
+                 * suites and is equal to 12 for the CNT_IMIT cipher suite.
+                 */
+                switch (cipherSuite)
+                {
+                case CipherSuite.TLS_GOSTR341112_256_WITH_KUZNYECHIK_CTR_OMAC:
+                case CipherSuite.TLS_GOSTR341112_256_WITH_MAGMA_CTR_OMAC:
+                {
+                    securityParameters.m_verifyDataLength = 32;
+                    break;
+                }
+
+                case CipherSuite.TLS_GOSTR341112_256_WITH_28147_CNT_IMIT:
+                default:
+                {
+                    securityParameters.m_verifyDataLength = 12;
+                    break;
+                }
+                }
             }
         }
 
@@ -5413,6 +5776,17 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             switch (extensionType)
             {
             case ExtensionType.server_name:
+            {
+                switch (handshakeType)
+                {
+                case HandshakeType.client_hello:
+                case HandshakeType.encrypted_extensions:
+                case HandshakeType.certificate_request:
+                    return true;
+                default:
+                    return false;
+                }
+            }
             case ExtensionType.max_fragment_length:
             case ExtensionType.supported_groups:
             case ExtensionType.use_srtp:
@@ -5420,6 +5794,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case ExtensionType.application_layer_protocol_negotiation:
             case ExtensionType.client_certificate_type:
             case ExtensionType.server_certificate_type:
+            case ExtensionType.cached_info:
+            case ExtensionType.record_size_limit:
             {
                 switch (handshakeType)
                 {
@@ -5483,6 +5859,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 }
             }
             case ExtensionType.pre_shared_key:
+            // TODO DTLS 1.3 differences
+            // case ExtensionType.connection_id:
             {
                 switch (handshakeType)
                 {
@@ -5542,6 +5920,45 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 if (!IsPermittedExtensionType13(handshakeType, extensionType))
                     throw new TlsFatalAlert(alertDescription, "Invalid extension: "
                         + ExtensionType.GetText(extensionType));
+            }
+        }
+
+        /// <summary>
+        /// RFC 8446 4.4.2. Extensions in the Certificate message from the server MUST correspond to ones from the
+        /// ClientHello message. Extensions in the Certificate message from the client MUST correspond to extensions in
+        /// the CertificateRequest message from the server.
+        /// </summary>
+        /// <param name="certificate">A TLS 1.3 Certificate message received from the peer.</param>
+        /// <param name="requestExtensions">
+        /// The extensions of the ClientHello (for a server Certificate) or the CertificateRequest (for a client
+        /// Certificate) that this endpoint sent.
+        /// </param>
+        /// <exception cref="IOException"/>
+        internal static void Check13CertificateEntryExtensions(Certificate certificate,
+            IDictionary<int, byte[]> requestExtensions)
+        {
+            int count = certificate.Length;
+            for (int i = 0; i < count; ++i)
+            {
+                var extensions = certificate.GetCertificateEntryAt(i).Extensions;
+                if (null == extensions)
+                {
+                    continue;
+                }
+
+                foreach (int extensionType in extensions.Keys)
+                {
+                    /*
+                     * RFC 8446 4.2. Implementations MUST NOT send extension responses if the remote endpoint did
+                     * not send the corresponding extension requests [..]. Upon receiving such an extension, an
+                     * endpoint MUST abort the handshake with an "unsupported_extension" alert.
+                     */
+                    if (!HasExtension(requestExtensions, extensionType))
+                    {
+                        throw new TlsFatalAlert(AlertDescription.unsupported_extension,
+                            "Unrequested extension in CertificateEntry: " + ExtensionType.GetText(extensionType));
+                    }
+                }
             }
         }
 
@@ -5883,6 +6300,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             return certificateType;
         }
 
+        internal static int GetMaxHandshakeMessageSize(TlsPeer tlsPeer) =>
+            System.Math.Max(1024, tlsPeer.GetMaxHandshakeMessageSize());
+
         // TODO[api] Not needed once GetHandshakeResendTimeMillis() has been added to TlsPeer
         internal static int GetHandshakeResendTimeMillis(TlsPeer tlsPeer)
         {
@@ -5913,7 +6333,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         // TODO[api] Not needed once PreferLocalSupportedGroups() has been added to TlsServer
         internal static bool PreferLocalSupportedGroups(TlsServer tlsServer)
         {
+            if (tlsServer is AbstractTlsServer abstractTlsServer)
+                return abstractTlsServer.PreferLocalSupportedGroups();
+
             return false;
+        }
+
+        // TODO[api] Not needed once GetCertificateStatusAt() has been added to TlsServerCertificate
+        public static CertificateStatus GetCertificateStatusAt(TlsServerCertificate tlsServerCertificate, int index)
+        {
+            if (tlsServerCertificate is TlsServerCertificateImpl tlsServerCertificateImpl)
+                return tlsServerCertificateImpl.GetCertificateStatusAt(index);
+
+            return null;
         }
     }
 }

@@ -60,6 +60,7 @@ namespace TurboHTTP.Transport.Http2
         public bool TryWrite(T item)
         {
             PendingReadSource pendingRead = null;
+            CancellationTokenRegistration cancellation;
 
             lock (_gate)
             {
@@ -69,8 +70,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     pendingRead = _pendingRead;
                     _readPending = false;
-                    _pendingCancellation.Dispose();
-                    _pendingCancellationToken = default;
+                    cancellation = TakePendingCancellation_NoLock();
                 }
                 else
                 {
@@ -82,6 +82,8 @@ namespace TurboHTTP.Transport.Http2
                 }
             }
 
+            // Disposed outside _gate: Dispose waits for a running CancelPendingRead, which needs _gate.
+            cancellation.Dispose();
             pendingRead.SetResult(item);
             return true;
         }
@@ -141,6 +143,7 @@ namespace TurboHTTP.Transport.Http2
         {
             PendingReadSource pendingRead = null;
             Exception pendingError = error;
+            CancellationTokenRegistration cancellation = default;
 
             lock (_gate)
             {
@@ -155,21 +158,36 @@ namespace TurboHTTP.Transport.Http2
                 {
                     pendingRead = _pendingRead;
                     _readPending = false;
-                    _pendingCancellation.Dispose();
-                    _pendingCancellationToken = default;
+                    cancellation = TakePendingCancellation_NoLock();
                     if (pendingError == null)
                         pendingError = new InvalidOperationException("Channel completed.");
                 }
             }
 
+            cancellation.Dispose();
             if (pendingRead != null)
                 pendingRead.SetException(pendingError);
+        }
+
+        /// <summary>
+        /// Detaches the pending read's cancellation registration under <see cref="_gate"/>. The caller
+        /// disposes it after leaving the lock: disposing waits for a callback that is already running,
+        /// and that callback (<see cref="CancelPendingRead"/>) takes <see cref="_gate"/>, so disposing
+        /// inside the lock deadlocks a writer against a concurrent cancellation.
+        /// </summary>
+        private CancellationTokenRegistration TakePendingCancellation_NoLock()
+        {
+            var cancellation = _pendingCancellation;
+            _pendingCancellation = default;
+            _pendingCancellationToken = default;
+            return cancellation;
         }
 
         private void CancelPendingRead()
         {
             PendingReadSource pendingRead = null;
             CancellationToken cancellationToken = default;
+            CancellationTokenRegistration cancellation;
 
             lock (_gate)
             {
@@ -179,10 +197,10 @@ namespace TurboHTTP.Transport.Http2
                 _readPending = false;
                 pendingRead = _pendingRead;
                 cancellationToken = _pendingCancellationToken;
-                _pendingCancellation.Dispose();
-                _pendingCancellationToken = default;
+                cancellation = TakePendingCancellation_NoLock();
             }
 
+            cancellation.Dispose();
             pendingRead.SetException(new OperationCanceledException(cancellationToken));
         }
 

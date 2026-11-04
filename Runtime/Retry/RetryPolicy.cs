@@ -1,5 +1,5 @@
 using System;
-using System.Threading;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Retry
 {
@@ -11,10 +11,6 @@ namespace TurboHTTP.Retry
     {
         private static readonly RetryPolicy DefaultPolicy = new RetryPolicy();
         private static readonly RetryPolicy NoRetryPolicy = new RetryPolicy { MaxRetries = 0 };
-        private static int _threadSeed = Environment.TickCount;
-
-        [ThreadStatic]
-        private static Random _threadJitterRng;
 
         private int _maxRetries = 3;
         private TimeSpan _initialDelay = TimeSpan.FromSeconds(1);
@@ -97,6 +93,10 @@ namespace TurboHTTP.Retry
         /// Maximum delay between retries. Prevents unbounded growth
         /// with high BackoffMultiplier or MaxRetries values.
         /// Default: 30 seconds.
+        /// <para>Also bounds a server-provided <c>Retry-After</c>: a value up to <see cref="MaxDelay"/>
+        /// raises the computed delay to the server's value; a value greater than <see cref="MaxDelay"/>
+        /// is not waited for: the retryable response (with its <c>Retry-After</c> header) is returned
+        /// to the caller immediately, so the caller decides whether to wait that long.</para>
         /// </summary>
         public TimeSpan MaxDelay
         {
@@ -150,30 +150,24 @@ namespace TurboHTTP.Retry
             if (UseJitter && delayMs > 0d)
             {
                 double halfDelayMs = delayMs / 2d;
-                delayMs = halfDelayMs + (NextThreadJitter() * halfDelayMs);
+                delayMs = halfDelayMs + (BackoffJitter.NextDouble() * halfDelayMs);
             }
 
             if (minimumDelayOverride.HasValue && minimumDelayOverride.Value > TimeSpan.Zero)
             {
+                // A server-provided Retry-After raises the delay but never above MaxDelay: a hostile
+                // or misconfigured server must not be able to park the call (RFC 9110 section 10.2.3
+                // leaves the follow-up timing to the client). RetryInterceptor does not retry at all
+                // when Retry-After exceeds MaxDelay; this clamp keeps ComputeDelay bounded for
+                // every caller.
                 double overrideDelayMs = minimumDelayOverride.Value.TotalMilliseconds;
+                if (overrideDelayMs > maxDelayMs)
+                    overrideDelayMs = maxDelayMs;
                 if (overrideDelayMs > delayMs)
                     delayMs = overrideDelayMs;
             }
 
             return TimeSpan.FromMilliseconds(delayMs);
-        }
-
-        private static double NextThreadJitter()
-        {
-            var rng = _threadJitterRng;
-            if (rng == null)
-            {
-                int seed = Interlocked.Increment(ref _threadSeed) ^ Environment.CurrentManagedThreadId;
-                rng = new Random(seed);
-                _threadJitterRng = rng;
-            }
-
-            return rng.NextDouble();
         }
     }
 }

@@ -7,8 +7,9 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 {
+    /// <summary>Diffie-Hellman public key parameters.</summary>
     public class DHPublicKeyParameters
-		: DHKeyParameters
+        : DHKeyParameters
     {
         private static BigInteger Validate(BigInteger y, DHParameters dhParams)
         {
@@ -16,6 +17,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
                 throw new ArgumentNullException(nameof(y));
 
             BigInteger p = dhParams.P;
+
+            // Bound the modulus size before the super-linear Legendre/ModPow below, so a crafted
+            // oversized p cannot turn key import into a CPU-exhaustion DoS (cf. RSA modulus cap).
+            int maxBitLength = Properties.GetInt32(Properties.DHMaxSize, 16384);
+            if (p.BitLength > maxBitLength)
+                throw new ArgumentException("DH modulus out of range", nameof(dhParams));
 
             // TLS check
             if (y.CompareTo(BigInteger.Two) < 0 || y.CompareTo(p.Subtract(BigInteger.Two)) > 0)
@@ -27,9 +34,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
             if (q == null)
                 return y;
 
-            if (p.TestBit(0)
-                && p.BitLength - 1 == q.BitLength
-                && p.ShiftRight(1).Equals(q))
+            if (p.TestBit(0) &&
+                p.BitLength - 1 == q.BitLength &&
+                p.ShiftRight(1).Equals(q))
             {
                 // Safe prime case
                 if (1 == Legendre(y, p))
@@ -46,40 +53,36 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
 
         private readonly BigInteger m_y;
 
-		public DHPublicKeyParameters(BigInteger y, DHParameters	parameters)
-			: base(false, parameters)
-        {
-			m_y = Validate(y, parameters);
-        }
-
-		public DHPublicKeyParameters(BigInteger y, DHParameters parameters, DerObjectIdentifier	algorithmOid)
-			: base(false, parameters, algorithmOid)
+        /// <summary>Initializes a new instance of <see cref="DHPublicKeyParameters"/>.</summary>
+        /// <param name="y">The public point Y.</param>
+        /// <param name="parameters">The DH domain parameters.</param>
+        public DHPublicKeyParameters(BigInteger y, DHParameters parameters)
+            : base(false, parameters)
         {
             m_y = Validate(y, parameters);
         }
 
+        public DHPublicKeyParameters(BigInteger y, DHParameters parameters, DerObjectIdentifier algorithmOid)
+            : base(false, parameters, algorithmOid)
+        {
+            m_y = Validate(y, parameters);
+        }
+
+        /// <summary>Gets the public point Y.</summary>
         public virtual BigInteger Y => m_y;
 
-		public override bool Equals(object obj)
+        public override bool Equals(object obj)
         {
-			if (obj == this)
-				return true;
+            if (obj == this)
+                return true;
 
-            if (!(obj is DHPublicKeyParameters other))
-				return false;
-
-			return Equals(other);
+            return obj is DHPublicKeyParameters that
+                && Equals(that);
         }
 
-		protected bool Equals(DHPublicKeyParameters other)
-		{
-			return m_y.Equals(other.m_y) && base.Equals(other);
-		}
+        protected bool Equals(DHPublicKeyParameters other) => m_y.Equals(other.m_y) && base.Equals(other);
 
-		public override int GetHashCode()
-        {
-            return m_y.GetHashCode() ^ base.GetHashCode();
-        }
+        public override int GetHashCode() => m_y.GetHashCode() ^ base.GetHashCode();
 
         private static int Legendre(BigInteger a, BigInteger b)
         {
@@ -135,7 +138,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters
                     Nat.ShiftDownWord(len, A, 0);
                 }
 
-                int shift = Integers.NumberOfTrailingZeros((int)A[0]);
+                int shift = Integers.NumberOfTrailingZeros(A[0]);
                 if (shift > 0)
                 {
                     Nat.ShiftDownBits(len, A, shift, 0);

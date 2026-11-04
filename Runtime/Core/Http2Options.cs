@@ -9,11 +9,17 @@ namespace TurboHTTP.Core
     {
         private bool _enablePush = true;
         private int _maxConcurrentStreams = 100;
-        private long _maxResponseBodySize = 100 * 1024 * 1024; // 100 MB default
+        private long _maxResponseBodySize = DefaultMaxResponseBodySize;
         private int _initialWindowSize = 65535; // Http2Constants.DefaultInitialWindowSize
         private int _maxFrameSize = 16384; // Http2Constants.DefaultMaxFrameSize
         private int _maxHeaderListSize = 64 * 1024; // 64 KB default
         private int _maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes;
+        private TimeSpan _pingInterval = DefaultPingInterval;
+        private TimeSpan _pingTimeout = DefaultPingTimeout;
+        // 0 = no transport cap (#147). IsDefault compares against the same constant (#275).
+        internal const long DefaultMaxResponseBodySize = 0;
+        internal static readonly TimeSpan DefaultPingInterval = TimeSpan.FromSeconds(30);
+        internal static readonly TimeSpan DefaultPingTimeout = TimeSpan.FromSeconds(10);
         internal int TestPerStreamReceiveBufferBytesOverride { get; set; }
         internal int TestMaxConnectionBufferedBytesOverride { get; set; }
         internal int TestStallTimeoutMillisecondsOverride { get; set; }
@@ -44,9 +50,10 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Maximum allowed response body size in bytes. Protects against unbounded
-        /// memory consumption from malicious or misconfigured servers. Defaults to 100 MB.
-        /// Set to 0 for unlimited.
+        /// Optional hard cap, in bytes, on every HTTP/2 response body, buffered or streamed. A response
+        /// that exceeds it is reset (RST_STREAM CANCEL) and its body faults with a network error.
+        /// Defaults to 0 (no transport cap): streamed bodies never accumulate in memory, and buffered
+        /// responses are capped by <see cref="UHttpClientOptions.MaxBufferedResponseBodySize"/>.
         /// </summary>
         public long MaxResponseBodySize
         {
@@ -118,6 +125,38 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>
+        /// How long a connection with open streams waits between liveness PINGs (RFC 9113 Section 6.7).
+        /// A connection with no open streams sends no PINGs. <see cref="TimeSpan.Zero"/> disables liveness
+        /// PINGs. Defaults to 30 seconds.
+        /// </summary>
+        public TimeSpan PingInterval
+        {
+            get => _pingInterval;
+            set
+            {
+                if (value < TimeSpan.Zero || value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Must be between zero and int.MaxValue milliseconds.");
+                _pingInterval = value;
+            }
+        }
+
+        /// <summary>
+        /// How long a liveness PING may wait for its ACK. Without an ACK in time the connection is
+        /// presumed dead: its streams fail with a network error and new requests use a fresh connection.
+        /// Defaults to 10 seconds.
+        /// </summary>
+        public TimeSpan PingTimeout
+        {
+            get => _pingTimeout;
+            set
+            {
+                if (value <= TimeSpan.Zero || value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Must be greater than zero and at most int.MaxValue milliseconds.");
+                _pingTimeout = value;
+            }
+        }
+
         public Http2Options Clone()
         {
             return new Http2Options
@@ -129,6 +168,8 @@ namespace TurboHTTP.Core
                 _maxFrameSize = _maxFrameSize,
                 _maxHeaderListSize = _maxHeaderListSize,
                 _maxDecodedHeaderBytes = _maxDecodedHeaderBytes,
+                _pingInterval = _pingInterval,
+                _pingTimeout = _pingTimeout,
                 TestPerStreamReceiveBufferBytesOverride = TestPerStreamReceiveBufferBytesOverride,
                 TestMaxConnectionBufferedBytesOverride = TestMaxConnectionBufferedBytesOverride,
                 TestStallTimeoutMillisecondsOverride = TestStallTimeoutMillisecondsOverride,
@@ -140,11 +181,13 @@ namespace TurboHTTP.Core
         {
             return _enablePush == true &&
                    _maxConcurrentStreams == 100 &&
-                   _maxResponseBodySize == 100 * 1024 * 1024 &&
+                   _maxResponseBodySize == DefaultMaxResponseBodySize &&
                    _initialWindowSize == 65535 &&
                    _maxFrameSize == 16384 &&
                    _maxHeaderListSize == 64 * 1024 &&
                    _maxDecodedHeaderBytes == UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes &&
+                   _pingInterval == DefaultPingInterval &&
+                   _pingTimeout == DefaultPingTimeout &&
                    TestPerStreamReceiveBufferBytesOverride == 0 &&
                    TestMaxConnectionBufferedBytesOverride == 0 &&
                    TestStallTimeoutMillisecondsOverride == 0 &&

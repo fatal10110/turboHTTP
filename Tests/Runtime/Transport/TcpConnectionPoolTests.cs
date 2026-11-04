@@ -752,6 +752,7 @@ namespace TurboHTTP.Tests.Transport
 #if TURBOHTTP_INTEGRATION_TESTS
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void PooledConnection_TlsVersion_SetAfterTlsHandshake()
         {
             Task.Run(async () =>
@@ -771,7 +772,7 @@ namespace TurboHTTP.Tests.Transport
                     }
                     catch (Exception ex) when (IsNetworkEnvironmentIssue(ex))
                     {
-                        Assert.Ignore($"TLS integration endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
+                        TestRequirements.IgnoreEnvironment($"TLS integration endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
                         return;
                     }
 
@@ -790,6 +791,7 @@ namespace TurboHTTP.Tests.Transport
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void ITlsProvider_WrapAsync_ReturnsTlsResult_WithNegotiatedProtocol()
         {
             Task.Run(async () =>
@@ -806,7 +808,7 @@ namespace TurboHTTP.Tests.Transport
                     }
                     catch (Exception ex) when (IsNetworkEnvironmentIssue(ex))
                     {
-                        Assert.Ignore($"TLS integration endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
+                        TestRequirements.IgnoreEnvironment($"TLS integration endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
                         return;
                     }
 
@@ -815,7 +817,7 @@ namespace TurboHTTP.Tests.Transport
                     var completed = await Task.WhenAny(wrapTask, Task.Delay(TimeSpan.FromSeconds(20), CancellationToken.None));
                     if (completed != wrapTask)
                     {
-                        Assert.Ignore("TLS handshake exceeded timeout in this environment.");
+                        TestRequirements.IgnoreEnvironment("TLS handshake exceeded timeout in this environment.");
                         return;
                     }
 
@@ -835,6 +837,7 @@ namespace TurboHTTP.Tests.Transport
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void ITlsProvider_TlsBelowMinimum_ThrowsAuthenticationException()
         {
             Task.Run(async () =>
@@ -852,7 +855,7 @@ namespace TurboHTTP.Tests.Transport
                     }
                     catch (Exception ex) when (IsNetworkEnvironmentIssue(ex))
                     {
-                        Assert.Ignore($"Legacy TLS test endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
+                        TestRequirements.IgnoreEnvironment($"Legacy TLS test endpoint unavailable in this environment: {ex.GetType().Name}: {ex.Message}");
                         return;
                     }
 

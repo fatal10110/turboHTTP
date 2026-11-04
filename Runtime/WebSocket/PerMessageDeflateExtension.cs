@@ -4,22 +4,36 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Threading;
 using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
     /// <summary>
-    /// RFC 7692 permessage-deflate extension (v1 no_context_takeover-only mode).
+    /// RFC 7692 permessage-deflate extension. Inbound messages are inflated with a fresh inflater each
+    /// (the offer always asks for <c>server_no_context_takeover</c>); outbound messages end at a sync flush,
+    /// so a server may keep its inflater across messages unless <c>client_no_context_takeover</c> is agreed.
     /// </summary>
     public sealed class PerMessageDeflateExtension : IWebSocketExtension
     {
         private static readonly byte[] DeflateTail = new byte[] { 0x00, 0x00, 0xFF, 0xFF };
+
+        // 1 once this runtime's DeflateStream.Flush was seen not to sync-flush (Unity Mono): its
+        // messages then end with a final block (#217). Written and read with Volatile.
+        private static int s_flushIsNotSyncFlush;
 
         private readonly PerMessageDeflateOptions _options;
         private readonly int _maxMessageSize;
 
         private bool _disposed;
         private bool _isNegotiated;
+        private bool _clientNoContextTakeover;
+
+        /// <summary>
+        /// Test hook: compress messages without client_no_context_takeover with
+        /// <see cref="SyncFlushDeflater"/>, as on runtimes whose DeflateStream cannot sync-flush.
+        /// </summary>
+        internal bool ForceSyncFlushDeflater { get; set; }
 
         public PerMessageDeflateExtension(
             PerMessageDeflateOptions options = null,
@@ -47,14 +61,17 @@ namespace TurboHTTP.WebSocket
 
             var parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            if (_options.ServerNoContextTakeover)
-                parameters["server_no_context_takeover"] = null;
+            // The inbound inflater is created per message, so server context takeover cannot be
+            // honoured: always ask for server_no_context_takeover (RFC 7692 section 7.1.1.1, #82).
+            parameters["server_no_context_takeover"] = null;
 
             if (_options.ClientNoContextTakeover)
                 parameters["client_no_context_takeover"] = null;
 
-            parameters["server_max_window_bits"] = _options.ServerMaxWindowBits.ToString();
-            parameters["client_max_window_bits"] = _options.ClientMaxWindowBits.ToString();
+            // client_max_window_bits is never offered: DeflateStream always compresses with a 15-bit
+            // window, so a smaller client window could not be honoured (RFC 7692 section 7.1.2.2).
+            parameters["server_max_window_bits"] = _options.ServerMaxWindowBits.ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
 
             return new[] { new WebSocketExtensionOffer(Name, parameters) };
         }
@@ -70,8 +87,8 @@ namespace TurboHTTP.WebSocket
                 return false;
 
             bool serverNoContextTakeover = false;
+            bool clientNoContextTakeover = false;
             int serverMaxWindowBits = _options.ServerMaxWindowBits;
-            int clientMaxWindowBits = _options.ClientMaxWindowBits;
 
             foreach (var parameter in serverParams.Parameters)
             {
@@ -88,6 +105,7 @@ namespace TurboHTTP.WebSocket
                         if (parameter.Value != null)
                             return false;
 
+                        clientNoContextTakeover = true;
                         break;
 
                     case "server_max_window_bits":
@@ -96,25 +114,25 @@ namespace TurboHTTP.WebSocket
                         break;
 
                     case "client_max_window_bits":
-                        if (!TryParseWindowBits(parameter.Value, out clientMaxWindowBits))
-                            return false;
-                        break;
+                        // Not offered, so the response must not contain it (RFC 7692 section 7.1.2.2).
+                        return false;
 
                     default:
                         return false;
                 }
             }
 
-            // v1 requires no context takeover for inbound decompression safety.
-            if (_options.ServerNoContextTakeover && !serverNoContextTakeover)
+            // Inbound context takeover is not implemented (a fresh inflater per message), so the server
+            // must agree to reset its context after every message (RFC 7692 section 7.1.1.1).
+            if (!serverNoContextTakeover)
                 return false;
 
+            // Any window up to 15 bits inflates with the 15-bit inflater; only a value above the offer
+            // violates RFC 7692 section 7.1.2.1.
             if (serverMaxWindowBits > _options.ServerMaxWindowBits)
                 return false;
 
-            if (clientMaxWindowBits > _options.ClientMaxWindowBits)
-                return false;
-
+            _clientNoContextTakeover = clientNoContextTakeover;
             _isNegotiated = true;
             return true;
         }
@@ -137,9 +155,24 @@ namespace TurboHTTP.WebSocket
             if (payload.Length < _options.CompressionThreshold)
                 return null;
 
+            // Without client_no_context_takeover in the agreed parameters the server may inflate all
+            // messages with one retained stream (RFC 7692 section 7.2.2), which cannot continue past a
+            // final block. Where DeflateStream.Flush cannot end a message without one (Unity Mono, #270),
+            // the managed encoder writes it, ending at a sync flush (RFC 7692 section 7.2.1).
+            bool finalBlockAllowed = _clientNoContextTakeover;
+            bool useSyncFlushDeflater = !finalBlockAllowed
+                && (ForceSyncFlushDeflater || Volatile.Read(ref s_flushIsNotSyncFlush) != 0);
+
             try
             {
-                var compressedOwner = Compress(payload);
+                IMemoryOwner<byte> compressedOwner = useSyncFlushDeflater
+                    ? null
+                    : Compress(payload, finalBlockAllowed);
+
+                // Compress returns null only when this message would need a final block.
+                if (compressedOwner == null)
+                    compressedOwner = SyncFlushDeflater.Compress(payload.Span, _options.CompressionLevel);
+
                 rsvBits = RsvBitMask;
                 return compressedOwner;
             }
@@ -205,7 +238,8 @@ namespace TurboHTTP.WebSocket
 
         public void Reset()
         {
-            // v1 no_context_takeover mode has no retained state between messages.
+            // No state is retained between messages: each outbound message gets a fresh encoder (its
+            // matches never reach into earlier messages) and each inbound message a fresh inflater.
         }
 
         public void Dispose()
@@ -213,9 +247,10 @@ namespace TurboHTTP.WebSocket
             _disposed = true;
         }
 
-        private IMemoryOwner<byte> Compress(ReadOnlyMemory<byte> payload)
+        private IMemoryOwner<byte> Compress(ReadOnlyMemory<byte> payload, bool finalBlockAllowed)
         {
             using var output = new MemoryStream(payload.Length + 32);
+            long syncFlushLength;
 
             using (var deflate = new DeflateStream(
                 output,
@@ -234,37 +269,48 @@ namespace TurboHTTP.WebSocket
                     }
                 }
 
+                // Sync flush: the data now ends with an empty stored block (00 00 FF FF), RFC 7692
+                // section 7.2.1 step 2. Disposing the stream below appends a final block (BFINAL=1).
                 deflate.Flush();
+                syncFlushLength = output.Length;
             }
 
-            if (!output.TryGetBuffer(out ArraySegment<byte> compressedSegment) ||
-                compressedSegment.Array == null)
+            byte[] compressed = output.TryGetBuffer(out ArraySegment<byte> buffer) && buffer.Array != null && buffer.Offset == 0
+                ? buffer.Array
+                : output.ToArray();
+
+            // The message ends at the sync flush (#217): a server that keeps its LZ77 window across
+            // messages (no client_no_context_takeover agreed, RFC 7692 section 7.2.2) inflates every
+            // message with one stream and cannot continue past a final block.
+            int compressedLength;
+            bool appendStoredBlockHeader = false;
+            if (HasTail(compressed, (int)syncFlushLength, DeflateTail))
             {
-                byte[] compressedFallback = output.ToArray();
-                int fallbackLength = compressedFallback.Length;
-                if (HasTail(compressedFallback, fallbackLength, DeflateTail))
-                    fallbackLength -= DeflateTail.Length;
+                compressedLength = (int)syncFlushLength - DeflateTail.Length;
+            }
+            else
+            {
+                // An empty payload may flush nothing at all, so only data proves the runtime's behaviour.
+                if (payload.Length > 0)
+                    Volatile.Write(ref s_flushIsNotSyncFlush, 1);
+                if (!finalBlockAllowed)
+                    return null;
 
-                var fallbackOwner = ArrayPoolMemoryOwner<byte>.Rent(fallbackLength);
-                if (fallbackLength > 0)
-                {
-                    new ReadOnlyMemory<byte>(compressedFallback, 0, fallbackLength).CopyTo(fallbackOwner.Memory);
-                }
-
-                return fallbackOwner;
+                // The server resets its inflater per message: keep the final block and add the empty
+                // stored block RFC 7692 section 7.2.1 step 2 requires, minus its 00 00 FF FF (7.2.3.4).
+                compressedLength = (int)output.Length;
+                if (HasTail(compressed, compressedLength, DeflateTail))
+                    compressedLength -= DeflateTail.Length;
+                else
+                    appendStoredBlockHeader = true;
             }
 
-            int compressedLength = (int)output.Length;
-            byte[] compressed = compressedSegment.Array;
-
-            if (HasTail(compressed, compressedLength, DeflateTail))
-                compressedLength -= DeflateTail.Length;
-
-            var owner = ArrayPoolMemoryOwner<byte>.Rent(compressedLength);
+            int messageLength = compressedLength + (appendStoredBlockHeader ? 1 : 0);
+            var owner = ArrayPoolMemoryOwner<byte>.Rent(messageLength);
             if (compressedLength > 0)
-            {
-                new ReadOnlyMemory<byte>(compressed, compressedSegment.Offset, compressedLength).CopyTo(owner.Memory);
-            }
+                new ReadOnlyMemory<byte>(compressed, 0, compressedLength).CopyTo(owner.Memory);
+            if (appendStoredBlockHeader)
+                owner.Memory.Span[compressedLength] = 0x00;
 
             return owner;
         }

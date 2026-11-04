@@ -5,9 +5,7 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 {
-    /**
-     * A Null object.
-     */
+    /// <summary>A NULL object.</summary>
     public abstract class Asn1Null
         : Asn1Object
     {
@@ -19,8 +17,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
             internal override Asn1Object FromImplicitPrimitive(DerOctetString octetString)
             {
-                CheckContentsLength(octetString.GetOctetsLength());
-                return CreatePrimitive();
+                return CreatePrimitive(octetString.GetOctetsLength());
             }
         }
 
@@ -45,11 +42,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct NULL from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct NULL from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj));
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
         public static Asn1Null GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
@@ -77,17 +74,20 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         {
         }
 
-        public override string ToString()
-        {
-            return "NULL";
-        }
+        public override string ToString() => "NULL";
 
-        internal static void CheckContentsLength(int contentsLength)
+        private static void CheckContentsLength(int contentsLength)
         {
             if (0 != contentsLength)
                 throw new InvalidOperationException("malformed NULL encoding encountered");
         }
 
-        internal static Asn1Null CreatePrimitive() => DerNull.Instance;
+        internal static Asn1Null CreatePrimitive(DefiniteLengthInputStream defIn) => CreatePrimitive(defIn.Remaining);
+
+        private static Asn1Null CreatePrimitive(int contentsLength)
+        {
+            CheckContentsLength(contentsLength);
+            return DerNull.Instance;
+        }
     }
 }

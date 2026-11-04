@@ -6,7 +6,7 @@ namespace TurboHTTP.Core
     /// Provides optimized, allocation-free access to platform and backend information.
     /// Acts as the source of truth for platform-conditional logic in TurboHTTP.
     /// </summary>
-    public static class PlatformInfo
+    internal static class PlatformInfo
     {
         /// <summary>
         /// Returns the current Unity runtime platform.

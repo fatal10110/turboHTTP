@@ -1,7 +1,6 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text;
@@ -62,8 +61,11 @@ namespace TurboHTTP.Cache
     /// <summary>
     /// RFC-aware cache interceptor with conditional revalidation support.
     /// </summary>
-    public sealed partial class CacheInterceptor : IHttpInterceptor, IDisposable
+    public sealed partial class CacheInterceptor : IHttpInterceptor, IDisposable, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#55).
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Cache;
+
         private const string EmptyVaryKeyToken = "~";
         private const int MaxVaryHeaders = 32;
 
@@ -86,18 +88,38 @@ namespace TurboHTTP.Cache
             "Upgrade"
         };
 
+        // RFC 9111 section 3.2: fields a 304 never writes into the stored response. Content-Length is never updated;
+        // Content-Encoding describes the processing the stored (decoded) body went through; Content-Range is
+        // processed and removed by the recipient; Transfer-Encoding is hop-by-hop framing.
+        private static readonly string[] NotModifiedMergeExcludedHeaders =
+        {
+            "Content-Length",
+            "Content-Encoding",
+            "Content-Range",
+            "Transfer-Encoding"
+        };
+
         private readonly CachePolicy _policy;
         private readonly bool _ownsStorage;
         private readonly object _indexLock = new object();
         // Variant index is an in-memory accelerator only. Entries are ref-counted per
         // signature and cleaned up as storage keys are removed or invalidated.
         // This index is intentionally not persisted across process restarts in v1.
+        // Storage evicts silently, so the index is also bounded LRU-style by
+        // _variantIndexCapacity (#60); _variantLru orders the buckets (head = least recent).
+        // All three are guarded by _indexLock.
         private readonly Dictionary<string, VariantBucket> _variantIndex = new Dictionary<string, VariantBucket>(StringComparer.Ordinal);
+        private readonly LinkedList<string> _variantLru = new LinkedList<string>();
+        private int _variantIndexCapacity;
         private readonly object _pendingMutationLock = new object();
         private readonly Dictionary<string, Task> _pendingMutations = new Dictionary<string, Task>(StringComparer.Ordinal);
         private readonly CancellationTokenSource _backgroundWorkCancellation = new CancellationTokenSource();
+        // Captured once: CancellationTokenSource.Token throws after Dispose, the captured token does not.
+        private readonly CancellationToken _backgroundWorkToken;
         private Func<IStreamingCacheAccumulator> _streamingAccumulatorFactory =
             static () => new SegmentedBufferStreamingCacheAccumulator();
+        // Clock for freshness and age (lookup, store, 304 merge, served Age). Replaced only by tests.
+        private Func<DateTime> _utcNow = static () => DateTime.UtcNow;
         private int _disposed;
 
         private sealed class VariantBucket
@@ -106,6 +128,7 @@ namespace TurboHTTP.Cache
             public readonly HashSet<string> StorageKeys = new HashSet<string>(StringComparer.Ordinal);
             public readonly Dictionary<string, string> SignatureByStorageKey = new Dictionary<string, string>(StringComparer.Ordinal);
             public readonly Dictionary<string, int> SignatureRefCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            public LinkedListNode<string> LruNode;
         }
 
         private sealed class PendingMutationState
@@ -120,13 +143,17 @@ namespace TurboHTTP.Cache
             }
         }
 
-        private sealed class StoreResponseState
+        // Owns the pooled body until StoreResponseAsync takes it over; disposed by
+        // RunQueuedMutationAsync when the store is skipped (#71).
+        private sealed class StoreResponseState : IDisposable
         {
             public readonly HttpMethod RequestMethod;
             public readonly Uri RequestUri;
             public readonly HttpHeaders RequestHeaders;
             public readonly int StatusCode;
             public readonly HttpHeaders ResponseHeaders;
+            public readonly HttpHeaders Trailers;
+            public readonly DateTime? ResponseTimeUtc;
             public readonly SegmentedBuffer Body;
 
             public StoreResponseState(
@@ -135,6 +162,8 @@ namespace TurboHTTP.Cache
                 HttpHeaders requestHeaders,
                 int statusCode,
                 HttpHeaders responseHeaders,
+                HttpHeaders trailers,
+                DateTime? responseTimeUtc,
                 SegmentedBuffer body)
             {
                 RequestMethod = requestMethod;
@@ -142,7 +171,14 @@ namespace TurboHTTP.Cache
                 RequestHeaders = requestHeaders;
                 StatusCode = statusCode;
                 ResponseHeaders = responseHeaders;
+                Trailers = trailers;
+                ResponseTimeUtc = responseTimeUtc;
                 Body = body;
+            }
+
+            public void Dispose()
+            {
+                Body?.Dispose();
             }
         }
 
@@ -244,6 +280,13 @@ namespace TurboHTTP.Cache
 
             if (_policy.Storage == null)
                 throw new ArgumentNullException(nameof(policy), "CachePolicy.Storage cannot be null.");
+
+            _backgroundWorkToken = _backgroundWorkCancellation.Token;
+            // Every live bucket holds at least one storage entry, so the storage entry limit bounds
+            // the live index; storages with no known limit get a fixed cap.
+            _variantIndexCapacity = _policy.Storage is MemoryCacheStorage memoryStorage
+                ? memoryStorage.MaxEntries
+                : DefaultVariantIndexCapacity;
         }
 
         public DispatchFunc Wrap(DispatchFunc next)
@@ -261,7 +304,9 @@ namespace TurboHTTP.Cache
                     return;
                 }
 
-                if (!CanCacheMethod(request.Method) || !_policy.EnableCache)
+                // RFC 9111 section 3.3: this cache does not store partial content, so a Range/If-Range request
+                // is neither answered from a stored response nor allowed to store its (possibly 206) response.
+                if (!CanCacheMethod(request.Method) || !_policy.EnableCache || IsRangeRequest(request.Headers))
                 {
                     await next(request, handler, context, cancellationToken).ConfigureAwait(false);
                     return;
@@ -273,7 +318,7 @@ namespace TurboHTTP.Cache
                 var lookup = await TryLookupAsync(request, baseKey, cancellationToken).ConfigureAwait(false);
                 if (lookup.Entry != null)
                 {
-                    var nowUtc = DateTime.UtcNow;
+                    var nowUtc = _utcNow();
                     if (forceRevalidation)
                     {
                         if (_policy.EnableRevalidation && lookup.Entry.CanRevalidate())
@@ -345,33 +390,22 @@ namespace TurboHTTP.Cache
             };
         }
 
-        private async Task HandleUnsafeInvalidationAsync(
+        private Task HandleUnsafeInvalidationAsync(
             UHttpRequest request,
             IHttpHandler handler,
             RequestContext context,
             DispatchFunc next,
             CancellationToken cancellationToken)
         {
-            using var response = await CollectBufferedResponseAsync(
-                next,
+            if (!_policy.InvalidateOnUnsafeMethods)
+                return next(request, handler, context, cancellationToken);
+
+            // The response streams through untouched; invalidation runs when the status is known.
+            return next(
                 request,
+                new UnsafeInvalidationHandler(this, handler, request.Uri, cancellationToken),
                 context,
-                cancellationToken).ConfigureAwait(false);
-
-            if (_policy.InvalidateOnUnsafeMethods && (int)response.StatusCode < 500)
-            {
-                var invalidationTargets = CollectInvalidationTargets(request.Uri, response.Headers);
-                for (int i = 0; i < invalidationTargets.Count; i++)
-                    await InvalidateUriAsync(invalidationTargets[i], cancellationToken).ConfigureAwait(false);
-
-                context.RecordEvent("CacheInvalidated", new Dictionary<string, object>
-                {
-                    { "uri", NormalizeUri(request.Uri) },
-                    { "count", invalidationTargets.Count }
-                });
-            }
-
-            await ReplayCollectedResponseAsync(handler, request, response, context).ConfigureAwait(false);
+                cancellationToken);
         }
 
         private async Task RevalidateAsync(
@@ -398,61 +432,14 @@ namespace TurboHTTP.Cache
                 .CopyWithSharedContent()
                 .WithHeaders(conditionalHeaders);
 
+            // The validation response is not buffered: RevalidationHandler sees the status first, serves the
+            // merged stored entry for 304 and streams any other response to the caller (teeing it into the
+            // store when storable). StreamingResponseRequested is left as the caller set it.
+            var revalidationHandler = new RevalidationHandler(this, handler, request, baseKey, lookup, cancellationToken);
             context.UpdateRequest(conditionalRequest);
             try
             {
-                using var response = await CollectBufferedResponseAsync(
-                    next,
-                    conditionalRequest,
-                    context,
-                    cancellationToken).ConfigureAwait(false);
-
-                context.UpdateRequest(request);
-                if (response.StatusCode != HttpStatusCode.NotModified)
-                {
-                    context.RecordEvent("CacheRevalidateModified");
-
-                    bool replacedCachedEntry = false;
-                    if (ShouldConsiderForStorage(request, response))
-                    {
-                        var prepared = PrepareEntryForStorage(request, response, baseKey);
-                        if (prepared.Entry != null)
-                        {
-                            await ReplaceStoredEntryAsync(
-                                baseKey,
-                                prepared,
-                                lookup.StorageKey,
-                                cancellationToken).ConfigureAwait(false);
-                            replacedCachedEntry = true;
-                        }
-                    }
-
-                    if (!replacedCachedEntry)
-                    {
-                        // The upstream response is authoritative and this cache entry is no longer valid.
-                        await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                    }
-
-                    await ReplayCollectedResponseAsync(handler, request, response, context).ConfigureAwait(false);
-                    return;
-                }
-
-                context.RecordEvent("CacheRevalidateNotModified");
-
-                var merged = MergeNotModifiedEntry(request, lookup.Entry, response, baseKey);
-                if (merged.Entry != null)
-                {
-                    if (!string.Equals(lookup.StorageKey, merged.Entry.Key, StringComparison.Ordinal))
-                        await ReplaceStoredEntryAsync(baseKey, merged, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                    else
-                        await StorePreparedEntryQueuedAsync(baseKey, merged, cancellationToken).ConfigureAwait(false);
-
-                    await ServeCachedEntryAsync(handler, merged.Entry, request, context, "REVALIDATED").ConfigureAwait(false);
-                    return;
-                }
-
-                await RemoveStoredEntryAsync(baseKey, lookup.StorageKey, cancellationToken).ConfigureAwait(false);
-                await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "REVALIDATED").ConfigureAwait(false);
+                await next(conditionalRequest, revalidationHandler, context, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -473,7 +460,7 @@ namespace TurboHTTP.Cache
                     next,
                     baseKey,
                     lookup,
-                    _backgroundWorkCancellation.Token),
+                    _backgroundWorkToken),
                 "revalidation");
         }
 
@@ -484,17 +471,21 @@ namespace TurboHTTP.Cache
             CacheLookupResult lookup,
             CancellationToken cancellationToken)
         {
-            // Detach from the foreground cache-hit path before starting revalidation work.
-            await Task.Yield();
-            if (cancellationToken.IsCancellationRequested)
-                return;
+            // Detach from the foreground cache-hit path onto the thread pool. Task.Yield would resume
+            // on the caller's SynchronizationContext (Unity main thread), which may not be pumping (#245).
+            await new ThreadPoolHop();
 
-            var context = RequestContext.CreateForBackground(request);
+            RequestContext context = null;
             try
             {
+                // Checked inside the try so the cloned request is disposed on cancel-before-start too.
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
+                context = RequestContext.CreateForBackground(request);
                 await RevalidateAsync(
                     request,
-                    NullHttpHandler.Instance,
+                    new BackgroundRevalidationSink(MaxCacheableResponseBodyBytes, cancellationToken),
                     context,
                     next,
                     cancellationToken,
@@ -506,12 +497,12 @@ namespace TurboHTTP.Cache
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[TurboHTTP][Cache] Background revalidation failed: " + ex);
+                TurboDiagnostics.Log("[TurboHTTP][Cache] Background revalidation failed", ex);
             }
             finally
             {
-                context.Stop();
-                context.Clear();
+                context?.Stop();
+                context?.Clear();
                 request.Dispose();
             }
         }
@@ -569,6 +560,8 @@ namespace TurboHTTP.Cache
                 response.StatusCode,
                 response.Headers,
                 SnapshotBodyForCache(response.Body),
+                response.Trailers,
+                responseTimeUtc: null,
                 response.Request?.Uri ?? request.Uri,
                 baseKey);
         }
@@ -579,6 +572,8 @@ namespace TurboHTTP.Cache
             HttpStatusCode statusCode,
             HttpHeaders responseHeaders,
             ReadOnlyMemory<byte> bodySnapshot,
+            HttpHeaders trailers,
+            DateTime? responseTimeUtc,
             Uri responseUrl,
             string baseKey)
         {
@@ -617,7 +612,9 @@ namespace TurboHTTP.Cache
                     return default;
             }
 
-            var nowUtc = DateTime.UtcNow;
+            // response_time (RFC 9111 section 4.2.3): when the response arrived, not when this background store runs.
+            var nowUtc = responseTimeUtc ?? _utcNow();
+            EnsureDateHeader(responseHeadersForStorage, nowUtc);
             var expiresAtUtc = ResolveExpiry(nowUtc, responseCacheControl, responseHeadersForStorage, isSharedCache: false);
             var eTag = responseHeadersForStorage.Get("ETag");
             var lastModified = responseHeadersForStorage.Get("Last-Modified");
@@ -657,7 +654,8 @@ namespace TurboHTTP.Cache
                 varyHeaders: varyHeaders,
                 varyKey: varyKey,
                 staleWhileRevalidate: responseCacheControl.StaleWhileRevalidate,
-                mustRevalidate: mustRevalidate);
+                mustRevalidate: mustRevalidate,
+                trailers: trailers);
 
             return new PreparedCacheEntry(entry, signature);
         }
@@ -665,17 +663,32 @@ namespace TurboHTTP.Cache
         private PreparedCacheEntry MergeNotModifiedEntry(
             UHttpRequest request,
             CacheEntry existing,
-            UHttpResponse notModifiedResponse,
+            HttpHeaders notModifiedHeaders,
             string baseKey)
         {
             var mergedHeaders = existing.Headers.Clone();
-            foreach (var name in notModifiedResponse.Headers.Names)
+            // The stored Age and Date describe the old response; the 304 is the new response (RFC 9111 section 4.2.3:
+            // age is counted from the last validation). Keep only the 304's own values, or the receive time as Date.
+            mergedHeaders.Remove("Age");
+            mergedHeaders.Remove("Date");
+            foreach (var name in notModifiedHeaders.Names)
             {
-                if (!notModifiedResponse.Headers.Contains(name))
+                if (!notModifiedHeaders.Contains(name))
+                    continue;
+
+                // RFC 9111 section 3.2. The stored body is whatever the inner pipeline produced (e.g. decoded by
+                // Decompression), so a 304 repeating Content-Encoding must not relabel it. Content-Type is updated:
+                // the stored bytes are not parsed by the cache.
+                if (IsNotModifiedMergeExcluded(name))
+                    continue;
+
+                // A cookie the policy keeps out of storage stays out when a 304 carries it; the revalidating
+                // consumer still receives it (ServeCachedEntryAsync), later hits never replay it.
+                if (!_policy.AllowSetCookieResponses && string.Equals(name, "Set-Cookie", StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 mergedHeaders.Remove(name);
-                var values = notModifiedResponse.Headers.GetValues(name);
+                var values = notModifiedHeaders.GetValues(name);
                 for (int j = 0; j < values.Count; j++)
                     mergedHeaders.Add(name, values[j]);
             }
@@ -693,7 +706,8 @@ namespace TurboHTTP.Cache
                     return default;
             }
 
-            var nowUtc = DateTime.UtcNow;
+            var nowUtc = _utcNow();
+            EnsureDateHeader(mergedHeaders, nowUtc);
             var cacheControl = ParseCacheControl(mergedHeaders.GetValues("Cache-Control"));
             var expiresAtUtc = ResolveExpiry(nowUtc, cacheControl, mergedHeaders, isSharedCache: false);
             var eTag = mergedHeaders.Get("ETag");
@@ -732,7 +746,8 @@ namespace TurboHTTP.Cache
                 varyHeaders: varyHeaders,
                 varyKey: varyKey,
                 staleWhileRevalidate: cacheControl.StaleWhileRevalidate,
-                mustRevalidate: mustRevalidate);
+                mustRevalidate: mustRevalidate,
+                trailers: existing.Trailers);
 
             return new PreparedCacheEntry(mergedEntry, signature);
         }
@@ -742,12 +757,22 @@ namespace TurboHTTP.Cache
             CacheEntry entry,
             UHttpRequest request,
             RequestContext context,
-            string provenance)
+            string provenance,
+            IReadOnlyList<string> responseSetCookies = null)
         {
             var headers = entry.Headers.Clone();
-            var ageSeconds = ComputeCurrentAgeSeconds(entry, DateTime.UtcNow);
+            var ageSeconds = ComputeCurrentAgeSeconds(entry, _utcNow());
             headers.Set("Age", ageSeconds.ToString(CultureInfo.InvariantCulture));
             headers.Set("X-Cache", provenance);
+
+            // A revalidating 304's own Set-Cookie belongs to this response only (never merged into storage when the
+            // policy refuses Set-Cookie responses).
+            if (responseSetCookies != null && responseSetCookies.Count > 0)
+            {
+                headers.Remove("Set-Cookie");
+                for (int i = 0; i < responseSetCookies.Count; i++)
+                    headers.Add("Set-Cookie", responseSetCookies[i]);
+            }
 
             // Cache hits synthesize the same handler lifecycle as a network response.
             // OnRequestStart here means "response delivery begins", not "socket dispatch started".
@@ -755,22 +780,27 @@ namespace TurboHTTP.Cache
             await handler.OnResponseStartAsync(
                 (int)entry.StatusCode,
                 headers,
-                new BufferedResponseBodySource(entry.Body, HttpHeaders.Empty),
+                new BufferedResponseBodySource(entry.Body, entry.Trailers),
                 context).ConfigureAwait(false);
-        }
-
-        private static bool ShouldConsiderForStorage(UHttpRequest request, UHttpResponse response)
-        {
-            return response != null
-                && ShouldConsiderForStorage(request.Method, response.StatusCode);
         }
 
         private static bool ShouldConsiderForStorage(HttpMethod requestMethod, HttpStatusCode responseStatusCode)
         {
             var numericStatusCode = (int)responseStatusCode;
+
+            // RFC 9111 section 3.3: a cache that does not implement partial-content storage MUST NOT store
+            // a 206 response.
+            if (numericStatusCode == 206)
+                return false;
+
             return ((numericStatusCode >= 200 && numericStatusCode < 300)
                     || IsRfc9111CacheableByDefault(responseStatusCode))
                    && requestMethod != HttpMethod.OPTIONS;
+        }
+
+        private static bool IsRangeRequest(HttpHeaders headers)
+        {
+            return headers != null && (headers.Contains("Range") || headers.Contains("If-Range"));
         }
 
         private bool CanCacheMethod(HttpMethod method)
@@ -802,7 +832,15 @@ namespace TurboHTTP.Cache
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            _backgroundWorkCancellation.Cancel();
+            try
+            {
+                _backgroundWorkCancellation.Cancel();
+            }
+            finally
+            {
+                // Background work holds _backgroundWorkToken, which stays readable (and cancelled).
+                _backgroundWorkCancellation.Dispose();
+            }
 
             if (_ownsStorage && _policy.Storage is IDisposable disposableStorage)
                 disposableStorage.Dispose();
@@ -821,7 +859,9 @@ namespace TurboHTTP.Cache
             string baseKey,
             int statusCode,
             HttpHeaders responseHeaders,
-            SegmentedBuffer body)
+            SegmentedBuffer body,
+            HttpHeaders trailers = null,
+            DateTime? responseTimeUtc = null)
         {
             QueueBackgroundWork(
                 QueueMutationAsync(
@@ -836,16 +876,20 @@ namespace TurboHTTP.Cache
                             key,
                             storeState.StatusCode,
                             storeState.ResponseHeaders,
+                            storeState.Trailers,
+                            storeState.ResponseTimeUtc,
                             storeState.Body,
                             token);
                     },
-                    _backgroundWorkCancellation.Token,
+                    _backgroundWorkToken,
                     new StoreResponseState(
                         requestMethod,
                         requestUri,
                         requestHeaders,
                         statusCode,
                         responseHeaders,
+                        trailers,
+                        responseTimeUtc,
                         body)),
                 "store");
         }
@@ -857,16 +901,23 @@ namespace TurboHTTP.Cache
             string baseKey,
             int statusCode,
             HttpHeaders responseHeaders,
+            HttpHeaders trailers,
+            DateTime? responseTimeUtc,
             SegmentedBuffer body,
             CancellationToken cancellationToken)
         {
-            // Detach from the response completion callback before snapshotting the response body.
-            await Task.Yield();
-            if (cancellationToken.IsCancellationRequested)
-                return;
+            // Detach from the response completion callback (and from _pendingMutationLock, which
+            // QueueMutationAsync holds while it starts this mutation inline) onto the thread pool
+            // before snapshotting the body. Task.Yield would resume on the caller's
+            // SynchronizationContext, and a foreground lookup of this key waits on this task (#245).
+            await new ThreadPoolHop();
 
             try
             {
+                // Checked inside the try so the pooled body is returned on cancel-before-start too.
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
                 var statusCodeForStorage = (HttpStatusCode)statusCode;
                 if (!ShouldConsiderForStorage(requestMethod, statusCodeForStorage))
                     return;
@@ -880,6 +931,8 @@ namespace TurboHTTP.Cache
                     statusCodeForStorage,
                     responseHeaders,
                     bodySnapshot,
+                    trailers,
+                    responseTimeUtc,
                     requestUri,
                     baseKey);
                 if (prepared.Entry == null)
@@ -913,7 +966,7 @@ namespace TurboHTTP.Cache
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[TurboHTTP][Cache] Store failed: " + ex);
+                TurboDiagnostics.Log("[TurboHTTP][Cache] Store failed", ex);
             }
         }
 
@@ -1118,7 +1171,13 @@ namespace TurboHTTP.Cache
                 }
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // The mutation never runs, so release what its state owns (the pooled store body, #71).
+                (state as IDisposable)?.Dispose();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             await mutation(this, baseKey, cancellationToken, state).ConfigureAwait(false);
         }
 
@@ -1141,7 +1200,7 @@ namespace TurboHTTP.Cache
                 {
                     var ex = t.Exception?.GetBaseException();
                     if (ex != null)
-                        Debug.WriteLine("[TurboHTTP][Cache] Background " + state + " failed: " + ex);
+                        TurboDiagnostics.Log("[TurboHTTP][Cache] Background " + state + " failed", ex);
                 },
                 operation,
                 CancellationToken.None,
@@ -1149,38 +1208,38 @@ namespace TurboHTTP.Cache
                 TaskScheduler.Default);
         }
 
-        private static ValueTask ReplayCollectedResponseAsync(
-            IHttpHandler handler,
-            UHttpRequest request,
-            UHttpResponse response,
-            RequestContext context)
-        {
-            handler.OnRequestStart(request, context);
-            var body = response.Body.IsEmpty
-                ? ReadOnlyMemory<byte>.Empty
-                : new ReadOnlyMemory<byte>(response.Body.ToArray());
-            return handler.OnResponseStartAsync(
-                (int)response.StatusCode,
-                response.Headers,
-                new BufferedResponseBodySource(body, HttpHeaders.Empty),
-                context);
-        }
-
-        private static Task<UHttpResponse> CollectBufferedResponseAsync(
-            DispatchFunc dispatch,
-            UHttpRequest request,
-            RequestContext context,
-            CancellationToken cancellationToken)
-        {
-            return TransportDispatchHelper.CollectResponseAsync(dispatch, request, context, cancellationToken);
-        }
-
         internal long MaxCacheableResponseBodyBytes => _policy.MaxCacheableResponseBodyBytes;
+
+        /// <summary>Background token; stays cancelled (not throwing) after <see cref="Dispose"/>. For tests.</summary>
+        internal CancellationToken BackgroundWorkToken => _backgroundWorkToken;
+
+        internal int PendingMutationCount
+        {
+            get
+            {
+                lock (_pendingMutationLock)
+                {
+                    return _pendingMutations.Count;
+                }
+            }
+        }
 
         internal Func<IStreamingCacheAccumulator> StreamingAccumulatorFactory
         {
             get => _streamingAccumulatorFactory;
             set => _streamingAccumulatorFactory = value ?? throw new ArgumentNullException(nameof(value));
+        }
+
+        /// <summary>Test seam: the clock used for freshness, age and the Date appended to stored responses.</summary>
+        internal Func<DateTime> UtcNowProvider
+        {
+            get => _utcNow;
+            set => _utcNow = value ?? throw new ArgumentNullException(nameof(value));
+        }
+
+        internal DateTime GetUtcNow()
+        {
+            return _utcNow();
         }
 
         internal IStreamingCacheAccumulator CreateStreamingAccumulator()
@@ -1191,33 +1250,6 @@ namespace TurboHTTP.Cache
         internal static bool ShouldConsiderForStorage(HttpMethod requestMethod, int statusCode)
         {
             return statusCode > 0 && ShouldConsiderForStorage(requestMethod, (HttpStatusCode)statusCode);
-        }
-
-        private sealed class NullHttpHandler : IHttpHandler
-        {
-            internal static readonly NullHttpHandler Instance = new NullHttpHandler();
-
-            private NullHttpHandler()
-            {
-            }
-
-            public void OnRequestStart(UHttpRequest request, RequestContext context)
-            {
-            }
-
-            public ValueTask OnResponseStartAsync(
-                int statusCode,
-                HttpHeaders headers,
-                IResponseBodySource body,
-                RequestContext context)
-            {
-                body?.Abort();
-                return default;
-            }
-
-            public void OnResponseError(UHttpException error, RequestContext context)
-            {
-            }
         }
     }
 }

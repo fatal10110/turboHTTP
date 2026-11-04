@@ -12,9 +12,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.Extension
 {
     // TODO[api] Make static
     public class X509ExtensionUtilities
-	{
+    {
+        // turbo-strip: E9 SubjectPublicKeyInfoFactory is denied; key identifiers only from an SPKI or certificate
         internal static Asn1OctetString CalculateKeyIdentifier(AsymmetricKeyParameter publicKey) =>
-            CalculateKeyIdentifier(SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(publicKey));
+            throw new NotSupportedException(
+                "Key identifier from AsymmetricKeyParameter not supported; use the SubjectPublicKeyInfo overload");
 
         internal static Asn1OctetString CalculateKeyIdentifier(SubjectPublicKeyInfo spki) =>
             new DerOctetString(CalculateSha1(spki));
@@ -50,6 +52,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.Extension
         {
             return new AuthorityKeyIdentifier(CalculateKeyIdentifier(publicKey), issuer, new DerInteger(serialNumber));
         }
+
+        public static AuthorityKeyIdentifier CreateAuthorityKeyIdentifier(SubjectKeyIdentifier ski) =>
+            new AuthorityKeyIdentifier(DerOctetString.WithContents(ski.GetKeyIdentifier()));
 
         public static AuthorityKeyIdentifier CreateAuthorityKeyIdentifier(SubjectPublicKeyInfo spki) =>
             new AuthorityKeyIdentifier(CalculateKeyIdentifier(spki));
@@ -122,7 +127,23 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.Extension
             Func<byte[], TExtension> constructor)
             where TExtension : class
         {
-            Asn1OctetString extensionValue = extension.GetExtensionValue(oid);
+            Asn1OctetString extensionValue = extension?.GetExtensionValue(oid);
+            return extensionValue == null ? null : constructor(extensionValue.GetOctets());
+        }
+
+        internal static TExtension GetExtension<TExtension>(this X509Extensions extensions,
+            DerObjectIdentifier oid, Func<byte[], TExtension> constructor)
+            where TExtension : class
+        {
+            Asn1OctetString extensionValue = extensions?.GetExtensionValue(oid);
+            return extensionValue == null ? null : constructor(extensionValue.GetOctets());
+        }
+
+        internal static TExtension GetExtension<TExtension>(this Extensions extensions,
+            DerObjectIdentifier oid, Func<byte[], TExtension> constructor)
+            where TExtension : class
+        {
+            Asn1OctetString extensionValue = extensions?.GetExtensionValue(oid);
             return extensionValue == null ? null : constructor(extensionValue.GetOctets());
         }
     }

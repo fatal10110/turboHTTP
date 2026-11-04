@@ -6,8 +6,9 @@ namespace TurboHTTP.Core
     /// <summary>
     /// Thread-safe factory for HTTP transport instances.
     /// Uses Lazy&lt;T&gt; for lock-free singleton reads after initialization.
-    /// Register a factory via <see cref="Register"/> (typically called by
-    /// RawSocketTransport's [ModuleInitializer] in the Transport assembly).
+    /// Register a factory via <see cref="Register"/>. The default raw-socket transport is
+    /// registered by TurboHTTP's startup bootstrap (a RuntimeInitializeOnLoadMethod in the
+    /// TurboHTTP.Complete assembly) through <c>RawSocketTransport.EnsureRegistered()</c>.
     /// </summary>
     public static class HttpTransportFactory
     {
@@ -16,6 +17,9 @@ namespace TurboHTTP.Core
         private static volatile Func<TlsBackend, ConnectionPoolOptions, Http2Options, IHttpTransport> _advancedFactory;
         private static volatile Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport> _advancedFactoryWithStreaming;
         private static volatile Lazy<IHttpTransport> _lazy;
+        private static volatile Func<TransportCapabilities> _capabilities;
+        // True while _lazy comes from SetForTesting instead of _factory. Guarded by _lock.
+        private static bool _lazyIsOverride;
         private static readonly object _lock = new object();
 
         /// <summary>
@@ -49,7 +53,9 @@ namespace TurboHTTP.Core
                 _backendFactory = backendFactory;
                 _advancedFactory = advancedFactory;
                 _advancedFactoryWithStreaming = null;
+                _capabilities = null;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
+                _lazyIsOverride = false;
             }
         }
 
@@ -68,7 +74,78 @@ namespace TurboHTTP.Core
                 _backendFactory = backendFactory;
                 _advancedFactory = null;
                 _advancedFactoryWithStreaming = advancedFactory;
+                _capabilities = null;
                 _lazy = new Lazy<IHttpTransport>(_factory, LazyThreadSafetyMode.ExecutionAndPublication);
+                _lazyIsOverride = false;
+            }
+        }
+
+        /// <summary>
+        /// Registers the given factories and capabilities probe unless exactly these factories are
+        /// already the current registration with a live default, in which case only the probe is
+        /// set and the default singleton (created or not) is kept. Returns true when it registered.
+        /// <c>RawSocketTransport.EnsureRegistered()</c> uses this with cached delegates, so calling
+        /// it again (module initializer, startup code, the bootstrap after
+        /// <see cref="DetachCreatedDefault"/>) never drops a default that clients already share
+        /// (#275). Any other registration, <see cref="SetForTesting"/> or <see cref="Reset"/> in
+        /// between makes the next call register again.
+        /// </summary>
+        internal static bool RegisterUnlessCurrent(
+            Func<IHttpTransport> factory,
+            Func<TlsBackend, IHttpTransport> backendFactory,
+            Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport> advancedFactory,
+            Func<TransportCapabilities> capabilities)
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            lock (_lock)
+            {
+                var current = _lazy != null &&
+                              !_lazyIsOverride &&
+                              ReferenceEquals(_factory, factory) &&
+                              ReferenceEquals(_backendFactory, backendFactory) &&
+                              _advancedFactory == null &&
+                              ReferenceEquals(_advancedFactoryWithStreaming, advancedFactory);
+                if (!current)
+                {
+                    _factory = factory;
+                    _backendFactory = backendFactory;
+                    _advancedFactory = null;
+                    _advancedFactoryWithStreaming = advancedFactory;
+                    _lazy = new Lazy<IHttpTransport>(factory, LazyThreadSafetyMode.ExecutionAndPublication);
+                    _lazyIsOverride = false;
+                }
+
+                _capabilities = capabilities;
+                return !current;
+            }
+        }
+
+        /// <summary>
+        /// Registers how the current transport reports its <see cref="TransportCapabilities"/>.
+        /// Call it after <see cref="Register(Func{IHttpTransport}, Func{TlsBackend, IHttpTransport})"/>:
+        /// every <c>Register</c> overload and <see cref="Reset"/> clear it, because capabilities belong
+        /// to the registered transport. The probe runs on each <see cref="Capabilities"/> read, so it
+        /// must be cheap, thread-safe and must not throw; registering it does not run it.
+        /// </summary>
+        /// <param name="capabilities">Probe returning the transport's capabilities; null clears them.</param>
+        public static void RegisterCapabilities(Func<TransportCapabilities> capabilities)
+        {
+            lock (_lock)
+            {
+                _capabilities = capabilities;
+            }
+        }
+
+        /// <summary>
+        /// Capabilities the registered transport reports (see <see cref="RegisterCapabilities"/>);
+        /// <see cref="TransportCapabilities.None"/> when nothing is registered.
+        /// </summary>
+        public static TransportCapabilities Capabilities
+        {
+            get
+            {
+                var probe = _capabilities;
+                return probe == null ? TransportCapabilities.None : probe();
             }
         }
 
@@ -84,9 +161,9 @@ namespace TurboHTTP.Core
                 if (lazy == null)
                     throw new InvalidOperationException(
                         "No default transport configured. " +
-                        "Ensure TurboHTTP.Transport is included in your project. " +
-                        "If using IL2CPP and the module initializer did not fire, " +
-                        "call RawSocketTransport.EnsureRegistered() at startup.");
+                        "Ensure TurboHTTP.Transport and TurboHTTP.Complete are included in the build " +
+                        "(the platform must not be WebGL), or call " +
+                        "RawSocketTransport.EnsureRegistered() at startup.");
                 return lazy.Value;
             }
         }
@@ -156,12 +233,39 @@ namespace TurboHTTP.Core
             lock (_lock)
             {
                 _lazy = new Lazy<IHttpTransport>(() => transport, LazyThreadSafetyMode.ExecutionAndPublication);
+                _lazyIsOverride = true;
+            }
+        }
+
+        /// <summary>
+        /// Detaches the default transport singleton if <see cref="Default"/> has already created
+        /// it and returns it so the caller can dispose it; returns null when nothing was created.
+        /// The registered factories stay in place, so the next <see cref="Default"/> read creates
+        /// a fresh singleton. The startup bootstrap uses this so that Enter Play Mode without a
+        /// domain reload disposes the previous session's transport (sockets, HTTP/2 read loops)
+        /// instead of leaking it when it registers the defaults again.
+        /// </summary>
+        internal static IHttpTransport DetachCreatedDefault()
+        {
+            lock (_lock)
+            {
+                var lazy = _lazy;
+                if (lazy == null || !lazy.IsValueCreated)
+                    return null;
+
+                var created = lazy.Value;
+                var factory = _factory;
+                _lazy = factory != null
+                    ? new Lazy<IHttpTransport>(factory, LazyThreadSafetyMode.ExecutionAndPublication)
+                    : null;
+                _lazyIsOverride = false;
+                return created;
             }
         }
 
         /// <summary>
         /// Reset to initial state. For testing only.
-        /// Clears both the factory and any created transport.
+        /// Clears the factories, the registered capabilities and any created transport.
         /// </summary>
         public static void Reset()
         {
@@ -171,7 +275,9 @@ namespace TurboHTTP.Core
                 _backendFactory = null;
                 _advancedFactory = null;
                 _advancedFactoryWithStreaming = null;
+                _capabilities = null;
                 _lazy = null;
+                _lazyIsOverride = false;
             }
         }
     }

@@ -44,6 +44,9 @@ namespace TurboHTTP.Cache
             _maxSizeBytes = maxSizeBytes;
         }
 
+        /// <summary>Entry limit; bounds the interceptor's in-memory variant index (#60).</summary>
+        internal int MaxEntries => _maxEntries;
+
         public async Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -214,13 +217,14 @@ namespace TurboHTTP.Cache
                 varyHeaders: entry.VaryHeaders,
                 varyKey: entry.VaryKey,
                 staleWhileRevalidate: entry.StaleWhileRevalidate,
-                mustRevalidate: entry.MustRevalidate);
+                mustRevalidate: entry.MustRevalidate,
+                trailers: entry.Trailers);
         }
 
         internal static long EstimateEntrySizeBytes(CacheEntry entry)
         {
             long bodyBytes = entry.BodyLength;
-            long headerBytes = EstimateHeaderBytes(entry.Headers);
+            long headerBytes = EstimateHeaderBytes(entry.Headers) + EstimateHeaderBytes(entry.Trailers);
             return bodyBytes + headerBytes + FixedMetadataBytesPerEntry;
         }
 

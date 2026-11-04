@@ -93,7 +93,7 @@ namespace TurboHTTP.Editor
                 id = evt.Id,
                 timestampUtc = evt.Timestamp.ToString("O", CultureInfo.InvariantCulture),
                 method = evt.Method,
-                url = evt.Url,
+                url = RedactionPolicy.Default.RedactUrl(evt.Url),
                 statusCode = evt.StatusCode,
                 statusText = evt.StatusText,
                 elapsedMilliseconds = evt.ElapsedTime.TotalMilliseconds,
@@ -130,8 +130,8 @@ namespace TurboHTTP.Editor
             {
                 // Always mask confidential headers in exports to prevent credential
                 // leakage when files are shared or committed to version control.
-                var value = ConfidentialHeaders.Contains(pair.Key)
-                    ? "********"
+                var value = RedactionPolicy.Default.IsSensitiveHeader(pair.Key)
+                    ? RedactionPolicy.RedactedValue
                     : pair.Value ?? string.Empty;
                 list.Add(new ExportHeaderEntry
                 {

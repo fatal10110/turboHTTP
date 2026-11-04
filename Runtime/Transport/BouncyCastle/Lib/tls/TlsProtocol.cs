@@ -8,6 +8,7 @@ using System.Threading;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Date;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
@@ -133,6 +134,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 #endif
 
         private int m_maxHandshakeMessageSize = -1;
+        private Timeout m_handshakeTimeout = null;
 
         internal TlsHandshakeHash m_handshakeHash;
 
@@ -359,7 +361,31 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     throw new TlsFatalAlert(AlertDescription.internal_error);
                 }
 
+                CheckHandshakeTimeout();
+
                 SafeReadRecord();
+            }
+        }
+
+        /// <summary>
+        /// Abandon the handshake once <see cref="TlsPeer.GetHandshakeTimeoutMillis"/> has elapsed since
+        /// <see cref="BeginHandshake"/>.
+        /// </summary>
+        /// <remarks>
+        /// NOTE: this bounds the handshake at record boundaries only. A plain input <see cref="Stream"/> has no timed
+        /// read, so a peer that stalls part way through a record blocks in the read itself, where only the transport's
+        /// own read timeout can intervene.
+        /// </remarks>
+        /// <exception cref="IOException"/>
+        private void CheckHandshakeTimeout()
+        {
+            if (Timeout.HasExpired(m_handshakeTimeout, DateTimeUtilities.CurrentUnixMs()))
+            {
+                TlsTimeoutException cause = new TlsTimeoutException("Handshake timed out");
+
+                HandleException(AlertDescription.internal_error, "Handshake timed out", cause);
+
+                throw cause;
             }
         }
 
@@ -369,11 +395,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             AbstractTlsContext context = ContextAdmin;
             TlsPeer peer = Peer;
 
-            this.m_maxHandshakeMessageSize = System.Math.Max(1024, peer.GetMaxHandshakeMessageSize());
+            m_maxHandshakeMessageSize = TlsUtilities.GetMaxHandshakeMessageSize(peer);
+            m_handshakeTimeout = Timeout.ForWaitMillis(peer.GetHandshakeTimeoutMillis(),
+                DateTimeUtilities.CurrentUnixMs());
 
-            this.m_handshakeHash = new DeferredHash(context);
-            this.m_connectionState = CS_START;
-            this.m_selectedPsk13 = false;
+            m_handshakeHash = new DeferredHash(context);
+            m_connectionState = CS_START;
+            m_selectedPsk13 = false;
 
             context.HandshakeBeginning(peer);
 
@@ -394,18 +422,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 }
             }
 
-            this.m_tlsSession = null;
-            this.m_sessionParameters = null;
-            this.m_sessionMasterSecret = null;
+            m_tlsSession = null;
+            m_sessionParameters = null;
+            m_sessionMasterSecret = null;
 
-            this.m_retryCookie = null;
-            this.m_retryGroup = -1;
-            this.m_clientExtensions = null;
-            this.m_serverExtensions = null;
+            m_retryCookie = null;
+            m_retryGroup = -1;
+            m_clientExtensions = null;
+            m_serverExtensions = null;
 
-            this.m_selectedPsk13 = false;
-            this.m_receivedChangeCipherSpec = false;
-            this.m_expectSessionTicket = false;
+            m_selectedPsk13 = false;
+            m_receivedChangeCipherSpec = false;
+            m_expectSessionTicket = false;
+            m_handshakeTimeout = null;
         }
 
         /// <exception cref="IOException"/>
@@ -457,7 +486,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                         .SetPeerCertificate(securityParameters.PeerCertificate)
                         .SetPskIdentity(securityParameters.PskIdentity)
                         .SetSrpIdentity(securityParameters.SrpIdentity)
-                        // TODO Consider filtering extensions that aren't relevant to resumed sessions
+                        /*
+                         * TODO Consider filtering extensions that aren't relevant to resumed sessions.
+                         * NOTE: the "status_request" / "status_request_v2" echoes are filtered where a server replays
+                         * these on an abbreviated handshake - see TlsExtensionsUtilities.RemoveStatusRequestExtensions.
+                         */
                         .SetServerExtensions(m_serverExtensions)
                         .Build();
 

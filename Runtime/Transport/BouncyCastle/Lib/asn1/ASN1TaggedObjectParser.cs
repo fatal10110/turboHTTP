@@ -1,14 +1,13 @@
-using System;
 using System.IO;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 {
-	public interface Asn1TaggedObjectParser
-		: IAsn1Convertible
-	{
+    public interface Asn1TaggedObjectParser
+        : IAsn1Convertible
+    {
         int TagClass { get; }
 
-		int TagNo { get; }
+        int TagNo { get; }
 
         // TODO[api]
         //bool HasContextTag();
@@ -19,6 +18,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         // TODO[api]
         //bool HasTagClass(int tagClass);
+
+        // TODO[api]
+        //bool HasTagNo(int tagNo);
 
         /// <exception cref="IOException"/>
         IAsn1Convertible ParseBaseUniversal(bool declaredExplicit, int baseTagNo);

@@ -7,7 +7,6 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Authentication;
-using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
@@ -477,13 +476,8 @@ namespace TurboHTTP.Tests.Transport.Http1
         [Test]
         public void ConnectTunnelAlpnProtocols_AdvertisesH2BeforeHttp11()
         {
-            var field = typeof(RawSocketTransport).GetField(
-                "s_connectTunnelAlpnProtocols",
-                BindingFlags.NonPublic | BindingFlags.Static);
-            Assert.IsNotNull(field);
-
-            var protocols = (string[])field.GetValue(null);
-            CollectionAssert.AreEqual(new[] { "h2", "http/1.1" }, protocols);
+            // The CONNECT tunnel and the direct pool share one list (#175).
+            CollectionAssert.AreEqual(new[] { "h2", "http/1.1" }, AlpnProtocols.H2AndHttp11);
         }
 
         [TestCase("h2")]
@@ -572,7 +566,7 @@ namespace TurboHTTP.Tests.Transport.Http1
             {
                 var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
                 if (!provider.IsAlpnSupported())
-                    Assert.Ignore("SslStream ALPN is unavailable in this runtime.");
+                    TestRequirements.IgnoreEnvironment("SslStream ALPN is unavailable in this runtime.");
 
                 using var transport = new RawSocketTransport(tlsBackend: TlsBackend.SslStream);
                 var stream = new ConnectThenFailTlsStream();
@@ -622,7 +616,7 @@ namespace TurboHTTP.Tests.Transport.Http1
             {
                 var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
                 if (!provider.IsAlpnSupported())
-                    Assert.Ignore("SslStream ALPN is unavailable in this runtime.");
+                    TestRequirements.IgnoreEnvironment("SslStream ALPN is unavailable in this runtime.");
 
                 using var transport = new RawSocketTransport(tlsBackend: TlsBackend.SslStream);
                 var stream = new ConnectAuthChallengeThenFailTlsStream();
@@ -834,12 +828,11 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.Ignore("TurboHTTP.Transport.BouncyCastle is required for local CONNECT tunnel TLS tests.");
+                TestRequirements.RequireBouncyCastle();
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
                 string firstRequestLine = null;
                 string secondRequestLine = null;
 
@@ -905,12 +898,11 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.Ignore("TurboHTTP.Transport.BouncyCastle is required for local CONNECT tunnel TLS tests.");
+                TestRequirements.RequireBouncyCastle();
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 using var originServerA = new HttpsOriginServer(certificate, async (stream, _) =>
                 {
@@ -960,12 +952,11 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.Ignore("TurboHTTP.Transport.BouncyCastle is required for local CONNECT tunnel TLS tests.");
+                TestRequirements.RequireBouncyCastle();
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 string sameTunnelFollowUp = null;
                 var largeBody = new byte[(64 * 1024) + 2];
@@ -1042,12 +1033,11 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                if (!TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.Ignore("TurboHTTP.Transport.BouncyCastle is required for local CONNECT tunnel TLS tests.");
+                TestRequirements.RequireBouncyCastle();
 
                 using var certificate = TryCreateLocalhostCertificate();
                 if (certificate == null)
-                    Assert.Ignore("Local self-signed certificate generation is unavailable in this runtime.");
+                    TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
 
                 string requestLine = null;
 
@@ -1241,7 +1231,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
             return (Task<TlsResult>)method.Invoke(
                 transport,
-                new object[] { stream, targetHost, targetPort, proxy, ct });
+                new object[] { stream, targetHost, targetPort, proxy, false, ct });
         }
 
         private static UHttpRequest InvokePrepareHttpsProxyTunnelRequest(UHttpRequest request)
@@ -1400,37 +1390,8 @@ namespace TurboHTTP.Tests.Transport.Http1
 
         private static X509Certificate2 TryCreateLocalhostCertificate()
         {
-            try
-            {
-                using var rsa = RSA.Create(2048);
-                var request = new CertificateRequest(
-                    "CN=localhost",
-                    rsa,
-                    HashAlgorithmName.SHA256,
-                    RSASignaturePadding.Pkcs1);
-
-                request.CertificateExtensions.Add(
-                    new X509BasicConstraintsExtension(false, false, 0, false));
-                request.CertificateExtensions.Add(
-                    new X509KeyUsageExtension(
-                        X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
-                        false));
-                request.CertificateExtensions.Add(
-                    new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
-
-                var certificate = request.CreateSelfSigned(
-                    DateTimeOffset.UtcNow.AddDays(-1),
-                    DateTimeOffset.UtcNow.AddDays(7));
-                return new X509Certificate2(certificate.Export(X509ContentType.Pfx));
-            }
-            catch (CryptographicException)
-            {
-                return null;
-            }
-            catch (PlatformNotSupportedException)
-            {
-                return null;
-            }
+            // Unity's Mono has no CertificateRequest; use the committed test identity (#151).
+            return global::TurboHTTP.Tests.Transport.Tls.TestLocalhostCertificate.TryLoad();
         }
 
         private static async Task WriteResponseAsync(Stream stream, string response)

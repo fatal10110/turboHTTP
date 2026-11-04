@@ -89,9 +89,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes.Gcm
                     Pclmulqdq.CarrylessMultiply(X, Y, 0x10));
                 var Z2 = Pclmulqdq.CarrylessMultiply(X, Y, 0x11);
 
+                Z0 = Sse2.Xor(Z0, Sse2.ShiftLeftLogical128BitLane (Z1, 8));
+                Z2 = Sse2.Xor(Z2, Sse2.ShiftRightLogical128BitLane(Z1, 8));
+
                 ulong t3 = Z0.GetElement(0);
-                ulong t2 = Z0.GetElement(1) ^ Z1.GetElement(0);
-                ulong t1 = Z2.GetElement(0) ^ Z1.GetElement(1);
+                ulong t2 = Z0.GetElement(1);
+                ulong t1 = Z2.GetElement(0);
                 ulong t0 = Z2.GetElement(1);
 
                 Debug.Assert(t0 >> 63 == 0);
@@ -169,7 +172,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes.Gcm
             out Vector128<ulong> Z1, out Vector128<ulong> Z2)
         {
             if (!TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled)
-                throw new PlatformNotSupportedException(nameof(GcmUtilities.MultiplyExt));
+                throw new PlatformNotSupportedException(nameof(MultiplyExt));
 
             Z0 =          Pclmulqdq.CarrylessMultiply(X, Y, 0x00);
             Z1 = Sse2.Xor(Pclmulqdq.CarrylessMultiply(X, Y, 0x01),
@@ -204,9 +207,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes.Gcm
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static Vector128<ulong> Reduce3(Vector128<ulong> Z0, Vector128<ulong> Z1, Vector128<ulong> Z2)
         {
+            Z0 = Sse2.Xor(Z0, Sse2.ShiftLeftLogical128BitLane (Z1, 8));
+            Z2 = Sse2.Xor(Z2, Sse2.ShiftRightLogical128BitLane(Z1, 8));
+
             ulong t3 = Z0.GetElement(0);
-            ulong t2 = Z0.GetElement(1) ^ Z1.GetElement(0);
-            ulong t1 = Z2.GetElement(0) ^ Z1.GetElement(1);
+            ulong t2 = Z0.GetElement(1);
+            ulong t1 = Z2.GetElement(0);
             ulong t0 = Z2.GetElement(1);
 
             Debug.Assert(t0 >> 63 == 0);
@@ -242,7 +248,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Modes.Gcm
         internal static void SquareExt(Vector128<ulong> X, out Vector128<ulong> Z0, out Vector128<ulong> Z2)
         {
             if (!TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Pclmulqdq.IsEnabled)
-                throw new PlatformNotSupportedException(nameof(GcmUtilities.SquareExt));
+                throw new PlatformNotSupportedException(nameof(SquareExt));
 
             Z0 = Pclmulqdq.CarrylessMultiply(X, X, 0x00);
             Z2 = Pclmulqdq.CarrylessMultiply(X, X, 0x11);

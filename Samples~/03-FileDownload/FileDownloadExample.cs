@@ -12,20 +12,20 @@ namespace TurboHTTP.Samples.FileDownload
     /// </summary>
     public class FileDownloadExample : MonoBehaviour
     {
-        [SerializeField] private UnityEngine.UI.Slider progressBar;
-        [SerializeField] private UnityEngine.UI.Text statusText;
-
+        private UHttpClient _client;
         private FileDownloader _downloader;
 
         void Start()
         {
-            _downloader = new FileDownloader();
+            _client = new UHttpClient();
+            _downloader = new FileDownloader(_client);
+            DownloadFile();
         }
 
-        public async void DownloadImage()
+        async void DownloadFile()
         {
-            var url = "https://via.placeholder.com/2000";
-            var savePath = Path.Combine(Application.persistentDataPath, "downloaded_image.png");
+            var url = "https://httpbin.org/bytes/1048576";
+            var savePath = Path.Combine(Application.persistentDataPath, "downloaded.bin");
 
             var options = new DownloadOptions
             {
@@ -35,25 +35,25 @@ namespace TurboHTTP.Samples.FileDownload
 
             try
             {
-                if (statusText != null) statusText.text = "Downloading...";
-
                 var result = await _downloader.DownloadFileAsync(url, savePath, options);
 
-                if (statusText != null) statusText.text = $"Downloaded {result.FileSize} bytes in {result.ElapsedTime.TotalSeconds:F1}s";
+                Debug.Log($"Downloaded {result.FileSize} bytes in {result.ElapsedTime.TotalSeconds:F1}s");
                 Debug.Log($"File saved to: {result.FilePath}");
             }
             catch (System.Exception ex)
             {
-                if (statusText != null) statusText.text = $"Error: {ex.Message}";
                 Debug.LogError(ex);
             }
         }
 
+        void OnDestroy()
+        {
+            _client?.Dispose();
+        }
+
         private void OnProgress(DownloadProgress progress)
         {
-            if (progressBar != null) progressBar.value = progress.Percentage / 100f;
-            if (statusText != null) statusText.text = $"Downloading: {progress.Percentage:F1}% ({progress.BytesDownloaded}/{progress.TotalBytes} bytes)";
-            Debug.Log($"Speed: {progress.SpeedBytesPerSecond / 1024:F0} KB/s");
+            Debug.Log($"Downloading: {progress.Percentage:F1}% ({progress.BytesDownloaded}/{progress.TotalBytes} bytes), {progress.SpeedBytesPerSecond / 1024:F0} KB/s");
         }
     }
 }

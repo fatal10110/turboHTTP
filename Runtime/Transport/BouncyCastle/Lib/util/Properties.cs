@@ -1,0 +1,405 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Threading;
+
+namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities
+{
+    /// <summary>Utility methods for managing properties.</summary>
+    /// <remarks>Properties may be thread properties, managed by this class, or environment variables
+    /// visible only when the corresponding thread property is not set. This API has no facilities for modifying
+    /// environment variables, though it may read them.
+    /// </remarks>
+    public static class Properties
+    {
+        /// <summary>
+        /// Allow Argon2 parameters with a memory size below the minimum of 8 * parallelism KiB that RFC 9106 sec. 3.1
+        /// requires.
+        /// </summary>
+        /// <remarks>
+        /// bc-csharp versions prior to 2.8.0 accepted such parameters, padding the memory actually used up to the
+        /// minimum but hashing in the requested size, so their output matches no RFC 9106 implementation. Since a
+        /// password record cannot be upgraded without the password, hashes computed that way can only be verified with
+        /// this property set to 'true'. It applies only to cost parameters from a trusted source (see the 'trusted'
+        /// parameter of the Argon2Parameters.Builder constructor). Defaults to 'false'.
+        /// </remarks>
+        public static readonly string Argon2AllowLegacyMemory = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Argon2.AllowLegacyMemory";
+
+        /// <summary>
+        /// The maximum permitted memory exponent (i.e. <c>memory &lt;= (1 &lt;&lt; MaxMemoryExp)</c>.
+        /// </summary>
+        /// <remarks>
+        /// Defaults to 24 (16 GiB); the property may be raised up to a ceiling of 30, and a larger value is treated
+        /// as 30. A value below 3 is a configuration error.
+        /// </remarks>
+        public static readonly string Argon2MaxMemoryExp = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Argon2.MaxMemoryExp";
+
+        /// <summary>
+        /// The maximum number of Argon2 passes (iterations) accepted when a key is derived from untrusted cost
+        /// parameters.
+        /// </summary>
+        /// <remarks>
+        /// Defaults to 10. A value below 1 is a configuration error.
+        /// </remarks>
+        public static readonly string Argon2MaxPasses = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Argon2.MaxPasses";
+
+        /// <summary>
+        /// The maximum Argon2 parallelism (lanes) accepted when a key is derived from untrusted cost parameters.
+        /// </summary>
+        /// <remarks>
+        /// Defaults to 16; the property may be raised up to a ceiling of <c>(1 &lt;&lt; 24) - 1</c>, and a larger
+        /// value is treated as that ceiling. A value below 1 is a configuration error.
+        /// </remarks>
+        public static readonly string Argon2MaxParallelism = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Argon2.MaxParallelism";
+
+        public static readonly string Asn1AllowUnsafeInteger = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.AllowUnsafeInteger";
+
+        public static readonly string Asn1MaxDepth = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.MaxDepth";
+
+        public static readonly string Asn1MaxLimit = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.MaxLimit";
+
+        /// <summary>
+        /// Allow CMS key-agreement recipients to retry the key-encryption-key derivation in known non-standard
+        /// forms, if the standard derivation fails to unwrap the content-encryption key.
+        /// </summary>
+        /// <remarks>
+        /// Two forms are retried. bc-csharp versions prior to 2.8.0 derived the key-encryption key as though the
+        /// key-wrap AlgorithmIdentifier carried NULL parameters, even when it was encoded with absent parameters (as
+        /// it is for AES key wrap, per RFC 5753). Some senders, among them bc-java 1.53 to 1.86 for 1-Pass ECMQV,
+        /// give the KDF the user keying material itself (for ECMQV, the addedukm, or nothing) as its SharedInfo, in
+        /// place of the ECC-CMS-SharedInfo of RFC 5753 sec. 7.2. This property defaults to 'true', so that messages
+        /// produced by those senders remain readable; set it to 'false' to accept only the standard derivation.
+        /// </remarks>
+        public static readonly string CmsAllowLegacyKeyAgreeKdf = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Cms.AllowLegacyKeyAgreeKdf";
+
+        /// <summary>
+        /// Allow legacy RSA PKCS#1 v1.5 key-transport unwrap in CMS when the content-encryption key has no fixed size.
+        /// </summary>
+        /// <remarks>
+        /// Without a fixed key size to target, the standard constant-time defense against the Bleichenbacher padding
+        /// Oracle cannot be applied. Setting this property to 'true' allows the unwrap to proceed anyway, which is not
+        /// recommended, since it leaves the padding oracle intact.
+        /// </remarks>
+        public static readonly string CmsAllowLenientRsaPkcs1 = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Cms.AllowLenientRsaPkcs1";
+
+        public static readonly string DHMaxSize = "TurboHTTP.SecureProtocol.Org.BouncyCastle.DH.MaxSize";
+
+        public static readonly string DsaMaxSize = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Dsa.MaxSize";
+
+        public static readonly string ECF2mMaxSize = "TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.F2m_MaxSize";
+
+        public static readonly string ECFpMaxSize = "TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.Fp_MaxSize";
+
+        public static readonly string ECFpCertainty = "TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.Fp_Certainty";
+
+        public static readonly string FpeDisable = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Fpe.Disable";
+
+        public static readonly string FpeDisableFf1 = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Fpe.Disable_Ff1";
+
+        /// <summary>
+        /// Allow GOST key AlgorithmIdentifier parameters that do not match the structure required for the key
+        /// algorithm, where earlier bc-csharp versions could write them.
+        /// </summary>
+        /// <remarks>
+        /// bc-csharp versions prior to 2.8.0 could encode a GOST R 34.10-2012 key with an encryptionParamSet, which
+        /// the RFC 9215 parameters structure does not have, a key on a TC26 parameter set under the GOST R 34.10-2001
+        /// key algorithm, which RFC 4491 does not allow, or a key whose parameters identify a different key
+        /// algorithm (e.g. a GOST R 34.11-94 digestParamSet under a GOST R 34.10-2012 key algorithm). This property
+        /// defaults to 'false'; set it to 'true' to accept such keys.
+        /// </remarks>
+        public static readonly string GostAllowLenientKeyParameters = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Gost.AllowLenientKeyParameters";
+
+        /// <summary>
+        /// The largest SEED, in bytes, accepted in an LMS or HSS private key encoding. Default 1024.
+        /// </summary>
+        /// <remarks>
+        /// SP 800-208 sec. 6.1 makes SEED n bytes (24 or 32 for the defined parameter sets), so the default is far
+        /// above any legitimate value; the bound keeps what a decoder commits to on the strength of a length field
+        /// read from untrusted data finite. A value below the parameter set's n is ignored, since SEED may not be
+        /// shorter than that.
+        /// </remarks>
+        public static readonly string LmsMaxSeedLength = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Lms.MaxSeedLength";
+
+        /// <summary>
+        /// The largest OCSP response, in bytes, to accept from a responder. Default 64KiB.
+        /// </summary>
+        /// <remarks>
+        /// Exceeding the limit is treated as an unreachable responder.
+        /// </remarks>
+        public static readonly string OcspMaxResponseSize = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Ocsp.MaxResponseSize";
+
+        /// <summary>
+        /// Upper bound on the PBKDF2 iteration count honoured when decrypting a PBES2-protected PKCS#8/PEM private key.
+        /// </summary>
+        /// <remarks>
+        /// The key-derivation parameters travel inside the (unauthenticated) encrypted-key container, so an unbounded
+        /// count makes decrypting attacker-supplied key material a CPU-exhaustion vector. Default 5,000,000.
+        /// </remarks>
+        public static readonly string PbeMaxIterationCount = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Pbe.MaxIterationCount";
+
+        /// <summary>
+        /// Upper bound, in bytes, on the scrypt working memory (~128 * N * r) honoured when decrypting a
+        /// PBES2-protected PKCS#8 / PEM private key.
+        /// </summary>
+        /// <remarks>
+        /// As with <see cref="PbeMaxIterationCount"/> the scrypt cost travels in the unauthenticated container, so an
+        /// unbounded cost is a memory-exhaustion vector. Default 1073741824 (1 GiB).
+        /// </remarks>
+        public static readonly string PbeMaxScryptMemory = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Pbe.MaxScryptMemory";
+
+        /// <summary>
+        /// When set to <c>true</c>, suppresses the error raised when loading a PKCS12 store with a password, for data
+        /// that does not require a password.
+        /// </summary>
+        public static readonly string Pkcs12IgnoreUselessPassword = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Pkcs12.IgnoreUselessPassword";
+
+        /// <summary>
+        /// If set, a PKCS12 file with a larger iteration count on PBE processing will be rejected. Default 5,000,000.
+        /// </summary>
+        public static readonly string Pkcs12MaxIterationCount = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Pkcs12.MaxIterationCount";
+
+        /// <summary>
+        /// The PBE iteration count the PKCS12 keystore uses when <b>writing</b> a file - the write-side counterpart of
+        /// <see cref="Pkcs12MaxIterationCount"/>, which only bounds what is accepted on load. Default 300,000 for the
+        /// key and certificate encryption, twice that for the integrity MAC.
+        /// </summary>
+        /// <remarks>
+        /// Note that Windows currently reports an error importing a PKCS#12 file whose key and certificate encryption
+        /// uses a PBE iteration count of 600,000 or greater (it accepts 600,000 for the MAC), so setting this property
+        /// to 600,000 or more produces files Windows may refuse.
+        /// <para>
+        /// A value outside 1..2,500,000 is ignored and the default used, so a mistyped property fails towards the
+        /// default rather than towards a file with no PBE work in it; the upper bound keeps the doubled MAC count
+        /// inside the 5,000,000 that <see cref="Pkcs12MaxIterationCount"/> defaults to, so a file written under this
+        /// property can always be read back.
+        /// </para>
+        /// </remarks>
+        public static readonly string Pkcs12StoreIterationCount = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Pkcs12.StoreIterationCount";
+
+        public static readonly string Pkcs1NotStrict = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Pkcs1.NotStrict";
+
+        /// <summary>
+        /// Upper bound on the RFC 4211 PKMAC / CMP password-based-MAC iteration count honoured when no explicit ceiling
+        /// is supplied.
+        /// </summary>
+        /// <remarks>
+        /// The count travels in the (unauthenticated) PBMParameter of an incoming CMP message and drives an iterated
+        /// hash, so an unbounded count makes verifying an attacker-supplied message a CPU-exhaustion vector. Default
+        /// 1,000,000.
+        /// </remarks>
+        public static readonly string PKMacMaxIterationCount = "TurboHTTP.SecureProtocol.Org.BouncyCastle.PKMac.MaxIterationCount";
+
+        public static readonly string RsaAllowUnsafeModulus = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Rsa.AllowUnsafeModulus";
+
+        public static readonly string RsaMaxMRTests = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Rsa.MaxMRTests";
+
+        public static readonly string RsaMaxSize = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Rsa.MaxSize";
+
+        public static readonly string X509AllowNonDerTbsCertificate = "TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.Allow_Non-DER_TBSCert";
+
+        /// <summary>
+        /// Upper bound on the total number of nodes the PKIX CertPath builder visits while searching for a chain. The
+        /// builder does a depth-first walk up the PKI graph, bounded per path by cycle detection and the caller's
+        /// maxPathLength. Because candidate issuers are matched by subject name only, a certificate store containing
+        /// many certificates that share a subject name without chaining to a trust anchor can make the search explore a
+        /// large number of partial paths before it concludes no chain exists. This bound keeps that work predictable:
+        /// the visited-node count is checked on entry to each build step and the build is aborted once it exceeds the
+        /// bound.
+        /// </summary>
+        public static readonly string X509MaxCertPathBuildNodes = "TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.MaxCertPathBuildNodes";
+
+        /// <summary>
+        /// Upper bound on the total number of valid-policy-tree nodes retained (across all depth levels) during PKIX
+        /// CertPath validation. Certificate policy mapping combined with the anyPolicy expansion of RFC 5280
+        /// 6.1.3/6.1.4 can grow the tree multiplicatively per certificate, so a crafted chain that still chains to a
+        /// trust anchor could drive the validator into exponential memory/CPU consumption - a denial of service.
+        /// The tree size is checked once per certificate and validation is aborted once it exceeds this bound.
+        /// </summary>
+        public static readonly string X509MaxPolicyNodes = "TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.MaxPolicyNodes";
+
+        /// <summary>
+        /// Opt in to the relaxed directoryName name-constraint matching required by GSMA SGP.22 v2.5 (Remote SIM
+        /// Provisioning), sections 4.5.2.1.0.2 / 4.5.2.1.0.3. When set, a permitted-subtree RDN is satisfied by any
+        /// matching subject RDN regardless of position, additional subject attributes beyond those named in the subtree
+        /// are tolerated, and a serialNumber RDN is matched with a <c>StartsWith</c> comparison wherever it appears.
+        /// This is deliberately looser than the contiguous-prefix DN matching mandated by RFC 5280 7.1, so it defaults
+        /// to off and must be enabled explicitly; BC's default validation remains RFC 5280 strict.
+        /// </summary>
+        public static readonly string X509Sgp22NameConstraints = "TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.Sgp22NameConstraints";
+
+        /// <summary>
+        /// Fall back to the legacy lenient parsing of rfc822Name values in X.509 name-constraint checks. By default the
+        /// validator is strict about rfc822Name conformance; today that means a tested rfc822Name with more than one
+        /// '@' is rejected as ambiguous when email constraints apply (RFC 5321 sec. 4.1.2 allows '@' inside a quoted
+        /// local part, so the domain is not simply the text after the first '@', and a wrong split could evade a
+        /// constraint). When set, that strictness (and any future rfc822Name conformance strictness) is disabled and
+        /// the historical permissive parsing is used instead. Strict is the default; set this only to restore the old
+        /// behaviour. This is a safety valve, not a recommended mode.
+        /// </summary>
+        public static readonly string X509AllowLenientRfc822Name = "TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.AllowLenientRfc822Name";
+
+        /// <summary>
+        /// If set to "true", certificate parsers will accept a certificate whose issuer is an empty distinguished
+        /// name. RFC 5280 sec. 4.1.2.4 requires the issuer field to contain a non-empty DN and the parser rejects an
+        /// empty one by default, but some non-PKIX certificate profiles - notably the libp2p TLS profile, which uses a
+        /// self-signed certificate purely as a peer-identity carrier - place no requirements on the issuer and such
+        /// certificates are in circulation. This is a read-side concession only: certificate generation still requires
+        /// a non-empty issuer unconditionally.
+        /// </summary>
+        public static readonly string X509AllowEmptyIssuerCert = "TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.AllowEmptyIssuerCert";
+
+        /// <summary>
+        /// Salvage a non-contiguous iPAddress name-constraint subnet mask instead of rejecting it. An iPAddress
+        /// name constraint carries a subnet mask expected to be CIDR (a run of leading 1-bits); a non-contiguous
+        /// mask is malformed per RFC 4632 and also lets the subtree set-algebra mint new ranges (a super-linear
+        /// blow-up on hostile input). By default such a constraint is rejected (fail-closed). When set, the mask
+        /// is instead rounded to the most-restrictive contiguous mask for its context - a permitted subtree is
+        /// narrowed (fill up to the last 1-bit; under-permit), an excluded subtree is broadened (keep only the
+        /// leading 1-bits; over-exclude) - so validation can only get stricter, never laxer. Strict rejection is
+        /// the default; this is a safety valve, not a recommended mode.
+        /// </summary>
+        public static readonly string X509AllowLenientIPAddressMask =
+            "TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.AllowLenientIPAddressMask";
+
+        private static readonly ThreadLocal<Dictionary<string, string>> ThreadProperties =
+            new ThreadLocal<Dictionary<string, string>>();
+
+        public static void Clear() => ThreadProperties.Value = null;
+
+        public static void ClearThreadProperties() => ThreadProperties.Value?.Clear();
+
+        public static bool GetBoolean(string propertyName, bool defaultValue) =>
+            TryGetBoolean(propertyName, out bool propertyValue) ? propertyValue : defaultValue;
+
+        public static int GetInt32(string propertyName, int defaultValue) =>
+            TryGetInt32(propertyName, out int propertyValue) ? propertyValue : defaultValue;
+
+        public static long GetInt64(string propertyName, long defaultValue) =>
+            TryGetInt64(propertyName, out long propertyValue) ? propertyValue : defaultValue;
+
+        /// <summary>
+        /// Return the <c>string</c> value of the property <paramref name="name"/>.
+        /// </summary>
+        /// <remarks>
+        /// Property evaluation order is thread properties first, then environment variables.
+        /// </remarks>
+        /// <param name="name">The name of the property.</param>
+        /// <returns>
+        /// The <c>string</c> value of the <paramref name="name"/> property, or <c>null</c> if not defined.
+        /// </returns>
+        public static string GetProperty(string name) =>
+            GetThreadProperty(name) ?? Platform.GetEnvironmentVariable(name);
+
+        /// <summary>
+        /// Return the <c>string</c> value of the property <paramref name="name"/>, or
+        /// <paramref name="defaultValue"/> if that property is not defined.
+        /// </summary>
+        /// <remarks>
+        /// Property evaluation order is thread properties first, then environment variables.
+        /// </remarks>
+        /// <param name="name">The name of the property.</param>
+        /// <param name="defaultValue">The default value to return in case the property is not defined.</param>
+        /// <returns>
+        /// The <c>string</c> value of the <paramref name="name"/> property, or <paramref name="defaultValue"/>
+        /// if not defined.
+        /// </returns>
+        public static string GetProperty(string name, string defaultValue) => GetProperty(name) ?? defaultValue;
+
+        public static string GetThreadProperty(string name)
+        {
+            if (name == null)
+                throw new ArgumentNullException(nameof(name));
+
+            var threadProperties = ThreadProperties.Value;
+            if (threadProperties != null && threadProperties.TryGetValue(name, out var value))
+                return value;
+
+            return null;
+        }
+
+        public static bool RemoveThreadProperty(string name)
+        {
+            if (name == null)
+                throw new ArgumentNullException(nameof(name));
+
+            var threadProperties = ThreadProperties.Value;
+            if (threadProperties != null)
+                return threadProperties.Remove(name);
+
+            return false;
+        }
+
+        public static void SetThreadBoolean(string propertyName, bool propertyValue) =>
+            SetThreadProperty(propertyName, propertyValue.ToString());
+
+        public static void SetThreadInt32(string propertyName, int propertyValue) =>
+            SetThreadProperty(propertyName, propertyValue.ToString());
+
+        public static void SetThreadInt64(string propertyName, long propertyValue) =>
+            SetThreadProperty(propertyName, propertyValue.ToString());
+
+        public static void SetThreadProperty(string name, string value)
+        {
+            if (name == null)
+                throw new ArgumentNullException(nameof(name));
+            if (value == null)
+                throw new ArgumentNullException(nameof(value));
+
+            var threadProperties = ThreadProperties.Value ?? InitThreadProperties();
+
+            threadProperties[name] = value;
+        }
+
+        public static bool TryGetBoolean(string propertyName, out bool propertyValue) =>
+            bool.TryParse(GetProperty(propertyName), out propertyValue);
+
+        public static bool TryGetInt32(string propertyName, out int propertyValue) =>
+            int.TryParse(GetProperty(propertyName), out propertyValue);
+
+        public static bool TryGetInt64(string propertyName, out long propertyValue) =>
+            long.TryParse(GetProperty(propertyName), out propertyValue);
+
+        public static void WithThreadProperty(string name, string value, Action action) =>
+            WithThreadProperty<object, object>(name, value, arg: null, (object ignore) => { action(); return null; });
+
+        public static TResult WithThreadProperty<TResult>(string name, string value, Func<TResult> func) =>
+            WithThreadProperty<object, TResult>(name, value, arg: null, (object ignore) => func());
+
+        public static TResult WithThreadProperty<TArg, TResult>(string name, string value, TArg arg,
+            Func<TArg, TResult> func)
+        {
+            if (name == null)
+                throw new ArgumentNullException(nameof(name));
+            if (value == null)
+                throw new ArgumentNullException(nameof(value));
+            if (func == null)
+                throw new ArgumentNullException(nameof(func));
+
+            string previousValue = GetThreadProperty(name);
+
+            SetThreadProperty(name, value);
+
+            try
+            {
+                return func.Invoke(arg);
+            }
+            finally
+            {
+                if (previousValue == null)
+                {
+                    RemoveThreadProperty(name);
+                }
+                else
+                {
+                    SetThreadProperty(name, previousValue);
+                }
+            }
+        }
+
+        private static Dictionary<string, string> InitThreadProperties()
+        {
+            var threadProperties = new Dictionary<string, string>();
+            ThreadProperties.Value = threadProperties;
+            return threadProperties;
+        }
+    }
+}

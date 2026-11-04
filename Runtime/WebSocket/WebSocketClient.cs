@@ -117,6 +117,11 @@ namespace TurboHTTP.WebSocket
 
             WebSocketConnection connection;
             IWebSocketTransport transport;
+            BoundedAsyncQueue<WebSocketMessage> queue;
+            CancellationTokenSource listenerCts;
+            CancellationToken listenerToken;
+            CancellationTokenSource previousListenerCts;
+            Task previousListener;
 
             lock (_sync)
             {
@@ -136,12 +141,20 @@ namespace TurboHTTP.WebSocket
                     DisposeTransportIfOwned();
 
                 CompleteAndDrainQueue(null);
-                _listenerCts?.Dispose();
+
+                // #208: the previous listener is canceled (not just disposed) and observed below; it
+                // only ever completes the queue it was started with, never the new one.
+                previousListenerCts = _listenerCts;
+                previousListener = _listenerTask;
                 _listenerCts = null;
+                _listenerTask = null;
 
                 _options = options;
-                _messageQueue = new BoundedAsyncQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
-                _listenerCts = new CancellationTokenSource();
+                queue = WebSocketMessageQueue.Create(options);
+                Volatile.Write(ref _messageQueue, queue);
+                listenerCts = new CancellationTokenSource();
+                listenerToken = listenerCts.Token;
+                _listenerCts = listenerCts;
                 _closeEventRaised = 0;
 
                 connection = new WebSocketConnection();
@@ -165,15 +178,29 @@ namespace TurboHTTP.WebSocket
                 _transport = transport;
             }
 
+            // Outside the lock: a canceled listener may resume inline and run user callbacks.
+            CancelQuietly(previousListenerCts);
+
             try
             {
                 await connection.ConnectAsync(uri, transport, options, ct).ConfigureAwait(false);
-                _listenerTask = RunReceiveListenerAsync(connection, _listenerCts.Token);
             }
             catch
             {
-                await CleanupAfterFailedConnectAsync(connection).ConfigureAwait(false);
+                await ObservePreviousListenerAsync(previousListener, previousListenerCts).ConfigureAwait(false);
+                await CleanupAfterFailedConnectAsync(connection, queue, listenerCts).ConfigureAwait(false);
                 throw;
+            }
+
+            // The previous listener is canceled and its connection disposed, so it ends promptly;
+            // awaiting it keeps its last OnMessage ahead of this connection's OnConnected.
+            await ObservePreviousListenerAsync(previousListener, previousListenerCts).ConfigureAwait(false);
+
+            var listenerTask = RunReceiveListenerAsync(connection, queue, listenerToken);
+            lock (_sync)
+            {
+                if (ReferenceEquals(_listenerCts, listenerCts))
+                    _listenerTask = listenerTask;
             }
 
             var connectedHandler = OnConnected;
@@ -188,7 +215,7 @@ namespace TurboHTTP.WebSocket
                 throw new ArgumentNullException(nameof(message));
 
             EnsureOpenState();
-            await Volatile.Read(ref _connection).SendTextAsync(message, ct).ConfigureAwait(false);
+            await RequireConnection().SendTextAsync(message, ct).ConfigureAwait(false);
         }
 
         public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
@@ -196,7 +223,7 @@ namespace TurboHTTP.WebSocket
             ThrowIfDisposed();
             EnsureOpenState();
 
-            await Volatile.Read(ref _connection).SendBinaryAsync(data, ct).ConfigureAwait(false);
+            await RequireConnection().SendBinaryAsync(data, ct).ConfigureAwait(false);
         }
 
         public Task SendAsync(byte[] data, CancellationToken ct = default)
@@ -244,23 +271,15 @@ namespace TurboHTTP.WebSocket
         {
             ThrowIfDisposed();
 
+            // Closed is not an error by itself (#217): messages received before the peer's close frame
+            // stay readable; the queue the listener completes after them then reports ConnectionClosed.
             var state = State;
-            if (state == WebSocketState.Closed)
-            {
-                var connection = Volatile.Read(ref _connection);
-                var closeStatus = connection?.CloseStatus;
-                throw new WebSocketException(
-                    WebSocketError.ConnectionClosed,
-                    "WebSocket connection is closed.",
-                    null,
-                    closeStatus?.Code,
-                    closeStatus?.Reason);
-            }
-
-            if (state != WebSocketState.Open && state != WebSocketState.Closing)
+            if (state != WebSocketState.Open &&
+                state != WebSocketState.Closing &&
+                state != WebSocketState.Closed)
             {
                 throw new InvalidOperationException(
-                    "ReceiveAsync requires Open or Closing state. Current state: " + state + ".");
+                    "ReceiveAsync requires Open, Closing, or Closed state. Current state: " + state + ".");
             }
 
             if (!fromAsyncEnumerable && Volatile.Read(ref _receiveAllInProgress) != 0)
@@ -271,7 +290,7 @@ namespace TurboHTTP.WebSocket
 
             try
             {
-                return await _messageQueue.DequeueAsync(ct).ConfigureAwait(false);
+                return await Volatile.Read(ref _messageQueue).DequeueAsync(ct).ConfigureAwait(false);
             }
             catch (AsyncQueueCompletedException ex)
             {
@@ -319,7 +338,7 @@ namespace TurboHTTP.WebSocket
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            _listenerCts?.Cancel();
+            CancelQuietly(Volatile.Read(ref _listenerCts));
 
             var connection = Interlocked.Exchange(ref _connection, null);
             if (connection != null)
@@ -342,7 +361,7 @@ namespace TurboHTTP.WebSocket
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            _listenerCts?.Cancel();
+            CancelQuietly(Volatile.Read(ref _listenerCts));
 
             var connection = Interlocked.Exchange(ref _connection, null);
             if (connection != null)
@@ -370,7 +389,14 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private async Task RunReceiveListenerAsync(WebSocketConnection connection, CancellationToken ct)
+        /// <summary>
+        /// Pumps <paramref name="connection"/> into <paramref name="queue"/>, the queue created with it
+        /// (#208): a listener outliving a reconnect never touches the next connection's queue.
+        /// </summary>
+        private async Task RunReceiveListenerAsync(
+            WebSocketConnection connection,
+            BoundedAsyncQueue<WebSocketMessage> queue,
+            CancellationToken ct)
         {
             Exception completionError = null;
 
@@ -380,34 +406,28 @@ namespace TurboHTTP.WebSocket
                 {
                     WebSocketMessage message = await connection.ReceiveAsync(ct).ConfigureAwait(false);
 
-                    try
-                    {
-                        await _messageQueue.EnqueueAsync(message, ct).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        message.Dispose();
-                        throw;
-                    }
-
                     var messageHandler = OnMessage;
-                    if (messageHandler != null)
+                    if (messageHandler == null)
                     {
+                        // Pull-only consumer: lossless, the puller drives backpressure.
                         try
                         {
-                            messageHandler(WebSocketMessage.CreateDetachedCopy(message));
+                            await queue.EnqueueAsync(message, ct).ConfigureAwait(false);
                         }
-                        catch (Exception ex)
+                        catch
                         {
-                            var error = new WebSocketException(
-                                WebSocketError.ReceiveFailed,
-                                "WebSocket OnMessage callback failed.",
-                                ex);
-
-                            var errorHandler = OnError;
-                            errorHandler?.Invoke(error);
+                            message.Dispose();
+                            throw;
                         }
+
+                        continue;
                     }
+
+                    // Handlers subscribed: never wait on the pull queue, or an event-only consumer stalls
+                    // this listener and, behind it, the connection read loop (#78). The copy is taken
+                    // before the original is published to a puller that may dispose it.
+                    var detachedCopy = PublishDroppingOldest(queue, message);
+                    RaiseMessage(messageHandler, detachedCopy);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -435,7 +455,55 @@ namespace TurboHTTP.WebSocket
             }
             finally
             {
-                _messageQueue?.Complete(completionError);
+                queue.Complete(completionError);
+            }
+        }
+
+        /// <summary>
+        /// Takes the detached copy for <c>OnMessage</c>, then hands the pooled original to the pull queue
+        /// without waiting (drop-oldest). Every path disposes the original or the dropped message once.
+        /// </summary>
+        internal static WebSocketMessage PublishDroppingOldest(
+            BoundedAsyncQueue<WebSocketMessage> queue,
+            WebSocketMessage message)
+        {
+            WebSocketMessage detachedCopy;
+            try
+            {
+                detachedCopy = WebSocketMessage.CreateDetachedCopy(message);
+                queue.EnqueueDropOldest(message, DisposeDroppedMessage);
+            }
+            catch
+            {
+                message.Dispose();
+                throw;
+            }
+
+            return detachedCopy;
+        }
+
+        private static readonly Action<WebSocketMessage> DisposeDroppedMessage = DisposeDropped;
+
+        private static void DisposeDropped(WebSocketMessage dropped)
+        {
+            dropped?.Dispose();
+        }
+
+        private void RaiseMessage(Action<WebSocketMessage> messageHandler, WebSocketMessage detachedCopy)
+        {
+            try
+            {
+                messageHandler(detachedCopy);
+            }
+            catch (Exception ex)
+            {
+                var error = new WebSocketException(
+                    WebSocketError.ReceiveFailed,
+                    "WebSocket OnMessage callback failed.",
+                    ex);
+
+                var errorHandler = OnError;
+                errorHandler?.Invoke(error);
             }
         }
 
@@ -444,7 +512,17 @@ namespace TurboHTTP.WebSocket
             if (state != WebSocketState.Closed)
                 return;
 
-            _messageQueue?.Complete(connection.TerminalError);
+            // #208: only the current connection raises OnClosed. A replaced connection's late event
+            // (already dispatched when it was unsubscribed) is stale.
+            lock (_sync)
+            {
+                if (!ReferenceEquals(_connection, connection))
+                    return;
+            }
+
+            // The queue is not completed here (#217): the listener may still hold a message it took from
+            // the connection ahead of the close. It completes the queue itself once the connection's
+            // drained queue reports the close.
             RaiseClosedFromConnection(connection);
         }
 
@@ -481,6 +559,13 @@ namespace TurboHTTP.WebSocket
             closedHandler?.Invoke(status.Code, status.Reason);
         }
 
+        private WebSocketConnection RequireConnection()
+        {
+            // A concurrent close or dispose detaches the connection after the state check (#84).
+            return Volatile.Read(ref _connection) ??
+                throw new WebSocketException(WebSocketError.ConnectionClosed, "WebSocket connection is closed.");
+        }
+
         private void EnsureOpenState()
         {
             var state = State;
@@ -505,7 +590,10 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private async Task CleanupAfterFailedConnectAsync(WebSocketConnection failedConnection)
+        private async Task CleanupAfterFailedConnectAsync(
+            WebSocketConnection failedConnection,
+            BoundedAsyncQueue<WebSocketMessage> queue,
+            CancellationTokenSource listenerCts)
         {
             if (failedConnection == null)
                 return;
@@ -524,13 +612,57 @@ namespace TurboHTTP.WebSocket
                 // Best effort cleanup for failed connect path.
             }
 
-            if (ReferenceEquals(_connection, failedConnection))
-                _connection = null;
+            // A reconnect from OnClosed of this failed attempt may already own the fields: only this
+            // attempt's own state is released then.
+            bool current;
+            lock (_sync)
+            {
+                current = ReferenceEquals(_connection, failedConnection);
+                if (current)
+                    _connection = null;
+                if (ReferenceEquals(_listenerCts, listenerCts))
+                    _listenerCts = null;
+            }
 
-            DisposeTransportIfOwned();
-            CompleteAndDrainQueue(null);
-            _listenerCts?.Dispose();
-            _listenerCts = null;
+            if (current)
+                DisposeTransportIfOwned();
+
+            CompleteAndDrainQueue(queue, null);
+            listenerCts.Dispose();
+        }
+
+        private static async Task ObservePreviousListenerAsync(
+            Task previousListener,
+            CancellationTokenSource previousListenerCts)
+        {
+            if (previousListener != null)
+            {
+                try
+                {
+                    await previousListener.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Listener faults are surfaced via OnError / terminal state.
+                }
+            }
+
+            previousListenerCts?.Dispose();
+        }
+
+        private static void CancelQuietly(CancellationTokenSource cts)
+        {
+            if (cts == null)
+                return;
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already released by a concurrent close/dispose path.
+            }
         }
 
         private void DisposeTransportIfOwned()
@@ -545,7 +677,11 @@ namespace TurboHTTP.WebSocket
 
         private void CompleteAndDrainQueue(Exception error)
         {
-            var queue = _messageQueue;
+            CompleteAndDrainQueue(Volatile.Read(ref _messageQueue), error);
+        }
+
+        private static void CompleteAndDrainQueue(BoundedAsyncQueue<WebSocketMessage> queue, Exception error)
+        {
             if (queue == null)
                 return;
 
@@ -555,13 +691,19 @@ namespace TurboHTTP.WebSocket
 
         private async Task StopListenerAsync()
         {
-            _listenerCts?.Cancel();
+            CancellationTokenSource listenerCts;
+            Task listenerTask;
+            lock (_sync)
+            {
+                listenerCts = _listenerCts;
+                listenerTask = _listenerTask;
+                _listenerTask = null;
+            }
 
-            var listenerTask = _listenerTask;
+            CancelQuietly(listenerCts);
+
             if (listenerTask == null)
                 return;
-
-            _listenerTask = null;
 
             try
             {

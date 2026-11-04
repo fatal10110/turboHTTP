@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Testing;
+using TurboHTTP.Unity.Mobile;
 
 namespace TurboHTTP.Tests.Transport
 {
@@ -17,19 +18,19 @@ namespace TurboHTTP.Tests.Transport
                 var detector = new NetworkQualityDetector();
                 var transport = new MockTransport();
 
-                using var client = new UHttpClient(new UHttpClientOptions
+                var options = new UHttpClientOptions
                 {
                     Transport = transport,
                     DisposeTransport = true,
-                    DefaultTimeout = TimeSpan.FromSeconds(10),
-                    AdaptivePolicy = new AdaptivePolicy
-                    {
-                        Enable = true,
-                        MinTimeout = TimeSpan.FromSeconds(1),
-                        MaxTimeout = TimeSpan.FromSeconds(30)
-                    },
-                    NetworkQualityDetector = detector
-                });
+                    DefaultTimeout = TimeSpan.FromSeconds(10)
+                };
+                options.UseAdaptiveNetworking(new AdaptivePolicy
+                {
+                    Enable = true,
+                    MinTimeout = TimeSpan.FromSeconds(1),
+                    MaxTimeout = TimeSpan.FromSeconds(30)
+                }, detector);
+                using var client = new UHttpClient(options);
 
                 using var request = client.Get("https://example.test/cold");
                 await client.SendBufferedAsync(request);
@@ -55,19 +56,19 @@ namespace TurboHTTP.Tests.Transport
                 }
 
                 var transport = new MockTransport();
-                using var client = new UHttpClient(new UHttpClientOptions
+                var options = new UHttpClientOptions
                 {
                     Transport = transport,
                     DisposeTransport = true,
-                    DefaultTimeout = TimeSpan.FromSeconds(10),
-                    AdaptivePolicy = new AdaptivePolicy
-                    {
-                        Enable = true,
-                        MinTimeout = TimeSpan.FromSeconds(1),
-                        MaxTimeout = TimeSpan.FromSeconds(20)
-                    },
-                    NetworkQualityDetector = detector
-                });
+                    DefaultTimeout = TimeSpan.FromSeconds(10)
+                };
+                options.UseAdaptiveNetworking(new AdaptivePolicy
+                {
+                    Enable = true,
+                    MinTimeout = TimeSpan.FromSeconds(1),
+                    MaxTimeout = TimeSpan.FromSeconds(20)
+                }, detector);
+                using var client = new UHttpClient(options);
 
                 using var request = client.Get("https://example.test/poor");
                 var baselineTimeout = request.Timeout;
@@ -95,18 +96,18 @@ namespace TurboHTTP.Tests.Transport
                 }
 
                 var transport = new MockTransport();
-                using var client = new UHttpClient(new UHttpClientOptions
+                var options = new UHttpClientOptions
                 {
                     Transport = transport,
-                    DisposeTransport = true,
-                    AdaptivePolicy = new AdaptivePolicy
-                    {
-                        Enable = true,
-                        MinTimeout = TimeSpan.FromSeconds(1),
-                        MaxTimeout = TimeSpan.FromSeconds(20)
-                    },
-                    NetworkQualityDetector = detector
-                });
+                    DisposeTransport = true
+                };
+                options.UseAdaptiveNetworking(new AdaptivePolicy
+                {
+                    Enable = true,
+                    MinTimeout = TimeSpan.FromSeconds(1),
+                    MaxTimeout = TimeSpan.FromSeconds(20)
+                }, detector);
+                using var client = new UHttpClient(options);
 
                 await client.Get("https://example.test/explicit")
                     .WithTimeout(TimeSpan.FromSeconds(3))
@@ -134,19 +135,19 @@ namespace TurboHTTP.Tests.Transport
                 }
 
                 var transport = new MockTransport();
-                using var client = new UHttpClient(new UHttpClientOptions
+                var options = new UHttpClientOptions
                 {
                     Transport = transport,
                     DisposeTransport = true,
-                    DefaultTimeout = TimeSpan.FromSeconds(15),
-                    AdaptivePolicy = new AdaptivePolicy
-                    {
-                        Enable = true,
-                        MinTimeout = TimeSpan.FromSeconds(1),
-                        MaxTimeout = TimeSpan.FromSeconds(20)
-                    },
-                    NetworkQualityDetector = detector
-                });
+                    DefaultTimeout = TimeSpan.FromSeconds(15)
+                };
+                options.UseAdaptiveNetworking(new AdaptivePolicy
+                {
+                    Enable = true,
+                    MinTimeout = TimeSpan.FromSeconds(1),
+                    MaxTimeout = TimeSpan.FromSeconds(20)
+                }, detector);
+                using var client = new UHttpClient(options);
 
                 await client.Get("https://example.test/max-timeout").SendBufferedAsync();
 
@@ -230,13 +231,13 @@ namespace TurboHTTP.Tests.Transport
                         request: request));
                 });
 
-                using var client = new UHttpClient(new UHttpClientOptions
+                var options = new UHttpClientOptions
                 {
                     Transport = transport,
-                    DisposeTransport = true,
-                    AdaptivePolicy = new AdaptivePolicy { Enable = true },
-                    NetworkQualityDetector = detector
-                });
+                    DisposeTransport = true
+                };
+                options.UseAdaptiveNetworking(new AdaptivePolicy { Enable = true }, detector);
+                using var client = new UHttpClient(options);
 
                 var response = await client.Get("https://example.test/null-body").SendBufferedAsync();
                 Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);

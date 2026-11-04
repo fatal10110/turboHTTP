@@ -1,6 +1,5 @@
 using System;
 
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Utilities;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
@@ -22,7 +21,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests
 
         internal ulong H1, H2, H3, H4, H5, H6, H7, H8;
 
-        private ulong[] W = new ulong[80];
+        private ulong[] W = new ulong[16];
         private int wOff;
 
         /**
@@ -256,68 +255,104 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests
         {
             AdjustByteCounts();
 
-            //
-            // expand 16 word block into 80 word blocks.
-            //
-            for (int ti = 16; ti <= 79; ++ti)
-            {
-                W[ti] = Sigma1(W[ti - 2]) + W[ti - 7] + Sigma0(W[ti - 15]) + W[ti - 16];
-            }
+            ulong[] W = this.W;
 
-            //
-            // set up working variables.
-            //
-            ulong a = H1;
-            ulong b = H2;
-            ulong c = H3;
-            ulong d = H4;
-            ulong e = H5;
-            ulong f = H6;
-            ulong g = H7;
-            ulong h = H8;
+            // The message schedule lives in 16 rotating locals instead of a 64/80-word array: no bounds
+            // checks or memory traffic for the expansion, and the array only ever holds the 16 input words.
+            ulong w00 = W[0], w01 = W[1], w02 = W[2], w03 = W[3];
+            ulong w04 = W[4], w05 = W[5], w06 = W[6], w07 = W[7];
+            ulong w08 = W[8], w09 = W[9], w10 = W[10], w11 = W[11];
+            ulong w12 = W[12], w13 = W[13], w14 = W[14], w15 = W[15];
 
-            int t = 0;
-            for (int i = 0; i < 10; i++)
+            ulong a = H1, b = H2, c = H3, d = H4, e = H5, f = H6, g = H7, h = H8;
+
+            for (int t = 0; ; t += 16)
             {
-                // t = 8 * i
-                h += Sum1(e) + Ch(e, f, g) + K[t] + W[t++];
+                h += Sum1(e) + Ch(e, f, g) + K[t] + w00;
                 d += h;
                 h += Sum0(a) + Maj(a, b, c);
 
-                // t = 8 * i + 1
-                g += Sum1(d) + Ch(d, e, f) + K[t] + W[t++];
+                g += Sum1(d) + Ch(d, e, f) + K[t + 1] + w01;
                 c += g;
                 g += Sum0(h) + Maj(h, a, b);
 
-                // t = 8 * i + 2
-                f += Sum1(c) + Ch(c, d, e) + K[t] + W[t++];
+                f += Sum1(c) + Ch(c, d, e) + K[t + 2] + w02;
                 b += f;
                 f += Sum0(g) + Maj(g, h, a);
 
-                // t = 8 * i + 3
-                e += Sum1(b) + Ch(b, c, d) + K[t] + W[t++];
+                e += Sum1(b) + Ch(b, c, d) + K[t + 3] + w03;
                 a += e;
                 e += Sum0(f) + Maj(f, g, h);
 
-                // t = 8 * i + 4
-                d += Sum1(a) + Ch(a, b, c) + K[t] + W[t++];
+                d += Sum1(a) + Ch(a, b, c) + K[t + 4] + w04;
                 h += d;
                 d += Sum0(e) + Maj(e, f, g);
 
-                // t = 8 * i + 5
-                c += Sum1(h) + Ch(h, a, b) + K[t] + W[t++];
+                c += Sum1(h) + Ch(h, a, b) + K[t + 5] + w05;
                 g += c;
                 c += Sum0(d) + Maj(d, e, f);
 
-                // t = 8 * i + 6
-                b += Sum1(g) + Ch(g, h, a) + K[t] + W[t++];
+                b += Sum1(g) + Ch(g, h, a) + K[t + 6] + w06;
                 f += b;
                 b += Sum0(c) + Maj(c, d, e);
 
-                // t = 8 * i + 7
-                a += Sum1(f) + Ch(f, g, h) + K[t] + W[t++];
+                a += Sum1(f) + Ch(f, g, h) + K[t + 7] + w07;
                 e += a;
                 a += Sum0(b) + Maj(b, c, d);
+
+                h += Sum1(e) + Ch(e, f, g) + K[t + 8] + w08;
+                d += h;
+                h += Sum0(a) + Maj(a, b, c);
+
+                g += Sum1(d) + Ch(d, e, f) + K[t + 9] + w09;
+                c += g;
+                g += Sum0(h) + Maj(h, a, b);
+
+                f += Sum1(c) + Ch(c, d, e) + K[t + 10] + w10;
+                b += f;
+                f += Sum0(g) + Maj(g, h, a);
+
+                e += Sum1(b) + Ch(b, c, d) + K[t + 11] + w11;
+                a += e;
+                e += Sum0(f) + Maj(f, g, h);
+
+                d += Sum1(a) + Ch(a, b, c) + K[t + 12] + w12;
+                h += d;
+                d += Sum0(e) + Maj(e, f, g);
+
+                c += Sum1(h) + Ch(h, a, b) + K[t + 13] + w13;
+                g += c;
+                c += Sum0(d) + Maj(d, e, f);
+
+                b += Sum1(g) + Ch(g, h, a) + K[t + 14] + w14;
+                f += b;
+                b += Sum0(c) + Maj(c, d, e);
+
+                a += Sum1(f) + Ch(f, g, h) + K[t + 15] + w15;
+                e += a;
+                a += Sum0(b) + Maj(b, c, d);
+
+                if (t == 64)
+                    break;
+
+                // W[t+16+j] = sigma1(W[t+14+j]) + W[t+9+j] + sigma0(W[t+1+j]) + W[t+j]; wrapped indices refer to
+                // words already updated in this pass, which is exactly the required schedule.
+                w00 += Sigma1(w14) + w09 + Sigma0(w01);
+                w01 += Sigma1(w15) + w10 + Sigma0(w02);
+                w02 += Sigma1(w00) + w11 + Sigma0(w03);
+                w03 += Sigma1(w01) + w12 + Sigma0(w04);
+                w04 += Sigma1(w02) + w13 + Sigma0(w05);
+                w05 += Sigma1(w03) + w14 + Sigma0(w06);
+                w06 += Sigma1(w04) + w15 + Sigma0(w07);
+                w07 += Sigma1(w05) + w00 + Sigma0(w08);
+                w08 += Sigma1(w06) + w01 + Sigma0(w09);
+                w09 += Sigma1(w07) + w02 + Sigma0(w10);
+                w10 += Sigma1(w08) + w03 + Sigma0(w11);
+                w11 += Sigma1(w09) + w04 + Sigma0(w12);
+                w12 += Sigma1(w10) + w05 + Sigma0(w13);
+                w13 += Sigma1(w11) + w06 + Sigma0(w14);
+                w14 += Sigma1(w12) + w07 + Sigma0(w15);
+                w15 += Sigma1(w13) + w08 + Sigma0(w00);
             }
 
             H1 += a;
@@ -336,41 +371,24 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests
             Array.Clear(W, 0, 16);
         }
 
-        /* SHA-384 and SHA-512 functions (as for SHA-256 but for longs) */
-        private static ulong Ch(ulong x, ulong y, ulong z)
-        {
-            return (x & y) ^ (~x & z);
-        }
+        //private static ulong Ch(ulong x, ulong y, ulong z) => (x & y) ^ (z & ~x);
+        private static ulong Ch(ulong x, ulong y, ulong z) => z ^ (x & (y ^ z));
 
-        private static ulong Maj(ulong x, ulong y, ulong z)
-        {
-            return (x & y) ^ (x & z) ^ (y & z);
-        }
+        //private static ulong Maj(ulong x, ulong y, ulong z) => (x & y) ^ (x & z) ^ (y & z);
+        private static ulong Maj(ulong x, ulong y, ulong z) => (x & y) | (z & (x ^ y));
 
-        private static ulong Sum0(ulong x)
-        {
-            return ((x << 36) | (x >> 28)) ^ ((x << 30) | (x >> 34)) ^ ((x << 25) | (x >> 39));
-        }
+        private static ulong Sum0(ulong x) => (x << 36 | x >> 28) ^ (x << 30 | x >> 34) ^ (x << 25 | x >> 39);
 
-        private static ulong Sum1(ulong x)
-        {
-            return ((x << 50) | (x >> 14)) ^ ((x << 46) | (x >> 18)) ^ ((x << 23) | (x >> 41));
-        }
+        private static ulong Sum1(ulong x) => (x << 50 | x >> 14) ^ (x << 46 | x >> 18) ^ (x << 23 | x >> 41);
 
-        private static ulong Sigma0(ulong x)
-        {
-            return ((x << 63) | (x >> 1)) ^ ((x << 56) | (x >> 8)) ^ (x >> 7);
-        }
+        private static ulong Sigma0(ulong x) => (x << 63 | x >> 1) ^ (x << 56 | x >> 8) ^ (x >> 7);
 
-        private static ulong Sigma1(ulong x)
-        {
-            return ((x << 45) | (x >> 19)) ^ ((x << 3) | (x >> 61)) ^ (x >> 6);
-        }
+        private static ulong Sigma1(ulong x) => (x << 45 | x >> 19) ^ (x << 3 | x >> 61) ^ (x >> 6);
 
-        /* SHA-384 and SHA-512 Constants
-         * (represent the first 64 bits of the fractional parts of the
-         * cube roots of the first sixty-four prime numbers)
-         */
+        /// <summary>
+        /// SHA-512 Constants (represent the first 64 bits of the fractional parts of the cube roots of the first
+        /// sixty-four prime numbers)
+        /// </summary>
         internal static readonly ulong[] K =
         {
             0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,

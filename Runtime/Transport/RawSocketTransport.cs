@@ -27,7 +27,6 @@ namespace TurboHTTP.Transport
     /// </summary>
     public sealed class RawSocketTransport : IHttpTransport
     {
-        private static readonly string[] s_connectTunnelAlpnProtocols = { "h2", "http/1.1" };
         private readonly TcpConnectionPool _pool;
         private readonly Http2ConnectionManager _h2Manager;
         private readonly TlsBackend _tlsBackend;
@@ -75,15 +74,34 @@ namespace TurboHTTP.Transport
 
         /// <summary>
         /// Explicitly register this transport with <see cref="HttpTransportFactory"/>.
-        /// Not needed in normal usage (module initializer handles it).
-        /// Useful for tests that call <see cref="HttpTransportFactory.Reset"/>.
+        /// Not needed in normal usage: TurboHTTP's startup bootstrap (TurboHTTP.Complete) calls it
+        /// at <c>RuntimeInitializeLoadType.SubsystemRegistration</c>. Call it at startup when that
+        /// assembly is excluded from the build, or after <see cref="HttpTransportFactory.Reset"/>.
+        /// Idempotent: while this transport is already the registered one, a further call keeps
+        /// the current <see cref="HttpTransportFactory.Default"/> instance, so clients created
+        /// earlier keep sharing it and no created default is dropped undisposed. It replaces any
+        /// other registration (a custom factory or <see cref="HttpTransportFactory.SetForTesting"/>).
         /// </summary>
         public static void EnsureRegistered()
         {
-            HttpTransportFactory.Register(
-                () => new RawSocketTransport(),
-                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend),
-                (tlsBackend, poolOptions, http2Options, streamingOptions) =>
+            HttpTransportFactory.RegisterUnlessCurrent(
+                Registration.Default,
+                Registration.WithBackend,
+                Registration.WithOptions,
+                Registration.Capabilities);
+        }
+
+        // The factories live in static fields so every EnsureRegistered call passes the same
+        // delegate instances and HttpTransportFactory can recognize its own registration (#275).
+        private static class Registration
+        {
+            internal static readonly Func<IHttpTransport> Default = () => new RawSocketTransport();
+
+            internal static readonly Func<TlsBackend, IHttpTransport> WithBackend =
+                tlsBackend => new RawSocketTransport(tlsBackend: tlsBackend);
+
+            internal static readonly Func<TlsBackend, ConnectionPoolOptions, Http2Options, StreamingOptions, IHttpTransport>
+                WithOptions = (tlsBackend, poolOptions, http2Options, streamingOptions) =>
                     new RawSocketTransport(
                         pool: new TcpConnectionPool(
                             maxConnectionsPerHost: poolOptions.MaxConnectionsPerHost,
@@ -91,10 +109,24 @@ namespace TurboHTTP.Transport
                             tlsBackend: tlsBackend,
                             dnsTimeout: TimeSpan.FromMilliseconds(poolOptions.DnsTimeoutMs),
                             happyEyeballsOptions: poolOptions.HappyEyeballs,
-                            socketIoMode: poolOptions.SocketIoMode),
+                            socketIoMode: poolOptions.SocketIoMode,
+                            connectTimeout: poolOptions.ConnectTimeout,
+                            reusedConnectionFirstByteTimeout: poolOptions.ReusedConnectionFirstByteTimeout),
                         tlsBackend: tlsBackend,
                         http2Options: http2Options,
-                        streamingOptions: streamingOptions));
+                        streamingOptions: streamingOptions);
+
+            internal static readonly Func<TransportCapabilities> Capabilities = ProbeCapabilities;
+        }
+
+        // HTTP/2 needs ALPN: SslStream exposes it on this runtime, or the BouncyCastle provider is
+        // present. Read lazily (HttpTransportFactory.Capabilities), so registration at startup does
+        // not initialize the TLS providers.
+        private static TransportCapabilities ProbeCapabilities()
+        {
+            return SslStreamTlsProvider.Instance.IsAlpnSupported() || TlsProviderSelector.IsBouncyCastleAvailable()
+                ? TransportCapabilities.Http2
+                : TransportCapabilities.None;
         }
 
         public async Task DispatchAsync(
@@ -150,10 +182,54 @@ namespace TurboHTTP.Transport
             ex as UHttpException ??
             new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
 
-        private static bool CanRetryH2RequestAfterTransportFailure(UHttpRequest request)
+        // Replays of one request after HTTP/2 failures that RFC 9113 Section 8.7 marks as unprocessed
+        // (REFUSED_STREAM, above a GOAWAY last-stream-id). Bounded so a peer that refuses every stream
+        // cannot loop a request forever.
+        internal const int MaxH2UnprocessedRetries = 3;
+
+        /// <summary>
+        /// A not-processed failure is replayed for any method (RFC 9113 Section 8.7); a connection
+        /// failure before the response started only for idempotent methods (RFC 9110 Section 9.2.2) and
+        /// once. Both need a body that can be sent again.
+        /// </summary>
+        internal static bool ShouldRetryH2Request(
+            Http2RetryableRequestException failure,
+            UHttpRequest request,
+            int attempt,
+            CancellationToken ct)
         {
-            return request.Method.IsIdempotent() &&
-                request.Content.Replayability != RequestBodyReplayability.NonReplayable;
+            if (ct.IsCancellationRequested ||
+                request.Content.Replayability == RequestBodyReplayability.NonReplayable)
+            {
+                return false;
+            }
+
+            return failure.RequestNotProcessed
+                ? attempt < MaxH2UnprocessedRetries
+                : attempt == 0 && request.Method.IsIdempotent();
+        }
+
+        /// <summary>
+        /// Dispatches on an HTTP/2 connection. After a failure the connection is evicted (instance-exact)
+        /// only when it no longer accepts streams; a stream-scoped failure leaves it and its other streams
+        /// in place (RFC 9113 Section 5.4.2).
+        /// </summary>
+        private async Task DispatchOnH2ConnectionAsync(
+            Http2Connection connection,
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            try
+            {
+                await connection.DispatchAsync(request, handler, context, ct).ConfigureAwait(false);
+            }
+            catch (Exception) when (!connection.AcceptsNewStreams)
+            {
+                _h2Manager.EvictIfUnusable(connection);
+                throw;
+            }
         }
 
         private static bool CanRetryHttp11RequestAfterTransportFailure(
@@ -163,8 +239,73 @@ namespace TurboHTTP.Transport
             if (request.Content.Replayability == RequestBodyReplayability.NonReplayable)
                 return false;
 
-            return request.Method.IsIdempotent() ||
-                (writeState != null && !writeState.HasCommittedBodyBytes);
+            if (request.Method.IsIdempotent())
+                return true;
+
+            // RFC 9110 sec 9.2.2: a non-idempotent request is replayed only while the server
+            // cannot have received it completely: no body byte committed and, for a bodiless
+            // request, the head not fully written.
+            return writeState != null &&
+                !writeState.HasCommittedBodyBytes &&
+                !writeState.HasWrittenCompleteMessage;
+        }
+
+        /// <summary>
+        /// Disposes the connection (stream and socket) when <paramref name="ct"/> fires. Mono and
+        /// IL2CPP <see cref="NetworkStream"/> ignore the token once a read is pending, so a peer that
+        /// accepts and never writes would otherwise hold the request, the lease and the per-host and
+        /// global permits past the request timeout (#162). The caller disposes the registration
+        /// before the connection is pooled or handed to a response body source.
+        /// </summary>
+        private static CancellationTokenRegistration RegisterDisposeOnCancel(
+            PooledConnection connection,
+            CancellationToken ct)
+        {
+            if (!ct.CanBeCanceled)
+                return default;
+
+            return ct.Register(static state =>
+            {
+                var pooled = (PooledConnection)state;
+                try { pooled.Dispose(); } catch { /* best effort */ }
+                try { pooled.Socket?.Dispose(); } catch { /* best effort */ }
+            }, connection);
+        }
+
+        /// <summary>
+        /// A read or write that fails after <see cref="RegisterDisposeOnCancel"/> tore the connection
+        /// down surfaces as ObjectDisposedException, IOException or a platform-specific error; it is
+        /// a cancellation, which the dispatch catch ladder maps to Timeout or OperationCanceled.
+        /// </summary>
+        private static bool IsFailureFromCancellation(Exception ex, CancellationToken ct)
+        {
+            return ct.IsCancellationRequested && !(ex is OperationCanceledException);
+        }
+
+        /// <summary>
+        /// The first-byte watchdog for an HTTP/1.1 attempt (#47): armed only on a reused connection
+        /// for an idempotent, replayable request, where a silent connection is retried once on a
+        /// fresh one. <see cref="Timeout.InfiniteTimeSpan"/> = not armed.
+        /// </summary>
+        private TimeSpan GetReusedConnectionFirstByteTimeout(ConnectionLease lease, UHttpRequest request)
+        {
+            if (!lease.Connection.IsReused ||
+                !request.Method.IsIdempotent() ||
+                request.Content.Replayability == RequestBodyReplayability.NonReplayable)
+            {
+                return Timeout.InfiniteTimeSpan;
+            }
+
+            return _pool.ReusedConnectionFirstByteTimeout;
+        }
+
+        private static bool IsStaleReusedConnectionFailure(Exception ex)
+        {
+            // RFC 9112 sec 9.3.1: a persistent connection the server closed while idle shows up
+            // as a write/read fault or as EOF before the first status-line byte.
+            return ex is IOException ||
+                ex is SocketException ||
+                IsConnectionClosedBeforeStatusLine(ex);
         }
 
         private static bool ShouldSurfaceCommittedNonReplayableBodyFailure(
@@ -267,9 +408,72 @@ namespace TurboHTTP.Transport
             var secure = string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase);
             var proxy = ResolveProxySettings(request);
 
+            // #85: raw sockets are not covered by iOS App Transport Security or the Android
+            // cleartext policy, so the policy is applied here, before any socket. The leg to an
+            // http:// proxy is cleartext even for an https:// target.
+            var allowCleartext = ResolveAllowCleartext(request);
+            if (!secure && !CleartextTrafficPolicy.IsPermitted(host, allowCleartext))
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest,
+                    $"Cleartext http:// request to '{host}' is not permitted. Use https://, or set " +
+                    "UHttpClientOptions.AllowCleartext = true (the platform cleartext policy must also permit the host)."));
+            }
+
+            if (proxy?.Address != null && !CleartextTrafficPolicy.IsPermitted(proxy.Address.Host, allowCleartext))
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest,
+                    $"Cleartext connection to http:// proxy '{proxy.Address.Host}' is not permitted. Set " +
+                    "UHttpClientOptions.AllowCleartext = true (the platform cleartext policy must also permit the host)."));
+            }
+
             // 3. Record transport start
             context.RecordEvent("TransportStart");
 
+            // 4. Dispatch. An HTTP/2 failure marked retryable (stream refused or above a GOAWAY
+            // last-stream-id, or the connection failed before the response started) is replayed on a
+            // fresh attempt, bounded, within the same timeout.
+            for (int h2Attempt = 0; ; h2Attempt++)
+            {
+                try
+                {
+                    await DispatchAttemptAsync(
+                            request,
+                            handler,
+                            context,
+                            host,
+                            port,
+                            secure,
+                            proxy,
+                            timeoutCts,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+                catch (Http2RetryableRequestException ex) when (
+                    Volatile.Read(ref _disposed) == 0 &&
+                    ShouldRetryH2Request(ex, request, h2Attempt, ct))
+                {
+                    context.RecordEvent(ex.RequestNotProcessed
+                        ? "TransportH2RetryUnprocessed"
+                        : "TransportH2StaleRetry");
+                }
+            }
+        }
+
+        private async Task DispatchAttemptAsync(
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            string host,
+            int port,
+            bool secure,
+            ProxySettings proxy,
+            CancellationTokenSource timeoutCts,
+            CancellationToken cancellationToken)
+        {
+            var ct = timeoutCts.Token;
             try
             {
                 if (proxy != null)
@@ -292,24 +496,10 @@ namespace TurboHTTP.Transport
                     var h2Conn = _h2Manager.GetIfExists(host, port);
                     if (h2Conn != null)
                     {
-                        try
-                        {
-                            context.RecordEvent("TransportH2Reuse");
-                            await h2Conn.DispatchAsync(request, handler, context, ct)
-                                .ConfigureAwait(false);
-                            return;
-                        }
-                        catch (Exception) when (!ct.IsCancellationRequested)
-                        {
-                            // Stale h2 connection — always remove from manager to avoid
-                            // subsequent requests hitting the same dead connection.
-                            _h2Manager.Remove(host, port);
-
-                            if (!CanRetryH2RequestAfterTransportFailure(request))
-                                throw;
-
-                            context.RecordEvent("TransportH2StaleRetry");
-                        }
+                        context.RecordEvent("TransportH2Reuse");
+                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
+                            .ConfigureAwait(false);
+                        return;
                     }
                 }
 
@@ -329,7 +519,7 @@ namespace TurboHTTP.Transport
                         var h2Conn = await _h2Manager.GetOrCreateAsync(
                             host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
                         lease = null;
-                        await h2Conn.DispatchAsync(request, handler, context, ct)
+                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
                             .ConfigureAwait(false);
                         return;
                     }
@@ -344,7 +534,8 @@ namespace TurboHTTP.Transport
                                 handler,
                                 context,
                                 requestWriteState,
-                                ct)
+                                ct,
+                                firstByteTimeout: GetReusedConnectionFirstByteTimeout(lease, request))
                             .ConfigureAwait(false);
                         lease = null;
 
@@ -353,7 +544,7 @@ namespace TurboHTTP.Transport
                     catch (Exception ex) when (
                         lease != null &&
                         lease.Connection.IsReused &&
-                        (ex is IOException || ex is SocketException) &&
+                        IsStaleReusedConnectionFailure(ex) &&
                         CanRetryHttp11RequestAfterTransportFailure(request, requestWriteState))
                     {
                         lease.Dispose();
@@ -365,7 +556,9 @@ namespace TurboHTTP.Transport
                         ConnectionLease freshLease = null;
                         try
                         {
-                            freshLease = await _pool.GetConnectionAsync(host, port, secure, ct)
+                            // A newly connected socket, not the next idle one: a NAT drop kills every
+                            // idle connection to the host at once, and this lease is not armed (#47).
+                            freshLease = await _pool.GetNewConnectionAsync(host, port, secure, ct)
                                 .ConfigureAwait(false);
 
                             if (freshLease.Connection.NegotiatedAlpnProtocol == "h2")
@@ -375,7 +568,7 @@ namespace TurboHTTP.Transport
                                 var h2Conn = await _h2Manager.GetOrCreateAsync(
                                     host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
                                 freshLease = null;
-                                await h2Conn.DispatchAsync(request, handler, context, ct)
+                                await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
                                     .ConfigureAwait(false);
                                 return;
                             }
@@ -515,6 +708,13 @@ namespace TurboHTTP.Transport
                 throw new UHttpException(new UHttpError(
                     UHttpErrorType.CertificateError, ex.Message, ex));
             }
+            catch (HttpFieldValidationException ex)
+            {
+                // A header or trailer field the caller set cannot be sent (RFC 9110 Sections 5.1
+                // and 5.5): the same non-retryable InvalidRequest HTTP/2 reports (#243).
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest, ex.Message, ex));
+            }
             catch (Exception ex)
             {
                 throw new UHttpException(new UHttpError(
@@ -553,35 +753,25 @@ namespace TurboHTTP.Transport
                 if (existingH2 != null)
                 {
                     var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-                    try
-                    {
-                        context.RecordEvent("TransportProxyH2Reuse");
-                        await existingH2.DispatchAsync(tunneledRequest, handler, context, ct)
-                            .ConfigureAwait(false);
-                        return;
-                    }
-                    catch (Exception ex) when (
-                        !ct.IsCancellationRequested &&
-                        (ex is IOException ||
-                         (ex is UHttpException uhe &&
-                          uhe.HttpError != null &&
-                          uhe.HttpError.IsRetryable())))
-                    {
-                        _h2Manager.Remove(host, port, proxyHost, proxyPort);
-
-                        if (!CanRetryH2RequestAfterTransportFailure(request))
-                            throw;
-
-                        context.RecordEvent("TransportProxyH2StaleRetry");
-                    }
+                    context.RecordEvent("TransportProxyH2Reuse");
+                    await DispatchOnH2ConnectionAsync(existingH2, tunneledRequest, handler, context, ct)
+                        .ConfigureAwait(false);
+                    return;
                 }
             }
 
             if (!secure)
             {
                 context.RecordEvent("TransportProxyConnecting");
-                var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy);
-                await DispatchProxyHttp11WithRetryAsync(
+
+                // RFC 9110 section 11.7.1 / RFC 7617: the forwarded request goes out without
+                // credentials; Basic answers a Basic 407 challenge once, and only when the body can
+                // be sent again (#236).
+                var answerBasicChallenge = proxy.Credentials != null &&
+                    proxy.AllowPlaintextProxyAuth &&
+                    request.Content.Replayability != RequestBodyReplayability.NonReplayable;
+                var forwardedRequest = PrepareHttpProxyForwardRequest(request, proxy, includeCredentials: false);
+                var delivered = await DispatchProxyHttp11WithRetryAsync(
                         proxyHost,
                         proxyPort,
                         poolKeyOverride: null,
@@ -590,6 +780,26 @@ namespace TurboHTTP.Transport
                         targetPort: 0,
                         proxy,
                         forwardedRequest,
+                        request,
+                        handler,
+                        context,
+                        ct,
+                        interceptBasicProxyChallenge: answerBasicChallenge)
+                    .ConfigureAwait(false);
+                if (delivered)
+                    return;
+
+                context.RecordEvent("TransportProxyAuthRetry");
+                var authenticatedRequest = PrepareHttpProxyForwardRequest(request, proxy, includeCredentials: true);
+                await DispatchProxyHttp11WithRetryAsync(
+                        proxyHost,
+                        proxyPort,
+                        poolKeyOverride: null,
+                        establishTunnel: false,
+                        targetHost: null,
+                        targetPort: 0,
+                        proxy,
+                        authenticatedRequest,
                         request,
                         handler,
                         context,
@@ -630,7 +840,7 @@ namespace TurboHTTP.Transport
                         .ConfigureAwait(false);
                     lease = null;
 
-                    await h2Conn.DispatchAsync(tunneledRequest, handler, context, ct)
+                    await DispatchOnH2ConnectionAsync(h2Conn, tunneledRequest, handler, context, ct)
                         .ConfigureAwait(false);
                     return;
                 }
@@ -659,7 +869,14 @@ namespace TurboHTTP.Transport
             }
         }
 
-        private async Task DispatchProxyHttp11WithRetryAsync(
+        /// <summary>
+        /// Dispatches an HTTP/1.1 request through the proxy, retrying once on a fresh connection
+        /// when a reused one turns out stale. Returns <c>true</c> once the response reached
+        /// <paramref name="handler"/>; returns <c>false</c> only when
+        /// <paramref name="interceptBasicProxyChallenge"/> is set and the proxy answered with a
+        /// Basic 407, which was consumed (connection pooled or closed) without reaching the handler.
+        /// </summary>
+        private async Task<bool> DispatchProxyHttp11WithRetryAsync(
             string proxyHost,
             int proxyPort,
             string poolKeyOverride,
@@ -672,7 +889,8 @@ namespace TurboHTTP.Transport
             IHttpHandler handler,
             RequestContext context,
             CancellationToken ct,
-            ConnectionLease preparedLease = null)
+            ConnectionLease preparedLease = null,
+            bool interceptBasicProxyChallenge = false)
         {
             ConnectionLease lease = null;
             try
@@ -696,21 +914,23 @@ namespace TurboHTTP.Transport
                 var writeState = new Http11RequestWriteState();
                 try
                 {
-                    await DispatchOnLeaseAsync(
+                    var result = await DispatchOnLeaseAsync(
                             lease,
                             dispatchRequest,
                             handler,
                             context,
                             writeState,
-                            ct)
+                            ct,
+                            interceptBasicProxyChallenge)
                         .ConfigureAwait(false);
+                    var completedLease = lease;
                     lease = null;
-                    return;
+                    return CompleteLeaseDispatch(completedLease, result);
                 }
                 catch (Exception ex) when (
                     lease != null &&
                     lease.Connection.IsReused &&
-                    (ex is IOException || ex is SocketException) &&
+                    IsStaleReusedConnectionFailure(ex) &&
                     CanRetryHttp11RequestAfterTransportFailure(originalRequest, writeState))
                 {
                     lease.Dispose();
@@ -749,24 +969,26 @@ namespace TurboHTTP.Transport
                                 .ConfigureAwait(false);
                             freshLease = null;
 
-                            await h2Conn.DispatchAsync(dispatchRequest, handler, context, ct)
+                            await DispatchOnH2ConnectionAsync(h2Conn, dispatchRequest, handler, context, ct)
                                 .ConfigureAwait(false);
-                            return;
+                            return true;
                         }
 
                         var retryWriteState = new Http11RequestWriteState();
                         try
                         {
-                            await DispatchOnLeaseAsync(
+                            var retryResult = await DispatchOnLeaseAsync(
                                     freshLease,
                                     dispatchRequest,
                                     handler,
                                     context,
                                     retryWriteState,
-                                    ct)
+                                    ct,
+                                    interceptBasicProxyChallenge)
                                 .ConfigureAwait(false);
+                            var completedLease = freshLease;
                             freshLease = null;
-                            return;
+                            return CompleteLeaseDispatch(completedLease, retryResult);
                         }
                         catch (Exception retryEx) when (
                             ShouldSurfaceCommittedNonReplayableBodyFailure(
@@ -813,52 +1035,101 @@ namespace TurboHTTP.Transport
             ConnectionLease lease = null;
             try
             {
-                lease = await _pool.GetConnectionAsync(
-                        proxyHost,
-                        proxyPort,
-                        secure: false,
-                        poolKeyOverride,
-                        ct)
-                    .ConfigureAwait(false);
-
-                if (!establishTunnel)
-                    return lease;
-
-                // Idle validation for TLS-wrapped tunnels is best-effort because the pool can
-                // only observe the outer proxy TCP socket. The stale-retry path remains the
-                // correctness backstop if the origin-side tunnel state has already gone bad.
-                if (lease.Connection.IsSecure)
+                // A CONNECT answered with a Basic 407 that cannot be reused (#229) is retried once,
+                // with credentials, on a fresh proxy connection.
+                var includeAuth = false;
+                while (true)
                 {
-                    if (string.Equals(
-                            lease.Connection.PoolKey,
+                    lease = await _pool.GetConnectionAsync(
+                            proxyHost,
+                            proxyPort,
+                            secure: false,
                             poolKeyOverride,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
+                            ct)
+                        .ConfigureAwait(false);
+
+                    if (!establishTunnel)
                         return lease;
+
+                    // Idle validation for TLS-wrapped tunnels is best-effort because the pool can
+                    // only observe the outer proxy TCP socket. The stale-retry path remains the
+                    // correctness backstop if the origin-side tunnel state has already gone bad.
+                    if (lease.Connection.IsSecure)
+                    {
+                        if (string.Equals(
+                                lease.Connection.PoolKey,
+                                poolKeyOverride,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            return lease;
+                        }
+
+                        throw new UHttpException(new UHttpError(
+                            UHttpErrorType.NetworkError,
+                            "Reused proxy tunnel connection was bound to an unexpected target."));
                     }
 
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Reused proxy tunnel connection was bound to an unexpected target."));
-                }
+                    context.RecordEvent("TransportProxyConnect");
+                    TlsResult tlsResult;
+                    using (RegisterDisposeOnCancel(lease.Connection, ct))
+                    {
+                        try
+                        {
+                            tlsResult = await EstablishConnectTunnelAsync(
+                                    lease.Connection.Stream,
+                                    targetHost,
+                                    targetPort,
+                                    proxy,
+                                    includeAuth,
+                                    ct)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
+                        {
+                            throw new OperationCanceledException("Proxy CONNECT tunnel setup was cancelled.", ex, ct);
+                        }
+                    }
 
-                context.RecordEvent("TransportProxyConnect");
-                context.RecordEvent("TransportProxyConnectTunnelEstablished");
-                var tlsResult = await EstablishConnectTunnelAsync(
-                        lease.Connection.Stream,
-                        targetHost,
-                        targetPort,
-                        proxy,
-                        ct)
-                    .ConfigureAwait(false);
-                RebindConnectTunnelLease(lease, targetHost, targetPort, poolKeyOverride, tlsResult);
-                return lease;
+                    if (tlsResult == null)
+                    {
+                        // The proxy closes, or the 407 body cannot be delimited: drop this
+                        // connection (releasing its pool permit) and authenticate on a new one.
+                        lease.Dispose();
+                        lease = null;
+                        ct.ThrowIfCancellationRequested();
+                        includeAuth = true;
+                        context.RecordEvent("TransportProxyConnectAuthReconnect");
+                        continue;
+                    }
+
+                    context.RecordEvent("TransportProxyConnectTunnelEstablished");
+                    if (ct.IsCancellationRequested)
+                    {
+                        // The token fired after the handshake; the proxy socket may already be disposed.
+                        try { tlsResult.SecureStream?.Dispose(); } catch { /* best effort */ }
+                        ct.ThrowIfCancellationRequested();
+                    }
+                    RebindConnectTunnelLease(lease, targetHost, targetPort, poolKeyOverride, tlsResult);
+                    return lease;
+                }
             }
             catch
             {
                 lease?.Dispose();
                 throw;
             }
+        }
+
+        private static bool ResolveAllowCleartext(UHttpRequest request)
+        {
+            if (request?.Metadata != null &&
+                request.Metadata.TryGetValue(RequestMetadataKeys.AllowCleartext, out var value) &&
+                value is bool allow)
+            {
+                return allow;
+            }
+
+            return CleartextTrafficPolicy.DefaultAllowCleartext;
         }
 
         private static ProxySettings ResolveProxySettings(UHttpRequest request)
@@ -879,25 +1150,26 @@ namespace TurboHTTP.Transport
             return null;
         }
 
-        private static UHttpRequest PrepareHttpProxyForwardRequest(UHttpRequest request, ProxySettings proxy)
+        /// <summary>
+        /// Clones <paramref name="request"/> for absolute-form forwarding. A caller-supplied
+        /// Proxy-Authorization never goes out; with <paramref name="includeCredentials"/> the clone
+        /// carries Basic credentials from <paramref name="proxy"/> (the answer to a Basic 407, #236)
+        /// when they are configured and <see cref="ProxySettings.AllowPlaintextProxyAuth"/> is set.
+        /// The user's request is never modified.
+        /// </summary>
+        private static UHttpRequest PrepareHttpProxyForwardRequest(
+            UHttpRequest request,
+            ProxySettings proxy,
+            bool includeCredentials)
         {
             var metadata = CloneMetadataWith(request.Metadata, RequestMetadataKeys.ProxyAbsoluteForm, true);
             var headers = request.Headers.Clone();
-            var proxyAuthValue = BuildProxyAuthorizationHeaderValue(proxy);
-            if (!string.IsNullOrEmpty(proxyAuthValue))
+            headers.Remove("Proxy-Authorization");
+            if (includeCredentials && proxy != null && proxy.AllowPlaintextProxyAuth)
             {
-                if (proxy.AllowPlaintextProxyAuth)
-                {
+                var proxyAuthValue = BuildProxyAuthorizationHeaderValue(proxy);
+                if (!string.IsNullOrEmpty(proxyAuthValue))
                     headers.Set("Proxy-Authorization", proxyAuthValue);
-                }
-                else
-                {
-                    headers.Remove("Proxy-Authorization");
-                }
-            }
-            else
-            {
-                headers.Remove("Proxy-Authorization");
             }
 
             return request
@@ -957,15 +1229,23 @@ namespace TurboHTTP.Transport
                 tlsResult.NegotiatedAlpn);
         }
 
+        /// <summary>
+        /// Sends CONNECT on <paramref name="proxyStream"/> and wraps the tunnel in TLS. A Basic 407
+        /// is answered once with credentials on the same stream when the reply is safely framed
+        /// (<see cref="ConnectReply.CanRetryOnSameConnection"/>); otherwise the method returns
+        /// <c>null</c> and the caller retries with <paramref name="includeAuth"/> on a fresh
+        /// connection (#229).
+        /// </summary>
         private async Task<TlsResult> EstablishConnectTunnelAsync(
             Stream proxyStream,
             string targetHost,
             int targetPort,
             ProxySettings proxy,
+            bool includeAuth,
             CancellationToken ct)
         {
             var authority = BuildAuthority(targetHost, targetPort);
-            var attemptedAuth = false;
+            var attemptedAuth = includeAuth;
 
             while (true)
             {
@@ -974,27 +1254,44 @@ namespace TurboHTTP.Transport
                 await proxyStream.WriteAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
                 await proxyStream.FlushAsync(ct).ConfigureAwait(false);
 
-                var response = await ReadProxyConnectResponseAsync(proxyStream, ct).ConfigureAwait(false);
-                await DrainProxyConnectBodyAsync(proxyStream, response.Headers, ct).ConfigureAwait(false);
+                // The reader stops at the end of the header block, so the tunnel's first bytes
+                // stay on the stream for the TLS handshake.
+                var response = await ConnectReplyReader.ReadAsync(proxyStream, ct).ConfigureAwait(false);
 
-                if (response.StatusCode == 200)
+                // RFC 9110 section 9.3.6: any 2xx switches to tunnel mode right after the header
+                // block; Content-Length / Transfer-Encoding in a 2xx reply are ignored (#44).
+                if (response.IsTunnelEstablished)
                 {
                     var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
                     var tlsResult = await tlsProvider.WrapAsync(
                         proxyStream,
                         targetHost,
-                        s_connectTunnelAlpnProtocols,
+                        AlpnProtocols.H2AndHttp11,
                         ct).ConfigureAwait(false);
 
                     MarkSslStreamViableIfAuto(_tlsBackend, tlsResult);
                     return tlsResult;
                 }
 
+                // RFC 9110 section 11.7.1 / RFC 7617: Basic credentials answer only a Basic
+                // challenge (#85). The proxy leg itself already passed the cleartext policy.
+                var offersBasic = response.StatusCode == 407 &&
+                    AuthChallengeParser.OffersScheme(response.Headers.GetValues("Proxy-Authenticate"), "Basic");
+
                 if (response.StatusCode == 407 &&
                     !attemptedAuth &&
+                    offersBasic &&
                     proxy?.Credentials != null &&
                     proxy.AllowPlaintextProxyAuth)
                 {
+                    // RFC 9112 sections 6.3 and 9.6: a 407 that closes the connection, has no
+                    // framing, or carries both Transfer-Encoding and Content-Length cannot be
+                    // followed by another CONNECT on this connection.
+                    if (!response.CanRetryOnSameConnection)
+                        return null;
+
+                    // Consume the 407 body so the retried CONNECT reads its own reply.
+                    await ConnectReplyReader.DrainBodyAsync(proxyStream, response, ct).ConfigureAwait(false);
                     attemptedAuth = true;
                     continue;
                 }
@@ -1006,9 +1303,14 @@ namespace TurboHTTP.Transport
                     //     never attempted; tell the caller how to enable it.
                     //   - Credentials were submitted (attemptedAuth = true) but rejected by the proxy.
                     //   - No credentials were configured at all.
-                    string reason = proxy?.Credentials != null && !proxy.AllowPlaintextProxyAuth
-                        ? "credentials were supplied but AllowPlaintextProxyAuth is disabled"
-                        : "credentials were not provided or were rejected";
+                    //   - The proxy does not offer the Basic scheme, so credentials were not sent.
+                    string reason;
+                    if (proxy?.Credentials != null && !attemptedAuth && !offersBasic)
+                        reason = "the proxy does not offer the Basic scheme, so credentials were not sent";
+                    else if (proxy?.Credentials != null && !proxy.AllowPlaintextProxyAuth)
+                        reason = "credentials were supplied but AllowPlaintextProxyAuth is disabled";
+                    else
+                        reason = "credentials were not provided or were rejected";
 
                     throw new UHttpException(new UHttpError(
                         UHttpErrorType.InvalidRequest,
@@ -1056,311 +1358,10 @@ namespace TurboHTTP.Transport
             return sb.ToString();
         }
 
+        // RFC 9110 Section 9.3.6 authority-form: the same ASCII host as Host / :authority (#46).
         private static string BuildAuthority(string host, int port)
         {
-            if (host.Contains(":") && !host.StartsWith("[", StringComparison.Ordinal))
-                return "[" + host + "]:" + port;
-            return host + ":" + port;
-        }
-
-        private sealed class ProxyConnectResponse
-        {
-            public int StatusCode { get; set; }
-            public HttpHeaders Headers { get; } = new HttpHeaders();
-        }
-
-        private static async Task<ProxyConnectResponse> ReadProxyConnectResponseAsync(
-            Stream stream,
-            CancellationToken ct)
-        {
-            const int maxTotalHeaderBytes = 16 * 1024;
-            int totalBytes = 0;
-
-            var statusLine = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
-            totalBytes += statusLine.Length;
-
-            if (string.IsNullOrEmpty(statusLine))
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Proxy CONNECT response is missing status line."));
-
-            var firstSpace = statusLine.IndexOf(' ');
-            if (firstSpace <= 0 || firstSpace + 1 >= statusLine.Length)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Invalid proxy CONNECT status line."));
-            }
-
-            var secondSpace = statusLine.IndexOf(' ', firstSpace + 1);
-            var statusCodeStr = secondSpace > 0
-                ? statusLine.Substring(firstSpace + 1, secondSpace - firstSpace - 1)
-                : statusLine.Substring(firstSpace + 1);
-
-            if (!int.TryParse(statusCodeStr, out var statusCode))
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Invalid proxy CONNECT status code."));
-            }
-
-            var response = new ProxyConnectResponse { StatusCode = statusCode };
-
-            while (true)
-            {
-                var line = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
-                totalBytes += line.Length;
-                if (totalBytes > maxTotalHeaderBytes)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Proxy CONNECT response headers exceeded size limit."));
-                }
-
-                if (line.Length == 0)
-                    break;
-
-                var colon = line.IndexOf(':');
-                if (colon <= 0)
-                    continue;
-
-                var name = line.Substring(0, colon).Trim();
-                var value = line.Substring(colon + 1).Trim();
-                response.Headers.Add(name, value);
-            }
-
-            return response;
-        }
-
-        private static async Task DrainProxyConnectBodyAsync(
-            Stream stream,
-            HttpHeaders headers,
-            CancellationToken ct)
-        {
-            if (headers == null)
-                return;
-
-            var transferEncoding = headers.Get("Transfer-Encoding");
-            if (!string.IsNullOrWhiteSpace(transferEncoding))
-            {
-                if (EndsWithTransferCodingToken(transferEncoding, "chunked"))
-                {
-                    await DrainChunkedBodyAsync(stream, ct).ConfigureAwait(false);
-                    return;
-                }
-            }
-
-            var contentLength = headers.Get("Content-Length");
-            if (!string.IsNullOrWhiteSpace(contentLength))
-            {
-                if (!int.TryParse(contentLength, out var length) || length <= 0)
-                    return;
-
-                var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(4096, length));
-                try
-                {
-                    await DrainFixedLengthBodyAsync(stream, buffer, length, ct).ConfigureAwait(false);
-                    return;
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(buffer);
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(transferEncoding))
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Proxy CONNECT response used an unsupported Transfer-Encoding without a Content-Length. " +
-                    "The connection cannot be safely reused."));
-            }
-        }
-
-        private static async Task DrainFixedLengthBodyAsync(
-            Stream stream,
-            byte[] buffer,
-            int length,
-            CancellationToken ct)
-        {
-            var remaining = length;
-            while (remaining > 0)
-            {
-                var toRead = Math.Min(remaining, buffer.Length);
-                var read = await stream.ReadAsync(buffer, 0, toRead, ct).ConfigureAwait(false);
-                if (read <= 0)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Unexpected EOF while draining proxy CONNECT response body."));
-                }
-
-                remaining -= read;
-            }
-        }
-
-        private static async Task DrainChunkedBodyAsync(
-            Stream stream,
-            CancellationToken ct)
-        {
-            var buffer = ArrayPool<byte>.Shared.Rent(4096);
-            try
-            {
-                while (true)
-                {
-                    var sizeLine = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
-                    var chunkSize = Http11ResponseParser.ParseChunkSizeLine(sizeLine);
-                    if (chunkSize < 0 || chunkSize > int.MaxValue)
-                    {
-                        throw new UHttpException(new UHttpError(
-                            UHttpErrorType.NetworkError,
-                            "Proxy CONNECT chunked response body exceeded the supported drain size."));
-                    }
-
-                    if (chunkSize == 0)
-                    {
-                        await DrainHeaderSectionAsync(stream, ct).ConfigureAwait(false);
-                        return;
-                    }
-
-                    await DrainFixedLengthBodyAsync(stream, buffer, (int)chunkSize, ct).ConfigureAwait(false);
-                    await ReadExpectedCrlfAsync(stream, ct).ConfigureAwait(false);
-                }
-            }
-            catch (FormatException ex)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    "Invalid chunked proxy CONNECT response body.", ex));
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
-        }
-
-        private static async Task DrainHeaderSectionAsync(Stream stream, CancellationToken ct)
-        {
-            while (true)
-            {
-                var line = await ReadAsciiLineAsync(stream, ct).ConfigureAwait(false);
-                if (line.Length == 0)
-                    return;
-            }
-        }
-
-        private static bool EndsWithTransferCodingToken(string transferEncoding, string token)
-        {
-            if (string.IsNullOrEmpty(transferEncoding))
-                return false;
-
-            int start = 0;
-            int end = transferEncoding.Length - 1;
-            while (start <= end && char.IsWhiteSpace(transferEncoding[start]))
-                start++;
-            while (end >= start && char.IsWhiteSpace(transferEncoding[end]))
-                end--;
-
-            int trimmedLength = end - start + 1;
-            if (trimmedLength < token.Length)
-                return false;
-
-            var trimmed = transferEncoding.AsSpan(start, trimmedLength);
-            var suffix = trimmed.Slice(trimmedLength - token.Length);
-            if (!suffix.Equals(token.AsSpan(), StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            if (trimmedLength == token.Length)
-                return true;
-
-            var preceding = trimmed[trimmedLength - token.Length - 1];
-            return preceding == ',' || char.IsWhiteSpace(preceding);
-        }
-
-        private static async Task ReadExpectedCrlfAsync(Stream stream, CancellationToken ct)
-        {
-            var delimiter = ArrayPool<byte>.Shared.Rent(2);
-            try
-            {
-                int read = 0;
-                while (read < 2)
-                {
-                    var current = await stream.ReadAsync(delimiter, read, 2 - read, ct).ConfigureAwait(false);
-                    if (current <= 0)
-                    {
-                        throw new UHttpException(new UHttpError(
-                            UHttpErrorType.NetworkError,
-                            "Unexpected EOF while draining proxy CONNECT response body."));
-                    }
-
-                    read += current;
-                }
-
-                if (delimiter[0] != (byte)'\r' || delimiter[1] != (byte)'\n')
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Invalid chunked proxy CONNECT response body framing."));
-                }
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(delimiter);
-            }
-        }
-
-        private static async Task<string> ReadAsciiLineAsync(Stream stream, CancellationToken ct)
-        {
-            var single = ArrayPool<byte>.Shared.Rent(1);
-            var lineBytes = ArrayPool<byte>.Shared.Rent(128);
-            var count = 0;
-
-            try
-            {
-                while (true)
-                {
-                    var read = await stream.ReadAsync(single, 0, 1, ct).ConfigureAwait(false);
-                    if (read == 0)
-                    {
-                        if (count == 0)
-                            return string.Empty;
-                        break;
-                    }
-
-                    if (single[0] == (byte)'\n')
-                        break;
-                    if (single[0] == (byte)'\r')
-                        continue;
-
-                    if (count == lineBytes.Length)
-                    {
-                        var resized = ArrayPool<byte>.Shared.Rent(lineBytes.Length * 2);
-                        try
-                        {
-                            Buffer.BlockCopy(lineBytes, 0, resized, 0, count);
-                        }
-                        catch
-                        {
-                            ArrayPool<byte>.Shared.Return(resized);
-                            throw;
-                        }
-
-                        ArrayPool<byte>.Shared.Return(lineBytes);
-                        lineBytes = resized;
-                    }
-
-                    lineBytes[count++] = single[0];
-                }
-
-                return count == 0
-                    ? string.Empty
-                    : Encoding.ASCII.GetString(lineBytes, 0, count);
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(single);
-                ArrayPool<byte>.Shared.Return(lineBytes);
-            }
+            return HttpAuthority.FormatHost(host) + ":" + port.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
 
         private static string BuildProxyAuthorizationHeaderValue(ProxySettings proxy)
@@ -1438,16 +1439,148 @@ namespace TurboHTTP.Transport
             return keepAlive;
         }
 
-        private async Task DispatchOnLeaseAsync(
+        /// <summary>How <see cref="DispatchOnLeaseAsync"/> left its lease.</summary>
+        private enum LeaseDispatchResult
+        {
+            /// <summary>The response reached the handler; its body source owns the lease.</summary>
+            ResponseDelivered,
+
+            /// <summary>A Basic 407 was consumed and its body drained; the lease can be pooled.</summary>
+            ProxyChallengeDrained,
+
+            /// <summary>A Basic 407 was consumed but the connection cannot carry another request.</summary>
+            ProxyChallengeConnectionUnusable
+        }
+
+        /// <summary>
+        /// Largest 407 body drained so the forward-proxy retry can reuse the connection (#236);
+        /// a larger, chunked or close-delimited body closes the connection instead.
+        /// </summary>
+        private const int MaxProxyChallengeDrainBytes = 64 * 1024;
+
+        /// <summary>
+        /// Settles the lease after <see cref="DispatchOnLeaseAsync"/> returned. Returns <c>true</c>
+        /// when the response was delivered (the body source owns the lease); otherwise pools or
+        /// destroys the lease and returns <c>false</c>.
+        /// </summary>
+        private static bool CompleteLeaseDispatch(ConnectionLease lease, LeaseDispatchResult result)
+        {
+            switch (result)
+            {
+                case LeaseDispatchResult.ResponseDelivered:
+                    return true;
+                case LeaseDispatchResult.ProxyChallengeDrained:
+                    lease.ReturnToPool();
+                    return false;
+                default:
+                    lease.Dispose();
+                    return false;
+            }
+        }
+
+        private static bool IsBasicProxyChallenge(ParsedResponseHead head)
+        {
+            return (int)head.StatusCode == 407 &&
+                AuthChallengeParser.OffersScheme(head.Headers.GetValues("Proxy-Authenticate"), "Basic");
+        }
+
+        /// <summary>
+        /// Consumes a forward-proxy 407 body so the connection can carry the authenticated retry.
+        /// Returns <c>false</c> when the connection must be closed instead: not keep-alive, a body
+        /// that is chunked, runs to close or exceeds <see cref="MaxProxyChallengeDrainBytes"/>, or
+        /// a read failure (cancellation included; the caller checks the token).
+        /// </summary>
+        private static async Task<bool> TryDrainProxyChallengeBodyAsync(ParsedResponseHead head, CancellationToken ct)
+        {
+            if (!head.KeepAlive)
+                return false;
+            if (head.BodyKind == Http11ResponseBodyKind.Empty)
+                return true;
+            if (head.BodyKind != Http11ResponseBodyKind.ContentLength)
+                return false;
+
+            var remaining = head.ContentLength.GetValueOrDefault();
+            if (remaining == 0)
+                return true;
+            if (remaining < 0 || remaining > MaxProxyChallengeDrainBytes)
+                return false;
+
+            var buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(remaining, 16 * 1024));
+            try
+            {
+                while (remaining > 0)
+                {
+                    var read = await head.Reader
+                        .ReadAsync(buffer.AsMemory(0, (int)Math.Min(remaining, buffer.Length)), ct)
+                        .ConfigureAwait(false);
+                    if (read <= 0)
+                        return false;
+                    remaining -= read;
+                }
+
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private async Task<LeaseDispatchResult> DispatchOnLeaseAsync(
             ConnectionLease lease,
             UHttpRequest request,
             IHttpHandler handler,
             RequestContext context,
             Http11RequestWriteState requestWriteState,
-            CancellationToken ct)
+            CancellationToken ct,
+            bool interceptBasicProxyChallenge = false,
+            TimeSpan firstByteTimeout = default)
         {
-            using var head = await SendOnLeaseAsync(lease, request, context, requestWriteState, ct)
-                .ConfigureAwait(false);
+            ParsedResponseHead parsedHead;
+            using (RegisterDisposeOnCancel(lease.Connection, ct))
+            {
+                try
+                {
+                    parsedHead = await SendOnLeaseAsync(lease, request, context, requestWriteState, ct, firstByteTimeout)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsFailureFromCancellation(ex, ct))
+                {
+                    throw new OperationCanceledException("HTTP/1.1 response header read was cancelled.", ex, ct);
+                }
+            }
+
+            // Disposing the registration waits for a running callback; if the token fired after
+            // the head was parsed, the connection may already be gone, so it must not reach the
+            // body source or the pool.
+            if (ct.IsCancellationRequested)
+            {
+                parsedHead.Dispose();
+                ct.ThrowIfCancellationRequested();
+            }
+
+            using var head = parsedHead;
+
+            if (interceptBasicProxyChallenge && IsBasicProxyChallenge(head))
+            {
+                // The 407 never reaches the handler: the caller retries once with Basic (#236).
+                // The drain stays under dispose-on-cancel like the head read (#162).
+                bool drained;
+                using (RegisterDisposeOnCancel(lease.Connection, ct))
+                {
+                    drained = await TryDrainProxyChallengeBodyAsync(head, ct).ConfigureAwait(false);
+                }
+
+                ct.ThrowIfCancellationRequested();
+                context.RecordEvent("TransportProxyAuthChallenge");
+                return drained
+                    ? LeaseDispatchResult.ProxyChallengeDrained
+                    : LeaseDispatchResult.ProxyChallengeConnectionUnusable;
+            }
 
             var transportBodyReadToken = context.GetState(
                 TransportBehaviorFlags.StreamingResponseRequested,
@@ -1466,6 +1599,7 @@ namespace TurboHTTP.Transport
                 .ConfigureAwait(false);
 
             context.RecordEvent("TransportComplete");
+            return LeaseDispatchResult.ResponseDelivered;
         }
 
         private static async Task<bool> DispatchOnStreamAsync(
@@ -1530,7 +1664,8 @@ namespace TurboHTTP.Transport
             UHttpRequest request,
             RequestContext context,
             Http11RequestWriteState requestWriteState,
-            CancellationToken ct)
+            CancellationToken ct,
+            TimeSpan firstByteTimeout = default)
         {
             context.RecordEvent("TransportSending");
             if (ExpectContinueHelper.ShouldAwaitExpectContinue(request))
@@ -1560,14 +1695,65 @@ namespace TurboHTTP.Transport
             }
 
             context.RecordEvent("TransportReceiving");
-            var parsed = await Http11ResponseParser.ParseHeadAsync(
-                    lease.Connection.Stream,
-                    request.Method,
-                    ct,
-                    context)
-                .ConfigureAwait(false);
+            if (firstByteTimeout <= TimeSpan.Zero || firstByteTimeout == Timeout.InfiniteTimeSpan)
+            {
+                return await Http11ResponseParser.ParseHeadAsync(
+                        lease.Connection.Stream,
+                        request.Method,
+                        ct,
+                        context)
+                    .ConfigureAwait(false);
+            }
 
-            return parsed;
+            var reader = new Http11ResponseParser.BufferedStreamReader(lease.Connection.Stream);
+            try
+            {
+                await AwaitFirstResponseByteAsync(lease.Connection, reader, firstByteTimeout, ct).ConfigureAwait(false);
+                var head = await Http11ResponseParser.ParseHeadAsync(reader, request.Method, ct, context)
+                    .ConfigureAwait(false);
+                reader = null; // the head owns the reader now
+                return head;
+            }
+            finally
+            {
+                reader?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Waits for the first response byte on a reused connection (#47). Mono and IL2CPP ignore a
+        /// read token once the read is pending, so expiry disposes the connection (as
+        /// <see cref="RegisterDisposeOnCancel"/> does) and surfaces as an <see cref="IOException"/>,
+        /// which the stale-connection retry treats like a connection the server closed while idle.
+        /// Caller cancellation and the request timeout keep their own handling.
+        /// </summary>
+        private static async Task AwaitFirstResponseByteAsync(
+            PooledConnection connection,
+            Http11ResponseParser.BufferedStreamReader reader,
+            TimeSpan firstByteTimeout,
+            CancellationToken ct)
+        {
+            using var watchdog = new CancellationTokenSource(firstByteTimeout);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
+            try
+            {
+                using (RegisterDisposeOnCancel(connection, watchdog.Token))
+                {
+                    // false = EOF: ParseHeadAsync then reports the "Empty HTTP status line" stale case.
+                    await reader.EnsureBufferedAsync(linked.Token).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex) when (watchdog.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                throw new IOException(
+                    "Reused connection sent no response byte within " +
+                    firstByteTimeout.TotalMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ms.",
+                    ex);
+            }
+
+            // The watchdog may have fired (and disposed the connection) just after the first byte.
+            if (watchdog.IsCancellationRequested && !ct.IsCancellationRequested)
+                throw new IOException("Reused connection was closed by the first-byte timeout.");
         }
 
         private async Task<ParsedResponseHead> SendOnLeaseWithExpectContinueAsync(
@@ -1581,6 +1767,7 @@ namespace TurboHTTP.Transport
             var reader = new Http11ResponseParser.BufferedStreamReader(stream);
             bool readerOwned = true;
             int interim1xxCount = 0;
+            Task pendingHeadRead = null;
             try
             {
                 await Http11RequestSerializer.SerializeHeadersAsync(request, stream, ct)
@@ -1600,6 +1787,7 @@ namespace TurboHTTP.Transport
                         request.Method,
                         ct,
                         context);
+                    pendingHeadRead = initialHeadTask;
 
                     var winner = await Task.WhenAny(timeoutTask, initialHeadTask).ConfigureAwait(false);
                     if (winner == initialHeadTask)
@@ -1607,9 +1795,14 @@ namespace TurboHTTP.Transport
                         var initialHead = await initialHeadTask.ConfigureAwait(false);
                         if (ShouldReturnExpectContinueHead(initialHead.StatusCode))
                         {
+                            // Early final response: no body byte was sent.
                             timeoutCts.Cancel();
                             readerOwned = false;
-                            return Http11ResponseParser.CreateParsedResponseHead(reader, initialHead);
+                            return CompleteExpectContinueHead(
+                                Http11ResponseParser.CreateParsedResponseHead(reader, initialHead),
+                                bodyComplete: false,
+                                bodySendException: null,
+                                context);
                         }
 
                         interim1xxCount = IncrementExpectContinueInterimCount(interim1xxCount);
@@ -1630,41 +1823,25 @@ namespace TurboHTTP.Transport
                                 ct)
                             .ConfigureAwait(false);
 
-                        try
-                        {
-                            var finalHead = await Http11ResponseParser.ParseHeadAsync(
-                                    reader,
-                                    request.Method,
-                                    ct,
-                                    context,
-                                    initialInterim1xxCount: interim1xxCount)
-                                .ConfigureAwait(false);
-                            if (bodySendException != null)
-                            {
-                                using (finalHead)
-                                {
-                                    ThrowCapturedBodySendException(
-                                        bodySendException,
-                                        context,
-                                        responseStatusCode: finalHead.StatusCode);
-                                }
-                            }
-
-                            readerOwned = false;
-                            return finalHead;
-                        }
-                        catch (Exception responseReadException) when (bodySendException != null)
-                        {
-                            ThrowCapturedBodySendException(
-                                bodySendException,
+                        var continuedHead = await ReadExpectContinueFinalHeadAsync(
+                                reader,
+                                request,
                                 context,
-                                responseReadException);
-                            throw;
-                        }
+                                interim1xxCount,
+                                bodySendException,
+                                ct)
+                            .ConfigureAwait(false);
+
+                        // A throw inside the helper disposes the head and its reader; the finally block's
+                        // reader.Dispose is then a no-op (Dispose is idempotent).
+                        readerOwned = false;
+                        return continuedHead;
                     }
 
                     // This is the caller's request-scoped cancellation token, not timeoutCts.Token.
                     // The expect-continue timeout already expired if we reached this branch.
+                    // A cancellation here leaves initialHeadTask pending; the finally block closes
+                    // the connection and waits for that read before the reader buffer is returned.
                     ct.ThrowIfCancellationRequested();
 
                     var timeoutBodySendException = await TrySendRequestBodyAsync(
@@ -1688,51 +1865,147 @@ namespace TurboHTTP.Transport
                     if (ShouldReturnExpectContinueHead(timedHead.StatusCode))
                     {
                         readerOwned = false;
-                        return Http11ResponseParser.CreateParsedResponseHead(reader, timedHead);
+                        return CompleteExpectContinueHead(
+                            Http11ResponseParser.CreateParsedResponseHead(reader, timedHead),
+                            bodyComplete: timeoutBodySendException == null,
+                            timeoutBodySendException,
+                            context);
                     }
 
                     interim1xxCount = IncrementExpectContinueInterimCount(interim1xxCount);
 
-                    try
-                    {
-                        var finalHead = await Http11ResponseParser.ParseHeadAsync(
-                                reader,
-                                request.Method,
-                                ct,
-                                context,
-                                initialInterim1xxCount: interim1xxCount)
-                            .ConfigureAwait(false);
-                        if (timeoutBodySendException != null)
-                        {
-                            using (finalHead)
-                            {
-                                ThrowCapturedBodySendException(
-                                    timeoutBodySendException,
-                                    context,
-                                    responseStatusCode: finalHead.StatusCode);
-                            }
-                        }
-
-                        readerOwned = false;
-                        return finalHead;
-                    }
-                    catch (Exception responseReadException) when (timeoutBodySendException != null)
-                    {
-                        ThrowCapturedBodySendException(
-                            timeoutBodySendException,
+                    var finalHead = await ReadExpectContinueFinalHeadAsync(
+                            reader,
+                            request,
                             context,
-                            responseReadException);
-                        throw;
-                    }
+                            interim1xxCount,
+                            timeoutBodySendException,
+                            ct)
+                        .ConfigureAwait(false);
+
+                    // A throw inside the helper disposes the head and its reader; the finally block's
+                    // reader.Dispose is then a no-op (Dispose is idempotent).
+                    readerOwned = false;
+                    return finalHead;
                 }
             }
             finally
             {
                 RecordRequestBodyBytesSent(context, requestWriteState);
+                if (readerOwned && pendingHeadRead != null && !pendingHeadRead.IsCompleted)
+                {
+                    // A head read is still in flight (caller cancellation during the
+                    // expect-continue wait; some platform streams ignore the token once a read
+                    // started). Close the connection so the read faults, and return the pooled
+                    // buffer only after the read stopped writing into it. A read that outlives
+                    // the bounded wait keeps its buffer: it is abandoned to the GC, never pooled.
+                    lease.Dispose();
+                    readerOwned = await WaitForAbortedReadAsync(pendingHeadRead).ConfigureAwait(false);
+                }
+
                 if (readerOwned)
                     reader.Dispose();
             }
         }
+
+        private static async Task<bool> WaitForAbortedReadAsync(Task read)
+        {
+            using var delayCts = new CancellationTokenSource();
+            var winner = await Task.WhenAny(read, Task.Delay(AbortedReadDrainTimeout, delayCts.Token))
+                .ConfigureAwait(false);
+            delayCts.Cancel();
+            if (winner == read)
+            {
+                _ = read.Exception;
+                return true;
+            }
+
+            _ = read.ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return false;
+        }
+
+        private static async Task<ParsedResponseHead> ReadExpectContinueFinalHeadAsync(
+            Http11ResponseParser.BufferedStreamReader reader,
+            UHttpRequest request,
+            RequestContext context,
+            int interim1xxCount,
+            Exception bodySendException,
+            CancellationToken ct)
+        {
+            ParsedResponseHead finalHead;
+            try
+            {
+                finalHead = await Http11ResponseParser.ParseHeadAsync(
+                        reader,
+                        request.Method,
+                        ct,
+                        context,
+                        initialInterim1xxCount: interim1xxCount)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception responseReadException) when (bodySendException != null)
+            {
+                ThrowCapturedBodySendException(
+                    bodySendException,
+                    context,
+                    responseReadException);
+                throw;
+            }
+
+            return CompleteExpectContinueHead(
+                finalHead,
+                bodyComplete: bodySendException == null,
+                bodySendException,
+                context);
+        }
+
+        /// <summary>
+        /// Applies the single "send failure vs early final response" rule of the expect-continue
+        /// path (phase 22b.1). A request whose body was not completely sent never leaves its
+        /// connection reusable: the server may still read and discard the declared body
+        /// (RFC 9110 sec 10.1.1), so the next request would be consumed as body (RFC 9112 sec 9.3,
+        /// 9.6). A non-2xx final response is the server declining the request and is returned to the
+        /// caller (RFC 9112 sec 9.5); a 1xx/2xx head cannot vouch for a request whose body failed
+        /// to send, so the send failure surfaces instead.
+        /// </summary>
+        private static ParsedResponseHead CompleteExpectContinueHead(
+            ParsedResponseHead head,
+            bool bodyComplete,
+            Exception bodySendException,
+            RequestContext context)
+        {
+            if (bodyComplete)
+                return head;
+
+            head.KeepAlive = false;
+            if (bodySendException == null)
+                return head;
+
+            if ((int)head.StatusCode < 300)
+            {
+                using (head)
+                {
+                    ThrowCapturedBodySendException(
+                        bodySendException,
+                        context,
+                        responseStatusCode: head.StatusCode);
+                }
+            }
+
+            RecordExpectContinueBodySendFailure(
+                bodySendException,
+                context,
+                responseReadException: null,
+                responseStatusCode: head.StatusCode);
+            return head;
+        }
+
+        // Upper bound on waiting for a read the transport aborted by closing its connection.
+        private static readonly TimeSpan AbortedReadDrainTimeout = TimeSpan.FromSeconds(2);
 
         private static bool ShouldReturnExpectContinueHead(HttpStatusCode statusCode)
         {
@@ -1758,6 +2031,20 @@ namespace TurboHTTP.Transport
             if (bodySendException == null)
                 return;
 
+            RecordExpectContinueBodySendFailure(
+                bodySendException,
+                context,
+                responseReadException,
+                responseStatusCode);
+            ExceptionDispatchInfo.Capture(bodySendException).Throw();
+        }
+
+        private static void RecordExpectContinueBodySendFailure(
+            Exception bodySendException,
+            RequestContext context,
+            Exception responseReadException,
+            HttpStatusCode? responseStatusCode)
+        {
             if (responseReadException != null)
             {
                 bodySendException.Data["TurboHTTP.ExpectContinue.ResponseReadFailureType"] =
@@ -1787,8 +2074,6 @@ namespace TurboHTTP.Transport
 
                 context.RecordEvent("TransportExpectContinueBodySendFailed", eventData);
             }
-
-            ExceptionDispatchInfo.Capture(bodySendException).Throw();
         }
 
         private async Task<Exception> TrySendRequestBodyAsync(

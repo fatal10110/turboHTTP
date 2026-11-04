@@ -1,8 +1,8 @@
 using System;
-using System.Diagnostics;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
@@ -59,7 +59,7 @@ namespace TurboHTTP.Core
 #if DEBUG || UNITY_EDITOR || DEVELOPMENT_BUILD
             if (Volatile.Read(ref _disposed) == 0)
             {
-                Debug.WriteLine(
+                TurboDiagnostics.Log(
                     "[TurboHTTP] UHttpStreamingResponse was not disposed. Response bodies must be disposed to release transport resources.");
             }
 #endif
@@ -72,14 +72,19 @@ namespace TurboHTTP.Core
 
             GC.SuppressFinalize(this);
 
+            Task pendingBodyDispose = null;
             try
             {
-                DisposeBodySynchronously();
+                pendingBodyDispose = StartBodyDispose();
             }
             finally
             {
-                InvokeDisposeCallbacks();
+                if (pendingBodyDispose == null)
+                    InvokeDisposeCallbacks();
             }
+
+            if (pendingBodyDispose != null)
+                CompleteDisposeWhenBodyDisposed(pendingBodyDispose);
         }
 
         public ValueTask DisposeAsync()
@@ -121,30 +126,81 @@ namespace TurboHTTP.Core
             _bodySource.Abort();
         }
 
-        private void DisposeBodySynchronously()
+        /// <summary>
+        /// Starts the synchronous dispose of the body source without waiting for it. Returns
+        /// <c>null</c> when the source is finished (aborted, disposed, or failed and aborted), or the
+        /// still-running dispose of a fully read body.
+        /// </summary>
+        private Task StartBodyDispose()
         {
             if (!_body.HasReachedEndOfStream)
             {
                 _bodySource.Abort();
-                return;
+                return null;
             }
 
+            Task disposeTask;
             try
             {
-                var disposeTask = _bodySource.DisposeAsync();
-                if (disposeTask.IsCompletedSuccessfully)
-                {
-                    disposeTask.GetAwaiter().GetResult();
-                }
-                else
-                {
-                    disposeTask.AsTask().GetAwaiter().GetResult();
-                }
+                // AsTask consumes the ValueTask; on an already completed one it does not allocate.
+                disposeTask = _bodySource.DisposeAsync().AsTask();
             }
             catch
             {
                 _bodySource.Abort();
+                return null;
             }
+
+            if (!disposeTask.IsCompleted)
+                return disposeTask;
+
+            if (disposeTask.Status != TaskStatus.RanToCompletion)
+                AbortAfterFailedBodyDispose(disposeTask);
+            return null;
+        }
+
+        /// <summary>
+        /// Sync <see cref="Dispose"/> never blocks its caller (often Unity's main thread) on a body
+        /// dispose that is still running (#181). This continuation owns the rest of the dispose: it
+        /// aborts the source if the dispose failed, then releases the request, the same order
+        /// <see cref="DisposeAsync"/> uses after its await.
+        /// </summary>
+        private void CompleteDisposeWhenBodyDisposed(Task bodyDispose)
+        {
+            _ = bodyDispose.ContinueWith(
+                static (task, state) =>
+                {
+                    var response = (UHttpStreamingResponse)state;
+                    try
+                    {
+                        if (task.Status != TaskStatus.RanToCompletion)
+                            response.AbortAfterFailedBodyDispose(task);
+                    }
+                    catch (Exception ex)
+                    {
+                        TurboDiagnostics.Log("[TurboHTTP] Aborting a response body after its dispose failed threw.", ex);
+                    }
+
+                    try
+                    {
+                        response.InvokeDisposeCallbacks();
+                    }
+                    catch (Exception ex)
+                    {
+                        TurboDiagnostics.Log("[TurboHTTP] A response dispose callback threw.", ex);
+                    }
+                },
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private void AbortAfterFailedBodyDispose(Task failedDispose)
+        {
+            // Reading Exception marks the fault observed, so it never reaches UnobservedTaskException.
+            _ = failedDispose.Exception;
+            _bodySource.Abort();
         }
 
         private async ValueTask DisposeAsyncCore()

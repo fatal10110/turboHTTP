@@ -12,16 +12,10 @@ namespace TurboHTTP.Tests.Transport.Tls
     [TestFixture]
     public class BouncyCastleProviderTests
     {
-        private bool IsAvailable() => TlsProviderSelector.IsBouncyCastleAvailable();
-
         [Test]
         public void ProviderName_ReturnsBouncyCastle()
         {
-            if (!IsAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
             Assert.AreEqual("BouncyCastle", provider.ProviderName);
@@ -30,11 +24,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void IsAlpnSupported_AlwaysReturnsTrue()
         {
-            if (!IsAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
             Assert.IsTrue(provider.IsAlpnSupported(),
@@ -44,11 +34,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void GetProvider_CachesInstance()
         {
-            if (!IsAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             var provider1 = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
             var provider2 = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
@@ -59,14 +45,11 @@ namespace TurboHTTP.Tests.Transport.Tls
 #if TURBOHTTP_INTEGRATION_TESTS
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_ValidServer_Succeeds()        {
             Task.Run(async () =>
             {
-                if (!IsAvailable())
-                {
-                    Assert.Ignore("BouncyCastle is not available");
-                    return;
-                }
+                TestRequirements.RequireBouncyCastle();
 
                 var result = await WrapAsync("www.google.com", "www.google.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
 
@@ -78,14 +61,11 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_WithAlpn_NegotiatesH2()        {
             Task.Run(async () =>
             {
-                if (!IsAvailable())
-                {
-                    Assert.Ignore("BouncyCastle is not available");
-                    return;
-                }
+                TestRequirements.RequireBouncyCastle();
 
                 var result = await WrapAsync("www.google.com", "www.google.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
 
@@ -98,13 +78,10 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_ExpiredCert_ThrowsFatalAlert()
         {
-            if (!IsAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             try
             {
@@ -123,14 +100,11 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_WildcardCert_Succeeds()        {
             Task.Run(async () =>
             {
-                if (!IsAvailable())
-                {
-                    Assert.Ignore("BouncyCastle is not available");
-                    return;
-                }
+                TestRequirements.RequireBouncyCastle();
 
                 // *.badssl.com wildcard certificate
                 var result = await WrapAsync("sha256.badssl.com", "sha256.badssl.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
@@ -141,20 +115,18 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_RealServer_SucceedsWithH2Alpn()        {
             WrapAsync_WithAlpn_NegotiatesH2();
         }
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_SniSent_ServerAcceptsConnection()        {
             Task.Run(async () =>
             {
-                if (!IsAvailable())
-                {
-                    Assert.Ignore("BouncyCastle is not available");
-                    return;
-                }
+                TestRequirements.RequireBouncyCastle();
 
                 // Test SNI by connecting to a server that requires it
                 var result = await WrapAsync("www.google.com", "www.google.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
@@ -164,13 +136,10 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         [Test]
         [Category("Integration")]
+        [Category("ExternalNetwork")]
         public void WrapAsync_HostnameMismatch_ThrowsAuthenticationException()
         {
-            if (!IsAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             Task.Run(async () =>
             {
@@ -194,11 +163,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             Task.Run(async () =>
             {
-                if (!IsAvailable())
-                {
-                    Assert.Ignore("BouncyCastle is not available");
-                    return;
-                }
+                TestRequirements.RequireBouncyCastle();
 
                 using var cts = new CancellationTokenSource();
                 cts.Cancel();  // Pre-cancel
@@ -215,11 +180,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void WrapAsync_NullStream_ThrowsArgumentNullException()
         {
-            if (!IsAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
 
@@ -230,11 +191,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void WrapAsync_NullHost_ThrowsArgumentNullException()
         {
-            if (!IsAvailable())
-            {
-                Assert.Ignore("BouncyCastle is not available");
-                return;
-            }
+            TestRequirements.RequireBouncyCastle();
 
             var provider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
             using var memoryStream = new System.IO.MemoryStream();

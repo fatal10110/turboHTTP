@@ -14,13 +14,25 @@ namespace TurboHTTP.WebSocket
     public sealed class WebSocketFrameReader
     {
         private readonly int _maxFrameSize;
+        private readonly int _maxMessageSize;
         private readonly byte _allowedRsvMask;
         private readonly bool _rejectMaskedServerFrames;
 
+        /// <summary>
+        /// Creates a frame reader.
+        /// </summary>
+        /// <param name="maxFrameSize">Largest accepted frame payload; larger frames fail with close code 1009.</param>
+        /// <param name="allowedRsvMask">RSV bits negotiated by extensions (data frames only).</param>
+        /// <param name="rejectMaskedServerFrames">Reject masked frames (client role, RFC 6455 section 5.1).</param>
+        /// <param name="maxMessageSize">
+        /// Largest accepted message; a single data frame larger than this fails with close code 1009 before
+        /// its payload is read.
+        /// </param>
         public WebSocketFrameReader(
             int maxFrameSize = WebSocketConstants.DefaultMaxFrameSize,
             byte allowedRsvMask = 0,
-            bool rejectMaskedServerFrames = true)
+            bool rejectMaskedServerFrames = true,
+            int maxMessageSize = WebSocketConstants.DefaultMaxMessageSize)
         {
             if (maxFrameSize < 1)
             {
@@ -38,7 +50,16 @@ namespace TurboHTTP.WebSocket
                     "Only RSV bits (0x70) can be enabled.");
             }
 
+            if (maxMessageSize < 1)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxMessageSize),
+                    maxMessageSize,
+                    "Max message size must be positive.");
+            }
+
             _maxFrameSize = maxFrameSize;
+            _maxMessageSize = maxMessageSize;
             _allowedRsvMask = (byte)(allowedRsvMask & 0x70);
             _rejectMaskedServerFrames = rejectMaskedServerFrames;
         }
@@ -95,6 +116,15 @@ namespace TurboHTTP.WebSocket
                         "Received invalid WebSocket opcode.");
                 }
 
+                // RFC 6455 section 5.2 / RFC 7692 section 6: extensions define RSV bits for data frames
+                // only, so a control frame with any RSV bit set is a protocol error (#82).
+                if (rsvBits != 0 && WebSocketFrame.IsControlOpcode(opcode))
+                {
+                    throw new WebSocketProtocolException(
+                        WebSocketError.ProtocolViolation,
+                        "Control frame must not set RSV bits.");
+                }
+
                 bool isMasked = (second & 0x80) != 0;
                 ulong payloadLength = (ulong)(second & 0x7F);
 
@@ -123,6 +153,16 @@ namespace TurboHTTP.WebSocket
                     }
 
                     headerByteCount += 8;
+                }
+
+                // One data frame larger than the message limit makes the message too big whether or not it
+                // is final; reject it before the payload is read or buffered (RFC 6455 section 7.4.1, #80).
+                if (!WebSocketFrame.IsControlOpcode(opcode) && payloadLength > (ulong)_maxMessageSize)
+                {
+                    throw new WebSocketProtocolException(
+                        WebSocketError.MessageTooLarge,
+                        "Frame payload exceeds configured max message size.",
+                        WebSocketCloseCode.MessageTooBig);
                 }
 
                 if (payloadLength > (ulong)_maxFrameSize)

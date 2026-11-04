@@ -5,6 +5,7 @@
     "TurboHTTP.Core",
     "TurboHTTP.Editor",
     "TurboHTTP.Observability",
+    "TurboHTTP.Testing",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"
   ],

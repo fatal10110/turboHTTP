@@ -4,76 +4,197 @@ TurboHTTP includes a robust, zero-allocation, fully RFC 6455 compliant WebSocket
 
 ## Creating a Connection
 
-WebSockets are created via the `UHttpClient.WebSockets` factory.
+Create a client with `WebSocketClient.Create(options)` and connect it to a `ws://` or `wss://` URI. The raw-socket WebSocket transport (`TurboHTTP.WebSocket.Transport`) registers itself at startup, so no setup code is needed.
 
+<!-- snippet: with CancellationToken ct = default; -->
 ```csharp
-var client = new UHttpClient();
-var ws = client.WebSockets.Create("wss://echo.websocket.events");
+using TurboHTTP.WebSocket;
 
-// Connect
-await ws.ConnectAsync(CancellationToken.None);
+IWebSocketClient ws = WebSocketClient.Create(new WebSocketConnectionOptions());
+await ws.ConnectAsync(new Uri("wss://echo.websocket.events"), ct);
+// ... send and receive ...
+await ws.CloseAsync(WebSocketCloseCode.NormalClosure, "bye", ct);
+ws.Dispose();
 ```
 
-## Sending and Receiving (ValueTask)
+The `TurboHTTP.Unity.WebSocket` module adds `client.WebSocket(url)` on `UHttpClient`, which connects a client that raises its events on the Unity main thread and inherits the TLS backend and cleartext setting of the HTTP client:
 
-The API is fully asynchronous and native to `ValueTask`, ensuring zero allocations on the hot path.
+<!-- snippet: with UHttpClient httpClient = null; -->
+```csharp
+using TurboHTTP.Unity.WebSocket;
+using TurboHTTP.WebSocket;
+
+IWebSocketClient ws = await httpClient.WebSocket("wss://echo.websocket.events");
+ws.OnMessage += message => Debug.Log(message.Text);
+```
+
+### Main-thread delivery under load
+
+`UnityWebSocketBridge` (and so `UnityWebSocketClient`) posts each event to `MainThreadDispatcher`.
+When its user queue is full (`MainThreadDispatcherSettings.UserQueueCapacity`, policy
+`BackpressurePolicy`), message, metrics, quality and reconnect callbacks are dropped: a dropped
+message is disposed, `OnMessageDropped` is raised on the thread that saw the drop, and at most one
+warning (with the drop count since the previous one) is logged every 10 seconds. `OnConnected` and `OnClosed` are never dropped: they queue behind the
+messages already waiting and move to the dispatcher's control lane when the user queue rejects or
+evicts them, so under saturation they can arrive before older queued messages. `OnError` takes the
+same path, with at most 32 errors waiting on the control lane at once. Work the
+user queue does not run fails with `MainThreadDispatchRejectedException` (its `Reason` says why),
+including work evicted by `DropOldest`.
+
+`UnityWebSocketClient` raises `OnDisconnectedEvent` exactly once per connection, also when the close
+fails or times out (code 1006). `Connect` while a `Disconnect` is still closing the previous
+connection (for example pause, then resume) waits for that close; `Disconnect` during a connect
+cancels it. No UnityEvent is raised after the component is destroyed.
+
+`ReceiveAsCoroutine` returns a `UnityWebSocketReceiveCoroutine`. Unity does not dispose a coroutine
+it stops, so call `Dispose()` on the handle when you `StopCoroutine` it; destroying the callback owner
+or canceling the token ends it without that call.
+
+### Cleartext (`ws://`)
+
+`ws://` URIs and `http://` proxies are cleartext. They are refused before any socket is opened
+(`WebSocketError.CleartextNotPermitted`) unless `WebSocketConnectionOptions.AllowCleartext` is
+`true` and the platform policy permits the host. The option defaults to `false` on iOS and Android
+players and `true` in the Editor and on desktop. Proxy Basic credentials are sent only when the
+proxy's 407 offers `Basic`, and only when cleartext is allowed. See PlatformNotes, "Cleartext traffic".
+
+## Sending and Receiving
 
 ### Sending
 
+<!-- snippet: with IWebSocketClient ws = null; -->
 ```csharp
-// Send text
-await ws.SendTextAsync("Hello World");
+using TurboHTTP.WebSocket;
 
-// Send binary (using spans/memory)
-byte[] data = new byte[] { 1, 2, 3 };
-await ws.SendBinaryAsync(data.AsMemory());
+await ws.SendAsync("Hello World");                       // text frame
+
+byte[] data = { 1, 2, 3 };
+await ws.SendAsync(data);                                // binary frame
+await ws.SendAsync(new ReadOnlyMemory<byte>(data, 0, 2));
 ```
 
 ### Receiving
 
-Receiving is done in a loop using `ReceiveAsync`. The result contains the message type and the payload. For zero-allocation, payload is returned as a leased `Memory<byte>` that **must** be released or consumed.
+Pull messages with `ReceiveAsync` (one message) or `ReceiveAllAsync` (an async stream). A `WebSocketMessage` holds a leased payload buffer and is `IDisposable`: dispose it once you have consumed it.
 
+<!-- snippet: with IWebSocketClient ws = null; CancellationToken ct = default; -->
 ```csharp
-var buffer = new byte[4096]; // Reusable buffer
+using TurboHTTP.WebSocket;
+
 while (ws.State == WebSocketState.Open)
 {
-    var result = await ws.ReceiveAsync(buffer.AsMemory(), CancellationToken.None);
-    
-    if (result.MessageType == WebSocketMessageType.Text)
-    {
-        var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
-        Debug.Log($"Received: {text}");
-    }
-    else if (result.MessageType == WebSocketMessageType.Close)
-    {
-        Debug.Log("Server initiated close.");
-        break;
-    }
+    using WebSocketMessage message = await ws.ReceiveAsync(ct);
+    if (message.IsText)
+        Debug.Log($"Received: {message.Text}");
+    else
+        Debug.Log($"Received {message.Length} bytes");
 }
 ```
 
+Messages that arrived before the server's close frame stay readable after `State` becomes `Closed`:
+`ReceiveAsync` returns them in order and only then throws `WebSocketException` with
+`WebSocketError.ConnectionClosed` and the server's close code. A loop that must not miss the last
+messages reads until that exception instead of testing `State`.
+
+### Events vs. `ReceiveAsync`
+
+`WebSocketClient` and `ResilientWebSocketClient` deliver messages through the `OnMessage` event, the
+pull API (`ReceiveAsync` / `ReceiveAllAsync`), or both:
+
+- **Event-only** (handlers on `OnMessage`, no pulling): every message is raised through the event and
+  receiving never waits on the pull queue, so the client keeps reading the socket and answering
+  ping/pong/close frames no matter how many messages arrive. `UnityWebSocketClient` and
+  `UnityWebSocketBridge` work this way.
+- **Pull-only** (no `OnMessage` handler): messages are queued losslessly, up to
+  `WebSocketConnectionOptions.ReceiveQueueCapacity` messages (default 100) and
+  `ReceiveQueueMaxBytes` payload bytes (default 8 MB). When either budget is reached, reading
+  from the socket pauses until you call `ReceiveAsync` again (TCP backpressure). The keep-alive pong
+  timeout is not charged while reading is paused. An empty queue always accepts one message, so a
+  message up to `MaxMessageSize` is delivered even when it is larger than `ReceiveQueueMaxBytes`.
+- **Mixed** (handlers subscribed and `ReceiveAsync` used): every message is raised through the event,
+  and the pull queue keeps only the most recent messages that fit `ReceiveQueueCapacity` and
+  `ReceiveQueueMaxBytes`; older unread messages are discarded. Each handler gets its own copy of the
+  message.
+
+### Message size limits
+
+`MaxMessageSize` (default 4 MB) bounds every received message: single-frame, reassembled from
+fragments, and after decompression. `MaxFrameSize` (default 4 MB) bounds one frame and must not be
+larger than `MaxMessageSize` (`Validate` throws otherwise). A frame or message over its limit is
+rejected from its header, before the payload is read, and the connection closes with code 1009
+(Message Too Big).
+
+### Cancelling a send
+
+The `CancellationToken` passed to a send can cancel the send before its first byte is written (for
+example while it waits for another send to finish); the connection stays open. Once a frame is on the
+wire, a partial message cannot be recovered (RFC 6455 sections 5.2 and 5.4), so cancelling or failing
+the send from that point aborts the connection (local close code 1006) and throws a
+`WebSocketException` with `WebSocketError.SendFailed`.
+
 ## Reconnection & Resilience
 
-The client supports automatic reconnections with exponential backoff.
+Set a `WebSocketReconnectPolicy` on the connection options and `WebSocketClient.Create` returns a `ResilientWebSocketClient`, which reconnects with exponential backoff and jitter.
 
+<!-- snippet: with CancellationToken ct = default; -->
 ```csharp
-var options = new WebSocketOptions {
-    EnableAutoReconnect = true,
-    MaxReconnectAttempts = 5,
-    InitialDelay = TimeSpan.FromSeconds(1)
-};
-var ws = client.WebSockets.Create("wss://api.example.com", options);
+using TurboHTTP.WebSocket;
 
+var options = new WebSocketConnectionOptions
+{
+    ReconnectPolicy = new WebSocketReconnectPolicy(maxRetries: 5, initialDelay: TimeSpan.FromSeconds(1))
+};
+var ws = (ResilientWebSocketClient)WebSocketClient.Create(options);
+
+ws.OnReconnecting += (attempt, delay) => Debug.Log($"Reconnecting (attempt {attempt}) in {delay.TotalSeconds:F1}s");
 ws.OnReconnected += () => Debug.Log("Reconnected!");
-ws.OnDisconnected += (code, reason) => Debug.Log($"Lost connection: {reason}");
+ws.OnClosed += (code, reason) => Debug.Log($"Closed: {code} {reason}");
+
+await ws.ConnectAsync(new Uri("wss://api.example.com/stream"), options, ct);
 ```
+
+`WebSocketReconnectPolicy.Default`, `.Infinite` and `.None` are ready-made policies.
+
+## Proxies, TLS and limits
+
+`WebSocketConnectionOptions.ProxySettings` (a `WebSocketProxySettings`) routes the connection through an HTTP CONNECT proxy; `TlsBackend` selects the TLS provider with the same rules as HTTP (see [Transport](Transport.md)); `MaxMessageSize`, `MaxFrameSize` and the receive-queue bounds cap what a peer can make the client buffer.
 
 ## Extensions & Compression
 
-Per-Message Deflate (`permessage-deflate`) extension is supported out of the box, reducing bandwidth usage.
+Per-Message Deflate (`permessage-deflate`, RFC 7692) is opt-in:
 
 ```csharp
-var options = new WebSocketOptions {
-    EnableCompression = true // Default is true
-};
+using TurboHTTP.WebSocket;
+
+var options = new WebSocketConnectionOptions().WithCompression();          // optional
+var strict = new WebSocketConnectionOptions().WithRequiredCompression();   // close 1010 if declined
 ```
+
+The client offers `server_no_context_takeover` and requires it in the server's response, because
+incoming messages are inflated without keeping context between messages. It never offers
+`client_max_window_bits` (outgoing compression always uses a 15-bit window), so a response that sets
+it is rejected. `PerMessageDeflateOptions` therefore only accepts `serverNoContextTakeover: true` and
+`clientMaxWindowBits: 15`.
+
+When the server's response does not include `client_no_context_takeover`, the server may keep one
+inflater for all client messages (RFC 7692 section 7.2.2). Every compressed client message therefore
+ends at a sync flush (RFC 7692 section 7.2.1), so such a server can keep its inflater. On runtimes
+whose `DeflateStream` cannot write a sync flush (Unity Mono, and IL2CPP with the same class libraries
+expected to behave the same), a built-in managed encoder with fixed Huffman codes compresses those
+messages instead; its ratio is somewhat lower than `DeflateStream`'s. Incoming messages are always
+decompressed.
+
+The handshake fails (`WebSocketError.ExtensionNegotiationFailed`, close code 1002) whenever the server
+selects an extension the client did not offer, selects one twice, or uses parameters the client
+cannot honour, whether compression is optional or required (RFC 6455 section 4.1). Raw extension
+strings in `WebSocketConnectionOptions.Extensions` are not supported and fail `Validate`; register
+extensions with `WithExtension` instead. Control frames with any RSV bit set close the connection
+with 1002.
+
+### Interop
+
+The client is checked against the [Autobahn testsuite](https://github.com/crossbario/autobahn-testsuite)
+fuzzing server (framing, ping/pong, reserved bits, opcodes, fragmentation, UTF-8, close handling,
+limits and `permessage-deflate`). Cases that need a parameter the client declines by design (above)
+fail the handshake on purpose. The gate, its results and every documented exception are in
+`Tools~/autobahn/README.md` in the package repository.

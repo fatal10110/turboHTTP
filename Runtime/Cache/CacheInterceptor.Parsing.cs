@@ -137,33 +137,86 @@ namespace TurboHTTP.Cache
                 ? cacheControl.SharedMaxAge
                 : cacheControl.MaxAge;
 
-            if (freshnessLifetime.HasValue)
+            if (!freshnessLifetime.HasValue)
             {
-                var upstreamAgeSeconds = ParseAgeSeconds(headers);
-                var remainingLifetime = freshnessLifetime.Value - TimeSpan.FromSeconds(upstreamAgeSeconds);
-                return nowUtc.Add(remainingLifetime);
+                var expiresValue = headers.Get("Expires");
+                if (string.IsNullOrWhiteSpace(expiresValue))
+                    return null;
+
+                expiresValue = expiresValue.Trim();
+                if (expiresValue == "0" || expiresValue == "-1")
+                    return nowUtc.AddSeconds(-1);
+
+                // RFC 9111 Section 5.3: an invalid Expires date MUST be treated as already expired, so it never
+                // falls through to heuristic freshness.
+                if (!TryParseHttpDate(expiresValue, out var expiresUtc))
+                    return nowUtc.AddSeconds(-1);
+
+                // RFC 9111 Section 4.2.1: freshness_lifetime = Expires - Date, both from the origin's clock, so the
+                // device clock's offset from the origin does not move the expiry. Callers ensure Date is present
+                // (the receive time when the origin sent none, RFC 9110 Section 6.6.1).
+                var dateUtc = TryParseHttpDate(headers.Get("Date"), out var parsedDate) ? parsedDate : nowUtc;
+                freshnessLifetime = expiresUtc - dateUtc;
             }
 
-            var expiresValue = headers.Get("Expires");
-            if (string.IsNullOrWhiteSpace(expiresValue))
-                return null;
+            // RFC 9111 Section 4.2.3: corrected_initial_age is the corrected_age_value (the Age field; the
+            // conservative max with apparent_age is optional and would reintroduce the device clock skew).
+            // The entry is stale once corrected_initial_age + resident_time reaches the lifetime.
+            var upstreamAgeSeconds = ParseAgeSeconds(headers);
+            var remainingLifetime = freshnessLifetime.Value - TimeSpan.FromSeconds(upstreamAgeSeconds);
+            return AddClamped(nowUtc, remainingLifetime);
+        }
 
-            // Private-cache simplification for v1: interpret Expires as an absolute instant.
-            // We intentionally do not adjust freshness via (Expires - Date) correction here.
-            expiresValue = expiresValue.Trim();
-            if (expiresValue == "0" || expiresValue == "-1")
-                return nowUtc.AddSeconds(-1);
+        // RFC 9110 Section 6.6.1: a recipient with a clock that caches a response without a (valid) Date appends one
+        // carrying the receive time.
+        private static void EnsureDateHeader(HttpHeaders headers, DateTime receivedAtUtc)
+        {
+            if (TryParseHttpDate(headers.Get("Date"), out _))
+                return;
 
-            if (DateTime.TryParse(
-                expiresValue,
+            headers.Set("Date", receivedAtUtc.ToString("r", CultureInfo.InvariantCulture));
+        }
+
+        private static bool TryParseHttpDate(string value, out DateTime utc)
+        {
+            utc = default;
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            if (!DateTime.TryParse(
+                value.Trim(),
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
                 out var parsed))
             {
-                return parsed;
+                return false;
             }
 
-            return null;
+            utc = DateTime.SpecifyKind(parsed, DateTimeKind.Utc);
+            return true;
+        }
+
+        // Peer-controlled lifetimes (Expires far from Date, huge max-age) must not overflow DateTime.
+        private static DateTime AddClamped(DateTime utc, TimeSpan offset)
+        {
+            if (offset > TimeSpan.Zero && offset.Ticks > DateTime.MaxValue.Ticks - utc.Ticks)
+                return DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc);
+
+            if (offset < TimeSpan.Zero && -offset.Ticks > utc.Ticks - DateTime.MinValue.Ticks)
+                return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+
+            return utc.Add(offset);
+        }
+
+        private static bool IsNotModifiedMergeExcluded(string name)
+        {
+            for (int i = 0; i < NotModifiedMergeExcludedHeaders.Length; i++)
+            {
+                if (string.Equals(name, NotModifiedMergeExcludedHeaders[i], StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
 
         private static bool HasPragmaNoCache(HttpHeaders headers)

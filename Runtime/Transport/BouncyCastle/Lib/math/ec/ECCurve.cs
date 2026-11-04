@@ -2,9 +2,11 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.BinPoly;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Endo;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Multiplier;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Field;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Raw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
@@ -30,53 +32,49 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
         public class Config
         {
-            protected ECCurve outer;
-            protected int coord;
-            protected ECEndomorphism endomorphism;
-            protected ECMultiplier multiplier;
+            private readonly ECCurve m_outer;
+            private int m_coord;
+            private ECEndomorphism m_endomorphism;
+            private ECMultiplier m_multiplier;
 
             internal Config(ECCurve outer, int coord, ECEndomorphism endomorphism, ECMultiplier multiplier)
             {
-                this.outer = outer;
-                this.coord = coord;
-                this.endomorphism = endomorphism;
-                this.multiplier = multiplier;
+                m_outer = outer;
+                m_coord = coord;
+                m_endomorphism = endomorphism;
+                m_multiplier = multiplier;
             }
 
             public Config SetCoordinateSystem(int coord)
             {
-                this.coord = coord;
+                m_coord = coord;
                 return this;
             }
 
             public Config SetEndomorphism(ECEndomorphism endomorphism)
             {
-                this.endomorphism = endomorphism;
+                m_endomorphism = endomorphism;
                 return this;
             }
 
             public Config SetMultiplier(ECMultiplier multiplier)
             {
-                this.multiplier = multiplier;
+                m_multiplier = multiplier;
                 return this;
             }
 
             public ECCurve Create()
             {
-                if (!outer.SupportsCoordinateSystem(coord))
-                {
+                if (!m_outer.SupportsCoordinateSystem(m_coord))
                     throw new InvalidOperationException("unsupported coordinate system");
-                }
 
-                ECCurve c = outer.CloneCurve();
-                if (c == outer)
-                {
+                ECCurve c = m_outer.CloneCurve();
+                if (c == m_outer)
                     throw new InvalidOperationException("implementation returned current curve");
-                }
 
-                c.m_coord = coord;
-                c.m_endomorphism = endomorphism;
-                c.m_multiplier = multiplier;
+                c.m_coord = m_coord;
+                c.m_endomorphism = m_endomorphism;
+                c.m_multiplier = m_multiplier;
 
                 return c;
             }
@@ -94,7 +92,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
         protected ECCurve(IFiniteField field)
         {
-            this.m_field = field;
+            m_field = field;
         }
 
         public abstract int FieldSize { get; }
@@ -105,10 +103,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
         public abstract ECFieldElement RandomFieldElementMult(SecureRandom r);
 
-        public virtual Config Configure()
-        {
-            return new Config(this, this.m_coord, this.m_endomorphism, this.m_multiplier);
-        }
+        public virtual Config Configure() => new Config(this, m_coord, m_endomorphism, m_multiplier);
 
         public virtual int FieldElementEncodingLength => (FieldSize + 7) / 8;
 
@@ -129,10 +124,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             return p;
         }
 
-        public virtual ECPoint CreatePoint(BigInteger x, BigInteger y)
-        {
-            return CreateRawPoint(FromBigInteger(x), FromBigInteger(y));
-        }
+        public virtual ECPoint CreatePoint(BigInteger x, BigInteger y) =>
+            CreateRawPoint(FromBigInteger(x), FromBigInteger(y));
 
         protected abstract ECCurve CloneCurve();
 
@@ -148,10 +141,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             return new WNafL2RMultiplier();
         }
 
-        public virtual bool SupportsCoordinateSystem(int coord)
-        {
-            return coord == COORD_AFFINE;
-        }
+        public virtual bool SupportsCoordinateSystem(int coord) => coord == COORD_AFFINE;
 
         public virtual PreCompInfo GetPreCompInfo(ECPoint point, string name)
         {
@@ -198,18 +188,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             }
         }
 
-        /**
-         * Compute a <code>PreCompInfo</code> for a point on this curve, under a given name. Used by
-         * <code>ECMultiplier</code>s to save the precomputation for this <code>ECPoint</code> for use
-         * by subsequent multiplication.
-         * 
-         * @param point
-         *            The <code>ECPoint</code> to store precomputations for.
-         * @param name
-         *            A <code>String</code> used to index precomputations of different types.
-         * @param callback
-         *            Called to calculate the <code>PreCompInfo</code>.
-         */
+        /// <summary>
+        /// Compute a <see cref="PreCompInfo"/> for a point on this curve, under a given name. Used by
+        /// <see cref="ECMultiplier"/>s to save the precomputation for this <see cref="ECPoint"/> for use by subsequent
+        /// multiplication.
+        /// </summary>
+        /// <param name="point">The <see cref="ECPoint"/> to store precomputations for.</param>
+        /// <param name="name">A <see cref="string"/> used to index precomputations of different types.</param>
+        /// <param name="callback">Called to calculate the <see cref="PreCompInfo"/>.</param>
         public virtual PreCompInfo Precompute(ECPoint point, string name, IPreCompCallback callback)
         {
             CheckPoint(point);
@@ -241,13 +227,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         public virtual ECPoint ImportPoint(ECPoint p)
         {
             if (this == p.Curve)
-            {
                 return p;
-            }
+
             if (p.IsInfinity)
-            {
                 return Infinity;
-            }
 
             // TODO Default behaviour could be improved if the two curves have the same coordinate system by copying any Z coordinates.
             p = p.Normalize();
@@ -255,60 +238,67 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             return CreatePoint(p.XCoord.ToBigInteger(), p.YCoord.ToBigInteger());
         }
 
-        /**
-         * Normalization ensures that any projective coordinate is 1, and therefore that the x, y
-         * coordinates reflect those of the equivalent point in an affine coordinate system. Where more
-         * than one point is to be normalized, this method will generally be more efficient than
-         * normalizing each point separately.
-         * 
-         * @param points
-         *            An array of points that will be updated in place with their normalized versions,
-         *            where necessary
-         */
-        public virtual void NormalizeAll(ECPoint[] points)
-        {
-            NormalizeAll(points, 0, points.Length, null);
-        }
+        /// <summary>
+        /// Normalization ensures that any projective coordinate is 1, and therefore that the x, y coordinates reflect
+        /// those of the equivalent point in an affine coordinate system.
+        /// </summary>
+        /// <remarks>
+        /// Where more than one point is to be normalized, this method will generally be more efficient than normalizing
+        /// each point separately.
+        /// </remarks>
+        /// <param name="points">
+        /// An array of points that will be updated in place with their normalized versions, where necessary.
+        /// </param>
+        public virtual void NormalizeAll(ECPoint[] points) => NormalizeAll(points, 0, points.Length, null);
 
-        /**
-         * Normalization ensures that any projective coordinate is 1, and therefore that the x, y
-         * coordinates reflect those of the equivalent point in an affine coordinate system. Where more
-         * than one point is to be normalized, this method will generally be more efficient than
-         * normalizing each point separately. An (optional) z-scaling factor can be applied; effectively
-         * each z coordinate is scaled by this value prior to normalization (but only one
-         * actual multiplication is needed).
-         * 
-         * @param points
-         *            An array of points that will be updated in place with their normalized versions,
-         *            where necessary
-         * @param off
-         *            The start of the range of points to normalize
-         * @param len
-         *            The length of the range of points to normalize
-         * @param iso
-         *            The (optional) z-scaling factor - can be null
-         */
+        /// <summary>
+        /// Normalization ensures that any projective coordinate is 1, and therefore that the x, y coordinates reflect
+        /// those of the equivalent point in an affine coordinate system.
+        /// </summary>
+        /// <remarks>
+        /// Where more than one point is to be normalized, this method will generally be more efficient than normalizing
+        /// each point separately.
+        /// <para>
+        /// An (optional) z-scaling factor can be applied; effectively each z coordinate is scaled by this value prior
+        /// to normalization(but only one actual multiplication is needed).
+        /// </para>
+        /// </remarks>
+        /// <param name="points">
+        /// An array of points; within the given range points will be updated in place with their normalized versions,
+        /// where necessary.
+        /// </param>
+        /// <param name="off">The start of the range of points to normalize.</param>
+        /// <param name="len">The length of the range of points to normalize.</param>
+        /// <param name="iso">The (optional) z-scaling factor - can be <c>null</c>.</param>
         public virtual void NormalizeAll(ECPoint[] points, int off, int len, ECFieldElement iso)
         {
             CheckPoints(points, off, len);
 
-            switch (this.CoordinateSystem)
+            switch (CoordinateSystem)
             {
-                case ECCurve.COORD_AFFINE:
-                case ECCurve.COORD_LAMBDA_AFFINE:
-                {
-                    if (iso != null)
-                        throw new ArgumentException("not valid for affine coordinates", "iso");
+            case ECCurve.COORD_AFFINE:
+            case ECCurve.COORD_LAMBDA_AFFINE:
+            {
+                if (iso != null)
+                    throw new ArgumentException("not valid for affine coordinates", nameof(iso));
 
-                    return;
-                }
+                return;
+            }
             }
 
             /*
              * Figure out which of the points actually need to be normalized
              */
             ECFieldElement[] zs = new ECFieldElement[len];
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Span<int> indices = len <= 256
+                ? stackalloc int[len]
+                : new int[len];
+#else
             int[] indices = new int[len];
+#endif
+
             int count = 0;
             for (int i = 0; i < len; ++i)
             {
@@ -321,9 +311,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             }
 
             if (count == 0)
-            {
                 return;
-            }
 
             ECAlgorithms.MontgomeryTrick(zs, 0, count, iso);
 
@@ -336,40 +324,21 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
         public abstract ECPoint Infinity { get; }
 
-        public virtual IFiniteField Field
-        {
-            get { return m_field; }
-        }
+        public virtual IFiniteField Field => m_field;
+        public virtual ECFieldElement A => m_a;
 
-        public virtual ECFieldElement A
-        {
-            get { return m_a; }
-        }
+        public virtual ECFieldElement B => m_b;
 
-        public virtual ECFieldElement B
-        {
-            get { return m_b; }
-        }
+        public virtual BigInteger Order => m_order;
 
-        public virtual BigInteger Order
-        {
-            get { return m_order; }
-        }
+        public virtual BigInteger Cofactor => m_cofactor;
 
-        public virtual BigInteger Cofactor
-        {
-            get { return m_cofactor; }
-        }
+        public virtual int CoordinateSystem => m_coord;
 
-        public virtual int CoordinateSystem
-        {
-            get { return m_coord; }
-        }
-
-        /**
-         * Create a cache-safe lookup table for the specified sequence of points. All the points MUST
-         * belong to this <code>ECCurve</code> instance, and MUST already be normalized.
-         */
+        /// <summary>
+        /// Create a cache-safe lookup table for the specified range of points. All the points MUST belong to this
+        /// <see cref="ECCurve"/> instance, and MUST already be normalized.
+        /// </summary>
         public virtual ECLookupTable CreateCacheSafeLookupTable(ECPoint[] points, int off, int len)
         {
             int FE_BYTES = FieldElementEncodingLength;
@@ -387,26 +356,20 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         protected virtual void CheckPoint(ECPoint point)
         {
             if (null == point || (this != point.Curve))
-                throw new ArgumentException("must be non-null and on this curve", "point");
+                throw new ArgumentException("must be non-null and on this curve", nameof(point));
         }
 
-        protected virtual void CheckPoints(ECPoint[] points)
-        {
-            CheckPoints(points, 0, points.Length);
-        }
+        protected virtual void CheckPoints(ECPoint[] points) => CheckPoints(points, 0, points.Length);
 
         protected virtual void CheckPoints(ECPoint[] points, int off, int len)
         {
-            if (points == null)
-                throw new ArgumentNullException("points");
-            if (off < 0 || len < 0 || (off > (points.Length - len)))
-                throw new ArgumentException("invalid range specified", "points");
+            Arrays.ValidateSegment(points, off, len);
 
             for (int i = 0; i < len; ++i)
             {
                 ECPoint point = points[off + i];
                 if (null != point && this != point.Curve)
-                    throw new ArgumentException("entries must be null or on this curve", "points");
+                    throw new ArgumentException("entries must be null or on this curve", nameof(points));
             }
         }
 
@@ -414,57 +377,52 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         {
             if (this == other)
                 return true;
-            if (null == other)
-                return false;
-            return Field.Equals(other.Field)
+
+            return other != null
+                && Field.Equals(other.Field)
                 && A.ToBigInteger().Equals(other.A.ToBigInteger())
                 && B.ToBigInteger().Equals(other.B.ToBigInteger());
         }
 
-        public override bool Equals(object obj) 
-        {
-            return Equals(obj as ECCurve);
-        }
+        public override bool Equals(object obj) => Equals(obj as ECCurve);
 
         public override int GetHashCode()
         {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            return HashCode.Combine(Field, A.ToBigInteger(), B.ToBigInteger());
+#else
             return Field.GetHashCode()
                 ^ Integers.RotateLeft(A.ToBigInteger().GetHashCode(), 8)
                 ^ Integers.RotateLeft(B.ToBigInteger().GetHashCode(), 16);
+#endif
         }
 
         protected abstract ECPoint DecompressPoint(int yTilde, BigInteger X1);
 
-        public virtual ECEndomorphism GetEndomorphism()
-        {
-            return m_endomorphism;
-        }
+        public virtual ECEndomorphism GetEndomorphism() => m_endomorphism;
 
-        /**
-         * Sets the default <code>ECMultiplier</code>, unless already set.
-         *
-         * We avoid locking for performance reasons, so there is no uniqueness guarantee.
-         */
+        /// <summary>Sets the default <see cref="ECMultiplier"/>, unless already set.</summary>
+        /// <remarks>We avoid locking for performance reasons, so there is no uniqueness guarantee.</remarks>
         public virtual ECMultiplier GetMultiplier()
         {
-            if (this.m_multiplier == null)
+            if (m_multiplier == null)
             {
-                this.m_multiplier = CreateDefaultMultiplier();
+                m_multiplier = CreateDefaultMultiplier();
             }
-            return this.m_multiplier;
+            return m_multiplier;
         }
 
-        /**
-         * Decode a point on this curve from its ASN.1 encoding. The different
-         * encodings are taken account of, including point compression for
-         * <code>F<sub>p</sub></code> (X9.62 s 4.2.1 pg 17).
-         * @return The decoded point.
-         */
         public virtual ECPoint DecodePoint(byte[] encoded)
         {
+            if (encoded == null)
+                throw new ArgumentNullException(nameof(encoded));
+
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
             return DecodePoint(encoded.AsSpan());
 #else
+            if (encoded.Length < 1)
+                throw new ArgumentException("Invalid point encoding: empty", nameof(encoded));
+
             ECPoint p;
             int expectedLength = FieldElementEncodingLength;
 
@@ -474,7 +432,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             case 0x00: // infinity
             {
                 if (encoded.Length != 1)
-                    throw new ArgumentException("Incorrect length for infinity encoding", "encoded");
+                    throw new ArgumentException("Incorrect length for infinity encoding", nameof(encoded));
 
                 p = Infinity;
                 break;
@@ -484,14 +442,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             case 0x03: // compressed
             {
                 if (encoded.Length != (expectedLength + 1))
-                    throw new ArgumentException("Incorrect length for compressed encoding", "encoded");
+                    throw new ArgumentException("Incorrect length for compressed encoding", nameof(encoded));
 
                 int yTilde = type & 1;
                 BigInteger X = new BigInteger(1, encoded, 1, expectedLength);
 
                 p = DecompressPoint(yTilde, X);
                 if (!p.ImplIsValid(true, true))
-                    throw new ArgumentException("Invalid point");
+                    throw new ArgumentException("Invalid point", nameof(encoded));
 
                 break;
             }
@@ -499,7 +457,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             case 0x04: // uncompressed
             {
                 if (encoded.Length != (2 * expectedLength + 1))
-                    throw new ArgumentException("Incorrect length for uncompressed encoding", "encoded");
+                    throw new ArgumentException("Incorrect length for uncompressed encoding", nameof(encoded));
 
                 BigInteger X = new BigInteger(1, encoded, 1, expectedLength);
                 BigInteger Y = new BigInteger(1, encoded, 1 + expectedLength, expectedLength);
@@ -512,24 +470,24 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             case 0x07: // hybrid
             {
                 if (encoded.Length != (2 * expectedLength + 1))
-                    throw new ArgumentException("Incorrect length for hybrid encoding", "encoded");
+                    throw new ArgumentException("Incorrect length for hybrid encoding", nameof(encoded));
 
                 BigInteger X = new BigInteger(1, encoded, 1, expectedLength);
                 BigInteger Y = new BigInteger(1, encoded, 1 + expectedLength, expectedLength);
 
                 if (Y.TestBit(0) != (type == 0x07))
-                    throw new ArgumentException("Inconsistent Y coordinate in hybrid encoding", "encoded");
+                    throw new ArgumentException("Inconsistent Y coordinate in hybrid encoding", nameof(encoded));
 
                 p = ValidatePoint(X, Y);
                 break;
             }
 
             default:
-                throw new FormatException("Invalid point encoding " + type);
+                throw new FormatException($"Invalid point encoding type: 0x{type:X2}");
             }
 
             if (type != 0x00 && p.IsInfinity)
-                throw new ArgumentException("Invalid infinity encoding", "encoded");
+                throw new ArgumentException("Invalid infinity encoding", nameof(encoded));
 
             return p;
 #endif
@@ -538,6 +496,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public virtual ECPoint DecodePoint(ReadOnlySpan<byte> encoded)
         {
+            if (encoded.Length < 1)
+                throw new ArgumentException("Invalid point encoding: empty", nameof(encoded));
+
             ECPoint p;
             int expectedLength = FieldElementEncodingLength;
 
@@ -547,7 +508,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             case 0x00: // infinity
             {
                 if (encoded.Length != 1)
-                    throw new ArgumentException("Incorrect length for infinity encoding", "encoded");
+                    throw new ArgumentException("Incorrect length for infinity encoding", nameof(encoded));
 
                 p = Infinity;
                 break;
@@ -557,14 +518,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             case 0x03: // compressed
             {
                 if (encoded.Length != (expectedLength + 1))
-                    throw new ArgumentException("Incorrect length for compressed encoding", "encoded");
+                    throw new ArgumentException("Incorrect length for compressed encoding", nameof(encoded));
 
                 int yTilde = type & 1;
                 BigInteger X = new BigInteger(1, encoded[1..]);
 
                 p = DecompressPoint(yTilde, X);
                 if (!p.ImplIsValid(true, true))
-                    throw new ArgumentException("Invalid point");
+                    throw new ArgumentException("Invalid point", nameof(encoded));
 
                 break;
             }
@@ -572,7 +533,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             case 0x04: // uncompressed
             {
                 if (encoded.Length != (2 * expectedLength + 1))
-                    throw new ArgumentException("Incorrect length for uncompressed encoding", "encoded");
+                    throw new ArgumentException("Incorrect length for uncompressed encoding", nameof(encoded));
 
                 BigInteger X = new BigInteger(1, encoded[1..(1 + expectedLength)]);
                 BigInteger Y = new BigInteger(1, encoded[(1 + expectedLength)..]);
@@ -585,35 +546,28 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             case 0x07: // hybrid
             {
                 if (encoded.Length != (2 * expectedLength + 1))
-                    throw new ArgumentException("Incorrect length for hybrid encoding", "encoded");
+                    throw new ArgumentException("Incorrect length for hybrid encoding", nameof(encoded));
 
                 BigInteger X = new BigInteger(1, encoded[1..(1 + expectedLength)]);
                 BigInteger Y = new BigInteger(1, encoded[(1 + expectedLength)..]);
 
                 if (Y.TestBit(0) != (type == 0x07))
-                    throw new ArgumentException("Inconsistent Y coordinate in hybrid encoding", "encoded");
+                    throw new ArgumentException("Inconsistent Y coordinate in hybrid encoding", nameof(encoded));
 
                 p = ValidatePoint(X, Y);
                 break;
             }
 
             default:
-                throw new FormatException("Invalid point encoding " + type);
+                throw new FormatException($"Invalid point encoding type: 0x{type:X2}");
             }
 
             if (type != 0x00 && p.IsInfinity)
-                throw new ArgumentException("Invalid infinity encoding", "encoded");
+                throw new ArgumentException("Invalid infinity encoding", nameof(encoded));
 
             return p;
         }
 #endif
-
-        internal static int ImplGetInteger(string envVariable, int defaultValue)
-        {
-            string property = Platform.GetEnvironmentVariable(envVariable);
-
-            return int.TryParse(property, out int value) ? value : defaultValue;
-        }
 
         private class DefaultLookupTable
             : AbstractECLookupTable
@@ -624,15 +578,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
             internal DefaultLookupTable(ECCurve outer, byte[] table, int size)
             {
-                this.m_outer = outer;
-                this.m_table = table;
-                this.m_size = size;
+                m_outer = outer;
+                m_table = table;
+                m_size = size;
             }
 
-            public override int Size
-            {
-                get { return m_size; }
-            }
+            public override int Size => m_size;
 
             public override ECPoint Lookup(int index)
             {
@@ -705,10 +656,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             }
         }
 
-        public override bool IsValidFieldElement(BigInteger x)
-        {
-            return x != null && x.SignValue >= 0 && x.CompareTo(Field.Characteristic) < 0;
-        }
+        public override bool IsValidFieldElement(BigInteger x) =>
+            x != null && x.SignValue >= 0 && x.CompareTo(Field.Characteristic) < 0;
 
         // TODO[api] Add this property (and replace usages of Field.Characteristic)
         //public virtual BigInteger Q => Field.Characteristic;
@@ -747,7 +696,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
              * If y is not a square, then we haven't got a point on the curve
              */
             if (y == null)
-                throw new ArgumentException("Invalid point compression");
+                throw new ArgumentException("Invalid point compression", nameof(X1));
 
             if (y.TestBitZero() != (yTilde == 1))
             {
@@ -760,12 +709,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
         private static void ImplCheckQ(BigInteger q)
         {
-            int maxBitLength = ImplGetInteger("TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.Fp_MaxSize", 1042); // 2 * 521
+            int maxBitLength = Properties.GetInt32(Properties.ECFpMaxSize, 1042); // 2 * 521
             if (q.BitLength > maxBitLength)
-                throw new ArgumentException("Fp q value out of range");
+                throw new ArgumentException("Fp q value out of range", nameof(q));
 
             if (!ImplIsPrime(q))
-                throw new ArgumentException("Fp q value not prime");
+                throw new ArgumentException("Fp q value not prime", nameof(q));
         }
 
         private static int ImplGetIterations(int bits, int certainty)
@@ -805,7 +754,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             if (Primes.HasAnySmallFactors(q))
                 return false;
 
-            int certainty = ImplGetInteger("TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.Fp_Certainty", 100);
+            int certainty = Properties.GetInt32(Properties.ECFpCertainty, 100);
             int iterations = ImplGetIterations(q.BitLength, certainty);
 
             return Primes.IsMRProbablePrime(q, SecureRandom.ArbitraryRandom, iterations);
@@ -834,9 +783,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         }
     }
 
-    /**
-     * Elliptic curve over Fp
-     */
+    /// <summary>Elliptic curve over Fp.</summary>
     public class FpCurve
         : AbstractFpCurve
     {
@@ -860,99 +807,81 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             bool isInternal)
             : base(q, isInternal)
         {
-            this.m_q = q;
-            this.m_r = FpFieldElement.CalculateResidue(q);
-            this.m_infinity = new FpPoint(this, null, null);
+            m_q = q;
+            m_r = FpFieldElement.CalculateResidue(q);
+            m_infinity = new FpPoint(this, null, null);
 
-            this.m_a = FromBigInteger(a);
-            this.m_b = FromBigInteger(b);
-            this.m_order = order;
-            this.m_cofactor = cofactor;
-            this.m_coord = FP_DEFAULT_COORDS;
+            m_a = FromBigInteger(a);
+            m_b = FromBigInteger(b);
+            m_order = order;
+            m_cofactor = cofactor;
+            m_coord = FP_DEFAULT_COORDS;
         }
 
         internal FpCurve(BigInteger q, BigInteger r, ECFieldElement a, ECFieldElement b, BigInteger order,
             BigInteger cofactor)
             : base(q, isInternal: true)
         {
-            this.m_q = q;
-            this.m_r = r;
-            this.m_infinity = new FpPoint(this, null, null);
+            m_q = q;
+            m_r = r;
+            m_infinity = new FpPoint(this, null, null);
 
-            this.m_a = a;
-            this.m_b = b;
-            this.m_order = order;
-            this.m_cofactor = cofactor;
-            this.m_coord = FP_DEFAULT_COORDS;
+            m_a = a;
+            m_b = b;
+            m_order = order;
+            m_cofactor = cofactor;
+            m_coord = FP_DEFAULT_COORDS;
         }
 
-        protected override ECCurve CloneCurve()
-        {
-            return new FpCurve(m_q, m_r, m_a, m_b, m_order, m_cofactor);
-        }
+        protected override ECCurve CloneCurve() => new FpCurve(m_q, m_r, m_a, m_b, m_order, m_cofactor);
 
         public override bool SupportsCoordinateSystem(int coord)
         {
             switch (coord)
             {
-                case COORD_AFFINE:
-                case COORD_HOMOGENEOUS:
-                case COORD_JACOBIAN:
-                case COORD_JACOBIAN_MODIFIED:
-                    return true;
-                default:
-                    return false;
+            case COORD_AFFINE:
+            case COORD_HOMOGENEOUS:
+            case COORD_JACOBIAN:
+            case COORD_JACOBIAN_MODIFIED:
+                return true;
+            default:
+                return false;
             }
         }
 
-        public virtual BigInteger Q
-        {
-            get { return m_q; }
-        }
+        public virtual BigInteger Q => m_q;
 
-        public override ECPoint Infinity
-        {
-            get { return m_infinity; }
-        }
+        public override ECPoint Infinity => m_infinity;
 
-        public override int FieldSize
-        {
-            get { return m_q.BitLength; }
-        }
+        public override int FieldSize => m_q.BitLength;
 
         public override ECFieldElement FromBigInteger(BigInteger x)
         {
             if (x == null || x.SignValue < 0 || x.CompareTo(m_q) >= 0)
-                throw new ArgumentException("value invalid for Fp field element", "x");
+                throw new ArgumentException("value invalid for Fp field element", nameof(x));
 
-            return new FpFieldElement(this.m_q, this.m_r, x);
+            return new FpFieldElement(m_q, m_r, x);
         }
 
-        protected internal override ECPoint CreateRawPoint(ECFieldElement x, ECFieldElement y)
-        {
-            return new FpPoint(this, x, y);
-        }
+        protected internal override ECPoint CreateRawPoint(ECFieldElement x, ECFieldElement y) =>
+            new FpPoint(this, x, y);
 
-        protected internal override ECPoint CreateRawPoint(ECFieldElement x, ECFieldElement y, ECFieldElement[] zs)
-        {
-            return new FpPoint(this, x, y, zs);
-        }
+        protected internal override ECPoint CreateRawPoint(ECFieldElement x, ECFieldElement y, ECFieldElement[] zs) =>
+            new FpPoint(this, x, y, zs);
 
         public override ECPoint ImportPoint(ECPoint p)
         {
-            if (this != p.Curve && this.CoordinateSystem == COORD_JACOBIAN && !p.IsInfinity)
+            if (this != p.Curve && CoordinateSystem == COORD_JACOBIAN && !p.IsInfinity)
             {
                 switch (p.Curve.CoordinateSystem)
                 {
-                    case COORD_JACOBIAN:
-                    case COORD_JACOBIAN_CHUDNOVSKY:
-                    case COORD_JACOBIAN_MODIFIED:
-                        return new FpPoint(this,
-                            FromBigInteger(p.RawXCoord.ToBigInteger()),
-                            FromBigInteger(p.RawYCoord.ToBigInteger()),
-                            new ECFieldElement[] { FromBigInteger(p.GetZCoord(0).ToBigInteger()) });
-                    default:
-                        break;
+                case COORD_JACOBIAN:
+                case COORD_JACOBIAN_CHUDNOVSKY:
+                case COORD_JACOBIAN_MODIFIED:
+                    return new FpPoint(this,
+                        FromBigInteger(p.RawXCoord.ToBigInteger()),
+                        FromBigInteger(p.RawYCoord.ToBigInteger()),
+                        new ECFieldElement[] { FromBigInteger(p.GetZCoord(0).ToBigInteger()) });
                 }
             }
 
@@ -963,16 +892,20 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
     public abstract class AbstractF2mCurve
         : ECCurve
     {
+        [Obsolete("Will be removed")]
         public static BigInteger Inverse(int m, int[] ks, BigInteger x)
         {
-            return new LongArray(x).ModInverse(m, ks).ToBigInteger();
+            ulong[] t = Nat.FromBigInteger64(m, x);
+            var f2mFieldData = F2mFieldData.From(m, ks);
+            var fe = new F2mFieldElement(f2mFieldData, t);
+            return fe.Invert().ToBigInteger();
         }
 
         private static IFiniteField BuildField(int m, int k1, int k2, int k3)
         {
-            int maxM = ImplGetInteger("TurboHTTP.SecureProtocol.Org.BouncyCastle.EC.F2m_MaxSize", 1142); // 2 * 571
+            int maxM = Properties.GetInt32(Properties.ECF2mMaxSize, 1142); // 2 * 571
             if (m > maxM)
-                throw new ArgumentException("F2m m value out of range");
+                throw new ArgumentException("F2m m value out of range", nameof(m));
 
             int[] exponents = (k2 | k3) == 0
                 ? new int[]{ 0, k1, m }
@@ -990,36 +923,30 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         {
             ECFieldElement X = FromBigInteger(x), Y = FromBigInteger(y);
 
-            switch (this.CoordinateSystem)
+            switch (CoordinateSystem)
             {
-                case COORD_LAMBDA_AFFINE:
-                case COORD_LAMBDA_PROJECTIVE:
+            case COORD_LAMBDA_AFFINE:
+            case COORD_LAMBDA_PROJECTIVE:
+            {
+                if (X.IsZero)
                 {
-                    if (X.IsZero)
-                    {
-                        if (!Y.Square().Equals(B))
-                            throw new ArgumentException();
-                    }
-                    else
-                    {
-                        // Y becomes Lambda (X + Y/X) here
-                        Y = Y.Divide(X).Add(X);
-                    }
-                    break;
+                    if (!Y.Square().Equals(B))
+                        throw new ArgumentException();
                 }
-                default:
+                else
                 {
-                    break;
+                    // Y becomes Lambda (X + Y/X) here
+                    Y = Y.Divide(X).Add(X);
                 }
+                break;
+            }
             }
 
             return CreateRawPoint(X, Y);
         }
 
-        public override bool IsValidFieldElement(BigInteger x)
-        {
-            return x != null && x.SignValue >= 0 && x.BitLength <= FieldSize;
-        }
+        public override bool IsValidFieldElement(BigInteger x) =>
+            x != null && x.SignValue >= 0 && x.BitLength <= FieldSize;
 
         public override ECFieldElement RandomFieldElement(SecureRandom r)
         {
@@ -1058,25 +985,25 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
                         z = z.AddOne();
                     }
 
-                    switch (this.CoordinateSystem)
+                    switch (CoordinateSystem)
                     {
-                        case COORD_LAMBDA_AFFINE:
-                        case COORD_LAMBDA_PROJECTIVE:
-                        {
-                            yp = z.Add(xp);
-                            break;
-                        }
-                        default:
-                        {
-                            yp = z.Multiply(xp);
-                            break;
-                        }
+                    case COORD_LAMBDA_AFFINE:
+                    case COORD_LAMBDA_PROJECTIVE:
+                    {
+                        yp = z.Add(xp);
+                        break;
+                    }
+                    default:
+                    {
+                        yp = z.Multiply(xp);
+                        break;
+                    }
                     }
                 }
             }
 
             if (yp == null)
-                throw new ArgumentException("Invalid point compression");
+                throw new ArgumentException("Invalid point compression", nameof(X1));
 
             return CreateRawPoint(xp, yp);
         }
@@ -1100,7 +1027,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
             int m = FieldSize;
 
-            // For odd m, use the half-trace 
+            // For odd m, use the half-trace
             if (0 != (m & 1))
             {
                 ECFieldElement r = betaF2m.HalfTrace();
@@ -1127,9 +1054,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
                     w = w2.Add(beta);
                 }
                 if (!w.IsZero)
-                {
                     return null;
-                }
                 gamma = z.Square().Add(z);
             }
             while (gamma.IsZero);
@@ -1137,17 +1062,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             return z;
         }
 
-        /**
-         * Returns true if this is a Koblitz curve (ABC curve).
-         * @return true if this is a Koblitz curve (ABC curve), false otherwise
-         */
-        public virtual bool IsKoblitz
-        {
-            get
-            {
-                return m_order != null && m_cofactor != null && m_b.IsOne && (m_a.IsZero || m_a.IsOne);
-            }
-        }
+        /// <summary>Returns true if this is a Koblitz curve (ABC curve).</summary>
+        public virtual bool IsKoblitz =>
+            m_order != null && m_cofactor != null && m_b.IsOne && (m_a.IsZero || m_a.IsOne);
 
         private static BigInteger ImplRandomFieldElementMult(SecureRandom r, int m)
         {
@@ -1161,45 +1078,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         }
     }
 
-    /**
-     * Elliptic curves over F2m. The Weierstrass equation is given by
-     * <code>y<sup>2</sup> + xy = x<sup>3</sup> + ax<sup>2</sup> + b</code>.
-     */
+    /// <summary>Elliptic curves over F2m.</summary>
+    /// <remarks>
+    /// The Weierstrass equation is given by: <c>y^2 + xy = x^3 + ax^2 + b</c>.
+    /// </remarks>
     public class F2mCurve
         : AbstractF2mCurve
     {
         private const int F2M_DEFAULT_COORDS = COORD_LAMBDA_PROJECTIVE;
 
-        /**
-         * The exponent <code>m</code> of <code>F<sub>2<sup>m</sup></sub></code>.
-         */
-        private readonly int m;
-
-        /**
-         * TPB: The integer <code>k</code> where <code>x<sup>m</sup> +
-         * x<sup>k</sup> + 1</code> represents the reduction polynomial
-         * <code>f(z)</code>.<br/>
-         * PPB: The integer <code>k1</code> where <code>x<sup>m</sup> +
-         * x<sup>k3</sup> + x<sup>k2</sup> + x<sup>k1</sup> + 1</code>
-         * represents the reduction polynomial <code>f(z)</code>.<br/>
-         */
-        private readonly int k1;
-
-        /**
-         * TPB: Always set to <code>0</code><br/>
-         * PPB: The integer <code>k2</code> where <code>x<sup>m</sup> +
-         * x<sup>k3</sup> + x<sup>k2</sup> + x<sup>k1</sup> + 1</code>
-         * represents the reduction polynomial <code>f(z)</code>.<br/>
-         */
-        private readonly int k2;
-
-        /**
-         * TPB: Always set to <code>0</code><br/>
-         * PPB: The integer <code>k3</code> where <code>x<sup>m</sup> +
-         * x<sup>k3</sup> + x<sup>k2</sup> + x<sup>k1</sup> + 1</code>
-         * represents the reduction polynomial <code>f(z)</code>.<br/>
-         */
-        private readonly int k3;
+        private readonly F2mFieldData m_f2mFieldData;
 
         /**
          * The point at infinity on this curve.
@@ -1248,9 +1136,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
          * <code>#E<sub>a</sub>(F<sub>2<sup>m</sup></sub>) = h * n</code>.
          */
         public F2mCurve(
-            int			m, 
-            int			k, 
-            BigInteger	a, 
+            int			m,
+            int			k,
+            BigInteger	a,
             BigInteger	b,
             BigInteger	order,
             BigInteger	cofactor)
@@ -1317,129 +1205,104 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             BigInteger cofactor)
             : base(m, k1, k2, k3)
         {
-            this.m = m;
-            this.k1 = k1;
-            this.k2 = k2;
-            this.k3 = k3;
-            this.m_order = order;
-            this.m_cofactor = cofactor;
-            this.m_infinity = new F2mPoint(this, null, null);
+            m_f2mFieldData = F2mFieldData.From(m, k1, k2, k3);
 
-            this.m_a = FromBigInteger(a);
-            this.m_b = FromBigInteger(b);
-            this.m_coord = F2M_DEFAULT_COORDS;
+            m_order = order;
+            m_cofactor = cofactor;
+            m_infinity = new F2mPoint(this, null, null);
+
+            m_a = FromBigInteger(a);
+            m_b = FromBigInteger(b);
+            m_coord = F2M_DEFAULT_COORDS;
         }
 
         internal F2mCurve(int m, int k1, int k2, int k3, ECFieldElement a, ECFieldElement b, BigInteger order,
             BigInteger cofactor)
             : base(m, k1, k2, k3)
         {
-            this.m = m;
-            this.k1 = k1;
-            this.k2 = k2;
-            this.k3 = k3;
-            this.m_order = order;
-            this.m_cofactor = cofactor;
-            this.m_infinity = new F2mPoint(this, null, null);
+            m_f2mFieldData = F2mFieldData.From(m, k1, k2, k3);
 
-            this.m_a = a;
-            this.m_b = b;
-            this.m_coord = F2M_DEFAULT_COORDS;
+            m_order = order;
+            m_cofactor = cofactor;
+            m_infinity = new F2mPoint(this, null, null);
+
+            m_a = a;
+            m_b = b;
+            m_coord = F2M_DEFAULT_COORDS;
         }
 
-        protected override ECCurve CloneCurve()
+        private F2mCurve(F2mFieldData f2mFieldData, ECFieldElement a, ECFieldElement b, BigInteger order,
+            BigInteger cofactor)
+            : base(f2mFieldData._m, f2mFieldData.K1, f2mFieldData.K2, f2mFieldData.K3)
         {
-            return new F2mCurve(m, k1, k2, k3, m_a, m_b, m_order, m_cofactor);
+            m_f2mFieldData = f2mFieldData;
+
+            m_order = order;
+            m_cofactor = cofactor;
+            m_infinity = new F2mPoint(this, null, null);
+
+            m_a = a;
+            m_b = b;
+            m_coord = F2M_DEFAULT_COORDS;
         }
+
+        protected override ECCurve CloneCurve() => new F2mCurve(m_f2mFieldData, m_a, m_b, m_order, m_cofactor);
 
         public override bool SupportsCoordinateSystem(int coord)
         {
             switch (coord)
             {
-                case COORD_AFFINE:
-                case COORD_HOMOGENEOUS:
-                case COORD_LAMBDA_PROJECTIVE:
-                    return true;
-                default:
-                    return false;
+            case COORD_AFFINE:
+            case COORD_HOMOGENEOUS:
+            case COORD_LAMBDA_PROJECTIVE:
+                return true;
+            default:
+                return false;
             }
         }
 
         protected override ECMultiplier CreateDefaultMultiplier()
         {
             if (IsKoblitz)
-            {
                 return new WTauNafMultiplier();
-            }
 
             return base.CreateDefaultMultiplier();
         }
 
-        public override int FieldSize
-        {
-            get { return m; }
-        }
+        public override int FieldSize => M;
 
         public override ECFieldElement FromBigInteger(BigInteger x)
         {
-            if (x == null || x.SignValue < 0 || x.BitLength > m)
-                throw new ArgumentException("value invalid for F2m field element", "x");
+            if (x == null || x.SignValue < 0 || x.BitLength > M)
+                throw new ArgumentException("value invalid for F2m field element", nameof(x));
 
-            int[] ks = (k2 | k3) == 0
-                ? new int[]{ k1 }
-                : new int[]{ k1, k2, k3 };
+            ulong[] t = Nat.FromBigInteger64(M, x);
 
-            return new F2mFieldElement(m, ks, new LongArray(x));
+            return new F2mFieldElement(m_f2mFieldData, t);
         }
 
-        protected internal override ECPoint CreateRawPoint(ECFieldElement x, ECFieldElement y)
-        {
-            return new F2mPoint(this, x, y);
-        }
+        protected internal override ECPoint CreateRawPoint(ECFieldElement x, ECFieldElement y) =>
+            new F2mPoint(this, x, y);
 
-        protected internal override ECPoint CreateRawPoint(ECFieldElement x, ECFieldElement y, ECFieldElement[] zs)
-        {
-            return new F2mPoint(this, x, y, zs);
-        }
+        protected internal override ECPoint CreateRawPoint(ECFieldElement x, ECFieldElement y, ECFieldElement[] zs) =>
+            new F2mPoint(this, x, y, zs);
 
-        public override ECPoint Infinity
-        {
-            get { return m_infinity; }
-        }
+        public override ECPoint Infinity => m_infinity;
 
-        public int M
-        {
-            get { return m; }
-        }
+        public int M => m_f2mFieldData._m;
 
-        /**
-         * Return true if curve uses a Trinomial basis.
-         *
-         * @return true if curve Trinomial, false otherwise.
-         */
-        public bool IsTrinomial()
-        {
-            return k2 == 0 && k3 == 0;
-        }
+        /// <summary>Return true if curve uses a Trinomial basis.</summary>
+        public bool IsTrinomial() => K2 == 0 && K3 == 0;
 
-        public int K1
-        {
-            get { return k1; }
-        }
+        public int K1 => m_f2mFieldData.K1;
 
-        public int K2
-        {
-            get { return k2; }
-        }
+        public int K2 => m_f2mFieldData.K2;
 
-        public int K3
-        {
-            get { return k3; }
-        }
+        public int K3 => m_f2mFieldData.K3;
 
         public override ECLookupTable CreateCacheSafeLookupTable(ECPoint[] points, int off, int len)
         {
-            int FE_LONGS = (m + 63) / 64;
+            int FE_LONGS = BinPolys.Size(M);
 
             ulong[] table = new ulong[len * FE_LONGS * 2];
             {
@@ -1447,8 +1310,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
                 for (int i = 0; i < len; ++i)
                 {
                     ECPoint p = points[off + i];
-                    ((F2mFieldElement)p.RawXCoord).x.CopyTo(table, pos); pos += FE_LONGS;
-                    ((F2mFieldElement)p.RawYCoord).x.CopyTo(table, pos); pos += FE_LONGS;
+                    BinPolys.Copy(FE_LONGS, ((F2mFieldElement)p.RawXCoord).m_x, 0, table, pos); pos += FE_LONGS;
+                    BinPolys.Copy(FE_LONGS, ((F2mFieldElement)p.RawYCoord).m_x, 0, table, pos); pos += FE_LONGS;
                 }
             }
 
@@ -1464,19 +1327,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
             internal DefaultF2mLookupTable(F2mCurve outer, ulong[] table, int size)
             {
-                this.m_outer = outer;
-                this.m_table = table;
-                this.m_size = size;
+                m_outer = outer;
+                m_table = table;
+                m_size = size;
             }
 
-            public override int Size
-            {
-                get { return m_size; }
-            }
+            public override int Size => m_size;
 
             public override ECPoint Lookup(int index)
             {
-                int FE_LONGS = (m_outer.m + 63) / 64;
+                int FE_LONGS = BinPolys.Size(m_outer.M);
                 ulong[] x = new ulong[FE_LONGS], y = new ulong[FE_LONGS];
                 int pos = 0;
 
@@ -1498,7 +1358,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
             public override ECPoint LookupVar(int index)
             {
-                int FE_LONGS = (m_outer.m + 63) / 64;
+                int FE_LONGS = BinPolys.Size(m_outer.M);
                 ulong[] x = new ulong[FE_LONGS], y = new ulong[FE_LONGS];
                 int pos = index * FE_LONGS * 2;
 
@@ -1513,13 +1373,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
             private ECPoint CreatePoint(ulong[] x, ulong[] y)
             {
-                int m = m_outer.m;
-                int[] ks = m_outer.IsTrinomial()
-                    ? new int[]{ m_outer.k1 }
-                    : new int[]{ m_outer.k1, m_outer.k2, m_outer.k3 }; 
-
-                ECFieldElement X = new F2mFieldElement(m, ks, new LongArray(x));
-                ECFieldElement Y = new F2mFieldElement(m, ks, new LongArray(y));
+                ECFieldElement X = new F2mFieldElement(m_outer.m_f2mFieldData, x);
+                ECFieldElement Y = new F2mFieldElement(m_outer.m_f2mFieldData, y);
                 return m_outer.CreateRawPoint(X, Y);
             }
         }

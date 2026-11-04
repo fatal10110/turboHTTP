@@ -1,0 +1,37 @@
+// TurboHTTP background networking bridge (experimental, opt-in through the
+// TURBOHTTP_BACKGROUND_NETWORKING scripting define). Unity adds this .androidlib as a Gradle
+// library module of unityLibrary, so the WorkManager dependency below is resolved without any
+// edit to the project's Gradle templates (#89). Java sources only: no Kotlin Gradle plugin needed.
+apply plugin: 'com.android.library'
+
+// Compile with the SDK levels Unity chose for unityLibrary (the parent project) when available.
+def unityAndroid = (project.parent != null && project.parent.hasProperty('android')) ? project.parent.android : null
+
+android {
+    compileSdkVersion unityAndroid != null ? unityAndroid.compileSdkVersion : 'android-33'
+    if (unityAndroid != null && unityAndroid.buildToolsVersion != null) {
+        buildToolsVersion unityAndroid.buildToolsVersion
+    }
+
+    defaultConfig {
+        minSdkVersion unityAndroid != null ? unityAndroid.defaultConfig.minSdkVersion.apiLevel : 22
+        // JNI entry points are looked up by name: keep them when the player is minified.
+        consumerProguardFiles 'proguard-rules.pro'
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            java.srcDirs = ['src/main/java']
+        }
+    }
+
+    lintOptions {
+        abortOnError false
+    }
+}
+
+dependencies {
+    // 2.7.x: last WorkManager line that builds with compileSdk 31+ and Java sources only.
+    implementation 'androidx.work:work-runtime:2.7.1'
+}

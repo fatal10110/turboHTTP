@@ -340,6 +340,15 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var response = await responseTask;
                 Assert.AreEqual((HttpStatusCode)417, response.StatusCode);
 
+                // #28: the body is never sent; the stream ends with RST_STREAM(NO_ERROR) so the server
+                // keeps no half-open stream (RFC 9113 Section 8.1). No DATA precedes it.
+                var reset = await TestHelpers.AssertCompletesWithinAsync(
+                    serverCodec.ReadFrameAsync(16384, cts.Token),
+                    TimeSpan.FromSeconds(2));
+                Assert.AreEqual(Http2FrameType.RstStream, reset.Type);
+                Assert.AreEqual(streamId, reset.StreamId);
+                Assert.AreEqual((byte)Http2ErrorCode.NoError, reset.Payload[3]);
+
                 await AssertNoFrameWithinAsync(serverCodec, TimeSpan.FromMilliseconds(150));
 
                 conn.Dispose();
@@ -440,11 +449,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await responseTask);
                 StringAssert.Contains("RST_STREAM", ex.HttpError.Message);
 
-                var clientRst = await TestHelpers.AssertCompletesWithinAsync(
-                    serverCodec.ReadFrameAsync(16384, cts.Token),
-                    TimeSpan.FromSeconds(1));
-                Assert.AreEqual(Http2FrameType.RstStream, clientRst.Type);
-                Assert.AreEqual(streamId, clientRst.StreamId);
+                // RFC 9113 Section 5.4.2: an endpoint MUST NOT send RST_STREAM in response to RST_STREAM.
+                await AssertNoFrameWithinAsync(serverCodec, TimeSpan.FromMilliseconds(150));
 
                 conn.Dispose();
             });

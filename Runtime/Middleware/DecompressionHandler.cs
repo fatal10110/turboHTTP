@@ -2,7 +2,6 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -12,11 +11,12 @@ namespace TurboHTTP.Middleware
 {
     internal sealed class DecompressionHandler : IHttpHandler
     {
-        private static readonly uint[] Crc32Table = BuildCrc32Table();
-
         private readonly IHttpHandler _inner;
         private readonly long _maxDecompressedBodySizeBytes;
         private readonly long _maxCompressedBodySizeBytes;
+
+        // Written by OnRequestStart, read by OnResponseStartAsync of the same dispatch.
+        private int _isHeadRequest;
 
         private enum CompressionKind
         {
@@ -41,6 +41,7 @@ namespace TurboHTTP.Middleware
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
         {
+            Volatile.Write(ref _isHeadRequest, request != null && request.Method == HttpMethod.HEAD ? 1 : 0);
             _inner.OnRequestStart(request, context);
         }
 
@@ -51,8 +52,13 @@ namespace TurboHTTP.Middleware
             RequestContext context)
         {
             CompressionKind[] compressionChain;
-            if (body == null || !TryResolveCompression(headers, out compressionChain))
+            if (body == null ||
+                HasNoContent(statusCode, body, context) ||
+                !TryResolveCompression(headers, out compressionChain))
             {
+                // RFC 9110 sections 6.4.1, 9.3.2, 15.4.5: HEAD responses and 1xx/204/304 carry no content, so
+                // Content-Encoding describes the selected representation, not bytes on the wire. Forward the
+                // response and its headers untouched instead of failing to decode an empty body.
                 await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
                 return;
             }
@@ -74,7 +80,7 @@ namespace TurboHTTP.Middleware
 
             if (body.TryGetBufferedData(out var compressed))
             {
-                BufferedResponseBodySource bufferedBody = null;
+                SegmentedResponseBodySource bufferedBody = null;
                 try
                 {
                     var trailers = await body.GetTrailersAsync(CancellationToken.None).ConfigureAwait(false);
@@ -82,7 +88,15 @@ namespace TurboHTTP.Middleware
                         compressed,
                         compressionChain,
                         _maxDecompressedBodySizeBytes);
-                    bufferedBody = new BufferedResponseBodySource(decompressed, trailers);
+                    try
+                    {
+                        bufferedBody = new SegmentedResponseBodySource(decompressed, trailers);
+                    }
+                    catch
+                    {
+                        decompressed.Dispose();
+                        throw;
+                    }
                 }
                 catch (Exception ex) when (ex is InvalidDataException || ex is IOException)
                 {
@@ -92,7 +106,16 @@ namespace TurboHTTP.Middleware
                 }
                 finally
                 {
-                    await body.DisposeAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await body.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // The decoded segments are not handed on: return them before the failure propagates.
+                        bufferedBody?.Abort();
+                        throw;
+                    }
                 }
 
                 try
@@ -138,71 +161,73 @@ namespace TurboHTTP.Middleware
             _inner.OnResponseError(error, context);
         }
 
-        private static byte[] DecompressBufferedBody(
+        private bool HasNoContent(int statusCode, IResponseBodySource body, RequestContext context)
+        {
+            if (statusCode < 200 || statusCode == 204 || statusCode == 304)
+                return true;
+
+            if (Volatile.Read(ref _isHeadRequest) != 0 ||
+                (context?.Request != null && context.Request.Method == HttpMethod.HEAD))
+            {
+                return true;
+            }
+
+            if (body.Length.HasValue && body.Length.Value == 0)
+                return true;
+
+            return body.TryGetBufferedData(out var buffered) && buffered.IsEmpty;
+        }
+
+        /// <summary>
+        /// Decodes a buffered body into pooled 16 KB segments (#74): no growing contiguous buffer and no final
+        /// copy, so the peak is the decoded size plus one segment. The limit is checked before a segment is
+        /// added; at the limit a one-byte probe tells a complete body from one that would exceed it. The caller
+        /// owns the returned buffer; on failure its segments are returned here.
+        /// </summary>
+        private static SegmentedBuffer DecompressBufferedBody(
             ReadOnlyMemory<byte> compressed,
             CompressionKind[] compressionChain,
             long maxDecompressedBodySizeBytes)
         {
-            var compressedSequence = new ReadOnlySequence<byte>(compressed);
-            var validateSingleGzipTrailer =
-                compressionChain.Length == 1 &&
-                compressionChain[0] == CompressionKind.Gzip;
-
-            using var compressedStream = new ReadOnlySequenceStream(compressedSequence);
-            using var decompressionStream = CreateDecompressionStream(compressedStream, compressionChain);
-            using var output = new MemoryStream();
-
-            var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+            var output = new SegmentedBuffer();
             try
             {
-                long totalDecompressed = 0;
-                uint crc32 = uint.MaxValue;
+                // Every gzip/zlib layer validates its trailers and reads its input to the end (InflateLayerStream).
+                using var compressedStream = new ReadOnlySequenceStream(new ReadOnlySequence<byte>(compressed));
+                using var decompressionStream = CreateDecompressionStream(compressedStream, compressionChain);
+
+                Span<byte> probe = stackalloc byte[1];
                 while (true)
                 {
-                    var read = decompressionStream.Read(buffer, 0, buffer.Length);
+                    var remainingBudget = maxDecompressedBodySizeBytes - output.Length;
+                    if (remainingBudget <= 0)
+                    {
+                        if (decompressionStream.Read(probe) > 0)
+                        {
+                            throw new IOException(
+                                $"Response decompression exceeded the maximum size ({maxDecompressedBodySizeBytes} bytes).");
+                        }
+
+                        break;
+                    }
+
+                    var span = output.GetWriteSpan();
+                    if (span.Length > remainingBudget)
+                        span = span.Slice(0, (int)remainingBudget);
+
+                    var read = decompressionStream.Read(span);
                     if (read <= 0)
                         break;
 
-                    totalDecompressed += read;
-                    if (totalDecompressed > maxDecompressedBodySizeBytes)
-                    {
-                        throw new IOException(
-                            $"Response decompression exceeded the maximum size ({maxDecompressedBodySizeBytes} bytes).");
-                    }
-
-                    if (validateSingleGzipTrailer)
-                        crc32 = UpdateCrc32(crc32, new ReadOnlySpan<byte>(buffer, 0, read));
-
-                    output.Write(buffer, 0, read);
+                    output.Advance(read);
                 }
 
-                if (validateSingleGzipTrailer)
-                    ValidateSingleGzipTrailer(compressedSequence, totalDecompressed, crc32 ^ uint.MaxValue);
+                return output;
             }
-            finally
+            catch
             {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
-
-            return output.ToArray();
-        }
-
-        private static void ValidateSingleGzipTrailer(
-            ReadOnlySequence<byte> compressedSequence,
-            long totalDecompressed,
-            uint actualCrc32)
-        {
-            if (compressedSequence.Length < 18)
-                throw new InvalidDataException("GZIP payload is truncated.");
-
-            Span<byte> trailer = stackalloc byte[8];
-            compressedSequence.Slice(compressedSequence.Length - trailer.Length).CopyTo(trailer);
-
-            var expectedCrc32 = ReadUInt32LittleEndian(trailer);
-            var expectedSize = ReadUInt32LittleEndian(trailer.Slice(4));
-            if (expectedCrc32 != actualCrc32 || expectedSize != unchecked((uint)totalDecompressed))
-            {
-                throw new InvalidDataException("GZIP trailer validation failed.");
+                output.Dispose();
+                throw;
             }
         }
 
@@ -448,28 +473,35 @@ namespace TurboHTTP.Middleware
 
             private void DisposeStreams()
             {
+                // Disposal runs after the body outcome is already decided: a truncation or trailer failure was
+                // thrown from ReadAsync (and surfaced to the consumer) before Abort() reaches this point, so a
+                // dispose-time failure cannot mask it. Record it in the diagnostic sink instead of swallowing it
+                // silently (#180).
                 try
                 {
                     _decompressionStream.Dispose();
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TurboDiagnostics.Log("[TurboHTTP][Decompression] Decompression stream dispose failed", ex);
                 }
 
                 try
                 {
                     _readAheadStream.Dispose();
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TurboDiagnostics.Log("[TurboHTTP][Decompression] Read-ahead stream dispose failed", ex);
                 }
 
                 try
                 {
                     _compressedStream.Dispose();
                 }
-                catch
+                catch (Exception ex)
                 {
+                    TurboDiagnostics.Log("[TurboHTTP][Decompression] Compressed stream dispose failed", ex);
                 }
             }
 
@@ -653,23 +685,34 @@ namespace TurboHTTP.Middleware
             Stream compressedStream,
             CompressionKind[] compressionChain)
         {
+            // Content-Encoding lists codings in the order they were applied (RFC 9110 section 8.4), so the last
+            // one wraps the wire bytes. The caller owns compressedStream; every decoder created here owns the
+            // decoder below it, so disposing the returned stream releases the whole chain.
             Stream current = compressedStream;
+            var leaveOpen = true;
             for (int i = compressionChain.Length - 1; i >= 0; i--)
             {
-                current = CreateSingleDecompressionStream(current, compressionChain[i]);
+                current = CreateSingleDecompressionStream(current, compressionChain[i], leaveOpen);
+                leaveOpen = false;
             }
 
             return current;
         }
 
-        private static Stream CreateSingleDecompressionStream(Stream compressedStream, CompressionKind compression)
+        private static Stream CreateSingleDecompressionStream(
+            Stream compressedStream,
+            CompressionKind compression,
+            bool leaveOpen)
         {
             switch (compression)
             {
                 case CompressionKind.Gzip:
-                    return new GZipStream(compressedStream, CompressionMode.Decompress, leaveOpen: true);
+                    // Member-aware gzip decoder (RFC 1952 section 2.2): checks every member's CRC32 + ISIZE itself,
+                    // because Unity's Mono GZipStream can report a truncated member as a clean end of stream.
+                    return new InflateLayerStream(compressedStream, leaveOpen, gzip: true);
                 case CompressionKind.Deflate:
-                    return new DeflateStream(compressedStream, CompressionMode.Decompress, leaveOpen: true);
+                    // RFC 9110 section 8.4.1.2: zlib (RFC 1950) with its Adler-32 checked; raw DEFLATE as fallback.
+                    return new InflateLayerStream(compressedStream, leaveOpen, gzip: false);
                 default:
                     throw new InvalidOperationException("Compression mode is not active.");
             }
@@ -761,42 +804,6 @@ namespace TurboHTTP.Middleware
 
             compression = null;
             return false;
-        }
-
-        private static uint UpdateCrc32(uint crc32, ReadOnlySpan<byte> data)
-        {
-            var crc = crc32;
-            for (var i = 0; i < data.Length; i++)
-                crc = Crc32Table[(int)((crc ^ data[i]) & 0xFF)] ^ (crc >> 8);
-
-            return crc;
-        }
-
-        private static uint ReadUInt32LittleEndian(ReadOnlySpan<byte> bytes)
-        {
-            return (uint)(bytes[0]
-                | (bytes[1] << 8)
-                | (bytes[2] << 16)
-                | (bytes[3] << 24));
-        }
-
-        private static uint[] BuildCrc32Table()
-        {
-            var table = new uint[256];
-            for (uint i = 0; i < table.Length; i++)
-            {
-                var value = i;
-                for (var bit = 0; bit < 8; bit++)
-                {
-                    value = (value & 1) != 0
-                        ? 0xEDB88320u ^ (value >> 1)
-                        : value >> 1;
-                }
-
-                table[(int)i] = value;
-            }
-
-            return table;
         }
     }
 }

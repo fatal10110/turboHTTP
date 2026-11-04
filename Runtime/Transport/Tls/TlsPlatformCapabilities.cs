@@ -14,6 +14,11 @@ namespace TurboHTTP.Transport.Tls
         public readonly bool IsSystemAlpnExpected;
         public readonly bool IsBouncyCastleAvailable;
         public readonly bool IsSystemTlsKnownBroken;
+
+        /// <summary>
+        /// <see cref="TlsBackend.SslStream"/> when system TLS is usable, otherwise
+        /// <see cref="TlsBackend.Auto"/>. Never a provider without full certificate chain validation.
+        /// </summary>
         public readonly TlsBackend RecommendedBackend;
 
         internal TlsPlatformCapabilitySummary(
@@ -68,7 +73,13 @@ namespace TurboHTTP.Transport.Tls
         /// Clears the cached capability snapshot so the next <see cref="GetSummary"/>
         /// call re-evaluates the environment. Intended for tests.
         /// </summary>
-        internal static void RefreshForTesting()
+        internal static void RefreshForTesting() => Invalidate();
+
+        /// <summary>
+        /// Clears the cached capability snapshot; called when the BouncyCastle provider registers
+        /// after a summary was already taken, so the summary does not keep reporting it missing.
+        /// </summary>
+        internal static void Invalidate()
         {
             lock (s_lock)
             {
@@ -92,8 +103,7 @@ namespace TurboHTTP.Transport.Tls
 
             var recommendedBackend = SelectRecommendedBackend(
                 isSystemTlsAvailable,
-                isSystemTlsKnownBroken,
-                isBouncyCastleAvailable);
+                isSystemTlsKnownBroken);
 
             return new TlsPlatformCapabilitySummary(
                 isSystemTlsAvailable,
@@ -149,17 +159,14 @@ namespace TurboHTTP.Transport.Tls
 
         private static TlsBackend SelectRecommendedBackend(
             bool systemTlsAvailable,
-            bool systemTlsKnownBroken,
-            bool bouncyCastleAvailable)
+            bool systemTlsKnownBroken)
         {
             if (systemTlsAvailable && !systemTlsKnownBroken)
                 return TlsBackend.SslStream;
 
-            if (bouncyCastleAvailable)
-                return TlsBackend.BouncyCastle;
-
-            // No viable backend confirmed. Return Auto so any attempt will probe and fail
-            // with PlatformNotSupportedException rather than silently returning a broken provider.
+            // No validated backend confirmed. Never recommend a provider without full certificate
+            // chain validation (BouncyCastle today): return Auto, which fails closed with a
+            // PlatformNotSupportedException instead of silently using an unvalidated provider.
             return TlsBackend.Auto;
         }
     }

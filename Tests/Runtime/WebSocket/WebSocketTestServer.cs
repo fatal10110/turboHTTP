@@ -4,7 +4,10 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,6 +44,12 @@ namespace TurboHTTP.Tests.WebSocket
         public bool EnablePerMessageDeflate { get; set; }
 
         public PerMessageDeflateOptions PerMessageDeflateOptions { get; set; }
+
+        /// <summary>
+        /// When set, every connection is a TLS 1.2 <see cref="SslStream"/> server with this
+        /// certificate (wss); use <see cref="WebSocketTestServer.CreateSecureUri"/>. The caller owns it.
+        /// </summary>
+        public X509Certificate2 ServerCertificate { get; set; }
     }
 
     /// <summary>
@@ -82,6 +91,17 @@ namespace TurboHTTP.Tests.WebSocket
                 path = "/" + path;
 
             return new Uri("ws://127.0.0.1:" + Port + path, UriKind.Absolute);
+        }
+
+        /// <summary>wss URI on the host name the committed test certificate is issued for.</summary>
+        public Uri CreateSecureUri(string path = "/")
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                path = "/";
+            if (path[0] != '/')
+                path = "/" + path;
+
+            return new Uri("wss://localhost:" + Port + path, UriKind.Absolute);
         }
 
         public void Dispose()
@@ -160,14 +180,33 @@ namespace TurboHTTP.Tests.WebSocket
             }
         }
 
+        private Stream CreateServerStream(TcpClient tcpClient)
+        {
+            Stream stream = tcpClient.GetStream();
+            return _options.ServerCertificate == null
+                ? stream
+                : new SslStream(stream, leaveInnerStreamOpen: false);
+        }
+
         private async Task HandleClientAsync(TcpClient tcpClient, int connectionIndex, CancellationToken ct)
         {
             using (tcpClient)
-            using (var stream = tcpClient.GetStream())
+            using (Stream stream = CreateServerStream(tcpClient))
             {
                 string requestHead;
                 try
                 {
+                    if (stream is SslStream ssl)
+                    {
+                        // AuthenticateAsServerAsync takes no token on netstandard2.1: closing the
+                        // socket on cancellation is what bounds the handshake when Dispose runs.
+                        using (ct.Register(tcpClient.Dispose))
+                        {
+                            await ssl.AuthenticateAsServerAsync(
+                                _options.ServerCertificate, false, SslProtocols.Tls12, false).ConfigureAwait(false);
+                        }
+                    }
+
                     requestHead = await ReadHeaderBlockAsync(stream, ct).ConfigureAwait(false);
                 }
                 catch

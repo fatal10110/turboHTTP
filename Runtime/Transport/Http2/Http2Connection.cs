@@ -65,7 +65,11 @@ namespace TurboHTTP.Transport.Http2
         // Flow control
         private int _connectionSendWindow = Http2Constants.DefaultInitialWindowSize;
         private int _connectionRecvWindow = Http2Constants.DefaultInitialWindowSize;
-        private readonly SemaphoreSlim _windowWaiter = new SemaphoreSlim(0);
+        // Send-window waiters (RFC 9113 Section 6.9, 6.9.2): one broadcast signal per connection, created
+        // lazily by the first sender that blocks. Every event that can let a blocked sender continue
+        // completes and clears it (WakeSendWindowWaiters); each waiter then re-checks its own windows,
+        // stream completion and cancellation. Accessed only through Volatile/Interlocked.
+        private TaskCompletionSource<bool> _sendWindowSignal;
         private readonly SemaphoreSlim _connectionRecvWindowUpdateLock = new SemaphoreSlim(1, 1);
         private long _connectionBufferedBytes;
         private int _connectionWindowUpdateScheduled;
@@ -78,21 +82,41 @@ namespace TurboHTTP.Transport.Http2
         private Task _keepAliveTask;
         private Task _maintenanceTask;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+        // Peer GOAWAY (RFC 9113 Section 6.8): written by the read loop under _streamCreateLock, so stream
+        // registration in DispatchAsync and the GOAWAY cut-off are ordered. _goawayReceived is also read
+        // without the lock (AcceptsNewStreams). A failed or disposed connection is _cts-cancelled instead.
         private volatile bool _goawayReceived;
-        private int _lastGoawayStreamId;
+        private int _lastGoawayStreamId; // guarded by _streamCreateLock
+        private uint _goawayErrorCode; // guarded by _streamCreateLock
+        private volatile bool _streamIdsExhausted;
+        private int _drainCloseStarted;
         private int _disposed;
         private int _resourcesDisposed;
-        private static readonly TimeSpan KeepAlivePingInterval = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan SettingsAckTimeout = TimeSpan.FromSeconds(5);
 
-        // CONTINUATION tracking
+        // Field-block reception (RFC 9113 Section 4.3, 6.10). Owned by the single ReadLoopAsync task:
+        // HEADERS/PUSH_PROMISE + CONTINUATION frames are contiguous on the wire, so at most one block
+        // is open per connection. It accumulates here, independent of _activeStreams, so a block for a
+        // closed, cancelled or reset stream is still HPACK-decoded and the dynamic table stays in sync.
+        // _continuationStreamId is the stream of the open block (0 = none).
         private int _continuationStreamId;
+        private byte[] _headerBlockBuffer; // rented per multi-frame block, returned at END_HEADERS or loop exit
+        private int _headerBlockLength;
+        private int _headerBlockContinuationCount;
+        private bool _headerBlockEndStream;
+        private bool _headerBlockIsPushPromise;
+
+        // CONTINUATION flood bounds (RFC 9113 Section 10.5.1). Exceeding either is ENHANCE_YOUR_CALM.
+        internal const int MaxHeaderBlockBytesCeiling = 256 * 1024;
+        internal const int MaxContinuationFramesPerHeaderBlock = 128;
 
         // Initialization handshake
         private readonly ResettableValueTaskSource<bool> _settingsAckSource;
 
-        // HPACK table size tracking (for detecting changes including back-to-default)
-        private int _lastHeaderTableSize = Http2Constants.DefaultHeaderTableSize;
+        // 0 while InitializeAsync waits for the SETTINGS ACK, 1 once a completer won (Interlocked): the ACK
+        // (read loop), the timeout or cancellation registration, or a connection failure (FailAllStreams).
+        private int _settingsAckCompleted;
+
         private readonly int _perStreamReceiveBufferBytes;
         private readonly int _streamingSendBufferBytes;
         private readonly int _maxConnectionBufferedBytes;
@@ -109,11 +133,25 @@ namespace TurboHTTP.Transport.Http2
         internal int MaxConnectionBufferedBytes => _maxConnectionBufferedBytes;
         internal long StallTimeoutMilliseconds => Volatile.Read(ref _stallTimeoutMs);
 
+        /// <summary>
+        /// True while the connection works: initialized, not failed and not disposed. A connection that
+        /// received GOAWAY stays alive while it drains the streams the peer may still process.
+        /// </summary>
         public bool IsAlive =>
-            !_goawayReceived &&
             !_cts.IsCancellationRequested &&
             _readLoopTask != null &&
             !_readLoopTask.IsCompleted;
+
+        /// <summary>
+        /// True when new requests may be dispatched here: alive, no GOAWAY received and stream ids left.
+        /// </summary>
+        public bool AcceptsNewStreams =>
+            !_goawayReceived &&
+            !_streamIdsExhausted &&
+            IsAlive;
+
+        /// <summary>The <see cref="Http2ConnectionManager"/> key this connection was published under.</summary>
+        internal string ManagerKey { get; set; }
 
         public Http2Connection(
             Stream stream,
@@ -160,6 +198,8 @@ namespace TurboHTTP.Transport.Http2
                 options.TestMaintenanceIntervalMillisecondsOverride > 0
                     ? options.TestMaintenanceIntervalMillisecondsOverride
                     : (int)DefaultMaintenanceInterval.TotalMilliseconds);
+            _pingInterval = options.PingInterval;
+            _pingTimeout = options.PingTimeout;
             _settingsAckSource = new ResettableValueTaskSource<bool>();
             _settingsAckSource.PrepareForUse();
         }
@@ -182,6 +222,8 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public async Task InitializeAsync(CancellationToken ct)
         {
+            // The read loop is not running yet, so no completer can race this reset.
+            Volatile.Write(ref _settingsAckCompleted, 0);
             _settingsAckSource.PrepareForUse();
 
             // 1. Write connection preface
@@ -209,36 +251,21 @@ namespace TurboHTTP.Transport.Http2
                        {
                            if (ct.IsCancellationRequested)
                            {
-                               try
-                               {
-                                   _settingsAckSource.SetCanceled(ct);
-                               }
-                               catch (InvalidOperationException)
-                               {
-                                   // ACK may have raced and completed the source concurrently.
-                               }
+                               TryCompleteSettingsAck(new OperationCanceledException(ct));
                                return;
                            }
 
-                           var timeoutError = new UHttpException(new UHttpError(
+                           TryCompleteSettingsAck(new UHttpException(new UHttpError(
                                UHttpErrorType.Timeout,
-                               "HTTP/2 SETTINGS ACK timeout"));
-                           try
-                           {
-                               _settingsAckSource.SetException(timeoutError);
-                           }
-                           catch (InvalidOperationException)
-                           {
-                               // ACK may have raced and completed the source concurrently.
-                           }
+                               "HTTP/2 SETTINGS ACK timeout")));
                        }))
                 {
                     await _settingsAckSource.CreateValueTask().ConfigureAwait(false);
                 }
             }
 
-            // Keep idle HTTP/2 connections active on mobile NATs.
-            if (_keepAliveTask == null)
+            // PING liveness while streams are open (RFC 9113 Section 6.7); TimeSpan.Zero disables it.
+            if (_keepAliveTask == null && _pingInterval > TimeSpan.Zero)
                 _keepAliveTask = Task.Run(() => KeepAliveLoopAsync(_cts.Token));
 
             if (_maintenanceTask == null)
@@ -258,63 +285,17 @@ namespace TurboHTTP.Transport.Http2
         {
             context.SetState(TransportBehaviorFlags.SelfDrainsResponseBody, true);
 
+            // RFC 9113 Sections 8.2.1 and 8.3: an invalid caller field (non-token or ':'-prefixed name,
+            // NUL/CR/LF/CTL or surrounding whitespace in a value) fails the request here, before a stream
+            // slot or id is taken and before any frame is written. Not replayable: InvalidRequest.
+            ValidateRequestFields(request.Headers);
+            var authority = BuildRequestAuthority(request.Uri);
+
             Http2Stream stream = null;
             int streamId = -1;
             bool requestHeadersSent = false;
             bool requestEndStreamSent = false;
-
-            lock (_streamCreateLock)
-            {
-                if (_goawayReceived)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Connection received GOAWAY"));
-                }
-                if (_cts.IsCancellationRequested)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Connection is closed"));
-                }
-
-                if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        $"MAX_CONCURRENT_STREAMS limit reached ({_remoteSettings.MaxConcurrentStreams})"));
-                }
-
-                streamId = AllocateNextStreamId();
-                if (_goawayReceived || (_lastGoawayStreamId > 0 && streamId > _lastGoawayStreamId))
-                {
-                    throw new UHttpException(new UHttpError(
-                        UHttpErrorType.NetworkError,
-                        "Connection closed during stream creation"));
-                }
-
-                stream = Http2StreamPool.Rent(
-                    streamId,
-                    request,
-                    handler,
-                    context,
-                    _remoteSettings.InitialWindowSize,
-                    _localSettings.InitialWindowSize,
-                    this);
-                _activeStreams[streamId] = stream;
-            }
-
-            if (ct.IsCancellationRequested)
-            {
-                RemoveActiveStream(streamId);
-                throw new OperationCanceledException(ct);
-            }
-
-            stream.SetRequestCancellationToken(ct);
-            stream.CancellationRegistration = ct.Register(
-                s_requestCancellationCallback,
-                stream,
-                useSynchronizationContext: false);
+            bool slotReserved = false;
 
             try
             {
@@ -322,16 +303,55 @@ namespace TurboHTTP.Transport.Http2
                 bool hasBody = shouldWaitForExpectContinue || ExpectContinueHelper.HasRequestBody(request.Content);
                 bool hasRequestTrailers = request.Content != null && request.Content.TrailerProvider != null;
 
-                if (shouldWaitForExpectContinue)
-                    stream.EnableExpectContinueWait();
+                // The request token only gates acquiring the write lock. Stream-id allocation and the
+                // HEADERS write share one _writeLock hold so ids reach the wire in increasing order
+                // (RFC 9113 Section 5.1.1), and a request cancelled while waiting consumes no id.
+                // The stream slot under the peer's MAX_CONCURRENT_STREAMS (RFC 9113 Section 5.1.2) is
+                // reserved first, so a request queued for a slot never holds _writeLock.
+                await AcquireStreamSlotAsync(ct).ConfigureAwait(false);
+                slotReserved = true;
 
                 await _writeLock.WaitAsync(ct).ConfigureAwait(false);
                 try
                 {
+                    ct.ThrowIfCancellationRequested();
+
+                    lock (_streamCreateLock)
+                    {
+                        // GOAWAY is applied under this monitor: a stream is either refused here (never
+                        // sent, so retryable for any method) or registered before HandleGoAwayFrame scans.
+                        if (!AcceptsNewStreamsCore())
+                            throw CreateNotAcceptingException();
+
+                        // The slot was reserved against the limit in force then; a SETTINGS frame applied
+                        // since may have lowered it (RFC 9113 Section 5.1.2). Opening the stream anyway
+                        // would exceed the peer's limit, so the request is refused unsent (replayable).
+                        if (_activeStreams.Count >= _remoteSettings.MaxConcurrentStreams)
+                            throw CreateLimitLoweredException();
+
+                        streamId = AllocateNextStreamId();
+
+                        // Registered before HEADERS hit the wire: the response may arrive at once.
+                        stream = Http2StreamPool.Rent(
+                            streamId,
+                            request,
+                            handler,
+                            context,
+                            _remoteSettings.InitialWindowSize,
+                            _localSettings.InitialWindowSize,
+                            this);
+                        _activeStreams[streamId] = stream;
+                        _pendingAdmissions--;
+                        slotReserved = false;
+                    }
+
+                    if (shouldWaitForExpectContinue)
+                        stream.EnableExpectContinueWait();
+
                     _headerListScratch.Clear();
                     _headerListScratch.Add((":method", request.Method.ToUpperString()));
                     _headerListScratch.Add((":scheme", _schemeHeader));
-                    _headerListScratch.Add((":authority", BuildAuthorityValue(request.Uri)));
+                    _headerListScratch.Add((":authority", authority));
                     _headerListScratch.Add((":path", request.Uri.PathAndQuery ?? "/"));
 
                     foreach (var name in request.Headers.Names)
@@ -367,17 +387,28 @@ namespace TurboHTTP.Transport.Http2
 
                     var headerBlock = _hpackEncoder.Encode(_headerListScratch);
 
-                    await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody, ct)
+                    // Set before the write: no response frame can be processed before HEADERS are out.
+                    stream.State = Http2StreamState.Open;
+                    await SendHeadersAsync(streamId, headerBlock, endStream: !hasBody)
                         .ConfigureAwait(false);
                     requestHeadersSent = true;
                     requestEndStreamSent = !hasBody;
-
-                    stream.State = hasBody ? Http2StreamState.Open : Http2StreamState.HalfClosedLocal;
+                    if (!hasBody)
+                        OnRequestEndStreamSent(stream);
                 }
                 finally
                 {
                     _writeLock.Release();
                 }
+
+                // Registered only once HEADERS are on the wire, so the cancellation RST_STREAM can
+                // never precede them (an RST_STREAM on an idle stream is a connection error,
+                // RFC 9113 Section 6.4). An already-cancelled token runs the callback here.
+                stream.SetRequestCancellationToken(ct);
+                stream.SetCancellationRegistration(ct.Register(
+                    s_requestCancellationCallback,
+                    stream,
+                    useSynchronizationContext: false));
 
                 if (hasBody)
                 {
@@ -387,38 +418,59 @@ namespace TurboHTTP.Transport.Http2
 
                     if (sendRequestBody)
                     {
+                        // The upload continues after the response starts or completes, until the body
+                        // ends or the stream is reset or abandoned (RFC 9113 Section 8.1).
                         var requestBodyBytesSent = await SendDataAsync(streamId, request.Content, stream, ct)
                             .ConfigureAwait(false);
                         context.SetState(TransportBehaviorFlags.RequestBodyBytesSent, requestBodyBytesSent);
-                        requestEndStreamSent = true;
-                        stream.State = Http2StreamState.HalfClosedLocal;
+                        requestEndStreamSent = stream.IsLocalClosed;
+                        if (!requestEndStreamSent)
+                        {
+                            // Stopped without END_STREAM: the stream must still end on the wire.
+                            requestEndStreamSent = true;
+                            await ResetStreamIfActiveAsync(streamId, stream, Http2ErrorCode.Cancel)
+                                .ConfigureAwait(false);
+                        }
                     }
                     else
                     {
+                        // Early final response to Expect: 100-continue (RFC 9110 Section 10.1.1): the body
+                        // is never sent, and the stream ends with RST_STREAM(NO_ERROR) once the response
+                        // is complete (RFC 9113 Section 8.1), so the server keeps no half-open stream.
                         context.SetState(TransportBehaviorFlags.RequestBodyBytesSent, 0L);
+                        requestEndStreamSent = true;
+                        if (stream.MarkLocalAbandoned())
+                        {
+                            await ResetStreamIfActiveAsync(streamId, stream, Http2ErrorCode.NoError)
+                                .ConfigureAwait(false);
+                        }
                     }
+
+                    stream.ReleaseCancellationIfStreamingHandedOff();
                 }
 
                 context.RecordEvent("TransportH2RequestSent");
                 await AwaitResponseCompletionOrCancellationAsync(stream)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested || !_cts.IsCancellationRequested)
             {
                 throw;
             }
             catch (Exception ex)
             {
+                // Includes an OperationCanceledException raised by the connection token (the
+                // connection was failed or disposed): mapped to a network error below.
                 if (stream != null &&
                     requestHeadersSent &&
                     !requestEndStreamSent &&
                     !ct.IsCancellationRequested)
                 {
-                    RemoveActiveStream(streamId);
+                    stream.AbortRequestBody();
                     try
                     {
-                        TrackRecentlyResetStream(streamId);
-                        await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
+                        await ResetStreamIfActiveAsync(streamId, stream, Http2ErrorCode.Cancel)
+                            .ConfigureAwait(false);
                     }
                     catch
                     {
@@ -433,32 +485,78 @@ namespace TurboHTTP.Transport.Http2
                     throw;
                 }
 
-                throw MapException(ex);
+                throw ClassifyDispatchFailure(ex, stream);
             }
             finally
             {
+                if (slotReserved)
+                    ReleaseReservedStreamSlot();
+
                 if (stream != null)
                 {
                     if (!stream.ResponseStarted)
-                        RemoveActiveStream(streamId);
+                        RemoveActiveStream(streamId, stream);
 
-                    stream.CancellationRegistration.Dispose();
-                    stream.CancellationRegistration = default;
+                    stream.ReleaseCancellationRegistration();
                     stream.ReleaseDispatchLifetime();
                 }
             }
+        }
+
+        /// <summary>
+        /// Completes the SETTINGS ACK wait of <see cref="InitializeAsync"/> once: with success when
+        /// <paramref name="error"/> is null, else with the error. Later calls are no-ops, so the ACK, the
+        /// timeout, cancellation and a connection failure never complete the source twice.
+        /// </summary>
+        private void TryCompleteSettingsAck(Exception error)
+        {
+            if (Interlocked.Exchange(ref _settingsAckCompleted, 1) != 0)
+                return;
+
+            if (error == null)
+                _settingsAckSource.SetResult(true);
+            else
+                _settingsAckSource.SetException(error);
         }
 
         private static UHttpException MapException(Exception ex) =>
             ex as UHttpException ??
             new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
 
+        /// <summary>
+        /// Maps a dispatch failure (not a handler fault) and marks what RawSocketTransport may replay.
+        /// Nothing is marked once the response started (RFC 9113 Section 8.7 covers unprocessed requests
+        /// only, and a replay would deliver a second OnResponseStart). A stream-scoped failure on a working
+        /// connection (RST_STREAM other than REFUSED_STREAM, a request-body source error) is not marked.
+        /// </summary>
+        private Exception ClassifyDispatchFailure(Exception ex, Http2Stream stream) =>
+            ClassifyDispatchFailure(ex, stream != null && stream.ResponseStarted, _cts.IsCancellationRequested);
+
+        /// <summary>
+        /// The classification itself, separated from the connection state so each branch is unit-tested
+        /// (several are defensive: Fail usually aborts the upload so the dispatch completes instead).
+        /// </summary>
+        internal static Exception ClassifyDispatchFailure(Exception ex, bool responseStarted, bool connectionClosed)
+        {
+            if (ex is Http2RetryableRequestException retryable)
+                return responseStarted ? new UHttpException(retryable.HttpError) : retryable;
+
+            var mapped = MapException(ex);
+            if (!responseStarted && connectionClosed)
+            {
+                // The connection failed or was closed (read-loop error, PING timeout, dispose).
+                return new Http2RetryableRequestException(mapped.HttpError, requestNotProcessed: false);
+            }
+
+            return mapped;
+        }
+
         private async Task AwaitResponseCompletionOrCancellationAsync(Http2Stream stream)
         {
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
-            // Request-scoped cancellation is owned by stream.CancellationRegistration, which
+            // Request-scoped cancellation is owned by the stream's cancellation registration, which
             // faults the stream and emits the best-effort RST_STREAM when the stream is still active.
             await stream.CompletionTask.ConfigureAwait(false);
         }

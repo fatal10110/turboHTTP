@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
-using System.Reflection;
-using System.Runtime.ExceptionServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -47,9 +46,21 @@ namespace TurboHTTP.Unity
         /// <summary>
         /// Sends a JSON GET request via coroutine callback pattern.
         /// </summary>
+        /// <typeparam name="T">
+        /// Payload type: a reference or a value type. An empty body yields <c>default(T)</c>.
+        /// </typeparam>
         /// <remarks>
+        /// <para>
+        /// Sends <c>Accept: application/json</c>, fails on a non-success status, and deserializes the
+        /// UTF-8 body through the JSON bridge registered with <see cref="ProjectJsonBridge"/>
+        /// (TurboHTTP.JSON registers it at startup; no reflection is involved). Without a registered
+        /// bridge, <paramref name="onError"/> receives an <see cref="InvalidOperationException"/>
+        /// naming TurboHTTP.JSON. Deserialization errors reach <paramref name="onError"/> unwrapped.
+        /// </para>
+        /// <para>
         /// If <paramref name="cancellationToken"/> is canceled (or <paramref name="callbackOwner"/>
         /// is destroyed), callbacks are intentionally suppressed.
+        /// </para>
         /// </remarks>
         public static IEnumerator GetJsonCoroutine<T>(
             this UHttpClient client,
@@ -59,7 +70,6 @@ namespace TurboHTTP.Unity
             CancellationToken cancellationToken = default,
             UnityEngine.Object callbackOwner = null,
             bool cancelOnOwnerInactive = false)
-            where T : class
         {
             if (client == null) throw new ArgumentNullException(nameof(client));
             if (string.IsNullOrWhiteSpace(url))
@@ -117,7 +127,6 @@ namespace TurboHTTP.Unity
             CancellationToken cancellationToken,
             UnityEngine.Object callbackOwner,
             bool cancelOnOwnerInactive)
-            where T : class
         {
             var lifecycleBinding = LifecycleCancellation.Bind(
                 callbackOwner,
@@ -272,9 +281,6 @@ namespace TurboHTTP.Unity
                 return aggregate;
             }
 
-            if (exception is TargetInvocationException tie && tie.InnerException != null)
-                return tie.InnerException;
-
             return exception;
         }
 
@@ -282,78 +288,38 @@ namespace TurboHTTP.Unity
             UHttpClient client,
             string url,
             CancellationToken cancellationToken)
-            where T : class
         {
-            var extensionsType = Type.GetType(
-                "TurboHTTP.JSON.JsonExtensions, TurboHTTP.JSON",
-                throwOnError: false);
+            // Resolved before the request is sent: a missing JSON module fails fast.
+            var bridge = ProjectJsonBridge.GetRequired("GetJsonCoroutine<T>");
+            return GetJsonAsync<T>(bridge, client, url, cancellationToken);
+        }
 
-            if (extensionsType == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON assembly is required for GetJsonCoroutine<T>. " +
-                    "Install or enable TurboHTTP.JSON in your project. " +
-                    "For IL2CPP builds with managed stripping, ensure TurboHTTP.JSON/link.xml " +
-                    "is included so JsonExtensions is preserved for reflection.");
-            }
+        private static async Task<T> GetJsonAsync<T>(
+            IJsonBridge bridge,
+            UHttpClient client,
+            string url,
+            CancellationToken cancellationToken)
+        {
+            using var response = await client
+                .Get(url)
+                .WithHeader("Accept", ContentTypes.Json)
+                .SendBufferedAsync(cancellationToken)
+                .ConfigureAwait(false);
 
-            var methods = extensionsType.GetMethods(BindingFlags.Public | BindingFlags.Static);
-            MethodInfo getJsonMethod = null;
+            response.EnsureSuccessStatusCode();
+            if (response.Body.IsEmpty)
+                return default;
 
-            for (var i = 0; i < methods.Length; i++)
-            {
-                var method = methods[i];
-                if (method.Name != "GetJsonAsync" || !method.IsGenericMethodDefinition)
-                    continue;
+            // RFC 8259 section 8.1: JSON exchanged between systems is UTF-8.
+            var value = bridge.Deserialize(response.GetBodyAsString(Encoding.UTF8), typeof(T));
+            if (value is T typed)
+                return typed;
+            if (value == null && default(T) == null)
+                return default;
 
-                var parameters = method.GetParameters();
-                if (parameters.Length != 3)
-                    continue;
-
-                if (parameters[0].ParameterType != typeof(UHttpClient) ||
-                    parameters[1].ParameterType != typeof(string) ||
-                    parameters[2].ParameterType != typeof(CancellationToken))
-                {
-                    continue;
-                }
-
-                getJsonMethod = method;
-                break;
-            }
-
-            if (getJsonMethod == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON.JsonExtensions.GetJsonAsync<T>(UHttpClient, string, CancellationToken) " +
-                    "was not found.");
-            }
-
-            try
-            {
-                var genericMethod = getJsonMethod.MakeGenericMethod(typeof(T));
-                var task = genericMethod.Invoke(
-                    obj: null,
-                    parameters: new object[] { client, url, cancellationToken });
-
-                if (task is Task<T> typedTask)
-                    return typedTask;
-
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON.JsonExtensions.GetJsonAsync<T> returned an unexpected task type.");
-            }
-            catch (ArgumentException ex)
-            {
-                throw new InvalidOperationException(
-                    "GetJsonCoroutine<T> cannot materialize the requested generic type at runtime. " +
-                    "For IL2CPP, prefer reference types and ensure required generic usages are " +
-                    "preserved for AOT compilation.",
-                    ex);
-            }
-            catch (TargetInvocationException tie) when (tie.InnerException != null)
-            {
-                ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
-                throw;
-            }
+            throw new InvalidOperationException(
+                "The registered JSON bridge returned " + (value == null ? "null" : value.GetType().FullName) +
+                " for GetJsonCoroutine<" + typeof(T).FullName + ">.");
         }
     }
 }

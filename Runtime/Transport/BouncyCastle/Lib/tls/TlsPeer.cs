@@ -25,8 +25,11 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
         /// <summary>Specify the timeout, in milliseconds, to use for the complete handshake process.</summary>
         /// <remarks>
-        /// NOTE: Currently only respected by DTLS protocols. Negative values are not allowed. A timeout of zero means
-        /// an infinite timeout (i.e.the handshake will never time out).
+        /// NOTE: Respected by the DTLS protocols, and by the blocking <see cref="TlsClientProtocol"/> /
+        /// <see cref="TlsServerProtocol"/> stream API. The stream API enforces it at record boundaries: a
+        /// caller-supplied input <see cref="Stream"/> has no timed-read primitive, so a peer that stalls part way
+        /// through a record blocks in the read itself, where only the transport's own read timeout can intervene.
+        /// The non-blocking API is driven by the caller's own I/O loop, which is where a deadline for it belongs.
         /// </remarks>
         /// <returns>the handshake timeout, in milliseconds.</returns>
         int GetHandshakeTimeoutMillis();
@@ -136,12 +139,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         /// <returns>the <see cref="HeartbeatMode"/> value.</returns>
         short GetHeartbeatPolicy();
 
-        // TODO[api] Remove this and treat it as default 'true'
-        /// <summary>Indicates whether a DTLS connection should ignore corrupt records (bad_record_mac) instead of
-        /// failing the connection.</summary>
-        /// <remarks>Called only once at the start of a connection and applies throughout.</remarks>
-        /// <returns>The value <c>true</c> to ignore corrupt DTLS records, or <c>false</c> to fail the connection.
-        /// </returns>
+        // TODO[api] Remove this; the DTLS record layer now unconditionally discards invalid records
+        /// <summary>Formerly indicated whether a DTLS connection should ignore corrupt records (bad_record_mac)
+        /// instead of failing the connection.</summary>
+        /// <remarks>This value is no longer consulted. Invalid DTLS records (bad MAC, invalid length, etc.) are
+        /// always silently discarded, preserving the association, per RFC 9147 section 4.5.2 and RFC 9146
+        /// section 6.</remarks>
+        /// <returns>Ignored.</returns>
+        [Obsolete("Will be removed")]
         bool IgnoreCorruptDtlsRecords { get; }
     }
 }

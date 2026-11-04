@@ -46,9 +46,39 @@ namespace TurboHTTP.Transport.Http2
         // Reusable buffer for 9-byte frame headers (write operations under lock)
         private readonly byte[] _writeHeaderBuffer = new byte[Http2Constants.FrameHeaderSize];
 
+        // A frame payload is written in slices of at most this size so a large DATA frame (the peer's
+        // SETTINGS_MAX_FRAME_SIZE may reach 2^24-1) records progress per slice. 16384 is the smallest
+        // legal SETTINGS_MAX_FRAME_SIZE (RFC 9113 Section 6.5.2), so default-sized frames are one slice.
+        internal const int WriteProgressSliceBytes = 16384;
+
+        // Http2MonotonicClock timestamp of the last progress of the frame write in flight (set before
+        // each header, payload-slice and flush write), 0 while no frame write is in flight. Written by
+        // the single writer (serialized by the connection's _writeLock), read by the connection's
+        // maintenance loop: Volatile on both sides (ARM64 / 32-bit IL2CPP memory model).
+        private long _writeProgressTimestamp;
+
         public Http2FrameCodec(Stream stream)
         {
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+        }
+
+        /// <summary>
+        /// True when a frame write is in flight and its last progress (a header, payload-slice or
+        /// flush write starting) is at least <paramref name="timeoutMilliseconds"/> before
+        /// <paramref name="nowTimestamp"/> (an <see cref="Http2MonotonicClock"/> timestamp). Safe to
+        /// call from any thread.
+        /// </summary>
+        internal bool IsWriteStalled(long nowTimestamp, long timeoutMilliseconds)
+        {
+            long lastProgress = Volatile.Read(ref _writeProgressTimestamp);
+            return lastProgress != 0 &&
+                   Http2MonotonicClock.HasElapsedMilliseconds(lastProgress, nowTimestamp, timeoutMilliseconds);
+        }
+
+        private void MarkWriteProgress()
+        {
+            long now = Http2MonotonicClock.GetTimestamp();
+            Volatile.Write(ref _writeProgressTimestamp, now == 0 ? 1 : now);
         }
 
         /// <summary>
@@ -185,13 +215,31 @@ namespace TurboHTTP.Transport.Http2
             _writeHeaderBuffer[7] = (byte)((streamId >> 8) & 0xFF);
             _writeHeaderBuffer[8] = (byte)(streamId & 0xFF);
 
-            await _stream.WriteAsync(_writeHeaderBuffer, 0, Http2Constants.FrameHeaderSize, ct)
-                .ConfigureAwait(false);
-            if (payloadLength > 0)
-                await _stream.WriteAsync(payload, ct).ConfigureAwait(false);
+            MarkWriteProgress();
+            try
+            {
+                await _stream.WriteAsync(_writeHeaderBuffer, 0, Http2Constants.FrameHeaderSize, ct)
+                    .ConfigureAwait(false);
 
-            if (flush)
-                await _stream.FlushAsync(ct).ConfigureAwait(false);
+                int offset = 0;
+                while (offset < payloadLength)
+                {
+                    int slice = Math.Min(WriteProgressSliceBytes, payloadLength - offset);
+                    MarkWriteProgress();
+                    await _stream.WriteAsync(payload.Slice(offset, slice), ct).ConfigureAwait(false);
+                    offset += slice;
+                }
+
+                if (flush)
+                {
+                    MarkWriteProgress();
+                    await _stream.FlushAsync(ct).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref _writeProgressTimestamp, 0);
+            }
         }
 
         /// <summary>

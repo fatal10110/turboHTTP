@@ -1,0 +1,60 @@
+name: soak
+
+# Soak and lossy-network gate (#114): an hour of mixed HTTP/1.1, HTTP/2, streaming, WebSocket and
+# cancellation traffic through local fault-injecting proxies (Tools~/soak/README.md). Manual only: it is a
+# release gate, not a PR check; the deterministic short variants run with the Unity test suites. It needs
+# no Unity license: the harness links the shadow-build DLLs, built from the Unity managed DLLs that
+# Tools~/ci/fetch-unity-dlls.sh extracts from the public unityci/editor image.
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Run length (seconds, or Nm / Nh)"
+        required: false
+        default: "1h"
+      profiles:
+        description: "Profiles, comma separated"
+        required: false
+        default: "clean,latency,bandwidth,lossy,reset"
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Unity version
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v6
+        with:
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
+
+      - name: Run the soak
+        env:
+          DURATION: ${{ inputs.duration }}
+          PROFILES: ${{ inputs.profiles }}
+        run: "'Tools~/soak/run.sh' --duration \"$DURATION\" --profiles \"$PROFILES\""
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: soak-results
+          path: |
+            .build/soak/run/result.json
+            .build/soak/run/samples.csv
+            .build/soak/run/harness.log
+          if-no-files-found: warn

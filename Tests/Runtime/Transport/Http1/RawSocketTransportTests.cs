@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Transport;
+using TurboHTTP.Transport.Http1;
 using TurboHTTP.Transport.Tcp;
 
 namespace TurboHTTP.Tests.Transport.Http1
@@ -654,11 +655,12 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public void RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_ReusesConnectionAfterDrain()
+        public void RawSocketTransport_ExpectContinue_KeepAliveRejectionWithBody_DoesNotReuseConnection()
         {
             AssertAsync.Run(async () =>
             {
                 string followUpRequestLine = null;
+                string rejectedConnectionFollowUp = null;
                 using var bodyStream = new TrackingNonSeekableReadStream(Encoding.UTF8.GetBytes("reject-me"));
 
                 using var server = new HttpServer(async (client, index) =>
@@ -674,8 +676,9 @@ namespace TurboHTTP.Tests.Transport.Http1
                             stream,
                             "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\nnope");
 
+                        // The body was never sent, so the connection must not carry another request.
                         var followUp = await TryReadRequestStartAndHeadersAsync(stream, TimeSpan.FromSeconds(2));
-                        followUpRequestLine = followUp?.RequestLine;
+                        rejectedConnectionFollowUp = followUp?.RequestLine;
                         if (followUp != null)
                         {
                             await WriteResponseAsync(
@@ -688,8 +691,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     }
 
                     var fallback = await ReadRequestStartAndHeadersAsync(stream);
-                    if (followUpRequestLine == null)
-                        followUpRequestLine = fallback.RequestLine;
+                    followUpRequestLine = fallback.RequestLine;
 
                     await WriteResponseAsync(
                         stream,
@@ -719,7 +721,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Assert.AreEqual("ok", followUpResponse.GetBodyAsString());
                 Assert.AreEqual(0, bodyStream.BytesRead);
                 Assert.AreEqual("GET /follow-up HTTP/1.1", followUpRequestLine);
-                Assert.AreEqual(1, server.AcceptCount);
+                Assert.IsNull(rejectedConnectionFollowUp);
+                Assert.AreEqual(2, server.AcceptCount);
             });
         }
 
@@ -2242,7 +2245,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                     first.Headers.TryGetValue("Proxy-Authorization", out firstAuth);
                     await WriteResponseAsync(
                         stream,
-                        "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+                        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\n" +
+                        "Content-Length: 0\r\nConnection: keep-alive\r\n\r\n");
 
                     var second = await ReadRequestStartAndHeadersAsync(stream);
                     connectCount++;
@@ -2303,15 +2307,14 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var stream = new MemoryStream(responseBytes, writable: false);
 
-                var firstResponse = await ReadProxyConnectResponseForTestAsync(stream);
-                Assert.AreEqual(407, GetProxyConnectStatusCode(firstResponse));
+                var firstResponse = await ConnectReplyReader.ReadAsync(stream, CancellationToken.None);
+                Assert.AreEqual(407, firstResponse.StatusCode);
 
-                await DrainProxyConnectBodyForTestAsync(
-                    stream,
-                    GetProxyConnectHeaders(firstResponse));
+                await ConnectReplyReader.DrainBodyAsync(stream, firstResponse, CancellationToken.None);
 
-                var secondResponse = await ReadProxyConnectResponseForTestAsync(stream);
-                Assert.AreEqual(200, GetProxyConnectStatusCode(secondResponse));
+                var secondResponse = await ConnectReplyReader.ReadAsync(stream, CancellationToken.None);
+                Assert.AreEqual(200, secondResponse.StatusCode);
+                Assert.AreEqual(stream.Length, stream.Position);
             });
         }
 
@@ -2380,45 +2383,6 @@ namespace TurboHTTP.Tests.Transport.Http1
                 AssertAsync.ThrowsAsync<OperationCanceledException>(async () =>
                     await client.Get("https://origin.example.com/secure").SendBufferedAsync(cts.Token));
             });
-        }
-
-        private static async Task<object> ReadProxyConnectResponseForTestAsync(Stream stream)
-        {
-            var method = typeof(RawSocketTransport).GetMethod(
-                "ReadProxyConnectResponseAsync",
-                BindingFlags.NonPublic | BindingFlags.Static);
-            Assert.IsNotNull(method);
-
-            var task = (Task)method.Invoke(null, new object[] { stream, CancellationToken.None });
-            await task.ConfigureAwait(false);
-            return task.GetType().GetProperty("Result").GetValue(task, null);
-        }
-
-        private static async Task DrainProxyConnectBodyForTestAsync(Stream stream, HttpHeaders headers)
-        {
-            var method = typeof(RawSocketTransport).GetMethod(
-                "DrainProxyConnectBodyAsync",
-                BindingFlags.NonPublic | BindingFlags.Static);
-            Assert.IsNotNull(method);
-
-            var task = (Task)method.Invoke(null, new object[] { stream, headers, CancellationToken.None });
-            await task.ConfigureAwait(false);
-        }
-
-        private static int GetProxyConnectStatusCode(object response)
-        {
-            Assert.IsNotNull(response);
-            var property = response.GetType().GetProperty("StatusCode", BindingFlags.Instance | BindingFlags.Public);
-            Assert.IsNotNull(property);
-            return (int)property.GetValue(response, null);
-        }
-
-        private static HttpHeaders GetProxyConnectHeaders(object response)
-        {
-            Assert.IsNotNull(response);
-            var property = response.GetType().GetProperty("Headers", BindingFlags.Instance | BindingFlags.Public);
-            Assert.IsNotNull(property);
-            return (HttpHeaders)property.GetValue(response, null);
         }
 
 #if TURBOHTTP_INTEGRATION_TESTS

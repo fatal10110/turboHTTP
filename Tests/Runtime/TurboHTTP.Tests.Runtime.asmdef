@@ -17,11 +17,12 @@
     "TurboHTTP.RateLimit",
     "TurboHTTP.JSON",
     "TurboHTTP.Middleware",
+    "TurboHTTP.Complete",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"
   ],
   "includePlatforms": [],
-  "excludePlatforms": [],
+  "excludePlatforms": ["WebGL"],
   "allowUnsafeCode": false,
   "overrideReferences": true,
   "precompiledReferences": [

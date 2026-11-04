@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -276,7 +277,16 @@ namespace TurboHTTP.Transport.Tcp
         private readonly int _maxConnectionsPerHost;
         private readonly TimeSpan _connectionIdleTimeout;
         private readonly TlsBackend _tlsBackend;
+        // Test seam: replaces TlsProviderSelector.GetProvider when set (internal ctor only).
+        private readonly Func<TlsBackend, ITlsProvider> _tlsProviderResolver;
         private readonly int _dnsTimeoutMs;
+        private readonly TimeSpan _connectTimeout;
+
+        /// <summary>
+        /// Silence allowed on a reused HTTP/1.1 connection after an idempotent request before the
+        /// transport retries it on a fresh connection (#47). <see cref="Timeout.InfiniteTimeSpan"/> = off.
+        /// </summary>
+        internal TimeSpan ReusedConnectionFirstByteTimeout { get; }
         private readonly HappyEyeballsOptions _happyEyeballsOptions;
         private readonly SocketIoMode _socketIoMode;
         private readonly TimeSpan _scavengeInterval;
@@ -291,17 +301,27 @@ namespace TurboHTTP.Transport.Tcp
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
 
         /// <param name="maxConnectionsPerHost">Maximum concurrent connections per host (default 6, matches browser convention).</param>
-        /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 2 minutes).</param>
+        /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 45 s on iOS/Android players, 2 minutes elsewhere).</param>
         /// <param name="tlsBackend">TLS backend selection strategy (default Auto).</param>
         /// <param name="dnsTimeout">Timeout for DNS lookups. Default 10 seconds.</param>
         /// <param name="socketIoMode">Socket I/O implementation (default NetworkStream).</param>
+        /// <param name="connectTimeout">
+        /// Wall-clock deadline for the TCP connect to one host (all address attempts). Default 10 seconds;
+        /// <see cref="Timeout.InfiniteTimeSpan"/> disables it. Expiry fails with <see cref="UHttpErrorType.Timeout"/>.
+        /// </param>
+        /// <param name="reusedConnectionFirstByteTimeout">
+        /// Silence allowed on a reused HTTP/1.1 connection after an idempotent request before it is
+        /// retried once on a fresh connection. Default 10 seconds; <see cref="Timeout.InfiniteTimeSpan"/> disables it.
+        /// </param>
         public TcpConnectionPool(
             int maxConnectionsPerHost = 6,
             TimeSpan? connectionIdleTimeout = null,
             TlsBackend tlsBackend = TlsBackend.Auto,
             TimeSpan? dnsTimeout = null,
             HappyEyeballsOptions happyEyeballsOptions = null,
-            SocketIoMode socketIoMode = SocketIoMode.NetworkStream)
+            SocketIoMode socketIoMode = SocketIoMode.NetworkStream,
+            TimeSpan? connectTimeout = null,
+            TimeSpan? reusedConnectionFirstByteTimeout = null)
         {
             if (maxConnectionsPerHost <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost), "Must be greater than 0");
@@ -312,11 +332,30 @@ namespace TurboHTTP.Transport.Tcp
             if (dnsTimeout.HasValue && dnsTimeout.Value.TotalMilliseconds > int.MaxValue)
                 throw new ArgumentOutOfRangeException(nameof(dnsTimeout),
                     "Must be less than or equal to Int32.MaxValue milliseconds.");
+            if (connectTimeout.HasValue && connectTimeout.Value != Timeout.InfiniteTimeSpan)
+            {
+                if (connectTimeout.Value <= TimeSpan.Zero)
+                    throw new ArgumentOutOfRangeException(nameof(connectTimeout), "Must be positive or Timeout.InfiniteTimeSpan");
+                if (connectTimeout.Value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(connectTimeout),
+                        "Must be less than or equal to Int32.MaxValue milliseconds.");
+            }
+
+            if (reusedConnectionFirstByteTimeout.HasValue && reusedConnectionFirstByteTimeout.Value != Timeout.InfiniteTimeSpan)
+            {
+                if (reusedConnectionFirstByteTimeout.Value <= TimeSpan.Zero)
+                    throw new ArgumentOutOfRangeException(nameof(reusedConnectionFirstByteTimeout), "Must be positive or Timeout.InfiniteTimeSpan");
+                if (reusedConnectionFirstByteTimeout.Value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(reusedConnectionFirstByteTimeout),
+                        "Must be less than or equal to Int32.MaxValue milliseconds.");
+            }
 
             _maxConnectionsPerHost = maxConnectionsPerHost;
-            _connectionIdleTimeout = connectionIdleTimeout ?? TimeSpan.FromMinutes(2);
+            _connectionIdleTimeout = connectionIdleTimeout ?? PlatformConfig.RecommendedConnectionIdleTimeout;
+            ReusedConnectionFirstByteTimeout = reusedConnectionFirstByteTimeout ?? PlatformConfig.DefaultReusedConnectionFirstByteTimeout;
             _tlsBackend = tlsBackend;
             _dnsTimeoutMs = dnsTimeout.HasValue ? (int)dnsTimeout.Value.TotalMilliseconds : DefaultDnsTimeoutMs;
+            _connectTimeout = connectTimeout ?? ConnectionPoolOptions.DefaultConnectTimeout;
             _happyEyeballsOptions = (happyEyeballsOptions ?? new HappyEyeballsOptions()).Clone();
             _happyEyeballsOptions.Validate();
             _socketIoMode = socketIoMode;
@@ -332,6 +371,19 @@ namespace TurboHTTP.Transport.Tcp
             _scavengeTask = Task.Run(() => RunIdleScavengerAsync(_scavengeCts.Token));
 
             SaeaPlatformDetection.LogSelectedMode(_socketIoMode);
+        }
+
+        /// <summary>
+        /// Test-only constructor: resolves the TLS provider through
+        /// <paramref name="tlsProviderResolver"/> instead of <see cref="TlsProviderSelector"/>.
+        /// </summary>
+        internal TcpConnectionPool(
+            Func<TlsBackend, ITlsProvider> tlsProviderResolver,
+            TlsBackend tlsBackend = TlsBackend.Auto)
+            : this(tlsBackend: tlsBackend)
+        {
+            _tlsProviderResolver = tlsProviderResolver
+                ?? throw new ArgumentNullException(nameof(tlsProviderResolver));
         }
 
         /// <summary>
@@ -351,6 +403,30 @@ namespace TurboHTTP.Transport.Tcp
             string poolKeyOverride,
             CancellationToken ct)
         {
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride, skipIdle: false, ct);
+        }
+
+        /// <summary>
+        /// Acquire a newly connected socket, bypassing the idle queue. Used for the one retry after
+        /// a reused connection failed or stayed silent (RFC 9112 section 9.3.1: "open a new
+        /// connection"): when NAT dropped every idle connection at once, the next idle one is just
+        /// as dead and <see cref="PooledConnection.IsAlive"/> cannot tell. The per-host permit is
+        /// taken as usual.
+        /// </summary>
+        internal ValueTask<ConnectionLease> GetNewConnectionAsync(
+            string host, int port, bool secure, CancellationToken ct)
+        {
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride: null, skipIdle: true, ct);
+        }
+
+        private ValueTask<ConnectionLease> GetConnectionCoreAsync(
+            string host,
+            int port,
+            bool secure,
+            string poolKeyOverride,
+            bool skipIdle,
+            CancellationToken ct)
+        {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(TcpConnectionPool));
 
@@ -368,7 +444,7 @@ namespace TurboHTTP.Transport.Tcp
             var waitTask = semaphore.WaitAsync(ct);
             if (waitTask.IsCompletedSuccessfully)
             {
-                return AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, ct);
+                return AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, skipIdle, ct);
             }
 
             return new ValueTask<ConnectionLease>(AcquireConnectionAfterWaitAsync(
@@ -378,6 +454,7 @@ namespace TurboHTTP.Transport.Tcp
                 port,
                 secure,
                 semaphore,
+                skipIdle,
                 ct));
         }
 
@@ -388,10 +465,11 @@ namespace TurboHTTP.Transport.Tcp
             int port,
             bool secure,
             SemaphoreSlim semaphore,
+            bool skipIdle,
             CancellationToken ct)
         {
             await waitTask.ConfigureAwait(false);
-            return await AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, ct).ConfigureAwait(false);
+            return await AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, skipIdle, ct).ConfigureAwait(false);
         }
 
         private ValueTask<ConnectionLease> AcquireConnectionWithOwnedPermit(
@@ -400,13 +478,14 @@ namespace TurboHTTP.Transport.Tcp
             int port,
             bool secure,
             SemaphoreSlim semaphore,
+            bool skipIdle,
             CancellationToken ct)
         {
             // From this point, the semaphore permit is owned. ALL paths must release it.
             try
             {
                 // Try to dequeue an idle connection
-                if (_idleConnections.TryGetValue(poolKey, out var queue))
+                if (!skipIdle && _idleConnections.TryGetValue(poolKey, out var queue))
                 {
                     while (queue.TryDequeue(out var candidate))
                     {
@@ -546,8 +625,15 @@ namespace TurboHTTP.Transport.Tcp
             // DNS resolution with timeout
             var addresses = await ResolveDnsAsync(host, ct).ConfigureAwait(false);
 
-            // Socket connection with address fallback (IPv6-safe)
-            var socket = await ConnectSocketAsync(addresses, port, ct).ConfigureAwait(false);
+            // Socket connection with address racing (IPv6-safe) under the connect deadline.
+            // An IPv4 literal that has no IPv4 route retries through NAT64-synthesized
+            // addresses (RFC 8305 section 7.1, #167).
+            var socket = await Nat64AddressSynthesizer.ConnectWithLiteralFallbackAsync(
+                host,
+                addresses,
+                candidates => ConnectSocketAsync(candidates, port, ct),
+                name => ResolveDnsAsync(name, ct),
+                ct).ConfigureAwait(false);
 
             // Build the base stream based on the configured socket I/O mode.
             // All three streams close the socket when disposed (via ownsSocket or channel ownership).
@@ -572,14 +658,13 @@ namespace TurboHTTP.Transport.Tcp
             {
                 try
                 {
-                    var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
+                    var tlsProvider = _tlsProviderResolver != null
+                        ? _tlsProviderResolver(_tlsBackend)
+                        : TlsProviderSelector.GetProvider(_tlsBackend);
                     var tlsResult = await tlsProvider.WrapAsync(
-                        stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
+                        stream, host, AlpnProtocols.H2AndHttp11, ct).ConfigureAwait(false);
 
                     // Only mark SslStream as viable when it was actually used.
-                    // In Auto mode after a probe-state transition, GetAutoProvider() may return
-                    // BouncyCastle; calling MarkSslStreamViable() with BC as the active provider
-                    // would be semantically incorrect (even though the CAS guards against promotion).
                     if (_tlsBackend == TlsBackend.Auto && tlsResult.ProviderName == "SslStream")
                         TlsProviderSelector.MarkSslStreamViable();
 
@@ -588,52 +673,13 @@ namespace TurboHTTP.Transport.Tcp
                     tlsVersion = tlsResult.TlsVersion;
                     tlsProviderName = tlsResult.ProviderName;
                 }
-                catch (Exception ex) when (
-                    _tlsBackend == TlsBackend.Auto
-                    && TlsProviderSelector.IsPlatformTlsException(ex)
-                    && TlsProviderSelector.IsBouncyCastleAvailable())
+                catch (Exception ex)
                 {
-                    // SslStream is fundamentally broken on this platform.
-                    // Cache the result so all future Auto calls skip SslStream entirely.
-                    TlsProviderSelector.MarkSslStreamBroken();
+                    // Fail closed: Auto never retries on another provider (no runtime
+                    // catch-and-retry). A platform-level failure is only recorded for diagnostics.
+                    if (_tlsBackend == TlsBackend.Auto && TlsProviderSelector.IsPlatformTlsException(ex))
+                        TlsProviderSelector.MarkSslStreamBroken(ex);
 
-                    // The failed SslStream handshake left the stream in an indeterminate state.
-                    // Dispose it and reconnect with a fresh socket for the BouncyCastle retry,
-                    // using the same SocketIoMode as the primary path for consistency.
-                    stream.Dispose();
-                    socket = await ConnectSocketAsync(addresses, port, ct).ConfigureAwait(false);
-                    switch (_socketIoMode)
-                    {
-                        case SocketIoMode.Saea:
-                            stream = new SaeaStream(new SaeaSocketChannel(socket));
-                            break;
-                        case SocketIoMode.PollSelect:
-                            stream = new PollSelectStream(new PollSelectSocketChannel(socket));
-                            break;
-                        default:
-                            stream = new NetworkStream(socket, ownsSocket: true);
-                            break;
-                    }
-
-                    try
-                    {
-                        var bcProvider = TlsProviderSelector.GetProvider(TlsBackend.BouncyCastle);
-                        var tlsResult = await bcProvider.WrapAsync(
-                            stream, host, new[] { "h2", "http/1.1" }, ct).ConfigureAwait(false);
-
-                        stream = tlsResult.SecureStream;
-                        negotiatedAlpn = tlsResult.NegotiatedAlpn;
-                        tlsVersion = tlsResult.TlsVersion;
-                        tlsProviderName = tlsResult.ProviderName;
-                    }
-                    catch
-                    {
-                        stream.Dispose();
-                        throw;
-                    }
-                }
-                catch
-                {
                     stream.Dispose(); // Cascades to NetworkStream -> Socket
                     throw;
                 }
@@ -674,21 +720,44 @@ namespace TurboHTTP.Transport.Tcp
             return await dnsTask.ConfigureAwait(false);
         }
 
-        private async Task<Socket> ConnectSocketAsync(
+        private Task<Socket> ConnectSocketAsync(
             IPAddress[] addresses, int port, CancellationToken ct)
+        {
+            return ConnectWithDeadlineAsync(addresses, port, _connectTimeout, _happyEyeballsOptions, ct);
+        }
+
+        /// <summary>
+        /// Races <paramref name="addresses"/> under <paramref name="connectTimeout"/>. Deadline expiry
+        /// becomes <c>UHttpException(Timeout)</c> (caller cancellation stays an
+        /// <see cref="OperationCanceledException"/>); an all-failed race rethrows the first failure.
+        /// </summary>
+        internal static async Task<Socket> ConnectWithDeadlineAsync(
+            IPAddress[] addresses,
+            int port,
+            TimeSpan connectTimeout,
+            HappyEyeballsOptions happyEyeballsOptions,
+            CancellationToken ct,
+            Func<IPAddress, int, CancellationToken, Task<Socket>> connector = null)
         {
             try
             {
                 return await HappyEyeballsConnector.ConnectAsync(
                     addresses,
                     port,
-                    Timeout.InfiniteTimeSpan,
-                    _happyEyeballsOptions,
-                    ct).ConfigureAwait(false);
+                    connectTimeout,
+                    happyEyeballsOptions,
+                    ct,
+                    connector).ConfigureAwait(false);
+            }
+            catch (TimeoutException ex) when (!ct.IsCancellationRequested)
+            {
+                throw new UHttpException(new UHttpError(UHttpErrorType.Timeout,
+                    $"TCP connect timed out after {(long)connectTimeout.TotalMilliseconds}ms", ex));
             }
             catch (AggregateException aggregate) when (aggregate.InnerExceptions.Count > 0)
             {
-                throw aggregate.InnerExceptions[0];
+                ExceptionDispatchInfo.Capture(aggregate.InnerExceptions[0]).Throw();
+                throw;
             }
         }
 

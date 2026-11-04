@@ -2,7 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Reflection;
+using TurboHTTP.Core;
 
 namespace TurboHTTP.Testing
 {
@@ -16,13 +16,18 @@ namespace TurboHTTP.Testing
                 entries.Add(ToSerializableDictionary(file.Entries[i]));
             }
 
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 ["Version"] = file.Version,
                 ["CreatedUtcTicks"] = file.CreatedUtcTicks,
                 ["UpdatedUtcTicks"] = file.UpdatedUtcTicks,
                 ["Entries"] = entries
             };
+
+            if (!string.IsNullOrEmpty(file.KeySalt))
+                result["KeySalt"] = file.KeySalt;
+
+            return result;
         }
 
         private static Dictionary<string, object> ToSerializableDictionary(RecordingEntryDto entry)
@@ -91,6 +96,7 @@ namespace TurboHTTP.Testing
             var file = new RecordingFileDto
             {
                 Version = ReadInt(dict, "Version"),
+                KeySalt = ReadString(dict, "KeySalt"),
                 CreatedUtcTicks = ReadLong(dict, "CreatedUtcTicks"),
                 UpdatedUtcTicks = ReadLong(dict, "UpdatedUtcTicks"),
                 Entries = new List<RecordingEntryDto>()
@@ -251,63 +257,27 @@ namespace TurboHTTP.Testing
 
         private static string SerializeJson(object value, Type type)
         {
-            var serializerType = Type.GetType("TurboHTTP.JSON.JsonSerializer, TurboHTTP.JSON", throwOnError: false);
-            if (serializerType == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON assembly is required for RecordReplayTransport serialization.");
-            }
-
-            var serializeMethod = serializerType.GetMethod(
-                "Serialize",
-                BindingFlags.Public | BindingFlags.Static,
-                binder: null,
-                types: new[] { typeof(object), typeof(Type) },
-                modifiers: null);
-            if (serializeMethod == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON.JsonSerializer.Serialize(object, Type) was not found.");
-            }
-
+            var bridge = ProjectJsonBridge.GetRequired("RecordReplayTransport serialization");
             try
             {
-                return (string)serializeMethod.Invoke(null, new[] { value, type });
+                return bridge.Serialize(value, type);
             }
-            catch (TargetInvocationException tie) when (tie.InnerException != null)
+            catch (Exception ex)
             {
-                throw new InvalidOperationException("RecordReplay serialization failed.", tie.InnerException);
+                throw new InvalidOperationException("RecordReplay serialization failed.", ex);
             }
         }
 
         private static object DeserializeJson(string json, Type type)
         {
-            var serializerType = Type.GetType("TurboHTTP.JSON.JsonSerializer, TurboHTTP.JSON", throwOnError: false);
-            if (serializerType == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON assembly is required for RecordReplayTransport deserialization.");
-            }
-
-            var deserializeMethod = serializerType.GetMethod(
-                "Deserialize",
-                BindingFlags.Public | BindingFlags.Static,
-                binder: null,
-                types: new[] { typeof(string), typeof(Type) },
-                modifiers: null);
-            if (deserializeMethod == null)
-            {
-                throw new InvalidOperationException(
-                    "TurboHTTP.JSON.JsonSerializer.Deserialize(string, Type) was not found.");
-            }
-
+            var bridge = ProjectJsonBridge.GetRequired("RecordReplayTransport deserialization");
             try
             {
-                return deserializeMethod.Invoke(null, new object[] { json, type });
+                return bridge.Deserialize(json, type);
             }
-            catch (TargetInvocationException tie) when (tie.InnerException != null)
+            catch (Exception ex)
             {
-                throw new InvalidOperationException("RecordReplay deserialization failed.", tie.InnerException);
+                throw new InvalidOperationException("RecordReplay deserialization failed.", ex);
             }
         }
     }

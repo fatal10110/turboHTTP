@@ -9,6 +9,7 @@ using System.Threading;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Digests;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc7748;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Raw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
@@ -55,7 +56,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         private const int ScalarUints = 8;
         private const int ScalarBytes = ScalarUints * 4;
 
-        public static readonly int PrehashSize = 64;
+        private const int DigestSize = 64;
+        public static readonly int PrehashSize = DigestSize;
         public static readonly int PublicKeySize = PointBytes;
         public static readonly int SecretKeySize = 32;
         public static readonly int SignatureSize = PointBytes + ScalarBytes;
@@ -356,15 +358,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         private static IDigest CreateDigest()
         {
             var d = new Sha512Digest();
-            if (d.GetDigestSize() != 64)
+            if (d.GetDigestSize() != DigestSize)
                 throw new InvalidOperationException();
             return d;
         }
 
-        public static IDigest CreatePrehash()
-        {
-            return CreateDigest();
-        }
+        public static IDigest CreatePrehash() => CreateDigest();
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         private static bool DecodePointVar(ReadOnlySpan<byte> p, bool negate, ref PointAffine r)
@@ -374,7 +373,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         {
             int x_0 = (p[PointBytes - 1] & 0x80) >> 7;
 
-            F.Decode(p, r.y);
+            F.Decode255(p, r.y);
 
             int[] u = F.Create();
             int[] v = F.Create();
@@ -441,16 +440,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
 
         public static void EncodePublicPoint(PublicPoint publicPoint, byte[] pk, int pkOff)
         {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            EncodePublicPoint(publicPoint, pk.AsSpan(pkOff, PublicKeySize));
+#else
+            if (publicPoint == null)
+                throw new ArgumentNullException(nameof(publicPoint));
+            Arrays.ValidateSegment(pk, pkOff, PublicKeySize);
+
             F.Encode(publicPoint.m_data, F.Size, pk, pkOff);
             pk[pkOff + PointBytes - 1] |= (byte)((publicPoint.m_data[0] & 1) << 7);
+#endif
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public static void EncodePublicPoint(PublicPoint publicPoint, Span<byte> pk)
         {
-            // TODO[api] Restrict to exact length
-            //if (pk.Length != PublicKeySize)
-            //    throw new ArgumentException(nameof(pk));
+            if (publicPoint == null)
+                throw new ArgumentNullException(nameof(publicPoint));
+            // TODO[api] Exact length check
+            if (pk.Length < PublicKeySize)
+                throw new ArgumentException(nameof(pk));
 
             F.Encode(publicPoint.m_data.AsSpan(F.Size), pk);
             pk[PointBytes - 1] |= (byte)((publicPoint.m_data[0] & 1) << 7);
@@ -487,6 +496,24 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         }
 #endif
 
+        private static void ExpandPrivateKey(IDigest d, byte[] sk, int skOff, byte[] h, int hOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            ExpandPrivateKey(d, sk.AsSpan(skOff), h.AsSpan(hOff));
+#else
+            d.BlockUpdate(sk, skOff, SecretKeySize);
+            d.DoFinal(h, hOff);
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        private static void ExpandPrivateKey(IDigest d, ReadOnlySpan<byte> sk, Span<byte> h)
+        {
+            d.BlockUpdate(sk[..SecretKeySize]);
+            d.DoFinal(h);
+        }
+#endif
+
         private static PublicPoint ExportPoint(ref PointAffine p)
         {
             int[] data = new int[F.Size * 2];
@@ -499,16 +526,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         // TODO[api] Rename k to sk
         public static void GeneratePrivateKey(SecureRandom random, byte[] k)
         {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            GeneratePrivateKey(random, k.AsSpan());
+#else
+            if (random == null)
+                throw new ArgumentNullException(nameof(random));
+            if (k == null)
+                throw new ArgumentNullException(nameof(k));
             if (k.Length != SecretKeySize)
                 throw new ArgumentException(nameof(k));
 
             random.NextBytes(k);
+#endif
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         // TODO[api] Rename k to sk
         public static void GeneratePrivateKey(SecureRandom random, Span<byte> k)
         {
+            if (random == null)
+                throw new ArgumentNullException(nameof(random));
             if (k.Length != SecretKeySize)
                 throw new ArgumentException(nameof(k));
 
@@ -519,13 +556,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         public static void GeneratePublicKey(byte[] sk, int skOff, byte[] pk, int pkOff)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            GeneratePublicKey(sk.AsSpan(skOff), pk.AsSpan(pkOff));
+            GeneratePublicKey(sk.AsSpan(skOff, SecretKeySize), pk.AsSpan(pkOff, PublicKeySize));
 #else
-            IDigest d = CreateDigest();
-            byte[] h = new byte[64];
+            Arrays.ValidateSegment(sk, skOff, SecretKeySize);
+            Arrays.ValidateSegment(pk, pkOff, PublicKeySize);
 
-            d.BlockUpdate(sk, skOff, SecretKeySize);
-            d.DoFinal(h, 0);
+            byte[] h = new byte[DigestSize];
+            ExpandPrivateKey(CreateDigest(), sk, skOff, h, 0);
 
             byte[] s = new byte[ScalarBytes];
             PruneScalar(h, 0, s);
@@ -537,11 +574,15 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public static void GeneratePublicKey(ReadOnlySpan<byte> sk, Span<byte> pk)
         {
-            IDigest d = CreateDigest();
-            Span<byte> h = stackalloc byte[64];
+            // TODO[api] Exact length check
+            if (sk.Length < SecretKeySize)
+                throw new ArgumentException(nameof(sk));
+            // TODO[api] Exact length check
+            if (pk.Length < PublicKeySize)
+                throw new ArgumentException(nameof(pk));
 
-            d.BlockUpdate(sk[..SecretKeySize]);
-            d.DoFinal(h);
+            Span<byte> h = stackalloc byte[DigestSize];
+            ExpandPrivateKey(CreateDigest(), sk, h);
 
             Span<byte> s = stackalloc byte[ScalarBytes];
             PruneScalar(h, s);
@@ -553,16 +594,38 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         public static PublicPoint GeneratePublicKey(byte[] sk, int skOff)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            return GeneratePublicKey(sk.AsSpan(skOff));
+            return GeneratePublicKey(sk.AsSpan(skOff, SecretKeySize));
 #else
-            IDigest d = CreateDigest();
-            byte[] h = new byte[64];
+            Arrays.ValidateSegment(sk, skOff, SecretKeySize);
 
-            d.BlockUpdate(sk, skOff, SecretKeySize);
-            d.DoFinal(h, 0);
+            byte[] h = new byte[DigestSize];
+            ExpandPrivateKey(CreateDigest(), sk, skOff, h, 0);
 
+            return GeneratePublicPoint(h, 0);
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static PublicPoint GeneratePublicKey(ReadOnlySpan<byte> sk)
+        {
+            // TODO[api] Exact length check
+            if (sk.Length < SecretKeySize)
+                throw new ArgumentException(nameof(sk));
+
+            Span<byte> h = stackalloc byte[DigestSize];
+            ExpandPrivateKey(CreateDigest(), sk, h);
+
+            return GeneratePublicPoint(h);
+        }
+#endif
+
+        private static PublicPoint GeneratePublicPoint(byte[] h, int hOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            return GeneratePublicPoint(h.AsSpan(hOff));
+#else
             byte[] s = new byte[ScalarBytes];
-            PruneScalar(h, 0, s);
+            PruneScalar(h, hOff, s);
 
             Init(out PointAccum p);
             ScalarMultBase(s, ref p);
@@ -578,14 +641,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        public static PublicPoint GeneratePublicKey(ReadOnlySpan<byte> sk)
+        private static PublicPoint GeneratePublicPoint(ReadOnlySpan<byte> h)
         {
-            IDigest d = CreateDigest();
-            Span<byte> h = stackalloc byte[64];
-
-            d.BlockUpdate(sk[..SecretKeySize]);
-            d.DoFinal(h);
-
             Span<byte> s = stackalloc byte[ScalarBytes];
             PruneScalar(h, s);
 
@@ -620,7 +677,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         {
             /*
              * Because we are using 4 teeth and 8 spacing, each limb of n corresponds to one of the 8 blocks.
-             * Therefore we can efficiently group the bits for each comb position using a (double) shuffle. 
+             * Therefore we can efficiently group the bits for each comb position using a (double) shuffle.
              */
             for (int i = 0; i < n.Length; ++i)
             {
@@ -705,10 +762,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
                 throw new ArgumentException(nameof(ctx));
 
             IDigest d = CreateDigest();
-            byte[] h = new byte[64];
 
-            d.BlockUpdate(sk, skOff, SecretKeySize);
-            d.DoFinal(h, 0);
+            byte[] h = new byte[DigestSize];
+            ExpandPrivateKey(d, sk, skOff, h, 0);
 
             byte[] s = new byte[ScalarBytes];
             PruneScalar(h, 0, s);
@@ -728,10 +784,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
                 throw new ArgumentException(nameof(ctx));
 
             IDigest d = CreateDigest();
-            Span<byte> h = stackalloc byte[64];
 
-            d.BlockUpdate(sk);
-            d.DoFinal(h);
+            Span<byte> h = stackalloc byte[DigestSize];
+            ExpandPrivateKey(d, sk, h);
 
             Span<byte> s = stackalloc byte[ScalarBytes];
             PruneScalar(h, s);
@@ -754,10 +809,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
                 throw new ArgumentException(nameof(ctx));
 
             IDigest d = CreateDigest();
-            byte[] h = new byte[64];
 
-            d.BlockUpdate(sk, skOff, SecretKeySize);
-            d.DoFinal(h, 0);
+            byte[] h = new byte[DigestSize];
+            ExpandPrivateKey(d, sk, skOff, h, 0);
 
             byte[] s = new byte[ScalarBytes];
             PruneScalar(h, 0, s);
@@ -774,10 +828,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
                 throw new ArgumentException(nameof(ctx));
 
             IDigest d = CreateDigest();
-            Span<byte> h = stackalloc byte[64];
 
-            d.BlockUpdate(sk);
-            d.DoFinal(h);
+            Span<byte> h = stackalloc byte[DigestSize];
+            ExpandPrivateKey(d, sk, h);
 
             Span<byte> s = stackalloc byte[ScalarBytes];
             PruneScalar(h, s);
@@ -819,7 +872,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
                 return false;
 
             IDigest d = CreateDigest();
-            byte[] h = new byte[64];
+            byte[] h = new byte[DigestSize];
 
             if (ctx != null)
             {
@@ -880,7 +933,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
                 return false;
 
             IDigest d = CreateDigest();
-            Span<byte> h = stackalloc byte[64];
+            Span<byte> h = stackalloc byte[DigestSize];
 
             if (ctx != null)
             {
@@ -942,7 +995,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
             EncodePublicPoint(publicPoint, A, 0);
 
             IDigest d = CreateDigest();
-            byte[] h = new byte[64];
+            byte[] h = new byte[DigestSize];
 
             if (ctx != null)
             {
@@ -1001,7 +1054,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
             EncodePublicPoint(publicPoint, A);
 
             IDigest d = CreateDigest();
-            Span<byte> h = stackalloc byte[64];
+            Span<byte> h = stackalloc byte[DigestSize];
 
             if (ctx != null)
             {
@@ -1638,23 +1691,41 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
             }
         }
 
-        private static void PruneScalar(byte[] n, int nOff, byte[] r)
+        private static void PruneScalar(byte[] s, int sOff)
         {
-            Array.Copy(n, nOff, r, 0, ScalarBytes);
-
-            r[0] &= 0xF8;
-            r[ScalarBytes - 1] &= 0x7F;
-            r[ScalarBytes - 1] |= 0x40;
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            PruneScalar(s.AsSpan(sOff));
+#else
+            s[sOff                  ] &= 0xF8;
+            s[sOff + ScalarBytes - 1] &= 0x7F;
+            s[sOff + ScalarBytes - 1] |= 0x40;
+#endif
         }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        private static void PruneScalar(ReadOnlySpan<byte> n, Span<byte> r)
+        private static void PruneScalar(Span<byte> s)
         {
-            n[..ScalarBytes].CopyTo(r);
+            s[0              ] &= 0xF8;
+            s[ScalarBytes - 1] &= 0x7F;
+            s[ScalarBytes - 1] |= 0x40;
+        }
+#endif
 
-            r[0] &= 0xF8;
-            r[ScalarBytes - 1] &= 0x7F;
-            r[ScalarBytes - 1] |= 0x40;
+        private static void PruneScalar(byte[] n, int nOff, byte[] s)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            PruneScalar(n.AsSpan(nOff), s.AsSpan());
+#else
+            Array.Copy(n, nOff, s, 0, ScalarBytes);
+            PruneScalar(s, 0);
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        private static void PruneScalar(ReadOnlySpan<byte> n, Span<byte> s)
+        {
+            n[..ScalarBytes].CopyTo(s);
+            PruneScalar(s);
         }
 #endif
 
@@ -1781,13 +1852,23 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         internal static void ScalarMultBaseYZ(byte[] k, int kOff, int[] y, int[] z)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            ScalarMultBaseYZ(k.AsSpan(kOff), y.AsSpan(), z.AsSpan());
+            ScalarMultBaseYZ(k.AsSpan(kOff, X25519.ScalarSize), y.AsSpan(), z.AsSpan());
 #else
-            byte[] n = new byte[ScalarBytes];
-            PruneScalar(k, kOff, n);
+            Arrays.ValidateSegment(k, kOff, ScalarBytes);
+            if (y == null)
+                throw new ArgumentNullException(nameof(y));
+            if (y.Length != F.Size)
+                throw new ArgumentException(nameof(y));
+            if (z == null)
+                throw new ArgumentNullException(nameof(z));
+            if (z.Length != F.Size)
+                throw new ArgumentException(nameof(z));
+
+            byte[] s = new byte[ScalarBytes];
+            PruneScalar(k, kOff, s);
 
             Init(out PointAccum p);
-            ScalarMultBase(n, ref p);
+            ScalarMultBase(s, ref p);
 
             if (0 == CheckPoint(p))
                 throw new InvalidOperationException();
@@ -1800,6 +1881,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         internal static void ScalarMultBaseYZ(ReadOnlySpan<byte> k, Span<int> y, Span<int> z)
         {
+            if (k.Length != X25519.ScalarSize)
+                throw new ArgumentException(nameof(k));
+            if (y.Length != F.Size)
+                throw new ArgumentException(nameof(y));
+            if (z.Length != F.Size)
+                throw new ArgumentException(nameof(z));
+
             Span<byte> n = stackalloc byte[ScalarBytes];
             PruneScalar(k, n);
 
@@ -1822,7 +1910,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
             sbyte[] ws_p = new sbyte[253];
 #endif
 
-            // NOTE: WnafWidth128 because of the special structure of the order 
+            // NOTE: WnafWidth128 because of the special structure of the order
             Scalar25519.GetOrderWnafVar(WnafWidth128, ws_p);
 
             int count = 1 << (WnafWidth128 - 2);
@@ -2111,8 +2199,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         public static bool ValidatePublicKeyFull(byte[] pk, int pkOff)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            return ValidatePublicKeyFull(pk.AsSpan(pkOff));
+            return ValidatePublicKeyFull(pk.AsSpan(pkOff, PublicKeySize));
 #else
+            Arrays.ValidateSegment(pk, pkOff, PublicKeySize);
+
             byte[] A = Copy(pk, pkOff, PublicKeySize);
 
             if (!CheckPointFullVar(A))
@@ -2129,6 +2219,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public static bool ValidatePublicKeyFull(ReadOnlySpan<byte> pk)
         {
+            // TODO[api] Exact length check
+            if (pk.Length < PublicKeySize)
+                throw new ArgumentException(nameof(pk));
+
             Span<byte> A = stackalloc byte[PublicKeySize];
             A.CopyFrom(pk);
 
@@ -2146,8 +2240,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         public static PublicPoint ValidatePublicKeyFullExport(byte[] pk, int pkOff)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            return ValidatePublicKeyFullExport(pk.AsSpan(pkOff));
+            return ValidatePublicKeyFullExport(pk.AsSpan(pkOff, PublicKeySize));
 #else
+            Arrays.ValidateSegment(pk, pkOff, PublicKeySize);
+
             byte[] A = Copy(pk, pkOff, PublicKeySize);
 
             if (!CheckPointFullVar(A))
@@ -2167,6 +2263,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public static PublicPoint ValidatePublicKeyFullExport(ReadOnlySpan<byte> pk)
         {
+            // TODO[api] Exact length check
+            if (pk.Length < PublicKeySize)
+                throw new ArgumentException(nameof(pk));
+
             Span<byte> A = stackalloc byte[PublicKeySize];
             A.CopyFrom(pk);
 
@@ -2187,8 +2287,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         public static bool ValidatePublicKeyPartial(byte[] pk, int pkOff)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            return ValidatePublicKeyPartial(pk.AsSpan(pkOff));
+            return ValidatePublicKeyPartial(pk.AsSpan(pkOff, PublicKeySize));
 #else
+            Arrays.ValidateSegment(pk, pkOff, PublicKeySize);
+
             byte[] A = Copy(pk, pkOff, PublicKeySize);
 
             if (!CheckPointFullVar(A))
@@ -2202,6 +2304,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public static bool ValidatePublicKeyPartial(ReadOnlySpan<byte> pk)
         {
+            // TODO[api] Exact length check
+            if (pk.Length < PublicKeySize)
+                throw new ArgumentException(nameof(pk));
+
             Span<byte> A = stackalloc byte[PublicKeySize];
             A.CopyFrom(pk);
 
@@ -2216,8 +2322,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         public static PublicPoint ValidatePublicKeyPartialExport(byte[] pk, int pkOff)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            return ValidatePublicKeyPartialExport(pk.AsSpan(pkOff));
+            return ValidatePublicKeyPartialExport(pk.AsSpan(pkOff, PublicKeySize));
 #else
+            Arrays.ValidateSegment(pk, pkOff, PublicKeySize);
+
             byte[] A = Copy(pk, pkOff, PublicKeySize);
 
             if (!CheckPointFullVar(A))
@@ -2234,6 +2342,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public static PublicPoint ValidatePublicKeyPartialExport(ReadOnlySpan<byte> pk)
         {
+            // TODO[api] Exact length check
+            if (pk.Length < PublicKeySize)
+                throw new ArgumentException(nameof(pk));
+
             Span<byte> A = stackalloc byte[PublicKeySize];
             A.CopyFrom(pk);
 
@@ -2295,6 +2407,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         {
             if (sig.Length != SignatureSize)
                 throw new ArgumentException(nameof(sig));
+            if (publicPoint == null)
+                throw new ArgumentNullException(nameof(publicPoint));
 
             return ImplVerify(sig, publicPoint, ctx: null, phflag: 0x00, m);
         }
@@ -2313,6 +2427,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         {
             if (sig.Length != SignatureSize)
                 throw new ArgumentException(nameof(sig));
+            if (publicPoint == null)
+                throw new ArgumentNullException(nameof(publicPoint));
 
             return ImplVerify(sig, publicPoint, ctx, phflag: 0x00, m);
         }
@@ -2374,6 +2490,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         {
             if (sig.Length != SignatureSize)
                 throw new ArgumentException(nameof(sig));
+            if (publicPoint == null)
+                throw new ArgumentNullException(nameof(publicPoint));
             if (ph.Length != PrehashSize)
                 throw new ArgumentException(nameof(ph));
 
@@ -2398,6 +2516,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
         {
             if (sig.Length != SignatureSize)
                 throw new ArgumentException(nameof(sig));
+            if (publicPoint == null)
+                throw new ArgumentNullException(nameof(publicPoint));
 
             Span<byte> m = stackalloc byte[PrehashSize];
             if (PrehashSize != ph.DoFinal(m))
@@ -2406,5 +2526,221 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC.Rfc8032
             return ImplVerify(sig, publicPoint, ctx, phflag: 0x01, m);
         }
 #endif
+
+        /// <summary>Methods that work with expanded format for private keys (xk/xkOff) i.e. SHA-512(seed).</summary>
+        public static class ExpandedKey
+        {
+            public static readonly int ExpandedKeySize = Ed25519.DigestSize;
+
+            public static void ExpandPrivateKey(byte[] sk, int skOff, byte[] xk, int xkOff)
+            {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                ExpandPrivateKey(sk.AsSpan(skOff, SecretKeySize), xk.AsSpan(xkOff, ExpandedKeySize));
+#else
+                Arrays.ValidateSegment(sk, skOff, SecretKeySize);
+                Arrays.ValidateSegment(xk, xkOff, ExpandedKeySize);
+
+                Ed25519.ExpandPrivateKey(CreateDigest(), sk, skOff, xk, xkOff);
+#endif
+            }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            public static void ExpandPrivateKey(ReadOnlySpan<byte> sk, Span<byte> xk)
+            {
+                if (sk.Length != SecretKeySize)
+                    throw new ArgumentException(nameof(sk));
+                if (xk.Length != ExpandedKeySize)
+                    throw new ArgumentException(nameof(xk));
+
+                Ed25519.ExpandPrivateKey(CreateDigest(), sk, xk);
+            }
+#endif
+
+            public static void GeneratePrivateKey(SecureRandom random, byte[] xk, int xkOff)
+            {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                GeneratePrivateKey(random, xk.AsSpan(xkOff, ExpandedKeySize));
+#else
+                if (random == null)
+                    throw new ArgumentNullException(nameof(random));
+                Arrays.ValidateSegment(xk, xkOff, ExpandedKeySize);
+
+                byte[] sk = new byte[SecretKeySize];
+                Ed25519.GeneratePrivateKey(random, sk);
+                Ed25519.ExpandPrivateKey(CreateDigest(), sk, 0, xk, xkOff);
+                Arrays.ZeroMemory(sk);
+#endif
+            }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            public static void GeneratePrivateKey(SecureRandom random, Span<byte> xk)
+            {
+                if (random == null)
+                    throw new ArgumentNullException(nameof(random));
+                if (xk.Length != ExpandedKeySize)
+                    throw new ArgumentException(nameof(xk));
+
+                Span<byte> sk = stackalloc byte[SecretKeySize];
+                Ed25519.GeneratePrivateKey(random, sk);
+                Ed25519.ExpandPrivateKey(CreateDigest(), sk, xk);
+                Arrays.ZeroMemory(sk);
+            }
+#endif
+
+            public static void GeneratePublicKey(byte[] xk, int xkOff, byte[] pk, int pkOff)
+            {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                GeneratePublicKey(xk.AsSpan(xkOff, ExpandedKeySize), pk.AsSpan(pkOff, PublicKeySize));
+#else
+                Arrays.ValidateSegment(xk, xkOff, ExpandedKeySize);
+                Arrays.ValidateSegment(pk, pkOff, PublicKeySize);
+
+                byte[] s = new byte[ScalarBytes];
+                Ed25519.PruneScalar(xk, xkOff, s);
+                Ed25519.ScalarMultBaseEncoded(s, pk, pkOff);
+#endif
+            }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            public static void GeneratePublicKey(ReadOnlySpan<byte> xk, Span<byte> pk)
+            {
+                if (xk.Length != ExpandedKeySize)
+                    throw new ArgumentException(nameof(xk));
+                if (pk.Length != PublicKeySize)
+                    throw new ArgumentException(nameof(pk));
+
+                Span<byte> s = stackalloc byte[ScalarBytes];
+                Ed25519.PruneScalar(xk, s);
+                Ed25519.ScalarMultBaseEncoded(s, pk);
+            }
+#endif
+
+            public static PublicPoint GeneratePublicKey(byte[] xk, int xkOff)
+            {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                return GeneratePublicKey(xk.AsSpan(xkOff, ExpandedKeySize));
+#else
+                Arrays.ValidateSegment(xk, xkOff, ExpandedKeySize);
+
+                return Ed25519.GeneratePublicPoint(xk, xkOff);
+#endif
+            }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            public static PublicPoint GeneratePublicKey(ReadOnlySpan<byte> xk)
+            {
+                if (xk.Length != ExpandedKeySize)
+                    throw new ArgumentException(nameof(xk));
+
+                return Ed25519.GeneratePublicPoint(xk);
+            }
+#endif
+
+            public static void Prune(byte[] xk, int xkOff)
+            {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                Prune(xk.AsSpan(xkOff, ExpandedKeySize));
+#else
+                Arrays.ValidateSegment(xk, xkOff, ExpandedKeySize);
+
+                Ed25519.PruneScalar(xk, xkOff);
+#endif
+            }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            public static void Prune(Span<byte> xk)
+            {
+                if (xk.Length != ExpandedKeySize)
+                    throw new ArgumentException(nameof(xk));
+
+                Ed25519.PruneScalar(xk);
+            }
+#endif
+
+            public static void Sign(byte[] xk, int xkOff, byte[] m, int mOff, int mLen, byte[] sig, int sigOff)
+            {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                Sign(xk.AsSpan(xkOff, ExpandedKeySize), m.AsSpan(mOff, mLen), sig.AsSpan(sigOff, SignatureSize));
+#else
+                Arrays.ValidateSegment(xk, xkOff, ExpandedKeySize);
+                Arrays.ValidateSegment(m, mOff, mLen);
+                Arrays.ValidateSegment(sig, sigOff, SignatureSize);
+
+                byte[] h = new byte[DigestSize];
+                Array.Copy(xk, xkOff, h, 0, DigestSize);
+
+                byte[] s = new byte[ScalarBytes];
+                Ed25519.PruneScalar(h, 0, s);
+
+                byte[] pk = new byte[PointBytes];
+                Ed25519.ScalarMultBaseEncoded(s, pk, 0);
+
+                Ed25519.ImplSign(CreateDigest(), h, s, pk, 0, ctx: null, phflag: 0x00, m, mOff, mLen, sig, sigOff);
+#endif
+            }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            public static void Sign(ReadOnlySpan<byte> xk, ReadOnlySpan<byte> m, Span<byte> sig)
+            {
+                if (xk.Length != ExpandedKeySize)
+                    throw new ArgumentException(nameof(xk));
+                if (sig.Length != SignatureSize)
+                    throw new ArgumentException(nameof(sig));
+
+                Span<byte> h = stackalloc byte[DigestSize];
+                xk.CopyTo(h);
+
+                Span<byte> s = stackalloc byte[ScalarBytes];
+                Ed25519.PruneScalar(h, s);
+
+                Span<byte> pk = stackalloc byte[PointBytes];
+                Ed25519.ScalarMultBaseEncoded(s, pk);
+
+                Ed25519.ImplSign(CreateDigest(), h, s, pk, ctx: null, phflag: 0x00, m, sig);
+            }
+#endif
+
+            public static void Sign(byte[] xk, int xkOff, byte[] pk, int pkOff, byte[] m, int mOff, int mLen,
+                byte[] sig, int sigOff)
+            {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+                Sign(xk.AsSpan(xkOff, ExpandedKeySize), pk.AsSpan(pkOff, PublicKeySize),
+                    m.AsSpan(mOff, mLen), sig.AsSpan(sigOff, SignatureSize));
+#else
+                Arrays.ValidateSegment(xk, xkOff, ExpandedKeySize);
+                Arrays.ValidateSegment(pk, pkOff, PublicKeySize);
+                Arrays.ValidateSegment(m, mOff, mLen);
+                Arrays.ValidateSegment(sig, sigOff, SignatureSize);
+
+                byte[] h = new byte[DigestSize];
+                Array.Copy(xk, xkOff, h, 0, DigestSize);
+
+                byte[] s = new byte[ScalarBytes];
+                Ed25519.PruneScalar(h, 0, s);
+
+                Ed25519.ImplSign(CreateDigest(), h, s, pk, pkOff, ctx: null, phflag: 0x00, m, mOff, mLen, sig, sigOff);
+#endif
+            }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            public static void Sign(ReadOnlySpan<byte> xk, ReadOnlySpan<byte> pk, ReadOnlySpan<byte> m, Span<byte> sig)
+            {
+                if (xk.Length != ExpandedKeySize)
+                    throw new ArgumentException(nameof(xk));
+                if (pk.Length != PublicKeySize)
+                    throw new ArgumentException(nameof(pk));
+                if (sig.Length != SignatureSize)
+                    throw new ArgumentException(nameof(sig));
+
+                Span<byte> h = stackalloc byte[DigestSize];
+                xk.CopyTo(h);
+
+                Span<byte> s = stackalloc byte[ScalarBytes];
+                Ed25519.PruneScalar(h, s);
+
+                Ed25519.ImplSign(CreateDigest(), h, s, pk, ctx: null, phflag: 0x00, m, sig);
+            }
+#endif
+        }
     }
 }

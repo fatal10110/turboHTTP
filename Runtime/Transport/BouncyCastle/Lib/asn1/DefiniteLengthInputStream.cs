@@ -8,10 +8,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
     internal class DefiniteLengthInputStream
         : LimitedInputStream
     {
-		private static readonly byte[] EmptyBytes = new byte[0];
+        private static readonly byte[] EmptyBytes = Array.Empty<byte>();
 
-		private readonly int _originalLength;
-		private int _remaining;
+        private readonly int m_originalLength;
+        private int m_remaining;
 
         internal DefiniteLengthInputStream(Stream inStream, int length, int limit)
             : base(inStream, limit)
@@ -21,59 +21,56 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 if (length < 0)
                     throw new ArgumentException("negative lengths not allowed", "length");
 
-                SetParentEofDetect();
+                EnableParentEofDetect();
             }
 
-            this._originalLength = length;
-			this._remaining = length;
+            m_originalLength = length;
+            m_remaining = length;
         }
 
-        internal int Remaining
-		{
-			get { return _remaining; }
-		}
+        internal int Remaining => m_remaining;
 
-		public override int ReadByte()
+        public override int ReadByte()
         {
-            if (_remaining < 2)
+            if (m_remaining < 2)
             {
-                if (_remaining == 0)
+                if (m_remaining == 0)
                     return -1;
 
-                int b = _in.ReadByte();
+                int b = m_in.ReadByte();
                 if (b < 0)
-                    throw new EndOfStreamException("DEF length " + _originalLength + " object truncated by " + _remaining);
+                    throw new EndOfStreamException("DEF length " + m_originalLength + " object truncated by " + m_remaining);
 
-                _remaining = 0;
-                SetParentEofDetect();
+                m_remaining = 0;
+                EnableParentEofDetect();
 
                 return b;
             }
             else
             {
-                int b = _in.ReadByte();
+                int b = m_in.ReadByte();
                 if (b < 0)
-                    throw new EndOfStreamException("DEF length " + _originalLength + " object truncated by " + _remaining);
+                    throw new EndOfStreamException("DEF length " + m_originalLength + " object truncated by " + m_remaining);
 
-                --_remaining;
+                --m_remaining;
                 return b;
             }
         }
 
-		public override int Read(byte[] buf, int off, int len)
-		{
-            if (_remaining == 0)
+        public override int Read(byte[] buf, int off, int len)
+        {
+            if (m_remaining == 0)
                 return 0;
 
-            int toRead = System.Math.Min(len, _remaining);
-            int numRead = _in.Read(buf, off, toRead);
+            int toRead = System.Math.Min(len, m_remaining);
+            int numRead = m_in.Read(buf, off, toRead);
 
             if (numRead < 1)
-                throw new EndOfStreamException("DEF length " + _originalLength + " object truncated by " + _remaining);
+                throw new EndOfStreamException("DEF length " + m_originalLength + " object truncated by " + m_remaining);
 
-            if ((_remaining -= numRead) == 0)
+            if ((m_remaining -= numRead) == 0)
             {
-                SetParentEofDetect();
+                EnableParentEofDetect();
             }
 
             return numRead;
@@ -82,18 +79,18 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
         public override int Read(Span<byte> buffer)
         {
-            if (_remaining == 0)
+            if (m_remaining == 0)
                 return 0;
 
-            int toRead = System.Math.Min(buffer.Length, _remaining);
-            int numRead = _in.Read(buffer[..toRead]);
+            int toRead = System.Math.Min(buffer.Length, m_remaining);
+            int numRead = m_in.Read(buffer[..toRead]);
 
             if (numRead < 1)
-                throw new EndOfStreamException("DEF length " + _originalLength + " object truncated by " + _remaining);
+                throw new EndOfStreamException("DEF length " + m_originalLength + " object truncated by " + m_remaining);
 
-            if ((_remaining -= numRead) == 0)
+            if ((m_remaining -= numRead) == 0)
             {
-                SetParentEofDetect();
+                EnableParentEofDetect();
             }
 
             return numRead;
@@ -102,37 +99,30 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         internal void ReadAllIntoByteArray(byte[] buf)
         {
-            if (_remaining != buf.Length)
-                throw new ArgumentException("buffer length not right for data");
-
-            if (_remaining == 0)
+            if (m_remaining == 0)
                 return;
 
-            // make sure it's safe to do this!
-            int limit = Limit;
-            if (_remaining >= limit)
-                throw new IOException("corrupted stream - out of bounds length found: " + _remaining + " >= " + limit);
+            Asn1InputStream.CheckLength(m_remaining, Limit);
 
-            if ((_remaining -= Streams.ReadFully(_in, buf, 0, buf.Length)) != 0)
-                throw new EndOfStreamException("DEF length " + _originalLength + " object truncated by " + _remaining);
-            SetParentEofDetect();
+            if (m_remaining > buf.Length)
+                throw new ArgumentException("buffer length insufficient for data");
+            if ((m_remaining -= Streams.ReadFully(m_in, buf, 0, m_remaining)) != 0)
+                throw new EndOfStreamException("DEF length " + m_originalLength + " object truncated by " + m_remaining);
+            EnableParentEofDetect();
         }
 
         internal byte[] ToArray()
-		{
-			if (_remaining == 0)
-				return EmptyBytes;
+        {
+            if (m_remaining == 0)
+                return EmptyBytes;
 
-            // make sure it's safe to do this!
-            int limit = Limit;
-            if (_remaining >= limit)
-                throw new IOException("corrupted stream - out of bounds length found: " + _remaining + " >= " + limit);
+            Asn1InputStream.CheckLength(m_remaining, Limit);
 
-            byte[] bytes = new byte[_remaining];
-			if ((_remaining -= Streams.ReadFully(_in, bytes, 0, bytes.Length)) != 0)
-				throw new EndOfStreamException("DEF length " + _originalLength + " object truncated by " + _remaining);
-			SetParentEofDetect();
-			return bytes;
-		}
+            if (Streams.TryReadExactIncremental(this, m_remaining, out var bytes))
+                return bytes;
+
+            // Unreachable since we passed 'this' above so incomplete reads throw in our Read(Byte) methods.
+            throw new EndOfStreamException();
+        }
     }
 }

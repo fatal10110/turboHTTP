@@ -1,0 +1,57 @@
+# Public types declared under Runtime/Core (assembly TurboHTTP.Core), one `Namespace.Name` per line, sorted.
+# Rule: every source line in Runtime/Core/**/*.cs that declares a `public` class, struct, enum, interface,
+# delegate or record, top-level or nested, whatever #if guards it (generic types as Name`N).
+# Checked by `Tools~/ci/check_repo.py coreapi` (run by Tools~/ci/check.sh and CI): the list must match the
+# source exactly, and the total may not exceed 60 (#77). Adding a public Core type means adding it here in
+# the same PR and naming it in the PR body; prefer internal (Core.Internal + InternalsVisibleTo).
+# count: 50
+TurboHTTP.Core.BufferedRequestBody
+TurboHTTP.Core.CleartextTrafficPolicy
+TurboHTTP.Core.ConnectionPoolOptions
+TurboHTTP.Core.ContentTypes
+TurboHTTP.Core.DetachedBufferedBody
+TurboHTTP.Core.DispatchFunc
+TurboHTTP.Core.EmptyRequestBody
+TurboHTTP.Core.FactoryRequestBody
+TurboHTTP.Core.Http2Options
+TurboHTTP.Core.HttpHeaders
+TurboHTTP.Core.HttpMethod
+TurboHTTP.Core.HttpMethodExtensions
+TurboHTTP.Core.HttpTransportFactory
+TurboHTTP.Core.IHttpHandler
+TurboHTTP.Core.IHttpInterceptor
+TurboHTTP.Core.IHttpPlugin
+TurboHTTP.Core.IHttpTransport
+TurboHTTP.Core.IResponseBodySource
+TurboHTTP.Core.InterceptorPipeline
+TurboHTTP.Core.OwnedMemoryRequestBody
+TurboHTTP.Core.PluginCapabilities
+TurboHTTP.Core.PluginContext
+TurboHTTP.Core.PluginDescriptor
+TurboHTTP.Core.PluginException
+TurboHTTP.Core.PluginLifecycleState
+TurboHTTP.Core.ProxyBypassMatcher
+TurboHTTP.Core.ProxyEnvironmentResolver
+TurboHTTP.Core.ProxyRequestBuilderExtensions
+TurboHTTP.Core.ProxySettings
+TurboHTTP.Core.RequestBodyReplayability
+TurboHTTP.Core.RequestContext
+TurboHTTP.Core.RequestMetadataKeys
+TurboHTTP.Core.ResponseBodyStream
+TurboHTTP.Core.SocketIoMode
+TurboHTTP.Core.StreamRequestBody
+TurboHTTP.Core.StreamingOptions
+TurboHTTP.Core.TimelineEvent
+TurboHTTP.Core.TlsBackend
+TurboHTTP.Core.TransportCapabilities
+TurboHTTP.Core.TransportDispatchHelper
+TurboHTTP.Core.UHttpClient
+TurboHTTP.Core.UHttpClientOptions
+TurboHTTP.Core.UHttpError
+TurboHTTP.Core.UHttpErrorType
+TurboHTTP.Core.UHttpException
+TurboHTTP.Core.UHttpRequest
+TurboHTTP.Core.UHttpRequestBody
+TurboHTTP.Core.UHttpResponse
+TurboHTTP.Core.UHttpStreamingResponse
+TurboHTTP.Transport.Connection.HappyEyeballsOptions

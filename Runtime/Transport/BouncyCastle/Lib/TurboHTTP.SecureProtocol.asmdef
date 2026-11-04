@@ -1,0 +1,16 @@
+{
+    "name": "TurboHTTP.SecureProtocol",
+    "rootNamespace": "TurboHTTP.SecureProtocol",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [
+        "WebGL"
+    ],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}

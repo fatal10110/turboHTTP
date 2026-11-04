@@ -1,0 +1,36 @@
+# What `npm pack` leaves out of the package tarball (OpenUPM builds its package this way, #6, #101).
+# A Git URL install clones the whole repository instead; Unity skips `~` and dot folders there too.
+# Shipped: Runtime/, Editor/, Plugins/, Tests/, Samples~/, Documentation~/, package.json, README,
+# CHANGELOG, LICENSE, Third-Party Notices, AGENTS/CLAUDE/CONTRIBUTING (public repo), and their .meta files.
+
+# Internal docs, dev tooling, CI and agent configuration
+Development~/
+Tools~/
+.claude/
+.github/
+.githooks/
+.config/
+.editorconfig
+.gitattributes
+.gitignore
+.npmignore
+
+# Local build output (also in .gitignore, which npm ignores when this file exists)
+.build/
+.tools/
+__pycache__/
+Library/
+Logs/
+Temp/
+Obj/
+Build/
+Builds/
+UserSettings/
+MemoryCaptures/
+.vscode/
+.vs/
+.DS_Store
+*.csproj
+*.sln
+*.pdb
+Tests/Benchmarks/*.observed.json

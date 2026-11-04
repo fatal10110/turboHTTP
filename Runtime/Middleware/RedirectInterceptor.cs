@@ -9,8 +9,11 @@ namespace TurboHTTP.Middleware
     /// <summary>
     /// Handles RFC-compliant redirect following for 301/302/303/307/308 responses.
     /// </summary>
-    public sealed class RedirectInterceptor : IHttpInterceptor
+    public sealed class RedirectInterceptor : IHttpInterceptor, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#55).
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Redirect;
+
         private static readonly TimeSpan ResponseDiscardTimeout = TimeSpan.FromSeconds(2);
         private readonly bool _defaultFollowRedirects;
         private readonly int _defaultMaxRedirects;
@@ -54,8 +57,19 @@ namespace TurboHTTP.Middleware
                     cancellationToken,
                     ResponseDiscardTimeout);
 
-                await next(request, redirectHandler, context, cancellationToken).ConfigureAwait(false);
-                await redirectHandler.Completion.ConfigureAwait(false);
+                // While this redirect interceptor runs, interceptors inside it see every hop
+                // themselves and must not register as redirect-response observers (a later dispatch
+                // on the same context, e.g. a retry, would otherwise snapshot them as outer ones).
+                RedirectHandler.EnterRedirectScope(context);
+                try
+                {
+                    await next(request, redirectHandler, context, cancellationToken).ConfigureAwait(false);
+                    await redirectHandler.Completion.ConfigureAwait(false);
+                }
+                finally
+                {
+                    RedirectHandler.ExitRedirectScope(context);
+                }
             };
         }
 

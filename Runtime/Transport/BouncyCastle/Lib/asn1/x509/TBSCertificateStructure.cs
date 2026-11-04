@@ -78,12 +78,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
                 throw new ArgumentException("version number not recognised");
             }
 
-            m_serialNumber = DerInteger.GetInstance(seq[pos++]);
-            m_signature = AlgorithmIdentifier.GetInstance(seq[pos++]);
-            m_issuer = X509Name.GetInstance(seq[pos++]);
-            m_validity = Validity.GetInstance(seq[pos++]);
-            m_subject = X509Name.GetInstance(seq[pos++]);
-            m_subjectPublicKeyInfo = SubjectPublicKeyInfo.GetInstance(seq[pos++]);
+            m_serialNumber = Asn1Utilities.Read(seq, ref pos, DerInteger.GetInstance);
+            m_signature = Asn1Utilities.Read(seq, ref pos, AlgorithmIdentifier.GetInstance);
+            m_issuer = Asn1Utilities.Read(seq, ref pos, X509Name.GetInstance);
+            m_validity = Asn1Utilities.Read(seq, ref pos, Validity.GetInstance);
+            m_subject = Asn1Utilities.Read(seq, ref pos, X509Name.GetInstance);
+            m_subjectPublicKeyInfo = Asn1Utilities.Read(seq, ref pos, SubjectPublicKeyInfo.GetInstance);
 
             if (!isV1)
             {
@@ -99,8 +99,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
             if (pos != count)
                 throw new ArgumentException("Unexpected elements in sequence", nameof(seq));
 
-			m_seq = seq;
-		}
+            // RFC 5280 sec. 4.1.2.4: certificate issuer MUST be a non-empty DN.
+            if (m_issuer.IsEmpty && !Properties.GetBoolean(Properties.X509AllowEmptyIssuerCert, false))
+                throw new ArgumentException("certificate issuer is an empty distinguished name");
+
+            m_seq = seq;
+        }
 
         public TbsCertificateStructure(DerInteger version, DerInteger serialNumber, AlgorithmIdentifier signature,
             X509Name issuer, Validity validity, X509Name subject, SubjectPublicKeyInfo subjectPublicKeyInfo,
@@ -117,6 +121,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
             m_issuerUniqueID = issuerUniqueID;
             m_subjectUniqueID = subjectUniqueID;
             m_extensions = extensions;
+
+            // RFC 5280 sec. 4.1.2.4: certificate issuer MUST be a non-empty DN.
+            if (m_issuer.IsEmpty)
+                throw new ArgumentException("certificate issuer is an empty distinguished name");
 
             m_seq = null;
         }
@@ -151,8 +159,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1.X509
         {
             if (m_seq != null)
             {
-                string property = Platform.GetEnvironmentVariable("TurboHTTP.SecureProtocol.Org.BouncyCastle.X509.Allow_Non-DER_TBSCert");
-                if (null == property || Platform.EqualsIgnoreCase("true", property))
+                if (Properties.GetBoolean(Properties.X509AllowNonDerTbsCertificate, true))
                     return m_seq;
             }
 

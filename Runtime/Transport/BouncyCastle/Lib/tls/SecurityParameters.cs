@@ -60,9 +60,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         internal byte[] m_peerVerifyData = null;
 
         /// <summary>Connection ID we use during communication to the peer.</summary>
-        internal byte[] m_connectionIDLocal = null;
+        internal byte[] m_connectionIDLocal;
         /// <summary>Connection ID our peer uses for communication to us.</summary>
-        internal byte[] m_connectionIDPeer = null;
+        internal byte[] m_connectionIDPeer;
 
         internal void Clear()
         {

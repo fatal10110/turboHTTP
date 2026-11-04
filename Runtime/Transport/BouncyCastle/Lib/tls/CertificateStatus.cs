@@ -15,10 +15,28 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
         public CertificateStatus(short statusType, object response)
         {
             if (!IsCorrectType(statusType, response))
-                throw new ArgumentException("not an instance of the correct type", "response");
+                throw new ArgumentException("not an instance of the correct type", nameof(response));
 
             m_statusType = statusType;
             m_response = response;
+        }
+
+        /// <summary>
+        /// Whether there exists an OCSP response for certificate 0 of the chain this status answers for: always true
+        /// for <see cref="CertificateStatusType.ocsp"/>, true for <see cref="CertificateStatusType.ocsp_multi"/> only
+        /// when there was a non-empty response for position 0.
+        /// </summary>
+        internal bool HasLeafResponse()
+        {
+            switch (m_statusType)
+            {
+            case CertificateStatusType.ocsp:
+                return true;
+            case CertificateStatusType.ocsp_multi:
+                return ((IList<OcspResponse>)m_response)[0] != null;
+            default:
+                throw new InvalidOperationException();
+            }
         }
 
         public short StatusType => m_statusType;
@@ -127,7 +145,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             {
             case CertificateStatusType.ocsp:
             {
-                RequireStatusRequestVersion(1, statusRequestVersion);
+                CheckStatusType(status_type, 1, statusRequestVersion);
 
                 byte[] derEncoding = TlsUtilities.ReadOpaque24(input, 1);
                 response = ParseOcspResponse(derEncoding);
@@ -135,7 +153,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             }
             case CertificateStatusType.ocsp_multi:
             {
-                RequireStatusRequestVersion(2, statusRequestVersion);
+                CheckStatusType(status_type, 2, statusRequestVersion);
 
                 byte[] ocsp_response_list = TlsUtilities.ReadOpaque24(input, 1);
                 MemoryStream buf = new MemoryStream(ocsp_response_list, false);
@@ -177,22 +195,24 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             case CertificateStatusType.ocsp_multi:
                 return IsOcspResponseList(response);
             default:
-                throw new ArgumentException("unsupported CertificateStatusType", "statusType");
+                throw new ArgumentException("unsupported CertificateStatusType", nameof(statusType));
             }
         }
 
-        private static bool IsOcspResponseList(object response) =>
-            response is IList<OcspResponse> v && v.Count > 0;
+        private static bool IsOcspResponseList(object response) => response is IList<OcspResponse> v && v.Count > 0;
 
         /// <exception cref="IOException"/>
         private static OcspResponse ParseOcspResponse(byte[] derEncoding) =>
             TlsUtilities.ReadDerEncoding(derEncoding, OcspResponse.GetOptional);
 
         /// <exception cref="IOException"/>
-        private static void RequireStatusRequestVersion(int minVersion, int statusRequestVersion)
+        private static void CheckStatusType(short status_type, int minVersion, int statusRequestVersion)
         {
             if (statusRequestVersion < minVersion)
-                throw new TlsFatalAlert(AlertDescription.decode_error);
+            {
+                throw new TlsFatalAlert(AlertDescription.decode_error,
+                    "Invalid status_type " + CertificateStatusType.GetText(status_type));
+            }
         }
     }
 }

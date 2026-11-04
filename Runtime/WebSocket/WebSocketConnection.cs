@@ -23,7 +23,14 @@ namespace TurboHTTP.WebSocket
 
         private static readonly double StopwatchFrequency = System.Diagnostics.Stopwatch.Frequency;
 
+        // Frame-level lock: serialises every frame written through the shared, non-thread-safe frame writer.
+        // Data messages take it per fragment so ping/pong frames can go between fragments (RFC 6455 5.4,
+        // #86). Never disposed: a racing holder or waiter must still be able to release or acquire it (#84).
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
+
+        // Message-level lock, taken before _sendLock: one data message at a time (fragments of two messages
+        // must not interleave, RFC 6455 5.4), and the Close frame never splits a message (5.5.1).
+        private readonly SemaphoreSlim _messageLock = new SemaphoreSlim(1, 1);
         private readonly TaskCompletionSource<WebSocketCloseStatus> _remoteCloseTcs =
             new TaskCompletionSource<WebSocketCloseStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -31,6 +38,13 @@ namespace TurboHTTP.WebSocket
         private int _disposed;
         private int _closeFrameSent;
         private int _finalized;
+
+        // #84: the frame writer, the extensions and the message assembler are used by the send funnel and
+        // the receive loop while FinalizeClose can run on any thread (Abort, pong timeout, a failed send).
+        // The connection holds one reference until FinalizeClose; each user holds one while it works, and
+        // the last release disposes them (TryAcquireResources / ReleaseResources).
+        private int _resourceRefCount = 1;
+        private int _controlFramesWaiting;
 
         private Stream _stream;
         private IWebSocketTransport _transport;
@@ -64,6 +78,15 @@ namespace TurboHTTP.WebSocket
         private long _lastPingTimestamp;
         private long _pingCounter;
         private long _lastPongCounter;
+
+        // Receive-loop backpressure (#78): 1 while the read loop waits for space in _receiveQueue,
+        // plus the Stopwatch timestamp of the last time such a wait ended. Interlocked/Volatile owned.
+        private int _receiveParked;
+        private long _receiveUnparkedTimestamp;
+
+        // Keep-alive iterations that skipped a ping or forgave a pong timeout because of local backpressure.
+        // Interlocked owned; diagnostics and tests only.
+        private long _keepAliveBackpressureSkips;
         private TaskCompletionSource<long> _pongWaiter;
         private WebSocketMetricsCollector _metrics;
         private WebSocketHealthMonitor _healthMonitor;
@@ -99,6 +122,19 @@ namespace TurboHTTP.WebSocket
 
         public Exception TerminalError => _terminalError;
 
+        /// <summary>
+        /// Number of keep-alive iterations that skipped a ping or forgave a pong timeout because the read
+        /// loop was parked on the full receive queue (#78).
+        /// </summary>
+        internal long KeepAliveBackpressureSkips => Interlocked.Read(ref _keepAliveBackpressureSkips);
+
+        // Diagnostics and tests only (#80): receive-loop parking and the delivery queue's byte budget.
+        internal bool IsReceiveLoopParked => Volatile.Read(ref _receiveParked) != 0;
+
+        internal int ReceiveQueueCount => _receiveQueue?.Count ?? 0;
+
+        internal long ReceiveQueueBytes => _receiveQueue?.QueuedBytes ?? 0;
+
         public WebSocketCloseStatus? CloseStatus => _hasCloseStatus ? _closeStatus : (WebSocketCloseStatus?)null;
 
         public WebSocketMetrics Metrics => _metrics?.GetSnapshot() ?? default;
@@ -131,25 +167,35 @@ namespace TurboHTTP.WebSocket
             _options = options;
             _frameWriter = new WebSocketFrameWriter(options.FragmentationThreshold);
             _messageAssembler = new MessageAssembler(options.MaxMessageSize, options.MaxFragmentCount);
-            _receiveQueue = new BoundedAsyncQueue<WebSocketMessage>(options.ReceiveQueueCapacity);
+            _receiveQueue = WebSocketMessageQueue.Create(options);
             _lifecycleCts = new CancellationTokenSource();
 
             List<IWebSocketExtension> configuredExtensions = null;
+            var handshakeToken = CancellationToken.None;
+            var disposeOnCancel = default(CancellationTokenRegistration);
             try
             {
                 using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 handshakeCts.CancelAfter(options.HandshakeTimeout);
 
-                var handshakeToken = handshakeCts.Token;
+                handshakeToken = handshakeCts.Token;
 
                 _stream = await transport.ConnectAsync(uri, options, handshakeToken).ConfigureAwait(false);
 
-                configuredExtensions = CreateConnectionExtensions(options);
-                var extensionNegotiator = configuredExtensions.Count > 0
-                    ? new WebSocketExtensionNegotiator(configuredExtensions)
-                    : null;
+                // #226: Mono/IL2CPP NetworkStream ignores the token once a read is pending, so a server
+                // that accepts and never sends the 101 would hold this call past HandshakeTimeout.
+                // Disposing the stream on cancellation faults the pending read or write; the fault is
+                // reported as cancellation (or the handshake timeout) below. A token that already fired
+                // disposes the stream immediately.
+                disposeOnCancel = RegisterDisposeOnCancel(_stream, handshakeToken);
 
-                var requestedExtensions = BuildRequestedExtensions(options.Extensions, extensionNegotiator);
+                configuredExtensions = CreateConnectionExtensions(options);
+
+                // Built even without configured extensions: a server that selects any extension the
+                // client did not offer must fail the connection (RFC 6455 section 4.1, #81).
+                var extensionNegotiator = new WebSocketExtensionNegotiator(configuredExtensions);
+
+                var requestedExtensions = BuildRequestedExtensions(extensionNegotiator);
 
                 var handshakeRequest = WebSocketHandshake.BuildRequest(
                     uri,
@@ -171,43 +217,45 @@ namespace TurboHTTP.WebSocket
                 string serverExtensionsHeader = JoinHeaderValues(
                     handshakeResult.ResponseHeaders.GetValues("Sec-WebSocket-Extensions"));
 
-                var extensionNegotiationResult = extensionNegotiator != null
-                    ? extensionNegotiator.ProcessNegotiation(serverExtensionsHeader)
-                    : WebSocketExtensionNegotiationResult.Success(Array.Empty<IWebSocketExtension>(), 0);
+                var extensionNegotiationResult = extensionNegotiator.ProcessNegotiation(serverExtensionsHeader);
 
-                if (extensionNegotiator != null && !extensionNegotiationResult.IsSuccess)
+                // An unoffered, duplicate or unhonourable extension in the response always fails the
+                // connection, whether or not extensions are required (RFC 6455 sections 4.1 and 9.1).
+                if (!extensionNegotiationResult.IsSuccess)
                 {
-                    if (options.RequireNegotiatedExtensions)
-                    {
-                        await TrySendMandatoryExtensionCloseAsync(
-                            extensionNegotiationResult.ErrorMessage,
-                            handshakeToken).ConfigureAwait(false);
+                    string message = "Server extension response rejected: " + extensionNegotiationResult.ErrorMessage;
 
-                        throw CreateMandatoryExtensionException(extensionNegotiationResult.ErrorMessage);
-                    }
+                    await TrySendExtensionFailureCloseAsync(
+                        WebSocketCloseCode.ProtocolError,
+                        message,
+                        handshakeToken).ConfigureAwait(false);
 
-                    extensionNegotiationResult = WebSocketExtensionNegotiationResult.Success(
-                        Array.Empty<IWebSocketExtension>(),
-                        allowedRsvMask: 0);
+                    throw CreateExtensionNegotiationException(WebSocketCloseCode.ProtocolError, message);
                 }
 
-                if (extensionNegotiator != null &&
-                    options.RequireNegotiatedExtensions &&
+                if (options.RequireNegotiatedExtensions &&
                     extensionNegotiationResult.ActiveExtensions.Count == 0)
                 {
                     const string message =
                         "Server did not negotiate any required WebSocket extension.";
 
-                    await TrySendMandatoryExtensionCloseAsync(message, handshakeToken).ConfigureAwait(false);
-                    throw CreateMandatoryExtensionException(message);
+                    await TrySendExtensionFailureCloseAsync(
+                        WebSocketCloseCode.MandatoryExtension,
+                        message,
+                        handshakeToken).ConfigureAwait(false);
+                    throw CreateExtensionNegotiationException(WebSocketCloseCode.MandatoryExtension, message);
                 }
+
+                // The opening handshake is complete: the stream is now owned by the receive loop and
+                // FinalizeClose. A token that fired before the registration was removed may have
+                // disposed it, so the connection never opens on it.
+                disposeOnCancel.Dispose();
+                handshakeToken.ThrowIfCancellationRequested();
 
                 _remoteUri = uri;
                 _subProtocol = handshakeResult.NegotiatedSubProtocol;
                 _activeExtensions = extensionNegotiationResult.ActiveExtensions;
-                _negotiatedExtensions = extensionNegotiator != null
-                    ? BuildNegotiatedExtensionNames(_activeExtensions)
-                    : handshakeResult.NegotiatedExtensions;
+                _negotiatedExtensions = BuildNegotiatedExtensionNames(_activeExtensions);
                 DisposeUnselectedExtensions(configuredExtensions, _activeExtensions);
                 configuredExtensions = null;
                 _allowedRsvMask = extensionNegotiationResult.AllowedRsvMask;
@@ -218,7 +266,10 @@ namespace TurboHTTP.WebSocket
                 if (_healthMonitor != null)
                     _healthMonitor.OnQualityChanged += HandleHealthQualityChanged;
                 _connectedAtUtc = DateTimeOffset.UtcNow;
-                _frameReader = new WebSocketFrameReader(options.MaxFrameSize, _allowedRsvMask);
+                _frameReader = new WebSocketFrameReader(
+                    options.MaxFrameSize,
+                    _allowedRsvMask,
+                    maxMessageSize: options.MaxMessageSize);
 
                 if (handshakeResult.PrefetchedBytes.Length > 0)
                 {
@@ -242,26 +293,51 @@ namespace TurboHTTP.WebSocket
                     _keepAliveTask = RunKeepAliveLoopAsync(_keepAliveCts.Token);
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (Exception ex) when (ct.IsCancellationRequested &&
+                                       (ex is OperationCanceledException || handshakeToken.IsCancellationRequested))
             {
+                // The caller canceled; a disposed-stream fault caused by that cancellation is the
+                // same outcome (#226).
+                disposeOnCancel.Dispose();
                 DisposeExtensions(configuredExtensions);
                 FinalizeClose(
                     new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure),
                     new WebSocketException(WebSocketError.ConnectionClosed, "WebSocket connect was canceled."));
                 await ObserveReceiveLoopTerminationAsync().ConfigureAwait(false);
-                throw;
+                if (ex is OperationCanceledException)
+                    throw;
+
+                throw new OperationCanceledException("WebSocket connect was canceled.", ex, ct);
             }
             catch (Exception ex)
             {
+                disposeOnCancel.Dispose();
                 DisposeExtensions(configuredExtensions);
                 WebSocketException mapped;
-                if (ex is WebSocketException wsEx)
+                if (ex is WebSocketHandshakeException handshakeEx)
+                {
+                    // The server answered: its status is the outcome even if the timer fired while the
+                    // error body was read (#83).
+                    int statusCode = handshakeEx.Result?.StatusCode ?? 0;
+                    mapped = new WebSocketException(
+                        WebSocketError.HandshakeFailed,
+                        ex.Message,
+                        ex,
+                        statusCode > 0 ? statusCode : (int?)null);
+                }
+                else if (handshakeToken.IsCancellationRequested)
+                {
+                    // HandshakeTimeout expired (the caller token did not fire): the connect phase,
+                    // CONNECT tunnel, TLS or the upgrade exchange did not finish in time.
+                    mapped = new WebSocketException(
+                        WebSocketError.ConnectionClosed,
+                        "WebSocket opening handshake timed out after " +
+                        options.HandshakeTimeout.TotalMilliseconds + " ms.",
+                        ex);
+                }
+                else if (ex is WebSocketException wsEx)
                 {
                     mapped = wsEx;
-                }
-                else if (ex is WebSocketHandshakeException)
-                {
-                    mapped = new WebSocketException(WebSocketError.HandshakeFailed, ex.Message, ex);
                 }
                 else
                 {
@@ -280,7 +356,18 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private async Task TrySendMandatoryExtensionCloseAsync(string reason, CancellationToken ct)
+        private static CancellationTokenRegistration RegisterDisposeOnCancel(Stream stream, CancellationToken ct)
+        {
+            if (stream == null || !ct.CanBeCanceled)
+                return default;
+
+            return ct.Register(static state => SafeDispose((Stream)state), stream);
+        }
+
+        private async Task TrySendExtensionFailureCloseAsync(
+            WebSocketCloseCode closeCode,
+            string reason,
+            CancellationToken ct)
         {
             var stream = _stream;
             var frameWriter = _frameWriter;
@@ -291,7 +378,7 @@ namespace TurboHTTP.WebSocket
             {
                 await frameWriter.WriteCloseAsync(
                     stream,
-                    WebSocketCloseCode.MandatoryExtension,
+                    closeCode,
                     reason ?? string.Empty,
                     ct).ConfigureAwait(false);
             }
@@ -301,16 +388,18 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private static WebSocketException CreateMandatoryExtensionException(string message)
+        private static WebSocketException CreateExtensionNegotiationException(
+            WebSocketCloseCode closeCode,
+            string message)
         {
             var effectiveMessage = string.IsNullOrWhiteSpace(message)
-                ? "Required WebSocket extension negotiation failed."
+                ? "WebSocket extension negotiation failed."
                 : message;
 
             return new WebSocketException(
                 WebSocketError.ExtensionNegotiationFailed,
                 effectiveMessage,
-                closeCode: WebSocketCloseCode.MandatoryExtension,
+                closeCode: closeCode,
                 closeReason: effectiveMessage);
         }
 

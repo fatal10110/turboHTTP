@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.BinPoly;
+using TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Raw;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
@@ -20,40 +22,23 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         public abstract ECFieldElement Invert();
         public abstract ECFieldElement Sqrt();
 
-        public virtual int BitLength
-        {
-            get { return ToBigInteger().BitLength; }
-        }
+        public virtual int BitLength => ToBigInteger().BitLength;
 
-        public virtual bool IsOne
-        {
-            get { return BitLength == 1; }
-        }
+        public virtual bool IsOne => BitLength == 1;
 
-        public virtual bool IsZero
-        {
-            get { return 0 == ToBigInteger().SignValue; }
-        }
+        public virtual bool IsZero => 0 == ToBigInteger().SignValue;
 
-        public virtual ECFieldElement MultiplyMinusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y)
-        {
-            return Multiply(b).Subtract(x.Multiply(y));
-        }
+        public virtual ECFieldElement MultiplyMinusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y) =>
+            Multiply(b).Subtract(x.Multiply(y));
 
-        public virtual ECFieldElement MultiplyPlusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y)
-        {
-            return Multiply(b).Add(x.Multiply(y));
-        }
+        public virtual ECFieldElement MultiplyPlusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y) =>
+            Multiply(b).Add(x.Multiply(y));
 
-        public virtual ECFieldElement SquareMinusProduct(ECFieldElement x, ECFieldElement y)
-        {
-            return Square().Subtract(x.Multiply(y));
-        }
+        public virtual ECFieldElement SquareMinusProduct(ECFieldElement x, ECFieldElement y) =>
+            Square().Subtract(x.Multiply(y));
 
-        public virtual ECFieldElement SquarePlusProduct(ECFieldElement x, ECFieldElement y)
-        {
-            return Square().Add(x.Multiply(y));
-        }
+        public virtual ECFieldElement SquarePlusProduct(ECFieldElement x, ECFieldElement y) =>
+            Square().Add(x.Multiply(y));
 
         public virtual ECFieldElement SquarePow(int pow)
         {
@@ -65,55 +50,38 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             return r;
         }
 
-        public virtual bool TestBitZero()
-        {
-            return ToBigInteger().TestBit(0);
-        }
+        public virtual bool TestBitZero() => ToBigInteger().TestBit(0);
 
-        public override bool Equals(object obj)
-        {
-            return Equals(obj as ECFieldElement);
-        }
+        public override bool Equals(object obj) => Equals(obj as ECFieldElement);
 
         public virtual bool Equals(ECFieldElement other)
         {
             if (this == other)
                 return true;
-            if (null == other)
-                return false;
-            return ToBigInteger().Equals(other.ToBigInteger());
+
+            return other != null
+                && ToBigInteger().Equals(other.ToBigInteger());
         }
 
-        public override int GetHashCode()
-        {
-            return ToBigInteger().GetHashCode();
-        }
+        public override int GetHashCode() => ToBigInteger().GetHashCode();
 
-        public override string ToString()
-        {
-            return this.ToBigInteger().ToString(16);
-        }
+        public override string ToString() => ToBigInteger().ToString(16);
 
         public virtual byte[] GetEncoded()
         {
-            return BigIntegers.AsUnsignedByteArray(GetEncodedLength(), ToBigInteger());
+            byte[] buf = new byte[GetEncodedLength()];
+            EncodeTo(buf, 0);
+            return buf;
         }
 
-        public virtual int GetEncodedLength()
-        {
-            return (FieldSize + 7) / 8;
-        }
+        public virtual int GetEncodedLength() => (FieldSize + 7) / 8;
 
-        public virtual void EncodeTo(byte[] buf, int off)
-        {
+        public virtual void EncodeTo(byte[] buf, int off) =>
             BigIntegers.AsUnsignedByteArray(ToBigInteger(), buf, off, GetEncodedLength());
-        }
 
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-        public virtual void EncodeTo(Span<byte> buf)
-        {
+        public virtual void EncodeTo(Span<byte> buf) =>
             BigIntegers.AsUnsignedByteArray(ToBigInteger(), buf[..GetEncodedLength()]);
-        }
 #endif
     }
 
@@ -125,7 +93,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
     public class FpFieldElement
         : AbstractFpFieldElement
     {
-        private readonly BigInteger q, r, x;
+        private readonly BigInteger m_q, m_r, m_x;
 
         internal static BigInteger CalculateResidue(BigInteger p)
         {
@@ -133,189 +101,152 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             if (bitLength >= 96)
             {
                 BigInteger firstWord = p.ShiftRight(bitLength - 64);
+
                 if (firstWord.LongValue == -1L)
-                {
                     return BigInteger.One.ShiftLeft(bitLength).Subtract(p);
-                }
+
                 if ((bitLength & 7) == 0)
-                {
                     return BigInteger.One.ShiftLeft(bitLength << 1).Divide(p).Negate();
-                }
             }
             return null;
         }
 
         internal FpFieldElement(BigInteger q, BigInteger r, BigInteger x)
         {
-            this.q = q;
-            this.r = r;
-            this.x = x;
+            m_q = q;
+            m_r = r;
+            m_x = x;
         }
 
-        public override BigInteger ToBigInteger()
-        {
-            return x;
-        }
+        public override BigInteger ToBigInteger() => m_x;
 
-        /**
-         * return the field name for this field.
-         *
-         * @return the string "Fp".
-         */
-        public override string FieldName
-        {
-            get { return "Fp"; }
-        }
+        public override string FieldName => "Fp";
 
-        public override int FieldSize
-        {
-            get { return q.BitLength; }
-        }
+        public override int FieldSize => m_q.BitLength;
 
-        public BigInteger Q
-        {
-            get { return q; }
-        }
+        public BigInteger Q => m_q;
 
-        public override ECFieldElement Add(
-            ECFieldElement b)
-        {
-            return new FpFieldElement(q, r, ModAdd(x, b.ToBigInteger()));
-        }
+        public override ECFieldElement Add(ECFieldElement b) =>
+            new FpFieldElement(m_q, m_r, ModAdd(m_x, b.ToBigInteger()));
 
         public override ECFieldElement AddOne()
         {
-            BigInteger x2 = x.Add(BigInteger.One);
-            if (x2.CompareTo(q) == 0)
+            BigInteger x2 = m_x.Add(BigInteger.One);
+            if (x2.CompareTo(m_q) == 0)
             {
                 x2 = BigInteger.Zero;
             }
-            return new FpFieldElement(q, r, x2);
+            return new FpFieldElement(m_q, m_r, x2);
         }
 
-        public override ECFieldElement Subtract(
-            ECFieldElement b)
-        {
-            return new FpFieldElement(q, r, ModSubtract(x, b.ToBigInteger()));
-        }
+        public override ECFieldElement Subtract(ECFieldElement b) =>
+            new FpFieldElement(m_q, m_r, ModSubtract(m_x, b.ToBigInteger()));
 
-        public override ECFieldElement Multiply(
-            ECFieldElement b)
-        {
-            return new FpFieldElement(q, r, ModMult(x, b.ToBigInteger()));
-        }
+        public override ECFieldElement Multiply(ECFieldElement b) =>
+            new FpFieldElement(m_q, m_r, ModMult(m_x, b.ToBigInteger()));
 
         public override ECFieldElement MultiplyMinusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y)
         {
-            BigInteger ax = this.x, bx = b.ToBigInteger(), xx = x.ToBigInteger(), yx = y.ToBigInteger();
+            BigInteger ax = m_x, bx = b.ToBigInteger(), xx = x.ToBigInteger(), yx = y.ToBigInteger();
             BigInteger ab = ax.Multiply(bx);
             BigInteger xy = xx.Multiply(yx);
-            return new FpFieldElement(q, r, ModReduce(ab.Subtract(xy)));
+            return new FpFieldElement(m_q, m_r, ModReduce(ab.Subtract(xy)));
         }
 
         public override ECFieldElement MultiplyPlusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y)
         {
-            BigInteger ax = this.x, bx = b.ToBigInteger(), xx = x.ToBigInteger(), yx = y.ToBigInteger();
+            BigInteger ax = m_x, bx = b.ToBigInteger(), xx = x.ToBigInteger(), yx = y.ToBigInteger();
             BigInteger ab = ax.Multiply(bx);
             BigInteger xy = xx.Multiply(yx);
             BigInteger sum = ab.Add(xy);
-            if (r != null && r.SignValue < 0 && sum.BitLength > (q.BitLength << 1))
+            if (m_r != null && m_r.SignValue < 0 && sum.BitLength > (m_q.BitLength << 1))
             {
-                sum = sum.Subtract(q.ShiftLeft(q.BitLength));
+                sum = sum.Subtract(m_q.ShiftLeft(m_q.BitLength));
             }
-            return new FpFieldElement(q, r, ModReduce(sum));
+            return new FpFieldElement(m_q, m_r, ModReduce(sum));
         }
 
-        public override ECFieldElement Divide(
-            ECFieldElement b)
-        {
-            return new FpFieldElement(q, r, ModMult(x, ModInverse(b.ToBigInteger())));
-        }
+        public override ECFieldElement Divide(ECFieldElement b) =>
+            new FpFieldElement(m_q, m_r, ModMult(m_x, ModInverse(b.ToBigInteger())));
 
-        public override ECFieldElement Negate()
-        {
-            return x.SignValue == 0 ? this : new FpFieldElement(q, r, q.Subtract(x));
-        }
+        public override ECFieldElement Negate() =>
+            m_x.SignValue == 0 ? this : new FpFieldElement(m_q, m_r, m_q.Subtract(m_x));
 
-        public override ECFieldElement Square()
-        {
-            return new FpFieldElement(q, r, ModMult(x, x));
-        }
+        public override ECFieldElement Square() =>
+            new FpFieldElement(m_q, m_r, ModMult(m_x, m_x));
 
         public override ECFieldElement SquareMinusProduct(ECFieldElement x, ECFieldElement y)
         {
-            BigInteger ax = this.x, xx = x.ToBigInteger(), yx = y.ToBigInteger();
+            BigInteger ax = m_x, xx = x.ToBigInteger(), yx = y.ToBigInteger();
             BigInteger aa = ax.Multiply(ax);
             BigInteger xy = xx.Multiply(yx);
-            return new FpFieldElement(q, r, ModReduce(aa.Subtract(xy)));
+            return new FpFieldElement(m_q, m_r, ModReduce(aa.Subtract(xy)));
         }
 
         public override ECFieldElement SquarePlusProduct(ECFieldElement x, ECFieldElement y)
         {
-            BigInteger ax = this.x, xx = x.ToBigInteger(), yx = y.ToBigInteger();
+            BigInteger ax = m_x, xx = x.ToBigInteger(), yx = y.ToBigInteger();
             BigInteger aa = ax.Multiply(ax);
             BigInteger xy = xx.Multiply(yx);
             BigInteger sum = aa.Add(xy);
-            if (r != null && r.SignValue < 0 && sum.BitLength > (q.BitLength << 1))
+            if (m_r != null && m_r.SignValue < 0 && sum.BitLength > (m_q.BitLength << 1))
             {
-                sum = sum.Subtract(q.ShiftLeft(q.BitLength));
+                sum = sum.Subtract(m_q.ShiftLeft(m_q.BitLength));
             }
-            return new FpFieldElement(q, r, ModReduce(sum));
+            return new FpFieldElement(m_q, m_r, ModReduce(sum));
         }
 
         public override ECFieldElement Invert()
         {
             // TODO Modular inversion can be faster for a (Generalized) Mersenne Prime.
-            return new FpFieldElement(q, r, ModInverse(x));
+            return new FpFieldElement(m_q, m_r, ModInverse(m_x));
         }
 
-        /**
-         * return a sqrt root - the routine verifies that the calculation
-         * returns the right value - if none exists it returns null.
-         */
+        /// <summary>Return a square root.</summary>
+        /// <remarks>
+        /// The routine verifies that the calculation returns a valid root; if none exists it returns <c>null</c>.
+        /// </remarks>
         public override ECFieldElement Sqrt()
         {
             if (IsZero || IsOne)
                 return this;
 
-            if (!q.TestBit(0))
+            if (!m_q.TestBit(0))
                 throw new NotImplementedException("even value of q");
 
-            if (q.TestBit(1)) // q == 4m + 3
+            if (m_q.TestBit(1)) // q == 4m + 3
             {
-                BigInteger e = q.ShiftRight(2).Add(BigInteger.One);
-                return CheckSqrt(new FpFieldElement(q, r, x.ModPow(e, q)));
+                BigInteger e = m_q.ShiftRight(2).Add(BigInteger.One);
+                return CheckSqrt(new FpFieldElement(m_q, m_r, m_x.ModPow(e, m_q)));
             }
 
-            if (q.TestBit(2)) // q == 8m + 5
+            if (m_q.TestBit(2)) // q == 8m + 5
             {
-                BigInteger t1 = x.ModPow(q.ShiftRight(3), q);
-                BigInteger t2 = ModMult(t1, x);
+                BigInteger t1 = m_x.ModPow(m_q.ShiftRight(3), m_q);
+                BigInteger t2 = ModMult(t1, m_x);
                 BigInteger t3 = ModMult(t2, t1);
 
                 if (t3.Equals(BigInteger.One))
-                {
-                    return CheckSqrt(new FpFieldElement(q, r, t2));
-                }
+                    return CheckSqrt(new FpFieldElement(m_q, m_r, t2));
 
                 // TODO This is constant and could be precomputed
-                BigInteger t4 = BigInteger.Two.ModPow(q.ShiftRight(2), q);
+                BigInteger t4 = BigInteger.Two.ModPow(m_q.ShiftRight(2), m_q);
 
                 BigInteger y = ModMult(t2, t4);
 
-                return CheckSqrt(new FpFieldElement(q, r, y));
+                return CheckSqrt(new FpFieldElement(m_q, m_r, y));
             }
 
             // q == 8m + 1
 
-            BigInteger legendreExponent = q.ShiftRight(1);
-            if (!(x.ModPow(legendreExponent, q).Equals(BigInteger.One)))
+            BigInteger legendreExponent = m_q.ShiftRight(1);
+            if (!(m_x.ModPow(legendreExponent, m_q).Equals(BigInteger.One)))
                 return null;
 
-            BigInteger X = this.x;
+            BigInteger X = m_x;
             BigInteger fourX = ModDouble(ModDouble(X)); ;
 
-            BigInteger k = legendreExponent.Add(BigInteger.One), qMinusOne = q.Subtract(BigInteger.One);
+            BigInteger k = legendreExponent.Add(BigInteger.One), qMinusOne = m_q.Subtract(BigInteger.One);
 
             BigInteger U, V;
             do
@@ -323,34 +254,26 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
                 BigInteger P;
                 do
                 {
-                    P = BigInteger.Arbitrary(q.BitLength);
+                    P = BigInteger.Arbitrary(m_q.BitLength);
                 }
-                while (P.CompareTo(q) >= 0
-                    || !ModReduce(P.Multiply(P).Subtract(fourX)).ModPow(legendreExponent, q).Equals(qMinusOne));
+                while (P.CompareTo(m_q) >= 0
+                    || !ModReduce(P.Multiply(P).Subtract(fourX)).ModPow(legendreExponent, m_q).Equals(qMinusOne));
 
                 BigInteger[] result = LucasSequence(P, X, k);
                 U = result[0];
                 V = result[1];
 
                 if (ModMult(V, V).Equals(fourX))
-                {
-                    return new FpFieldElement(q, r, ModHalfAbs(V));
-                }
+                    return new FpFieldElement(m_q, m_r, ModHalfAbs(V));
             }
             while (U.Equals(BigInteger.One) || U.Equals(qMinusOne));
 
             return null;
         }
 
-        private ECFieldElement CheckSqrt(ECFieldElement z)
-        {
-            return z.Square().Equals(this) ? z : null;
-        }
+        private ECFieldElement CheckSqrt(ECFieldElement z) => z.Square().Equals(this) ? z : null;
 
-        private BigInteger[] LucasSequence(
-            BigInteger	P,
-            BigInteger	Q,
-            BigInteger	k)
+        private BigInteger[] LucasSequence(BigInteger P, BigInteger Q, BigInteger k)
         {
             // TODO Research and apply "common-multiplicand multiplication here"
 
@@ -404,9 +327,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         protected virtual BigInteger ModAdd(BigInteger x1, BigInteger x2)
         {
             BigInteger x3 = x1.Add(x2);
-            if (x3.CompareTo(q) >= 0)
+            if (x3.CompareTo(m_q) >= 0)
             {
-                x3 = x3.Subtract(q);
+                x3 = x3.Subtract(m_q);
             }
             return x3;
         }
@@ -414,9 +337,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         protected virtual BigInteger ModDouble(BigInteger x)
         {
             BigInteger _2x = x.ShiftLeft(1);
-            if (_2x.CompareTo(q) >= 0)
+            if (_2x.CompareTo(m_q) >= 0)
             {
-                _2x = _2x.Subtract(q);
+                _2x = _2x.Subtract(m_q);
             }
             return _2x;
         }
@@ -425,7 +348,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         {
             if (x.TestBit(0))
             {
-                x = q.Add(x);
+                x = m_q.Add(x);
             }
             return x.ShiftRight(1);
         }
@@ -434,26 +357,20 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         {
             if (x.TestBit(0))
             {
-                x = q.Subtract(x);
+                x = m_q.Subtract(x);
             }
             return x.ShiftRight(1);
         }
 
-        protected virtual BigInteger ModInverse(BigInteger x)
-        {
-            return BigIntegers.ModOddInverse(q, x);
-        }
+        protected virtual BigInteger ModInverse(BigInteger x) => BigIntegers.ModOddInverse(m_q, x);
 
-        protected virtual BigInteger ModMult(BigInteger x1, BigInteger x2)
-        {
-            return ModReduce(x1.Multiply(x2));
-        }
+        protected virtual BigInteger ModMult(BigInteger x1, BigInteger x2) => ModReduce(x1.Multiply(x2));
 
         protected virtual BigInteger ModReduce(BigInteger x)
         {
-            if (r == null)
+            if (m_r == null)
             {
-                x = x.Mod(q);
+                x = x.Mod(m_q);
             }
             else
             {
@@ -462,18 +379,18 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
                 {
                     x = x.Abs();
                 }
-                int qLen = q.BitLength;
-                if (r.SignValue > 0)
+                int qLen = m_q.BitLength;
+                if (m_r.SignValue > 0)
                 {
                     BigInteger qMod = BigInteger.One.ShiftLeft(qLen);
-                    bool rIsOne = r.Equals(BigInteger.One);
+                    bool rIsOne = m_r.Equals(BigInteger.One);
                     while (x.BitLength > (qLen + 1))
                     {
                         BigInteger u = x.ShiftRight(qLen);
                         BigInteger v = x.Remainder(qMod);
                         if (!rIsOne)
                         {
-                            u = u.Multiply(r);
+                            u = u.Multiply(m_r);
                         }
                         x = u.Add(v);
                     }
@@ -481,10 +398,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
                 else
                 {
                     int d = ((qLen - 1) & 31) + 1;
-                    BigInteger mu = r.Negate();
+                    BigInteger mu = m_r.Negate();
                     BigInteger u = mu.Multiply(x.ShiftRight(qLen - d));
                     BigInteger quot = u.ShiftRight(qLen + d);
-                    BigInteger v = quot.Multiply(q);
+                    BigInteger v = quot.Multiply(m_q);
                     BigInteger bk1 = BigInteger.One.ShiftLeft(qLen + d);
                     v = v.Remainder(bk1);
                     x = x.Remainder(bk1);
@@ -494,13 +411,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
                         x = x.Add(bk1);
                     }
                 }
-                while (x.CompareTo(q) >= 0)
+                while (x.CompareTo(m_q) >= 0)
                 {
-                    x = x.Subtract(q);
+                    x = x.Subtract(m_q);
                 }
                 if (negative && x.SignValue != 0)
                 {
-                    x = q.Subtract(x);
+                    x = m_q.Subtract(x);
                 }
             }
             return x;
@@ -511,28 +428,29 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             BigInteger x3 = x1.Subtract(x2);
             if (x3.SignValue < 0)
             {
-                x3 = x3.Add(q);
+                x3 = x3.Add(m_q);
             }
             return x3;
         }
 
-        public override bool Equals(object obj) => obj is FpFieldElement that && Equals(that);
+        public override bool Equals(object obj) => Equals(obj as FpFieldElement);
 
         public virtual bool Equals(FpFieldElement other)
         {
             if (this == other)
                 return true;
 
-            return q.Equals(other.q)
-                && x.Equals(other.x);
+            return other != null
+                && m_q.Equals(other.m_q)
+                && m_x.Equals(other.m_x);
         }
 
         public override int GetHashCode()
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            return HashCode.Combine(q, x);
+            return HashCode.Combine(m_q, m_x);
 #else
-            return q.GetHashCode() ^ x.GetHashCode();
+            return m_q.GetHashCode() ^ m_x.GetHashCode();
 #endif
         }
     }
@@ -553,7 +471,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             //}
 
             int n = (m + 1) >> 1;
-            int k = 31 - Integers.NumberOfLeadingZeros(n);
+            int k = Integers.BitLength(n) - 1;
             int nk = 1;
 
             ECFieldElement ht = this;
@@ -570,10 +488,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             return ht;
         }
 
-        public virtual bool HasFastTrace
-        {
-            get { return false; }
-        }
+        public virtual bool HasFastTrace => false;
 
         public virtual int Trace()
         {
@@ -585,7 +500,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
             //    tr = tr.Square().Add(this);
             //}
 
-            int k = 31 - Integers.NumberOfLeadingZeros(m);
+            int k = Integers.BitLength(m) - 1;
             int mk = 1;
 
             ECFieldElement tr = this;
@@ -607,93 +522,54 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         }
     }
 
-    /**
-     * Class representing the Elements of the finite field
-     * <code>F<sub>2<sup>m</sup></sub></code> in polynomial basis (PB)
-     * representation. Both trinomial (Tpb) and pentanomial (Ppb) polynomial
-     * basis representations are supported. Gaussian normal basis (GNB)
-     * representation is not supported.
-     */
+    /// <summary>
+    /// Class representing the elements of the finite field F2m in polynomial basis (PB) representation.
+    /// </summary>
+    /// <remarks>
+    /// Both trinomial (Tpb) and pentanomial (Ppb) polynomial basis representations are supported. Gaussian normal basis (GNB)
+    /// representation is not supported.
+    /// </remarks>
     public class F2mFieldElement
         :   AbstractF2mFieldElement
     {
-        /**
-         * Indicates gaussian normal basis representation (GNB). Number chosen
-         * according to X9.62. GNB is not implemented at present.
-         */
+        /// <summary>
+        /// Indicates gaussian normal basis representation (GNB). Number chosen according to X9.62. GNB is not
+        /// implemented at present.
+        /// </summary>
         public const int Gnb = 1;
 
-        /**
-         * Indicates trinomial basis representation (Tpb). Number chosen
-         * according to X9.62.
-         */
+        /// <summary>
+        /// Indicates trinomial basis representation (Tpb). Number chosen according to X9.62.
+        /// </summary>
         public const int Tpb = 2;
 
-        /**
-         * Indicates pentanomial basis representation (Ppb). Number chosen
-         * according to X9.62.
-         */
+        /// <summary>
+        /// Indicates pentanomial basis representation (Ppb). Number chosen according to X9.62.
+        /// </summary>
         public const int Ppb = 3;
 
-        /**
-         * Tpb or Ppb.
-         */
-        private int representation;
+        private readonly F2mFieldData m_f2mFieldData;
+        internal readonly ulong[] m_x;
 
-        /**
-         * The exponent <code>m</code> of <code>F<sub>2<sup>m</sup></sub></code>.
-         */
-        private int m;
-
-        private int[] ks;
-
-        /**
-         * The <code>LongArray</code> holding the bits.
-         */
-        internal LongArray x;
-
-        internal F2mFieldElement(int m, int[] ks, LongArray x)
+        internal F2mFieldElement(F2mFieldData f2mFieldData, ulong[] x)
         {
-            this.m = m;
-            this.representation = (ks.Length == 1) ? Tpb : Ppb;
-            this.ks = ks;
-            this.x = x;
+            m_f2mFieldData = f2mFieldData ?? throw new ArgumentNullException(nameof(f2mFieldData));
+            m_x = x ?? throw new ArgumentNullException(nameof(x));
         }
 
-        public override int BitLength
-        {
-            get { return x.Degree(); }
-        }
+        public override int BitLength => BinPolys.BitLengthVar(m_x.Length, m_x, 0);
 
-        public override bool IsOne
-        {
-            get { return x.IsOne(); }
-        }
+        public override bool IsOne => BinPolys.EqualToOne(m_x.Length, m_x, 0) != 0UL;
 
-        public override bool IsZero
-        {
-            get { return x.IsZero(); }
-        }
+        public override bool IsZero => BinPolys.EqualToZero(m_x.Length, m_x, 0) != 0UL;
 
-        public override bool TestBitZero()
-        {
-            return x.TestBitZero();
-        }
+        public override bool TestBitZero() => (m_x[0] & 1UL) != 0UL;
 
-        public override BigInteger ToBigInteger()
-        {
-            return x.ToBigInteger();
-        }
+        public override BigInteger ToBigInteger() => Nat.ToBigInteger64(m_x.Length, m_x);
 
-        public override string FieldName
-        {
-            get { return "F2m"; }
-        }
+        public override string FieldName => "F2m";
 
-        public override int FieldSize
-        {
-            get { return m; }
-        }
+        public override int FieldSize => M;
 
         /**
         * Checks, if the ECFieldElements <code>a</code> and <code>b</code>
@@ -706,93 +582,46 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
         * <code>F<sub>2<sup>m</sup></sub></code> (having the same
         * representation).
         */
-        public static void CheckFieldElements(
-            ECFieldElement	a,
-            ECFieldElement	b)
+        public static void CheckFieldElements(ECFieldElement a, ECFieldElement b)
         {
-            if (!(a is F2mFieldElement) || !(b is F2mFieldElement))
-            {
-                throw new ArgumentException("Field elements are not "
-                    + "both instances of F2mFieldElement");
-            }
+            if (!(a is F2mFieldElement aF2m) || !(b is F2mFieldElement bF2m))
+                throw new ArgumentException("Field elements are not both instances of F2mFieldElement");
 
-            F2mFieldElement aF2m = (F2mFieldElement)a;
-            F2mFieldElement bF2m = (F2mFieldElement)b;
-
-            if (aF2m.representation != bF2m.representation)
-            {
-                // Should never occur
-                throw new ArgumentException("One of the F2m field elements has incorrect representation");
-            }
-
-            if ((aF2m.m != bF2m.m) || !Arrays.AreEqual(aF2m.ks, bF2m.ks))
-            {
+            if (!F2mFieldData.Equals(aF2m.m_f2mFieldData, bF2m.m_f2mFieldData))
                 throw new ArgumentException("Field elements are not elements of the same field F2m");
-            }
         }
 
-        public override ECFieldElement Add(
-            ECFieldElement b)
+        public override ECFieldElement Add(ECFieldElement b)
         {
-            // No check performed here for performance reasons. Instead the
-            // elements involved are checked in ECPoint.F2m
-            // checkFieldElements(this, b);
-            LongArray iarrClone = this.x.Copy();
             F2mFieldElement bF2m = (F2mFieldElement)b;
-            iarrClone.AddShiftedByWords(bF2m.x, 0);
-            return new F2mFieldElement(m, ks, iarrClone);
+            int size = m_x.Length;
+            ulong[] z = BinPolys.Create(size);
+            BinPolys.Add(size, m_x, 0, bF2m.m_x, 0, z, 0);
+            return new F2mFieldElement(m_f2mFieldData, z);
         }
 
         public override ECFieldElement AddOne()
         {
-            return new F2mFieldElement(m, ks, x.AddOne());
+            ulong[] z = BinPolys.Create(m_x.Length);
+            BinPolys.Copy(m_x.Length, m_x, 0, z, 0);
+            z[0] ^= 1UL;
+            return new F2mFieldElement(m_f2mFieldData, z);
         }
 
-        public override ECFieldElement Subtract(
-            ECFieldElement b)
+        public override ECFieldElement Subtract(ECFieldElement b) => Add(b);
+
+        public override ECFieldElement Multiply(ECFieldElement b)
         {
-            // Addition and subtraction are the same in F2m
-            return Add(b);
+            F2mFieldElement bF2m = (F2mFieldElement)b;
+            ulong[] z = BinPolys.Create(m_x.Length);
+            m_f2mFieldData._mul.Multiply(m_x, 0, bF2m.m_x, 0, z, 0);
+            return new F2mFieldElement(m_f2mFieldData, z);
         }
 
-        public override ECFieldElement Multiply(
-            ECFieldElement b)
-        {
-            // Right-to-left comb multiplication in the LongArray
-            // Input: Binary polynomials a(z) and b(z) of degree at most m-1
-            // Output: c(z) = a(z) * b(z) mod f(z)
+        public override ECFieldElement MultiplyMinusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y) =>
+            MultiplyPlusProduct(b, x, y);
 
-            // No check performed here for performance reasons. Instead the
-            // elements involved are checked in ECPoint.F2m
-            // checkFieldElements(this, b);
-            return new F2mFieldElement(m, ks, x.ModMultiply(((F2mFieldElement)b).x, m, ks));
-        }
-
-        public override ECFieldElement MultiplyMinusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y)
-        {
-            return MultiplyPlusProduct(b, x, y);
-        }
-
-        public override ECFieldElement MultiplyPlusProduct(ECFieldElement b, ECFieldElement x, ECFieldElement y)
-        {
-            LongArray ax = this.x, bx = ((F2mFieldElement)b).x, xx = ((F2mFieldElement)x).x, yx = ((F2mFieldElement)y).x;
-
-            LongArray ab = ax.Multiply(bx, m, ks);
-            LongArray xy = xx.Multiply(yx, m, ks);
-
-            if (LongArray.AreAliased(ref ab, ref ax) || LongArray.AreAliased(ref ab, ref bx))
-            {
-                ab = ab.Copy();
-            }
-
-            ab.AddShiftedByWords(xy, 0);
-            ab.Reduce(m, ks);
-
-            return new F2mFieldElement(m, ks, ab);
-        }
-
-        public override ECFieldElement Divide(
-            ECFieldElement b)
+        public override ECFieldElement Divide(ECFieldElement b)
         {
             // There may be more efficient implementations
             ECFieldElement bInv = b.Invert();
@@ -807,124 +636,69 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.EC
 
         public override ECFieldElement Square()
         {
-            return new F2mFieldElement(m, ks, x.ModSquare(m, ks));
+            int size = m_x.Length;
+            ulong[] z = BinPolys.Create(size);
+            m_f2mFieldData._mul.Square(m_x, 0, z, 0);
+            return new F2mFieldElement(m_f2mFieldData, z);
         }
 
-        public override ECFieldElement SquareMinusProduct(ECFieldElement x, ECFieldElement y)
-        {
-            return SquarePlusProduct(x, y);
-        }
-
-        public override ECFieldElement SquarePlusProduct(ECFieldElement x, ECFieldElement y)
-        {
-            LongArray ax = this.x, xx = ((F2mFieldElement)x).x, yx = ((F2mFieldElement)y).x;
-
-            LongArray aa = ax.Square(m, ks);
-            LongArray xy = xx.Multiply(yx, m, ks);
-
-            if (LongArray.AreAliased(ref aa, ref ax))
-            {
-                aa = aa.Copy();
-            }
-
-            aa.AddShiftedByWords(xy, 0);
-            aa.Reduce(m, ks);
-
-            return new F2mFieldElement(m, ks, aa);
-        }
+        public override ECFieldElement SquareMinusProduct(ECFieldElement x, ECFieldElement y) =>
+            SquarePlusProduct(x, y);
 
         public override ECFieldElement SquarePow(int pow)
         {
-            return pow < 1 ? this : new F2mFieldElement(m, ks, x.ModSquareN(pow, m, ks));
+            if (pow < 1)
+                return this;
+
+            int size = m_x.Length;
+            ulong[] z = BinPolys.Create(size);
+            m_f2mFieldData._mul.SquareN(m_x, 0, pow, z, 0);
+            return new F2mFieldElement(m_f2mFieldData, z);
         }
 
         public override ECFieldElement Invert()
         {
-            return new F2mFieldElement(this.m, this.ks, this.x.ModInverse(m, ks));
+            // TODO Intentional fast-path in otherwise constant-time implementation (for performance) - review.
+            if (BitLength <= 1)
+                return this;
+
+            ulong[] z = BinPolys.Create(m_x.Length);
+            m_f2mFieldData._inv.Invert(m_x, 0, z, 0);
+            return new F2mFieldElement(m_f2mFieldData, z);
         }
 
         public override ECFieldElement Sqrt()
         {
-            return (x.IsZero() || x.IsOne()) ? this : SquarePow(m - 1);
+            // TODO Intentional fast-path in otherwise constant-time implementation (for performance) - review.
+            if (BitLength <= 1)
+                return this;
+
+            return SquarePow(M - 1);
         }
 
-        /**
-            * @return the representation of the field
-            * <code>F<sub>2<sup>m</sup></sub></code>, either of
-            * {@link F2mFieldElement.Tpb} (trinomial
-            * basis representation) or
-            * {@link F2mFieldElement.Ppb} (pentanomial
-            * basis representation).
-            */
-        public int Representation
-        {
-            get { return this.representation; }
-        }
+        public int Representation => m_f2mFieldData._ks.Length == 1 ? Tpb : Ppb;
 
-        /**
-            * @return the degree <code>m</code> of the reduction polynomial
-            * <code>f(z)</code>.
-            */
-        public int M
-        {
-            get { return this.m; }
-        }
+        public int M => m_f2mFieldData._m;
 
-        /**
-            * @return Tpb: The integer <code>k</code> where <code>x<sup>m</sup> +
-            * x<sup>k</sup> + 1</code> represents the reduction polynomial
-            * <code>f(z)</code>.<br/>
-            * Ppb: The integer <code>k1</code> where <code>x<sup>m</sup> +
-            * x<sup>k3</sup> + x<sup>k2</sup> + x<sup>k1</sup> + 1</code>
-            * represents the reduction polynomial <code>f(z)</code>.<br/>
-            */
-        public int K1
-        {
-            get { return this.ks[0]; }
-        }
+        public int K1 => m_f2mFieldData.K1;
 
-        /**
-            * @return Tpb: Always returns <code>0</code><br/>
-            * Ppb: The integer <code>k2</code> where <code>x<sup>m</sup> +
-            * x<sup>k3</sup> + x<sup>k2</sup> + x<sup>k1</sup> + 1</code>
-            * represents the reduction polynomial <code>f(z)</code>.<br/>
-            */
-        public int K2
-        {
-            get { return this.ks.Length >= 2 ? this.ks[1] : 0; }
-        }
+        public int K2 => m_f2mFieldData.K2;
 
-        /**
-            * @return Tpb: Always set to <code>0</code><br/>
-            * Ppb: The integer <code>k3</code> where <code>x<sup>m</sup> +
-            * x<sup>k3</sup> + x<sup>k2</sup> + x<sup>k1</sup> + 1</code>
-            * represents the reduction polynomial <code>f(z)</code>.<br/>
-            */
-        public int K3
-        {
-            get { return this.ks.Length >= 3 ? this.ks[2] : 0; }
-        }
+        public int K3 => m_f2mFieldData.K3;
 
-        public override bool Equals(object obj) => obj is F2mFieldElement that && Equals(that);
+        public override bool Equals(object obj) => Equals(obj as F2mFieldElement);
 
         public virtual bool Equals(F2mFieldElement other)
         {
             if (this == other)
                 return true;
 
-            return this.m == other.m
-                && this.representation == other.representation
-                && Arrays.AreEqual(this.ks, other.ks)
-                && this.x.Equals(other.x);
+            return other != null
+                && F2mFieldData.Equals(m_f2mFieldData, other.m_f2mFieldData)
+                && m_x.Length == other.m_x.Length
+                && BinPolys.EqualTo(m_x.Length, m_x, 0, other.m_x, 0) != 0UL;
         }
 
-        public override int GetHashCode()
-        {
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            return HashCode.Combine(x, m, Arrays.GetHashCode(ks));
-#else
-            return x.GetHashCode() ^ m ^ Arrays.GetHashCode(ks);
-#endif
-        }
+        public override int GetHashCode() => Arrays.GetHashCode(m_x) ^ F2mFieldData.GetHashCode(m_f2mFieldData);
     }
 }

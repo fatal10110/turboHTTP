@@ -17,15 +17,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
             internal override Asn1Object FromImplicitPrimitive(DerOctetString octetString)
             {
-                return CreatePrimitive(octetString.GetOctets(), false);
+                return CreatePrimitive(octetString.GetOctets());
             }
         }
 
-        /**
-         * return an integer from the passed in object
-         *
-         * @exception ArgumentException if the object cannot be converted.
-         */
+        private static readonly DerEnumerated[] SmallConstants = new DerEnumerated[16];
+
         public static DerEnumerated GetInstance(object obj)
         {
             if (obj == null)
@@ -47,20 +44,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct enumerated from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct enumerated from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj));
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
-        /**
-         * return an Enumerated from a tagged object.
-         *
-         * @param taggedObject the tagged object holding the object we want
-         * @param declaredExplicit true if the object is meant to be explicitly tagged false otherwise.
-         * @exception ArgumentException if the tagged object cannot be converted.
-         */
         public static DerEnumerated GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
         {
             return (DerEnumerated)Meta.Instance.GetContextTagged(taggedObject, declaredExplicit);
@@ -82,136 +72,166 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return (DerEnumerated)Meta.Instance.GetTagged(taggedObject, declaredExplicit);
         }
 
-        private readonly byte[] contents;
-        private readonly int start;
-
-        public DerEnumerated(int val)
+        public static DerEnumerated ValueOf(int value)
         {
-            if (val < 0)
-                throw new ArgumentException("enumerated must be non-negative", "val");
+            if (value >= 0L && value < SmallConstants.Length)
+                return SmallConstants[value];
 
-            this.contents = BigInteger.ValueOf(val).ToByteArray();
-            this.start = 0;
+#pragma warning disable CS0618 // Type or member is obsolete
+            return new DerEnumerated(value);
+#pragma warning restore CS0618 // Type or member is obsolete
         }
 
+        public static DerEnumerated ValueOf(long value)
+        {
+            if (value >= 0L && value < SmallConstants.Length)
+                return SmallConstants[(int)value];
+
+#pragma warning disable CS0618 // Type or member is obsolete
+            return new DerEnumerated(value);
+#pragma warning restore CS0618 // Type or member is obsolete
+        }
+
+        static DerEnumerated()
+        {
+            for (int i = 0; i < SmallConstants.Length; ++i)
+            {
+#pragma warning disable CS0618 // Type or member is obsolete
+                SmallConstants[i] = new DerEnumerated(i);
+#pragma warning restore CS0618 // Type or member is obsolete
+            }
+        }
+
+        private readonly byte[] m_contents;
+        private readonly int m_start;
+
+        [Obsolete("Use ValueOf instead.")]
+        public DerEnumerated(int val)
+        {
+            m_contents = BigInteger.ValueOf(val).ToByteArray();
+            m_start = 0;
+        }
+
+        [Obsolete("Use ValueOf instead.")]
         public DerEnumerated(long val)
         {
-            if (val < 0L)
-                throw new ArgumentException("enumerated must be non-negative", "val");
-
-            this.contents = BigInteger.ValueOf(val).ToByteArray();
-            this.start = 0;
+            m_contents = BigInteger.ValueOf(val).ToByteArray();
+            m_start = 0;
         }
 
         public DerEnumerated(BigInteger val)
         {
-            if (val.SignValue < 0)
-                throw new ArgumentException("enumerated must be non-negative", "val");
-
-            this.contents = val.ToByteArray();
-            this.start = 0;
+            m_contents = val.ToByteArray();
+            m_start = 0;
         }
 
         public DerEnumerated(byte[] contents)
-            : this(contents, true)
+            : this(contents, clone: true)
         {
         }
 
         internal DerEnumerated(byte[] contents, bool clone)
         {
             if (DerInteger.IsMalformed(contents))
-                throw new ArgumentException("malformed enumerated", "contents");
-            if (0 != (contents[0] & 0x80))
-                throw new ArgumentException("enumerated must be non-negative", "contents");
+                throw new ArgumentException("malformed enumerated", nameof(contents));
 
-            this.contents = clone ? Arrays.Clone(contents) : contents;
-            this.start = DerInteger.SignBytesToSkip(this.contents);
+            m_contents = clone ? Arrays.Clone(contents) : contents;
+            m_start = DerInteger.SignBytesToSkip(m_contents);
         }
 
-        public BigInteger Value
-        {
-            get { return new BigInteger(contents); }
-        }
+        // NB: The BigInteger constructor tolerates any redundant sign bytes (per 'AllowUnsafe')
+        public BigInteger Value => new BigInteger(m_contents);
 
         public bool HasValue(int x)
         {
-            return (contents.Length - start) <= 4
-                && DerInteger.IntValue(contents, start, DerInteger.SignExtSigned) == x;
+            return (m_contents.Length - m_start) <= 4
+                && DerInteger.IntValue(m_contents, m_start, DerInteger.SignExtSigned) == x;
         }
 
         public bool HasValue(BigInteger x)
         {
             return null != x
                 // Fast check to avoid allocation
-                && DerInteger.IntValue(contents, start, DerInteger.SignExtSigned) == x.IntValue
+                && DerInteger.IntValue(m_contents, m_start, DerInteger.SignExtSigned) == x.IntValue
                 && Value.Equals(x);
         }
 
-        public int IntValueExact
+        public int IntValueExact => TryGetIntValueExact(out int result) ? result
+            : throw new ArithmeticException("ASN.1 Enumerated out of int range");
+
+        public long LongValueExact => TryGetLongValueExact(out long result) ? result
+            : throw new ArithmeticException("ASN.1 Enumerated out of long range");
+
+        public bool TryGetIntValueExact(out int value)
         {
-            get
+            int count = m_contents.Length - m_start;
+            if (count > 4)
             {
-                int count = contents.Length - start;
-                if (count > 4)
-                    throw new ArithmeticException("ASN.1 Enumerated out of int range");
-
-                return DerInteger.IntValue(contents, start, DerInteger.SignExtSigned);
+                value = default;
+                return false;
             }
+
+            value = DerInteger.IntValue(m_contents, m_start, DerInteger.SignExtSigned);
+            return true;
         }
 
-        internal override IAsn1Encoding GetEncoding(int encoding)
+        public bool TryGetLongValueExact(out long value)
         {
-            return new PrimitiveEncoding(Asn1Tags.Universal, Asn1Tags.Enumerated, contents);
+            int count = m_contents.Length - m_start;
+            if (count > 8)
+            {
+                value = default;
+                return false;
+            }
+
+            value = DerInteger.LongValue(m_contents, m_start, DerInteger.SignExtSigned);
+            return true;
         }
 
-        internal override IAsn1Encoding GetEncodingImplicit(int encoding, int tagClass, int tagNo)
-        {
-            return new PrimitiveEncoding(tagClass, tagNo, contents);
-        }
+        public bool IsNegative => (m_contents[m_start] & 0x80) != 0;
 
-        internal sealed override DerEncoding GetEncodingDer()
-        {
-            return new PrimitiveDerEncoding(Asn1Tags.Universal, Asn1Tags.Enumerated, contents);
-        }
+        internal override IAsn1Encoding GetEncoding(int encoding) =>
+            new PrimitiveEncoding(Asn1Tags.Universal, Asn1Tags.Enumerated, m_contents);
 
-        internal sealed override DerEncoding GetEncodingDerImplicit(int tagClass, int tagNo)
-        {
-            return new PrimitiveDerEncoding(tagClass, tagNo, contents);
-        }
+        internal override IAsn1Encoding GetEncodingImplicit(int encoding, int tagClass, int tagNo) =>
+            new PrimitiveEncoding(tagClass, tagNo, m_contents);
+
+        internal sealed override DerEncoding GetEncodingDer() =>
+            new PrimitiveDerEncoding(Asn1Tags.Universal, Asn1Tags.Enumerated, m_contents);
+
+        internal sealed override DerEncoding GetEncodingDerImplicit(int tagClass, int tagNo) =>
+            new PrimitiveDerEncoding(tagClass, tagNo, m_contents);
 
         protected override bool Asn1Equals(Asn1Object asn1Object)
         {
-            DerEnumerated other = asn1Object as DerEnumerated;
-            if (other == null)
-                return false;
-
-            return Arrays.AreEqual(this.contents, other.contents);
+            return asn1Object is DerEnumerated that
+                && Arrays.AreEqual(this.m_contents, that.m_contents);
         }
 
-        protected override int Asn1GetHashCode()
+        protected override int Asn1GetHashCode() => Arrays.GetHashCode(m_contents);
+
+        public override string ToString() => Value.ToString();
+
+        private static DerEnumerated CreatePrimitive(byte[] contents)
         {
-            return Arrays.GetHashCode(contents);
+            if (contents.Length == 1 && contents[0] < SmallConstants.Length)
+                return SmallConstants[contents[0]];
+
+            return new DerEnumerated(contents, clone: false);
         }
 
-        private static readonly DerEnumerated[] cache = new DerEnumerated[12];
-
-        internal static DerEnumerated CreatePrimitive(byte[] contents, bool clone)
+        internal static DerEnumerated CreatePrimitive(DefiniteLengthInputStream defIn)
         {
-            if (contents.Length > 1)
-                return new DerEnumerated(contents, clone);
-            if (contents.Length == 0)
-                throw new ArgumentException("ENUMERATED has zero length", "contents");
-
-            int value = contents[0];
-            if (value >= cache.Length)
-                return new DerEnumerated(contents, clone);
-
-            DerEnumerated possibleMatch = cache[value];
-            if (possibleMatch == null)
+            if (defIn.Remaining == 1)
             {
-                cache[value] = possibleMatch = new DerEnumerated(contents, clone);
+                int value = defIn.ReadByte();
+                if (value < SmallConstants.Length)
+                    return SmallConstants[value];
+
+                return new DerEnumerated(new byte[1] { (byte)value }, clone: false);
             }
-            return possibleMatch;
+
+            return new DerEnumerated(defIn.ToArray(), clone: false);
         }
     }
 }

@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
 #if NETCOREAPP3_0_OR_GREATER
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
@@ -1895,17 +1894,106 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Raw
             return new BigInteger(1, bs);
         }
 
+        public static void Xor(uint[] x, uint y, uint[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Xor(x.AsSpan(), y, z.AsSpan());
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                z[i] = x[i] ^ y;
+            }
+#endif
+        }
+
+        public static void Xor(uint[] x, int xOff, uint y, uint[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Xor(x.AsSpan(xOff), y, z.AsSpan(zOff));
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                z[zOff + i] = x[xOff + i] ^ y;
+            }
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void Xor(ReadOnlySpan<uint> x, uint y, Span<uint> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..8]);
+                var Z = MemoryMarshal.AsBytes(z[..8]);
+
+                var X0 = MemoryMarshal.Read<Vector256<byte>>(X[0x00..0x20]);
+
+                var Y_ = Vector256.Create(y).AsByte();
+
+                var Z0 = Avx2.Xor(X0, Y_);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z0);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..8]);
+                var Z = MemoryMarshal.AsBytes(z[..8]);
+
+                var X0 = MemoryMarshal.Read<Vector128<byte>>(X[0x00..0x10]);
+                var X1 = MemoryMarshal.Read<Vector128<byte>>(X[0x10..0x20]);
+
+                var Y_ = Vector128.Create(y).AsByte();
+
+                var Z0 = Sse2.Xor(X0, Y_);
+                var Z1 = Sse2.Xor(X1, Y_);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z1);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z1);
+#endif
+                return;
+            }
+#endif
+
+            for (int i = 0; i < 8; ++i)
+            {
+                z[i] = x[i] ^ y;
+            }
+        }
+#endif
+
+        public static void Xor(uint[] x, uint[] y, uint[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Xor(x.AsSpan(), y.AsSpan(), z.AsSpan());
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                z[i] = x[i] ^ y[i];
+            }
+#endif
+        }
+
         public static void Xor(uint[] x, int xOff, uint[] y, int yOff, uint[] z, int zOff)
         {
 #if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
             Xor(x.AsSpan(xOff), y.AsSpan(yOff), z.AsSpan(zOff));
 #else
-            for (int i = 0; i < 8; i += 4)
+            for (int i = 0; i < 8; ++i)
             {
-                z[zOff + i + 0] = x[xOff + i + 0] ^ y[yOff + i + 0];
-                z[zOff + i + 1] = x[xOff + i + 1] ^ y[yOff + i + 1];
-                z[zOff + i + 2] = x[xOff + i + 2] ^ y[yOff + i + 2];
-                z[zOff + i + 3] = x[xOff + i + 3] ^ y[yOff + i + 3];
+                z[zOff + i] = x[xOff + i] ^ y[yOff + i];
             }
 #endif
         }
@@ -1922,6 +2010,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Raw
                 var Z = MemoryMarshal.AsBytes(z[..8]);
 
                 var X0 = MemoryMarshal.Read<Vector256<byte>>(X[0x00..0x20]);
+
                 var Y0 = MemoryMarshal.Read<Vector256<byte>>(Y[0x00..0x20]);
 
                 var Z0 = Avx2.Xor(X0, Y0);
@@ -1961,26 +2050,837 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Math.Raw
             }
 #endif
 
+            for (int i = 0; i < 8; ++i)
+            {
+                z[i] = x[i] ^ y[i];
+            }
+        }
+#endif
+
+        public static void Xor64(ulong[] x, ulong y, ulong[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Xor64(x.AsSpan(), y, z.AsSpan());
+#else
+            z[0] = x[0] ^ y;
+            z[1] = x[1] ^ y;
+            z[2] = x[2] ^ y;
+            z[3] = x[3] ^ y;
+#endif
+        }
+
+        public static void Xor64(ulong[] x, int xOff, ulong y, ulong[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Xor64(x.AsSpan(xOff), y, z.AsSpan(zOff));
+#else
+            z[zOff + 0] = x[xOff + 0] ^ y;
+            z[zOff + 1] = x[xOff + 1] ^ y;
+            z[zOff + 2] = x[xOff + 2] ^ y;
+            z[zOff + 3] = x[xOff + 3] ^ y;
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void Xor64(ReadOnlySpan<ulong> x, ulong y, Span<ulong> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..4]);
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var X0 = MemoryMarshal.Read<Vector256<byte>>(X[0x00..0x20]);
+
+                var Y_ = Vector256.Create(y).AsByte();
+
+                var Z0 = Avx2.Xor(X0, Y_);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z0);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..4]);
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var X0 = MemoryMarshal.Read<Vector128<byte>>(X[0x00..0x10]);
+                var X1 = MemoryMarshal.Read<Vector128<byte>>(X[0x10..0x20]);
+
+                var Y_ = Vector128.Create(y).AsByte();
+
+                var Z0 = Sse2.Xor(X0, Y_);
+                var Z1 = Sse2.Xor(X1, Y_);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z1);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z1);
+#endif
+                return;
+            }
+#endif
+
+            z[0] = x[0] ^ y;
+            z[1] = x[1] ^ y;
+            z[2] = x[2] ^ y;
+            z[3] = x[3] ^ y;
+        }
+#endif
+
+        public static void Xor64(ulong[] x, ulong[] y, ulong[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Xor64(x.AsSpan(), y.AsSpan(), z.AsSpan());
+#else
+            z[0] = x[0] ^ y[0];
+            z[1] = x[1] ^ y[1];
+            z[2] = x[2] ^ y[2];
+            z[3] = x[3] ^ y[3];
+#endif
+        }
+
+        public static void Xor64(ulong[] x, int xOff, ulong[] y, int yOff, ulong[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Xor64(x.AsSpan(xOff), y.AsSpan(yOff), z.AsSpan(zOff));
+#else
+            z[zOff + 0] = x[xOff + 0] ^ y[yOff + 0];
+            z[zOff + 1] = x[xOff + 1] ^ y[yOff + 1];
+            z[zOff + 2] = x[xOff + 2] ^ y[yOff + 2];
+            z[zOff + 3] = x[xOff + 3] ^ y[yOff + 3];
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void Xor64(ReadOnlySpan<ulong> x, ReadOnlySpan<ulong> y, Span<ulong> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..4]);
+                var Y = MemoryMarshal.AsBytes(y[..4]);
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var X0 = MemoryMarshal.Read<Vector256<byte>>(X[0x00..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector256<byte>>(Y[0x00..0x20]);
+
+                var Z0 = Avx2.Xor(X0, Y0);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z0);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..4]);
+                var Y = MemoryMarshal.AsBytes(y[..4]);
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var X0 = MemoryMarshal.Read<Vector128<byte>>(X[0x00..0x10]);
+                var X1 = MemoryMarshal.Read<Vector128<byte>>(X[0x10..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector128<byte>>(Y[0x00..0x10]);
+                var Y1 = MemoryMarshal.Read<Vector128<byte>>(Y[0x10..0x20]);
+
+                var Z0 = Sse2.Xor(X0, Y0);
+                var Z1 = Sse2.Xor(X1, Y1);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z1);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z1);
+#endif
+                return;
+            }
+#endif
+
+            z[0] = x[0] ^ y[0];
+            z[1] = x[1] ^ y[1];
+            z[2] = x[2] ^ y[2];
+            z[3] = x[3] ^ y[3];
+        }
+#endif
+
+        public static void XorBothTo(uint[] x, uint[] y, uint[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorBothTo(x.AsSpan(), y.AsSpan(), z.AsSpan());
+#else
             for (int i = 0; i < 8; i += 4)
             {
-                z[i + 0] = x[i + 0] ^ y[i + 0];
-                z[i + 1] = x[i + 1] ^ y[i + 1];
-                z[i + 2] = x[i + 2] ^ y[i + 2];
-                z[i + 3] = x[i + 3] ^ y[i + 3];
+                z[i + 0] ^= x[i + 0] ^ y[i + 0];
+                z[i + 1] ^= x[i + 1] ^ y[i + 1];
+                z[i + 2] ^= x[i + 2] ^ y[i + 2];
+                z[i + 3] ^= x[i + 3] ^ y[i + 3];
+            }
+#endif
+        }
+
+        public static void XorBothTo(uint[] x, int xOff, uint[] y, int yOff, uint[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorBothTo(x.AsSpan(xOff), y.AsSpan(yOff), z.AsSpan(zOff));
+#else
+            for (int i = 0; i < 8; i += 4)
+            {
+                z[zOff + i + 0] ^= x[xOff + i + 0] ^ y[yOff + i + 0];
+                z[zOff + i + 1] ^= x[xOff + i + 1] ^ y[yOff + i + 1];
+                z[zOff + i + 2] ^= x[xOff + i + 2] ^ y[yOff + i + 2];
+                z[zOff + i + 3] ^= x[xOff + i + 3] ^ y[yOff + i + 3];
+            }
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void XorBothTo(ReadOnlySpan<uint> x, ReadOnlySpan<uint> y, Span<uint> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..8]);
+                var Y = MemoryMarshal.AsBytes(y[..8]);
+                var Z = MemoryMarshal.AsBytes(z[..8]);
+
+                var X0 = MemoryMarshal.Read<Vector256<byte>>(X[0x00..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector256<byte>>(Y[0x00..0x20]);
+
+                var Z0 = MemoryMarshal.Read<Vector256<byte>>(Z[0x00..0x20]);
+
+                Z0 = Avx2.Xor(Z0, Avx2.Xor(X0, Y0));
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z0);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..8]);
+                var Y = MemoryMarshal.AsBytes(y[..8]);
+                var Z = MemoryMarshal.AsBytes(z[..8]);
+
+                var X0 = MemoryMarshal.Read<Vector128<byte>>(X[0x00..0x10]);
+                var X1 = MemoryMarshal.Read<Vector128<byte>>(X[0x10..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector128<byte>>(Y[0x00..0x10]);
+                var Y1 = MemoryMarshal.Read<Vector128<byte>>(Y[0x10..0x20]);
+
+                var Z0 = MemoryMarshal.Read<Vector128<byte>>(Z[0x00..0x10]);
+                var Z1 = MemoryMarshal.Read<Vector128<byte>>(Z[0x10..0x20]);
+
+                Z0 = Sse2.Xor(Z0, Sse2.Xor(X0, Y0));
+                Z1 = Sse2.Xor(Z1, Sse2.Xor(X1, Y1));
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z1);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z1);
+#endif
+                return;
+            }
+#endif
+
+            for (int i = 0; i < 8; i += 4)
+            {
+                z[i + 0] ^= x[i + 0] ^ y[i + 0];
+                z[i + 1] ^= x[i + 1] ^ y[i + 1];
+                z[i + 2] ^= x[i + 2] ^ y[i + 2];
+                z[i + 3] ^= x[i + 3] ^ y[i + 3];
+            }
+        }
+#endif
+
+        public static void XorBothTo64(ulong[] x, ulong[] y, ulong[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorBothTo64(x.AsSpan(), y.AsSpan(), z.AsSpan());
+#else
+            z[0] ^= x[0] ^ y[0];
+            z[1] ^= x[1] ^ y[1];
+            z[2] ^= x[2] ^ y[2];
+            z[3] ^= x[3] ^ y[3];
+#endif
+        }
+
+        public static void XorBothTo64(ulong[] x, int xOff, ulong[] y, int yOff, ulong[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorBothTo64(x.AsSpan(xOff), y.AsSpan(yOff), z.AsSpan(zOff));
+#else
+            z[zOff + 0] ^= x[xOff + 0] ^ y[yOff + 0];
+            z[zOff + 1] ^= x[xOff + 1] ^ y[yOff + 1];
+            z[zOff + 2] ^= x[xOff + 2] ^ y[yOff + 2];
+            z[zOff + 3] ^= x[xOff + 3] ^ y[yOff + 3];
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void XorBothTo64(ReadOnlySpan<ulong> x, ReadOnlySpan<ulong> y, Span<ulong> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..4]);
+                var Y = MemoryMarshal.AsBytes(y[..4]);
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var X0 = MemoryMarshal.Read<Vector256<byte>>(X[0x00..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector256<byte>>(Y[0x00..0x20]);
+
+                var Z0 = MemoryMarshal.Read<Vector256<byte>>(Z[0x00..0x20]);
+
+                Z0 = Avx2.Xor(Z0, Avx2.Xor(X0, Y0));
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z0);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..4]);
+                var Y = MemoryMarshal.AsBytes(y[..4]);
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var X0 = MemoryMarshal.Read<Vector128<byte>>(X[0x00..0x10]);
+                var X1 = MemoryMarshal.Read<Vector128<byte>>(X[0x10..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector128<byte>>(Y[0x00..0x10]);
+                var Y1 = MemoryMarshal.Read<Vector128<byte>>(Y[0x10..0x20]);
+
+                var Z0 = MemoryMarshal.Read<Vector128<byte>>(Z[0x00..0x10]);
+                var Z1 = MemoryMarshal.Read<Vector128<byte>>(Z[0x10..0x20]);
+
+                Z0 = Sse2.Xor(Z0, Sse2.Xor(X0, Y0));
+                Z1 = Sse2.Xor(Z1, Sse2.Xor(X1, Y1));
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z1);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z1);
+#endif
+                return;
+            }
+#endif
+
+            z[0] ^= x[0] ^ y[0];
+            z[1] ^= x[1] ^ y[1];
+            z[2] ^= x[2] ^ y[2];
+            z[3] ^= x[3] ^ y[3];
+        }
+#endif
+
+        public static void XorTo(uint[] x, uint[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorTo(x.AsSpan(), z.AsSpan());
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                z[i] ^= x[i];
+            }
+#endif
+        }
+
+        public static void XorTo(uint[] x, int xOff, uint[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorTo(x.AsSpan(xOff), z.AsSpan(zOff));
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                z[zOff + i] ^= x[xOff + i];
+            }
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void XorTo(ReadOnlySpan<uint> x, Span<uint> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..8]);
+                var Z = MemoryMarshal.AsBytes(z[..8]);
+
+                var X0 = MemoryMarshal.Read<Vector256<byte>>(X[0x00..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector256<byte>>(Z[0x00..0x20]);
+
+                var Z0 = Avx2.Xor(X0, Y0);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z0);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..8]);
+                var Z = MemoryMarshal.AsBytes(z[..8]);
+
+                var X0 = MemoryMarshal.Read<Vector128<byte>>(X[0x00..0x10]);
+                var X1 = MemoryMarshal.Read<Vector128<byte>>(X[0x10..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector128<byte>>(Z[0x00..0x10]);
+                var Y1 = MemoryMarshal.Read<Vector128<byte>>(Z[0x10..0x20]);
+
+                var Z0 = Sse2.Xor(X0, Y0);
+                var Z1 = Sse2.Xor(X1, Y1);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z1);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z1);
+#endif
+                return;
+            }
+#endif
+
+            for (int i = 0; i < 8; ++i)
+            {
+                z[i] ^= x[i];
+            }
+        }
+#endif
+
+        public static void XorTo64(ulong[] x, ulong[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorTo64(x.AsSpan(), z.AsSpan());
+#else
+            z[0] ^= x[0];
+            z[1] ^= x[1];
+            z[2] ^= x[2];
+            z[3] ^= x[3];
+#endif
+        }
+
+        public static void XorTo64(ulong[] x, int xOff, ulong[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorTo64(x.AsSpan(xOff), z.AsSpan(zOff));
+#else
+            z[zOff + 0] ^= x[xOff + 0];
+            z[zOff + 1] ^= x[xOff + 1];
+            z[zOff + 2] ^= x[xOff + 2];
+            z[zOff + 3] ^= x[xOff + 3];
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void XorTo64(ReadOnlySpan<ulong> x, Span<ulong> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..4]);
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var X0 = MemoryMarshal.Read<Vector256<byte>>(X[0x00..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector256<byte>>(Z[0x00..0x20]);
+
+                var Z0 = Avx2.Xor(X0, Y0);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z0);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var X = MemoryMarshal.AsBytes(x[..4]);
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var X0 = MemoryMarshal.Read<Vector128<byte>>(X[0x00..0x10]);
+                var X1 = MemoryMarshal.Read<Vector128<byte>>(X[0x10..0x20]);
+
+                var Y0 = MemoryMarshal.Read<Vector128<byte>>(Z[0x00..0x10]);
+                var Y1 = MemoryMarshal.Read<Vector128<byte>>(Z[0x10..0x20]);
+
+                var Z0 = Sse2.Xor(X0, Y0);
+                var Z1 = Sse2.Xor(X1, Y1);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z1);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z0);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z1);
+#endif
+                return;
+            }
+#endif
+
+            z[0] ^= x[0];
+            z[1] ^= x[1];
+            z[2] ^= x[2];
+            z[3] ^= x[3];
+        }
+#endif
+
+        public static void XorToEachOther(uint[] u, uint[] v)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorToEachOther(u.AsSpan(), v.AsSpan());
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                uint t = u[i] ^ v[i];
+                u[i] = t;
+                v[i] = t;
+            }
+#endif
+        }
+
+        public static void XorToEachOther(uint[] u, int uOff, uint[] v, int vOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorToEachOther(u.AsSpan(uOff), v.AsSpan(vOff));
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                uint t = u[uOff + i] ^ v[vOff + i];
+                u[uOff + i] = t;
+                v[vOff + i] = t;
+            }
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void XorToEachOther(Span<uint> u, Span<uint> v)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var U = MemoryMarshal.AsBytes(u[..8]);
+                var V = MemoryMarshal.AsBytes(v[..8]);
+
+                var U0 = MemoryMarshal.Read<Vector256<byte>>(U[0x00..0x20]);
+
+                var V0 = MemoryMarshal.Read<Vector256<byte>>(V[0x00..0x20]);
+
+                var T0 = Avx2.Xor(U0, V0);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(U[0x00..0x20], in T0);
+                MemoryMarshal.Write(V[0x00..0x20], in T0);
+#else
+                MemoryMarshal.Write(U[0x00..0x20], ref T0);
+                MemoryMarshal.Write(V[0x00..0x20], ref T0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var U = MemoryMarshal.AsBytes(u[..8]);
+                var V = MemoryMarshal.AsBytes(v[..8]);
+
+                var U0 = MemoryMarshal.Read<Vector128<byte>>(U[0x00..0x10]);
+                var U1 = MemoryMarshal.Read<Vector128<byte>>(U[0x10..0x20]);
+
+                var V0 = MemoryMarshal.Read<Vector128<byte>>(V[0x00..0x10]);
+                var V1 = MemoryMarshal.Read<Vector128<byte>>(V[0x10..0x20]);
+
+                var T0 = Sse2.Xor(U0, V0);
+                var T1 = Sse2.Xor(U1, V1);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(U[0x00..0x10], in T0);
+                MemoryMarshal.Write(V[0x00..0x10], in T0);
+                MemoryMarshal.Write(U[0x10..0x20], in T1);
+                MemoryMarshal.Write(V[0x10..0x20], in T1);
+#else
+                MemoryMarshal.Write(U[0x00..0x10], ref T0);
+                MemoryMarshal.Write(V[0x00..0x10], ref T0);
+                MemoryMarshal.Write(U[0x10..0x20], ref T1);
+                MemoryMarshal.Write(V[0x10..0x20], ref T1);
+#endif
+                return;
+            }
+#endif
+
+            for (int i = 0; i < 8; ++i)
+            {
+                uint t = u[i] ^ v[i];
+                u[i] = t;
+                v[i] = t;
+            }
+        }
+#endif
+
+        public static void XorToEachOther64(ulong[] u, ulong[] v)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorToEachOther64(u.AsSpan(), v.AsSpan());
+#else
+            for (int i = 0; i < 4; ++i)
+            {
+                ulong t = u[i] ^ v[i];
+                u[i] = t;
+                v[i] = t;
+            }
+#endif
+        }
+
+        public static void XorToEachOther64(ulong[] u, int uOff, ulong[] v, int vOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            XorToEachOther64(u.AsSpan(uOff), v.AsSpan(vOff));
+#else
+            for (int i = 0; i < 4; ++i)
+            {
+                ulong t = u[uOff + i] ^ v[vOff + i];
+                u[uOff + i] = t;
+                v[vOff + i] = t;
+            }
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void XorToEachOther64(Span<ulong> u, Span<ulong> v)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var U = MemoryMarshal.AsBytes(u[..4]);
+                var V = MemoryMarshal.AsBytes(v[..4]);
+
+                var U0 = MemoryMarshal.Read<Vector256<byte>>(U[0x00..0x20]);
+
+                var V0 = MemoryMarshal.Read<Vector256<byte>>(V[0x00..0x20]);
+
+                var T0 = Avx2.Xor(U0, V0);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(U[0x00..0x20], in T0);
+                MemoryMarshal.Write(V[0x00..0x20], in T0);
+#else
+                MemoryMarshal.Write(U[0x00..0x20], ref T0);
+                MemoryMarshal.Write(V[0x00..0x20], ref T0);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var U = MemoryMarshal.AsBytes(u[..4]);
+                var V = MemoryMarshal.AsBytes(v[..4]);
+
+                var U0 = MemoryMarshal.Read<Vector128<byte>>(U[0x00..0x10]);
+                var U1 = MemoryMarshal.Read<Vector128<byte>>(U[0x10..0x20]);
+
+                var V0 = MemoryMarshal.Read<Vector128<byte>>(V[0x00..0x10]);
+                var V1 = MemoryMarshal.Read<Vector128<byte>>(V[0x10..0x20]);
+
+                var T0 = Sse2.Xor(U0, V0);
+                var T1 = Sse2.Xor(U1, V1);
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(U[0x00..0x10], in T0);
+                MemoryMarshal.Write(V[0x00..0x10], in T0);
+                MemoryMarshal.Write(U[0x10..0x20], in T1);
+                MemoryMarshal.Write(V[0x10..0x20], in T1);
+#else
+                MemoryMarshal.Write(U[0x00..0x10], ref T0);
+                MemoryMarshal.Write(V[0x00..0x10], ref T0);
+                MemoryMarshal.Write(U[0x10..0x20], ref T1);
+                MemoryMarshal.Write(V[0x10..0x20], ref T1);
+#endif
+                return;
+            }
+#endif
+
+            for (int i = 0; i < 4; ++i)
+            {
+                ulong t = u[i] ^ v[i];
+                u[i] = t;
+                v[i] = t;
             }
         }
 #endif
 
         public static void Zero(uint[] z)
         {
-            z[0] = 0;
-            z[1] = 0;
-            z[2] = 0;
-            z[3] = 0;
-            z[4] = 0;
-            z[5] = 0;
-            z[6] = 0;
-            z[7] = 0;
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Zero(z.AsSpan());
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                z[i] = 0U;
+            }
+#endif
         }
+
+        public static void Zero(uint[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Zero(z.AsSpan(zOff));
+#else
+            for (int i = 0; i < 8; ++i)
+            {
+                z[zOff + i] = 0U;
+            }
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void Zero(Span<uint> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var Z = MemoryMarshal.AsBytes(z[..8]);
+
+                var Z_ = Vector256<byte>.Zero;
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z_);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z_);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var Z = MemoryMarshal.AsBytes(z[..8]);
+
+                var Z_ = Vector128<byte>.Zero;
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z_);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z_);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z_);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z_);
+#endif
+                return;
+            }
+#endif
+
+            z[..8].Fill(0U);
+        }
+#endif
+
+        public static void Zero64(ulong[] z)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Zero64(z.AsSpan());
+#else
+            z[0] = 0UL;
+            z[1] = 0UL;
+            z[2] = 0UL;
+            z[3] = 0UL;
+#endif
+        }
+
+        public static void Zero64(ulong[] z, int zOff)
+        {
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            Zero64(z.AsSpan(zOff));
+#else
+            z[zOff + 0] = 0UL;
+            z[zOff + 1] = 0UL;
+            z[zOff + 2] = 0UL;
+            z[zOff + 3] = 0UL;
+#endif
+        }
+
+#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        public static void Zero64(Span<ulong> z)
+        {
+#if NETCOREAPP3_0_OR_GREATER
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Avx2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var Z_ = Vector256<byte>.Zero;
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x20], in Z_);
+#else
+                MemoryMarshal.Write(Z[0x00..0x20], ref Z_);
+#endif
+                return;
+            }
+
+            if (TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.X86.Sse2.IsEnabled &&
+                TurboHTTP.SecureProtocol.Org.BouncyCastle.Runtime.Intrinsics.Vector.IsPacked)
+            {
+                var Z = MemoryMarshal.AsBytes(z[..4]);
+
+                var Z_ = Vector128<byte>.Zero;
+
+#if NET8_0_OR_GREATER
+                MemoryMarshal.Write(Z[0x00..0x10], in Z_);
+                MemoryMarshal.Write(Z[0x10..0x20], in Z_);
+#else
+                MemoryMarshal.Write(Z[0x00..0x10], ref Z_);
+                MemoryMarshal.Write(Z[0x10..0x20], ref Z_);
+#endif
+                return;
+            }
+#endif
+
+            z[..4].Fill(0UL);
+        }
+#endif
     }
 }

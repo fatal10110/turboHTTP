@@ -20,14 +20,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
         }
 
-        public static readonly DerBoolean False = new DerBoolean(false);
-        public static readonly DerBoolean True  = new DerBoolean(true);
+        public static readonly DerBoolean False = new DerBoolean(0x00);
+        public static readonly DerBoolean True = new DerBoolean(0xFF);
 
-        /**
-         * return a bool from the passed in object.
-         *
-         * @exception ArgumentException if the object cannot be converted.
-         */
+        public static DerBoolean FromContents(byte contents) => CreatePrimitive(contents);
+
+        public static DerBoolean FromContents(byte[] contents) =>
+            CreatePrimitive(contents ?? throw new ArgumentNullException(nameof(contents)));
+
         public static DerBoolean GetInstance(object obj)
         {
             if (obj == null)
@@ -49,34 +49,19 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 }
                 catch (IOException e)
                 {
-                    throw new ArgumentException("failed to construct boolean from byte[]: " + e.Message);
+                    throw new ArgumentException("failed to construct boolean from byte[]", nameof(obj), e);
                 }
             }
 
-            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj));
+            throw new ArgumentException("illegal object in GetInstance: " + Platform.GetTypeName(obj), nameof(obj));
         }
 
-        public static DerBoolean GetInstance(bool value)
-        {
-            return value ? True : False;
-        }
+        public static DerBoolean GetInstance(bool value) => value ? True : False;
 
-        public static DerBoolean GetInstance(int value)
-        {
-            return value != 0 ? True : False;
-        }
+        public static DerBoolean GetInstance(int value) => value != 0 ? True : False;
 
-        /**
-         * return a Boolean from a tagged object.
-         *
-         * @param taggedObject the tagged object holding the object we want
-         * @param declaredExplicit true if the object is meant to be explicitly tagged false otherwise.
-         * @exception ArgumentException if the tagged object cannot be converted.
-         */
-        public static DerBoolean GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit)
-        {
-            return (DerBoolean)Meta.Instance.GetContextTagged(taggedObject, declaredExplicit);
-        }
+        public static DerBoolean GetInstance(Asn1TaggedObject taggedObject, bool declaredExplicit) =>
+            (DerBoolean)Meta.Instance.GetContextTagged(taggedObject, declaredExplicit);
 
         public static DerBoolean GetOptional(Asn1Encodable element)
         {
@@ -89,89 +74,76 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return null;
         }
 
-        public static DerBoolean GetTagged(Asn1TaggedObject taggedObject, bool declaredExplicit)
+        public static DerBoolean GetTagged(Asn1TaggedObject taggedObject, bool declaredExplicit) =>
+            (DerBoolean)Meta.Instance.GetTagged(taggedObject, declaredExplicit);
+
+        private readonly byte m_contents;
+
+        private DerBoolean(byte contents)
         {
-            return (DerBoolean)Meta.Instance.GetTagged(taggedObject, declaredExplicit);
+            m_contents = contents;
         }
 
-        private readonly byte value;
-
-        public DerBoolean(
-            byte[] val)
+        [Obsolete("Use 'FromContents(byte[])' instead")]
+        public DerBoolean(byte[] val)
         {
-            if (val.Length != 1)
-                throw new ArgumentException("byte value should have 1 byte in it", "val");
+            if (val == null)
+                throw new ArgumentNullException(nameof(val));
 
-            // TODO Are there any constraints on the possible byte values?
-            this.value = val[0];
+            CheckContentsLength(val.Length);
+
+            m_contents = val[0];
         }
 
-        private DerBoolean(
-            bool value)
+        public bool IsFalse => m_contents == 0x00;
+
+        public bool IsTrue => m_contents != 0x00;
+
+        internal override IAsn1Encoding GetEncoding(int encoding) =>
+            new PrimitiveEncoding(Asn1Tags.Universal, Asn1Tags.Boolean, GetContents(encoding));
+
+        internal override IAsn1Encoding GetEncodingImplicit(int encoding, int tagClass, int tagNo) =>
+            new PrimitiveEncoding(tagClass, tagNo, GetContents(encoding));
+
+        internal sealed override DerEncoding GetEncodingDer() =>
+            new PrimitiveDerEncoding(Asn1Tags.Universal, Asn1Tags.Boolean, GetContents(Asn1OutputStream.EncodingDer));
+
+        internal sealed override DerEncoding GetEncodingDerImplicit(int tagClass, int tagNo) =>
+            new PrimitiveDerEncoding(tagClass, tagNo, GetContents(Asn1OutputStream.EncodingDer));
+
+        protected override bool Asn1Equals(Asn1Object asn1Object)
         {
-            this.value = value ? (byte)0xff : (byte)0;
+            return asn1Object is DerBoolean that
+                && this.IsTrue == that.IsTrue;
         }
 
-        public bool IsTrue
+        protected override int Asn1GetHashCode() => IsTrue.GetHashCode();
+
+        public override string ToString() => IsTrue ? "TRUE" : "FALSE";
+
+        private static void CheckContentsLength(int contentsLength)
         {
-            get { return value != 0; }
+            if (contentsLength != 1)
+                throw new ArgumentException("BOOLEAN value should have 1 byte in it", nameof(contentsLength));
         }
 
-        internal override IAsn1Encoding GetEncoding(int encoding)
+        internal static DerBoolean CreatePrimitive(DefiniteLengthInputStream defIn)
         {
-            return new PrimitiveEncoding(Asn1Tags.Universal, Asn1Tags.Boolean, GetContents(encoding));
+            CheckContentsLength(defIn.Remaining);
+            return CreatePrimitive(Convert.ToByte(defIn.ReadByte()));
         }
 
-        internal override IAsn1Encoding GetEncodingImplicit(int encoding, int tagClass, int tagNo)
+        private static DerBoolean CreatePrimitive(byte[] contents)
         {
-            return new PrimitiveEncoding(tagClass, tagNo, GetContents(encoding));
+            CheckContentsLength(contents.Length);
+            return CreatePrimitive(contents[0]);
         }
 
-        internal sealed override DerEncoding GetEncodingDer()
-        {
-            return new PrimitiveDerEncoding(Asn1Tags.Universal, Asn1Tags.Boolean,
-                GetContents(Asn1OutputStream.EncodingDer));
-        }
-
-        internal sealed override DerEncoding GetEncodingDerImplicit(int tagClass, int tagNo)
-        {
-            return new PrimitiveDerEncoding(tagClass, tagNo, GetContents(Asn1OutputStream.EncodingDer));
-        }
-
-        protected override bool Asn1Equals(
-            Asn1Object asn1Object)
-        {
-            DerBoolean other = asn1Object as DerBoolean;
-
-            if (other == null)
-                return false;
-
-            return IsTrue == other.IsTrue;
-        }
-
-        protected override int Asn1GetHashCode()
-        {
-            return IsTrue.GetHashCode();
-        }
-
-        public override string ToString()
-        {
-            return IsTrue ? "TRUE" : "FALSE";
-        }
-
-        internal static DerBoolean CreatePrimitive(byte[] contents)
-        {
-            if (contents.Length != 1)
-                throw new ArgumentException("BOOLEAN value should have 1 byte in it", "contents");
-
-            byte b = contents[0];
-
-            return b == 0 ? False : b == 0xFF ? True : new DerBoolean(contents);
-        }
+        private static DerBoolean CreatePrimitive(byte b) => b == 0x00 ? False : b == 0xFF ? True : new DerBoolean(b);
 
         private byte[] GetContents(int encoding)
         {
-            byte contents = value;
+            byte contents = m_contents;
             if (Asn1OutputStream.EncodingDer == encoding && IsTrue)
             {
                 contents = 0xFF;

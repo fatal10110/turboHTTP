@@ -1,8 +1,4 @@
 using System;
-using System.Diagnostics;
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-using System.Buffers.Binary;
-#endif
 using System.IO;
 
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
@@ -10,19 +6,34 @@ using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.IO;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 {
-    /**
-     * a general purpose ASN.1 decoder - note: this class differs from the
-     * others in that it returns null after it has read the last object in
-     * the stream. If an ASN.1 Null is encountered a Der/BER Null object is
-     * returned.
-     */
+    /// <summary>A general purpose ASN.1 decoder.</summary>
+    /// <remarks>
+    /// This class differs from the others in that it returns null after it has read the last object in the stream. If
+    /// an ASN.1 Null is encountered a Der / BER Null object is returned.
+    /// </remarks>
     public class Asn1InputStream
         : FilterStream
     {
-        private readonly int limit;
-        private readonly bool m_leaveOpen;
+        internal static void CheckLength(int length, int limit)
+        {
+            if (length > limit)
+                throw new Asn1Exception("corrupted stream - out of bounds length found: " + length + " > " + limit);
+        }
 
-        internal byte[][] tmpBuffers;
+        internal static int DecrementDepth(int parentDepth)
+        {
+            if (parentDepth <= 0)
+                throw new Asn1Exception("maximum nested construction level reached");
+            return parentDepth - 1;
+        }
+
+        internal static int FindDepth()
+        {
+            if (Properties.TryGetInt32(Properties.Asn1MaxDepth, out int maxDepth))
+                return System.Math.Max(0, maxDepth);
+
+            return 64;
+        }
 
         internal static int FindLimit(Stream input)
         {
@@ -30,22 +41,27 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 return limited.Limit;
 
             if (input is Asn1InputStream asn1)
-                return asn1.limit;
+                return asn1.Limit;
 
-            if (input is MemoryStream memory)
-                return GetMemoryStreamLimit(memory);
+            if (Streams.TryGetAvailable(input, out long available))
+                return (int)System.Math.Min(Arrays.MaxLength, available);
 
-            return int.MaxValue;
+            if (Properties.TryGetInt32(Properties.Asn1MaxLimit, out int maxLimit))
+                return System.Math.Max(0, maxLimit);
+
+            return Arrays.MaxLength;
         }
 
-        internal static int GetMemoryStreamLimit(MemoryStream input) => Convert.ToInt32(input.Length - input.Position);
+        private readonly int m_depth;
+        private readonly int m_limit;
+        private readonly bool m_leaveOpen;
+        private readonly byte[] m_tmp;
 
-        /**
-         * Create an ASN1InputStream based on the input byte array. The length of DER objects in
-         * the stream is automatically limited to the length of the input array.
-         *
-         * @param input array containing ASN.1 encoded data.
-         */
+        /// <summary>Create an Asn1InputStream based on the input byte array.</summary>
+        /// <remarks>
+        /// The length of DER objects in the stream is automatically limited to the length of the input array.
+        /// </remarks>
+        /// <param name="input">Array containing ASN.1 encoded data.</param>
         public Asn1InputStream(byte[] input)
             : this(new MemoryStream(input, false), input.Length)
         {
@@ -56,42 +72,43 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
         {
         }
 
-        internal Asn1InputStream(MemoryStream input)
-            : this(input, GetMemoryStreamLimit(input))
+        public Asn1InputStream(Stream input, bool leaveOpen)
+            : this(input, FindLimit(input), leaveOpen)
         {
         }
 
-        /**
-         * Create an ASN1InputStream where no DER object will be longer than limit.
-         *
-         * @param input stream containing ASN.1 encoded data.
-         * @param limit maximum size of a DER encoded object.
-         */
+        /// <summary>Create an Asn1InputStream where no DER object will be longer than limit.</summary>
+        /// <param name="input">Stream containing ASN.1 encoded data.</param>
+        /// <param name="limit">Maximum size of a DER encoded object.</param>
         public Asn1InputStream(Stream input, int limit)
             : this(input, limit, false)
         {
         }
 
         public Asn1InputStream(Stream input, int limit, bool leaveOpen)
-            : this(input, limit, leaveOpen, new byte[16][])
+            : this(input, FindDepth(), limit, leaveOpen, tmp: new byte[16])
         {
         }
 
-        internal Asn1InputStream(Stream input, int limit, bool leaveOpen, byte[][] tmpBuffers)
+        internal Asn1InputStream(Stream input, int depth, int limit, bool leaveOpen, byte[] tmp)
             : base(input)
         {
             if (!input.CanRead)
                 throw new ArgumentException("Expected stream to be readable", nameof(input));
 
-            this.limit = limit;
+            m_depth = depth;
+            m_limit = limit;
             m_leaveOpen = leaveOpen;
-            this.tmpBuffers = tmpBuffers;
+            m_tmp = tmp;
         }
+
+        private Asn1InputStream CreateSubStream(Stream sub, int limit) =>
+            new Asn1InputStream(sub, DecrementDepth(m_depth), limit, leaveOpen: true, m_tmp);
+
+        public int Limit => m_limit;
 
         protected override void Dispose(bool disposing)
         {
-            tmpBuffers = null;
-
             if (m_leaveOpen)
             {
                 base.Detach(disposing);
@@ -102,17 +119,16 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
         }
 
-        /**
-        * build an object given its tag and the number of bytes to construct it from.
-        */
+        /// <summary>Build an object given its tag and the number of bytes to construct it from.</summary>
         private Asn1Object BuildObject(int tagHdr, int tagNo, int length)
         {
             // TODO[asn1] Special-case zero length first?
 
-            DefiniteLengthInputStream defIn = new DefiniteLengthInputStream(s, length, limit);
+            CheckLength(length, m_limit);
+            DefiniteLengthInputStream defIn = new DefiniteLengthInputStream(s, length, limit: length);
 
             if (0 == (tagHdr & Asn1Tags.Flags))
-                return CreatePrimitiveDerObject(tagNo, defIn, tmpBuffers);
+                return CreatePrimitiveDerObject(tagNo, defIn, m_tmp);
 
             int tagClass = tagHdr & Asn1Tags.Private;
             if (0 != tagClass)
@@ -171,7 +187,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             if (remaining < 1)
                 return new Asn1EncodableVector(0);
 
-            using (var sub = new Asn1InputStream(defIn, remaining, leaveOpen: true, tmpBuffers))
+            using (var sub = CreateSubStream(defIn, remaining))
             {
                 return sub.ReadVector();
             }
@@ -189,7 +205,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
 
             int tagNo = ReadTagNumber(s, tagHdr);
-            int length = ReadLength(s, limit, false);
+            int length = ReadLength(s);
 
             if (length >= 0)
             {
@@ -202,6 +218,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 {
                     throw new Asn1Exception("corrupted stream detected", e);
                 }
+                catch (InvalidOperationException e)
+                {
+                    throw new Asn1Exception("corrupted stream detected", e);
+                }
+                catch (IndexOutOfRangeException e)
+                {
+                    throw new Asn1Exception("corrupted stream detected", e);
+                }
             }
 
             // indefinite-length
@@ -209,8 +233,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             if (0 == (tagHdr & Asn1Tags.Constructed))
                 throw new IOException("indefinite-length primitive encoding encountered");
 
-            IndefiniteLengthInputStream indIn = new IndefiniteLengthInputStream(s, limit);
-            Asn1StreamParser sp = new Asn1StreamParser(indIn, limit, tmpBuffers);
+            IndefiniteLengthInputStream indIn = new IndefiniteLengthInputStream(s, m_limit);
+            Asn1StreamParser sp = Asn1StreamParser.CreateSubParser(indIn, m_depth, m_limit, m_tmp);
 
             int tagClass = tagHdr & Asn1Tags.Private;
             if (0 != tagClass)
@@ -236,14 +260,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
         }
 
-        private DerBitString BuildConstructedBitString(Asn1EncodableVector contentsElements)
+        private static DLBitString BuildConstructedBitString(Asn1EncodableVector contentsElements)
         {
             DerBitString[] bitStrings = new DerBitString[contentsElements.Count];
 
             for (int i = 0; i != bitStrings.Length; i++)
             {
-                DerBitString bitString = contentsElements[i] as DerBitString;
-                if (null == bitString)
+                if (!(contentsElements[i] is DerBitString bitString))
                     throw new Asn1Exception("unknown object encountered in constructed BIT STRING: "
                         + Platform.GetTypeName(contentsElements[i]));
 
@@ -253,14 +276,13 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return new DLBitString(BerBitString.FlattenBitStrings(bitStrings), false);
         }
 
-        private Asn1OctetString BuildConstructedOctetString(Asn1EncodableVector contentsElements)
+        private static DerOctetString BuildConstructedOctetString(Asn1EncodableVector contentsElements)
         {
             Asn1OctetString[] octetStrings = new Asn1OctetString[contentsElements.Count];
 
             for (int i = 0; i != octetStrings.Length; i++)
             {
-                Asn1OctetString octetString = contentsElements[i] as Asn1OctetString;
-                if (null == octetString)
+                if (!(contentsElements[i] is Asn1OctetString octetString))
                     throw new Asn1Exception("unknown object encountered in constructed OCTET STRING: "
                         + Platform.GetTypeName(contentsElements[i]));
 
@@ -314,7 +336,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             return tagNo;
         }
 
-        internal static int ReadLength(Stream s, int limit, bool isParsing)
+        internal static int ReadLength(Stream s)
         {
             int length = s.ReadByte();
             if (0U == ((uint)length >> 7))
@@ -352,70 +374,27 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             }
             while (++octetsPos < octetsCount);
 
-            if (length >= limit && !isParsing)   // after all we must have read at least 1 byte
-                throw new IOException("corrupted stream - out of bounds length found: " + length + " >= " + limit);
-
             return length;
         }
 
-        private static bool GetBuffer(DefiniteLengthInputStream defIn, byte[][] tmpBuffers, out byte[] contents)
-        {
-            int len = defIn.Remaining;
-            if (len >= tmpBuffers.Length)
-            {
-                contents = defIn.ToArray();
-                return false;
-            }
-
-            byte[] buf = tmpBuffers[len];
-            if (buf == null)
-            {
-                buf = tmpBuffers[len] = new byte[len];
-            }
-
-            defIn.ReadAllIntoByteArray(buf);
-
-            contents = buf;
-            return true;
-        }
-
-        internal static Asn1Object CreatePrimitiveDerObject(int tagNo, DefiniteLengthInputStream defIn,
-            byte[][] tmpBuffers)
+        internal static Asn1Object CreatePrimitiveDerObject(int tagNo, DefiniteLengthInputStream defIn, byte[] tmp)
         {
             switch (tagNo)
             {
             case Asn1Tags.BmpString:
-            {
-                return CreateDerBmpString(defIn);
-            }
+                return DerBmpString.CreatePrimitive(defIn);
             case Asn1Tags.Boolean:
-            {
-                GetBuffer(defIn, tmpBuffers, out var contents);
-                return DerBoolean.CreatePrimitive(contents);
-            }
+                return DerBoolean.CreatePrimitive(defIn);
             case Asn1Tags.Enumerated:
-            {
-                bool usedBuffer = GetBuffer(defIn, tmpBuffers, out var contents);
-                return DerEnumerated.CreatePrimitive(contents, clone: usedBuffer);
-            }
+                return DerEnumerated.CreatePrimitive(defIn);
+            case Asn1Tags.Integer:
+                return DerInteger.CreatePrimitive(defIn);
             case Asn1Tags.Null:
-            {
-                Asn1Null.CheckContentsLength(defIn.Remaining);
-                Debug.Assert(defIn.Remaining == 0);
-                return Asn1Null.CreatePrimitive();
-            }
+                return Asn1Null.CreatePrimitive(defIn);
             case Asn1Tags.ObjectIdentifier:
-            {
-                DerObjectIdentifier.CheckContentsLength(defIn.Remaining);
-                bool usedBuffer = GetBuffer(defIn, tmpBuffers, out var contents);
-                return DerObjectIdentifier.CreatePrimitive(contents, clone: usedBuffer);
-            }
+                return DerObjectIdentifier.CreatePrimitive(defIn, tmp);
             case Asn1Tags.RelativeOid:
-            {
-                Asn1RelativeOid.CheckContentsLength(defIn.Remaining);
-                bool usedBuffer = GetBuffer(defIn, tmpBuffers, out var contents);
-                return Asn1RelativeOid.CreatePrimitive(contents, clone: usedBuffer);
-            }
+                return Asn1RelativeOid.CreatePrimitive(defIn, tmp);
             }
 
             byte[] bytes = defIn.ToArray();
@@ -432,8 +411,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 return DerGraphicString.CreatePrimitive(bytes);
             case Asn1Tags.IA5String:
                 return DerIA5String.CreatePrimitive(bytes);
-            case Asn1Tags.Integer:
-                return DerInteger.CreatePrimitive(bytes);
             case Asn1Tags.NumericString:
                 return DerNumericString.CreatePrimitive(bytes);
             case Asn1Tags.ObjectDescriptor:
@@ -469,89 +446,6 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
             default:
                 throw new IOException("unknown tag " + tagNo + " encountered");
             }
-        }
-
-        private static DerBmpString CreateDerBmpString(DefiniteLengthInputStream defIn)
-        {
-            int remainingBytes = defIn.Remaining;
-            if (0 != (remainingBytes & 1))
-                throw new IOException("malformed BMPString encoding encountered");
-
-            int length = remainingBytes / 2;
-
-#if NETCOREAPP2_1_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-            return DerBmpString.CreatePrimitive(length, defIn, (str, defIn) =>
-            {
-                int stringPos = 0;
-
-                Span<byte> buf = stackalloc byte[8];
-                while (remainingBytes >= 8)
-                {
-                    if (Streams.ReadFully(defIn, buf) != 8)
-                        throw new EndOfStreamException("EOF encountered in middle of BMPString");
-
-                    str[stringPos    ] = (char)BinaryPrimitives.ReadUInt16BigEndian(buf[0..]);
-                    str[stringPos + 1] = (char)BinaryPrimitives.ReadUInt16BigEndian(buf[2..]);
-                    str[stringPos + 2] = (char)BinaryPrimitives.ReadUInt16BigEndian(buf[4..]);
-                    str[stringPos + 3] = (char)BinaryPrimitives.ReadUInt16BigEndian(buf[6..]);
-                    stringPos += 4;
-                    remainingBytes -= 8;
-                }
-                if (remainingBytes > 0)
-                {
-                    if (Streams.ReadFully(defIn, buf) != remainingBytes)
-                        throw new EndOfStreamException("EOF encountered in middle of BMPString");
-
-                    int bufPos = 0;
-                    do
-                    {
-                        int b1 = buf[bufPos++] << 8;
-                        int b2 = buf[bufPos++] & 0xFF;
-                        str[stringPos++] = (char)(b1 | b2);
-                    }
-                    while (bufPos < remainingBytes);
-                }
-
-                if (0 != defIn.Remaining || str.Length != stringPos)
-                    throw new InvalidOperationException();
-            });
-#else
-            char[] str = new char[length];
-            int stringPos = 0;
-
-            byte[] buf = new byte[8];
-            while (remainingBytes >= 8)
-            {
-                if (Streams.ReadFully(defIn, buf, 0, 8) != 8)
-                    throw new EndOfStreamException("EOF encountered in middle of BMPString");
-
-                str[stringPos    ] = (char)((buf[0] << 8) | (buf[1] & 0xFF));
-                str[stringPos + 1] = (char)((buf[2] << 8) | (buf[3] & 0xFF));
-                str[stringPos + 2] = (char)((buf[4] << 8) | (buf[5] & 0xFF));
-                str[stringPos + 3] = (char)((buf[6] << 8) | (buf[7] & 0xFF));
-                stringPos += 4;
-                remainingBytes -= 8;
-            }
-            if (remainingBytes > 0)
-            {
-                if (Streams.ReadFully(defIn, buf, 0, remainingBytes) != remainingBytes)
-                    throw new EndOfStreamException("EOF encountered in middle of BMPString");
-
-                int bufPos = 0;
-                do
-                {
-                    int b1 = buf[bufPos++] << 8;
-                    int b2 = buf[bufPos++] & 0xFF;
-                    str[stringPos++] = (char)(b1 | b2);
-                }
-                while (bufPos < remainingBytes);
-            }
-
-            if (0 != defIn.Remaining || str.Length != stringPos)
-                throw new InvalidOperationException();
-
-            return DerBmpString.CreatePrimitive(str);
-#endif
         }
     }
 }

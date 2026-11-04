@@ -22,11 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
 
@@ -37,83 +37,118 @@ jobs:
       # 34 MB of managed DLLs extracted from the ~4 GB unityci/editor image; the
       # image is only pulled when the cache misses (new Unity version).
       - name: Cache Unity managed DLLs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .tools/unity-managed
           key: unity-managed-${{ steps.unity.outputs.version }}
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
           key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
 
-      - name: Install actionlint
+      - name: Install actionlint and ripgrep
         run: |
+          sudo apt-get install -y --no-install-recommends ripgrep
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Check
         run: '"Tools~/ci/check.sh" --full'
 
-  # Unity Test Runner (EditMode + PlayMode) on the pinned Unity version via GameCI.
-  # Needs the UNITY_LICENSE, UNITY_EMAIL and UNITY_PASSWORD secrets (see
-  # Development/docs/agents/tooling.md). Without them the job warns and passes, so
-  # forks and fresh clones still get the lint gate.
-  unity-tests:
+  # TLS interop (#230, #113): the production TLS providers (BouncyCastle, SslStream, Auto) over the
+  # shadow-built DLLs against OpenSSL 3 s_server: handshakes pinned to 0xC030 / 0x1302 through
+  # BouncyCastleTlsStream, and the negative certificate suite with positive controls. Unity is not
+  # needed; a missing openssl or BouncyCastle provider fails the job (Tools~/tls-interop/run.sh).
+  tls-interop:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        testMode: [EditMode, PlayMode]
-    env:
-      HAS_UNITY_LICENSE: ${{ secrets.UNITY_LICENSE != '' }}
+    timeout-minutes: 20
     steps:
-      - name: License check
-        if: env.HAS_UNITY_LICENSE != 'true'
-        run: echo "::warning::UNITY_LICENSE secret is not set; Unity tests were not run"
-
-      - uses: actions/checkout@v4
-        if: env.HAS_UNITY_LICENSE == 'true'
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
       - name: Unity version
-        if: env.HAS_UNITY_LICENSE == 'true'
         id: unity
         run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
 
-      - uses: game-ci/unity-test-runner@v4
-        if: env.HAS_UNITY_LICENSE == 'true'
-        env:
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v6
         with:
-          packageMode: true
-          projectPath: .
-          unityVersion: ${{ steps.unity.outputs.version }}
-          testMode: ${{ matrix.testMode }}
-          # Tests that need the public internet stay out of PR CI.
-          customParameters: -testCategory "!ExternalNetwork"
-          artifactsPath: artifacts-${{ matrix.testMode }}
-          githubToken: ${{ secrets.GITHUB_TOKEN }}
-          checkName: Unity ${{ matrix.testMode }} results
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
 
-      - uses: actions/upload-artifact@v4
-        if: always() && env.HAS_UNITY_LICENSE == 'true'
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
         with:
-          name: unity-${{ matrix.testMode }}-results
-          path: artifacts-${{ matrix.testMode }}
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
+
+      - name: TLS interop rows
+        run: '"Tools~/tls-interop/run.sh"'
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: tls-interop-logs
+          path: .build/tls-interop/run
+
+  # HTTP/2 adversarial server and interop (#111): the scripted adversarial-server scenarios
+  # (Tests/Runtime/Transport/Http2/Adversarial, compiled into a plain .NET harness against the
+  # shadow-built DLLs) and the production RawSocketTransport over TLS + ALPN h2 against Kestrel,
+  # nghttpd and nginx (docker, pinned images). Unity is not needed (Tools~/h2-interop/run.sh).
+  h2-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Unity version
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v6
+        with:
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
+
+      - name: HTTP/2 adversarial and interop rows
+        run: '"Tools~/h2-interop/run.sh"'
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: h2-interop-logs
+          path: .build/h2-interop/run
 
   # The ruleset requires this single check; it passes only when every job above does.
+  # CI never runs Unity (no license, #188): the Unity gates are the host-editor runs in
+  # Development~/docs/agents/testing.md ("Host-editor gates"), not a job here.
   ci:
     if: always()
-    needs: [lint, unity-tests]
+    needs: [lint, tls-interop, h2-interop]
     runs-on: ubuntu-latest
     steps:
       - env:
           LINT: ${{ needs.lint.result }}
-          UNITY: ${{ needs.unity-tests.result }}
-        run: '[ "$LINT" = success ] && [ "$UNITY" = success ]'
+          TLS_INTEROP: ${{ needs.tls-interop.result }}
+          H2_INTEROP: ${{ needs.h2-interop.result }}
+        run: '[ "$LINT" = success ] && [ "$TLS_INTEROP" = success ] && [ "$H2_INTEROP" = success ]'

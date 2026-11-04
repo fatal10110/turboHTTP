@@ -141,6 +141,14 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Collections
             }
         }
 
+        // TODO[api] Make public (currently could conflict with overload)
+        internal static T[] ToArray<T>(ICollection<T> c)
+        {
+            T[] a = new T[c.Count];
+            c.CopyTo(a, 0);
+            return a;
+        }
+
         public static T[] ToArray<T>(IReadOnlyCollection<T> c)
         {
             int count = c.Count, pos = 0;
@@ -182,6 +190,18 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities.Collections
             d.Add(k, v);
             return true;
 #endif
+        }
+
+        // TODO[api] Make extension method
+        public static IEnumerable<T> Where<T>(IEnumerable<T> source, Func<T, bool> predicate)
+        {
+            foreach (var element in source)
+            {
+                if (predicate(element))
+                {
+                    yield return element;
+                }
+            }
         }
     }
 }

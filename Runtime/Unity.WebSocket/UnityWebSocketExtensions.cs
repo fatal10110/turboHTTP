@@ -47,6 +47,7 @@ namespace TurboHTTP.Unity.WebSocket
             var clientOptions = client.GetOptionsSnapshot();
 
             options.TlsBackend = clientOptions.TlsBackend;
+            options.AllowCleartext = clientOptions.AllowCleartext;
             options.CustomHeaders = clientOptions.DefaultHeaders?.Clone() ?? new HttpHeaders();
 
             return options;

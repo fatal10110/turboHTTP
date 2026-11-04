@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,13 +9,20 @@ namespace TurboHTTP.RateLimit
     /// Limits concurrent operations on a per-host basis using semaphores.
     /// Also enforces a global concurrency limit across all hosts.
     /// Thread-safe and disposable.
+    /// <para>Host entries are reference-counted: an entry is pinned from the moment an
+    /// <see cref="AcquireAsync"/> call looks it up until the matching <see cref="Release"/> (or the
+    /// failed acquire) unpins it, and only unpinned entries are evicted. A release therefore always
+    /// returns its permit to the same semaphore it was taken from, and two semaphores never exist
+    /// for one host at the same time (#73).</para>
     /// </summary>
     public sealed class ConcurrencyLimiter : IDisposable
     {
-        private const int MaxHostSemaphoreEntries = 1024;
+        internal const int MaxHostSemaphoreEntries = 1024;
 
-        private readonly ConcurrentDictionary<string, SemaphoreSlim> _hostSemaphores
-            = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+        // Owned by _hostLock: the dictionary and every HostEntry.RefCount.
+        private readonly object _hostLock = new object();
+        private readonly Dictionary<string, HostEntry> _hostSemaphores
+            = new Dictionary<string, HostEntry>(StringComparer.OrdinalIgnoreCase);
 
         private readonly SemaphoreSlim _globalSemaphore;
         private readonly CancellationTokenSource _disposeCts = new CancellationTokenSource();
@@ -75,6 +82,7 @@ namespace TurboHTTP.RateLimit
 
             bool globalAcquired = false;
             bool hostAcquired = false;
+            HostEntry hostEntry = null;
 
             try
             {
@@ -88,12 +96,10 @@ namespace TurboHTTP.RateLimit
                 await _globalSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
                 globalAcquired = true;
 
-                var hostSemaphore = _hostSemaphores.GetOrAdd(host,
-                    _ => new SemaphoreSlim(_maxConnectionsPerHost, _maxConnectionsPerHost));
+                hostEntry = PinHostEntry(host);
 
-                await hostSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+                await hostEntry.Semaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
                 hostAcquired = true;
-                EvictHostSemaphoresIfNeeded(host);
             }
             catch (OperationCanceledException) when (IsDisposingOrDisposed() && !cancellationToken.IsCancellationRequested)
             {
@@ -120,13 +126,19 @@ namespace TurboHTTP.RateLimit
             {
                 // Failed acquires still consume an active-operation slot that must be released.
                 if (!hostAcquired)
+                {
+                    if (hostEntry != null)
+                        UnpinHostEntry(hostEntry);
                     EndOperation();
+                }
             }
         }
 
         /// <summary>
         /// Release a concurrency permit for the given host.
         /// Must be called exactly once per successful <see cref="AcquireAsync"/> call.
+        /// The permit goes back to the host semaphore it was acquired from, even when other hosts
+        /// have churned through the entry cache in between.
         /// </summary>
         /// <param name="host">The host key used in the corresponding <see cref="AcquireAsync"/> call.</param>
         /// <exception cref="ArgumentNullException"><paramref name="host"/> is null.</exception>
@@ -137,9 +149,23 @@ namespace TurboHTTP.RateLimit
 
             try
             {
-                if (_hostSemaphores.TryGetValue(host, out var hostSemaphore))
+                HostEntry entry;
+                lock (_hostLock)
                 {
-                    hostSemaphore.Release();
+                    // A pinned entry is never evicted, so the entry of a held permit is still here.
+                    _hostSemaphores.TryGetValue(host, out entry);
+                }
+
+                if (entry != null)
+                {
+                    try
+                    {
+                        entry.Semaphore.Release();
+                    }
+                    finally
+                    {
+                        UnpinHostEntry(entry);
+                    }
                 }
             }
             catch (ObjectDisposedException) when (IsDisposingOrDisposed())
@@ -198,36 +224,72 @@ namespace TurboHTTP.RateLimit
                 TryFinalizeDispose();
         }
 
-        private void EvictHostSemaphoresIfNeeded(string currentHost)
+        /// <summary>Number of cached host entries (pinned or idle), for tests.</summary>
+        internal int HostEntryCount
         {
-            if (_hostSemaphores.Count <= MaxHostSemaphoreEntries)
+            get
+            {
+                lock (_hostLock)
+                    return _hostSemaphores.Count;
+            }
+        }
+
+        private HostEntry PinHostEntry(string host)
+        {
+            lock (_hostLock)
+            {
+                if (!_hostSemaphores.TryGetValue(host, out var entry))
+                {
+                    entry = new HostEntry(new SemaphoreSlim(_maxConnectionsPerHost, _maxConnectionsPerHost));
+                    _hostSemaphores.Add(host, entry);
+                }
+
+                entry.RefCount++;
+                return entry;
+            }
+        }
+
+        private void UnpinHostEntry(HostEntry entry)
+        {
+            List<SemaphoreSlim> evicted = null;
+            lock (_hostLock)
+            {
+                entry.RefCount--;
+                if (_hostSemaphores.Count > MaxHostSemaphoreEntries)
+                    evicted = EvictIdleHostEntries_NoLock();
+            }
+
+            if (evicted == null)
                 return;
 
+            // Unpinned entries have no waiter and no permit holder: nobody can reach them again.
+            for (int i = 0; i < evicted.Count; i++)
+                evicted[i].Dispose();
+        }
+
+        private List<SemaphoreSlim> EvictIdleHostEntries_NoLock()
+        {
+            List<string> idleHosts = null;
             foreach (var kvp in _hostSemaphores)
             {
-                if (string.Equals(kvp.Key, currentHost, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                bool isIdle;
-                try
-                {
-                    isIdle = kvp.Value.CurrentCount == _maxConnectionsPerHost;
-                }
-                catch (ObjectDisposedException)
-                {
-                    isIdle = true;
-                }
-
-                if (!isIdle)
-                    continue;
-
-                // Remove only from dictionary. Do not dispose removed semaphores because
-                // racing acquires/releases may still hold references.
-                _hostSemaphores.TryRemove(kvp.Key, out _);
-
-                if (_hostSemaphores.Count <= MaxHostSemaphoreEntries)
-                    break;
+                if (kvp.Value.RefCount == 0)
+                    (idleHosts ??= new List<string>()).Add(kvp.Key);
             }
+
+            if (idleHosts == null)
+                return null;
+
+            var evicted = new List<SemaphoreSlim>(idleHosts.Count);
+            for (int i = 0; i < idleHosts.Count; i++)
+            {
+                if (_hostSemaphores.TryGetValue(idleHosts[i], out var entry))
+                {
+                    _hostSemaphores.Remove(idleHosts[i]);
+                    evicted.Add(entry.Semaphore);
+                }
+            }
+
+            return evicted;
         }
 
         private void TryFinalizeDispose()
@@ -240,13 +302,30 @@ namespace TurboHTTP.RateLimit
 
             _globalSemaphore.Dispose();
 
-            foreach (var kvp in _hostSemaphores)
+            lock (_hostLock)
             {
-                kvp.Value.Dispose();
+                foreach (var kvp in _hostSemaphores)
+                {
+                    kvp.Value.Semaphore.Dispose();
+                }
+
+                _hostSemaphores.Clear();
             }
 
-            _hostSemaphores.Clear();
             _disposeCts.Dispose();
+        }
+
+        private sealed class HostEntry
+        {
+            public HostEntry(SemaphoreSlim semaphore)
+            {
+                Semaphore = semaphore;
+            }
+
+            public SemaphoreSlim Semaphore { get; }
+
+            // Acquirers between lookup and release/failed acquire. Guarded by _hostLock.
+            public int RefCount;
         }
     }
 }

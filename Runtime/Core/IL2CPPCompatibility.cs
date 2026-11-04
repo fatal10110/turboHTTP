@@ -9,7 +9,7 @@ namespace TurboHTTP.Core
     /// Validates runtime compatibility with IL2CPP and AOT constraints.
     /// Runs a series of smoke tests on core language features to detect aggressive code stripping.
     /// </summary>
-    public static class IL2CPPCompatibility
+    internal static class IL2CPPCompatibility
     {
         /// <summary>
         /// Runs all compatibility checks and returns a pass/fail result.
@@ -50,7 +50,10 @@ namespace TurboHTTP.Core
 
         private static bool CheckAsyncAwait()
         {
-            // Exercise a real async state machine on a worker thread to avoid main-thread deadlocks.
+            // Exercise a real async state machine on a pool thread. The caller blocks until it finishes,
+            // but cannot deadlock: inside Task.Run there is no SynchronizationContext, so the
+            // continuation after Task.Yield resumes on the thread pool, never on the caller's context
+            // (#245). The class is internal and only the self-tests call it (#181).
             var result = Task.Run(async () =>
             {
                 await Task.Yield();

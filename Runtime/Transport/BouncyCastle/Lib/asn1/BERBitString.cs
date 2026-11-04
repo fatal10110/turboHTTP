@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Diagnostics;
 
 namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 {
@@ -39,7 +38,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                 byte padBits = lastElementContents[0];
                 totalLength += lastElementContents.Length;
 
+                // Every byte is written below before the array is returned.
+#if NET5_0_OR_GREATER
+                byte[] contents = GC.AllocateUninitializedArray<byte>(totalLength);
+#else
                 byte[] contents = new byte[totalLength];
+#endif
                 contents[0] = padBits;
 
                 int pos = 1;
@@ -51,7 +55,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
                     pos += length;
                 }
 
-                Debug.Assert(pos == totalLength);
+                // Guards the uninitialized allocation above: never return a partially written array.
+                if (pos != totalLength)
+                    throw new InvalidOperationException("flattened bit string length mismatch");
+
                 return contents;
             }
             }
@@ -72,7 +79,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         public BerBitString(byte[] data, int padBits)
             : base(data, padBits)
-		{
+        {
             this.elements = null;
         }
 
@@ -103,7 +110,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Asn1
 
         public BerBitString(Asn1Encodable obj)
             : this(obj.GetDerEncoded(), 0)
-		{
+        {
         }
 
         public BerBitString(DerBitString[] elements)

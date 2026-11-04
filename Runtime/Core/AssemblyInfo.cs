@@ -9,5 +9,11 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("TurboHTTP.Middleware")]
 [assembly: InternalsVisibleTo("TurboHTTP.Observability")]
 [assembly: InternalsVisibleTo("TurboHTTP.Retry")]
+[assembly: InternalsVisibleTo("TurboHTTP.RateLimit")]
 [assembly: InternalsVisibleTo("TurboHTTP.WebSocket")]
+[assembly: InternalsVisibleTo("TurboHTTP.WebSocket.Transport")]
+[assembly: InternalsVisibleTo("TurboHTTP.Unity")]
+[assembly: InternalsVisibleTo("TurboHTTP.Complete")]
 [assembly: InternalsVisibleTo("TurboHTTP.Tests.Runtime")]
+// The soak and lossy-network harness (Tools~/soak, not shipped): pool counters (#114).
+[assembly: InternalsVisibleTo("TurboHTTP.Soak")]

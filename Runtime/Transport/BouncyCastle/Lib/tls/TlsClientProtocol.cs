@@ -594,7 +594,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     }
                     else
                     {
-                        m_keyExchange.ProcessClientCredentials(clientAuthCredentials);                    
+                        m_keyExchange.ProcessClientCredentials(clientAuthCredentials);
                     }
 
                     var clientSupplementalData = m_tlsClient.GetClientSupplementalData();
@@ -607,7 +607,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     if (m_certificateRequest != null)
                     {
                         SendCertificateMessage(clientAuthCertificate, null);
-                        this.m_connectionState = CS_CLIENT_CERTIFICATE;                    
+                        this.m_connectionState = CS_CLIENT_CERTIFICATE;
                     }
 
                     SendClientKeyExchange();
@@ -841,7 +841,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                     if (ExtensionType.cookie == extensionType)
                         continue;
 
-                    if (null == TlsUtilities.GetExtensionData(m_clientExtensions, extensionType))
+                    if (!TlsUtilities.HasExtension(m_clientExtensions, extensionType))
                     {
                         throw new TlsFatalAlert(AlertDescription.unsupported_extension,
                             "Unrequested extension in HelloRetryRequest: " + ExtensionType.GetText(extensionType));
@@ -994,9 +994,12 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             securityParameters.m_extendedMasterSecret = true;
 
             /*
-             * TODO[tls13] RFC 8446 4.4.2.1. OCSP Status and SCT Extensions.
-             * 
-             * OCSP information is carried in an extension for a CertificateEntry.
+             * TODO[tls13] RFC 8446 4.4.2.1. SCT Extensions.
+             *
+             * OCSP information is carried in an extension of the CertificateEntry the certificate it answers for is in,
+             * so there is nothing to echo here and no "certificate_status" message to expect; a version of 1 records
+             * only that we asked, which is what has the entries read for staples when the Certificate message arrives.
+             * "status_request_v2" is not honoured at all - RFC 8446 sec. 4.2.1 leaves it out of TLS 1.3.
              */
             securityParameters.m_statusRequestVersion =
                 m_clientExtensions.ContainsKey(ExtensionType.status_request) ? 1 : 0;
@@ -1195,7 +1198,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             /*
              * RFC 3546 2.2 Note that the extended server hello message is only sent in response to an
              * extended client hello message.
-             * 
+             *
              * However, see RFC 5746 exception below. We always include the SCSV, so an Extended Server
              * Hello is always allowed.
              */
@@ -1221,7 +1224,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                      * associated ClientHello, it MUST abort the handshake with an unsupported_extension
                      * fatal alert.
                      */
-                    if (null == TlsUtilities.GetExtensionData(clientHelloExtensions, extType))
+                    if (!TlsUtilities.HasExtension(clientHelloExtensions, extType))
                     {
                         throw new TlsFatalAlert(AlertDescription.unsupported_extension,
                             "Unrequested extension in ServerHello: " + ExtensionType.GetText(extType));
@@ -1242,7 +1245,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                 }
             }
 
-            byte[] renegExtData = TlsUtilities.GetExtensionData(serverHelloExtensions, ExtensionType.renegotiation_info);
+            byte[] renegExtData = TlsUtilities.GetExtensionData(serverHelloExtensions,
+                ExtensionType.renegotiation_info);
 
             // NOT renegotiating
             {
@@ -1410,7 +1414,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (postHandshakeAuth)
                 throw new TlsFatalAlert(AlertDescription.internal_error);
 
-            /* 
+            /*
              * RFC 8446 4.3.2. A server which is authenticating with a certificate MAY optionally
              * request a certificate from the client.
              */
@@ -1449,7 +1453,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                  */
                 foreach (int extType in m_serverExtensions.Keys)
                 {
-                    if (null == TlsUtilities.GetExtensionData(m_clientExtensions, extType))
+                    if (!TlsUtilities.HasExtension(m_clientExtensions, extType))
                     {
                         throw new TlsFatalAlert(AlertDescription.unsupported_extension,
                             "Unrequested extension in EncryptedExtensions: " + ExtensionType.GetText(extType));
@@ -1482,9 +1486,10 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (!securityParameters.IsResumedSession)
             {
                 /*
-                 * TODO[tls13] RFC 8446 4.4.2.1. OCSP Status and SCT Extensions.
-                 * 
-                 * OCSP information is carried in an extension for a CertificateEntry.
+                 * TODO[tls13] RFC 8446 4.4.2.1. SCT Extensions.
+                 *
+                 * OCSP information is carried in an extension of the CertificateEntry the certificate it answers for is
+                 * in; see the note in Process13ServerHello.
                  */
                 securityParameters.m_statusRequestVersion = m_clientExtensions.ContainsKey(ExtensionType.status_request)
                     ? 1 : 0;
@@ -1535,7 +1540,8 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             if (m_selectedPsk13)
                 throw new TlsFatalAlert(AlertDescription.unexpected_message);
 
-            m_authentication = TlsUtilities.Receive13ServerCertificate(m_tlsClientContext, m_tlsClient, buf);
+            m_authentication = TlsUtilities.Receive13ServerCertificate(m_tlsClientContext, m_tlsClient,
+                m_clientExtensions, buf);
 
             // NOTE: In TLS 1.3 we don't have to wait for a possible CertificateStatus message.
             HandleServerCertificate();
@@ -1721,7 +1727,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
 
             TlsSession sessionToResume = offeringTlsV12Minus ? m_tlsClient.GetSessionToResume() : null;
 
-            // NOTE: Client is free to modify the cipher suites up until GetSessionToResume 
+            // NOTE: Client is free to modify the cipher suites up until GetSessionToResume
             int[] offeredCipherSuites = m_tlsClient.GetCipherSuites();
 
             bool fallback = m_tlsClient.IsFallback();
@@ -1812,7 +1818,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
             this.m_clientBinders = TlsUtilities.AddPreSharedKeyToClientHello(m_tlsClientContext, m_tlsClient,
                 m_clientExtensions, offeredCipherSuites);
 
-            // TODO[tls13-psk] Perhaps don't add key_share if external PSK(s) offered and 'psk_dhe_ke' not offered  
+            // TODO[tls13-psk] Perhaps don't add key_share if external PSK(s) offered and 'psk_dhe_ke' not offered
             this.m_clientAgreements = TlsUtilities.AddKeyShareToClientHello(m_tlsClientContext, m_tlsClient,
                 m_clientExtensions);
 
@@ -1837,8 +1843,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls
                  * TLS_EMPTY_RENEGOTIATION_INFO_SCSV signaling cipher suite value in the ClientHello.
                  * Including both is NOT RECOMMENDED.
                  */
-                bool noRenegExt = (null == TlsUtilities.GetExtensionData(m_clientExtensions,
-                    ExtensionType.renegotiation_info));
+                bool noRenegExt = !TlsUtilities.HasExtension(m_clientExtensions, ExtensionType.renegotiation_info);
                 bool noRenegScsv = !Arrays.Contains(offeredCipherSuites, CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
 
                 if (noRenegExt && noRenegScsv)

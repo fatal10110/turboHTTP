@@ -15,10 +15,26 @@ namespace TurboHTTP.Transport.Http1
     internal sealed class Http11RequestWriteState
     {
         private int _bodyWriteStarted;
+        private int _messageWritten;
         private long _bodyBytesWritten;
 
         internal bool HasCommittedBodyBytes => Volatile.Read(ref _bodyWriteStarted) != 0;
         internal long BodyBytesWritten => Interlocked.Read(ref _bodyBytesWritten);
+
+        /// <summary>
+        /// True once the last byte of the request message (the head for a bodiless request,
+        /// otherwise the body) was handed to the stream without a write failure. From then on
+        /// the server may have received and processed the complete request. Only the one-shot
+        /// <c>SerializeAsync</c> path sets it; the Expect: 100-continue split path
+        /// (<c>SerializeHeadersAsync</c>/<c>SerializeBodyAsync</c>) does not, and relies on
+        /// <see cref="HasCommittedBodyBytes"/> to block a replay instead.
+        /// </summary>
+        internal bool HasWrittenCompleteMessage => Volatile.Read(ref _messageWritten) != 0;
+
+        internal void MarkMessageWritten()
+        {
+            Interlocked.Exchange(ref _messageWritten, 1);
+        }
 
         internal void MarkBodyWriteStarted()
         {
@@ -77,6 +93,7 @@ namespace TurboHTTP.Transport.Http1
                     smallBufferedRequestThresholdBytes,
                     ct).ConfigureAwait(false))
             {
+                writeState?.MarkMessageWritten();
                 await stream.FlushAsync(ct).ConfigureAwait(false);
                 return;
             }
@@ -99,6 +116,7 @@ namespace TurboHTTP.Transport.Http1
                     .ConfigureAwait(false);
             }
 
+            writeState?.MarkMessageWritten();
             await stream.FlushAsync(ct).ConfigureAwait(false);
         }
 
@@ -287,28 +305,11 @@ namespace TurboHTTP.Transport.Http1
             headerWriter.Append(GetRequestTarget(request));
             headerWriter.Append(" HTTP/1.1\r\n");
 
-            // 2. Host header (required by HTTP/1.1)
+            // 2. Host header (required by HTTP/1.1; RFC 9112 Section 3.2): the A-label form of
+            // an IDN host and a single-bracketed IPv6 literal (#46).
             if (!request.Headers.Contains("Host"))
             {
-                string hostValue;
-                if (request.Uri.HostNameType == UriHostNameType.IPv6)
-                {
-                    // Mono/Unity can already return bracketed IPv6 hosts.
-                    var host = request.Uri.Host;
-                    hostValue = host.Length > 1 && host[0] == '[' && host[host.Length - 1] == ']'
-                        ? host
-                        : "[" + host + "]";
-                }
-                else
-                {
-                    hostValue = request.Uri.Host;
-                }
-
-                bool isDefaultPort = (request.Uri.Scheme == "https" && request.Uri.Port == 443)
-                                  || (request.Uri.Scheme == "http" && request.Uri.Port == 80);
-                if (!isDefaultPort)
-                    hostValue = hostValue + ":" + request.Uri.Port;
-
+                var hostValue = HttpAuthority.FromUri(request.Uri);
                 ValidateHeader("Host", hostValue);
                 headerWriter.Append("Host: ");
                 headerWriter.Append(hostValue);
@@ -511,21 +512,10 @@ namespace TurboHTTP.Transport.Http1
                 || string.Equals(name, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static void ValidateHeader(string name, string value)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-                throw new ArgumentException("Header name cannot be null or empty");
-
-            var nameSpan = name.AsSpan();
-            for (int i = 0; i < nameSpan.Length; i++)
-            {
-                if (!EncodingHelper.IsRfc9110TChar(nameSpan[i]))
-                    throw new ArgumentException($"Header name contains invalid characters: {name}");
-            }
-
-            if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
-                throw new ArgumentException($"Header value for '{name}' contains CRLF characters");
-        }
+        // The field rules are shared with HTTP/2 (RFC 9110 Sections 5.1 and 5.5): token names,
+        // VCHAR / obs-text / SP / HTAB values without surrounding whitespace.
+        private static void ValidateHeader(string name, string value) =>
+            HttpFieldValidator.ValidateField(name, value);
 
         private static string GetRequestTarget(UHttpRequest request)
         {
@@ -534,11 +524,10 @@ namespace TurboHTTP.Transport.Http1
                 absoluteFormObj is bool useAbsoluteForm &&
                 useAbsoluteForm)
             {
-                var absolute = request.Uri.GetComponents(
-                    UriComponents.SchemeAndServer | UriComponents.PathAndQuery,
-                    UriFormat.UriEscaped);
-                if (!string.IsNullOrEmpty(absolute))
-                    return absolute;
+                // RFC 9112 Section 3.2.2: the absolute URI, with the same ASCII authority as Host.
+                var pathAndQuery = request.Uri.PathAndQuery;
+                return request.Uri.Scheme + "://" + HttpAuthority.FromUri(request.Uri) +
+                       (string.IsNullOrEmpty(pathAndQuery) ? "/" : pathAndQuery);
             }
 
             var path = request.Uri.PathAndQuery;

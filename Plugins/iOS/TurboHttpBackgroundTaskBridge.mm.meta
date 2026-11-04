@@ -5,7 +5,8 @@ PluginImporter:
   serializedVersion: 2
   iconMap: {}
   executionOrder: {}
-  defineConstraints: []
+  defineConstraints:
+  - TURBOHTTP_BACKGROUND_NETWORKING
   isPreloaded: 0
   isOverridable: 1
   isExplicitlyReferenced: 0
@@ -30,7 +31,7 @@ PluginImporter:
   - first:
       tvOS: tvOS
     second:
-      enabled: 1
+      enabled: 0
       settings: {}
   userData: 
   assetBundleName: 

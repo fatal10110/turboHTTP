@@ -5,7 +5,9 @@ namespace TurboHTTP.JSON
 {
     /// <summary>
     /// Static facade and registry for JSON serialization.
-    /// Uses LiteJsonSerializer by default, but users can register custom serializers.
+    /// The built-in default is <see cref="LiteJsonSerializer"/> (no engine dependency); TurboHTTP's
+    /// startup bootstrap (TurboHTTP.Complete) replaces it with the <c>JsonUtility</c>-backed
+    /// <c>JsonUtilitySerializer</c> unless a serializer was set first. Users can register their own.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -34,8 +36,9 @@ namespace TurboHTTP.JSON
         /// Get or set the default JSON serializer.
         /// </summary>
         /// <remarks>
-        /// Defaults to <see cref="LiteJsonSerializer"/>.
-        /// Set this at application startup before any serialization occurs.
+        /// The built-in value is <see cref="LiteJsonSerializer"/>; with TurboHTTP.Complete in the build
+        /// it is <c>JsonUtilitySerializer</c> from startup on. Set this at application startup before
+        /// any serialization occurs.
         /// </remarks>
         public static IJsonSerializer Default
         {
@@ -60,7 +63,8 @@ namespace TurboHTTP.JSON
         }
 
         /// <summary>
-        /// Reset to the built-in LiteJsonSerializer.
+        /// Reset to the built-in LiteJsonSerializer (also replacing the startup
+        /// <c>JsonUtilitySerializer</c>, which then stays unregistered until the next startup).
         /// </summary>
         public static void ResetToDefault()
         {
@@ -116,9 +120,12 @@ namespace TurboHTTP.JSON
         }
 
         /// <summary>
-        /// Check if a custom serializer is registered.
+        /// Check whether the default is anything other than the built-in <see cref="LiteJsonSerializer"/>.
         /// </summary>
-        /// <returns>True if a non-default serializer is registered</returns>
+        /// <returns>
+        /// True if a serializer other than <see cref="LiteJsonSerializer.Instance"/> is registered,
+        /// including the <c>JsonUtilitySerializer</c> that the startup bootstrap installs.
+        /// </returns>
         public static bool HasCustomSerializer()
         {
             return _default != LiteJsonSerializer.Instance;

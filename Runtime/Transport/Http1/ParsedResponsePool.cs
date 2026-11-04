@@ -23,5 +23,11 @@ namespace TurboHTTP.Transport.Http1
         public static ParsedResponse Rent() => s_pool.Rent();
 
         public static void Return(ParsedResponse response) => s_pool.Return(response);
+
+        /// <summary>
+        /// Counters of the process-wide pool, for leak checks (tests, the soak harness):
+        /// <see cref="ObjectPoolDiagnostics.ActiveCount"/> is the number of instances not yet returned.
+        /// </summary>
+        internal static ObjectPoolDiagnostics GetDiagnostics() => s_pool.GetDiagnostics();
     }
 }

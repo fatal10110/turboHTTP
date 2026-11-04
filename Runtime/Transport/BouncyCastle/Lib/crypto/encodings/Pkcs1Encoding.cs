@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 
-using TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Parameters;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Security;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Utilities;
 
@@ -18,7 +17,20 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
          * some providers fail to include the leading zero in PKCS1 encoded blocks. If you need to
          * work with one of these set the system property TurboHTTP.SecureProtocol.Org.BouncyCastle.Pkcs1.Strict to false.
          */
+        [Obsolete("Use 'Properties.Pkcs1NotStrict' instead")]
         public const string StrictLengthEnabledProperty = "TurboHTTP.SecureProtocol.Org.BouncyCastle.Pkcs1.Strict";
+
+        private static bool NotStrict()
+        {
+            //return Properties.GetBoolean(Properties.Pkcs1NotStrict, false);
+
+            if (Properties.TryGetBoolean(Properties.Pkcs1NotStrict, out var notStrict))
+                return notStrict;
+
+#pragma warning disable CS0618 // Type or member is obsolete
+            return !StrictLengthEnabled;
+#pragma warning restore CS0618 // Type or member is obsolete
+        }
 
         private const int HeaderLength = 10;
 
@@ -29,6 +41,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
          * true by default.
          * </p>
          */
+        [Obsolete("Use 'Properties.Pkcs1NotStrict' instead")]
         public static bool StrictLengthEnabled
         {
             get { return Convert.ToBoolean(Interlocked.Read(ref m_strictLengthEnabled)); }
@@ -39,7 +52,9 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
 
         static Pkcs1Encoding()
         {
+#pragma warning disable CS0618 // Type or member is obsolete
             string strictProperty = Platform.GetEnvironmentVariable(StrictLengthEnabledProperty);
+#pragma warning restore CS0618 // Type or member is obsolete
             bool strictLengthEnabled = strictProperty == null || Platform.EqualsIgnoreCase("true", strictProperty);
 
             m_strictLengthEnabled = Convert.ToInt64(strictLengthEnabled);
@@ -50,7 +65,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
         private IAsymmetricBlockCipher engine;
         private bool forEncryption;
         private bool forPrivateKey;
-        private bool useStrictLength;
+        private readonly bool m_useStrictLength;
         private int pLen = -1;
         private byte[] fallback = null;
         private byte[] blockBuffer = null;
@@ -63,7 +78,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
         public Pkcs1Encoding(IAsymmetricBlockCipher cipher)
         {
             this.engine = cipher;
-            this.useStrictLength = StrictLengthEnabled;
+            m_useStrictLength = !NotStrict();
         }
 
         /**
@@ -75,7 +90,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
         public Pkcs1Encoding(IAsymmetricBlockCipher cipher, int pLen)
         {
             this.engine = cipher;
-            this.useStrictLength = StrictLengthEnabled;
+            m_useStrictLength = !NotStrict();
             this.pLen = pLen;
         }
 
@@ -91,7 +106,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
         public Pkcs1Encoding(IAsymmetricBlockCipher cipher, byte[] fallback)
         {
             this.engine = cipher;
-            this.useStrictLength = StrictLengthEnabled;
+            m_useStrictLength = !NotStrict();
             this.fallback = fallback;
             this.pLen = fallback.Length;
         }
@@ -292,7 +307,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
             byte[] data = block;
             if (block.Length != strictBlockSize)
             {
-                if (useStrictLength || block.Length < strictBlockSize)
+                if (m_useStrictLength || block.Length < strictBlockSize)
                 {
                     data = blockBuffer;
                 }
@@ -332,7 +347,7 @@ namespace TurboHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Encodings
             int strictBlockSize = engine.GetOutputBlockSize();
             byte[] block = engine.ProcessBlock(input, inOff, inLen);
 
-            bool incorrectLength = useStrictLength & (block.Length != strictBlockSize);
+            bool incorrectLength = m_useStrictLength & (block.Length != strictBlockSize);
 
             byte[] data = block;
             if (block.Length < strictBlockSize)

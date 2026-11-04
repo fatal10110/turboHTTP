@@ -1,0 +1,7 @@
+<Project>
+  <!-- Keep bin/obj out of the source tree (Tools~/tls-interop) and inside the ignored .build folder. -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../.build/tls-interop/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../../.build/tls-interop/bin/</BaseOutputPath>
+  </PropertyGroup>
+</Project>

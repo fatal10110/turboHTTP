@@ -9,8 +9,11 @@ namespace TurboHTTP.Retry
     /// <summary>
     /// Interceptor that retries retryable requests with exponential backoff.
     /// </summary>
-    public sealed class RetryInterceptor : IHttpInterceptor
+    public sealed class RetryInterceptor : IHttpInterceptor, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#55).
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Retry;
+
         private static readonly TimeSpan ResponseDiscardTimeout = TimeSpan.FromSeconds(2);
 
         private readonly Action<string> _log;
@@ -39,7 +42,11 @@ namespace TurboHTTP.Retry
                 }
 
                 var attempt = 0;
-                var detector = new RetryDetectorHandler(handler, cancellationToken, ResponseDiscardTimeout);
+                var detector = new RetryDetectorHandler(
+                    handler,
+                    cancellationToken,
+                    ResponseDiscardTimeout,
+                    _policy.MaxDelay);
                 var terminalObserver = new RetryTerminalObserverHandler(handler);
 
                 while (true)
@@ -73,6 +80,19 @@ namespace TurboHTTP.Retry
 
                     if (detector.DeliveredError)
                         return;
+
+                    if (detector.RetryAfterExceededCap)
+                    {
+                        var retryAfterMs = detector.RetryAfterDelay.GetValueOrDefault().TotalMilliseconds;
+                        context.RecordEvent("RetryAfterExceedsMaxDelay", new Dictionary<string, object>
+                        {
+                            { "attempt", attempt },
+                            { "retryAfterMs", retryAfterMs },
+                            { "maxDelayMs", _policy.MaxDelay.TotalMilliseconds }
+                        });
+                        _log($"[RetryInterceptor] Attempt {attempt} failed with Retry-After {retryAfterMs / 1000d:F1}s above MaxDelay; returning the response without retrying.");
+                        return;
+                    }
 
                     if (!detector.WasRetryable)
                     {

@@ -29,8 +29,8 @@ namespace TurboHTTP.WebSocket
             {
                 throw new InvalidOperationException(
                     "No WebSocket transport factory configured. " +
-                    "Ensure TurboHTTP.WebSocket.Transport is included in your project. " +
-                    "If module initializer ordering prevents registration, call " +
+                    "Ensure TurboHTTP.WebSocket.Transport and TurboHTTP.Complete are included in the " +
+                    "build (the platform must not be WebGL), or call " +
                     "RawSocketWebSocketTransport.EnsureRegistered() at startup.");
             }
 

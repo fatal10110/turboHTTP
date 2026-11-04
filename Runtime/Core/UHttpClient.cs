@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core.Internal;
@@ -10,24 +8,32 @@ namespace TurboHTTP.Core
 {
     /// <summary>
     /// Main HTTP client for TurboHTTP.
-    /// Provides fluent verb helpers and pooled request creation.
+    /// Provides fluent verb helpers and client-bound request creation.
     /// Thread-safe for concurrent use.
     /// </summary>
     public class UHttpClient : IDisposable
     {
-        private const string MonitorInterceptorTypeName = "TurboHTTP.Observability.MonitorInterceptor, TurboHTTP.Observability";
         private readonly UHttpClientOptions _options;
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
+        // Snapshot of UHttpClientOptions.DisposeInterceptors (#63): configured interceptors are
+        // disposed by the client only when the caller handed their ownership to it.
+        private readonly bool _ownsInterceptors;
         private readonly IReadOnlyList<IHttpInterceptor> _baseInterceptors;
-        private readonly ObjectPool<UHttpRequest> _requestPool;
 
+        // Written only under _pluginLock; read lock-free (volatile) by the send paths.
         private volatile DispatchFunc _pipeline;
 
+        // Serializes RegisterPluginAsync/UnregisterPluginAsync. Never disposed: it has no wait handle
+        // (AvailableWaitHandle is not used), and disposing it under waiters made their Release throw
+        // ObjectDisposedException over the real result (#178).
         private readonly SemaphoreSlim _pluginLifecycleGate = new SemaphoreSlim(1, 1);
+        // Guards _plugins and every write of _pipeline. Dispose clears both under it after setting
+        // _disposed, so a registration that re-checks _disposed under it cannot resurrect either.
         private readonly object _pluginLock = new object();
         private readonly List<PluginRegistration> _plugins = new List<PluginRegistration>();
 
+        // 0 = live, 1 = disposed. Set once by Interlocked.CompareExchange; read with Volatile.Read.
         private int _disposed;
 
         /// <summary>
@@ -98,6 +104,15 @@ namespace TurboHTTP.Core
                     "Must be greater than 0.");
             }
 
+            // Validated before any transport is created, so a rejected configuration leaks nothing (#55).
+            _baseInterceptors = BuildInterceptors(_options);
+            var orderViolation = InterceptorOrdering.FindViolation(_baseInterceptors);
+            if (orderViolation != null)
+                throw new ArgumentException(orderViolation, nameof(options));
+
+            WarnIfRedirectsAreNotFollowed(_options, _baseInterceptors);
+            _ownsInterceptors = _options.DisposeInterceptors;
+
             if (_options.Transport != null)
             {
                 _transport = _options.Transport;
@@ -121,20 +136,31 @@ namespace TurboHTTP.Core
                 _ownsTransport = false;
             }
 
-            _baseInterceptors = BuildInterceptors(_options);
             _pipeline = new InterceptorPipeline(_baseInterceptors, _transport).Pipeline;
+        }
 
-            var poolCapacity = Math.Max(
-                16,
-                (_options.ConnectionPool?.MaxConnectionsPerHost ?? PlatformConfig.RecommendedMaxConcurrency) * 4);
-            _requestPool = new ObjectPool<UHttpRequest>(
-                () => new UHttpRequest(this),
-                poolCapacity);
+        private static void WarnIfRedirectsAreNotFollowed(
+            UHttpClientOptions options,
+            IReadOnlyList<IHttpInterceptor> interceptors)
+        {
+            // FollowRedirects/MaxRedirects only reach the request metadata; the RedirectInterceptor
+            // (Middleware module) acts on them. Without it a 3xx is returned as is (#64).
+            if (!options.FollowRedirects || InterceptorOrdering.Contains(interceptors, InterceptorRole.Redirect))
+                return;
+
+            TurboDiagnostics.LogOnce(
+                TurboDiagnostics.OnceFollowRedirectsWithoutInterceptor,
+                "[TurboHTTP] UHttpClientOptions.FollowRedirects is true but no RedirectInterceptor is configured, " +
+                "so redirects are returned to the caller instead of followed. Add " +
+                "TurboHTTP.Middleware.RedirectInterceptor to UHttpClientOptions.Interceptors, or set " +
+                "FollowRedirects = false. This warning is shown once.");
         }
 
         /// <summary>
-        /// Rent a mutable request object from the pool.
-        /// Dispose the returned request to return it to the pool.
+        /// Creates a new mutable request bound to this client.
+        /// The request is single-use: dispose it, or send it with <see cref="UHttpRequest.SendBufferedAsync"/> /
+        /// <see cref="UHttpRequest.SendStreamingAsync"/> (which dispose it), to end its lease. A request is never
+        /// reused after its lease ends, so a stale reference throws <see cref="ObjectDisposedException"/>.
         /// </summary>
         public UHttpRequest CreateRequest(HttpMethod method, string url)
         {
@@ -144,10 +170,11 @@ namespace TurboHTTP.Core
             ThrowIfDisposed();
 
             var uri = ResolveUri(url);
-            var request = _requestPool.Rent();
+            // Not pooled: a recycled instance would let a stale reference mutate or send another caller's
+            // request (#62). Each lease gets its own object, which is never handed out again.
+            var request = new UHttpRequest(this, method, uri, _options.DefaultTimeout);
             try
             {
-                request.ActivateLease(method, uri, _options.DefaultTimeout);
                 request.ApplyDefaultHeaders(_options.DefaultHeaders);
                 ApplyDefaultMetadata(request, uri);
                 return request;
@@ -188,15 +215,9 @@ namespace TurboHTTP.Core
             var enteredLifecycleGate = false;
             try
             {
-                try
-                {
-                    await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
-                    enteredLifecycleGate = true;
-                }
-                catch (ObjectDisposedException ex)
-                {
-                    throw new ObjectDisposedException(nameof(UHttpClient), ex.Message);
-                }
+                await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+                enteredLifecycleGate = true;
+                ThrowIfDisposed();
 
                 var pluginName = string.IsNullOrWhiteSpace(plugin.Name) ? plugin.GetType().FullName : plugin.Name;
                 if (FindPluginByName_NoLock(pluginName) != null)
@@ -213,7 +234,7 @@ namespace TurboHTTP.Core
                     pluginName,
                     plugin.Capabilities,
                     interceptor => contributedInterceptors.Add(interceptor),
-                    message => Debug.WriteLine("[TurboHTTP][Plugin:" + pluginName + "] " + message));
+                    message => TurboDiagnostics.Log("[TurboHTTP][Plugin:" + pluginName + "] " + message));
 
                 PluginRegistration registration;
                 try
@@ -233,11 +254,31 @@ namespace TurboHTTP.Core
                         ex);
                 }
 
+                string orderViolation = null;
                 lock (_pluginLock)
                 {
-                    _plugins.Add(registration);
-                    RebuildPipelineSnapshot_NoLock();
+                    // Re-checked under the lock Dispose clears _plugins under: a plugin added here is
+                    // either seen (and shut down) by Dispose, or not added at all (#178).
+                    if (Volatile.Read(ref _disposed) == 0)
+                    {
+                        var combined = BuildCombinedInterceptors_NoLock(registration);
+                        orderViolation = InterceptorOrdering.FindViolation(combined);
+                        if (orderViolation == null)
+                        {
+                            _plugins.Add(registration);
+                            _pipeline = new InterceptorPipeline(combined, _transport).Pipeline;
+                            return;
+                        }
+                    }
                 }
+
+                // Initialized but not registered: shut it down here, nobody else owns it.
+                await ShutdownUnregisteredPluginAsync(registration).ConfigureAwait(false);
+
+                if (orderViolation != null)
+                    throw new PluginException(pluginName, "register", orderViolation);
+
+                throw new ObjectDisposedException(nameof(UHttpClient));
             }
             finally
             {
@@ -260,15 +301,9 @@ namespace TurboHTTP.Core
             var enteredLifecycleGate = false;
             try
             {
-                try
-                {
-                    await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
-                    enteredLifecycleGate = true;
-                }
-                catch (ObjectDisposedException ex)
-                {
-                    throw new ObjectDisposedException(nameof(UHttpClient), ex.Message);
-                }
+                await _pluginLifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+                enteredLifecycleGate = true;
+                ThrowIfDisposed();
 
                 PluginRegistration registration;
                 lock (_pluginLock)
@@ -344,10 +379,10 @@ namespace TurboHTTP.Core
 
             ThrowIfDisposed();
 
-            if (request.IsPooled && !request.IsOwnedBy(this))
+            if (request.IsClientOwned && !request.IsOwnedBy(this))
             {
                 throw new InvalidOperationException(
-                    "Cannot send a pooled request through a different client than the one that created it. " +
+                    "Cannot send a client-created request through a different client than the one that created it. " +
                     "Use the client that created this request, or create a new request from this client.");
             }
 
@@ -361,7 +396,12 @@ namespace TurboHTTP.Core
             {
                 var pipelineSnapshot = _pipeline ?? _transport.DispatchAsync;
                 response = await BufferedDispatchBridge
-                    .CollectResponseAsync(pipelineSnapshot, request, context, cancellationToken)
+                    .CollectResponseAsync(
+                        pipelineSnapshot,
+                        request,
+                        context,
+                        cancellationToken,
+                        _options.MaxBufferedResponseBodySize)
                     .ConfigureAwait(false);
 
                 context.RecordEvent("RequestComplete");
@@ -408,10 +448,10 @@ namespace TurboHTTP.Core
 
             ThrowIfDisposed();
 
-            if (request.IsPooled && !request.IsOwnedBy(this))
+            if (request.IsClientOwned && !request.IsOwnedBy(this))
             {
                 throw new InvalidOperationException(
-                    "Cannot send a pooled request through a different client than the one that created it. " +
+                    "Cannot send a client-created request through a different client than the one that created it. " +
                     "Use the client that created this request, or create a new request from this client.");
             }
 
@@ -420,6 +460,7 @@ namespace TurboHTTP.Core
             var context = new RequestContext(request);
             context.RecordEvent("RequestStart");
             UHttpStreamingResponse response = null;
+            var contextHandedToResponse = false;
 
             try
             {
@@ -429,7 +470,12 @@ namespace TurboHTTP.Core
                     .ConfigureAwait(false);
 
                 context.RecordEvent("RequestComplete");
-                context.Stop();
+
+                // The body is still in flight: handlers complete when it is disposed and read the
+                // context then (elapsed time, request state). The response stops and clears the
+                // context after its body source has been disposed (#70).
+                response.AttachRequestRelease(context.CompleteAfterResponse);
+                contextHandedToResponse = true;
                 return response;
             }
             catch (UHttpException)
@@ -456,7 +502,8 @@ namespace TurboHTTP.Core
             finally
             {
                 request.EndSend();
-                context.Clear();
+                if (!contextHandedToResponse)
+                    context.Clear();
             }
         }
 
@@ -480,7 +527,8 @@ namespace TurboHTTP.Core
                 SchedulePluginShutdownOnDispose(pluginsToShutdown[i]);
             }
 
-            DisposeConfiguredInterceptors();
+            if (_ownsInterceptors)
+                DisposeConfiguredInterceptors();
 
             if (_ownsTransport)
             {
@@ -490,11 +538,11 @@ namespace TurboHTTP.Core
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[TurboHTTP] Transport dispose failed: {ex}");
+                    TurboDiagnostics.Log("[TurboHTTP] Transport dispose failed", ex);
                 }
             }
 
-            _pluginLifecycleGate.Dispose();
+            // _pluginLifecycleGate is deliberately not disposed (see its declaration, #178).
         }
 
         private void SchedulePluginShutdownOnDispose(PluginRegistration plugin)
@@ -517,25 +565,21 @@ namespace TurboHTTP.Core
             catch (OperationCanceledException ex)
             {
                 plugin.State = PluginLifecycleState.Faulted;
-                Debug.WriteLine(
-                    $"[TurboHTTP] Plugin dispose timed out ({plugin.Name}) after {_options.PluginShutdownTimeout.TotalMilliseconds:F0}ms: {ex}");
+                TurboDiagnostics.Log(
+                    $"[TurboHTTP] Plugin dispose timed out ({plugin.Name}) after {_options.PluginShutdownTimeout.TotalMilliseconds:F0}ms",
+                    ex);
             }
             catch (Exception ex)
             {
                 plugin.State = PluginLifecycleState.Faulted;
-                Debug.WriteLine($"[TurboHTTP] Plugin dispose failed ({plugin.Name}): {ex}");
+                TurboDiagnostics.Log($"[TurboHTTP] Plugin dispose failed ({plugin.Name})", ex);
             }
         }
 
-        internal void ReturnRequestToPool(UHttpRequest request)
+        private Task ShutdownUnregisteredPluginAsync(PluginRegistration plugin)
         {
-            if (request == null)
-                return;
-
-            if (Volatile.Read(ref _disposed) != 0)
-                return;
-
-            _requestPool.Return(request);
+            plugin.State = PluginLifecycleState.ShuttingDown;
+            return ShutdownPluginOnDisposeAsync(plugin);
         }
 
         private void ThrowIfDisposed()
@@ -557,23 +601,40 @@ namespace TurboHTTP.Core
 
         private void RebuildPipelineSnapshot_NoLock()
         {
+            // Never resurrect a pipeline Dispose has cleared.
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                _pipeline = null;
+                return;
+            }
+
+            _pipeline = new InterceptorPipeline(BuildCombinedInterceptors_NoLock(null), _transport).Pipeline;
+        }
+
+        private List<IHttpInterceptor> BuildCombinedInterceptors_NoLock(PluginRegistration candidate)
+        {
             var combined = new List<IHttpInterceptor>(_baseInterceptors.Count + 8);
             combined.AddRange(_baseInterceptors);
 
             for (int i = 0; i < _plugins.Count; i++)
+                AddContributions(combined, _plugins[i].Interceptors);
+
+            if (candidate != null)
+                AddContributions(combined, candidate.Interceptors);
+
+            return combined;
+        }
+
+        private static void AddContributions(List<IHttpInterceptor> combined, IReadOnlyList<IHttpInterceptor> contributions)
+        {
+            if (contributions == null)
+                return;
+
+            for (int j = 0; j < contributions.Count; j++)
             {
-                var contributions = _plugins[i].Interceptors;
-                if (contributions == null)
-                    continue;
-
-                for (int j = 0; j < contributions.Count; j++)
-                {
-                    if (contributions[j] != null)
-                        combined.Add(contributions[j]);
-                }
+                if (contributions[j] != null)
+                    combined.Add(contributions[j]);
             }
-
-            _pipeline = new InterceptorPipeline(combined, _transport).Pipeline;
         }
 
         private Uri ResolveUri(string url)
@@ -596,6 +657,7 @@ namespace TurboHTTP.Core
         {
             request.WithMetadata(RequestMetadataKeys.FollowRedirects, _options.FollowRedirects);
             request.WithMetadata(RequestMetadataKeys.MaxRedirects, _options.MaxRedirects);
+            request.WithMetadata(RequestMetadataKeys.AllowCleartext, _options.AllowCleartext);
 
             if (!request.Metadata.ContainsKey(RequestMetadataKeys.ProxyDisabled) &&
                 !request.Metadata.ContainsKey(RequestMetadataKeys.ProxySettings))
@@ -628,7 +690,7 @@ namespace TurboHTTP.Core
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[TurboHTTP] {label} dispose failed: {ex}");
+                TurboDiagnostics.Log($"[TurboHTTP] {label} dispose failed", ex);
             }
         }
 
@@ -638,83 +700,11 @@ namespace TurboHTTP.Core
                 ? new List<IHttpInterceptor>(options.Interceptors)
                 : new List<IHttpInterceptor>();
 
-            TryAppendBackgroundNetworkingInterceptor(options, interceptors);
-            TryAppendAdaptiveInterceptor(options, interceptors);
-
 #if UNITY_EDITOR
             TryAppendEditorMonitorInterceptor(interceptors);
 #endif
 
             return interceptors;
-        }
-
-        private static void TryAppendAdaptiveInterceptor(
-            UHttpClientOptions options,
-            List<IHttpInterceptor> interceptors)
-        {
-            if (options?.AdaptivePolicy == null || !options.AdaptivePolicy.Enable || interceptors == null)
-                return;
-
-            if (ContainsPipelineComponent<AdaptiveInterceptor>(interceptors))
-                return;
-
-            var detector = options.NetworkQualityDetector ?? new NetworkQualityDetector();
-            options.NetworkQualityDetector = detector;
-            interceptors.Insert(0, new AdaptiveInterceptor(options.AdaptivePolicy.Clone(), detector));
-        }
-
-        private static void TryAppendBackgroundNetworkingInterceptor(
-            UHttpClientOptions options,
-            List<IHttpInterceptor> interceptors)
-        {
-            if (options?.BackgroundNetworkingPolicy == null ||
-                !options.BackgroundNetworkingPolicy.Enable ||
-                interceptors == null)
-            {
-                return;
-            }
-
-            if (ContainsPipelineComponent<BackgroundNetworkingInterceptor>(interceptors))
-                return;
-
-            interceptors.Insert(0, new BackgroundNetworkingInterceptor(
-                options.BackgroundNetworkingPolicy.Clone(),
-                options.BackgroundExecutionBridge));
-        }
-
-        private static bool ContainsPipelineComponent<T>(IReadOnlyList<IHttpInterceptor> interceptors)
-        {
-            if (interceptors == null)
-                return false;
-
-            for (int i = 0; i < interceptors.Count; i++)
-            {
-                if (interceptors[i] is T)
-                    return true;
-            }
-
-            return false;
-        }
-
-        private static bool ContainsPipelineComponent(
-            IReadOnlyList<IHttpInterceptor> interceptors,
-            Type componentType)
-        {
-            if (interceptors == null || componentType == null)
-                return false;
-
-            for (int i = 0; i < interceptors.Count; i++)
-            {
-                var interceptor = interceptors[i];
-                if (interceptor == null)
-                    continue;
-
-                if (componentType.IsInstanceOfType(interceptor))
-                    return true;
-
-            }
-
-            return false;
         }
 
 #if UNITY_EDITOR
@@ -726,7 +716,7 @@ namespace TurboHTTP.Core
             bool isPlaying;
             try
             {
-                isPlaying = UnityEngine.Application.isPlaying;
+                isPlaying = ReadApplicationIsPlaying();
             }
             catch
             {
@@ -736,47 +726,16 @@ namespace TurboHTTP.Core
             if (!isPlaying)
                 return;
 
-            try
-            {
-                TryAppendEditorMonitorInterceptor(interceptors, MonitorInterceptorTypeName);
-            }
-            catch
-            {
-                // Monitor auto-wiring is optional and must never break client construction.
-            }
+            // Observability registers the monitor through EditorMonitorHook (no reflection, #186);
+            // without that module this is a no-op.
+            EditorMonitorHook.TryAppend(interceptors);
         }
 
-        private static bool TryAppendEditorMonitorInterceptor(
-            List<IHttpInterceptor> interceptors,
-            string typeName)
-        {
-            var monitorType = Type.GetType(typeName, throwOnError: false);
-            if (monitorType == null || !typeof(IHttpInterceptor).IsAssignableFrom(monitorType))
-                return false;
-
-            if (!IsMonitorCaptureEnabled(monitorType) ||
-                ContainsPipelineComponent(interceptors, monitorType))
-            {
-                return true;
-            }
-
-            if (Activator.CreateInstance(monitorType) is IHttpInterceptor monitorInterceptor)
-                interceptors.Add(monitorInterceptor);
-
-            return true;
-        }
-
-        private static bool IsMonitorCaptureEnabled(Type monitorType)
-        {
-            var captureEnabledProperty = monitorType.GetProperty(
-                "CaptureEnabled",
-                BindingFlags.Public | BindingFlags.Static);
-            if (captureEnabledProperty == null || captureEnabledProperty.PropertyType != typeof(bool))
-                return false;
-
-            var value = captureEnabledProperty.GetValue(null, null);
-            return value is bool enabled && enabled;
-        }
+        // Its own non-inlined method: outside a Unity runtime (the Tools~ harnesses on plain .NET link the
+        // editor build) binding the engine call fails when this method is compiled, which the caller's
+        // catch only sees when the call sits in a separate method.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static bool ReadApplicationIsPlaying() => UnityEngine.Application.isPlaying;
 #endif
     }
 }

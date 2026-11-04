@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Threading;
 using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Internal;
 
@@ -8,14 +9,24 @@ namespace TurboHTTP.Transport.Http2
 {
     /// <summary>
     /// HPACK header encoder. RFC 7541 Sections 6.1, 6.2, 6.3.
-    /// NOT thread-safe — accessed only under Http2Connection._writeLock.
+    /// NOT thread-safe — accessed only under Http2Connection._writeLock, except
+    /// <see cref="SetMaxDynamicTableSize"/>, which only records a pending change.
     /// Implements <see cref="IDisposable"/> so the reusable output buffer is returned
     /// to <see cref="ArrayPool{T}"/> when the encoder's owning connection is disposed.
     /// </summary>
     internal class HpackEncoder : IDisposable
     {
         private readonly HpackDynamicTable _dynamicTable;
-        private bool _pendingSizeUpdate;
+
+        // Pending dynamic table size changes (RFC 7541 Section 4.2). Recorded by the connection read
+        // loop, applied only inside Encode (under Http2Connection._writeLock) so the table is never
+        // resized while a block is being encoded. Guarded by _sizeUpdateLock; _sizeUpdateSignal lets
+        // Encode skip the lock when nothing changed.
+        private readonly object _sizeUpdateLock = new object();
+        private int _sizeUpdateSignal;
+        private int _pendingMinSize;
+        private int _pendingFinalSize;
+        private int _appliedMaxSize;
 
         /// <summary>
         /// Reusable output buffer. Allocated once per encoder instance and reset
@@ -27,6 +38,7 @@ namespace TurboHTTP.Transport.Http2
         public HpackEncoder(int maxDynamicTableSize = 4096)
         {
             _dynamicTable = new HpackDynamicTable(maxDynamicTableSize);
+            _appliedMaxSize = maxDynamicTableSize;
         }
 
         public void Dispose() => _outputBuffer.Dispose();
@@ -48,11 +60,8 @@ namespace TurboHTTP.Transport.Http2
             _outputBuffer.Reset();
             var output = _outputBuffer;
 
-            if (_pendingSizeUpdate)
-            {
-                EncodeInteger(_dynamicTable.MaxSize, 5, 0x20, output);
-                _pendingSizeUpdate = false;
-            }
+            if (Volatile.Read(ref _sizeUpdateSignal) != 0)
+                ApplyPendingSizeUpdates(output);
 
             foreach (var (name, value) in headers)
             {
@@ -89,12 +98,61 @@ namespace TurboHTTP.Transport.Http2
         }
 
         /// <summary>
-        /// Emit a dynamic table size update instruction at the start of the next header block.
+        /// Record a new maximum dynamic table size (the peer's SETTINGS_HEADER_TABLE_SIZE).
+        /// Thread-safe: may be called from the read loop while another thread runs <see cref="Encode"/>.
+        /// The table is resized, and the size update instructions emitted, at the start of the next
+        /// <see cref="Encode"/> call: the smallest size recorded since the last block first, then the
+        /// final size (RFC 7541 Section 4.2).
         /// </summary>
         public void SetMaxDynamicTableSize(int newSize)
         {
-            _dynamicTable.SetMaxSize(newSize);
-            _pendingSizeUpdate = true;
+            if (newSize < 0)
+                throw new ArgumentOutOfRangeException(nameof(newSize), newSize, "Table size must be non-negative.");
+
+            lock (_sizeUpdateLock)
+            {
+                if (Volatile.Read(ref _sizeUpdateSignal) == 0)
+                {
+                    if (newSize == _appliedMaxSize)
+                        return;
+
+                    _pendingMinSize = newSize;
+                }
+                else if (newSize < _pendingMinSize)
+                {
+                    _pendingMinSize = newSize;
+                }
+
+                _pendingFinalSize = newSize;
+                Volatile.Write(ref _sizeUpdateSignal, 1);
+            }
+        }
+
+        private void ApplyPendingSizeUpdates(PooledArrayBufferWriter output)
+        {
+            int minSize;
+            int finalSize;
+            lock (_sizeUpdateLock)
+            {
+                if (Volatile.Read(ref _sizeUpdateSignal) == 0)
+                    return;
+
+                minSize = _pendingMinSize;
+                finalSize = _pendingFinalSize;
+                _appliedMaxSize = finalSize;
+                Volatile.Write(ref _sizeUpdateSignal, 0);
+            }
+
+            // RFC 7541 Section 4.2: signal the smallest size since the last block (evicting down to
+            // it, as the decoder will), then the final size. At most two updates.
+            if (minSize < finalSize)
+            {
+                _dynamicTable.SetMaxSize(minSize);
+                EncodeInteger(minSize, 5, 0x20, output);
+            }
+
+            _dynamicTable.SetMaxSize(finalSize);
+            EncodeInteger(finalSize, 5, 0x20, output);
         }
 
         private void EncodeLiteralNeverIndexed(string name, string value, PooledArrayBufferWriter output)

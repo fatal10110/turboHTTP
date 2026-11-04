@@ -1,6 +1,5 @@
 using System;
 using System.Collections;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Threading;
@@ -247,32 +246,21 @@ namespace TurboHTTP.Tests.Performance
             }
         }
 
-        [UnityTest]
-        public IEnumerator AcquireAsync_EvictsIdleHostSemaphores_WhenCapExceeded()
+        [Test]
+        public void AcquireRelease_ManyHosts_EvictsIdleHostEntriesBeyondCap()
         {
-            var task = RunAsync();
-            yield return new UnityEngine.WaitUntil(() => task.IsCompleted);
-            RethrowIfFaulted(task);
-
-            async Task RunAsync()
+            Task.Run(async () =>
             {
                 using var limiter = new ConcurrencyLimiter(maxConnectionsPerHost: 1, maxTotalConnections: 2048);
-                var semaphoresField = typeof(ConcurrencyLimiter).GetField(
-                    "_hostSemaphores", BindingFlags.NonPublic | BindingFlags.Instance);
-                var semaphores = (ConcurrentDictionary<string, SemaphoreSlim>)semaphoresField.GetValue(limiter);
 
                 for (int i = 0; i < 1100; i++)
                 {
-                    semaphores.TryAdd($"host-{i}", new SemaphoreSlim(1, 1));
+                    await limiter.AcquireAsync($"host-{i}");
+                    limiter.Release($"host-{i}");
                 }
 
-                Assert.Greater(semaphores.Count, 1024);
-
-                await limiter.AcquireAsync("active-host");
-                limiter.Release("active-host");
-
-                Assert.LessOrEqual(semaphores.Count, 1024);
-            }
+                Assert.LessOrEqual(limiter.HostEntryCount, ConcurrencyLimiter.MaxHostSemaphoreEntries);
+            }).GetAwaiter().GetResult();
         }
 
         [Test]

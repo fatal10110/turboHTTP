@@ -7,7 +7,7 @@ namespace TurboHTTP.Core.Internal
     /// <summary>
     /// Diagnostics snapshot for <see cref="ByteArrayPool"/>.
     /// </summary>
-    public readonly struct ByteArrayPoolDiagnostics
+    internal readonly struct ByteArrayPoolDiagnostics
     {
         /// <summary>Total number of <see cref="ByteArrayPool.Rent"/> calls since last reset.</summary>
         public readonly long RentCount;
@@ -35,7 +35,7 @@ namespace TurboHTTP.Core.Internal
     /// Provides bounded, thread-safe byte array pooling with optional
     /// clear-on-return for security-sensitive buffers.
     /// </summary>
-    public static class ByteArrayPool
+    internal static class ByteArrayPool
     {
         private static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Shared;
 

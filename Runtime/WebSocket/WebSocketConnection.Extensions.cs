@@ -11,7 +11,6 @@ namespace TurboHTTP.WebSocket
     public sealed partial class WebSocketConnection
     {
         private async Task WriteMessageWithExtensionsAsync(
-            Stream stream,
             WebSocketOpcode opcode,
             ReadOnlyMemory<byte> payload,
             CancellationToken ct)
@@ -54,8 +53,7 @@ namespace TurboHTTP.WebSocket
                     transformedPayload = transformed.Memory;
                 }
 
-                await _frameWriter.WriteMessageAsync(stream, opcode, transformedPayload, ct, rsvBits)
-                    .ConfigureAwait(false);
+                await WriteMessageFramesAsync(opcode, transformedPayload, rsvBits, ct).ConfigureAwait(false);
 
                 CalculateMessageWireStats(
                     transformedPayload.Length,
@@ -214,29 +212,13 @@ namespace TurboHTTP.WebSocket
             return result;
         }
 
-        private static IReadOnlyList<string> BuildRequestedExtensions(
-            IReadOnlyList<string> rawExtensions,
-            WebSocketExtensionNegotiator negotiator)
+        private static IReadOnlyList<string> BuildRequestedExtensions(WebSocketExtensionNegotiator negotiator)
         {
             var result = new List<string>();
 
-            if (negotiator != null)
-            {
-                string structuredOffers = negotiator.BuildOffersHeader();
-                if (!string.IsNullOrWhiteSpace(structuredOffers))
-                    result.Add(structuredOffers);
-            }
-
-            if (rawExtensions != null)
-            {
-                for (int i = 0; i < rawExtensions.Count; i++)
-                {
-                    if (string.IsNullOrWhiteSpace(rawExtensions[i]))
-                        continue;
-
-                    result.Add(rawExtensions[i]);
-                }
-            }
+            string structuredOffers = negotiator.BuildOffersHeader();
+            if (!string.IsNullOrWhiteSpace(structuredOffers))
+                result.Add(structuredOffers);
 
             return result;
         }

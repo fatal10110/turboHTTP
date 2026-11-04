@@ -221,6 +221,7 @@ namespace TurboHTTP.Tests.Core
             {
                 Transport = transport,
                 DisposeTransport = true,
+                DisposeInterceptors = true,
                 Interceptors = new List<IHttpInterceptor> { interceptor1, interceptor2, interceptor3 }
             });
 
@@ -242,6 +243,7 @@ namespace TurboHTTP.Tests.Core
             {
                 Transport = transport,
                 DisposeTransport = true,
+                DisposeInterceptors = true,
                 Interceptors = new List<IHttpInterceptor> { interceptor1, interceptor2 }
             });
 
@@ -322,7 +324,7 @@ namespace TurboHTTP.Tests.Core
         }
 
         [Test]
-        public void SendBufferedAsync_KeepsPooledRequestOutOfPoolUntilResponseDisposed()
+        public void SendBufferedAsync_KeepsRequestLeaseActiveUntilResponseDisposed()
         {
             Task.Run(async () =>
             {
@@ -335,20 +337,25 @@ namespace TurboHTTP.Tests.Core
                 var request = client.Get("https://example.test/buffered");
                 using var response = await request.SendBufferedAsync();
 
+                Assert.IsTrue(request.IsLeaseActive, "The response still references the request.");
+
                 var other = client.Get("https://example.test/other");
                 Assert.AreNotSame(request, other);
                 other.Dispose();
 
                 response.Dispose();
 
-                var recycled = client.Get("https://example.test/recycled");
-                Assert.AreSame(request, recycled);
-                recycled.Dispose();
+                Assert.IsFalse(request.IsLeaseActive);
+
+                // Requests are never recycled: a stale reference can never alias a new lease (#62).
+                var next = client.Get("https://example.test/next");
+                Assert.AreNotSame(request, next);
+                next.Dispose();
             }).GetAwaiter().GetResult();
         }
 
         [Test]
-        public void SendStreamingAsync_KeepsPooledRequestOutOfPoolUntilResponseDisposed()
+        public void SendStreamingAsync_KeepsRequestLeaseActiveUntilResponseDisposed()
         {
             Task.Run(async () =>
             {
@@ -361,15 +368,20 @@ namespace TurboHTTP.Tests.Core
                 var request = client.Get("https://example.test/streaming");
                 var response = await request.SendStreamingAsync();
 
+                Assert.IsTrue(request.IsLeaseActive, "The response still references the request.");
+
                 var other = client.Get("https://example.test/other");
                 Assert.AreNotSame(request, other);
                 other.Dispose();
 
                 await response.DisposeAsync();
 
-                var recycled = client.Get("https://example.test/recycled");
-                Assert.AreSame(request, recycled);
-                recycled.Dispose();
+                Assert.IsFalse(request.IsLeaseActive);
+
+                // Requests are never recycled: a stale reference can never alias a new lease (#62).
+                var next = client.Get("https://example.test/next");
+                Assert.AreNotSame(request, next);
+                next.Dispose();
             }).GetAwaiter().GetResult();
         }
 
