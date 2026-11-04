@@ -86,11 +86,7 @@ namespace TurboHTTP.Observability
                 _onChunkRead?.Invoke(destination.Slice(0, read));
                 return read;
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
+            catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
             {
                 Interlocked.CompareExchange(ref _error, ex, null);
                 Abort();
@@ -133,11 +129,7 @@ namespace TurboHTTP.Observability
             {
                 return await _inner.GetTrailersAsync(ct).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
+            catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
             {
                 Interlocked.CompareExchange(ref _error, ex, null);
                 Abort();

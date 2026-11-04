@@ -250,22 +250,22 @@ namespace TurboHTTP.Testing
 
                 await DriveHandlerAsync(response, safeHandler, context).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (!(ex is OperationCanceledException))
             {
-                throw;
-            }
-            catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Cancelled)
-            {
-                throw new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken);
-            }
-            catch (UHttpException ex)
-            {
-                safeHandler.OnResponseError(ex, context);
-            }
-            catch (Exception ex)
-            {
-                safeHandler.OnResponseError(new UHttpException(
-                    new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one, which reported a cancellation as a handler error (#320).
+                if (ex is UHttpException httpError)
+                {
+                    if (httpError.HttpError != null && httpError.HttpError.Type == UHttpErrorType.Cancelled)
+                        throw new OperationCanceledException(httpError.HttpError.Message, httpError, cancellationToken);
+
+                    safeHandler.OnResponseError(httpError, context);
+                }
+                else
+                {
+                    safeHandler.OnResponseError(new UHttpException(
+                        new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
+                }
             }
             finally
             {

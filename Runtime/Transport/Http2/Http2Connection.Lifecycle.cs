@@ -206,15 +206,19 @@ namespace TurboHTTP.Transport.Http2
 
             int streamId = stream.StreamId;
 
+            // Claim the stream before faulting it (#318). Faulting first resumed DispatchAsync on another
+            // thread, and its cleanup could remove the still-open stream before this check, so neither
+            // path sent RST_STREAM(CANCEL) and the peer kept the stream open (RFC 9113 Sections 5.1, 8.1).
+            bool claimed = RemoveActiveStream(streamId, stream);
+            if (claimed)
+                TrackRecentlyResetStream(streamId);
+
             // Always fault the captured stream so DispatchAsync can finish even if
             // active-stream bookkeeping already raced with completion/cleanup.
             stream.Cancel(cancellationToken);
 
-            if (TryRemoveActiveStream(streamId, out _))
-            {
-                TrackRecentlyResetStream(streamId);
+            if (claimed)
                 _ = SendCancelRstAfterRequestCancellationAsync(streamId);
-            }
         }
 
         private async Task SendCancelRstAfterRequestCancellationAsync(int streamId)

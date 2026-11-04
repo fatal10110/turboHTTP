@@ -507,32 +507,28 @@ namespace TurboHTTP.Testing
                 await _innerTransport.DispatchAsync(request, recordingHandler, context, cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
-            {
-                recordingHandler.DisposeBufferedBody();
-                throw;
-            }
-            catch (UHttpException ex) when (ex.HttpError != null && ex.HttpError.Type == UHttpErrorType.Cancelled)
-            {
-                recordingHandler.DisposeBufferedBody();
-                throw new OperationCanceledException(ex.HttpError.Message, ex, cancellationToken);
-            }
-            catch (UHttpException ex)
-            {
-                if (!recordingHandler.TerminalCallbackSeen)
-                {
-                    recordingHandler.OnResponseError(ex, context);
-                    return;
-                }
-
-                throw;
-            }
             catch (Exception ex)
             {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320).
+                if (ex is OperationCanceledException)
+                {
+                    recordingHandler.DisposeBufferedBody();
+                    throw;
+                }
+
+                var httpError = ex as UHttpException;
+                if (httpError?.HttpError != null && httpError.HttpError.Type == UHttpErrorType.Cancelled)
+                {
+                    recordingHandler.DisposeBufferedBody();
+                    throw new OperationCanceledException(httpError.HttpError.Message, httpError, cancellationToken);
+                }
+
                 if (!recordingHandler.TerminalCallbackSeen)
                 {
-                    recordingHandler.OnResponseError(new UHttpException(
-                        new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)), context);
+                    recordingHandler.OnResponseError(
+                        httpError ?? new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex.Message, ex)),
+                        context);
                     return;
                 }
 

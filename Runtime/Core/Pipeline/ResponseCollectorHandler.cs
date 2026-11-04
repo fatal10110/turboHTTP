@@ -69,6 +69,13 @@ namespace TurboHTTP.Core
                 return;
 
             stagedResponse?.Dispose();
+            if (Internal.CancellationClassification.TryGetCallerCancellation(
+                    responseError, _cancellationToken, out var canceled))
+            {
+                _tcs.TrySetException(canceled);
+                return;
+            }
+
             _tcs.TrySetException(responseError);
         }
 
@@ -88,6 +95,12 @@ namespace TurboHTTP.Core
             if (ex is OperationCanceledException operationCanceledException)
             {
                 _tcs.TrySetException(operationCanceledException);
+                return;
+            }
+
+            if (Internal.CancellationClassification.TryGetCallerCancellation(ex, _cancellationToken, out var canceled))
+            {
+                _tcs.TrySetException(canceled);
                 return;
             }
 
