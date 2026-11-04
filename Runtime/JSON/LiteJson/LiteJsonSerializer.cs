@@ -119,12 +119,13 @@ namespace TurboHTTP.JSON.Lite
                 // Try to convert primitive types
                 return ConvertPrimitive(result, type);
             }
-            catch (JsonParseException ex)
-            {
-                throw new JsonSerializationException($"JSON parse error: {ex.Message}", ex);
-            }
             catch (Exception ex) when (ex is not JsonSerializationException)
             {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320).
+                if (ex is JsonParseException parseError)
+                    throw new JsonSerializationException($"JSON parse error: {parseError.Message}", parseError);
+
                 throw new JsonSerializationException(
                     $"Failed to deserialize to type '{type?.Name ?? "unknown"}'", ex);
             }

@@ -266,18 +266,17 @@ namespace TurboHTTP.WebSocket
 
                 return new WebSocketFrameReadLease(frame, null, 0, frameByteCount);
             }
-            catch (ObjectDisposedException) when (ct.IsCancellationRequested)
+            catch (Exception ex)
             {
-                throw new OperationCanceledException("WebSocket frame read was canceled.", ct);
-            }
-            catch (IOException) when (ct.IsCancellationRequested)
-            {
-                throw new OperationCanceledException("WebSocket frame read was canceled.", ct);
-            }
-            catch
-            {
+                // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
+                // caught by a later one (#320). The payload buffer goes back on every failure, the
+                // cancellation-mapped ones included.
                 if (payloadBuffer != null)
                     ArrayPool<byte>.Shared.Return(payloadBuffer);
+
+                if (ct.IsCancellationRequested && (ex is ObjectDisposedException || ex is IOException))
+                    throw new OperationCanceledException("WebSocket frame read was canceled.", ct);
+
                 throw;
             }
             finally

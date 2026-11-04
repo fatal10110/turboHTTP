@@ -62,11 +62,7 @@ namespace TurboHTTP.Unity.Mobile
             {
                 read = await _inner.ReadAsync(destination, ct).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch
+            catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
             {
                 Complete();
                 throw;

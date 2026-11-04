@@ -198,7 +198,8 @@ namespace TurboHTTP.Transport
             int attempt,
             CancellationToken ct)
         {
-            if (ct.IsCancellationRequested ||
+            if (failure == null ||
+                ct.IsCancellationRequested ||
                 request.Content.Replayability == RequestBodyReplayability.NonReplayable)
             {
                 return false;
@@ -207,6 +208,44 @@ namespace TurboHTTP.Transport
             return failure.RequestNotProcessed
                 ? attempt < MaxH2UnprocessedRetries
                 : attempt == 0 && request.Method.IsIdempotent();
+        }
+
+        // Wrappers are shallow; the bound only stops a pathological InnerException chain.
+        private const int MaxRetryableUnwrapDepth = 8;
+
+        /// <summary>
+        /// The <see cref="Http2RetryableRequestException"/> that <paramref name="failure"/> is or wraps
+        /// (through <see cref="UHttpException"/> or single-inner <see cref="AggregateException"/> wrappers),
+        /// else null. A wrapped marker still means the request was not answered: the IL2CPP catch ladder
+        /// once wrapped it as <see cref="UHttpErrorType.Unknown"/> and the replay was lost (#320). The HTTP/2
+        /// layer never marks a request whose response started, so unwrapping cannot replay one.
+        /// </summary>
+        internal static Http2RetryableRequestException FindH2Retryable(Exception failure)
+        {
+            var current = failure;
+            for (int depth = 0; current != null && depth < MaxRetryableUnwrapDepth; depth++)
+            {
+                if (current is Http2RetryableRequestException retryable)
+                    return retryable;
+
+                if (current is AggregateException aggregate)
+                {
+                    if (aggregate.InnerExceptions.Count != 1)
+                        return null;
+
+                    current = aggregate.InnerExceptions[0];
+                }
+                else if (current is UHttpException)
+                {
+                    current = current.InnerException;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -451,11 +490,11 @@ namespace TurboHTTP.Transport
                         .ConfigureAwait(false);
                     return;
                 }
-                catch (Http2RetryableRequestException ex) when (
+                catch (Exception ex) when (
                     Volatile.Read(ref _disposed) == 0 &&
-                    ShouldRetryH2Request(ex, request, h2Attempt, ct))
+                    ShouldRetryH2Request(FindH2Retryable(ex), request, h2Attempt, ct))
                 {
-                    context.RecordEvent(ex.RequestNotProcessed
+                    context.RecordEvent(FindH2Retryable(ex).RequestNotProcessed
                         ? "TransportH2RetryUnprocessed"
                         : "TransportH2StaleRetry");
                 }
@@ -618,109 +657,92 @@ namespace TurboHTTP.Transport
                     lease?.Dispose();
                 }
             }
-            // IMPORTANT: UHttpException MUST be the first catch handler. Moving it will
-            // cause double-wrapping of pool/TLS-thrown exceptions. See error model in overview.md.
-            catch (UHttpException ex) when (
-                ex.HttpError != null &&
-                ex.HttpError.Type == UHttpErrorType.NetworkError &&
-                timeoutCts.IsCancellationRequested &&
-                !cancellationToken.IsCancellationRequested)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Timeout,
-                    $"Request timed out after {request.Timeout.TotalSeconds}s",
-                    ex));
-            }
-            catch (UHttpException ex) when (
-                ex.HttpError != null &&
-                ex.HttpError.Type == UHttpErrorType.NetworkError &&
-                cancellationToken.IsCancellationRequested)
-            {
-                throw new OperationCanceledException("Request was cancelled", ex, cancellationToken);
-            }
-            catch (UHttpException)
-            {
-                // Already mapped by pool/TLS layer — pass through, do NOT re-wrap.
-                throw;
-            }
-            catch (HandlerCallbackException ex)
-            {
-                context.RecordEvent("RequestFailed");
-                ExceptionDispatchInfo.Capture(ex.InnerException ?? ex).Throw();
-                throw;
-            }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Timeout,
-                    $"Request timed out after {request.Timeout.TotalSeconds}s"));
-            }
-            catch (OperationCanceledException)
-            {
-                throw new OperationCanceledException("Request was cancelled", cancellationToken);
-            }
-            catch (IOException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Timeout,
-                    $"Request timed out after {request.Timeout.TotalSeconds}s"));
-            }
-            catch (IOException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw new OperationCanceledException("Request was cancelled", cancellationToken);
-            }
-            catch (IOException ex)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError, ex.Message, ex));
-            }
-            catch (SocketException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Timeout,
-                    $"Request timed out after {request.Timeout.TotalSeconds}s"));
-            }
-            catch (SocketException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw new OperationCanceledException("Request was cancelled", cancellationToken);
-            }
-            catch (SocketException ex)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError, ex.Message, ex));
-            }
-            catch (FormatException ex)
-            {
-                // Malformed HTTP response (e.g., invalid chunk size, bad status line, header size exceeded)
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    $"Malformed HTTP response: {ex.Message}", ex));
-            }
-            catch (NotSupportedException ex)
-            {
-                // Unsupported Transfer-Encoding or other protocol feature — treat as broken response
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    $"Unsupported HTTP response: {ex.Message}", ex));
-            }
-            catch (AuthenticationException ex)
-            {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.CertificateError, ex.Message, ex));
-            }
-            catch (HttpFieldValidationException ex)
-            {
-                // A header or trailer field the caller set cannot be sent (RFC 9110 Sections 5.1
-                // and 5.5): the same non-retryable InvalidRequest HTTP/2 reports (#243).
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.InvalidRequest, ex.Message, ex));
-            }
             catch (Exception ex)
             {
-                throw new UHttpException(new UHttpError(
-                    UHttpErrorType.Unknown, ex.Message, ex));
+                // One clause that maps, not a ladder of filtered clauses: IL2CPP (Unity 2021.3) emits the
+                // clauses of a try that has an exception filter as nested C++ try blocks, so the exception
+                // one clause threw was caught by a later one (a replayable HTTP/2 failure lost its type and
+                // was not replayed, a cancellation became Unknown) (#320).
+                ExceptionDispatchInfo.Capture(
+                        MapDispatchAttemptFailure(ex, request, context, timeoutCts, cancellationToken))
+                    .Throw();
+                throw;
             }
         }
+
+        /// <summary>
+        /// Maps a failure of one dispatch attempt to the error model: the caller's cancellation is an
+        /// <see cref="OperationCanceledException"/>, the request deadline (<paramref name="timeoutCts"/>
+        /// without the caller's token) a <see cref="UHttpErrorType.Timeout"/>, anything else a
+        /// <see cref="UHttpException"/>. An exception already mapped by the pool, TLS or HTTP/2 layer
+        /// (including <see cref="Http2RetryableRequestException"/>) is returned as is, never re-wrapped;
+        /// a handler fault returns the handler's own exception.
+        /// </summary>
+        internal static Exception MapDispatchAttemptFailure(
+            Exception ex,
+            UHttpRequest request,
+            RequestContext context,
+            CancellationTokenSource timeoutCts,
+            CancellationToken cancellationToken)
+        {
+            bool callerCanceled = cancellationToken.IsCancellationRequested;
+            bool timedOut = timeoutCts.IsCancellationRequested && !callerCanceled;
+            switch (ex)
+            {
+                // UHttpException first: pool/TLS-thrown exceptions are already mapped (see the error
+                // model in overview.md); only a network error caused by the deadline or the caller's
+                // cancellation is reclassified.
+                case UHttpException mapped:
+                    if (mapped.HttpError != null && mapped.HttpError.Type == UHttpErrorType.NetworkError)
+                    {
+                        if (timedOut)
+                            return CreateRequestTimeout(request, mapped);
+                        if (callerCanceled)
+                            return new OperationCanceledException("Request was cancelled", mapped, cancellationToken);
+                    }
+
+                    return mapped;
+                case HandlerCallbackException handlerFault:
+                    context.RecordEvent("RequestFailed");
+                    return handlerFault.InnerException ?? handlerFault;
+                case OperationCanceledException _:
+                case IOException _ when timedOut || callerCanceled:
+                case SocketException _ when timedOut || callerCanceled:
+                    return timedOut
+                        ? CreateRequestTimeout(request, null)
+                        : new OperationCanceledException("Request was cancelled", cancellationToken);
+                case IOException io:
+                    return new UHttpException(new UHttpError(UHttpErrorType.NetworkError, io.Message, io));
+                case SocketException socketError:
+                    return new UHttpException(new UHttpError(UHttpErrorType.NetworkError, socketError.Message, socketError));
+                case FormatException format:
+                    // Malformed HTTP response (e.g., invalid chunk size, bad status line, header size exceeded)
+                    return new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        $"Malformed HTTP response: {format.Message}", format));
+                case NotSupportedException notSupported:
+                    // Unsupported Transfer-Encoding or other protocol feature — treat as broken response
+                    return new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        $"Unsupported HTTP response: {notSupported.Message}", notSupported));
+                case AuthenticationException authentication:
+                    return new UHttpException(new UHttpError(
+                        UHttpErrorType.CertificateError, authentication.Message, authentication));
+                case HttpFieldValidationException invalidField:
+                    // A header or trailer field the caller set cannot be sent (RFC 9110 Sections 5.1
+                    // and 5.5): the same non-retryable InvalidRequest HTTP/2 reports (#243).
+                    return new UHttpException(new UHttpError(
+                        UHttpErrorType.InvalidRequest, invalidField.Message, invalidField));
+                default:
+                    return new UHttpException(new UHttpError(UHttpErrorType.Unknown, ex.Message, ex));
+            }
+        }
+
+        private static UHttpException CreateRequestTimeout(UHttpRequest request, Exception inner) =>
+            new UHttpException(new UHttpError(
+                UHttpErrorType.Timeout,
+                $"Request timed out after {request.Timeout.TotalSeconds}s",
+                inner));
 
         /// <summary>
         /// Sends a request through an HTTP proxy (forward for HTTP, CONNECT tunnel for HTTPS).
