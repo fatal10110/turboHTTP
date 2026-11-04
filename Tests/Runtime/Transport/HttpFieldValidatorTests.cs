@@ -17,9 +17,27 @@ namespace TurboHTTP.Tests.Transport
     [TestFixture]
     public class HttpFieldValidatorTests
     {
+        // NUL cases are built at run time: IL2CPP truncates attribute strings at the NUL, so a
+        // [TestCase("X-Test\0")] reached the validator as the valid "X-Test" (#321).
+        private const char Nul = (char)0;
+
+        private static readonly object[] NulValues =
+        {
+            new object[] { "nul" + Nul + "value", "0x00" },
+        };
+
+        private static readonly object[] NulNames =
+        {
+            new object[] { "X-Test" + Nul },
+        };
+
+        private static readonly object[] NulSerializerValues =
+        {
+            new object[] { "nul" + Nul + "value" },
+        };
+
         [TestCase("bad\r\nInjected: yes", "CRLF")]
         [TestCase("bad\nvalue", "CRLF")]
-        [TestCase("nul\0value", "0x00")]
         [TestCase("ctl\u0001value", "0x01")]
         [TestCase("ctl\u0008value", "0x08")]
         [TestCase("ctl\u000Bvalue", "0x0B")]
@@ -30,6 +48,7 @@ namespace TurboHTTP.Tests.Transport
         [TestCase("\tleading", "whitespace")]
         [TestCase("trailing ", "whitespace")]
         [TestCase("trailing\t", "whitespace")]
+        [TestCaseSource(nameof(NulValues))]
         public void ValidateField_InvalidValue_Throws(string value, string expectedInMessage)
         {
             var ex = Assert.Throws<HttpFieldValidationException>(() => HttpFieldValidator.ValidateField("X-Test", value));
@@ -42,10 +61,10 @@ namespace TurboHTTP.Tests.Transport
         [TestCase("X Test")]
         [TestCase("X-Test:")]
         [TestCase("X-Test\r\nInjected")]
-        [TestCase("X-Test\0")]
         [TestCase("X-Tést")]
         [TestCase("")]
         [TestCase(null)]
+        [TestCaseSource(nameof(NulNames))]
         public void ValidateField_InvalidName_Throws(string name)
         {
             Assert.Throws<HttpFieldValidationException>(() => HttpFieldValidator.ValidateField(name, "ok"));
@@ -87,11 +106,11 @@ namespace TurboHTTP.Tests.Transport
 
         // --- HTTP/1.1 serializer uses the shared validator (#49) ---
 
-        [TestCase("nul\0value")]
         [TestCase("ctl\u0001value")]
         [TestCase("ctl\u001Fvalue")]
         [TestCase("del\u007Fvalue")]
         [TestCase("trailing ")]
+        [TestCaseSource(nameof(NulSerializerValues))]
         public void Http11Serialize_HeaderValueWithCtlOrSurroundingWhitespace_ThrowsArgumentException(string value)
         {
             AssertAsync.Run(async () =>

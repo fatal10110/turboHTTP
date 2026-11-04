@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using NUnit.Framework;
 using TurboHTTP.Transport.Tls;
 
@@ -29,17 +31,18 @@ namespace TurboHTTP.Tests.Transport.Tls
         /// </summary>
         public static byte[] ReadHandshakeMessage(Stream stream)
         {
+            var deadline = System.Diagnostics.Stopwatch.StartNew();
             var message = new MemoryStream();
             var header = new byte[5];
             while (true)
             {
-                BouncyCastleLoopbackServer.ReadExact(stream, header, 5);
+                ReadExactPatiently(stream, header, 5, deadline);
                 int length = (header[3] << 8) | header[4];
                 if (header[0] != HandshakeRecord || length > MaxRecordFragment + 256)
                     throw new InvalidDataException("Expected a handshake record, got type " + header[0]);
 
                 var fragment = new byte[length];
-                BouncyCastleLoopbackServer.ReadExact(stream, fragment, length);
+                ReadExactPatiently(stream, fragment, length, deadline);
                 message.Write(fragment, 0, length);
 
                 var buffered = message.ToArray();
@@ -47,6 +50,52 @@ namespace TurboHTTP.Tests.Transport.Tls
                     buffered.Length >= 4 + ((buffered[1] << 16) | (buffered[2] << 8) | buffered[3]))
                     return buffered;
             }
+        }
+
+        /// <summary>Longest the capture waits for the whole ClientHello.</summary>
+        public static readonly TimeSpan HelloBound = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// <see cref="BouncyCastleLoopbackServer.ReadExact"/> that survives a socket reporting
+        /// <see cref="SocketError.WouldBlock"/> (#330): the IL2CPP Android socket layer reports
+        /// EAGAIN, also an expired receive timeout, as "would block" instead of a timeout. The read
+        /// is retried until <see cref="HelloBound"/>; then <see cref="TimeoutException"/> says the
+        /// client sent no (complete) ClientHello.
+        /// </summary>
+        private static void ReadExactPatiently(
+            Stream stream, byte[] buffer, int count, System.Diagnostics.Stopwatch elapsed)
+        {
+            int read = 0;
+            while (read < count)
+            {
+                int n;
+                try
+                {
+                    n = stream.Read(buffer, read, count - read);
+                }
+                catch (IOException ex) when (IsWouldBlock(ex))
+                {
+                    if (elapsed.Elapsed >= HelloBound)
+                    {
+                        throw new TimeoutException(
+                            "The client sent no complete ClientHello within " + HelloBound.TotalSeconds + " s.", ex);
+                    }
+
+                    // Not synchronization: a back-off before the next read of a socket that had no data.
+                    Thread.Sleep(5);
+                    continue;
+                }
+
+                if (n <= 0)
+                    throw new EndOfStreamException();
+                read += n;
+            }
+        }
+
+        private static bool IsWouldBlock(IOException ex)
+        {
+            return ex.InnerException is SocketException socket &&
+                   (socket.SocketErrorCode == SocketError.WouldBlock || socket.SocketErrorCode == SocketError.TimedOut);
         }
 
         /// <summary>Sends a fatal handshake_failure alert (TLS 1.2 record framing).</summary>

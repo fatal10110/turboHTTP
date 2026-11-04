@@ -20,7 +20,7 @@ namespace TurboHTTP.Tests.Testing
             Task.Run(async () =>
             {
                 var recordingPath = Path.Combine(
-                    Path.GetTempPath(),
+                    TestTempPath.Root,
                     "turbohttp-record-replay-record-" + Guid.NewGuid().ToString("N") + ".json");
 
                 try
@@ -64,7 +64,7 @@ namespace TurboHTTP.Tests.Testing
             Task.Run(async () =>
             {
                 var recordingPath = Path.Combine(
-                    Path.GetTempPath(),
+                    TestTempPath.Root,
                     "turbohttp-record-replay-replay-" + Guid.NewGuid().ToString("N") + ".json");
 
                 try
@@ -123,7 +123,7 @@ namespace TurboHTTP.Tests.Testing
             Task.Run(async () =>
             {
                 var recordingPath = Path.Combine(
-                    Path.GetTempPath(),
+                    TestTempPath.Root,
                     "turbohttp-record-replay-mismatch-" + Guid.NewGuid().ToString("N") + ".json");
 
                 try
@@ -180,7 +180,7 @@ namespace TurboHTTP.Tests.Testing
         public void Dispose_SwallowsSaveAndInnerDisposeExceptions()
         {
             var recordingPath = Path.Combine(
-                Path.GetTempPath(),
+                TestTempPath.Root,
                 "turbohttp-record-replay-dispose-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(recordingPath);
 

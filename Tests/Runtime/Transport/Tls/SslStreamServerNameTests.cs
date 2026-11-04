@@ -18,7 +18,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [TestCase("localhost", "localhost")]
         public void SslStream_ClientHello_SendsAsciiServerName(string host, string expected)
         {
-            var hello = CaptureSslStreamClientHello(host);
+            var hello = CaptureSslStreamClientHello(host, ipLiteral: false);
 
             CollectionAssert.AreEqual(new[] { expected }, ClientHelloCapture.ServerNames(hello),
                 ClientHelloCapture.Describe(hello));
@@ -28,9 +28,9 @@ namespace TurboHTTP.Tests.Transport.Tls
         [TestCase("[::1]")]
         public void SslStream_ClientHello_IpLiteral_SendsNoServerName(string host)
         {
-            var hello = CaptureSslStreamClientHello(host);
+            var hello = CaptureSslStreamClientHello(host, ipLiteral: true);
 
-            if (ClientHelloCapture.ServerNames(hello) != null && Type.GetType("Mono.Runtime") != null)
+            if (ClientHelloCapture.ServerNames(hello) != null && IsMonoSslStream)
             {
                 // Documented limitation (Documentation~/PlatformNotes.md, #46): Unity's Mono
                 // SslStream (UnityTls) derives server_name from the target host, also for an
@@ -46,9 +46,12 @@ namespace TurboHTTP.Tests.Transport.Tls
                 ClientHelloCapture.Describe(hello));
         }
 
-        private static byte[] CaptureSslStreamClientHello(string host)
+        private static bool IsMonoSslStream => Type.GetType("Mono.Runtime") != null;
+
+        private static byte[] CaptureSslStreamClientHello(string host, bool ipLiteral)
         {
             byte[] clientHello = null;
+            Exception clientError = null;
             using var server = BouncyCastleLoopbackServer.StartRaw(stream =>
             {
                 Volatile.Write(ref clientHello, ClientHelloCapture.ReadHandshakeMessage(stream));
@@ -59,7 +62,10 @@ namespace TurboHTTP.Tests.Transport.Tls
             AssertAsync.Run(async () =>
             {
                 var stream = await BouncyCastleLoopbackServer.ConnectAsync(server.Port);
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                // Longer than the server's bound (one more receive timeout included), so a hung
+                // client is reported by the server as "no ClientHello", not by a cancelled client.
+                using var cts = new CancellationTokenSource(
+                    ClientHelloCapture.HelloBound + ClientHelloCapture.HelloBound + TimeSpan.FromSeconds(15));
                 try
                 {
                     var result = await SslStreamTlsProvider.Instance.WrapAsync(
@@ -70,6 +76,7 @@ namespace TurboHTTP.Tests.Transport.Tls
                 catch (Exception ex) when (!(ex is AssertionException))
                 {
                     // Expected: the server answered with a fatal alert.
+                    Volatile.Write(ref clientError, ex);
                 }
                 finally
                 {
@@ -78,7 +85,22 @@ namespace TurboHTTP.Tests.Transport.Tls
             });
 
             var captured = Volatile.Read(ref clientHello);
-            Assert.IsNotNull(captured, "The server did not capture a ClientHello: " + server.HandlerError);
+            if (captured == null)
+            {
+                var detail = "server: " + server.HandlerError + "; client: " + Volatile.Read(ref clientError);
+                if (ipLiteral && IsMonoSslStream && server.HandlerError is TimeoutException)
+                {
+                    // API 29 emulator (#330): Unity's Mono/UnityTls SslStream put no ClientHello on
+                    // the wire for an IPv6 literal target host within the bound, so there is no
+                    // server_name to check. The loopback connection itself is IPv4 (127.0.0.1).
+                    TestRequirements.IgnoreEnvironment(
+                        "Unity Mono/UnityTls SslStream sent no ClientHello for the IP literal target host '" + host +
+                        "' within " + ClientHelloCapture.HelloBound.TotalSeconds + " s. " + detail);
+                }
+
+                Assert.Fail("The server did not capture a ClientHello: " + detail);
+            }
+
             return captured;
         }
     }
