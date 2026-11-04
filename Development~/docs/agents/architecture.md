@@ -26,9 +26,10 @@ recorded in the journal and in this table.
 | `TurboHTTP.WebSocket` | Core | `noEngineReferences` |
 | `TurboHTTP.WebSocket.Transport` | Core, WebSocket, Transport | raw-socket WebSocket transport; `noEngineReferences` |
 | `TurboHTTP.Unity.WebSocket` | Core, WebSocket, Unity | MonoBehaviour client/bridge |
-| `TurboHTTP.UniTask` | Core, WebSocket, UniTask (the `com.cysharp.unitask` assembly) | compiled only with `com.cysharp.unitask` (`TURBOHTTP_UNITASK`); split tracked in #116 |
+| `TurboHTTP.UniTask` | Core, UniTask (the `com.cysharp.unitask` assembly) | HTTP adapters, cancellation and timeout extensions (#97); compiled only with `com.cysharp.unitask` (`defineConstraints` and `versionDefines` `TURBOHTTP_UNITASK`); not `noEngineReferences` |
+| `TurboHTTP.UniTask.WebSocket` | Core, WebSocket, UniTask | WebSocket UniTask adapters incl. the `IUniTaskAsyncEnumerable` receive adapter, split out of `TurboHTTP.UniTask` so the HTTP adapters do not pull in WebSocket (#116); same `TURBOHTTP_UNITASK` gate and root namespace `TurboHTTP.UniTask`. Tests: `TurboHTTP.Tests.UniTask` (any reference, same gate) |
 | `TurboHTTP.Editor` | Core, Observability | HTTP Monitor window |
-| `TurboHTTP.Complete` | Core, Transport, WebSocket, WebSocket.Transport, Unity.WebSocket, Retry, Cache, Auth, Observability, Files, Unity, Testing, RateLimit, JSON, Middleware | aggregation asmdef; its only code is the `TurboHttpBootstrap` default registration (`Runtime/Bootstrap/`, `[AlwaysLinkAssembly]`, #216); omits the optional `Transport.BouncyCastle` and `UniTask` |
+| `TurboHTTP.Complete` | Core, Transport, WebSocket, WebSocket.Transport, Unity.WebSocket, Retry, Cache, Auth, Observability, Files, Unity, Testing, RateLimit, JSON, Middleware | aggregation asmdef plus the startup defaults that need both UnityEngine and optional modules, all in `Runtime/Bootstrap/`: `TurboHttpBootstrap` (default transport and JSON-bridge registration, `[AlwaysLinkAssembly]` in `AssemblyInfo.cs`, #216) and `JsonUtilitySerializer` (public `IJsonSerializer` over `UnityEngine.JsonUtility`, namespace `TurboHTTP.JSON`, #271). The bootstrap installs it as the default only when no custom serializer is registered (`RegisterAsDefaultIfBuiltIn`), so a project's own serializer is kept. `TurboHTTP.JSON` itself stays engine-free (LiteJson) for projects without Complete. Omits the optional `Transport.BouncyCastle`, `UniTask` and `UniTask.WebSocket` |
 
 - String references in asmdefs, never GUIDs. Namespaces are `TurboHTTP.<Module>`.
 - Modules reach `Core.Internal` through `InternalsVisibleTo` in `Runtime/Core/AssemblyInfo.cs`; third-party
@@ -65,7 +66,7 @@ recorded in the journal and in this table.
   `TurboHTTP.Complete`) from `[RuntimeInitializeOnLoadMethod(SubsystemRegistration)]` (plus
   `[InitializeOnLoadMethod]` in the Editor); the assembly is `[AlwaysLinkAssembly]` so stripping keeps it.
   Each run disposes the previous session's default transport (Enter Play Mode without domain reload).
-  The same bootstrap registers TurboHTTP.JSON with `ProjectJsonBridge`. The `[ModuleInitializer]`s in
+  The same bootstrap registers TurboHTTP.JSON with `ProjectJsonBridge` and makes `JsonUtilitySerializer` the default serializer unless the project already set one. The `[ModuleInitializer]`s in
   Transport and WebSocket.Transport are only a secondary path; projects that exclude `TurboHTTP.Complete`
   call `RawSocketTransport.EnsureRegistered()`, `RawSocketWebSocketTransport.EnsureRegistered()` and
   `JsonModuleRegistration.EnsureRegistered()` themselves. Player-build and device checks: #100, #99.
