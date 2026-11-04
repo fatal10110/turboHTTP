@@ -35,12 +35,15 @@
 # Exit codes: 0 pass, 1 test failures, 2 usage/setup error (incl. a UniTask commit other than the pin), 3 Unity not installed (prints
 # UNITY_UNAVAILABLE; CI never runs Unity (no license, #188): this script in a host editor is the Unity gate), 4 skip gate
 # (a skipped test without an #issue or [env] reason, or an unfiltered run skipping more tests than
-# Tools~/unity/skip-baseline.txt allows; summarize_results.py, #151). Env: UNITY_TEST_PROJECT (default
+# Tools~/unity/skip-baseline.txt allows; summarize_results.py, #151), 5 WSL interop unavailable (a Windows editor
+# driven from WSL: cmd.exe or Unity.exe did not start through about two minutes of retries, wsl-interop.sh, #355). Env: UNITY_TEST_PROJECT (default
 # <cache>/testproj), UNITY_PACKAGE_COPY (default <cache>/package), where <cache> is
 # ~/.cache/turbohttp, or %LOCALAPPDATA%\turbohttp for a Windows editor driven from WSL.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=Tools~/unity/wsl-interop.sh
+. "$repo/Tools~/unity/wsl-interop.sh"
 platform=""; filter=""; category=""; integration=0; unitask=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -71,18 +74,9 @@ esac
 topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
 
 if [ "$win" = 1 ]; then
-  # set -e must not turn a failed probe into exit 1 ("test failures"): every failure here is exit 2.
-  # WSL interop occasionally fails to start cmd.exe; try a few times before giving up.
-  localappdata=""
-  for _ in 1 2 3; do
-    localappdata="$( (cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%') 2>/dev/null | tr -d '\r' || true)"
-    [ -n "$localappdata" ] && break
-    sleep 1
-  done
-  wincache=""
-  if [ -n "$localappdata" ]; then wincache="$(wslpath -u "$localappdata" 2>/dev/null || true)"; fi
-  [ -n "$wincache" ] || { echo "run-tests: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
-  cache="$wincache/turbohttp"
+  # A failed lookup is never exit 1 ("test failures"): exit 5 for an interop outage, else 2 (wsl-interop.sh).
+  wsl_resolve_localappdata run-tests
+  cache="$wsl_localappdata/turbohttp"
 else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi
@@ -95,7 +89,9 @@ rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --ex
   "$repo/" "$pkg/"
 
 if [ ! -d "$proj/ProjectSettings" ]; then
-  "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$cache/create.log")"
+  wsl_unity_launch run-tests "$cache/create.log" \
+    "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$cache/create.log")"
+  [ "$unity_code" = 0 ] || { echo "run-tests: creating $proj failed (Unity exit $unity_code); see $cache/create.log" >&2; exit 2; }
 fi
 # com.cysharp.unitask (#311) only for --with-unitask; removed otherwise, like TURBOHTTP_INTEGRATION_TESTS below.
 unitask_url=""; lock_args=()
@@ -160,10 +156,9 @@ args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform "$plat
 [ -n "$filter" ] && args+=(-testFilter "$filter")
 [ -n "$category" ] && args+=(-testCategory "$category")
 
-set +e
-"$unity" "${args[@]}"
-code=$?
-set -e
+# A Unity.exe that did not start (no log) is retried, then exit 5: never reported as compile errors (#355).
+wsl_unity_launch run-tests "$log" "$unity" "${args[@]}"
+code="$unity_code"
 
 # Unity wrote the resolved packages before compiling: a moved tag or stale pin voids the run (#311).
 if [ "$unitask" != 0 ] && ! python3 "$repo/Tools~/ci/unitask_pin.py" check-lock "$proj/Packages/packages-lock.json" ${lock_args[@]+"${lock_args[@]}"}; then

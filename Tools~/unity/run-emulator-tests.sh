@@ -16,13 +16,16 @@
 # by its AVD name and stopped with taskkill when its console does not stop it, after the level and on exit
 # (emulator-windows.sh, #353). Before a boot, a leftover turbohttp-api<N> from an earlier run is stopped; another
 # emulator holding the console port fails the level (exit 2) naming its PID.
-# Exit: the highest run-device-tests.sh exit code over the levels (0 pass, 1 failures, 2 setup, 4 skip gate),
-# 3 when Unity is unavailable.
+# Exit: the highest run-device-tests.sh exit code over the levels (0 pass, 1 failures, 2 setup, 4 skip gate,
+# 5 WSL interop unavailable), 3 when Unity is unavailable. Exit 5 also when, from WSL, the %LOCALAPPDATA% lookup or
+# a level's boot failed while Windows programs did not start (wsl-interop.sh, #355): an outage, not a result.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=Tools~/unity/emulator-windows.sh
 . "$repo/Tools~/unity/emulator-windows.sh"
+# shellcheck source=Tools~/unity/wsl-interop.sh
+. "$repo/Tools~/unity/wsl-interop.sh"
 apis="23,26,29,33,36"; jobs=2; pass=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -50,14 +53,8 @@ win=0
 case "$unity" in *.exe|*.EXE) if command -v wslpath >/dev/null 2>&1; then win=1; fi ;; esac
 topath() { if [ "$win" = 1 ]; then wslpath -w "$1"; else printf '%s\n' "$1"; fi; }
 if [ "$win" = 1 ]; then
-  localappdata=""
-  for _ in 1 2 3; do
-    localappdata="$( (cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%') 2>/dev/null | tr -d '\r' || true)"
-    [ -n "$localappdata" ] && break
-    sleep 1
-  done
-  [ -n "$localappdata" ] || { echo "run-emulator-tests: cannot resolve %LOCALAPPDATA% from Windows" >&2; exit 2; }
-  cache="$(wslpath -u "$localappdata")/turbohttp"
+  wsl_resolve_localappdata run-emulator-tests
+  cache="$wsl_localappdata/turbohttp"
 else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi
@@ -141,7 +138,18 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# From WSL: returns 5 (with the outage message) when Windows programs do not start now, else 1. A boot that failed
+# during a WSL interop outage (emulator.exe or adb.exe did not start) is reported as exit 5, not a setup error (#355).
+boot_failed() {
+  if [ "$win" = 1 ] && ! wsl_interop_up; then
+    echo "run-emulator-tests: WSL interop unavailable: API $1 boot failed while cmd.exe does not answer (#355)" >&2
+    return "$wsl_interop_exit"
+  fi
+  return 1
+}
+
 # Boots the AVD for one level on its own console port and waits for boot_completed (5 minutes).
+# Returns 1 when it fails, 5 when it failed during a WSL interop outage.
 boot() {
   local api="$1" port="$2" serial="emulator-$2"
   if [ "$win" = 1 ]; then win_free_avd "turbohttp-api$api" "$port" || return 1; fi
@@ -156,7 +164,8 @@ boot() {
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if ! kill -0 "$emu_pid" 2>/dev/null; then
       echo "run-emulator-tests: the API $api emulator exited; see $out/emulator-api$api.log" >&2
-      return 1
+      boot_failed "$api"
+      return
     fi
     if [ "$(adbs "$serial" shell getprop sys.boot_completed)" = 1 ]; then
       # Keep the screen on and unlocked: the test player must stay in the foreground.
@@ -167,7 +176,7 @@ boot() {
     sleep 5
   done
   echo "run-emulator-tests: API $api did not boot in 5 minutes; see $out/emulator-api$api.log" >&2
-  return 1
+  boot_failed "$api"
 }
 
 # Stops the lane's emulator: the console first, the process when the console does not answer (frozen).
@@ -198,7 +207,8 @@ lane() {
     "$repo/Tools~/unity/run-device-tests.sh" --arch x86_64 --serial "$serial" ${extra[@]+"${extra[@]}"} ${pass[@]+"${pass[@]}"} \
       > "$out/api$api.log" 2>&1 || code=$?
   else
-    code=2
+    code=$?
+    [ "$code" = "$wsl_interop_exit" ] || code=2
   fi
   stop_emulator "$serial" "turbohttp-api$api"
   echo "$code" > "$out/api$api.code"

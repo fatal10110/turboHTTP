@@ -22,6 +22,11 @@ cloud agent containers).
 | Release on a `v*.*.*` tag: tag on `main`, tag = `package.json` version, notes from the `CHANGELOG.md` section, GitHub (pre-)Release | `python3 'Tools~/ci/release_notes.py' vX.Y.Z` (preview) | `Release` (`release.yml`, tags only) | n/a; steps in `../release-checklist.md` |
 | Copilot code review, code quality | — | ruleset | advisory / errors |
 
+The Unity scripts above (except `build-ios-test-player.sh`) exit 0 pass, 1 failures, 2 setup, 3 Unity unavailable,
+4 skip gate (the test runners) and 5 WSL interop unavailable: from WSL with a Windows editor, `cmd.exe`, `adb.exe`
+or `Unity.exe` did not start through about two minutes of retries (`Tools~/unity/wsl-interop.sh`, #355,
+`testing.md`). Exit 5 is an infrastructure outage, never a result: rerun.
+
 The required status check is the aggregate job `ci` (`.github/workflows/ci.yml`), which passes
 only when `lint`, `tls-interop` and `h2-interop` pass. None of them needs Unity: the repository has
 no Unity license and CI never gets one (owner decision 2026-11-02, #188), so there is no
