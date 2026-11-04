@@ -167,7 +167,11 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    It needs an SDK with `emulator` and the `default;x86_64` system images (`TURBOHTTP_EMULATOR_SDK`,
    default `<cache>/android-sdk`: `${XDG_CACHE_HOME:-~/.cache}/turbohttp`, or `%LOCALAPPDATA%\turbohttp`
    from WSL; filled with the editor's `cmdline-tools` 6.0 sdkmanager) and WHPX/KVM. Ctrl-C stops every
-   lane (its run-device-tests.sh and Unity) and then the emulators. Emulator results cover API-level
+   lane (its run-device-tests.sh and Unity) and then the emulators. From WSL the emulators are Windows
+   processes the shell cannot see: after each level and on exit the script finds `emulator.exe`/`qemu-system-*`
+   by `-avd turbohttp-api<N>` (PowerShell CIM query) and stops what the console left with `taskkill /T /F`
+   (`emulator-windows.sh`, #353). Before a boot it stops a `turbohttp-api*` leftover of an earlier run on that
+   AVD or port, and fails the level (exit 2) naming the PID of any other emulator on its port. Emulator results cover API-level
    behavior only: x86_64, no radio, no vendor stack, so ARM/IL2CPP and network rows still need the phone.
 5. **iOS simulator run (#99).** `'./Tools~/unity/build-ios-test-player.sh' [--out <dir>] [--stripping
    Low|High] [--filter ...]` builds the PlayMode suite as an IL2CPP Simulator SDK player and exports the

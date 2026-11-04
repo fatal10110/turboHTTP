@@ -9,7 +9,12 @@ MODE="${1:-gate}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 UNITY_BIN="${UNITY_BIN:-/Applications/Unity/Hub/Editor/2021.3.45f2/Unity.app/Contents/MacOS/Unity}"
-PROJECT_PATH="${PROJECT_PATH:-/Users/arturkoshtei/workspace/turboHTTP-testproj}"
+PROJECT_PATH="${PROJECT_PATH:-}"
+if [[ -z "${PROJECT_PATH}" ]]; then
+  echo "usage: PROJECT_PATH=<Unity test project> [UNITY_BIN=<Unity 2021.3 editor binary>] $0 [gate|record]" >&2
+  echo "  PROJECT_PATH is the Unity project that consumes this package (see Development~/docs/how-to-run-tests-with-temp-unity-project.md)." >&2
+  exit 2
+fi
 TEST_PLATFORM="${TEST_PLATFORM:-PlayMode}"
 THRESHOLD_PERCENT="${TURBOHTTP_ALLOCATION_REGRESSION_THRESHOLD_PERCENT:-10}"
 
