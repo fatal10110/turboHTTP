@@ -30,6 +30,10 @@ namespace TurboHTTP.Transport.Internal
         }
 
         /// <summary>The wire form of <paramref name="uri"/>'s host (no port).</summary>
+        /// <exception cref="HttpFieldValidationException">
+        /// The host has no valid ASCII (A-label) form: <see cref="Uri.IdnHost"/> rejected it or
+        /// <see cref="FormatHost"/> did.
+        /// </exception>
         internal static string HostFromUri(Uri uri)
         {
             if (uri == null) throw new ArgumentNullException(nameof(uri));
@@ -37,9 +41,24 @@ namespace TurboHTTP.Transport.Internal
             // Uri.Host keeps IPv6 brackets on .NET and drops the zone id; Uri.IdnHost is the
             // A-label form of a DNS name. Either form goes through FormatHost, which accepts the
             // bracketed and the bare IPv6 spelling (Mono/Unity has returned both).
-            return uri.HostNameType == UriHostNameType.IPv6
-                ? FormatHost(uri.Host)
-                : FormatHost(uri.IdnHost);
+            if (uri.HostNameType == UriHostNameType.IPv6)
+                return FormatHost(uri.Host);
+
+            string idnHost;
+            try
+            {
+                idnHost = uri.IdnHost;
+            }
+            catch (UriFormatException)
+            {
+                // .NET and Unity Mono throw here for a name IDNA disallows (for example a Unicode
+                // noncharacter, #319) instead of returning it Unicode: the same "no A-label form"
+                // case FormatHost reports, so the transport maps both to InvalidRequest.
+                throw new HttpFieldValidationException(
+                    "The request host has no valid ASCII (A-label) form and cannot be sent.");
+            }
+
+            return FormatHost(idnHost);
         }
 
         /// <summary>
