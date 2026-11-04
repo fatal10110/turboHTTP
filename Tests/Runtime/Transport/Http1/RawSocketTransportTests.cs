@@ -1073,10 +1073,13 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
+                // The handler runs after the accept loop counted the connection (#359).
+                var failingConnectionCounted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 using var server = new HttpServer(async (client, index) =>
                 {
                     if (index == 1)
                     {
+                        failingConnectionCounted.TrySetResult(true);
                         return;
                     }
 
@@ -1108,6 +1111,11 @@ namespace TurboHTTP.Tests.Transport.Http1
                 var queue = idle.GetOrAdd(key, _ => new ConcurrentQueue<PooledConnection>());
                 queue.Enqueue(failingConn);
 
+                // ConnectAsync completes when the kernel queued the connection, before the server
+                // accepted and counted it: wait for the count so AcceptCount == 1 below means "no
+                // retry connection" on every runtime, not "the accept loop has not run yet" (#359).
+                await failingConnectionCounted.Task;
+
                 var bodyBytes = Encoding.UTF8.GetBytes("one-shot");
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                     await client.Get($"http://127.0.0.1:{server.Port}/")
@@ -1117,7 +1125,9 @@ namespace TurboHTTP.Tests.Transport.Http1
                         .SendBufferedAsync());
 
                 Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
-                Assert.AreEqual(1, server.AcceptCount);
+                // A retry of the non-replayable body would have needed a second accepted connection
+                // to get its 200, so it would have succeeded with AcceptCount == 2.
+                Assert.AreEqual(1, server.AcceptCount, "the non-replayable body must not be retried on a new connection");
             });
         }
 
