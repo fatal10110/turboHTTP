@@ -76,6 +76,7 @@ namespace TurboHTTP.Tests.WebSocket
         {
             return new WebSocketConnectionOptions
             {
+                AllowCleartext = true,
                 TlsBackend = TlsBackend.BouncyCastle,
                 HandshakeTimeout = TimeSpan.FromSeconds(10),
                 CloseHandshakeTimeout = TimeSpan.FromMilliseconds(500),
