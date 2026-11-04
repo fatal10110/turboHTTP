@@ -3,16 +3,16 @@
 # issue or platform reason; any other skip means a test silently stopped executing, so investigate
 # before raising a number, and list every raise here with its test and reason (#319).
 #
-# PlayMode 4, all permanent on the Windows host editor (Unity 2021.3, Mono):
-#   1 SoakShortTests.Http11_MixedWorkloadWithInFlightCancel_EveryCancelledRequestEnds
-#     Explicit: a cancelled in-flight HTTP/1.1 request can hang on Unity Mono (#293)
-#   2 SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("127.0.0.1")
-#   3 SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("[::1]")
+# PlayMode 3, all permanent on the Windows host editor (Unity 2021.3, Mono):
+#   1 SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("127.0.0.1")
+#   2 SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("[::1]")
 #     [env] UnityTls SslStream sends an IP literal as server_name (known limitation, #46)
-#   4 VerificationFailClosedTests.Linux_ProductionConfiguration_RejectsWithNoVerifier
+#   3 VerificationFailClosedTests.Linux_ProductionConfiguration_RejectsWithNoVerifier
 #     [env] runs only in a Linux Editor or player
 # Device and emulator runs (run-device-tests.sh) read this file too but skip more [env] tests
 # (desktop-verifier tests); they are not covered by these numbers (#341).
+# Lowered from 4 to 3: SoakShortTests.Http11_MixedWorkloadWithInFlightCancel_EveryCancelledRequestEnds
+# runs again since the head read no longer waits for the platform read after cancellation (#293).
 # <platform> <max skipped>
 EditMode 0
-PlayMode 4
+PlayMode 3

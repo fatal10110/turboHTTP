@@ -19,7 +19,7 @@ namespace TurboHTTP.Tests.Performance
     /// <summary>
     /// Deterministic short variant of the soak harness (#114, Tools~/soak) for HTTP/1.1 over real
     /// loopback sockets: a fixed-seed mix of buffered, uploaded, streamed and abandoned requests from
-    /// concurrent workers (the variant with in-flight cancellation is explicit until #293 is fixed). Afterwards the parser pools hold no outstanding item and,
+    /// concurrent workers, with and without in-flight cancellation (#293). Afterwards the parser pools hold no outstanding item and,
     /// once the transport is disposed, the server sees every connection closed (no leaked socket).
     /// The hour-long run with memory and fault profiles is Tools~/soak/run.sh.
     /// </summary>
@@ -80,13 +80,12 @@ namespace TurboHTTP.Tests.Performance
         }
 
         /// <summary>
-        /// The same mix plus cancellation while the server holds the response head. It runs green on
-        /// .NET 8, but on Unity 2021.3 Mono (Windows Editor) about one run in 25 never ends a cancelled
-        /// request even though the socket was disposed and the server saw it close (#293). Explicit
-        /// until that is fixed. Repro: <c>--filter SoakShortTests.Http11_MixedWorkloadWithInFlightCancel</c>
-        /// with <c>[Repeat(25)]</c>.
+        /// The same mix plus cancellation while the server holds the response head. On Unity 2021.3
+        /// Mono (Windows Editor) about one run in 25 used to never end a cancelled request even though
+        /// the socket was disposed and the server saw it close (#293). The head read now races the
+        /// token, so cancellation ends the request at once whatever the platform read does.
         /// </summary>
-        [Test, Explicit("Unity Mono: a cancelled in-flight HTTP/1.1 request can hang (#293)")]
+        [Test]
         public void Http11_MixedWorkloadWithInFlightCancel_EveryCancelledRequestEnds()
         {
             AssertAsync.Run(async () =>
