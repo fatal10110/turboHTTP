@@ -7,7 +7,8 @@
 #     Tools~/unity/build-ios-test-player.sh [--out <dir>] [--stripping Low|High] [--filter <regex>] [--category <name>] [--integration]
 #
 # --out, or UNITY_IOS_HANDOFF_OUT when --out is not given, receives the Xcode project
-# (Unity-iPhone.xcodeproj at its root). It is the xcode/ folder inside the handoff folder the Mac mounts.
+# (Unity-iPhone.xcodeproj at its root). It must be the xcode/ folder inside the handoff folder the Mac
+# mounts (<handoff>/xcode, not <handoff>); any other last path component exits 2.
 # The handoff folder is local configuration with no default here: set it in your shell, not in the repo.
 # The project is written there after a successful build (editor exit 0 and "Build Finished, Result: Success"
 # in the log); <out>/../READY is created only after the copy finishes, and stale READY, DONE and out/ in that folder
@@ -35,7 +36,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$stripping" in Low|High) ;; *) echo "build-ios-test-player: --stripping Low|High" >&2; exit 2 ;; esac
-[ -n "$out_dir" ] || { echo "build-ios-test-player: pass --out <handoff folder>/xcode or set UNITY_IOS_HANDOFF_OUT" >&2; exit 2; }
+[ -n "$out_dir" ] || { echo "build-ios-test-player: pass --out <handoff folder>/xcode or set UNITY_IOS_HANDOFF_OUT=<handoff folder>/xcode" >&2; exit 2; }
+# The parent of out_dir gets rm -rf of out/ and READY/DONE below: refuse a value one level too high.
+[ "$(basename "$out_dir")" = xcode ] || { echo "build-ios-test-player: --out / UNITY_IOS_HANDOFF_OUT must be <handoff folder>/xcode, got $out_dir" >&2; exit 2; }
 if [ "$category" = ExternalNetwork ]; then integration=1; fi
 
 unity="${UNITY_PATH:-}"

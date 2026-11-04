@@ -158,7 +158,8 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    Low|High] [--filter ...]` builds the PlayMode suite as an IL2CPP Simulator SDK player and exports the
    Xcode project (a Windows editor cannot run it); a Mac builds it with `xcodebuild`, runs it on a
    simulator and reads `results.xml` from the app's data container. The handoff folder is local: pass
-   `--out <handoff>/xcode` or export `UNITY_IOS_HANDOFF_OUT`, and keep machine paths out of the repo,
+   `--out <handoff>/xcode` or export `UNITY_IOS_HANDOFF_OUT=<handoff>/xcode` (the `xcode/` folder, not the
+   handoff folder itself; any other last component exits 2), and keep machine paths out of the repo,
    issues and PRs. The script removes `READY`, `DONE`
    and `out/` next to `--out` before the build and creates `READY` after the copy. The player logs
    `TURBOHTTP_DEVICE_TEST`/`_FAIL`/`_HANG` markers, rewrites `results.xml` after every fixture
