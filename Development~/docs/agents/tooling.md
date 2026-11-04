@@ -17,6 +17,7 @@ cloud agent containers).
 | Player builds (Mono Win64, IL2CPP Android with/without BouncyCastle, IL2CPP Win64) and linker-output checks | `"Tools~/unity/build-player.sh" --target ...` | none | no; host-editor gate |
 | PlayMode suite as an IL2CPP player on one Android device over adb (#99) | `"Tools~/unity/run-device-tests.sh" [--stripping Low\|High] [--arch arm64\|armv7\|x86_64] [--serial id [--skip-build]]` | none | no; host-editor gate, `testing.md` step 4 |
 | PlayMode suite on x86_64 Android emulators, one per API level (#99) | `"Tools~/unity/run-emulator-tests.sh" [--api 23,26,29,33,36] [--jobs 2]` | Android SDK with `emulator` and `system-images;android-<N>;default;x86_64` (`TURBOHTTP_EMULATOR_SDK`), WHPX/KVM | no; host-editor gate, `testing.md` step 4 |
+| PlayMode suite as an iOS Simulator SDK IL2CPP player: exports the Xcode project for a Mac to run (#99) | `"Tools~/unity/build-ios-test-player.sh" [--out <dir>] [--filter ...]` | none | no; host-editor gate, `testing.md` step 5 |
 | CodeQL (C#, build-mode none; GitHub Actions) | — | `CodeQL` | errors / high+ security alerts |
 | Release on a `v*.*.*` tag: tag on `main`, tag = `package.json` version, notes from the `CHANGELOG.md` section, GitHub (pre-)Release | `python3 'Tools~/ci/release_notes.py' vX.Y.Z` (preview) | `Release` (`release.yml`, tags only) | n/a; steps in `../release-checklist.md` |
 | Copilot code review, code quality | — | ruleset | advisory / errors |
