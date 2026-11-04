@@ -77,7 +77,19 @@ No Runtime/ change.
 
 ## How verified
 
-See the PR "Local gates" section for the exact commands and results: `check.sh`, the Python tool tests,
-a scoped host-editor PlayMode run, and one unfiltered API 29 emulator run for the `Player-Android` gate.
-Not run: Unity EditMode (no EditMode change), iOS simulator/device, macOS, arm64 Android device, IL2CPP
-on Windows.
+- `./Tools~/ci/check.sh`: OK. Python tool tests (`test_unity_results_summary.py`, 13 cases): OK.
+- Host editor (Windows, Unity 2021.3.45f2, Mono), PlayMode `--filter
+  'WebSocketCleartextPolicyTests|WebSocketBouncyCastleTlsTests|WebSocketProxyTests|WebSocketTestServerDispose|WebSocketConnectionPhase18|ServerCertificateVerifierTests|BouncyCastleChainValidationTests|TestShortLivedLocalhostCertificate'`:
+  57/57 passed. The short-lived PKCS#12 loads on Mono, and both #332 cases still reject (UntrustedRoot,
+  unknown_ca).
+- Old wait semantics emulated (infinite bound, no socket close; reverted afterwards):
+  `WebSocketTestServer_HandlerThatNeverEnds_DisposeReturnsAfterTheBound` and the proxy case fail at
+  their 10 s guard. The handshake-read case passes either way on Mono, because Mono ends that read on
+  the token.
+- One unfiltered API 29 x86_64 emulator run (IL2CPP, Stripping High): 2578 total, 2561 passed, 16
+  skipped, which is exactly the `Player-Android` list ("skipped=16 within baseline 16 for
+  Player-Android"). The 1 failure is not this lane's: `RawSocketTransportTests.RawSocketTransport_StaleConnection_NonReplayableKnownLengthBody_NoRetry`
+  asserts the accept count before the accept loop has counted the connection; follow-up #359. After
+  the run, no `qemu*` process was left.
+- Not run: Unity EditMode (no EditMode change), iOS simulator/device, macOS, arm64 Android device,
+  IL2CPP on Windows.
