@@ -377,6 +377,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     pool,
                     server.Port,
                     tcp => new ScriptedReadStream(tcp, () => new IOException("Connection reset by peer")));
+                await WithGuard(server.FirstConnectionCounted);
 
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                     await client.Post(server.Url("/charge")).SendBufferedAsync());
@@ -548,6 +549,8 @@ namespace TurboHTTP.Tests.Transport.Http1
             private readonly bool _keepFirstConnectionOpen;
             private readonly List<TcpClient> _clients = new List<TcpClient>();
             private readonly object _lock = new object();
+            private readonly TaskCompletionSource<bool> _firstConnectionCounted =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             private int _acceptCount;
             private volatile bool _disposed;
 
@@ -563,6 +566,13 @@ namespace TurboHTTP.Tests.Transport.Http1
             public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
             public int AcceptCount => Volatile.Read(ref _acceptCount);
+
+            /// <summary>
+            /// Completes once the accept loop counted the first connection. A client connect completes when the
+            /// kernel queues the connection, before the count, so a test that asserts <see cref="AcceptCount"/>
+            /// for a connection it opened itself awaits this first (#370).
+            /// </summary>
+            public Task FirstConnectionCounted => _firstConnectionCounted.Task;
 
             public string Url(string path) => $"http://127.0.0.1:{Port}{path}";
 
@@ -590,6 +600,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                         _clients.Add(client);
 
                     int index = Interlocked.Increment(ref _acceptCount);
+                    if (index == 1)
+                        _firstConnectionCounted.TrySetResult(true);
                     _ = Task.Run(() => HandleAsync(client, index));
                 }
             }
