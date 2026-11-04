@@ -442,6 +442,18 @@ namespace TurboHTTP.Transport
                     $"Unsupported URI scheme: {scheme}. Only http and https are supported."));
             }
 
+            // #340: the wire host (Host, :authority, absolute-form, CONNECT) must be an RFC 3986
+            // host; checked here so an empty or malformed one fails before any socket opens.
+            try
+            {
+                HttpAuthority.HostFromUri(request.Uri);
+            }
+            catch (HttpFieldValidationException invalidHost)
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest, invalidHost.Message, invalidHost));
+            }
+
             var host = request.Uri.Host;
             var port = request.Uri.Port;
             var secure = string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase);
