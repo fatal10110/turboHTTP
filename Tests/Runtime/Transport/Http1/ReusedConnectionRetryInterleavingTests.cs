@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport;
 using TurboHTTP.Transport.Tcp;
 
@@ -27,6 +28,26 @@ namespace TurboHTTP.Tests.Transport.Http1
     {
         private static readonly TimeSpan ShortFirstByte = TimeSpan.FromMilliseconds(200);
         private static readonly TimeSpan LongSettle = TimeSpan.FromSeconds(30);
+
+        private readonly List<StuckReadStream> _stuckStreams = new List<StuckReadStream>();
+        private TimeSpan _savedSettle;
+
+        [SetUp]
+        public void SetUp()
+        {
+            _savedSettle = AbandonedSocketIo.SettleTimeout;
+        }
+
+        // The settle bound is process-wide (#369): restore it, and end every read a test left pending
+        // so its entry stops holding back the sockets of later tests.
+        [TearDown]
+        public void TearDown()
+        {
+            AbandonedSocketIo.SettleTimeout = _savedSettle;
+            foreach (var stream in _stuckStreams)
+                stream.EndRead();
+            _stuckStreams.Clear();
+        }
 
         [Test]
         public void TwoIdleConnectionsWithStuckReads_RetryOpensNewSocket_AndNeverUsesTheSecondIdle()
@@ -63,7 +84,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var sink = new SilentListener();
                 using var server = new OkServer();
                 var pool = new TcpConnectionPool(maxConnectionsPerHost: 1, reusedConnectionFirstByteTimeout: ShortFirstByte);
-                var transport = new RawSocketTransport(pool) { AbandonedReadSettleTimeout = LongSettle };
+                AbandonedSocketIo.SettleTimeout = LongSettle;
+                var transport = new RawSocketTransport(pool);
                 using var client = CreateClient(transport);
 
                 // The read ends (faults) on another thread some time after its socket was disposed,
@@ -94,7 +116,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var sink = new SilentListener();
                 using var server = new OkServer();
                 var pool = new TcpConnectionPool(maxConnectionsPerHost: 1, reusedConnectionFirstByteTimeout: ShortFirstByte);
-                var transport = new RawSocketTransport(pool) { AbandonedReadSettleTimeout = LongSettle };
+                AbandonedSocketIo.SettleTimeout = LongSettle;
+                var transport = new RawSocketTransport(pool);
                 using var client = CreateClient(transport);
                 var idle = await InjectIdleConnectionAsync(pool, sink, server.Port, endReadOnDispose: false);
 
@@ -125,7 +148,7 @@ namespace TurboHTTP.Tests.Transport.Http1
         /// Pools a real socket connected to <paramref name="sink"/> under the server's pool key, behind
         /// a <see cref="StuckReadStream"/>.
         /// </summary>
-        private static async Task<StuckReadStream> InjectIdleConnectionAsync(
+        private async Task<StuckReadStream> InjectIdleConnectionAsync(
             TcpConnectionPool pool,
             SilentListener sink,
             int serverPort,
@@ -134,6 +157,7 @@ namespace TurboHTTP.Tests.Transport.Http1
             var tcp = new TcpClient();
             await tcp.ConnectAsync(IPAddress.Loopback, sink.Port);
             var stream = new StuckReadStream(tcp, endReadOnDispose);
+            _stuckStreams.Add(stream);
             var connection = new PooledConnection(tcp.Client, stream, "127.0.0.1", serverPort, false);
 
             var idleField = typeof(TcpConnectionPool).GetField(
@@ -173,6 +197,13 @@ namespace TurboHTTP.Tests.Transport.Http1
             public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
                 return _read.Task;
+            }
+
+            /// <summary>Ends a read that is still pending (test teardown).</summary>
+            public void EndRead()
+            {
+                Volatile.Write(ref _readEnded, 1);
+                _read.TrySetException(new ObjectDisposedException(nameof(StuckReadStream)));
             }
 
             public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)

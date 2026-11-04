@@ -1070,6 +1070,11 @@ namespace TurboHTTP.Transport.Http1
             private Action _onBodyReadCompleted;
             private int _bodyReadState;
 
+            // #369: the abandoned body read's entry in AbandonedSocketIo. Interlocked: AbandonBodyRead
+            // (token callback) stores it, the read's completion swaps in Entry.Ended and ends it;
+            // whichever of the two runs second ends the entry.
+            private AbandonedSocketIo.Entry _abandonedBodyRead;
+
             // Reader-owned target for large body reads that can be abandoned: an abandoned read must
             // never write into caller memory (often a pooled buffer the caller returns on cancel).
             private byte[] _bodyBuffer;
@@ -1111,13 +1116,6 @@ namespace TurboHTTP.Transport.Http1
             {
                 _headComplete = true;
             }
-
-            /// <summary>
-            /// The last head-phase read that went through the race (#293): still pending when the
-            /// token abandoned it, completed when it faulted. Null when no read was raced or the
-            /// last raced read returned normally. Read by the reader's owner after the failed call.
-            /// </summary>
-            internal Task AbandonedHeadRead => _raceRead;
 
             /// <summary>
             /// Waits until at least one byte is buffered. Returns false when the stream ended first.
@@ -1472,12 +1470,22 @@ namespace TurboHTTP.Transport.Http1
                 {
                     // Best effort.
                 }
+
+                // The read ended, so the platform no longer holds its socket job: new sockets may be
+                // created again (#369).
+                Interlocked.Exchange(ref _abandonedBodyRead, AbandonedSocketIo.Entry.Ended)?.End();
             }
 
             private void AbandonBodyRead()
             {
                 if (Interlocked.CompareExchange(ref _bodyReadState, BodyReadAbandoned, BodyReadPending) != BodyReadPending)
                     return;
+
+                // Recorded before the caller sees the cancellation, so its next socket waits for this
+                // read (#369). A completion that already ran left Entry.Ended: end the entry at once.
+                var entry = AbandonedSocketIo.Begin();
+                if (Interlocked.CompareExchange(ref _abandonedBodyRead, entry, null) != null)
+                    entry.End();
 
                 // Not inline: the caller's continuation must not run inside CancellationTokenSource.Cancel.
                 ThreadPool.QueueUserWorkItem(s_failAbandonedBodyRead, this);

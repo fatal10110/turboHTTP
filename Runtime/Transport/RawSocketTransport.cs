@@ -322,14 +322,6 @@ namespace TurboHTTP.Transport
         }
 
         /// <summary>
-        /// How long the first-byte retry waits for the head read the watchdog abandoned to end before
-        /// it opens the retry socket (#364, <see cref="WaitForAbandonedReadAsync"/>). Platforms that
-        /// end the read when its socket is disposed take milliseconds; the bound only matters where
-        /// the read never ends (#293). Tests set it.
-        /// </summary>
-        internal TimeSpan AbandonedReadSettleTimeout { get; set; } = TimeSpan.FromSeconds(1);
-
-        /// <summary>
         /// The first-byte watchdog for an HTTP/1.1 attempt (#47): armed only on a reused connection
         /// for an idempotent, replayable request, where a silent connection is retried once on a
         /// fresh one. <see cref="Timeout.InfiniteTimeSpan"/> = not armed.
@@ -1757,7 +1749,6 @@ namespace TurboHTTP.Transport
                         lease.Connection,
                         reader,
                         firstByteTimeout,
-                        AbandonedReadSettleTimeout,
                         ct)
                     .ConfigureAwait(false);
                 var head = await Http11ResponseParser.ParseHeadAsync(reader, request.Method, ct, context)
@@ -1776,15 +1767,14 @@ namespace TurboHTTP.Transport
         /// read token once the read is pending, so expiry disposes the connection (as
         /// <see cref="RegisterDisposeOnCancel"/> does) and surfaces as an <see cref="IOException"/>,
         /// which the stale-connection retry treats like a connection the server closed while idle.
-        /// Before that exception reaches the retry, the abandoned read gets up to
-        /// <paramref name="abandonedReadSettleTimeout"/> to end (<see cref="WaitForAbandonedReadAsync"/>, #364).
+        /// The head read the watchdog abandoned is recorded by the race (<see cref="AbandonedSocketIo"/>),
+        /// so the retry socket is created only once that read ended or its bound expired (#364, #369).
         /// Caller cancellation and the request timeout keep their own handling.
         /// </summary>
         private static async Task AwaitFirstResponseByteAsync(
             PooledConnection connection,
             Http11ResponseParser.BufferedStreamReader reader,
             TimeSpan firstByteTimeout,
-            TimeSpan abandonedReadSettleTimeout,
             CancellationToken ct)
         {
             using var watchdog = new CancellationTokenSource(firstByteTimeout);
@@ -1805,8 +1795,6 @@ namespace TurboHTTP.Transport
 
             if (silentFailure != null)
             {
-                await WaitForAbandonedReadAsync(reader.AbandonedHeadRead, abandonedReadSettleTimeout, ct)
-                    .ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();
                 throw new IOException(
                     "Reused connection sent no response byte within " +
@@ -1817,38 +1805,6 @@ namespace TurboHTTP.Transport
             // The watchdog may have fired (and disposed the connection) just after the first byte.
             if (watchdog.IsCancellationRequested && !ct.IsCancellationRequested)
                 throw new IOException("Reused connection was closed by the first-byte timeout.");
-        }
-
-        /// <summary>
-        /// Waits until <paramref name="abandonedRead"/> (the head read the first-byte watchdog abandoned
-        /// after disposing its connection) has ended, at most <paramref name="settleTimeout"/> or until
-        /// <paramref name="ct"/> fires, before the caller opens the retry socket (#364). IL2CPP's
-        /// socket close does not remove a pending receive from its I/O selector, whose state is keyed
-        /// by the descriptor number; a new socket that reuses that number before the selector dropped
-        /// the stale receive can lose its own receive and wait until the request timeout. The
-        /// abandoned read ends once the selector dropped it, so waiting for it restores the order the
-        /// retry had before the head read was raced (#346). The bound keeps a platform that never ends
-        /// the read (#293) from delaying the retry by more than <paramref name="settleTimeout"/>.
-        /// The read's own fault is already observed by the race; it is not rethrown here.
-        /// </summary>
-        private static async Task WaitForAbandonedReadAsync(Task abandonedRead, TimeSpan settleTimeout, CancellationToken ct)
-        {
-            if (abandonedRead == null || abandonedRead.IsCompleted || settleTimeout <= TimeSpan.Zero)
-                return;
-
-            using var settle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            if (settleTimeout != Timeout.InfiniteTimeSpan)
-                settle.CancelAfter(settleTimeout);
-
-            try
-            {
-                await AbandonableTask.WaitAsync(abandonedRead, settle.Token).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Ended with a fault (expected: its socket was disposed), the bound expired or ct
-                // fired; the caller checks ct itself.
-            }
         }
 
         private async Task<ParsedResponseHead> SendOnLeaseWithExpectContinueAsync(

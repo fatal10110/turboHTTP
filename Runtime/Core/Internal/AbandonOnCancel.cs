@@ -10,7 +10,8 @@ namespace TurboHTTP.Core.Internal
     /// when the token fires. An abandoned task still runs until the caller disposes the resource
     /// it works on, and then usually faults; <see cref="WaitAsync(Task, CancellationToken, IDisposable)"/> attaches an observer before
     /// returning so that fault never surfaces as <see cref="TaskScheduler.UnobservedTaskException"/>
-    /// (#172). It lives in Core so the WebSocket handshake reads (#226/#345), which may not reference
+    /// (#172), and records it in <see cref="AbandonedSocketIo"/>, which holds back the next socket until it
+    /// ended (#369). It lives in Core so the WebSocket handshake reads (#226/#345), which may not reference
     /// Transport, race their reads the same way; Transport keeps <c>AbandonableTask</c> as a forwarder.
     /// </summary>
     internal static class AbandonOnCancel
@@ -43,7 +44,7 @@ namespace TurboHTTP.Core.Internal
                 var completed = await Task.WhenAny(task, cancelSignal.Task).ConfigureAwait(false);
                 if (!ReferenceEquals(completed, task))
                 {
-                    Observe(task, abandonedResource);
+                    Abandon(task, abandonedResource);
                     throw new OperationCanceledException(ct);
                 }
             }
@@ -68,12 +69,25 @@ namespace TurboHTTP.Core.Internal
                 var completed = await Task.WhenAny(task, cancelSignal.Task).ConfigureAwait(false);
                 if (!ReferenceEquals(completed, task))
                 {
-                    Observe(task, abandonedResource);
+                    Abandon(task, abandonedResource);
                     throw new OperationCanceledException(ct);
                 }
             }
 
             return await task.ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// The cancel-wins branch of both <c>WaitAsync</c> overloads: the still-running operation
+        /// (a socket read, handshake or connect) is observed, its resource disposed once it ends, and
+        /// it is recorded in <see cref="AbandonedSocketIo"/> until it ends, so no new socket is created
+        /// while IL2CPP's I/O selector may still hold its job under a descriptor number the new socket
+        /// could reuse (#369).
+        /// </summary>
+        private static void Abandon(Task task, IDisposable abandonedResource)
+        {
+            AbandonedSocketIo.Track(task);
+            Observe(task, abandonedResource);
         }
 
         /// <summary>
