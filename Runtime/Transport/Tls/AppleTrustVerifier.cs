@@ -84,6 +84,9 @@ namespace TurboHTTP.Transport.Tls
         internal const int ErrSecCertificateExpired = -67818;
         internal const int ErrSecCertificateNotValidYet = -67819;
         internal const int ErrSecNotTrusted = -67843;
+        // "One or more certificates required to validate this certificate cannot be found": no path
+        // to a trusted anchor (iOS 26 reports an unknown root this way, #239).
+        internal const int ErrSecCreateChainFailed = -25318;
 
         /// <summary>
         /// Maps a bridge result to a verification result. Reads the path only for
@@ -97,8 +100,9 @@ namespace TurboHTTP.Transport.Tls
 
         /// <summary>
         /// The SecTrustEvaluateWithError error code to a result code, as <c>MapEvaluationError</c>
-        /// in the bridge: validity period, untrusted anchor, anything else (host name, usage,
-        /// constraints, signatures) invalid.
+        /// in the bridge: validity period, no trusted anchor (not trusted, or no chain to an anchor),
+        /// anything else (host name, usage, constraints, signatures, validity too long) invalid.
+        /// Only codes that mean "no trusted anchor" become untrusted-root; every code rejects.
         /// </summary>
         internal static int MapEvaluationError(long errorCode)
         {
@@ -108,6 +112,7 @@ namespace TurboHTTP.Transport.Tls
                 case ErrSecCertificateNotValidYet:
                     return ResultNotTimeValid;
                 case ErrSecNotTrusted:
+                case ErrSecCreateChainFailed:
                     return ResultUntrustedRoot;
                 default:
                     return ResultInvalid;
