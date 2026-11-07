@@ -44,6 +44,8 @@ namespace TurboHTTP.Tools.H2Interop
             Directory.CreateDirectory(www);
             File.WriteAllText(Path.Combine(www, "small.txt"), SmallBody);
             File.WriteAllBytes(Path.Combine(www, "large.bin"), Pattern(LargeBytes, 1));
+            // nghttpx serves /headers from this file and appends the x-h-* fields (docker/nghttpx/entrypoint.sh).
+            File.WriteAllText(Path.Combine(www, "headers"), "headers\n");
         }
 
         public static string ResponseHeaderValue(int i) => new string((char)('a' + i % 26), 200);
@@ -80,9 +82,9 @@ namespace TurboHTTP.Tools.H2Interop
             using (var root = new X509Certificate2(expectedRoots))
                 ServerCertificateVerifier.AddTestTrustAnchor(root.RawData);
 
-            if (server != "kestrel" && server != "nghttpd" && server != "nginx")
+            if (!Servers.TryGetValue(server, out var capabilities))
             {
-                Console.Error.WriteLine("unknown server " + server + " (kestrel, nghttpd, nginx)");
+                Console.Error.WriteLine("unknown server " + server + " (" + string.Join(", ", Servers.Keys) + ")");
                 return 2;
             }
 
@@ -96,18 +98,24 @@ namespace TurboHTTP.Tools.H2Interop
                 }
 
                 await WaitForListenerAsync(server, port).ConfigureAwait(false);
-                var target = new Target(port, echoesUpload: server != "nginx", servesHeaders: server != "nghttpd");
+                var target = new Target(port, capabilities.EchoesUpload, capabilities.ServesHeaders);
                 var rows = new List<(string, Func<CancellationToken, Task>)>();
                 foreach (var (name, run) in Rows)
                 {
-                    if (name == "response-headers-many" && !target.ServesHeaders)
-                        continue;
                     string full = "interop/" + server + "/" + name;
-                    if (filter == null || full.Contains(filter, StringComparison.Ordinal))
-                        rows.Add((full, ct => run(target, ct)));
+                    if (filter != null && !full.Contains(filter, StringComparison.Ordinal))
+                        continue;
+                    if (name == "response-headers-many" && !target.ServesHeaders)
+                    {
+                        // Printed, never dropped silently: the server has no way to send the 40 configured fields.
+                        Console.WriteLine("N/A " + full + ": " + server + " cannot serve /headers (README, server table)");
+                        continue;
+                    }
+
+                    rows.Add((full, ct => run(target, ct)));
                 }
 
-                return await Program.RunRowsAsync(rows).ConfigureAwait(false);
+                return await Program.RunRowsAsync(rows, KnownFailures).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -120,6 +128,31 @@ namespace TurboHTTP.Tools.H2Interop
                     await kestrel.DisposeAsync().ConfigureAwait(false);
             }
         }
+
+        /// <summary>
+        /// The servers run.sh starts and what each can serve. <c>EchoesUpload</c>: POST /upload returns the request body
+        /// (otherwise exactly "uploaded\n"). <c>ServesHeaders</c>: GET /headers returns <see cref="ResponseHeaderCount"/>
+        /// fields of <see cref="ResponseHeaderValue"/>; without it <c>response-headers-many</c> prints N/A.
+        /// </summary>
+        private static readonly Dictionary<string, (bool EchoesUpload, bool ServesHeaders)> Servers =
+            new Dictionary<string, (bool, bool)>(StringComparer.Ordinal)
+            {
+                ["kestrel"] = (true, true),
+                ["nghttpd"] = (true, false),
+                ["nginx"] = (false, true),
+                ["h2o"] = (true, true),
+                ["go"] = (true, true),
+                ["envoy"] = (false, true),
+                ["nghttpx"] = (true, true),
+            };
+
+        /// <summary>
+        /// Rows that fail on a filed client defect: full row name to issue number. Such a row prints KNOWN-FAIL with the
+        /// issue and does not fail the run; if it passes, the run fails until the entry is removed. Keep it explicit.
+        /// </summary>
+        private static readonly Dictionary<string, int> KnownFailures = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+        };
 
         private static readonly (string Name, Func<Target, CancellationToken, Task> Run)[] Rows =
         {
@@ -145,7 +178,7 @@ namespace TurboHTTP.Tools.H2Interop
 
             public int Port { get; }
 
-            /// <summary>nghttpd --echo-upload and the Kestrel endpoint echo POST bodies; nginx answers "uploaded".</summary>
+            /// <summary>POST /upload echoes the body; otherwise the server answers exactly "uploaded\n" (<see cref="Servers"/>).</summary>
             public bool EchoesUpload { get; }
 
             /// <summary>Serves <c>/headers</c> with <see cref="ResponseHeaderCount"/> large response fields.</summary>
@@ -169,7 +202,8 @@ namespace TurboHTTP.Tools.H2Interop
             CheckHttp2(transport, target);
         }
 
-        // 100 concurrent streams on one connection, around the servers' MAX_CONCURRENT_STREAMS (nghttpd 100, nginx 128).
+        // 100 concurrent streams on one connection, around the servers' MAX_CONCURRENT_STREAMS (nghttpd 100, nginx 128); a
+        // lower limit relies on the client queueing.
         private static async Task Concurrent100Async(Target target, CancellationToken ct)
         {
             using var transport = new RawSocketTransport(null, TlsBackend.SslStream);

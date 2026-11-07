@@ -29,16 +29,39 @@ watchdog.
 
 ## Interop rows (`--only interop`)
 
-The production `RawSocketTransport` (SslStream, ALPN h2) talks to three servers over TLS on loopback:
+The production `RawSocketTransport` (SslStream, ALPN h2) talks to seven servers over TLS on loopback.
+Every container listens on 8443 with the per-run directory mounted read-only on `/pki`
+(`leaf-valid.pem`, `leaf.key`, `www/`), and every image is pinned by digest, directly in `run.sh` or
+through the `FROM` lines of its Dockerfile under `docker/`:
 
-- Kestrel (ASP.NET Core 8, in-process)
-- nghttpd (Debian bookworm `nghttp2-server`, image pinned by digest)
-- nginx 1.27.3 (pinned by digest)
+| Server | Image | `/upload` | `/headers` |
+| --- | --- | --- | --- |
+| Kestrel (ASP.NET Core 8) | in-process, no image | echoes | served |
+| nghttpd | Debian bookworm `nghttp2-server` (`docker/nghttpd`) | echoes (`--echo-upload`) | N/A: nghttpd cannot add response fields |
+| nginx 1.27.3 | `nginx:1.27.3-alpine` | `uploaded\n` | served (`h2-headers.conf`) |
+| h2o 2.2.5 | Debian bookworm `h2o`, built with mruby (`docker/h2o`) | echoes (mruby) | served (mruby) |
+| Go net/http | Go 1.23 build, multi-stage onto `alpine:3.20` (`docker/go/main.go`) | echoes | served |
+| Envoy 1.32.1 | `envoyproxy/envoy:v1.32.1` | `uploaded\n` (`direct_response`, sent before the body is read) | served (Lua filter) |
+| nghttpx | Debian bookworm `nghttp2-proxy` in front of `nghttp2-server` over h2c (`docker/nghttpx`) | echoes (nghttpd behind it) | served (`--add-response-header` on every response) |
 
-The rows are `get-small`, `get-large` (2 MiB), `concurrent-100`, `post-upload` (1 MiB, echoed by
-Kestrel and nghttpd), `request-headers-large` and `response-headers-many` (Kestrel and nginx). Every
-row checks that the request ran on an HTTP/2 connection. The per-run root
-(`Tools~/tls-interop/TestPki.cs`) is trusted only through `SSL_CERT_FILE`/`SSL_CERT_DIR`.
+No official h2o image is pullable anonymously, so h2o comes from Debian's package on the same pinned
+base as nghttpd. Envoy has no static-file serving: each path is a `direct_response` read from `/pki/www`
+at startup.
+
+The rows are `get-small`, `get-large` (2 MiB), `concurrent-100`, `post-upload` (1 MiB; echoed, or
+exactly `uploaded\n`, per the table), `request-headers-large` and `response-headers-many`. Every row
+checks that the request ran on an HTTP/2 connection. The per-run root
+(`Tools~/tls-interop/TestPki.cs`) is trusted only through `SSL_CERT_FILE`/`SSL_CERT_DIR`. The
+capabilities live in `InteropRows.Servers`.
+
+Every row prints one visible result line:
+
+- `PASS`: the row passed.
+- `FAIL`: the row failed and the run exits 1.
+- `N/A`: the server cannot serve the row (the table above); printed, never silently dropped.
+- `KNOWN-FAIL <row> (#N)`: the row fails on the filed client defect #N, listed in
+  `InteropRows.KnownFailures`. It does not fail the run, but a listed row that passes does, so the entry
+  is removed once the defect is fixed. The list is empty today.
 
 The `bc-*` rows (#255) run the same client with `TlsBackend.BouncyCastle` against each server:
 
@@ -65,13 +88,14 @@ export PATH="$HOME/.dotnet:$PATH" DOTNET_ROOT="$HOME/.dotnet"
 'Tools~/h2-interop/run.sh'                                  # everything
 'Tools~/h2-interop/run.sh' --only adversarial --row hpack/  # one group, no docker
 'Tools~/h2-interop/run.sh' --only interop --no-shadow-build
+'Tools~/h2-interop/run.sh' --only interop --row /envoy/   # rows of one server (the others print "no row matches" and fail)
 ```
 
 Exit codes:
 
-- 0: every row passed.
+- 0: every row passed (or is N/A or KNOWN-FAIL, as above).
 - 1: a row or a precondition failed. Nothing is ever skipped.
 - 2: usage error.
 - 3: dotnet or docker is missing.
 
-Logs are written to `.build/h2-interop/run`.
+Logs are written to `.build/h2-interop/run` (`interop.log`, `docker-<server>.log`).
