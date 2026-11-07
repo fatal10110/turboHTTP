@@ -37,9 +37,8 @@ the repository specifics are turboHTTP's.
   2. **Review agent.** It starts at the first push and stays alive until the PR is merged or given
      up. Round 1 is a full `turbohttp-pr-review` with both specialist rubrics
      (`.claude/agents/unity-infrastructure-architect.md`, `.claude/agents/unity-network-architect.md`)
-     applied by the review agent itself, since workflow agents cannot spawn subagents, plus the
-     performance and compatibility pass (`turbohttp-perf-compat-review`). Every later round is a
-     delta re-review. When the PR is clean, it asks the merger to merge and routes the
+     and `turbohttp-perf-compat-review`, applied by the review agent itself, since workflow agents
+     cannot spawn subagents. Every later round is a delta re-review. When the PR is clean, it asks the merger to merge and routes the
      result back.
 
   The two agents talk directly through the lane mailbox. Before the first push, a Haiku watcher

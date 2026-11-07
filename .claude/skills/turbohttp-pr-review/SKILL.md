@@ -118,10 +118,8 @@ cd <review-root> && './Tools~/unity/run-tests.sh' --platform EditMode|PlayMode -
 
 Apply `.claude/agents/unity-infrastructure-architect.md` and
 `.claude/agents/unity-network-architect.md` to the diff — as subagents when you can spawn them,
-otherwise read both files and work their checklists yourself. Then run the performance and
-compatibility pass: read `.claude/skills/turbohttp-perf-compat-review/SKILL.md` and follow it (hot
-paths, allocations, Unity 2021.3/.NET Standard 2.1/C# 9, IL2CPP/AOT, platforms, public API breaks,
-wire interop). All their findings go through §6 like any other.
+otherwise read both files and work their checklists yourself. Then run
+`.claude/skills/turbohttp-perf-compat-review/SKILL.md`. All findings go through §6.
 
 ## 6. Gate every finding before posting
 

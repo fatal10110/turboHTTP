@@ -121,7 +121,7 @@ milestone-assigned issue, the diff is scoped, the journal entry exists and the P
 ## 8. Skills and agents
 
 - Skills (`.claude/skills/`): `turbohttp-issue` (one issue), `turbohttp-pr-review` (review a PR),
-  `turbohttp-perf-compat-review` (performance/compatibility pass every review runs),
+  `turbohttp-perf-compat-review` (perf/compat pass of every review),
   `turbohttp-pr-review-comments` (answer review comments), `turbohttp-waves` (multi-PR fan-out with
   the `wave-*` agent types).
 - Specialist reviewers: `unity-infrastructure-architect`, `unity-network-architect` (`.claude/agents/`).
