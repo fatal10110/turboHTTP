@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -14,12 +15,21 @@ namespace TurboHTTP.Transport.Http2
         // The read loop counts every inbound frame (Interlocked): a probe whose ACK is late but that saw
         // frames arrive meanwhile (the ACK queued behind DATA or behind our own upload on a slow link)
         // does not declare the connection dead.
+        // One PING is outstanding at a time: the keep-alive loop and the idle-reuse probe share the
+        // probe in flight (_activeProbe, Interlocked), so concurrent callers never overwrite each other's
+        // payload and a burst of requests on an idle connection sends one PING, not one each.
         private readonly TimeSpan _pingInterval;
         private readonly TimeSpan _pingTimeout;
         private long _pingPayloadCounter;
         private long _outstandingPingPayload;
         private TaskCompletionSource<bool> _pingAckSignal; // Volatile
         private int _inboundFrameCount;
+        private Task<LivenessCycleResult> _activeProbe; // Interlocked / Volatile
+
+        // Idle-reuse probe (Http2Options.ReuseProbeIdleThreshold, off when 0). Stopwatch ticks, written
+        // by the read loop on every inbound frame while the probe is enabled; a long, so Interlocked only.
+        private readonly long _reuseProbeIdleTicks;
+        private long _lastInboundTimestamp;
 
         internal enum LivenessCycleResult
         {
@@ -65,6 +75,118 @@ namespace TurboHTTP.Transport.Http2
             if (_activeStreams.IsEmpty || !IsAlive)
                 return LivenessCycleResult.Idle;
 
+            return await AwaitProbeAsync(GetOrStartProbe(), ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Idle-reuse probe: one PING before a request reuses a connection that received no frame for
+        /// the configured threshold. Returns when the peer answered (ACK or any other frame). Throws a
+        /// not-processed <see cref="Http2RetryableRequestException"/> when the probe timed out or the
+        /// connection closed meanwhile; the connection is then disposed and nothing was sent for the
+        /// request, so the transport replays it on a fresh connection.
+        /// </summary>
+        private async Task ProbeIdleConnectionBeforeReuseAsync(CancellationToken ct)
+        {
+            LivenessCycleResult result;
+            try
+            {
+                result = await AwaitProbeAsync(GetOrStartProbe(), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // The probe was cancelled by the connection token: the connection closed meanwhile.
+                result = LivenessCycleResult.TimedOut;
+            }
+
+            if (result == LivenessCycleResult.TimedOut)
+            {
+                throw new Http2RetryableRequestException(
+                    new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        "HTTP/2 idle connection did not answer its reuse PING; the request was not sent"),
+                    requestNotProcessed: true);
+            }
+        }
+
+        private bool IsIdleBeyondReuseProbeThreshold() =>
+            Stopwatch.GetTimestamp() - Interlocked.Read(ref _lastInboundTimestamp) >= _reuseProbeIdleTicks;
+
+        private void RecordInboundActivity() =>
+            Interlocked.Exchange(ref _lastInboundTimestamp, Stopwatch.GetTimestamp());
+
+        /// <summary>Moves the last inbound activity into the past (tests only: no wall-clock waits).</summary>
+        internal void BackdateInboundActivityForTest(TimeSpan by) =>
+            Interlocked.Add(ref _lastInboundTimestamp, -ToStopwatchTicks(by));
+
+        private static long ToStopwatchTicks(TimeSpan value) =>
+            value <= TimeSpan.Zero ? 0 : Math.Max(1, (long)(value.TotalSeconds * Stopwatch.Frequency));
+
+        /// <summary>
+        /// The PING probe in flight, or a new one. The probe runs under the connection token, not a
+        /// caller's, because several callers may share it; it always completes its task (result,
+        /// or cancelled when the connection closes), which is its owner.
+        /// </summary>
+        private Task<LivenessCycleResult> GetOrStartProbe()
+        {
+            while (true)
+            {
+                var current = Volatile.Read(ref _activeProbe);
+                if (current != null && !current.IsCompleted)
+                    return current;
+
+                var source = new TaskCompletionSource<LivenessCycleResult>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                if (Interlocked.CompareExchange(ref _activeProbe, source.Task, current) != current)
+                    continue;
+
+                _ = RunProbeIntoAsync(source);
+                return source.Task;
+            }
+        }
+
+        private async Task RunProbeIntoAsync(TaskCompletionSource<LivenessCycleResult> source)
+        {
+            try
+            {
+                source.TrySetResult(await RunProbeAsync(_cts.Token).ConfigureAwait(false));
+            }
+            catch (OperationCanceledException)
+            {
+                source.TrySetCanceled();
+            }
+            catch (ObjectDisposedException)
+            {
+                source.TrySetCanceled();
+            }
+            catch (Exception ex)
+            {
+                source.TrySetException(ex);
+            }
+        }
+
+        /// <summary>Waits for a shared probe, giving up (only this caller) when <paramref name="ct"/> fires.</summary>
+        private static async Task<LivenessCycleResult> AwaitProbeAsync(
+            Task<LivenessCycleResult> probe,
+            CancellationToken ct)
+        {
+            if (!probe.IsCompleted && ct.CanBeCanceled)
+            {
+                var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                using (ct.Register(
+                           state => ((TaskCompletionSource<bool>)state).TrySetResult(true),
+                           cancelled,
+                           useSynchronizationContext: false))
+                {
+                    if (await Task.WhenAny(probe, cancelled.Task).ConfigureAwait(false) != probe)
+                        ct.ThrowIfCancellationRequested();
+                }
+            }
+
+            return await probe.ConfigureAwait(false);
+        }
+
+        private async Task<LivenessCycleResult> RunProbeAsync(CancellationToken ct)
+        {
             long payload = Interlocked.Increment(ref _pingPayloadCounter);
             int framesBeforePing = Volatile.Read(ref _inboundFrameCount);
             var ack = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

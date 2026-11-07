@@ -486,7 +486,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 BindingFlags.NonPublic | BindingFlags.Instance);
             Assert.IsNotNull(field);
 
-            var connections = (ConcurrentDictionary<string, Http2Connection>)field.GetValue(manager);
+            var connections = (ConcurrentDictionary<string, Http2Connection[]>)field.GetValue(manager);
             return connections.Keys.ToArray();
         }
 

@@ -25,7 +25,7 @@ namespace TurboHTTP.Tests.Transport.Http2
     /// The origin is 127.0.0.1:1, so a request that wrongly opens a real socket fails at once locally.
     /// </summary>
     [TestFixture]
-    public class RawSocketTransportHttp2ConnectionManagementTests
+    public partial class RawSocketTransportHttp2ConnectionManagementTests
     {
         private const string Host = "127.0.0.1";
         private const int Port = 1;
@@ -422,9 +422,14 @@ namespace TurboHTTP.Tests.Transport.Http2
             private readonly List<Task> _servers = new List<Task>();
 
             public Harness()
+                : this(new Http2Options())
+            {
+            }
+
+            public Harness(Http2Options http2Options)
             {
                 Pool = new TcpConnectionPool(maxConnectionsPerHost: 8, tlsBackend: TlsBackend.SslStream);
-                Transport = new RawSocketTransport(Pool, TlsBackend.SslStream);
+                Transport = new RawSocketTransport(Pool, TlsBackend.SslStream, http2Options);
             }
 
             public TcpConnectionPool Pool { get; }
@@ -442,11 +447,14 @@ namespace TurboHTTP.Tests.Transport.Http2
             /// <summary>
             /// As above; <paramref name="serve"/> also gets the server end (disposing it breaks the
             /// connection) and the server's SETTINGS carry <paramref name="serverSettings"/> (null: none).
+            /// <paramref name="beforeHandshake"/> (optional) runs on the server end before the handshake:
+            /// it can hold the handshake, or dispose the stream to make it fail.
             /// </summary>
             public void AddIdleConnection(
                 Func<Http2FrameCodec, Stream, CancellationToken, Task> serve,
                 byte[] serverSettings,
-                CancellationToken ct)
+                CancellationToken ct,
+                Func<Stream, CancellationToken, Task> beforeHandshake = null)
             {
                 var pair = LoopbackSocketPair.Create();
                 _resources.Add(pair);
@@ -467,6 +475,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                 {
                     try
                     {
+                        if (beforeHandshake != null)
+                            await beforeHandshake(duplex.ServerStream, ct);
+
                         var codec = await CompleteHandshakeAsync(duplex.ServerStream, serverSettings, ct);
                         await serve(codec, duplex.ServerStream, ct);
                     }
