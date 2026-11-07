@@ -13,6 +13,9 @@ namespace TurboHTTP.Core
         private readonly object _disposeCallbackGate = new object();
         private Action _onDispose;
         private int _disposed;
+#if DEBUG || UNITY_EDITOR || DEVELOPMENT_BUILD
+        private static int s_undisposedFinalizedCount;
+#endif
 
         public UHttpStreamingResponse(
             HttpStatusCode statusCode,
@@ -37,6 +40,23 @@ namespace TurboHTTP.Core
 
         internal IResponseBodySource BodySourceForTesting => _bodySource;
 
+        /// <summary>
+        /// Number of responses whose finalizer ran without a prior dispose since start-up (debug,
+        /// editor and development builds only; always 0 otherwise). Lets tests attribute a dropped
+        /// response to the test that dropped it (#366).
+        /// </summary>
+        internal static int UndisposedFinalizedCountForTesting
+        {
+            get
+            {
+#if DEBUG || UNITY_EDITOR || DEVELOPMENT_BUILD
+                return Volatile.Read(ref s_undisposedFinalizedCount);
+#else
+                return 0;
+#endif
+            }
+        }
+
         internal ValueTask<int> ReadBodyAsync(Memory<byte> destination, CancellationToken ct)
         {
             return _bodySource.ReadAsync(destination, ct);
@@ -59,6 +79,7 @@ namespace TurboHTTP.Core
 #if DEBUG || UNITY_EDITOR || DEVELOPMENT_BUILD
             if (Volatile.Read(ref _disposed) == 0)
             {
+                Interlocked.Increment(ref s_undisposedFinalizedCount);
                 TurboDiagnostics.Log(
                     "[TurboHTTP] UHttpStreamingResponse was not disposed. Response bodies must be disposed to release transport resources.");
             }
