@@ -20,6 +20,10 @@ namespace TurboHTTP.JSON
         /// "JSON text exchanged between systems MUST be encoded using UTF-8."
         /// </remarks>
         /// <exception cref="JsonSerializationException">Deserialization failed</exception>
+        /// <exception cref="NotSupportedException">
+        /// The default serializer cannot map <typeparamref name="T"/> (the engine-free LiteJson default
+        /// reads only object/Dictionary/List/scalars); the message names the alternatives.
+        /// </exception>
         public static T AsJson<T>(this UHttpResponse response)
         {
             if (response == null) throw new ArgumentNullException(nameof(response));
@@ -47,6 +51,9 @@ namespace TurboHTTP.JSON
         /// Try to deserialize the response body as JSON.
         /// Returns false if deserialization fails or body is empty.
         /// </summary>
+        /// <exception cref="NotSupportedException">
+        /// The serializer cannot map <typeparamref name="T"/> at all (a configuration error, not bad data).
+        /// </exception>
         public static bool TryAsJson<T>(this UHttpResponse response, out T result)
         {
             try
