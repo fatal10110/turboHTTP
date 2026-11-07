@@ -154,6 +154,7 @@ namespace TurboHTTP.Cache
             public readonly HttpHeaders ResponseHeaders;
             public readonly HttpHeaders Trailers;
             public readonly DateTime? ResponseTimeUtc;
+            public readonly DateTime? RequestTimeUtc;
             public readonly SegmentedBuffer Body;
 
             public StoreResponseState(
@@ -164,6 +165,7 @@ namespace TurboHTTP.Cache
                 HttpHeaders responseHeaders,
                 HttpHeaders trailers,
                 DateTime? responseTimeUtc,
+                DateTime? requestTimeUtc,
                 SegmentedBuffer body)
             {
                 RequestMethod = requestMethod;
@@ -173,6 +175,7 @@ namespace TurboHTTP.Cache
                 ResponseHeaders = responseHeaders;
                 Trailers = trailers;
                 ResponseTimeUtc = responseTimeUtc;
+                RequestTimeUtc = requestTimeUtc;
                 Body = body;
             }
 
@@ -562,6 +565,7 @@ namespace TurboHTTP.Cache
                 SnapshotBodyForCache(response.Body),
                 response.Trailers,
                 responseTimeUtc: null,
+                requestTimeUtc: null,
                 response.Request?.Uri ?? request.Uri,
                 baseKey);
         }
@@ -574,6 +578,7 @@ namespace TurboHTTP.Cache
             ReadOnlyMemory<byte> bodySnapshot,
             HttpHeaders trailers,
             DateTime? responseTimeUtc,
+            DateTime? requestTimeUtc,
             Uri responseUrl,
             string baseKey)
         {
@@ -615,6 +620,8 @@ namespace TurboHTTP.Cache
             // response_time (RFC 9111 section 4.2.3): when the response arrived, not when this background store runs.
             var nowUtc = responseTimeUtc ?? _utcNow();
             EnsureDateHeader(responseHeadersForStorage, nowUtc);
+            if (responseTimeUtc.HasValue)
+                ApplyResponseDelay(responseHeadersForStorage, requestTimeUtc, responseTimeUtc.Value);
             var expiresAtUtc = ResolveExpiry(nowUtc, responseCacheControl, responseHeadersForStorage, isSharedCache: false);
             var eTag = responseHeadersForStorage.Get("ETag");
             var lastModified = responseHeadersForStorage.Get("Last-Modified");
@@ -664,7 +671,9 @@ namespace TurboHTTP.Cache
             UHttpRequest request,
             CacheEntry existing,
             HttpHeaders notModifiedHeaders,
-            string baseKey)
+            string baseKey,
+            DateTime requestTimeUtc,
+            DateTime responseTimeUtc)
         {
             var mergedHeaders = existing.Headers.Clone();
             // The stored Age and Date describe the old response; the 304 is the new response (RFC 9111 section 4.2.3:
@@ -706,8 +715,10 @@ namespace TurboHTTP.Cache
                     return default;
             }
 
-            var nowUtc = _utcNow();
+            // response_time of the 304; the 304's own Age is corrected by its revalidation request's response_delay.
+            var nowUtc = responseTimeUtc;
             EnsureDateHeader(mergedHeaders, nowUtc);
+            ApplyResponseDelay(mergedHeaders, requestTimeUtc, nowUtc);
             var cacheControl = ParseCacheControl(mergedHeaders.GetValues("Cache-Control"));
             var expiresAtUtc = ResolveExpiry(nowUtc, cacheControl, mergedHeaders, isSharedCache: false);
             var eTag = mergedHeaders.Get("ETag");
@@ -861,7 +872,8 @@ namespace TurboHTTP.Cache
             HttpHeaders responseHeaders,
             SegmentedBuffer body,
             HttpHeaders trailers = null,
-            DateTime? responseTimeUtc = null)
+            DateTime? responseTimeUtc = null,
+            DateTime? requestTimeUtc = null)
         {
             QueueBackgroundWork(
                 QueueMutationAsync(
@@ -878,6 +890,7 @@ namespace TurboHTTP.Cache
                             storeState.ResponseHeaders,
                             storeState.Trailers,
                             storeState.ResponseTimeUtc,
+                            storeState.RequestTimeUtc,
                             storeState.Body,
                             token);
                     },
@@ -890,6 +903,7 @@ namespace TurboHTTP.Cache
                         responseHeaders,
                         trailers,
                         responseTimeUtc,
+                        requestTimeUtc,
                         body)),
                 "store");
         }
@@ -903,6 +917,7 @@ namespace TurboHTTP.Cache
             HttpHeaders responseHeaders,
             HttpHeaders trailers,
             DateTime? responseTimeUtc,
+            DateTime? requestTimeUtc,
             SegmentedBuffer body,
             CancellationToken cancellationToken)
         {
@@ -933,6 +948,7 @@ namespace TurboHTTP.Cache
                     bodySnapshot,
                     trailers,
                     responseTimeUtc,
+                    requestTimeUtc,
                     requestUri,
                     baseKey);
                 if (prepared.Entry == null)
