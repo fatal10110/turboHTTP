@@ -31,6 +31,10 @@ namespace TurboHTTP.Transport.Http2
         private const int RemoteClosedFlag = 2;
         private const int AbandonPendingFlag = 4;
 
+        // Runs the response-start handler chain on the thread pool (#29). Static, so queueing a response
+        // start allocates no delegate; the state is the stream itself.
+        private static readonly WaitCallback s_invokeResponseStart = RunQueuedResponseStart;
+
         private int _streamId;
         private UHttpRequest _request;
         private RequestContext _context;
@@ -259,7 +263,16 @@ namespace TurboHTTP.Transport.Http2
             // Request cancellation stays active while the upload may still be running (RFC 9113
             // Section 8.1); a streamed body is handed off to its reader once both are done.
             ReleaseCancellationIfStreamingHandedOff();
-            _ = InvokeResponseStartAsync(ResponseBodySource);
+
+            // The handler chain (decompression, cache, redirect, user handlers) runs synchronously up to
+            // its first real await, so it must not run on the read loop: a blocking handler would stall
+            // WINDOW_UPDATE, PING and every other stream's frames on this connection (#29). The queued
+            // work item owns one lifetime reference until the handler's synchronous part has returned
+            // (it replaces the read loop's lease), so it never reads a stream that went back to the pool.
+            // Body DATA and trailers only enter the body source, which the handler pulls from, so
+            // response start still precedes body delivery for this stream.
+            Interlocked.Increment(ref _lifetimeRefCount);
+            ThreadPool.QueueUserWorkItem(s_invokeResponseStart, this);
             return true;
         }
 
@@ -568,16 +581,36 @@ namespace TurboHTTP.Transport.Http2
             ValueTaskSourceOnCompletedFlags flags) =>
             _completionSource.OnCompleted(continuation, state, token, flags);
 
-        private async Task InvokeResponseStartAsync(Http2ResponseBodySource bodySource)
+        private static void RunQueuedResponseStart(object state)
         {
+            // The returned task is owned here: InvokeResponseStartAsync catches every handler failure and
+            // reports it through the stream's completion source, which the dispatch awaits, so the task
+            // never faults.
+            _ = ((Http2Stream)state).InvokeResponseStartAsync();
+        }
+
+        private async Task InvokeResponseStartAsync()
+        {
+            // Holds the lifetime reference TryStartResponse took for this work item.
+            bool holdsStartReference = true;
+            Http2ResponseBodySource bodySource = ResponseBodySource;
             try
             {
-                await _handler.OnResponseStartAsync(
-                        _statusCode,
-                        _headers ?? new HttpHeaders(),
-                        bodySource,
-                        _context)
-                    .ConfigureAwait(false);
+                var pending = _handler.OnResponseStartAsync(
+                    _statusCode,
+                    _headers ?? new HttpHeaders(),
+                    bodySource,
+                    _context);
+
+                if (!pending.IsCompleted)
+                {
+                    // The fields are read; from here on the stream is kept alive by the dispatch and the
+                    // body source, exactly as after the first await of an inline call.
+                    holdsStartReference = false;
+                    ReleaseLifetime();
+                }
+
+                await pending.ConfigureAwait(false);
 
                 TrySetResult();
             }
@@ -594,6 +627,11 @@ namespace TurboHTTP.Transport.Http2
                 }
 
                 TrySetException(new HandlerCallbackException(ex));
+            }
+            finally
+            {
+                if (holdsStartReference)
+                    ReleaseLifetime();
             }
         }
 
