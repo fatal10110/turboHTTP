@@ -678,7 +678,10 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var socketPair = await SocketPair.CreateAsync();
                 using var pool = new TcpConnectionPool(maxConnectionsPerHost: 1, tlsBackend: TlsBackend.SslStream);
-                using var transport = new RawSocketTransport(pool, TlsBackend.SslStream);
+                using var transport = new RawSocketTransport(
+                    pool,
+                    TlsBackend.SslStream,
+                    new Http2Options { EnableHttp2ThroughConnectTunnels = true });
 
                 var tunnelPoolKey = BuildTunnelPoolKey(socketPair.Port, "example.com", 443);
                 var connection = new PooledConnection(
@@ -759,7 +762,10 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var staleSocketPair = await SocketPair.CreateAsync();
                 using var h2SocketPair = await SocketPair.CreateAsync();
                 using var pool = new TcpConnectionPool(maxConnectionsPerHost: 1, tlsBackend: TlsBackend.SslStream);
-                using var transport = new RawSocketTransport(pool, TlsBackend.SslStream);
+                using var transport = new RawSocketTransport(
+                    pool,
+                    TlsBackend.SslStream,
+                    new Http2Options { EnableHttp2ThroughConnectTunnels = true });
 
                 var tunnelPoolKey = BuildTunnelPoolKey(h2SocketPair.Port, "example.com", 443);
                 var staleStream = new FailingStream(
