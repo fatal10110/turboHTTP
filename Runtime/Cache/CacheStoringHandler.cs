@@ -16,13 +16,21 @@ namespace TurboHTTP.Cache
         private readonly HttpHeaders _requestHeaders;
         private readonly string _baseKey;
         private readonly long _maxCacheableResponseBodyBytes;
+        // RFC 9111 section 4.2.3 request_time: when the request that elicits the response was sent (#306).
+        private readonly DateTime _requestTimeUtc;
 
+        /// <param name="requestTimeUtc">
+        /// When the request was sent. Null means now: the handler is created right before the request is dispatched.
+        /// A handler created after the response arrived (200 after revalidation) passes the time captured before
+        /// the conditional request was sent.
+        /// </param>
         internal CacheStoringHandler(
             IHttpHandler inner,
             CacheInterceptor owner,
             UHttpRequest request,
             string baseKey,
-            RequestContext context)
+            RequestContext context,
+            DateTime? requestTimeUtc = null)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             _owner = owner ?? throw new ArgumentNullException(nameof(owner));
@@ -35,6 +43,7 @@ namespace TurboHTTP.Cache
             _baseKey = baseKey ?? throw new ArgumentNullException(nameof(baseKey));
             _maxCacheableResponseBodyBytes = owner.MaxCacheableResponseBodyBytes;
             _ = context ?? throw new ArgumentNullException(nameof(context));
+            _requestTimeUtc = requestTimeUtc ?? owner.GetUtcNow();
         }
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
@@ -123,7 +132,8 @@ namespace TurboHTTP.Cache
                         headersToStore,
                         bodyToStore,
                         trailersToStore,
-                        responseTimeUtc);
+                        responseTimeUtc,
+                        _requestTimeUtc);
                     bodyToStore = null;
                 }
                 catch (Exception ex)
@@ -145,6 +155,7 @@ namespace TurboHTTP.Cache
                 statusCode,
                 capturedHeaders,
                 responseTimeUtc,
+                _requestTimeUtc,
                 _maxCacheableResponseBodyBytes);
 
             await _inner.OnResponseStartAsync(statusCode, capturedHeaders, tee, context).ConfigureAwait(false);
@@ -169,6 +180,7 @@ namespace TurboHTTP.Cache
         private readonly int _statusCode;
         private readonly HttpHeaders _responseHeaders;
         private readonly DateTime _responseTimeUtc;
+        private readonly DateTime _requestTimeUtc;
         private readonly long _maxCacheableResponseBodyBytes;
 
         private IStreamingCacheAccumulator _accumulator;
@@ -191,6 +203,7 @@ namespace TurboHTTP.Cache
             int statusCode,
             HttpHeaders responseHeaders,
             DateTime responseTimeUtc,
+            DateTime requestTimeUtc,
             long maxCacheableResponseBodyBytes)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
@@ -202,6 +215,7 @@ namespace TurboHTTP.Cache
             _statusCode = statusCode;
             _responseHeaders = responseHeaders?.Clone() ?? new HttpHeaders();
             _responseTimeUtc = responseTimeUtc;
+            _requestTimeUtc = requestTimeUtc;
             if (maxCacheableResponseBodyBytes <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxCacheableResponseBodyBytes));
 
@@ -320,7 +334,8 @@ namespace TurboHTTP.Cache
                             _responseHeaders,
                             bodyToStore,
                             _trailersToStore,
-                            _responseTimeUtc);
+                            _responseTimeUtc,
+                            _requestTimeUtc);
                         bodyToStore = null;
                     }
                     catch (Exception ex)
