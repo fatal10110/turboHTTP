@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -75,6 +76,19 @@ namespace TurboHTTP.WebSocket
             return true;
         }
 
+        /// <summary>
+        /// Records the receive loop, which may still await a read on the stream about to be closed, until
+        /// it ends: on IL2CPP that read keeps its I/O job keyed by the descriptor number, so no socket is
+        /// created before it ended (#375). Called right before the stream is closed under the loop (the
+        /// close-handshake timeout, <see cref="FinalizeClose"/>); records the loop once. A loop that has
+        /// not started or has ended is not recorded.
+        /// </summary>
+        private void TrackAbandonedReceiveLoop()
+        {
+            if (Interlocked.Exchange(ref _receiveLoopTracked, 1) == 0)
+                AbandonedSocketIo.Track(Volatile.Read(ref _receiveLoopTask));
+        }
+
         private void FinalizeClose(WebSocketCloseStatus status, Exception terminalError)
         {
             if (Interlocked.CompareExchange(ref _finalized, 1, 0) != 0)
@@ -131,6 +145,7 @@ namespace TurboHTTP.WebSocket
 
             // Disposing the stream faults any pending read or write, so the receive loop and an in-flight
             // send finish; the writer, extensions and assembler go when the last of them releases (#84).
+            TrackAbandonedReceiveLoop();
             SafeDispose(Interlocked.Exchange(ref _stream, null));
             ReleaseResources();
 

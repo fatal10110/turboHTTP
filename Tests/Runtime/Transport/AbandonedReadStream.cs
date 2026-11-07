@@ -46,6 +46,19 @@ namespace TurboHTTP.Tests.Transport
 
         public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
+        /// <summary>
+        /// Called with each write as ASCII text (a handshake request, say), before the write returns; it
+        /// may queue the reply with <see cref="Answer"/>.
+        /// </summary>
+        public Action<string> OnWrite { get; set; }
+
+        /// <summary>Queues <paramref name="bytes"/> as the answer to the next reads that start.</summary>
+        public void Answer(byte[] bytes)
+        {
+            lock (_gate)
+                _answers.Enqueue(bytes);
+        }
+
         public void EndRead(int count) => TakePendingRead().TrySetResult(count);
 
         public void EndRead(string ascii)
@@ -92,12 +105,16 @@ namespace TurboHTTP.Tests.Transport
 
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
-        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
-
-        public override void Write(byte[] buffer, int offset, int count)
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
+            ObserveWrite(buffer, offset, count);
+            return Task.CompletedTask;
         }
+
+        public override void Write(byte[] buffer, int offset, int count) => ObserveWrite(buffer, offset, count);
+
+        private void ObserveWrite(byte[] buffer, int offset, int count) =>
+            OnWrite?.Invoke(Encoding.ASCII.GetString(buffer, offset, count));
 
         public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 

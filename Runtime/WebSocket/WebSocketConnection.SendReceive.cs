@@ -529,10 +529,16 @@ namespace TurboHTTP.WebSocket
             timeoutCts.CancelAfter(timeout);
 
             // Disposing the stream faults a read the platform does not cancel (#226), so the read below
-            // always completes before its buffer is returned.
+            // always completes before its buffer is returned. The read is the receive loop's: it is
+            // recorded until the loop ended before the stream closes under it (#375).
             using var closeOnTimeout = timeoutCts.Token.Register(
-                static state => SafeDispose((Stream)state),
-                stream);
+                static state =>
+                {
+                    var (connection, closing) = ((WebSocketConnection, Stream))state;
+                    connection.TrackAbandonedReceiveLoop();
+                    SafeDispose(closing);
+                },
+                (this, stream));
 
             byte[] buffer = ArrayPool<byte>.Shared.Rent(256);
             try

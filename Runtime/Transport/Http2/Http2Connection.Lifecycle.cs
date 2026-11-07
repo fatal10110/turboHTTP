@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -589,6 +590,12 @@ namespace TurboHTTP.Transport.Http2
             SendGoAwayOnDisposeBestEffort();
 
             FailAllStreams(new ObjectDisposedException(nameof(Http2Connection)));
+
+            // The read loop may still await a read on the stream closed below. On IL2CPP that read keeps
+            // its I/O job keyed by the descriptor number until it ends, so no socket is created before
+            // the loop ended (#375). Recorded here only: _disposed lets one caller through, and the
+            // second DisposeStreamOnce in FinalizeResourceDispose runs after the loop ended.
+            AbandonedSocketIo.Track(Volatile.Read(ref _readLoopTask));
             DisposeStreamOnce();
 
             var shutdownTasks = CollectBackgroundTasks();
