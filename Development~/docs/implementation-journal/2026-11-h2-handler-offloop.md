@@ -33,6 +33,12 @@ outcome is signalled). An `_responseErrorQueued` flag delivers only the first fa
 sees one outcome even if two failures race. Replayable failures (`Http2RetryableRequestException`)
 still skip the handler and complete the dispatch directly, as before.
 
+Review round 2: the queued failure raced `Cancel()`. While the work item waited, a request-token or
+timeout cancel could complete the dispatch with `OperationCanceledException` (which
+`RawSocketTransport` then reports to the handler), and the work item still called `OnResponseError`.
+The work item now claims the outcome first (`CompareExchange` on `_completionSignaled`) and calls the
+handler only if it won, then completes `_completionSource` itself.
+
 ## Files
 
 - `Runtime/Transport/Http2/Http2Stream.cs`
@@ -65,8 +71,13 @@ None.
   completes and a PING is ACKed while A is blocked, and A's handler sees exactly one error. With the
   round-0 `Http2Stream.cs` (error path inline) it fails ("Test watchdog expired.",
   HandlerOffLoop.cs:135).
+- Regression test `HandlerOffLoop_CancelWhileResponseErrorQueued_HandlerSeesOneOutcome`: 50 pooled
+  streams, each `Fail` then `Cancel` back to back; after the work item released the stream, the handler
+  saw one error when the dispatch completed normally and none when it was cancelled. With the round-1
+  `Http2Stream.cs` it fails ("iteration 1: cancelled=True, Expected 0 But was 1"). It is a race test:
+  on the fixed code it cannot fail, on the old code it fails whenever Cancel wins any iteration.
 - `'./Tools~/ci/check.sh'`: OK.
 - Unity PlayMode `--filter 'Http2ConnectionTests|Http2FlowControlTests|StreamingAllocationGate|Http2'`:
   382/382 passed (EditMode has no matching tests). After the review-round-1 fix, `--filter 'Http2'`:
-  379/379 passed.
+  379/379 passed. After round 2, `--filter 'Http2|HandlerOffLoop|RawSocketTransport'`: 501/501 passed.
 - Not run: the full Unity suites (periodic host-editor run), IL2CPP player builds, devices.

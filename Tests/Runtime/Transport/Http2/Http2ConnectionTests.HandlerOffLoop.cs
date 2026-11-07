@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http2;
 
 namespace TurboHTTP.Tests.Transport.Http2
@@ -155,6 +156,80 @@ namespace TurboHTTP.Tests.Transport.Http2
                     conn.Dispose();
                 }
             });
+        }
+
+        [Test]
+        public void HandlerOffLoop_CancelWhileResponseErrorQueued_HandlerSeesOneOutcome()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(15000);
+                var duplex = new TestDuplexStream();
+                using var conn = new Http2Connection(
+                    duplex.ClientStream, "test.example.com", 443, new Http2Options(), new StreamingOptions());
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/race"));
+
+                // Fail queues OnResponseError; a Cancel right behind it (request token, timeout) usually
+                // completes the dispatch before the work item runs. Whichever wins is the only outcome:
+                // the dispatch either completed normally after exactly one OnResponseError, or was
+                // cancelled and the handler (whose outcome the transport then reports) saw none.
+                for (int i = 0; i < 50; i++)
+                {
+                    int streamId = 1_000_001 + (2 * i);
+                    var handler = new CountingErrorHandler();
+                    var stream = Http2StreamPool.Rent(
+                        streamId, request, handler, new RequestContext(request), 65535, 65535, conn);
+
+                    stream.Fail(new UHttpException(new UHttpError(UHttpErrorType.NetworkError, "reset")));
+                    stream.Cancel(CancellationToken.None);
+
+                    bool cancelled;
+                    try
+                    {
+                        await stream.CompletionTask;
+                        cancelled = false;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        cancelled = true;
+                    }
+
+                    // The queued work item holds the last reference once the owner lets go: the stream
+                    // leaves this identity only after the work item finished.
+                    stream.ReleaseDispatchLifetime();
+                    while (stream.StreamId == streamId)
+                    {
+                        cts.Token.ThrowIfCancellationRequested();
+                        await Task.Yield();
+                    }
+
+                    Assert.AreEqual(cancelled ? 0 : 1, handler.ErrorCount,
+                        $"iteration {i}: cancelled={cancelled}");
+                }
+            });
+        }
+
+        private sealed class CountingErrorHandler : IHttpHandler
+        {
+            private int _errorCount;
+
+            public int ErrorCount => Volatile.Read(ref _errorCount);
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+            }
+
+            public ValueTask OnResponseStartAsync(
+                int statusCode, HttpHeaders headers, IResponseBodySource body, RequestContext context)
+            {
+                body?.Abort();
+                return default;
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                Interlocked.Increment(ref _errorCount);
+            }
         }
 
         /// <summary>

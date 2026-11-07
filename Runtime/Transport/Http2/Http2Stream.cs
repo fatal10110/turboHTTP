@@ -668,12 +668,35 @@ namespace TurboHTTP.Transport.Http2
             {
                 var exception = _pendingResponseError;
                 _pendingResponseError = null;
-                _handler.OnResponseError(MapHandlerException(exception), _context);
-                TrySetResult();
-            }
-            catch (Exception errorCallbackException)
-            {
-                TrySetException(new HandlerCallbackException(errorCallbackException));
+
+                // Claim the outcome before calling the handler: while this work item was queued, Cancel
+                // (request token, timeout) may already have completed the dispatch, which then reports
+                // that outcome itself (RawSocketTransport maps a timeout to OnResponseError). The handler
+                // must not get a second one.
+                if (Interlocked.CompareExchange(ref _completionSignaled, 1, 0) != 0)
+                    return;
+
+                Exception callbackFailure = null;
+                try
+                {
+                    _handler.OnResponseError(MapHandlerException(exception), _context);
+                }
+                catch (Exception errorCallbackException)
+                {
+                    callbackFailure = new HandlerCallbackException(errorCallbackException);
+                }
+
+                _connection?.WakeSendWindowWaiters();
+                try
+                {
+                    if (callbackFailure == null)
+                        _completionSource.SetResult(default);
+                    else
+                        _completionSource.SetException(callbackFailure);
+                }
+                catch (InvalidOperationException)
+                {
+                }
             }
             finally
             {
