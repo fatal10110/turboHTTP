@@ -5,7 +5,8 @@ description: >
   issues into lanes (one PR each) and waves, then fan out. Each PR gets a Sonnet lane brief, an
   implementation side that implements and fixes every review round, CI failure and merge conflict
   (handing over to a fresh agent at context checkpoints), and one long-lived review agent that
-  reviews the first push in full (turbohttp-pr-review plus both specialist rubrics), re-reviews
+  reviews the first push in full (turbohttp-pr-review plus both specialist rubrics and the
+  turbohttp-perf-compat-review pass), re-reviews
   only each new delta, and requests the merge. A merger workflow runs the cheap-model CI/merge
   agent; a helper workflow runs the cheap helper agents (cs-scout, rfc-researcher, runner) that
   workflow agents cannot spawn themselves. Use when the user says "run the waves", "fan out
@@ -36,8 +37,9 @@ the repository specifics are turboHTTP's.
   2. **Review agent.** It starts at the first push and stays alive until the PR is merged or given
      up. Round 1 is a full `turbohttp-pr-review` with both specialist rubrics
      (`.claude/agents/unity-infrastructure-architect.md`, `.claude/agents/unity-network-architect.md`)
-     applied by the review agent itself, since workflow agents cannot spawn subagents. Every later
-     round is a delta re-review. When the PR is clean, it asks the merger to merge and routes the
+     applied by the review agent itself, since workflow agents cannot spawn subagents, plus the
+     performance and compatibility pass (`turbohttp-perf-compat-review`). Every later round is a
+     delta re-review. When the PR is clean, it asks the merger to merge and routes the
      result back.
 
   The two agents talk directly through the lane mailbox. Before the first push, a Haiku watcher
