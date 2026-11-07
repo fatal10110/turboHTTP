@@ -60,6 +60,44 @@ namespace TurboHTTP.Transport.Internal
             return false;
         }
 
+        /// <summary>
+        /// True when the request carries the 100-continue expectation and no other one: every
+        /// member of every <c>Expect</c> field line is <c>100-continue</c> (RFC 9110 Section 10.1.1).
+        /// A 417 to a request with another expectation may be about that one, so only this shape is
+        /// repeated without <c>Expect</c>.
+        /// </summary>
+        internal static bool HasOnlyExpectContinueExpectation(HttpHeaders headers)
+        {
+            if (headers == null || !headers.Contains("Expect"))
+                return false;
+
+            var tokenSpan = "100-continue".AsSpan();
+            bool sawContinue = false;
+            var values = headers.GetValues("Expect");
+            for (int i = 0; i < values.Count; i++)
+            {
+                var span = (values[i] ?? string.Empty).AsSpan();
+                while (true)
+                {
+                    int comma = span.IndexOf(',');
+                    var segment = TrimWhitespace(comma >= 0 ? span.Slice(0, comma) : span);
+                    if (segment.Length > 0)
+                    {
+                        if (!segment.Equals(tokenSpan, StringComparison.OrdinalIgnoreCase))
+                            return false;
+                        sawContinue = true;
+                    }
+
+                    if (comma < 0)
+                        break;
+
+                    span = span.Slice(comma + 1);
+                }
+            }
+
+            return sawContinue;
+        }
+
         internal static bool HeaderValueContainsToken(string value, string token)
         {
             if (string.IsNullOrWhiteSpace(value) || string.IsNullOrEmpty(token))

@@ -494,13 +494,18 @@ namespace TurboHTTP.Transport
 
             // 4. Dispatch. An HTTP/2 failure marked retryable (stream refused or above a GOAWAY
             // last-stream-id, or the connection failed before the response started) is replayed on a
-            // fresh attempt, bounded, within the same timeout.
-            for (int h2Attempt = 0; ; h2Attempt++)
+            // fresh attempt, bounded, within the same timeout. An HTTP/1.1 early 417 to a replayable
+            // request is repeated once without Expect (RFC 9110 Section 10.1.1, #214): the copy has
+            // no Expect header, so it cannot raise the signal again. One filtered clause, not two:
+            // IL2CPP nests the clauses of a filtered try (#320).
+            var dispatchRequest = request;
+            int h2Attempt = 0;
+            while (true)
             {
                 try
                 {
                     await DispatchAttemptAsync(
-                            request,
+                            dispatchRequest,
                             handler,
                             context,
                             host,
@@ -513,12 +518,21 @@ namespace TurboHTTP.Transport
                     return;
                 }
                 catch (Exception ex) when (
-                    Volatile.Read(ref _disposed) == 0 &&
-                    ShouldRetryH2Request(FindH2Retryable(ex), request, h2Attempt, ct))
+                    ex is ExpectationFailedRetrySignal ||
+                    (Volatile.Read(ref _disposed) == 0 &&
+                     ShouldRetryH2Request(FindH2Retryable(ex), dispatchRequest, h2Attempt, ct)))
                 {
+                    if (ex is ExpectationFailedRetrySignal)
+                    {
+                        dispatchRequest = dispatchRequest.CopyWithSharedContent().WithExpectContinue(false);
+                        context.UpdateRequest(dispatchRequest);
+                        continue;
+                    }
+
                     context.RecordEvent(FindH2Retryable(ex).RequestNotProcessed
                         ? "TransportH2RetryUnprocessed"
                         : "TransportH2StaleRetry");
+                    h2Attempt++;
                 }
             }
         }
@@ -1500,6 +1514,43 @@ namespace TurboHTTP.Transport
             return keepAlive;
         }
 
+        /// <summary>
+        /// Raised by <see cref="DispatchOnLeaseAsync"/> for a 417 that <see cref="DispatchCoreAsync"/>
+        /// repeats without <c>Expect</c> (#214). A <see cref="UHttpException"/> that is not a network
+        /// error, so <see cref="MapDispatchAttemptFailure"/> passes it through unchanged and it still
+        /// fits the error model if it ever escaped.
+        /// </summary>
+        private sealed class ExpectationFailedRetrySignal : UHttpException
+        {
+            internal ExpectationFailedRetrySignal()
+                : base(new UHttpError(
+                    UHttpErrorType.Unknown,
+                    "The server rejected Expect: 100-continue (417); the request is repeated without it."))
+            {
+            }
+        }
+
+        /// <summary>
+        /// RFC 9110 Section 10.1.1: a 417 to a request with a 100-continue expectation SHOULD be
+        /// repeated without it. Only when the 417 arrived before any body byte was sent (an early
+        /// final response; after a 100 or the wait timeout the body went out and the 417 is the
+        /// server's answer to the whole request), 100-continue was the only expectation, and the
+        /// body can be sent again. The repeat carries no <c>Expect</c>, so a second 417 is returned.
+        /// </summary>
+        internal static bool ShouldRetryWithoutExpectation(
+            ParsedResponseHead head,
+            UHttpRequest request,
+            Http11RequestWriteState requestWriteState)
+        {
+            return head != null &&
+                (int)head.StatusCode == 417 &&
+                requestWriteState != null &&
+                !requestWriteState.HasCommittedBodyBytes &&
+                ExpectContinueHelper.ShouldAwaitExpectContinue(request) &&
+                ExpectContinueHelper.HasOnlyExpectContinueExpectation(request.Headers) &&
+                request.Content.Replayability != RequestBodyReplayability.NonReplayable;
+        }
+
         /// <summary>How <see cref="DispatchOnLeaseAsync"/> left its lease.</summary>
         private enum LeaseDispatchResult
         {
@@ -1628,6 +1679,15 @@ namespace TurboHTTP.Transport
             }
 
             using var head = parsedHead;
+
+            if (ShouldRetryWithoutExpectation(head, request, requestWriteState))
+            {
+                // RFC 9110 Section 10.1.1 (#214): the 417 never reaches the handler. The head and its
+                // unread body go with this lease, which the caller destroys (KeepAlive is false, the
+                // body was never sent); DispatchCoreAsync repeats the request without Expect.
+                context.RecordEvent("TransportExpectationFailedRetry");
+                throw new ExpectationFailedRetrySignal();
+            }
 
             if (interceptBasicProxyChallenge && IsBasicProxyChallenge(head))
             {
