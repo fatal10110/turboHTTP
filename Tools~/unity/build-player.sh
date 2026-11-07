@@ -195,11 +195,12 @@ if [ "$run" = 1 ]; then
     ps_out="$(adbr shell "ps -A 2>/dev/null; ps 2>/dev/null")" || return 1
     if printf '%s\n' "$ps_out" | grep -q "[[:space:]]$pkg_id\$"; then echo y; else echo n; fi
   }
-  # True while the lock screen shows (field names differ across Android versions); false when unknown.
+  # True while the lock screen shows; false when unknown. Field names differ across Android versions
+  # (API 33 prints KeyguardShowing= and mDreamingLockscreen=; older ones mShowingLockscreen= or isStatusBarKeyguard=).
   keyguard_showing() {
     local windows
     windows="$(adbr shell dumpsys window)" || return 1
-    printf '%s\n' "$windows" | grep -qE '(mShowingLockscreen|mDreamingLockscreen|isStatusBarKeyguard|mKeyguardShowing)=true'
+    printf '%s\n' "$windows" | grep -qE '(mShowingLockscreen|mDreamingLockscreen|isStatusBarKeyguard|KeyguardShowing)=true'
   }
   # Installs APK $1, launches it, waits for the aggregate marker, keeps logcat in $2 and checks it (fail=1).
   android_run() {

@@ -129,6 +129,14 @@ class AndroidPlayerRunTests(unittest.TestCase):
         self.assertIn("shows its lock screen", result.stderr)
         self.assertFalse([c for c in self.calls("adb") if "am start" in c])
 
+    def test_lock_screen_field_of_api_33_is_recognized(self):
+        # API 33 (emulator image 13/TE1A.220922.034) prints "KeyguardShowing=<bool>" in dumpsys window.
+        self.write_exe(self.unity.parent / "Data" / "PlaybackEngines" / "AndroidPlayer" / "SDK" / "platform-tools"
+                       / "adb.exe", ADB.replace("mShowingDream=false mDreamingLockscreen=%s", "KeyguardShowing=%s"))
+        self.logcat(PASS_LOG)
+        self.assertEqual(self.run_apk().returncode, 0)
+        self.assertEqual(self.run_apk(FAKE_ADB_LOCKED="true").returncode, 2)
+
     def test_missing_device_is_a_setup_error(self):
         self.write_exe(self.unity.parent / "Data" / "PlaybackEngines" / "AndroidPlayer" / "SDK" / "platform-tools"
                        / "adb.exe", wsl.PRELUDE + 'echo "$*" >> "$FAKE_WSL.adb.calls"; exit 1\n')
