@@ -43,8 +43,9 @@ namespace TurboHTTP.Tests.Transport.Http1
                     if (index == 1)
                     {
                         await ReadHeadAsync(stream);
+                        // A final status other than 417, which would be repeated without Expect (#214).
                         await WriteAsync(stream,
-                            "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+                            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
 
                         // RFC 9110 sec 10.1.1: the server may read and discard the declared body.
                         var consumed = await ReadUpToAsync(stream, body.Length);
@@ -74,7 +75,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                            .WithExpectContinue()
                            .SendBufferedAsync())
                 {
-                    Assert.AreEqual(HttpStatusCode.ExpectationFailed, rejected.StatusCode);
+                    Assert.AreEqual(HttpStatusCode.Forbidden, rejected.StatusCode);
                 }
 
                 using var followUp = await client.Get(server.Url("/follow-up")).SendBufferedAsync();
@@ -84,44 +85,6 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Assert.AreEqual(string.Empty, await WithGuard(discarded.Task),
                     "The rejected connection must be closed, not reused for the next request.");
                 Assert.AreEqual(2, server.AcceptCount);
-            });
-        }
-
-        [Test]
-        public void ExpectContinue_Expect417_ReplayableBody_ReturnedToCallerWithoutRetry()
-        {
-            AssertAsync.Run(async () =>
-            {
-                string firstHead = null;
-                using var server = new LoopbackServer(async (stream, index) =>
-                {
-                    var head = await ReadHeadAsync(stream);
-                    if (index == 1)
-                    {
-                        firstHead = head;
-                        await WriteAsync(stream,
-                            "HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
-                        return;
-                    }
-
-                    await WriteAsync(stream, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                });
-
-                using var client = CreateClient(new RawSocketTransport(
-                    pool: null,
-                    tlsBackend: TlsBackend.Auto,
-                    http2Options: new Http2Options(),
-                    streamingOptions: new StreamingOptions { ExpectContinueTimeoutMs = 30000 }));
-
-                using var response = await client.Post(server.Url("/upload"))
-                    .WithBody("replayable")
-                    .WithExpectContinue()
-                    .SendBufferedAsync();
-
-                // Phase 22b.1: no automatic retry without Expect; the 417 reaches the caller.
-                Assert.AreEqual(HttpStatusCode.ExpectationFailed, response.StatusCode);
-                StringAssert.Contains("Expect: 100-continue", firstHead);
-                Assert.AreEqual(1, server.AcceptCount);
             });
         }
 
