@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
@@ -17,8 +18,11 @@ namespace TurboHTTP.Core
         /// <item><c>*.example.com</c>: subdomains only; the apex <c>example.com</c> is not bypassed.</item>
         /// <item><c>10.0.0.0/8</c>, <c>fd00::/8</c>: CIDR, matched only against IP-literal hosts;
         /// a host name is never resolved to test it (curl does the same).</item>
+        /// <item><c>::1</c>, <c>[::1]:8080</c>: an IPv6 literal, bare or (with a port) bracketed.</item>
         /// </list>
-        /// <c>NO_PROXY</c>/<c>no_proxy</c> entries (comma-separated) use the same rules.
+        /// An internationalized name is compared in its A-label form on both sides (RFC 5890 Section
+        /// 2.3.2.1), so a <c>münchen.de</c> or <c>xn--mnchen-3ya.de</c> rule matches either spelling of
+        /// the target. <c>NO_PROXY</c>/<c>no_proxy</c> entries (comma-separated) use the same rules.
         /// </summary>
         public IReadOnlyList<string> BypassList { get; set; } = Array.Empty<string>();
         public bool UseEnvironmentVariables { get; set; } = true;
@@ -63,10 +67,22 @@ namespace TurboHTTP.Core
 
     public static class ProxyBypassMatcher
     {
+        /// <summary>
+        /// Whether <paramref name="host"/>:<paramref name="port"/> matches one of
+        /// <paramref name="bypassRules"/> (rule syntax: <see cref="ProxySettings.BypassList"/>).
+        /// Internationalized names are compared in A-label form on both sides (#378); IPv6 brackets
+        /// are ignored on both sides.
+        /// </summary>
+        /// <param name="host">Target host without port: a name (Unicode or A-label), an IPv4 literal,
+        /// or an IPv6 literal with or without brackets.</param>
+        /// <param name="port">Target port, compared with a rule's optional <c>:port</c>.</param>
+        /// <param name="bypassRules">The rules; null or blank entries are skipped.</param>
         public static bool IsBypassed(string host, int port, IReadOnlyList<string> bypassRules)
         {
             if (string.IsNullOrWhiteSpace(host) || bypassRules == null || bypassRules.Count == 0)
                 return false;
+
+            host = WireHost.ToALabel(WireHost.StripBrackets(host));
 
             for (int i = 0; i < bypassRules.Count; i++)
             {
@@ -87,14 +103,30 @@ namespace TurboHTTP.Core
             int? rulePort = null;
 
             var lastColon = rule.LastIndexOf(':');
-            if (lastColon > 0 && lastColon < rule.Length - 1 && int.TryParse(rule.Substring(lastColon + 1), out var parsedPort))
+            if (rule[0] == '[')
             {
+                // "[v6]" or "[v6]:port" (RFC 3986 Section 3.2.2 brackets).
+                var close = rule.IndexOf(']');
+                if (close > 1 && close == lastColon - 1 && lastColon < rule.Length - 1 &&
+                    int.TryParse(rule.Substring(lastColon + 1), out var bracketedPort))
+                {
+                    hostPart = rule.Substring(0, close + 1);
+                    rulePort = bracketedPort;
+                }
+            }
+            else if (lastColon > 0 && lastColon < rule.Length - 1 && rule.IndexOf(':') == lastColon &&
+                     int.TryParse(rule.Substring(lastColon + 1), out var parsedPort))
+            {
+                // One ':' only: "name:port". Two or more are a bare IPv6 literal or CIDR, which has
+                // no port ("::1" is not host ":" with port 1).
                 hostPart = rule.Substring(0, lastColon);
                 rulePort = parsedPort;
             }
 
             if (rulePort.HasValue && rulePort.Value != port)
                 return false;
+
+            hostPart = NormalizeRuleHost(WireHost.StripBrackets(hostPart));
 
             if (hostPart.StartsWith("*.", StringComparison.Ordinal))
             {
@@ -118,6 +150,19 @@ namespace TurboHTTP.Core
             }
 
             return string.Equals(host, hostPart, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // A Unicode rule name (also after "*." or ".") in A-label form, like the host (#378).
+        private static string NormalizeRuleHost(string hostPart)
+        {
+            if (WireHost.IsAscii(hostPart))
+                return hostPart; // the common case: compared as written, no allocation
+
+            if (hostPart.StartsWith("*.", StringComparison.Ordinal))
+                return "*." + WireHost.ToALabel(hostPart.Substring(2));
+            if (hostPart.StartsWith(".", StringComparison.Ordinal))
+                return "." + WireHost.ToALabel(hostPart.Substring(1));
+            return WireHost.ToALabel(hostPart);
         }
 
         private static bool MatchesCidr(string host, string cidr)
@@ -188,7 +233,7 @@ namespace TurboHTTP.Core
 
             if (configured != null && configured.Address != null)
             {
-                if (ProxyBypassMatcher.IsBypassed(targetUri.Host, targetUri.Port, configured.BypassList))
+                if (ProxyBypassMatcher.IsBypassed(WireHost.LookupHost(targetUri), targetUri.Port, configured.BypassList))
                     return null;
                 return configured;
             }
@@ -209,7 +254,7 @@ namespace TurboHTTP.Core
             var noProxy = Environment.GetEnvironmentVariable("NO_PROXY")
                 ?? Environment.GetEnvironmentVariable("no_proxy");
             var bypassRules = ParseNoProxyRules(noProxy);
-            if (ProxyBypassMatcher.IsBypassed(targetUri.Host, targetUri.Port, bypassRules))
+            if (ProxyBypassMatcher.IsBypassed(WireHost.LookupHost(targetUri), targetUri.Port, bypassRules))
                 return null;
 
             if (!string.Equals(proxyUri.Scheme, "http", StringComparison.OrdinalIgnoreCase))

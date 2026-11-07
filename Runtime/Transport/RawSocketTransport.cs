@@ -448,9 +448,10 @@ namespace TurboHTTP.Transport
 
             // #340: the wire host (Host, :authority, absolute-form, CONNECT) must be an RFC 3986
             // host; checked here so an empty or malformed one fails before any socket opens.
+            string wireHost;
             try
             {
-                HttpAuthority.HostFromUri(request.Uri);
+                wireHost = HttpAuthority.HostFromUri(request.Uri);
             }
             catch (HttpFieldValidationException invalidHost)
             {
@@ -458,7 +459,11 @@ namespace TurboHTTP.Transport
                     UHttpErrorType.InvalidRequest, invalidHost.Message, invalidHost));
             }
 
-            var host = request.Uri.Host;
+            // #378: the cleartext policy, the connection pool / HTTP/2 keys, DNS and TLS use the lookup
+            // host: the wire host (A-label for an IDN, RFC 5891 Section 5) with an IPv6 literal bare.
+            // The TLS providers normalize it like Uri.Host before (TlsHostName.ToTargetHost), so the
+            // server name and the certificate reference identity are unchanged.
+            var host = WireHost.LookupHost(request.Uri, wireHost);
             var port = request.Uri.Port;
             var secure = string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase);
             var proxy = ResolveProxySettings(request);
@@ -467,19 +472,20 @@ namespace TurboHTTP.Transport
             // cleartext policy, so the policy is applied here, before any socket. The leg to an
             // http:// proxy is cleartext even for an https:// target.
             var allowCleartext = ResolveAllowCleartext(request);
+            // The messages never contain the host (#378, CLAUDE.md section 3).
             if (!secure && !CleartextTrafficPolicy.IsPermitted(host, allowCleartext))
             {
                 throw new UHttpException(new UHttpError(
                     UHttpErrorType.InvalidRequest,
-                    $"Cleartext http:// request to '{host}' is not permitted. Use https://, or set " +
+                    "Cleartext http:// request is not permitted. Use https://, or set " +
                     "UHttpClientOptions.AllowCleartext = true (the platform cleartext policy must also permit the host)."));
             }
 
-            if (proxy?.Address != null && !CleartextTrafficPolicy.IsPermitted(proxy.Address.Host, allowCleartext))
+            if (proxy?.Address != null && !CleartextTrafficPolicy.IsPermitted(WireHost.LookupHost(proxy.Address), allowCleartext))
             {
                 throw new UHttpException(new UHttpError(
                     UHttpErrorType.InvalidRequest,
-                    $"Cleartext connection to http:// proxy '{proxy.Address.Host}' is not permitted. Set " +
+                    "Cleartext connection to the http:// proxy is not permitted. Set " +
                     "UHttpClientOptions.AllowCleartext = true (the platform cleartext policy must also permit the host)."));
             }
 
@@ -780,7 +786,8 @@ namespace TurboHTTP.Transport
                     "Proxy address is required."));
             }
 
-            var proxyHost = proxy.Address.Host;
+            // Same lookup host as the cleartext check (#378): pool key and DNS use the A-label.
+            var proxyHost = WireHost.LookupHost(proxy.Address);
             var proxyPort = proxy.Address.IsDefaultPort
                 ? 80
                 : proxy.Address.Port;
