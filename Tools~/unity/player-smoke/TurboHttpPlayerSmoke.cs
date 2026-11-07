@@ -4,7 +4,7 @@
 // script (#7 AC1; QuickStartExample.cs is the README Quick Start verbatim). At startup it builds a client the README Quick Start way and a WebSocket client
 // WITHOUT calling any EnsureRegistered(), so it only passes when TurboHttpBootstrap registered the
 // default transports by itself in a player (#1 AC1). It prints one marker line and quits:
-//   TURBOHTTP_SMOKE PASS http=<transport type> ws=<transport type> json=ok bc=<present|absent>
+//   TURBOHTTP_SMOKE PASS http=<transport type> ws=<transport type> json=ok bc=<present|absent> alpn=<true|false|n/a>
 //   TURBOHTTP_SMOKE FAIL <exception>
 // It never sends a request (no network); QuickStartExample is compiled, never attached to a scene.
 using System;
@@ -82,6 +82,21 @@ public static class TurboHttpPlayerSmoke
             ? "present"
             : "absent";
 
-        return "http=" + http + " ws=" + ws + " json=ok bc=" + bc;
+        return "http=" + http + " ws=" + ws + " json=ok bc=" + bc + " alpn=" + ProbeSslStreamAlpn();
+    }
+
+    // SslStream ALPN probe (#303): the provider's type initializer builds the ALPN options
+    // (SslClientAuthenticationOptions with a List<SslApplicationProtocol>) once; "true" means the
+    // IL2CPP player has the AOT code and members for them, "false" means TLS runs without ALPN
+    // (HTTP/1.1). The provider is internal, so the probe goes through reflection; "n/a" means the
+    // type or member was not found. It says nothing about what a server negotiates (device row).
+    private static string ProbeSslStreamAlpn()
+    {
+        var type = Type.GetType("TurboHTTP.Transport.Tls.SslStreamTlsProvider, TurboHTTP.Transport");
+        var instance = type?.GetField("Instance")?.GetValue(null);
+        var probe = type?.GetMethod("IsAlpnSupported", Type.EmptyTypes);
+        if (instance == null || probe == null)
+            return "n/a";
+        return (bool)probe.Invoke(instance, null) ? "true" : "false";
     }
 }

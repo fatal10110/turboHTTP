@@ -45,8 +45,6 @@ RS0030|Runtime/Transport/Tcp/PollSelectStream.cs|=> WriteAsync(buffer, offset, c
 RS0030|Runtime/Transport/Tcp/SaeaStream.cs|=> ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
 RS0030|Runtime/Transport/Tcp/SaeaStream.cs|=> WriteAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
 RS0030|Runtime/Transport/Tcp/TcpConnectionPool.cs|_scavengeTask?.Wait(TimeSpan.FromMilliseconds(250));
-RS0030|Runtime/Transport/Tls/SslStreamTlsProvider.cs|_createOptionsInstance = Expression.Lambda<Func<object>>(newExpr).Compile();
-RS0030|Runtime/Transport/Tls/SslStreamTlsProvider.cs|var protocolListType = typeof(System.Collections.Generic.List<>)
 RS0030|Runtime/Unity/CoroutineWrapper.cs|() => jsonTask.Result,
 RS0030|Runtime/Unity/CoroutineWrapper.cs|() => task.Result,
 RS0030|Runtime/Unity/CoroutineWrapper.cs|var genericMethod = getJsonMethod.MakeGenericMethod(typeof(T));
