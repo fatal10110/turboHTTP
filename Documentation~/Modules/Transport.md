@@ -47,7 +47,12 @@ options.Proxy = new ProxySettings
     Only `http://` proxy URLs are supported: an `https://` (or other) value fails the request with `UHttpException` (`InvalidRequest`), never echoing the value.
 *   Bypass rules (`BypassList` and the comma-separated `NO_PROXY`): `example.com` matches that host only; `.example.com` matches `example.com` and every subdomain (curl semantics); `*.example.com` matches subdomains only, not the apex; CIDR rules (`10.0.0.0/8`, `fd00::/8`) match IP-literal hosts only, host names are never resolved for them. Any rule may end in `:port`.
 *   Proxy credentials are sent only to the proxy, as `Proxy-Authorization`, and only in answer to a 407 that offers `Basic`; because the proxy leg is cleartext, `AllowCleartext` and `ProxySettings.AllowPlaintextProxyAuth` must both allow it. They never reach the origin server, logs or exceptions. See PlatformNotes, "Cleartext traffic".
-*   **HTTP/2 through CONNECT.** A tunnel offers ALPN `h2` and `http/1.1` like a direct connection. This path passed Editor validation only; it has not been validated on iOS or Android devices (#103), so do not rely on HTTP/2 inside a CONNECT tunnel on devices yet. There is no switch for it in v1.0.
+*   **HTTP/2 through CONNECT is off by default.** Inside a CONNECT tunnel the TLS handshake offers only ALPN `http/1.1`, so requests through a proxy use HTTP/1.1. Set `UHttpClientOptions.Http2.EnableHttp2ThroughConnectTunnels = true` to offer `h2` then `http/1.1`, like a direct connection: an origin that selects `h2` then gets one shared HTTP/2 connection per origin and proxy. HTTP/2 through a tunnel has passed Editor validation only, not yet on iOS or Android devices (#103), so leave it off for device builds until that validation is recorded. Direct connections are not affected by this option; they always offer `h2`.
+
+<!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
+```csharp
+options.Http2.EnableHttp2ThroughConnectTunnels = true;   // default false: HTTP/1.1 inside CONNECT tunnels
+```
 
 ## HTTP/2
 
