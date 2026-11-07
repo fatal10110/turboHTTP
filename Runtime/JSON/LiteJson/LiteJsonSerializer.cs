@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 
 namespace TurboHTTP.JSON.Lite
@@ -11,28 +12,80 @@ namespace TurboHTTP.JSON.Lite
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Limitations:</b> This serializer works with primitives, dictionaries,
-    /// and lists. Custom types must be converted to/from Dictionary&lt;string, object&gt;
-    /// manually, or handled by another serializer: TurboHTTP.Complete installs the
-    /// <c>JsonUtility</c>-backed <c>JsonUtilitySerializer</c> at startup (which delegates these
-    /// built-in shapes to this class), or register your own with
-    /// <see cref="JsonSerializer.SetDefault"/>.
+    /// <b>Limitations:</b> This serializer works with primitives, strings, <see cref="DateTime"/>,
+    /// <see cref="DateTimeOffset"/>, <see cref="Guid"/>, <see cref="Uri"/>, dictionaries and lists.
+    /// It does not map custom types (POCOs, typed collections such as <c>List&lt;int&gt;</c>): asking
+    /// for one throws <see cref="NotSupportedException"/> in both directions. Convert to/from
+    /// Dictionary&lt;string, object&gt; manually, or use another serializer: TurboHTTP.Complete
+    /// installs the <c>JsonUtility</c>-backed <c>JsonUtilitySerializer</c> at startup (which
+    /// delegates these built-in shapes to this class), or register a System.Text.Json/Newtonsoft
+    /// adapter with <see cref="JsonSerializer.SetDefault"/>.
+    /// </para>
+    /// <para>
+    /// <b>Input:</b> strict RFC 8259 (see <see cref="JsonReader"/>); one leading UTF-8 byte-order mark
+    /// is ignored; input larger than <see cref="MaxInputBytes"/> (default
+    /// <see cref="DefaultMaxInputBytes"/>, 16 MiB) is rejected before it is decoded or parsed.
+    /// Timestamps keep their kind: <c>"...Z"</c> deserializes to a <see cref="DateTime"/> with
+    /// <see cref="DateTimeKind.Utc"/>. Integers are exact across the whole
+    /// <see cref="long"/>/<see cref="ulong"/> range.
     /// </para>
     /// </remarks>
     public sealed class LiteJsonSerializer : IJsonSerializer
     {
         /// <summary>
-        /// Singleton instance for convenience.
+        /// Default for <see cref="MaxInputBytes"/>: 16 MiB (16,777,216 bytes) of UTF-8 input.
+        /// </summary>
+        public const int DefaultMaxInputBytes = 16 * 1024 * 1024;
+
+        private const string UnsupportedTypeAdvice =
+            "LiteJsonSerializer maps JSON only to object, Dictionary<string, object>, List<object>, " +
+            "strings, numbers, bool, DateTime, DateTimeOffset, Guid and Uri (no reflection, IL2CPP-safe). " +
+            "For custom types use TurboHTTP.Complete (it installs the JsonUtility-backed JsonUtilitySerializer " +
+            "for [Serializable] types), register a System.Text.Json or Newtonsoft adapter with " +
+            "JsonSerializer.SetDefault, or convert to/from Dictionary<string, object>.";
+
+        /// <summary>
+        /// Singleton instance for convenience, with <see cref="DefaultMaxInputBytes"/>.
         /// </summary>
         public static readonly LiteJsonSerializer Instance = new LiteJsonSerializer();
+
+        /// <summary>
+        /// Creates a serializer that accepts at most <see cref="DefaultMaxInputBytes"/> of input.
+        /// </summary>
+        public LiteJsonSerializer()
+            : this(DefaultMaxInputBytes)
+        {
+        }
+
+        /// <summary>
+        /// Creates a serializer with an input-size cap. Register it with
+        /// <see cref="JsonSerializer.SetDefault"/> to change the limit used by <c>AsJson</c>.
+        /// </summary>
+        /// <param name="maxInputBytes">Largest accepted JSON input in UTF-8 bytes (BOM included).</param>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxInputBytes"/> is not positive.</exception>
+        public LiteJsonSerializer(int maxInputBytes)
+        {
+            if (maxInputBytes <= 0)
+                throw new ArgumentOutOfRangeException(nameof(maxInputBytes), maxInputBytes, "Must be positive.");
+            MaxInputBytes = maxInputBytes;
+        }
+
+        /// <summary>
+        /// Largest JSON input this instance deserializes, in UTF-8 bytes. Larger input throws
+        /// <see cref="JsonSerializationException"/> before it is decoded or parsed. Default
+        /// <see cref="DefaultMaxInputBytes"/> (16 MiB). Immutable after construction.
+        /// </summary>
+        public int MaxInputBytes { get; }
 
         /// <summary>
         /// Serialize an object to JSON.
         /// </summary>
         /// <remarks>
         /// Supported types: primitives, strings, DateTime, Guid, enums,
-        /// arrays, lists, and dictionaries. Custom types throw <see cref="JsonSerializationException"/>.
+        /// arrays, lists, and dictionaries. Custom types (also nested in a collection) throw
+        /// <see cref="NotSupportedException"/> naming the alternatives (JsonUtility, System.Text.Json).
         /// </remarks>
+        /// <exception cref="NotSupportedException">The value contains a custom (POCO) type.</exception>
         public string Serialize<T>(T value)
         {
             return Serialize((object)value, typeof(T));
@@ -48,7 +101,7 @@ namespace TurboHTTP.JSON.Lite
                 var writer = new JsonWriter();
                 return writer.Write(value);
             }
-            catch (Exception ex) when (ex is not JsonSerializationException)
+            catch (Exception ex) when (ex is not JsonSerializationException && ex is not NotSupportedException)
             {
                 throw new JsonSerializationException(
                     $"Failed to serialize type '{type?.Name ?? "unknown"}'", ex);
@@ -71,6 +124,8 @@ namespace TurboHTTP.JSON.Lite
         /// </list>
         /// </para>
         /// </remarks>
+        /// <exception cref="NotSupportedException"><typeparamref name="T"/> is a custom (POCO) or typed collection type.</exception>
+        /// <exception cref="JsonSerializationException">Invalid JSON, input over <see cref="MaxInputBytes"/>, or a type mismatch.</exception>
         public T Deserialize<T>(string json)
         {
             var result = Deserialize(json, typeof(T));
@@ -80,13 +135,29 @@ namespace TurboHTTP.JSON.Lite
         /// <summary>
         /// Deserialize JSON to object (non-generic).
         /// </summary>
+        /// <exception cref="NotSupportedException"><paramref name="type"/> is a custom (POCO) or typed collection type.</exception>
+        /// <exception cref="JsonSerializationException">Invalid JSON, input over <see cref="MaxInputBytes"/>, or a type mismatch.</exception>
         public object Deserialize(string json, Type type)
         {
+            EnsureSupportedTarget(type);
             if (string.IsNullOrEmpty(json))
             {
                 throw new JsonSerializationException("JSON string is null or empty");
             }
 
+            // UTF-8 needs at most 3 bytes per UTF-16 char, so only count when that bound exceeds the cap.
+            if ((long)json.Length * 3 > MaxInputBytes)
+            {
+                int byteCount = json.Length > MaxInputBytes ? json.Length : Encoding.UTF8.GetByteCount(json);
+                if (byteCount > MaxInputBytes)
+                    throw InputTooLarge(byteCount);
+            }
+
+            return ParseAndConvert(json, type);
+        }
+
+        private object ParseAndConvert(string json, Type type)
+        {
             try
             {
                 var reader = new JsonReader(json);
@@ -176,8 +247,16 @@ namespace TurboHTTP.JSON.Lite
         /// Single-segment sequences are decoded directly. Multi-segment sequences are
         /// flattened into a temporary string before parsing (LiteJson requires contiguous input).
         /// </summary>
+        /// <exception cref="NotSupportedException"><typeparamref name="T"/> is a custom (POCO) or typed collection type.</exception>
+        /// <exception cref="JsonSerializationException">Invalid JSON, input over <see cref="MaxInputBytes"/>, or a type mismatch.</exception>
         public T Deserialize<T>(ReadOnlySequence<byte> input)
         {
+            EnsureSupportedTarget(typeof(T));
+
+            // Checked on the raw byte count, before anything is copied, decoded or parsed.
+            if (input.Length > MaxInputBytes)
+                throw InputTooLarge(input.Length);
+
             string json;
 
             if (input.IsSingleSegment)
@@ -200,7 +279,48 @@ namespace TurboHTTP.JSON.Lite
                 }
             }
 
-            return Deserialize<T>(json);
+            if (json.Length == 0)
+                throw new JsonSerializationException("JSON string is null or empty");
+
+            return ConvertTo<T>(ParseAndConvert(json, typeof(T)));
+        }
+
+        private JsonSerializationException InputTooLarge(long byteCount)
+        {
+            return new JsonSerializationException(
+                $"JSON input of {byteCount} bytes exceeds MaxInputBytes ({MaxInputBytes}).");
+        }
+
+        /// <summary>
+        /// Throws <see cref="NotSupportedException"/> for targets this serializer can never produce
+        /// (custom classes/structs, typed collections). Type metadata checks only: no reflection over
+        /// members, nothing IL2CPP strips.
+        /// </summary>
+        private static void EnsureSupportedTarget(Type type)
+        {
+            if (type == null || IsSupportedTarget(Nullable.GetUnderlyingType(type) ?? type))
+                return;
+
+            throw new NotSupportedException($"Cannot deserialize JSON to '{type.Name}'. {UnsupportedTypeAdvice}");
+        }
+
+        private static bool IsSupportedTarget(Type type)
+        {
+            return type.IsPrimitive
+                || type.IsEnum
+                || type == typeof(string)
+                || type == typeof(decimal)
+                || type == typeof(DateTime)
+                || type == typeof(DateTimeOffset)
+                || type == typeof(Guid)
+                || type == typeof(Uri)
+                || type.IsAssignableFrom(typeof(Dictionary<string, object>))
+                || type.IsAssignableFrom(typeof(List<object>));
+        }
+
+        internal static string UnsupportedSerializeMessage(Type type)
+        {
+            return $"Cannot serialize type '{type.Name}' to JSON. {UnsupportedTypeAdvice}";
         }
 
         private T ConvertTo<T>(object value)
@@ -388,10 +508,12 @@ namespace TurboHTTP.JSON.Lite
             // String to special types
             if (value is string s)
             {
+                // RoundtripKind: "Z" stays DateTimeKind.Utc (and no zone stays Unspecified) instead of
+                // being shifted to local time.
                 if (targetType == typeof(DateTime))
-                    return DateTime.Parse(s, System.Globalization.CultureInfo.InvariantCulture);
+                    return DateTime.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
                 if (targetType == typeof(DateTimeOffset))
-                    return DateTimeOffset.Parse(s, System.Globalization.CultureInfo.InvariantCulture);
+                    return DateTimeOffset.Parse(s, CultureInfo.InvariantCulture);
                 if (targetType == typeof(Guid))
                     return Guid.Parse(s);
                 if (targetType == typeof(Uri))
