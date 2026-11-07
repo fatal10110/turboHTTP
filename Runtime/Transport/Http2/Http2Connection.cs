@@ -200,6 +200,8 @@ namespace TurboHTTP.Transport.Http2
                     : (int)DefaultMaintenanceInterval.TotalMilliseconds);
             _pingInterval = options.PingInterval;
             _pingTimeout = options.PingTimeout;
+            _reuseProbeIdleTicks = ToStopwatchTicks(options.ReuseProbeIdleThreshold);
+            _lastInboundTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
             _settingsAckSource = new ResettableValueTaskSource<bool>();
             _settingsAckSource.PrepareForUse();
         }
@@ -308,6 +310,12 @@ namespace TurboHTTP.Transport.Http2
                 // (RFC 9113 Section 5.1.1), and a request cancelled while waiting consumes no id.
                 // The stream slot under the peer's MAX_CONCURRENT_STREAMS (RFC 9113 Section 5.1.2) is
                 // reserved first, so a request queued for a slot never holds _writeLock.
+                // Optional PING before reusing an idle connection (Http2Options.ReuseProbeIdleThreshold):
+                // a dead one fails here, unsent, as not-processed, so the transport replays the request
+                // on a fresh connection.
+                if (_reuseProbeIdleTicks != 0 && IsIdleBeyondReuseProbeThreshold())
+                    await ProbeIdleConnectionBeforeReuseAsync(ct).ConfigureAwait(false);
+
                 await AcquireStreamSlotAsync(ct).ConfigureAwait(false);
                 slotReserved = true;
 

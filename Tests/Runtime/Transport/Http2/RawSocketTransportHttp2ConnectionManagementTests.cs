@@ -25,7 +25,7 @@ namespace TurboHTTP.Tests.Transport.Http2
     /// The origin is 127.0.0.1:1, so a request that wrongly opens a real socket fails at once locally.
     /// </summary>
     [TestFixture]
-    public class RawSocketTransportHttp2ConnectionManagementTests
+    public partial class RawSocketTransportHttp2ConnectionManagementTests
     {
         private const string Host = "127.0.0.1";
         private const int Port = 1;
@@ -422,9 +422,14 @@ namespace TurboHTTP.Tests.Transport.Http2
             private readonly List<Task> _servers = new List<Task>();
 
             public Harness()
+                : this(new Http2Options())
+            {
+            }
+
+            public Harness(Http2Options http2Options)
             {
                 Pool = new TcpConnectionPool(maxConnectionsPerHost: 8, tlsBackend: TlsBackend.SslStream);
-                Transport = new RawSocketTransport(Pool, TlsBackend.SslStream);
+                Transport = new RawSocketTransport(Pool, TlsBackend.SslStream, http2Options);
             }
 
             public TcpConnectionPool Pool { get; }
