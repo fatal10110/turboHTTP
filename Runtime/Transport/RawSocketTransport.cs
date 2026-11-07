@@ -1267,13 +1267,6 @@ namespace TurboHTTP.Transport
         }
 
         /// <summary>
-        /// Sends CONNECT on <paramref name="proxyStream"/> and wraps the tunnel in TLS. A Basic 407
-        /// is answered once with credentials on the same stream when the reply is safely framed
-        /// (<see cref="ConnectReply.CanRetryOnSameConnection"/>); otherwise the method returns
-        /// <c>null</c> and the caller retries with <paramref name="includeAuth"/> on a fresh
-        /// connection (#229).
-        /// </summary>
-        /// <summary>
         /// The ALPN list offered by the TLS handshake inside a CONNECT tunnel: one of the shared
         /// <see cref="AlpnProtocols"/> arrays, never a per-handshake allocation (#175).
         /// </summary>
@@ -1288,6 +1281,13 @@ namespace TurboHTTP.Transport
         private bool IsHttp2Tunnel(ConnectionLease lease) =>
             _http2ThroughConnectTunnels && lease.Connection.NegotiatedAlpnProtocol == "h2";
 
+        /// <summary>
+        /// Sends CONNECT on <paramref name="proxyStream"/> and wraps the tunnel in TLS. A Basic 407
+        /// is answered once with credentials on the same stream when the reply is safely framed
+        /// (<see cref="ConnectReply.CanRetryOnSameConnection"/>); otherwise the method returns
+        /// <c>null</c> and the caller retries with <paramref name="includeAuth"/> on a fresh
+        /// connection (#229).
+        /// </summary>
         private async Task<TlsResult> EstablishConnectTunnelAsync(
             Stream proxyStream,
             string targetHost,
