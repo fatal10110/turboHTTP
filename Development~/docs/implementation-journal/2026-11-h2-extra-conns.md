@@ -25,7 +25,12 @@ Lane `h2-extra-conns` (wave w1110). Optional parts of #16 and #22 left out of `h
 
 - `Runtime/Core/Http2Options.cs`: two options, with XML docs, `Clone` and `IsDefault`.
 - `Runtime/Transport/Http2/Http2ConnectionManager.cs`: connection set per key, `SelectConnection`,
-  `TryPublish` (cap), `TryRemoveExact` (instance-exact CAS removal), `Remove`/`Dispose` over sets.
+  `TryPublish` (cap), `TryRemoveExact` (instance-exact CAS removal), `Remove`/`Dispose` over sets,
+  the per-key extra-dial claim (`GetIfExists(..., out ExtraDialClaim)`, `ReleaseExtraDial`,
+  `ReleaseExtraDialAndFallBack`).
+- `Runtime/Transport/RawSocketTransport.cs`: direct and tunnel paths take the claim, release it once
+  the dial ended (and in a `finally`), and fall back to the saturated connection when the extra dial
+  fails (`FallBackAfterFailedExtraDial`).
 - `Runtime/Transport/Http2/Http2Connection.Admission.cs`: `HasFreeStreamSlot`.
 - `Runtime/Transport/Http2/Http2Connection.Liveness.cs`: one shared probe in flight
   (`GetOrStartProbe`, `_activeProbe`), used by the keep-alive loop and the reuse probe;
@@ -56,6 +61,17 @@ Lane `h2-extra-conns` (wave w1110). Optional parts of #16 and #22 left out of `h
 - **Never above the max.** The init lock is dropped from `_initLocks` after each publish (an earlier
   decision against unbounded growth), so two creators can run at once. `TryPublish` enforces the cap.
   The loser disposes its new connection and returns an existing one.
+- **One extra dial at a time (review round 1).** Without it, every request that saw saturation got
+  null and dialed: a burst of 1000 requests against a peer limit of 100 cost about 900 TCP+TLS
+  handshakes, all but one closed by `TryPublish`. A per-key claim (`ConcurrentDictionary.TryAdd`,
+  instance-exact removal) lets one request dial; the others queue on the least-queued connection.
+  The claim is released right after `GetOrCreateAsync` returns or throws, before an HTTP/1.1
+  dispatch, and in the `finally` of both the direct and the tunnel path.
+- **Failed extra dial (review round 1).** With one connection per origin the request would have
+  queued, so a failed extra dial (refused by a per-client connection cap, failed handshake) that the
+  caller did not cancel and that did not time out falls back to the least-queued connection instead of
+  failing with a network error. The fallback uses a connection whose certificate was already
+  validated, so it does not bypass TLS.
 - **One PING in flight.** Before this change the keep-alive loop owned the single outstanding-payload
   slot. A reuse probe running concurrently would have overwritten it and caused a false timeout. Both
   now share `_activeProbe`. A burst of requests on an idle connection sends one PING, which also
@@ -73,7 +89,10 @@ None.
 ## Verification
 
 - `./Tools~/ci/check.sh`: see the PR "Local gates" section for the pushed head.
-- Unity EditMode, scoped to the touched fixtures: see the PR.
-- Not run: the full Unity suites (periodic host-editor run), PlayMode, IL2CPP players, devices. The
-  change uses no reflection or codegen in runtime code. Its shared state goes through Interlocked,
-  Volatile or `_streamCreateLock`.
+- Unity PlayMode (the runtime tests are PlayMode), scoped:
+  `--filter 'Http2ConnectionManagerExtraConnectionTests|Http2ConnectionManagerTests|Http2ConnectionTests|RawSocketTransportHttp2ConnectionManagementTests|Http2Options'`,
+  242/242 passed after review round 1. The two round-1 transport tests fail with the transport change
+  reverted ("no further connection was dialed"; "Unexpected end of HTTP/2 stream").
+- Not run: the full Unity suites (periodic host-editor run), IL2CPP players, devices. The change
+  uses no reflection or codegen in runtime code. Its shared state goes through Interlocked,
+  Volatile, `_streamCreateLock` or `ConcurrentDictionary`.

@@ -29,6 +29,13 @@ namespace TurboHTTP.Transport.Http2
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _initLocks
             = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
 
+        // Per key, the claim of the one request that currently dials an extra connection for a saturated
+        // origin. TryAdd is the atomic claim: only its winner gets null from GetIfExists, every other
+        // request queues on the least-queued connection, so a burst opens one extra TCP+TLS handshake at
+        // a time instead of one per request. Removed instance-exact by ReleaseExtraDial.
+        private readonly ConcurrentDictionary<string, ExtraDialClaim> _extraDials
+            = new ConcurrentDictionary<string, ExtraDialClaim>(StringComparer.OrdinalIgnoreCase);
+
         // Connections evicted after GOAWAY that still drain in-flight streams (RFC 9113 Section 6.8).
         // Each closes itself once drained; the manager only keeps them to dispose them on its own Dispose.
         private readonly ConcurrentDictionary<Http2Connection, byte> _draining
@@ -43,9 +50,9 @@ namespace TurboHTTP.Transport.Http2
         }
 
         /// <summary>
-        /// Get an existing alive h2 connection for this host:port, or null. Also null when every
-        /// connection is saturated and fewer than <see cref="Http2Options.MaxConnectionsPerOrigin"/> are
-        /// open, so the caller dials another one. Fast path — no async.
+        /// Get an existing alive h2 connection for this host:port, or null. Never claims an extra dial:
+        /// null also when every connection is saturated and fewer than
+        /// <see cref="Http2Options.MaxConnectionsPerOrigin"/> are open. Fast path — no async.
         /// </summary>
         public Http2Connection GetIfExists(string host, int port)
         {
@@ -54,6 +61,19 @@ namespace TurboHTTP.Transport.Http2
 
             var connection = SelectConnection($"{host}:{port}", out bool openAnother);
             return openAnother ? null : connection;
+        }
+
+        /// <summary>
+        /// The connection a new request for this host:port should use, or null when the caller has to
+        /// dial. When every connection is saturated and fewer than
+        /// <see cref="Http2Options.MaxConnectionsPerOrigin"/> are open, only one caller at a time gets
+        /// null together with <paramref name="extraDial"/>; it owns the claim and returns it through
+        /// <see cref="ReleaseExtraDial"/> once its dial ended (published, lost, failed or cancelled).
+        /// The others get the least-queued connection. Fast path — no async.
+        /// </summary>
+        public Http2Connection GetIfExists(string host, int port, out ExtraDialClaim extraDial)
+        {
+            return GetForRequest($"{host}:{port}", out extraDial);
         }
 
         /// <summary>
@@ -73,6 +93,68 @@ namespace TurboHTTP.Transport.Http2
                 BuildTunnelKey(originHost, originPort, proxyHost, proxyPort),
                 out bool openAnother);
             return openAnother ? null : connection;
+        }
+
+        /// <summary>
+        /// As <see cref="GetIfExists(string, int, out ExtraDialClaim)"/>, for an origin reached through a
+        /// CONNECT proxy tunnel.
+        /// </summary>
+        public Http2Connection GetIfExists(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort,
+            out ExtraDialClaim extraDial)
+        {
+            return GetForRequest(BuildTunnelKey(originHost, originPort, proxyHost, proxyPort), out extraDial);
+        }
+
+        private Http2Connection GetForRequest(string key, out ExtraDialClaim extraDial)
+        {
+            extraDial = null;
+            if (Volatile.Read(ref _disposed) != 0)
+                return null;
+
+            var connection = SelectConnection(key, out bool openAnother);
+            if (!openAnother || _extraDials.ContainsKey(key))
+                return connection;
+
+            var claim = new ExtraDialClaim(key);
+            if (!_extraDials.TryAdd(key, claim))
+                return connection;
+
+            extraDial = claim;
+            return null;
+        }
+
+        /// <summary>
+        /// Returns an extra-dial claim (idempotent: <paramref name="extraDial"/> is cleared, and removal
+        /// is instance-exact, so a later claim of the same key is never released by mistake).
+        /// </summary>
+        public void ReleaseExtraDial(ref ExtraDialClaim extraDial)
+        {
+            var claim = extraDial;
+            extraDial = null;
+            if (claim != null)
+            {
+                ((ICollection<KeyValuePair<string, ExtraDialClaim>>)_extraDials).Remove(
+                    new KeyValuePair<string, ExtraDialClaim>(claim.Key, claim));
+            }
+        }
+
+        /// <summary>
+        /// After the extra dial of <paramref name="extraDial"/> failed: releases the claim and returns the
+        /// connection the request would have queued on without it (the least-queued one that still
+        /// accepts streams), or null when none is left.
+        /// </summary>
+        public Http2Connection ReleaseExtraDialAndFallBack(ref ExtraDialClaim extraDial)
+        {
+            var claim = extraDial;
+            ReleaseExtraDial(ref extraDial);
+            if (claim == null || Volatile.Read(ref _disposed) != 0)
+                return null;
+
+            return SelectConnection(claim.Key, out _);
         }
 
         /// <summary>True when a connection for this host:port accepts new streams (saturated or not).</summary>
@@ -403,6 +485,7 @@ namespace TurboHTTP.Transport.Http2
                 kvp.Value.Dispose();
             }
             _initLocks.Clear();
+            _extraDials.Clear();
         }
 
         private static string BuildTunnelKey(
@@ -483,6 +566,20 @@ namespace TurboHTTP.Transport.Http2
                 if (_connections.TryUpdate(key, next, current))
                     return true;
             }
+        }
+
+        /// <summary>
+        /// The right to dial one extra connection for a saturated origin; see
+        /// <see cref="GetIfExists(string, int, out ExtraDialClaim)"/>.
+        /// </summary>
+        internal sealed class ExtraDialClaim
+        {
+            internal ExtraDialClaim(string key)
+            {
+                Key = key;
+            }
+
+            internal string Key { get; }
         }
     }
 }

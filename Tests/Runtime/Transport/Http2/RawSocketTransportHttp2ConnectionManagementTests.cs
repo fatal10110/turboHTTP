@@ -447,11 +447,14 @@ namespace TurboHTTP.Tests.Transport.Http2
             /// <summary>
             /// As above; <paramref name="serve"/> also gets the server end (disposing it breaks the
             /// connection) and the server's SETTINGS carry <paramref name="serverSettings"/> (null: none).
+            /// <paramref name="beforeHandshake"/> (optional) runs on the server end before the handshake:
+            /// it can hold the handshake, or dispose the stream to make it fail.
             /// </summary>
             public void AddIdleConnection(
                 Func<Http2FrameCodec, Stream, CancellationToken, Task> serve,
                 byte[] serverSettings,
-                CancellationToken ct)
+                CancellationToken ct,
+                Func<Stream, CancellationToken, Task> beforeHandshake = null)
             {
                 var pair = LoopbackSocketPair.Create();
                 _resources.Add(pair);
@@ -472,6 +475,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                 {
                     try
                     {
+                        if (beforeHandshake != null)
+                            await beforeHandshake(duplex.ServerStream, ct);
+
                         var codec = await CompleteHandshakeAsync(duplex.ServerStream, serverSettings, ct);
                         await serve(codec, duplex.ServerStream, ct);
                     }

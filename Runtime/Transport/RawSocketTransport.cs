@@ -565,10 +565,13 @@ namespace TurboHTTP.Transport
                     return;
                 }
 
-                // 4a. HTTP/2 fast path (TLS only)
+                // 4a. HTTP/2 fast path (TLS only). extraDial: this request dials the one extra
+                // connection of a saturated origin (MaxConnectionsPerOrigin > 1, #238); released as soon
+                // as the dial ended, and by the finally below on every other path.
+                Http2ConnectionManager.ExtraDialClaim extraDial = null;
                 if (secure)
                 {
-                    var h2Conn = _h2Manager.GetIfExists(host, port);
+                    var h2Conn = _h2Manager.GetIfExists(host, port, out extraDial);
                     if (h2Conn != null)
                     {
                         context.RecordEvent("TransportH2Reuse");
@@ -583,21 +586,52 @@ namespace TurboHTTP.Transport
                 ConnectionLease lease = null;
                 try
                 {
-                    lease = await _pool.GetConnectionAsync(host, port, secure, ct)
-                        .ConfigureAwait(false);
+                    Http2Connection dialFallback = null;
+                    try
+                    {
+                        lease = await _pool.GetConnectionAsync(host, port, secure, ct)
+                            .ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        dialFallback = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                        if (dialFallback == null)
+                            throw;
+                    }
+
+                    if (dialFallback != null)
+                    {
+                        await DispatchOnH2ConnectionAsync(dialFallback, request, handler, context, ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
 
                     // 4c. Protocol routing based on ALPN
                     if (lease.Connection.NegotiatedAlpnProtocol == "h2")
                     {
                         context.RecordEvent("TransportH2Init");
                         lease.TransferOwnership();
-                        var h2Conn = await _h2Manager.GetOrCreateAsync(
-                            host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                        Http2Connection h2Conn;
+                        try
+                        {
+                            h2Conn = await _h2Manager.GetOrCreateAsync(
+                                host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            h2Conn = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                            if (h2Conn == null)
+                                throw;
+                        }
+
                         lease = null;
+                        _h2Manager.ReleaseExtraDial(ref extraDial);
                         await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
                             .ConfigureAwait(false);
                         return;
                     }
+
+                    _h2Manager.ReleaseExtraDial(ref extraDial);
 
                     // 4d. HTTP/1.1 path
                     var requestWriteState = new Http11RequestWriteState();
@@ -691,6 +725,7 @@ namespace TurboHTTP.Transport
                 finally
                 {
                     lease?.Dispose();
+                    _h2Manager.ReleaseExtraDial(ref extraDial);
                 }
             }
             catch (Exception ex)
@@ -806,9 +841,10 @@ namespace TurboHTTP.Transport
                 ? 80
                 : proxy.Address.Port;
 
+            Http2ConnectionManager.ExtraDialClaim extraDial = null;
             if (secure)
             {
-                var existingH2 = _h2Manager.GetIfExists(host, port, proxyHost, proxyPort);
+                var existingH2 = _h2Manager.GetIfExists(host, port, proxyHost, proxyPort, out extraDial);
                 if (existingH2 != null)
                 {
                     var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
@@ -872,38 +908,67 @@ namespace TurboHTTP.Transport
             try
             {
                 context.RecordEvent("TransportProxyConnecting");
-                lease = await AcquirePreparedProxyLeaseAsync(
-                        proxyHost,
-                        proxyPort,
-                        tunnelPoolKey,
-                        establishTunnel: true,
-                        host,
-                        port,
-                        proxy,
-                        context,
-                        ct)
-                    .ConfigureAwait(false);
+                Http2Connection dialFallback = null;
+                try
+                {
+                    lease = await AcquirePreparedProxyLeaseAsync(
+                            proxyHost,
+                            proxyPort,
+                            tunnelPoolKey,
+                            establishTunnel: true,
+                            host,
+                            port,
+                            proxy,
+                            context,
+                            ct)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    dialFallback = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                    if (dialFallback == null)
+                        throw;
+                }
 
                 var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
+                if (dialFallback != null)
+                {
+                    await DispatchOnH2ConnectionAsync(dialFallback, tunneledRequest, handler, context, ct)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
                 if (IsHttp2Tunnel(lease))
                 {
                     context.RecordEvent("TransportProxyH2Init");
                     lease.TransferOwnership();
-                    var h2Conn = await _h2Manager.GetOrCreateAsync(
-                            host,
-                            port,
-                            proxyHost,
-                            proxyPort,
-                            lease.Connection.Stream,
-                            ct)
-                        .ConfigureAwait(false);
-                    lease = null;
+                    Http2Connection h2Conn;
+                    try
+                    {
+                        h2Conn = await _h2Manager.GetOrCreateAsync(
+                                host,
+                                port,
+                                proxyHost,
+                                proxyPort,
+                                lease.Connection.Stream,
+                                ct)
+                            .ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        h2Conn = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                        if (h2Conn == null)
+                            throw;
+                    }
 
+                    lease = null;
+                    _h2Manager.ReleaseExtraDial(ref extraDial);
                     await DispatchOnH2ConnectionAsync(h2Conn, tunneledRequest, handler, context, ct)
                         .ConfigureAwait(false);
                     return;
                 }
 
+                _h2Manager.ReleaseExtraDial(ref extraDial);
                 context.RecordEvent("TransportProxyH1Dispatch");
                 await DispatchProxyHttp11WithRetryAsync(
                         proxyHost,
@@ -925,7 +990,34 @@ namespace TurboHTTP.Transport
             finally
             {
                 lease?.Dispose();
+                _h2Manager.ReleaseExtraDial(ref extraDial);
             }
+        }
+
+        /// <summary>
+        /// The dial of the extra connection <paramref name="extraDial"/> claimed failed (#238): unless the
+        /// request was cancelled or timed out, it falls back to the connection it would have queued on
+        /// with one connection per origin (a refused extra connection, e.g. by a per-client connection
+        /// cap, must not fail a request the saturated connection can still serve). Releases the claim.
+        /// Null when there was no claim, on cancellation, or when no connection accepts streams any more:
+        /// the caller rethrows the dial failure.
+        /// </summary>
+        private Http2Connection FallBackAfterFailedExtraDial(
+            ref Http2ConnectionManager.ExtraDialClaim extraDial,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            if (extraDial == null || ct.IsCancellationRequested)
+            {
+                _h2Manager.ReleaseExtraDial(ref extraDial);
+                return null;
+            }
+
+            var fallback = _h2Manager.ReleaseExtraDialAndFallBack(ref extraDial);
+            if (fallback != null)
+                context.RecordEvent("TransportH2ExtraDialFallback");
+
+            return fallback;
         }
 
         /// <summary>

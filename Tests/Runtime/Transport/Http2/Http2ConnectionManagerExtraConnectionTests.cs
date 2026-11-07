@@ -82,8 +82,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var firstStream = await OpenStreamAsync(first, cts.Token);
                 Assert.IsNull(manager.GetIfExists(Host, Port));
 
-                // Two requests both saw saturation and dialed. The second waits for the per-key lock, then
-                // finds the new connection with a free slot and closes its own stream.
+                // Two dials race while saturated (the transport lets only the extra-dial claim owner dial,
+                // but a dial without the claim, e.g. the stale HTTP/1.1 retry that negotiated h2, can still
+                // arrive). The second waits for the per-key lock, then finds the new connection with a free
+                // slot and closes its own stream.
                 var duplexA = new TestDuplexStream();
                 var duplexB = new TestDuplexStream();
                 var serverA = CompleteHandshakeAsync(duplexA.ServerStream, cts.Token);
@@ -97,6 +99,46 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreSame(connectionA, connectionB);
                 Assert.AreEqual(2, GetConnections(manager, Host + ":" + Port).Length);
                 Assert.AreEqual(0, await duplexB.ServerStream.ReadAsync(new byte[1], 0, 1, cts.Token));
+
+                await CompleteAsync(first, firstStream, cts.Token);
+            });
+        }
+
+        [Test]
+        public void MaxConnectionsTwo_SaturatedOrigin_OneExtraDialClaimAtATime()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(10000);
+                using var manager = CreateManager(maxConnectionsPerOrigin: 2);
+
+                var first = await CreateConnectionAsync(manager, cts.Token);
+                var firstStream = await OpenStreamAsync(first, cts.Token);
+
+                // Only the first caller that sees saturation dials; the others queue on the connection.
+                Assert.IsNull(manager.GetIfExists(Host, Port, out var claimA));
+                Assert.IsNotNull(claimA);
+                Assert.AreSame(first.Connection, manager.GetIfExists(Host, Port, out var claimB));
+                Assert.IsNull(claimB);
+
+                // Released: the next caller may dial.
+                var stale = claimA;
+                manager.ReleaseExtraDial(ref claimA);
+                Assert.IsNull(claimA);
+                Assert.IsNull(manager.GetIfExists(Host, Port, out var claimC));
+                Assert.IsNotNull(claimC);
+
+                // Releasing an old claim again never releases the newer one.
+                manager.ReleaseExtraDial(ref stale);
+                Assert.AreSame(first.Connection, manager.GetIfExists(Host, Port, out var claimD));
+                Assert.IsNull(claimD);
+
+                // A failed dial falls back to the saturated connection and frees the claim.
+                Assert.AreSame(first.Connection, manager.ReleaseExtraDialAndFallBack(ref claimC));
+                Assert.IsNull(claimC);
+                Assert.IsNull(manager.GetIfExists(Host, Port, out var claimE));
+                Assert.IsNotNull(claimE);
+                manager.ReleaseExtraDial(ref claimE);
 
                 await CompleteAsync(first, firstStream, cts.Token);
             });
