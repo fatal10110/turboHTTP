@@ -21,8 +21,9 @@ namespace TurboHTTP.Tools.H2Interop
     /// Interop rows: the production client (<see cref="RawSocketTransport"/>, SslStream, ALPN h2) against real
     /// HTTP/2 servers over TLS on loopback. Every row checks the request went over an HTTP/2 connection.
     /// The <c>bc-*</c> rows use <see cref="TlsBackend.BouncyCastle"/> instead, directly and through a real
-    /// CONNECT tunnel (<see cref="ConnectProxy"/>, #255): BouncyCastle offers ALPN h2 inside the tunnel and the
-    /// HTTP/2 connection is keyed by origin and proxy. A missing BouncyCastle provider fails the run (#140).
+    /// CONNECT tunnel (<see cref="ConnectProxy"/>, #255): with <see cref="Http2Options.EnableHttp2ThroughConnectTunnels"/>
+    /// on (default off, #103), BouncyCastle offers ALPN h2 inside the tunnel and the HTTP/2 connection is keyed by
+    /// origin and proxy. A missing BouncyCastle provider fails the run (#140).
     /// UHttpClient is not used: the editor shadow build of TurboHTTP.Core calls into the Unity engine while
     /// building its interceptors, which a plain .NET process cannot (as in Tools~/tls-interop).
     /// </summary>
@@ -248,7 +249,7 @@ namespace TurboHTTP.Tools.H2Interop
         private static async Task BcConnectGetSmallAsync(Target target, CancellationToken ct)
         {
             await using var proxy = ConnectProxy.Start();
-            using (var transport = new RawSocketTransport(null, TlsBackend.BouncyCastle))
+            using (var transport = NewBcTunnelTransport())
             {
                 using (var first = await SendAsync(transport, target, HttpMethod.GET, "/small.txt", null, null, ct, proxy).ConfigureAwait(false))
                     Check(first.GetBodyAsString() == SmallBody, "first body: " + first.GetBodyAsString());
@@ -269,11 +270,15 @@ namespace TurboHTTP.Tools.H2Interop
             CheckTunnels(proxy, target, 1);
         }
 
+        // HTTP/2 inside CONNECT tunnels is opt-in (#103): by default the tunnel offers only http/1.1.
+        private static RawSocketTransport NewBcTunnelTransport() =>
+            new RawSocketTransport(null, TlsBackend.BouncyCastle, new Http2Options { EnableHttp2ThroughConnectTunnels = true });
+
         // 2 MiB through the tunnel: HTTP/2 flow control over BouncyCastle records over the relayed TCP stream.
         private static async Task BcConnectGetLargeAsync(Target target, CancellationToken ct)
         {
             await using var proxy = ConnectProxy.Start();
-            using (var transport = new RawSocketTransport(null, TlsBackend.BouncyCastle))
+            using (var transport = NewBcTunnelTransport())
             {
                 using (var response = await SendAsync(transport, target, HttpMethod.GET, "/large.bin", null, null, ct, proxy).ConfigureAwait(false))
                     Check(SameBytes(Pattern(LargeBytes, 1), response.Body.ToArray()), "large body differs (" + response.Body.Length + " bytes)");

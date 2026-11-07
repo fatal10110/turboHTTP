@@ -28,6 +28,9 @@
 - `Tests/Runtime/Transport/Http1/RawSocketTransportProxyTunnelTests.cs`: the two tests that inject
   an idle `h2` tunnel lease now build the transport with the option on.
 - `Development~/docs/phases/phase22c/phase-22c.4-validation.md`, `Documentation~/Modules/Transport.md`.
+- `Tools~/h2-interop/InteropRows.cs`, `README.md`: the `bc-connect-*` rows (#255) assert h2 inside the
+  tunnel, so they now build the transport with the option on. CI failed without this: Kestrel answered
+  the `http/1.1`-only offer with `no_application_protocol`, and nginx served HTTP/1.1.
 
 ## Decisions
 
@@ -69,6 +72,7 @@ listener that also serves the tunnel (HTTP/2 when the client sends the preface, 
 - `'./Tools~/ci/check.sh'`: OK.
 - Unity 2021.3.45f2 PlayMode (Editor, Windows host) `--filter 'RawSocketTransportTunnelAlpnOptionTests|RawSocketTransportProxyTunnelTests|Http2ConnectionManagerTests|TcpConnectionPoolAlpnArrayTests|TcpConnectionPoolTlsFallbackTests'`:
   37/37 passed (9 new).
+- `'./Tools~/h2-interop/run.sh' --only interop --row bc-` (kestrel, nghttpd, nginx): 9/9 rows passed.
 
 ## Not run / deferred
 

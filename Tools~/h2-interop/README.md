@@ -45,7 +45,7 @@ The `bc-*` rows (#255) run the same client with `TlsBackend.BouncyCastle` agains
 | Row | What it proves |
 | --- | --- |
 | `bc-get-small` | BouncyCastle offers ALPN h2 and serves one HTTP/2 request directly (no proxy). |
-| `bc-connect-get-small` | Through a real CONNECT tunnel (`ConnectProxy.cs`, RFC 9110 9.3.6), BouncyCastle negotiates h2 inside the tunnel. One GET runs, then 20 concurrent GETs multiplex on that connection. The HTTP/2 connection is keyed by origin and proxy, no direct connection exists, and the proxy sees exactly one `CONNECT 127.0.0.1:<port>`. |
+| `bc-connect-get-small` | Through a real CONNECT tunnel (`ConnectProxy.cs`, RFC 9110 9.3.6), with `Http2Options.EnableHttp2ThroughConnectTunnels` on (default off, #103), BouncyCastle negotiates h2 inside the tunnel. One GET runs, then 20 concurrent GETs multiplex on that connection. The HTTP/2 connection is keyed by origin and proxy, no direct connection exists, and the proxy sees exactly one `CONNECT 127.0.0.1:<port>`. |
 | `bc-connect-get-large` | 2 MiB through the tunnel: HTTP/2 flow control over BouncyCastle records over the relayed stream. |
 
 A missing BouncyCastle provider fails the whole interop run as a precondition and never skips it (#140).
