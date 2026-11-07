@@ -1,10 +1,12 @@
 <linker>
   <!--
-    SslStream types for reflection-based ALPN (SslStreamTlsProvider static constructor:
+    SslStream ALPN types (SslStreamTlsProvider.BuildAlpnOptions and the ALPN handshake:
     SslClientAuthenticationOptions, ApplicationProtocols, SslApplicationProtocol.Http2/Http11,
     AuthenticateAsClientAsync(options, CancellationToken), NegotiatedApplicationProtocol).
-    If stripped, AuthenticateWithAlpnAsync falls back to non-ALPN auth and HTTP/2 is never
-    negotiated over SslStream.
+    The provider calls them statically (no reflection since #303), so the linker already keeps
+    what it uses; these rules stay as defense in depth. If the options cannot be built at run
+    time, the provider falls back to a handshake without ALPN (http/1.1 offered) and HTTP/2 is
+    never negotiated over SslStream.
     On Unity 2021.3 Mono/IL2CPP (unityaot and unityjit profiles) these types are implemented in
     System.dll; System.Net.Security.dll is only a .NET Standard facade that forwards to it, so the
     rule must name "System" (#35). No facade is named: a facade is not in a player build unless
@@ -17,9 +19,9 @@
   </assembly>
 
   <!--
-    Generic instantiation hint for IL2CPP/AOT.
-    MakeGenericType(typeof(SslApplicationProtocol)) in SslStreamTlsProvider
-    needs the open generic List<> template preserved.
+    Generic templates for IL2CPP/AOT. List<SslApplicationProtocol> is instantiated by a static
+    call site in SslStreamTlsProvider.BuildAlpnOptions (#303), which is what makes IL2CPP generate
+    its AOT code; preserving the open List<> template keeps its members against stripping.
     UnityLinker matches open generic type names only; closed instantiations such as
     ValueTask`1[[...]] are ignored, so only the open templates are listed.
   -->

@@ -1,8 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Linq.Expressions;
 using System.Net.Security;
-using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
@@ -13,10 +13,11 @@ namespace TurboHTTP.Transport.Tls
 {
     /// <summary>
     /// TLS provider using System.Net.Security.SslStream.
-    /// Uses reflection to access ALPN APIs on .NET Standard 2.1.
-    /// On IL2CPP with aggressive stripping, preserve SslStream ALPN types (e.g., via
-    /// link.xml or [Preserve]) to keep HTTP/2 ALPN negotiation available. Without that
-    /// preservation, TLS still works but ALPN may be unavailable (HTTP/1.1 fallback).
+    /// Calls the .NET Standard 2.1 ALPN API (<see cref="SslClientAuthenticationOptions"/>,
+    /// <see cref="SslApplicationProtocol"/>) directly, without reflection (#303): the static call
+    /// sites make IL2CPP generate <c>List&lt;SslApplicationProtocol&gt;</c> and keep the members
+    /// (link.xml preserves them as well). If building the options still fails on a runtime
+    /// (missing AOT code or metadata), TLS works without ALPN (HTTP/1.1 fallback).
     /// ALPN is a negotiation (RFC 7301): when the caller also offers "http/1.1", a runtime
     /// without ALPN performs a plain handshake and reports no negotiated protocol (HTTP/1.1).
     /// Only a request that cannot fall back to HTTP/1.1 (e.g. "h2" alone) fails without ALPN.
@@ -74,94 +75,29 @@ namespace TurboHTTP.Transport.Tls
 
         public string ProviderName => "SslStream";
 
-        private static readonly PropertyInfo _alpnOptionsProperty;
-        private static readonly PropertyInfo _alpnNegotiatedProperty;
+        // Set once by the type initializer: true when this runtime can build the ALPN options
+        // (the same builder every connection uses), false when it throws (#303).
         private static readonly bool _alpnSupported;
 
-        // Cached reflection for ALPN auth path — avoids per-connection reflection overhead
-        private static readonly Type _optionsType;
-        private static readonly PropertyInfo _targetHostProp;
-        private static readonly PropertyInfo _enabledProtocolsProp;
-        private static readonly Type _alpnProtocolType;
-        private static readonly ConstructorInfo _alpnProtocolListCtor;
-        private static readonly MethodInfo _alpnProtocolListAddMethod;
-        private static readonly MethodInfo _authWithOptionsMethod;
-        private static readonly object _h2ProtocolValue;
-        private static readonly object _http11ProtocolValue;
-        private static readonly ConstructorInfo _optionsCtor;
-        private static readonly Func<object> _createOptionsInstance;
+        // Cached so WrapAsync allocates no delegate per connection.
+        private static readonly Func<string, string[], object> s_buildAlpnOptions = BuildAlpnOptionsObject;
 
         static SslStreamTlsProvider()
         {
-            // Reflect into SslClientAuthenticationOptions.ApplicationProtocols
-            var optionsType = typeof(SslStream).Assembly.GetType(
-                "System.Net.Security.SslClientAuthenticationOptions");
+            _alpnSupported = ProbeAlpnOptions();
+        }
 
-            if (optionsType != null)
+        // A type initializer must never throw: any failure only means "no ALPN" (HTTP/1.1 fallback,
+        // or PlatformNotSupportedException for an offer without http/1.1), never weaker TLS.
+        private static bool ProbeAlpnOptions()
+        {
+            try
             {
-                _alpnOptionsProperty = optionsType.GetProperty(
-                    "ApplicationProtocols",
-                    BindingFlags.Public | BindingFlags.Instance);
+                return BuildAlpnOptionsObject("localhost", AlpnProtocols.H2AndHttp11) != null;
             }
-
-            // Reflect into SslStream.NegotiatedApplicationProtocol
-            _alpnNegotiatedProperty = typeof(SslStream).GetProperty(
-                "NegotiatedApplicationProtocol",
-                BindingFlags.Public | BindingFlags.Instance);
-
-            _alpnSupported = _alpnOptionsProperty != null && _alpnNegotiatedProperty != null;
-
-            // Cache remaining ALPN auth reflection for per-connection reuse
-            if (_alpnSupported && optionsType != null)
+            catch (Exception)
             {
-                _optionsType = optionsType;
-                _optionsCtor = optionsType.GetConstructor(Type.EmptyTypes);
-                if (_optionsCtor != null)
-                {
-                    try
-                    {
-                        var newExpr = Expression.New(_optionsCtor);
-                        _createOptionsInstance = Expression.Lambda<Func<object>>(newExpr).Compile();
-                    }
-                    catch (PlatformNotSupportedException)
-                    {
-                        // IL2CPP does not support dynamic method compilation.
-                        // Fall back to ConstructorInfo.Invoke in CreateAlpnOptions.
-                    }
-                    catch (NotSupportedException)
-                    {
-                        // Mono interpreter or AOT variant that disallows Compile(). Fall back.
-                    }
-                }
-
-                _targetHostProp = optionsType.GetProperty("TargetHost");
-                _enabledProtocolsProp = optionsType.GetProperty("EnabledSslProtocols");
-                _alpnProtocolType = typeof(SslStream).Assembly.GetType(
-                    "System.Net.Security.SslApplicationProtocol");
-                _authWithOptionsMethod = typeof(SslStream).GetMethod(
-                    "AuthenticateAsClientAsync",
-                    new[] { optionsType, typeof(CancellationToken) });
-
-                if (_alpnProtocolType != null)
-                {
-                    _h2ProtocolValue = _alpnProtocolType.GetField("Http2",
-                        BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
-                    _http11ProtocolValue = _alpnProtocolType.GetField("Http11",
-                        BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
-
-                    try
-                    {
-                        var protocolListType = typeof(System.Collections.Generic.List<>)
-                            .MakeGenericType(_alpnProtocolType);
-                        _alpnProtocolListCtor = protocolListType.GetConstructor(Type.EmptyTypes);
-                        _alpnProtocolListAddMethod = protocolListType.GetMethod("Add", new[] { _alpnProtocolType });
-                    }
-                    catch
-                    {
-                        // IL2CPP/AOT or aggressive stripping may reject this generic instantiation.
-                        // Leave list metadata null so caller can fall back to non-ALPN auth.
-                    }
-                }
+                return false;
             }
         }
 
@@ -190,28 +126,16 @@ namespace TurboHTTP.Transport.Tls
             bool http11Offered = OffersProtocol(alpnProtocols, Http11Protocol);
             bool useAlpn = ShouldNegotiateAlpn(alpnProtocols, alpnSupported);
 
-            // The ALPN decision is final before the SslStream exists (#171). The options are built
-            // by reflection only, so a failure here (AOT/stripping edge case) happens before any
-            // byte reaches the wire: with http/1.1 offered the handshake runs without ALPN
-            // (RFC 7301 section 3.1), otherwise the requested protocol cannot be negotiated.
+            // The ALPN decision is final before the SslStream exists (#171). Building the options
+            // touches no socket, so a failure here (missing AOT code or metadata, #303) happens
+            // before any byte reaches the wire: with http/1.1 offered the handshake runs without
+            // ALPN (RFC 7301 section 3.1), otherwise the requested protocol cannot be negotiated.
+            // Held as object so this method never names the options type itself.
             object alpnOptions = null;
             if (useAlpn && _handshakeOverride == null)
             {
-                try
-                {
-                    alpnOptions = CreateAlpnOptions(host, alpnProtocols);
-                }
-                catch (Exception ex) when (IsAlpnSetupFailure(ex))
-                {
-                    if (!http11Offered)
-                    {
-                        throw new PlatformNotSupportedException(
-                            "SslStream ALPN negotiation failed on this runtime and the caller " +
-                            "did not offer http/1.1, so the requested protocol cannot be negotiated.", ex);
-                    }
-
-                    useAlpn = false;
-                }
+                alpnOptions = ResolveAlpnOptions(s_buildAlpnOptions, host, alpnProtocols, http11Offered);
+                useAlpn = alpnOptions != null;
             }
 
             var sslStream = new SslStream(
@@ -263,19 +187,60 @@ namespace TurboHTTP.Transport.Tls
         }
 
         /// <summary>
-        /// Exception filter for building the ALPN options by reflection (#171). These types can
-        /// only come from metadata or member access that AOT/stripping removed, before the
-        /// handshake starts. <see cref="InvalidOperationException"/> is deliberately absent: from
+        /// Exception filter for building the ALPN options (#171, #303). These types can only come
+        /// from a runtime that lacks the API, its metadata (stripping) or its AOT code (IL2CPP
+        /// throws <see cref="ExecutionEngineException"/> or <see cref="NotSupportedException"/>
+        /// for a generic instantiation it did not generate), before the handshake starts.
+        /// <see cref="NotSupportedException"/> covers <see cref="PlatformNotSupportedException"/>.
+        /// <see cref="InvalidOperationException"/> is deliberately absent: from
         /// <c>AuthenticateAsClientAsync</c> it is an SslStream state error (already authenticated,
         /// handshake in progress), never a missing ALPN capability, and it propagates.
         /// </summary>
         internal static bool IsAlpnSetupFailure(Exception ex)
         {
-            return ex is TargetInvocationException
+            return ex is System.Reflection.TargetInvocationException
                 || ex is MemberAccessException
                 || ex is TypeLoadException
                 || ex is MissingMethodException
-                || ex is PlatformNotSupportedException;
+                || ex is NotSupportedException
+                || ex is NotImplementedException
+                || IsMissingAotCode(ex);
+        }
+
+        // ExecutionEngineException is obsolete in the target profile (the CLR no longer raises it),
+        // but Mono AOT/IL2CPP still throw it for a generic instantiation with no generated code.
+#pragma warning disable CS0618
+        private static bool IsMissingAotCode(Exception ex) => ex is ExecutionEngineException;
+#pragma warning restore CS0618
+
+        /// <summary>
+        /// Builds the ALPN options before the SslStream exists (#171). Returns null when the
+        /// runtime cannot build them and the offer includes "http/1.1": the handshake then runs
+        /// without ALPN (RFC 7301 section 3.1, no result means HTTP/1.1). Without "http/1.1" the
+        /// requested protocol cannot be negotiated and <see cref="PlatformNotSupportedException"/>
+        /// is thrown. Any other exception propagates.
+        /// </summary>
+        internal static object ResolveAlpnOptions(
+            Func<string, string[], object> buildOptions,
+            string host,
+            string[] alpnProtocols,
+            bool http11Offered)
+        {
+            try
+            {
+                return buildOptions(host, alpnProtocols);
+            }
+            catch (Exception ex) when (IsAlpnSetupFailure(ex))
+            {
+                if (!http11Offered)
+                {
+                    throw new PlatformNotSupportedException(
+                        "SslStream ALPN negotiation failed on this runtime and the caller " +
+                        "did not offer http/1.1, so the requested protocol cannot be negotiated.", ex);
+                }
+
+                return null;
+            }
         }
 
         private Task StartAuthentication(
@@ -302,83 +267,68 @@ namespace TurboHTTP.Transport.Tls
                 checkCertificateRevocation: false);
         }
 
-        private static object CreateAlpnOptions(string host, string[] alpnProtocols)
+        // Boundary for callers that hold the options as object (see WrapAsync).
+        private static object BuildAlpnOptionsObject(string host, string[] alpnProtocols)
         {
-            // All reflection results are cached in static fields (see static ctor).
-            // Option instance creation prefers cached delegate to avoid Activator overhead.
-            if (_optionsType == null || _targetHostProp == null || _authWithOptionsMethod == null)
-                throw new PlatformNotSupportedException("SslClientAuthenticationOptions not available");
-
-            var options = _createOptionsInstance != null
-                ? _createOptionsInstance()
-                : _optionsCtor != null
-                    ? _optionsCtor.Invoke(null)
-                    : throw new PlatformNotSupportedException(
-                        "SslClientAuthenticationOptions default constructor not available.");
-
-            _targetHostProp.SetValue(options, host);
-
-            if (_enabledProtocolsProp != null)
-            {
-                _enabledProtocolsProp.SetValue(options, HandshakeProtocols);
-            }
-
-            // Set ApplicationProtocols (List<SslApplicationProtocol>)
-            // NOTE: Cached reflection metadata can still be unavailable under IL2CPP/AOT
-            // stripping. In that case this path is skipped and the handshake carries no ALPN.
-            if (_alpnProtocolType != null && _alpnProtocolListCtor != null && _alpnProtocolListAddMethod != null)
-            {
-                var alpnList = _alpnProtocolListCtor.Invoke(null);
-
-                foreach (var protocol in alpnProtocols)
-                {
-                    object value;
-                    if (protocol == "h2")
-                        value = _h2ProtocolValue;
-                    else if (protocol == "http/1.1")
-                        value = _http11ProtocolValue;
-                    else
-                        continue;
-
-                    if (value != null)
-                        _alpnProtocolListAddMethod.Invoke(alpnList, new[] { value });
-                }
-
-                _alpnOptionsProperty.SetValue(options, alpnList);
-            }
-
-            return options;
+            return BuildAlpnOptions(host, alpnProtocols);
         }
 
+        /// <summary>
+        /// Client options for an ALPN handshake: <paramref name="host"/> as target host, the
+        /// OS-negotiated <see cref="HandshakeProtocols"/>, and one
+        /// <see cref="SslApplicationProtocol"/> per known offered protocol ("h2", "http/1.1") in
+        /// offer order (RFC 7301 section 3.1: the client lists, the server picks). Unknown
+        /// protocol strings are skipped. A fresh list per call: the options are per connection
+        /// and nothing mutable is shared between concurrent connects.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        internal static SslClientAuthenticationOptions BuildAlpnOptions(string host, string[] alpnProtocols)
+        {
+            // Static reference on purpose (#303): this call site makes IL2CPP generate
+            // List<SslApplicationProtocol>..ctor/Add, which MakeGenericType could not guarantee.
+            // NoInlining keeps a runtime failure (missing AOT code or type) inside this call,
+            // where ResolveAlpnOptions turns it into the HTTP/1.1 fallback.
+            var protocols = new List<SslApplicationProtocol>(alpnProtocols.Length);
+            for (int i = 0; i < alpnProtocols.Length; i++)
+            {
+                string protocol = alpnProtocols[i];
+                if (string.Equals(protocol, "h2", StringComparison.Ordinal))
+                    protocols.Add(SslApplicationProtocol.Http2);
+                else if (string.Equals(protocol, Http11Protocol, StringComparison.Ordinal))
+                    protocols.Add(SslApplicationProtocol.Http11);
+            }
+
+            // Certificate validation stays with the SslStream constructor callback
+            // (ValidateServerCertificate); the options set no callback of their own.
+            return new SslClientAuthenticationOptions
+            {
+                TargetHost = host,
+                EnabledSslProtocols = HandshakeProtocols,
+                ApplicationProtocols = protocols
+            };
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
         private static Task StartAlpnAuthentication(SslStream sslStream, object options, CancellationToken ct)
         {
-            try
-            {
-                return (Task)_authWithOptionsMethod.Invoke(sslStream, new[] { options, ct });
-            }
-            catch (TargetInvocationException tie) when (tie.InnerException != null)
-            {
-                // MethodInfo.Invoke wraps all target exceptions in TargetInvocationException.
-                // Unwrap so the caller sees the real exception (AuthenticationException,
-                // IOException, etc.) instead of a misleading reflection wrapper.
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
-                throw; // unreachable, satisfies compiler
-            }
+            // checkCertificateRevocation: the options keep the default X509RevocationMode.NoCheck,
+            // matching the plain overload (see StartAuthentication).
+            return sslStream.AuthenticateAsClientAsync((SslClientAuthenticationOptions)options, ct);
         }
 
-        private string ExtractAlpnResult(SslStream sslStream)
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static string ExtractAlpnResult(SslStream sslStream)
         {
             try
             {
-                var alpnResult = _alpnNegotiatedProperty?.GetValue(sslStream);
-                if (alpnResult == null)
-                    return null;
-
-                var result = alpnResult.ToString();
+                // Empty when the server selected nothing (RFC 7301 section 3.1: HTTP/1.1).
+                var result = sslStream.NegotiatedApplicationProtocol.ToString();
                 return string.IsNullOrEmpty(result) ? null : result;
             }
             catch
             {
+                // A runtime that accepts the options but does not report the result (e.g. it
+                // throws PlatformNotSupportedException here) negotiated nothing usable: HTTP/1.1.
                 return null;
             }
         }
