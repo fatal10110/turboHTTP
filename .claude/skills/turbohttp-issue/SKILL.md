@@ -3,8 +3,8 @@ name: turbohttp-issue
 description: >
   Implement one fatal10110/turboHTTP GitHub issue end to end: read the issue, the phase docs and
   RFC sections it names and the 2026-10 review, work in a linked worktree, write a failing
-  regression test first, fix, run the local gates, apply both specialist rubrics, add the
-  implementation-journal entry, and open a PR that closes the issue. Use when the user says
+  regression test first, fix, run the local gates, apply both specialist rubrics, and open a PR
+  that closes the issue. Use when the user says
   "implement #N", "fix issue N", "pick up <issue>", or when a turbohttp-waves lane prompt names
   this skill. Do not use for reviewing a PR (turbohttp-pr-review), for answering review comments
   (turbohttp-pr-review-comments), or for multi-issue fan-out (turbohttp-waves).
@@ -13,7 +13,7 @@ description: >
 # turboHTTP issue implementation
 
 Repository rules live in `CLAUDE.md` and the scoped guides it lists (module rules, design constraints, known
-risk areas, journal and review requirements); nothing here repeats them — read the sections your
+risk areas, review requirements); nothing here repeats them — read the sections your
 change touches. A turbohttp-waves prompt overrides this file on test scope, worktree commands and
 GitHub tooling.
 
@@ -98,8 +98,7 @@ Every change answers three questions in the PR body, from evidence:
    `.claude/agents/unity-network-architect.md` to your diff (spawn them as subagents when you can;
    otherwise read both files and work their checklists yourself). Fix findings, re-run the gates,
    and record any deliberate deferral with rationale and target milestone (and a follow-up issue).
-9. **Journal.** Add one new file `Development~/docs/implementation-journal/YYYY-MM-<issue-slug>.md`
-   (what, files, decisions, deferred items, how verified). Update CLAUDE.md or
+9. **Docs.** No journal entry (decisions and verification go in the PR body). Update CLAUDE.md or
    the guides in `Development~/docs/agents/` only when phase status, architecture or conventions
    change and you are not in a turbohttp-waves lane (lanes leave them alone).
 10. **Deliver.**

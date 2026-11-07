@@ -107,16 +107,15 @@ Work comes from GitHub issues, ordered by milestone (v1.0-alpha → v1.0-beta �
    `.claude/agents/unity-network-architect.md` to the diff (as subagents, or by working their
    checklists yourself); verify each finding in the code before acting (reviews have produced
    false positives), fix, re-run gates and the rubrics again (fix rounds have introduced sibling bugs).
-5. **Journal.** Add one file `Development~/docs/implementation-journal/YYYY-MM-<slug>.md`:
-   what, files, decisions, deferrals with issue numbers, how verified — and what was *not* run
-   (Unity EditMode/PlayMode, IL2CPP, device). Earlier entries often claim "fixed"/"PASS" without
-   evidence; treat them as leads and check the code.
+5. **Record in the PR, not a journal.** Decisions, deferrals with issue numbers, and what was
+   *not* run (Unity EditMode/PlayMode, IL2CPP, device) go in the PR body. `implementation-journal/`
+   is frozen history: add no files; its "fixed"/"PASS" claims are leads, not evidence.
 6. **Deliver.** One PR per issue (or wave lane) against `main`, body per
    `.github/pull_request_template.md`, `Closes #N` only for fully met criteria. Never merge without
    authorization (a `turbohttp-waves` invocation authorizes its merges).
 
 **Done** means: acceptance criteria met with tests, rubrics clean, gates pass, every gap has a
-milestone-assigned issue, the diff is scoped, the journal entry exists and the PR is open.
+milestone-assigned issue, the diff is scoped and the PR is open.
 
 ## 8. Skills and agents
 
