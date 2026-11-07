@@ -65,6 +65,15 @@ options.ConnectionPool.MaxConnectionsPerHost = 8;
 options.ConnectionPool.ConnectTimeout = TimeSpan.FromSeconds(10);
 ```
 
+*   **One connection per origin by default.** `Http2.MaxConnectionsPerOrigin` (default 1, as RFC 9113 Section 9.1 recommends) lets a server that advertises a low concurrent-stream limit get more connections: another opens only when every connection of the origin has reached that limit, and the count never exceeds the maximum. At the maximum, requests wait for a free stream.
+*   **Optional PING before reusing an idle connection.** With `Http2.ReuseProbeIdleThreshold` above zero (default off), a request about to use a connection that received nothing for that long first sends one PING and waits up to `Http2.PingTimeout`. A connection that does not answer is closed and the request goes out on a fresh one (a body that cannot be replayed fails instead). It is off by default because idle PINGs cost battery and peers may treat frequent PINGs as abuse.
+
+<!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
+```csharp
+options.Http2.MaxConnectionsPerOrigin = 2;                          // default 1
+options.Http2.ReuseProbeIdleThreshold = TimeSpan.FromSeconds(60);   // default TimeSpan.Zero (off)
+```
+
 ## Allocation-conscious pipeline
 
 - **ValueTask:** hot paths avoid allocating `Task` objects.

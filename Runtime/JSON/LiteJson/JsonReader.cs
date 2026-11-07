@@ -9,6 +9,15 @@ namespace TurboHTTP.JSON.Lite
     /// Minimal JSON reader. Parses JSON strings into Dictionary/List/primitive types.
     /// AOT-safe: no reflection, no Activator.CreateInstance.
     /// </summary>
+    /// <remarks>
+    /// The grammar is strict RFC 8259: whitespace is only space, tab, LF and CR (section 2); numbers
+    /// follow <c>[-] int [frac] [exp]</c> with ASCII digits, no leading zeros and at least one digit
+    /// in each part (section 6); string contents below U+0020 must be escaped and <c>\uXXXX</c>
+    /// takes exactly four hex digits (section 7). One leading byte-order mark (U+FEFF) is ignored
+    /// (section 8.1). Integers are returned as <see cref="long"/>, or <see cref="ulong"/> above
+    /// <see cref="long.MaxValue"/>, so 64-bit values are exact; fractions and exponents become
+    /// <see cref="double"/>.
+    /// </remarks>
     public sealed class JsonReader
     {
         private const int MaxDepth = 64;
@@ -36,6 +45,10 @@ namespace TurboHTTP.JSON.Lite
         /// <exception cref="JsonParseException">Invalid JSON syntax or nesting too deep</exception>
         public object Parse()
         {
+            // RFC 8259 section 8.1: a parser MAY ignore a leading byte-order mark.
+            if (_position == 0 && _json.Length > 0 && _json[0] == '\uFEFF')
+                _position = 1;
+
             SkipWhitespace();
             var result = ReadValue();
             SkipWhitespace();
@@ -65,7 +78,7 @@ namespace TurboHTTP.JSON.Lite
                 return ReadBoolean();
             if (c == 'n')
                 return ReadNull();
-            if (c == '-' || char.IsDigit(c))
+            if (c == '-' || IsAsciiDigit(c))
                 return ReadNumber();
 
             throw new JsonParseException($"Unexpected character '{c}' at position {_position}");
@@ -208,6 +221,12 @@ namespace TurboHTTP.JSON.Lite
                             throw new JsonParseException($"Invalid escape sequence '\\{escaped}'");
                     }
                 }
+                else if (c < '\u0020')
+                {
+                    // RFC 8259 section 7: control characters must be escaped.
+                    throw new JsonParseException(
+                        $"Unescaped control character U+{(int)c:X4} in string at position {_position - 1}");
+                }
                 else
                 {
                     _stringBuffer.Append(c);
@@ -262,13 +281,42 @@ namespace TurboHTTP.JSON.Lite
             if (_position + 4 > _json.Length)
                 throw new JsonParseException("Invalid unicode escape sequence");
 
-            string hex = _json.Substring(_position, 4);
+            // Exactly four hex digits (int.TryParse(HexNumber) would also accept surrounding white space).
+            int codePoint = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                int digit = HexValue(_json[_position + i]);
+                if (digit < 0)
+                {
+                    throw new JsonParseException(
+                        $"Invalid unicode escape sequence '\\u{_json.Substring(_position, 4)}'");
+                }
+
+                codePoint = (codePoint << 4) | digit;
+            }
+
             _position += 4;
+            return codePoint;
+        }
 
-            if (int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int codePoint))
-                return codePoint;
+        private static int HexValue(char c)
+        {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        }
 
-            throw new JsonParseException($"Invalid unicode escape sequence '\\u{hex}'");
+        private static bool IsAsciiDigit(char c) => c >= '0' && c <= '9';
+
+        private void ReadDigits(string part)
+        {
+            int start = _position;
+            while (_position < _json.Length && IsAsciiDigit(_json[_position]))
+                _position++;
+
+            if (_position == start)
+                throw new JsonParseException($"Expected a digit in the {part} of a number at position {_position}");
         }
 
         private object ReadNumber()
@@ -277,18 +325,26 @@ namespace TurboHTTP.JSON.Lite
             bool hasFraction = false;
             bool hasExponent = false;
 
+            // RFC 8259 section 6: number = [ minus ] int [ frac ] [ exp ]; int = zero / ( digit1-9 *DIGIT )
             if (Peek() == '-')
                 Advance();
 
-            while (_position < _json.Length && char.IsDigit(_json[_position]))
+            if (_position < _json.Length && _json[_position] == '0')
+            {
                 Advance();
+                if (_position < _json.Length && IsAsciiDigit(_json[_position]))
+                    throw new JsonParseException($"Leading zero in number at position {start}");
+            }
+            else
+            {
+                ReadDigits("integer part");
+            }
 
             if (_position < _json.Length && _json[_position] == '.')
             {
                 hasFraction = true;
                 Advance();
-                while (_position < _json.Length && char.IsDigit(_json[_position]))
-                    Advance();
+                ReadDigits("fraction");
             }
 
             if (_position < _json.Length && (_json[_position] == 'e' || _json[_position] == 'E'))
@@ -297,8 +353,7 @@ namespace TurboHTTP.JSON.Lite
                 Advance();
                 if (_position < _json.Length && (_json[_position] == '+' || _json[_position] == '-'))
                     Advance();
-                while (_position < _json.Length && char.IsDigit(_json[_position]))
-                    Advance();
+                ReadDigits("exponent");
             }
 
             string numStr = _json.Substring(start, _position - start);
@@ -351,8 +406,14 @@ namespace TurboHTTP.JSON.Lite
 
         private void SkipWhitespace()
         {
-            while (_position < _json.Length && char.IsWhiteSpace(_json[_position]))
+            // RFC 8259 section 2: ws = space / horizontal tab / line feed / carriage return.
+            while (_position < _json.Length)
+            {
+                char c = _json[_position];
+                if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
+                    return;
                 _position++;
+            }
         }
 
         private char Peek()
