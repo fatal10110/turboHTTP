@@ -55,6 +55,43 @@ namespace TurboHTTP.Tests.JSON
         }
 
         [Test]
+        public void TryAsJson_Poco_PropagatesNotSupported_InvalidJsonReturnsFalse()
+        {
+            // TryAsJson reports bad data as false, but an unmappable target type is a configuration
+            // error and propagates (documented on TryAsJson).
+            var previous = JsonSerializer.Default;
+            JsonSerializer.SetDefault(Lite);
+            try
+            {
+                var request = new UHttpRequest(HttpMethod.GET, new Uri("http://localhost/poco"));
+                using (var poco = new UHttpResponse(
+                           HttpStatusCode.OK,
+                           new HttpHeaders(),
+                           Encoding.UTF8.GetBytes("{\"id\":1,\"name\":\"a\"}"),
+                           TimeSpan.Zero,
+                           request))
+                {
+                    AssertNotSupported(() => poco.TryAsJson<Poco>(out _));
+                }
+
+                using (var invalid = new UHttpResponse(
+                           HttpStatusCode.OK,
+                           new HttpHeaders(),
+                           Encoding.UTF8.GetBytes("{\"id\":01}"),
+                           TimeSpan.Zero,
+                           request))
+                {
+                    Assert.IsFalse(invalid.TryAsJson<Dictionary<string, object>>(out var result));
+                    Assert.IsNull(result);
+                }
+            }
+            finally
+            {
+                JsonSerializer.SetDefault(previous);
+            }
+        }
+
+        [Test]
         public void Deserialize_UnsupportedTargets_ThrowNotSupported()
         {
             byte[] bytes = Encoding.UTF8.GetBytes("{\"id\":1}");

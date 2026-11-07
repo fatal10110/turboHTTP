@@ -53,6 +53,11 @@ failed POCOs with an unhelpful message.
 - `MaxInputBytes` is a constructor option (immutable, no shared mutable state) rather than a static
   setting; to change the limit used by `AsJson`, register `new LiteJsonSerializer(n)` with
   `JsonSerializer.SetDefault`.
+- Under the Complete bootstrap, `JsonUtilitySerializer` routes built-in shapes and `T[]` through
+  `LiteJsonSerializer.Instance` (default 16 MiB cap, not configurable there); its `JsonUtility` POCO path
+  is not capped by this change.
+- `TryAsJson` returns false for bad data but lets `NotSupportedException` (unmappable target type)
+  propagate; pinned by `TryAsJson_Poco_PropagatesNotSupported_InvalidJsonReturnsFalse`.
 
 ## Deferred
 
