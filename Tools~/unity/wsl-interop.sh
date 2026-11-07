@@ -8,7 +8,7 @@
 # win_emulator_procs in emulator-windows.sh. When an outage outlasts it they print "WSL interop unavailable" and
 # exit wsl_interop_exit (5), so an outage is never reported as a compile error, a missing device or a setup error.
 # The scripts set win=1 when UNITY_PATH is a Windows Unity.exe and wslpath exists; only then do they retry.
-# Any script can source this file (build-ios-test-player.sh still has its own single-attempt Unity start).
+# Every Unity script that starts a Windows tool from WSL sources this file.
 
 # Exit code of every script that sources this file when WSL interop stays unavailable (documented in each header).
 wsl_interop_exit=5

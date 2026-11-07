@@ -127,6 +127,7 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
 './Tools~/unity/run-tests.sh' --platform PlayMode --with-unitask --filter 'UniTaskCancellationTests'  # 2b. UniTask adapters
 './Tools~/unity/build-player.sh' --target win64-mono                    # 3. player builds
 './Tools~/unity/build-player.sh' --target android-il2cpp                #    (+ --bouncycastle; win64-il2cpp when the SDK is installed)
+'./Tools~/unity/build-player.sh' --target android-il2cpp --run [--serial <id>] [--network]  # 4. player smoke on a device/emulator
 ```
 
 1. **Full suites and the skip gate.** Only this run may omit `--filter`. `summarize_results.py` exits 4
@@ -148,8 +149,13 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    `--platform PlayMode --integration --filter 'ExceedsMaxBodySize|FreshConnection_IOException_NoRetry'`.
 3. **Player builds (#273, #100).** `build-player.sh` builds Mono Win64, Android IL2CPP with and without
    `--bouncycastle`, and IL2CPP Win64 when the Visual Studio C++ toolchain is present, runs the Windows
-   players and checks the linker output (BouncyCastle assemblies absent without the opt-in). iOS and
-   device rows stay `needs-device-validation` (#99).
+   players and checks the linker output (BouncyCastle assemblies absent without the opt-in). The smoke
+   player logs one `TURBOHTTP_SMOKE ROW <id> PASS|FAIL|SKIP <issue> <detail>` line per row (transport
+   registration #1, link.xml reflection targets #8, WebSocket JSON DTO with a nested list and dictionary
+   #192, OAuth refresh #67, `GetJsonCoroutine<T>` for a class and a struct #95, offline through an
+   in-process transport; with `--network` one HTTPS request per TLS provider, #141/#258) and one aggregate
+   `TURBOHTTP_SMOKE PASS|FAIL` line the script requires. iOS and device rows stay
+   `needs-device-validation` (#99).
 4. **Android device run (#99).** With one Android device on `adb` (unlocked, screen kept on:
    Developer options → Stay awake), `'./Tools~/unity/run-device-tests.sh' [--stripping Low|High]
    [--arch arm64|armv7|x86_64] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
@@ -158,8 +164,15 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    for the XML the player writes on the device and pulls it over adb. That wait ends when the player
    finishes or its process is gone, and is capped by `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120).
    The device-only test project (`UNITY_DEVICE_TEST_PROJECT`, never `run-tests.sh`'s `UNITY_TEST_PROJECT`)
-   opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. Install
-   `build-player.sh`'s Android APK and read `TURBOHTTP_SMOKE` from logcat for the player smoke. Never
+   opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. The player
+   smoke runs next to it: `'./Tools~/unity/build-player.sh' --target android-il2cpp [--bouncycastle] --run
+   [--serial <id>] [--arch arm64|x86_64] [--network]` checks the device on adb first (`--arch` defaults
+   to its ABI, so an emulator serial gets an x86_64 APK), builds, installs (`adb install -r`),
+   force-stops, wakes the screen (exit 2 on a lock screen it cannot dismiss), launches
+   `UnityPlayerActivity` and polls logcat for the aggregate marker (`TURBOHTTP_SMOKE_WAIT_S`, default
+   300 s); exit 1 on FAIL or no marker, logcat kept as `logcat.txt` in the build folder. `--apk <file>`
+   reruns a built APK without Unity; `--network` (opt-in, needs the internet) adds the TLS rows and
+   requires their PASS. Quote the row lines in the #99 journal. Never
    stop a running device run from the shell: killing Unity's process tree also kills its adb server.
    With the phone and an emulator (or several) attached, pass `--serial <id>`: Unity only builds the APK
    and the script installs and launches it on that device; `--skip-build` reinstalls the last such APK.
@@ -197,12 +210,11 @@ never run the whole suite.
 
 WSL-to-Windows interop fails now and then, sometimes for a minute or more (`cmd.exe`, `adb.exe` and
 `Unity.exe` do not start; stderr shows `UtilAcceptVsock ... accept4 failed 110`). `run-tests.sh`,
-`run-device-tests.sh`, `run-emulator-tests.sh`, `build-player.sh` and `run-samples.sh` source
-`Tools~/unity/wsl-interop.sh` (#355): the `%LOCALAPPDATA%` lookup, a Unity start that wrote no log and an
+`run-device-tests.sh`, `run-emulator-tests.sh`, `build-player.sh`, `run-samples.sh` and
+`build-ios-test-player.sh` source `Tools~/unity/wsl-interop.sh` (#355): the `%LOCALAPPDATA%` lookup, a Unity start that wrote no log and an
 `adb.exe` call that failed while `cmd.exe` does not answer either are retried with a growing pause (about
 two minutes). A longer outage prints `WSL interop unavailable` and exits **5**: not a test, compile or
-device result, so rerun once `cmd.exe /c ver` answers. `build-ios-test-player.sh` does not use the helper
-yet.
+device result, so rerun once `cmd.exe /c ver` answers.
 
 Afterwards:
 

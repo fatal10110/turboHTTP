@@ -20,10 +20,14 @@
 # Unity 2021.3 ships the simulator player as x86_64 only; Unity 6 builds the ARM64 simulator player
 # (Apple Silicon runtimes such as iOS 26 are arm64-only). Env: UNITY_IOS_TEST_PROJECT (default
 # <cache>/ios-testproj; use one per editor version), UNITY_IOS_PACKAGE_COPY (default <cache>/ios-package).
-# Exit codes: 0 built, 2 setup or build error, 3 Unity or the iOS build module unavailable.
+# Exit codes: 0 built, 2 setup or build error, 3 Unity or the iOS build module unavailable, 5 WSL interop
+# unavailable (a Windows editor driven from WSL: cmd.exe or Unity.exe did not start through about two minutes of
+# retries, wsl-interop.sh, #355).
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=Tools~/unity/wsl-interop.sh
+. "$repo/Tools~/unity/wsl-interop.sh"
 out_dir="${UNITY_IOS_HANDOFF_OUT:-}"; stripping=High; filter=""; category=""; integration=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,16 +64,9 @@ esac
 topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
 
 if [ "$win" = 1 ]; then
-  localappdata=""
-  for _ in 1 2 3; do
-    localappdata="$( (cd /mnt/c && cmd.exe /c 'echo %LOCALAPPDATA%') 2>/dev/null | tr -d '\r' || true)"
-    [ -n "$localappdata" ] && break
-    sleep 1
-  done
-  wincache=""
-  if [ -n "$localappdata" ]; then wincache="$(wslpath -u "$localappdata" 2>/dev/null || true)"; fi
-  [ -n "$wincache" ] || { echo "build-ios-test-player: cannot resolve %LOCALAPPDATA% from Windows (cmd.exe, wslpath)" >&2; exit 2; }
-  cache="$wincache/turbohttp"
+  # An interop outage is retried with a back-off, then exit 5; a bad answer exits 2 (wsl-interop.sh, #355).
+  wsl_resolve_localappdata build-ios-test-player
+  cache="$wsl_localappdata/turbohttp"
 else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi
@@ -85,7 +82,9 @@ rsync -a --delete --exclude='.git/' --exclude='.build/' --exclude='.tools/' --ex
   "$repo/" "$pkg/"
 
 if [ ! -d "$proj/ProjectSettings" ]; then
-  "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$cache/ios-create.log")"
+  wsl_unity_launch build-ios-test-player "$cache/ios-create.log" \
+    "$unity" -batchmode -nographics -quit -createProject "$(topath "$proj")" -logFile "$(topath "$cache/ios-create.log")"
+  [ "$unity_code" = 0 ] || { echo "build-ios-test-player: creating $proj failed (Unity exit $unity_code); see $cache/ios-create.log" >&2; exit 2; }
 fi
 python3 - "$proj/Packages/manifest.json" "$(topath "$pkg")" <<'PY'
 import json, sys
@@ -402,10 +401,9 @@ args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform iOS -b
 [ -n "$category" ] && args+=(-testCategory "$category")
 
 echo "build-ios-test-player: building -> $stage (log $log)"
-set +e
-"$unity" "${args[@]}"
-code=$?
-set -e
+# A Unity.exe that did not start from WSL (no log written) is retried, then exit 5 (wsl-interop.sh, #355).
+wsl_unity_launch build-ios-test-player "$log" "$unity" "${args[@]}"
+code="$unity_code"
 grep -E "TURBOHTTP_DEVICE_BUILD|error CS[0-9]+|Build Finished, Result|BuildFailedException" "$log" | head -20 || true
 # The handoff needs all three: the editor hook exits 0 only after the last post-process step, BuildPlayer
 # logs the overall result, and the exported project must exist. A build that fails after the Xcode skeleton
