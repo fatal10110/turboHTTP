@@ -12,5 +12,12 @@ namespace TurboHTTP.Transport.Tls
         /// and HTTP/1.1 stays available when the server or runtime does not negotiate it.
         /// </summary>
         internal static readonly string[] H2AndHttp11 = { "h2", "http/1.1" };
+
+        /// <summary>
+        /// "http/1.1" only: the CONNECT tunnel offer while
+        /// <c>Http2Options.EnableHttp2ThroughConnectTunnels</c> is off (#103), so the origin cannot
+        /// select HTTP/2 inside the tunnel.
+        /// </summary>
+        internal static readonly string[] Http11Only = { "http/1.1" };
     }
 }

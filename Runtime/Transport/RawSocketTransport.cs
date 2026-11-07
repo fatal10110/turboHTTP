@@ -31,6 +31,9 @@ namespace TurboHTTP.Transport
         private readonly Http2ConnectionManager _h2Manager;
         private readonly TlsBackend _tlsBackend;
         private readonly StreamingOptions _streamingOptions;
+        // Fixed at construction from Http2Options.EnableHttp2ThroughConnectTunnels (#103); read-only
+        // afterwards, so connection threads read it without synchronization.
+        private readonly bool _http2ThroughConnectTunnels;
         private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for atomic CAS)
 
         /// <summary>
@@ -70,6 +73,7 @@ namespace TurboHTTP.Transport
             _streamingOptions = streamingOptions.Clone();
             _h2Manager = new Http2ConnectionManager(http2Options, _streamingOptions);
             _tlsBackend = tlsBackend;
+            _http2ThroughConnectTunnels = http2Options.EnableHttp2ThroughConnectTunnels;
         }
 
         /// <summary>
@@ -860,7 +864,7 @@ namespace TurboHTTP.Transport
                     .ConfigureAwait(false);
 
                 var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-                if (lease.Connection.NegotiatedAlpnProtocol == "h2")
+                if (IsHttp2Tunnel(lease))
                 {
                     context.RecordEvent("TransportProxyH2Init");
                     lease.TransferOwnership();
@@ -988,8 +992,7 @@ namespace TurboHTTP.Transport
                                 ct)
                             .ConfigureAwait(false);
 
-                        if (establishTunnel &&
-                            freshLease.Connection.NegotiatedAlpnProtocol == "h2")
+                        if (establishTunnel && IsHttp2Tunnel(freshLease))
                         {
                             context.RecordEvent("TransportProxyH2Init");
                             freshLease.TransferOwnership();
@@ -1270,6 +1273,21 @@ namespace TurboHTTP.Transport
         /// <c>null</c> and the caller retries with <paramref name="includeAuth"/> on a fresh
         /// connection (#229).
         /// </summary>
+        /// <summary>
+        /// The ALPN list offered by the TLS handshake inside a CONNECT tunnel: one of the shared
+        /// <see cref="AlpnProtocols"/> arrays, never a per-handshake allocation (#175).
+        /// </summary>
+        internal string[] ConnectTunnelAlpnProtocols =>
+            _http2ThroughConnectTunnels ? AlpnProtocols.H2AndHttp11 : AlpnProtocols.Http11Only;
+
+        /// <summary>
+        /// True when a tunnel lease negotiated <c>h2</c> and HTTP/2 through tunnels is enabled. With
+        /// the option off, h2 is never offered, so a provider reporting it anyway is not trusted
+        /// with an HTTP/2 connection: the lease stays on HTTP/1.1 (#103).
+        /// </summary>
+        private bool IsHttp2Tunnel(ConnectionLease lease) =>
+            _http2ThroughConnectTunnels && lease.Connection.NegotiatedAlpnProtocol == "h2";
+
         private async Task<TlsResult> EstablishConnectTunnelAsync(
             Stream proxyStream,
             string targetHost,
@@ -1297,10 +1315,12 @@ namespace TurboHTTP.Transport
                 if (response.IsTunnelEstablished)
                 {
                     var tlsProvider = TlsProviderSelector.GetProvider(_tlsBackend);
+                    // HTTP/2 is offered inside the tunnel only when enabled (#103); RFC 9113
+                    // section 3.2 selects h2 over TLS only through ALPN.
                     var tlsResult = await tlsProvider.WrapAsync(
                         proxyStream,
                         targetHost,
-                        AlpnProtocols.H2AndHttp11,
+                        ConnectTunnelAlpnProtocols,
                         ct).ConfigureAwait(false);
 
                     MarkSslStreamViableIfAuto(_tlsBackend, tlsResult);

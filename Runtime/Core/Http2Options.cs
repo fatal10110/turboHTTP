@@ -16,6 +16,7 @@ namespace TurboHTTP.Core
         private int _maxDecodedHeaderBytes = UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes;
         private TimeSpan _pingInterval = DefaultPingInterval;
         private TimeSpan _pingTimeout = DefaultPingTimeout;
+        private bool _enableHttp2ThroughConnectTunnels;
         // 0 = no transport cap (#147). IsDefault compares against the same constant (#275).
         internal const long DefaultMaxResponseBodySize = 0;
         internal static readonly TimeSpan DefaultPingInterval = TimeSpan.FromSeconds(30);
@@ -157,6 +158,24 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>
+        /// Offers HTTP/2 inside HTTPS CONNECT proxy tunnels. Defaults to false: the TLS handshake
+        /// inside a tunnel offers only ALPN <c>http/1.1</c>, so requests through a proxy use HTTP/1.1.
+        /// When true, the tunnel offers <c>h2</c> then <c>http/1.1</c> (RFC 7301 Section 3.1), like a
+        /// direct connection, and an origin that selects <c>h2</c> gets one shared HTTP/2 connection
+        /// per origin and proxy. HTTP/2 through CONNECT is validated in the Editor only, not yet on
+        /// iOS or Android devices. Direct connections always offer <c>h2</c>; this option does not
+        /// affect them.
+        /// </summary>
+        public bool EnableHttp2ThroughConnectTunnels
+        {
+            get => _enableHttp2ThroughConnectTunnels;
+            set => _enableHttp2ThroughConnectTunnels = value;
+        }
+
+        /// <summary>
+        /// Returns a copy of these options.
+        /// </summary>
         public Http2Options Clone()
         {
             return new Http2Options
@@ -170,6 +189,7 @@ namespace TurboHTTP.Core
                 _maxDecodedHeaderBytes = _maxDecodedHeaderBytes,
                 _pingInterval = _pingInterval,
                 _pingTimeout = _pingTimeout,
+                _enableHttp2ThroughConnectTunnels = _enableHttp2ThroughConnectTunnels,
                 TestPerStreamReceiveBufferBytesOverride = TestPerStreamReceiveBufferBytesOverride,
                 TestMaxConnectionBufferedBytesOverride = TestMaxConnectionBufferedBytesOverride,
                 TestStallTimeoutMillisecondsOverride = TestStallTimeoutMillisecondsOverride,
@@ -188,6 +208,7 @@ namespace TurboHTTP.Core
                    _maxDecodedHeaderBytes == UHttpClientOptions.DefaultHttp2MaxDecodedHeaderBytes &&
                    _pingInterval == DefaultPingInterval &&
                    _pingTimeout == DefaultPingTimeout &&
+                   !_enableHttp2ThroughConnectTunnels &&
                    TestPerStreamReceiveBufferBytesOverride == 0 &&
                    TestMaxConnectionBufferedBytesOverride == 0 &&
                    TestStallTimeoutMillisecondsOverride == 0 &&

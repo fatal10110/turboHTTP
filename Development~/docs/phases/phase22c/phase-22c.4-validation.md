@@ -43,10 +43,10 @@ Call `Http2Connection.Dispose()` and assert all three mock streams were disposed
 **Why this matters:** If any layer forgets to dispose the inner stream, the proxy TCP socket leaks. With `TransferOwnership()`, the proxy connection is no longer managed by the pool — the `Http2Connection` is the sole owner.
 
 **Completion criteria:**
-- [ ] `Http2Connection.Dispose()` triggers disposal of the TLS stream
-- [ ] TLS stream disposal triggers disposal of the inner tunnel stream
-- [ ] Inner stream disposal closes the proxy socket (verified via mock capture)
-- [ ] No double-dispose: `Http2Connection.Dispose()` called twice does not throw or double-close
+- [x] `Http2Connection.Dispose()` triggers disposal of the TLS stream: `Tests/Runtime/Transport/Http2/Http2ConnectionManagerTests.cs` `Http2Connection_Dispose_DisposesTunnelStreamChainOnce`
+- [x] TLS stream disposal triggers disposal of the inner tunnel stream: same test
+- [x] Inner stream disposal closes the proxy socket (verified via mock capture): same test (innermost proxy-socket stand-in disposed once)
+- [x] No double-dispose: `Http2Connection.Dispose()` called twice does not throw or double-close: same test (two calls, each stream disposed exactly once)
 
 ---
 
@@ -64,10 +64,10 @@ Call `Http2Connection.Dispose()` and assert all three mock streams were disposed
 **Test approach:** Reuse the existing `Http2ConnectionTests` patterns. Feed the `Http2Connection` a mock stream that can emit frame bytes on demand (GOAWAY byte sequence). Confirm the read loop reacts correctly.
 
 **Completion criteria:**
-- [ ] GOAWAY received through tunnel fails pending streams
-- [ ] `IsAlive` false after GOAWAY
-- [ ] Next `GetIfExists(origin, port, proxy, pport)` returns null
-- [ ] Connection re-establishment flow works (new tunnel from scratch)
+- [x] GOAWAY received through tunnel fails pending streams: `Tests/Runtime/Transport/Http2/Http2ConnectionManagerTests.cs` `GoawayThroughTunnel_FailsPendingStreamAndManagerReturnsNull`
+- [x] `IsAlive` false after GOAWAY: same test
+- [x] Next `GetIfExists(origin, port, proxy, pport)` returns null: same test; through the transport, `Tests/Runtime/Transport/Http1/RawSocketTransportTunnelAlpnOptionTests.cs` `HttpsViaProxy_Enabled_GoawayThroughTunnel_NextRequestOpensNewTunnel` (graceful GOAWAY: no new streams)
+- [x] Connection re-establishment flow works (new tunnel from scratch): `Tests/Runtime/Transport/Http1/RawSocketTransportTunnelAlpnOptionTests.cs` `HttpsViaProxy_Enabled_GoawayThroughTunnel_NextRequestOpensNewTunnel` (second CONNECT, new HTTP/2 connection); manager level in `GoawayThroughTunnel_FailsPendingStreamAndManagerReturnsNull`
 
 ---
 
@@ -87,9 +87,9 @@ Between `GetIfExists` (returns null) and `GetOrCreateAsync` (acquires init lock 
 6. Assert: no leaked streams or sockets (use mock streams with dispose-tracking).
 
 **Completion criteria:**
-- [ ] Concurrent tunnel establishment produces exactly one retained `Http2Connection` under the tunnel key
-- [ ] Both requests complete without error
-- [ ] No stream or socket leaks from the discarded second tunnel
+- [x] Concurrent tunnel establishment produces exactly one retained `Http2Connection` under the tunnel key: `Tests/Runtime/Transport/Http1/RawSocketTransportTunnelAlpnOptionTests.cs` `HttpsViaProxy_Enabled_ConcurrentTunnelEstablishment_RetainsOneConnectionAndDisposesDiscardedTunnel` (both requests open their own CONNECT tunnel before either handshake finishes); manager level in `Tests/Runtime/Transport/Http2/Http2ConnectionManagerTests.cs` `GetOrCreateAsync_ConcurrentTunnelCreation_RetainsOneConnectionAndDisposesDiscardedStream`
+- [x] Both requests complete without error: same transport test
+- [x] No stream or socket leaks from the discarded second tunnel: both tests (the discarded tunnel stream is disposed exactly once, the retained one stays open)
 
 ---
 
@@ -111,8 +111,8 @@ Verify:
 - Assert the CONNECT request (captured via mock proxy stream) does contain `Proxy-Authorization`.
 
 **Completion criteria:**
-- [ ] `Proxy-Authorization` not forwarded to origin on HTTP/2 path through tunnel
-- [ ] `Proxy-Authorization` present in the CONNECT request to the proxy
+- [x] `Proxy-Authorization` not forwarded to origin on HTTP/2 path through tunnel: `Tests/Runtime/Transport/Http1/RawSocketTransportProxyTunnelTests.cs` `HttpsViaProxy_PreparedTunnelWithH2Alpn_UsesTunneledHttp2AndFastPathReuse`, `Tests/Runtime/Transport/Http1/RawSocketTransportTunnelAlpnOptionTests.cs` `HttpsViaProxy_Enabled_ExplicitBouncyCastleMockNegotiatesH2_AndReusesTunnelConnection`
+- [x] `Proxy-Authorization` present in the CONNECT request to the proxy: `Tests/Runtime/Transport/Http1/RawSocketTransportProxyTunnelTests.cs` `EstablishConnectTunnelAsync_ProxyAuthChallenge_SendsProxyAuthorizationOnlyToProxy` (sent on the CONNECT that answers the 407, never before)
 
 ---
 
@@ -120,10 +120,10 @@ Verify:
 
 Added in 22c.1. Verify via tests:
 
-- [ ] `HasConnection(origin, port, proxy, pport)` returns false before any tunnel established
-- [ ] Returns true after `GetOrCreateAsync(origin, port, proxy, pport, ...)` completes
-- [ ] Returns false after `Remove(origin, port, proxy, pport)` or after the connection dies
-- [ ] Does not interfere with `HasConnection(origin, port)` (direct connection variant)
+- [x] `HasConnection(origin, port, proxy, pport)` returns false before any tunnel established: `Tests/Runtime/Transport/Http2/Http2ConnectionManagerTests.cs` `HasConnection_TunnelOverload_TracksLifecycleWithoutAffectingDirectConnection`
+- [x] Returns true after `GetOrCreateAsync(origin, port, proxy, pport, ...)` completes: same test
+- [x] Returns false after `Remove(origin, port, proxy, pport)` or after the connection dies: same test (Remove); `Tests/Runtime/Transport/Http2/Http2ConnectionManagerTests.cs` `GetIfExists_StaleTunnelConnection_RemovesAndDisposesObservedConnection` (dead connection)
+- [x] Does not interfere with `HasConnection(origin, port)` (direct connection variant): `HasConnection_TunnelOverload_TracksLifecycleWithoutAffectingDirectConnection`
 
 ---
 
@@ -147,9 +147,9 @@ BouncyCastle has no full chain validation until #33 lands, so today Auto always 
 5. Record result in the implementation journal
 
 **Completion criteria:**
-- [ ] Unit test: platform TLS failure through tunnel propagates without a provider switch
-- [ ] Unit test: explicitly selected BouncyCastle (mock) through tunnel produces HTTP/2 connection
-- [ ] IL2CPP: BouncyCastle ALPN `h2` negotiated through CONNECT tunnel on physical device (iOS or Android)
+- [x] Unit test: platform TLS failure through tunnel propagates without a provider switch: `Tests/Runtime/Transport/Http1/RawSocketTransportTunnelAlpnOptionTests.cs` `EstablishConnectTunnelAsync_PlatformTlsException_PropagatesWithoutProviderSwitch` (`PlatformNotSupportedException`, one CONNECT, BouncyCastle never called) and `HttpsViaProxy_TunnelTlsFailure_PropagatesWithoutNewTunnelOrProviderSwitch` (no fresh tunnel, no provider switch)
+- [x] Unit test: explicitly selected BouncyCastle (mock) through tunnel produces HTTP/2 connection: `Tests/Runtime/Transport/Http1/RawSocketTransportTunnelAlpnOptionTests.cs` `HttpsViaProxy_Enabled_ExplicitBouncyCastleMockNegotiatesH2_AndReusesTunnelConnection` (needs `Http2Options.EnableHttp2ThroughConnectTunnels`, #103)
+- [ ] IL2CPP: BouncyCastle ALPN `h2` negotiated through CONNECT tunnel on physical device (iOS or Android). **needs-device-validation** (#103, device matrix #99); not claimable from the Editor.
 
 ---
 
@@ -159,7 +159,7 @@ BouncyCastle has no full chain validation until #33 lands, so today Auto always 
 |-----|---------|-------|-------------|
 | RFC 9110 § 9.3.6 | CONNECT method | CONNECT request format, 200 response handling, tunnel lifetime | Existing tests + 22c.3 integration test |
 | RFC 9113 § 3.2–3.3 | HTTP/2 connection preface | Preface + SETTINGS exchange through tunnel | 22c.3 integration test (mock server) |
-| RFC 7301 § 3 | ALPN | Both `h2` and `http/1.1` offered; server selection honored | 22c.2 unit tests |
+| RFC 7301 § 3 | ALPN | Only `http/1.1` offered by default; `h2` then `http/1.1` when `Http2Options.EnableHttp2ThroughConnectTunnels` is on (#103); server selection honored | `Tests/Runtime/Transport/Http1/RawSocketTransportTunnelAlpnOptionTests.cs` |
 | RFC 9113 § 9.1 | GOAWAY | GOAWAY through tunnel fails streams correctly | Step 2 above |
 
 ---
@@ -177,13 +177,18 @@ Both reviews are mandatory before marking 22c.4 complete:
 
 After 22c.4, the following must all be true:
 
+> Status (2026-11, #103): the Editor-testable 22c.4 items above are ticked with their tests. The
+> items left open below are not claimable yet: the device item of Step 6 (needs-device-validation,
+> #103/#99), the unticked 22c.1-22c.3 checklists and the phase status line (owned by the docs-status
+> work, `Development~/docs/agents/project-status.md`). They stay open until #103 closes.
+
 - [ ] All 22c.1 completion criteria met (manager key extension + unit tests)
 - [ ] All 22c.2 completion criteria met (tunnel ALPN extension + unit tests)
 - [ ] All 22c.3 completion criteria met (protocol routing + unit tests + integration test)
 - [ ] All 22c.4 edge-case validations complete
 - [ ] Both specialist reviews passed for each sub-phase
 - [ ] CLAUDE.md Development Status updated: Phase 22c → COMPLETE
-- [ ] Implementation journal entry created: `Development~/docs/implementation-journal/2026-04-phase22c-proxy-http2-alpn.md`
+- [x] Implementation journal entry created: `Development~/docs/implementation-journal/2026-04-phase22c-proxy-http2-alpn.md` (validation follow-up: `2026-11-h2-tunnel-gate.md`)
 
 ---
 
