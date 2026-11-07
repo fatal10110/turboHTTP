@@ -305,7 +305,8 @@ Header is allowed per RFC but meaningless. Client sends headers, then immediatel
 
 ### 6d. Non-Replayable Body + Server Rejects
 
-Body source is disposed without reading. Caller receives the rejection response. No retry is attempted.
+Body source is disposed without reading. Caller receives the rejection response. No retry is
+attempted, a 417 included (see 6j).
 
 ### 6e. Retry with `Expect: 100-continue`
 
@@ -333,14 +334,30 @@ If the server sends RST_STREAM while the client is waiting for 100-continue, the
 
 ### 6j. 417 Expectation Failed
 
-RFC 9110 sec 10.1.1 says a client that receives 417 SHOULD repeat the request without the
-expectation. TurboHTTP does **not** retry automatically: the 417 response is returned to the caller
-(whose body was not consumed, so a replayable body can be re-sent). Note that `WithExpectContinue(false)`
-alone does not suppress the header for known-length bodies above `AutoExpectContinueThresholdBytes`:
-`ShouldAutoInjectExpectContinue` adds it back, so a manual re-send also needs the auto-injection
-threshold raised or set to `null`. The opt-in retry in #214 owns a proper suppression switch.
-Covered by `RawSocketTransportConnectionReuseTests.ExpectContinue_Expect417_ReplayableBody_ReturnedToCallerWithoutRetry`.
-An opt-in automatic retry is tracked in #214.
+RFC 9110 sec 10.1.1 says a client that receives 417 to a request with a 100-continue expectation
+SHOULD repeat it without that expectation. The HTTP/1.1 transport does so once (#214) when all of
+these hold (`RawSocketTransport.ShouldRetryWithoutExpectation`):
+
+- the 417 arrived before any body byte was sent (an early final response, also after non-100 1xx
+  responses). After a 100 or the wait timeout the body went out, and the 417 answers the whole
+  request; it is returned;
+- `100-continue` is the only expectation (`ExpectContinueHelper.HasOnlyExpectContinueExpectation`).
+  A 417 to a request with another expectation may be about that one; it is returned;
+- the body is replayable (`Replayable` or `ReplayableViaFactory`). A non-replayable body is never
+  repeated; the 417 is returned (6d).
+
+The 417 never reaches the handler (no `OnResponseStart` for it); the timeline records
+`TransportExpectationFailedRetry`. The rejected connection is destroyed with its unread 417 body
+(6f); the repeat takes another connection like any new request, within the same request timeout,
+on the direct, forward-proxy and CONNECT-tunnel paths alike (the retry loop is in
+`DispatchCoreAsync`). The repeat is a copy of the request without the `Expect` header
+(`CopyWithSharedContent().WithExpectContinue(false)`, set as `RequestContext.Request`). Auto-injection
+(`AutoExpectContinueThresholdBytes`) runs once, before the first attempt, so the copy does not get
+the header back; a 417 to the repeat is returned to the caller, so there is at most one repeat.
+Explicit (`WithExpectContinue()`) and auto-injected expectations are treated the same.
+
+HTTP/2 is out of scope of #214: a 417 on an HTTP/2 stream is returned to the caller (follow-up #391).
+Covered by `RawSocketTransportExpect417RetryTests`.
 
 ---
 
@@ -358,6 +375,9 @@ An opt-in automatic retry is tracked in #214.
 5. **`BufferedStreamReader` transfer** — bytes pre-fetched during 100-continue wait are preserved for final response parsing
 6. **Non-replayable body + server rejects** — body source not consumed, rejection response delivered
 7. **Replayable body + retry** — body reopened on retry, 100-continue flow repeats
+7a. **Early 417 + replayable body** — repeated once without `Expect` on another connection; a
+    second 417, a non-replayable body, another expectation or a 417 after the body was sent is
+    returned (6j, `RawSocketTransportExpect417RetryTests`)
 8. **Bodyless request with `Expect: 100-continue`** — no wait, no error
 
 ### HTTP/2 Unit Tests
