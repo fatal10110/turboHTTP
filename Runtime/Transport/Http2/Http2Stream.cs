@@ -35,6 +35,10 @@ namespace TurboHTTP.Transport.Http2
         // start allocates no delegate; the state is the stream itself.
         private static readonly WaitCallback s_invokeResponseStart = RunQueuedResponseStart;
 
+        // Runs OnResponseError for a stream that failed before its response started on the thread pool
+        // (#29), for the same reason; the failure travels in _pendingResponseError.
+        private static readonly WaitCallback s_invokeResponseError = RunQueuedResponseError;
+
         private int _streamId;
         private UHttpRequest _request;
         private RequestContext _context;
@@ -49,6 +53,8 @@ namespace TurboHTTP.Transport.Http2
         private int _handlerFaulted;
         private int _completionSignaled;
         private int _lifetimeRefCount;
+        private int _responseErrorQueued;
+        private Exception _pendingResponseError;
         private long _responseBodyLength;
         private long? _responseContentLength;
         private long _expectedResponseBodyLength = -1;
@@ -193,6 +199,8 @@ namespace TurboHTTP.Transport.Http2
             Interlocked.Exchange(ref _handlerFaulted, 0);
             Interlocked.Exchange(ref _responseStarted, 0);
             Interlocked.Exchange(ref _completionSignaled, 0);
+            Interlocked.Exchange(ref _responseErrorQueued, 0);
+            _pendingResponseError = null;
             Interlocked.Exchange(ref _lifetimeRefCount, 1);
             Interlocked.Exchange(ref _responseBodyLength, 0);
             Volatile.Write(ref _disposed, 0);
@@ -225,6 +233,8 @@ namespace TurboHTTP.Transport.Http2
             Interlocked.Exchange(ref _handlerFaulted, 0);
             Interlocked.Exchange(ref _responseStarted, 0);
             Interlocked.Exchange(ref _completionSignaled, 0);
+            Interlocked.Exchange(ref _responseErrorQueued, 0);
+            _pendingResponseError = null;
             Interlocked.Exchange(ref _lifetimeRefCount, 0);
             Interlocked.Exchange(ref _responseBodyLength, 0);
             _completionSource.Reset();
@@ -552,7 +562,17 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
-            CompleteWithResponseStartFailure(normalizedException);
+            // OnResponseError runs the handler chain too, and most callers are on the read loop
+            // (RST_STREAM before HEADERS, malformed responses, flow-control errors), so it is queued like
+            // the response start (#29). Only the first failure is delivered: the handler sees one outcome.
+            // The work item owns one lifetime reference; every caller holds a lease or the dispatch's
+            // reference, so the count is positive here.
+            if (Interlocked.Exchange(ref _responseErrorQueued, 1) != 0)
+                return;
+
+            _pendingResponseError = normalizedException;
+            Interlocked.Increment(ref _lifetimeRefCount);
+            ThreadPool.QueueUserWorkItem(s_invokeResponseError, this);
         }
 
         public void Dispose()
@@ -635,16 +655,29 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        private void CompleteWithResponseStartFailure(Exception exception)
+        private static void RunQueuedResponseError(object state)
         {
+            ((Http2Stream)state).CompleteWithResponseStartFailure();
+        }
+
+        private void CompleteWithResponseStartFailure()
+        {
+            // Holds the lifetime reference Fail took for this work item; released after the outcome is
+            // signaled, so the fields read here never belong to a pooled or re-rented stream.
             try
             {
+                var exception = _pendingResponseError;
+                _pendingResponseError = null;
                 _handler.OnResponseError(MapHandlerException(exception), _context);
                 TrySetResult();
             }
             catch (Exception errorCallbackException)
             {
                 TrySetException(new HandlerCallbackException(errorCallbackException));
+            }
+            finally
+            {
+                ReleaseLifetime();
             }
         }
 

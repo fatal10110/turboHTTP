@@ -85,6 +85,113 @@ namespace TurboHTTP.Tests.Transport.Http2
             });
         }
 
+        [Test]
+        public void HandlerOffLoop_BlockingResponseErrorHandler_DoesNotDelayConcurrentStream()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(15000);
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                var serverCodec = new Http2FrameCodec(serverStream);
+                var slowHandler = new BlockingResponseErrorHandler();
+
+                try
+                {
+                    var slowRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/slow"));
+                    var slowDispatch = conn.DispatchAsync(
+                        slowRequest, slowHandler, new RequestContext(slowRequest), cts.Token);
+                    var slowHeaders = await ReadFrameMatchingAsync(
+                        serverCodec, f => f.Type == Http2FrameType.Headers, cts.Token);
+
+                    var fastRequest = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/fast"));
+                    var fastHandler = new RecordingHandler();
+                    var fastDispatch = conn.DispatchAsync(
+                        fastRequest, fastHandler, new RequestContext(fastRequest), cts.Token);
+                    var fastHeaders = await ReadFrameMatchingAsync(
+                        serverCodec, f => f.Type == Http2FrameType.Headers, cts.Token);
+
+                    // RST_STREAM(CANCEL) before HEADERS fails the slow stream before its response started,
+                    // so its handler gets OnResponseError, which blocks until the test opens the gate.
+                    await serverCodec.WriteFrameAsync(
+                        BuildRstStreamFrame(slowHeaders.StreamId, Http2ErrorCode.Cancel), cts.Token);
+                    await WithWatchdog(slowHandler.Entered, cts.Token);
+
+                    await serverCodec.WriteFrameAsync(
+                        BuildResponseHeadersFrame(fastHeaders.StreamId, 204, endStream: true), cts.Token);
+                    var pingPayload = new byte[] { 8, 7, 6, 5, 4, 3, 2, 1 };
+                    await serverCodec.WriteFrameAsync(new Http2Frame
+                    {
+                        Type = Http2FrameType.Ping,
+                        Flags = Http2FrameFlags.None,
+                        StreamId = 0,
+                        Payload = pingPayload,
+                        Length = pingPayload.Length
+                    }, cts.Token);
+
+                    // Before the fix the read loop itself ran OnResponseError, so neither the other
+                    // stream's HEADERS nor the PING was processed until the gate opened.
+                    using (var unaffected = new CancellationTokenSource(5000))
+                    {
+                        await WithWatchdog(fastDispatch, unaffected.Token);
+                        var pong = await ReadFrameMatchingAsync(
+                            serverCodec,
+                            f => f.Type == Http2FrameType.Ping && (f.Flags & Http2FrameFlags.Ack) != 0,
+                            unaffected.Token);
+                        Assert.AreEqual(pingPayload, pong.Payload.AsSpan(0, pong.Length).ToArray());
+                    }
+
+                    Assert.AreEqual(204, fastHandler.StatusCode);
+                    Assert.IsNull(fastHandler.Error);
+                    Assert.IsFalse(slowDispatch.IsCompleted, "The slow error handler is still blocked.");
+
+                    slowHandler.Release();
+                    await WithWatchdog(slowDispatch, cts.Token);
+                    Assert.AreEqual(1, slowHandler.ErrorCount, "The handler sees exactly one outcome.");
+                    Assert.IsTrue(conn.IsAlive);
+                }
+                finally
+                {
+                    slowHandler.Release();
+                    conn.Dispose();
+                }
+            });
+        }
+
+        /// <summary>
+        /// Handler whose OnResponseError blocks its thread synchronously until the test releases it
+        /// (bounded, so a failing run never parks a thread forever).
+        /// </summary>
+        private sealed class BlockingResponseErrorHandler : IHttpHandler
+        {
+            private readonly TaskCompletionSource<bool> _entered =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly ManualResetEventSlim _release = new ManualResetEventSlim(false);
+            private int _errorCount;
+
+            public Task Entered => _entered.Task;
+            public int ErrorCount => Volatile.Read(ref _errorCount);
+
+            public void Release() => _release.Set();
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+            }
+
+            public ValueTask OnResponseStartAsync(
+                int statusCode, HttpHeaders headers, IResponseBodySource body, RequestContext context)
+            {
+                body?.Abort();
+                return default;
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                Interlocked.Increment(ref _errorCount);
+                _entered.TrySetResult(true);
+                _release.Wait(TimeSpan.FromSeconds(10));
+            }
+        }
+
         /// <summary>
         /// Handler whose OnResponseStartAsync blocks its thread synchronously until the test releases it
         /// (bounded, so a failing run never parks a thread forever).

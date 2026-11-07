@@ -24,6 +24,15 @@ as state, the `Http11ResponseParser` precedent):
   (start before body for the stream), and `Fail`/`Cancel` take the body-source path (fault the body)
   instead of `OnResponseError`; the handler never sees error-before-start or two outcomes.
 
+Review round 1 found the same stall on the failure path: `Fail()` on a stream whose response had
+not started called `OnResponseError` inline, and most callers are on the read loop (RST_STREAM
+before HEADERS, malformed responses, frames on a closed stream, flow-control errors). `Fail` now
+queues it the same way (static `s_invokeResponseError` callback; the failure travels in
+`_pendingResponseError`; the work item owns one lifetime reference, released in `finally` after the
+outcome is signalled). An `_responseErrorQueued` flag delivers only the first failure, so the handler
+sees one outcome even if two failures race. Replayable failures (`Http2RetryableRequestException`)
+still skip the handler and complete the dispatch directly, as before.
+
 ## Files
 
 - `Runtime/Transport/Http2/Http2Stream.cs`
@@ -51,7 +60,13 @@ None.
   streams on one connection, stream A's handler blocks synchronously in `OnResponseStartAsync` on an
   event the test opens only afterwards; stream B's dispatch completes and a PING is ACKed while A is
   still blocked. On `origin/main`'s `Http2Stream.cs` it fails ("Test watchdog expired." waiting for B).
+- Regression test `HandlerOffLoop_BlockingResponseErrorHandler_DoesNotDelayConcurrentStream`:
+  RST_STREAM(CANCEL) before HEADERS on stream A whose handler blocks in `OnResponseError`; stream B
+  completes and a PING is ACKed while A is blocked, and A's handler sees exactly one error. With the
+  round-0 `Http2Stream.cs` (error path inline) it fails ("Test watchdog expired.",
+  HandlerOffLoop.cs:135).
 - `'./Tools~/ci/check.sh'`: OK.
 - Unity PlayMode `--filter 'Http2ConnectionTests|Http2FlowControlTests|StreamingAllocationGate|Http2'`:
-  382/382 passed (EditMode has no matching tests).
+  382/382 passed (EditMode has no matching tests). After the review-round-1 fix, `--filter 'Http2'`:
+  379/379 passed.
 - Not run: the full Unity suites (periodic host-editor run), IL2CPP player builds, devices.
