@@ -112,7 +112,19 @@ namespace TurboHTTP.WebSocket
                     "CloseAsync requires Open, Closing, or Closed state. Current state: " + state + ".");
             }
 
-            if (state == WebSocketState.Closed)
+            await CloseCoreAsync(code, reason, ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// The closing handshake (RFC 6455 section 7.1.2) behind <see cref="CloseAsync"/> and
+        /// <see cref="DisposeAsync"/>. It does not check <c>_disposed</c>: <see cref="DisposeAsync"/> marks the
+        /// connection disposed first, so concurrent sends fail, and then still sends its Close frame (#301).
+        /// The caller validated <paramref name="code"/>. A None or Connecting connection is left to the caller.
+        /// </summary>
+        private async Task CloseCoreAsync(WebSocketCloseCode code, string reason, CancellationToken ct)
+        {
+            var state = State;
+            if (state == WebSocketState.Closed || state == WebSocketState.None || state == WebSocketState.Connecting)
                 return;
 
             if (state == WebSocketState.Open)
