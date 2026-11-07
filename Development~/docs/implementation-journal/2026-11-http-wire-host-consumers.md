@@ -66,8 +66,8 @@ None. `WebSocketProxySettings` keeps its own `ToALabel` copy (#368); it could ca
 ## Verified
 
 - `'./Tools~/ci/check.sh'`: OK (invariants, format, shadow build of 33 assemblies with analyzers).
-- Unity PlayMode `--filter 'HttpWireHostConsumersTests|ProxySettingsTests|CleartextTrafficPolicyTests|ProxySupportTests|RawSocketTransportCleartextTests|WireHost|TcpConnectionPool'`:
-  183/183 passed (60 `HttpWireHostConsumersTests` cases). `Tests/Runtime` tests run on PlayMode; the
+- Unity PlayMode `--filter 'HttpWireHostConsumersTests|ProxySettingsTests|CleartextTrafficPolicyTests|ProxySupportTests|RawSocketTransportCleartextTests|WireHost|TcpConnectionPool|RawSocketTransport'`:
+  313/313 passed at ba1006a (60 `HttpWireHostConsumersTests` cases). `Tests/Runtime` tests run on PlayMode; the
   EditMode filter selects none.
 - Not run: the full Unity suites (periodic host-editor run), IL2CPP players, Android emulator or
   device (the Android policy with an IDN host is needs-device-validation), iOS.
