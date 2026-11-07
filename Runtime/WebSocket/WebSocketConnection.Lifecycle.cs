@@ -25,6 +25,9 @@ namespace TurboHTTP.WebSocket
             AbortCore(validateDisposed: false);
         }
 
+        /// <summary>How long <see cref="DisposeAsync"/> waits for the closing handshake before it aborts.</summary>
+        private static readonly TimeSpan DisposeCloseBudget = TimeSpan.FromSeconds(1);
+
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
@@ -32,10 +35,14 @@ namespace TurboHTTP.WebSocket
 
             try
             {
-                if (State == WebSocketState.Open || State == WebSocketState.Closing)
+                var state = State;
+                if (state == WebSocketState.Open || state == WebSocketState.Closing)
                 {
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-                    await CloseAsync(WebSocketCloseCode.NormalClosure, "Disposing connection.", cts.Token)
+                    // The close core, not CloseAsync: CloseAsync rejects the disposed connection, so the Close
+                    // frame was never sent and the peer saw an abnormal closure (#301). The budget bounds the
+                    // wait for the peer's Close and FIN; when it expires the canceled close aborts (#86).
+                    using var cts = new CancellationTokenSource(DisposeCloseBudget);
+                    await CloseCoreAsync(WebSocketCloseCode.NormalClosure, "Disposing connection.", cts.Token)
                         .ConfigureAwait(false);
                 }
                 else
