@@ -317,9 +317,14 @@ namespace TurboHTTP.Tests.Core
                         await _releaseShutdown.Task.ConfigureAwait(false);
                         break;
                     case PluginShutdownMode.UntilCancelled:
-                        using (cancellationToken.Register(() => ShutdownCancelled.TrySetResult(true)))
+                        try
                         {
                             await Task.Delay(System.Threading.Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            if (cancellationToken.IsCancellationRequested)
+                                ShutdownCancelled.TrySetResult(true);
                         }
 
                         break;

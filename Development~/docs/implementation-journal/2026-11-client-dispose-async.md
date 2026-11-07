@@ -51,8 +51,12 @@ Lane `client-dispose-async` of the w1110 waves run.
 ## Verification
 
 - `'./Tools~/ci/check.sh'`: OK (invariants, format, shadow build with analyzers; no new warning).
-- Unity EditMode scoped run: see the PR "Local gates" section.
-- Not run: the full Unity suites (periodic host-editor run), PlayMode, IL2CPP players, devices. Nothing here is
+- Unity PlayMode scoped run (runtime tests run in PlayMode), filter
+  `UHttpClientDisposeAsyncTests|UHttpClientDisposeRaceTests|PluginRegistryTests|PluginInterceptorCapabilityTests|PluginExtensibilityTests|UHttpClientTests`:
+  78/78 passed. The first run caught a test-only bug (a `CancellationTokenRegistration` disposed while the
+  token's callbacks were running, so the "token cancelled" signal never fired); the test now sets it in a
+  `finally`.
+- Not run: the full Unity suites (periodic host-editor run), IL2CPP players, devices. Nothing here is
   platform-specific.
 
 ## Deferred
