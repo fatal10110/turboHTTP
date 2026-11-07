@@ -64,7 +64,9 @@ namespace TurboHTTP.Core
         /// <summary>
         /// Max time to wait for plugin shutdown callbacks.
         /// Used by both <see cref="UHttpClient.UnregisterPluginAsync(string, System.Threading.CancellationToken)"/>
-        /// and the best-effort asynchronous shutdown path triggered during <see cref="UHttpClient.Dispose()"/>.
+        /// and both dispose paths: <see cref="UHttpClient.DisposeAsync"/> waits at most this long per
+        /// plugin before disposing interceptors and the transport, while the non-blocking
+        /// <see cref="UHttpClient.Dispose()"/> starts the shutdowns with this timeout without waiting.
         /// </summary>
         public TimeSpan PluginShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
 

@@ -10,8 +10,12 @@ namespace TurboHTTP.Core
     /// Main HTTP client for TurboHTTP.
     /// Provides fluent verb helpers and client-bound request creation.
     /// Thread-safe for concurrent use.
+    /// Dispose it with <see cref="DisposeAsync"/> to wait for plugin shutdown before owned
+    /// interceptors and the owned transport are released; <see cref="Dispose"/> is the
+    /// non-blocking path that does not wait for plugins.
+    /// The class is sealed and has no finalizer: it holds no unmanaged resources itself.
     /// </summary>
-    public class UHttpClient : IDisposable
+    public sealed class UHttpClient : IDisposable, IAsyncDisposable
     {
         private readonly UHttpClientOptions _options;
         private readonly IHttpTransport _transport;
@@ -28,7 +32,7 @@ namespace TurboHTTP.Core
         // (AvailableWaitHandle is not used), and disposing it under waiters made their Release throw
         // ObjectDisposedException over the real result (#178).
         private readonly SemaphoreSlim _pluginLifecycleGate = new SemaphoreSlim(1, 1);
-        // Guards _plugins and every write of _pipeline. Dispose clears both under it after setting
+        // Guards _plugins and every write of _pipeline. Dispose/DisposeAsync clear both under it after setting
         // _disposed, so a registration that re-checks _disposed under it cannot resurrect either.
         private readonly object _pluginLock = new object();
         private readonly List<PluginRegistration> _plugins = new List<PluginRegistration>();
@@ -507,12 +511,70 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>
+        /// Disposes the client without blocking: marks it disposed, unregisters every plugin and
+        /// <em>starts</em> their <see cref="IHttpPlugin.ShutdownAsync"/> (each bounded by
+        /// <see cref="UHttpClientOptions.PluginShutdownTimeout"/>), then immediately disposes the
+        /// configured interceptors (when <see cref="UHttpClientOptions.DisposeInterceptors"/> is set)
+        /// and the transport (when the client owns it). It does not wait for plugin shutdown, so a
+        /// plugin may still be shutting down after this returns, against already disposed
+        /// components; shutdown failures and timeouts are logged, never thrown. Use
+        /// <see cref="DisposeAsync"/> to wait for plugin shutdown first. Calling either method again
+        /// (or the other one) after the first call is a no-op.
+        /// </summary>
         public void Dispose()
         {
-            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+            PluginRegistration[] pluginsToShutdown = BeginDispose();
+            if (pluginsToShutdown == null)
                 return;
 
-            GC.SuppressFinalize(this);
+            for (int i = pluginsToShutdown.Length - 1; i >= 0; i--)
+            {
+                SchedulePluginShutdownOnDispose(pluginsToShutdown[i]);
+            }
+
+            DisposeOwnedComponents();
+        }
+
+        /// <summary>
+        /// Disposes the client and waits for plugin shutdown: marks it disposed, unregisters every
+        /// plugin and awaits each <see cref="IHttpPlugin.ShutdownAsync"/> in reverse registration
+        /// order, each bounded by <see cref="UHttpClientOptions.PluginShutdownTimeout"/> (the
+        /// plugin's token is cancelled at the timeout, and the client stops waiting for a plugin that
+        /// ignores it). Only after every plugin completed or timed out does it dispose the
+        /// configured interceptors (when <see cref="UHttpClientOptions.DisposeInterceptors"/> is set)
+        /// and then the transport (when the client owns it). Shutdown failures and timeouts are
+        /// logged, never thrown. Calling either dispose method again after the first call is a no-op
+        /// that returns at once, even while the first disposal is still running.
+        /// </summary>
+        /// <returns>A task that completes when the client is fully disposed.</returns>
+        public ValueTask DisposeAsync()
+        {
+            PluginRegistration[] pluginsToShutdown = BeginDispose();
+            if (pluginsToShutdown == null)
+                return default;
+
+            return new ValueTask(DisposeAfterPluginShutdownAsync(pluginsToShutdown));
+        }
+
+        private async Task DisposeAfterPluginShutdownAsync(PluginRegistration[] pluginsToShutdown)
+        {
+            for (int i = pluginsToShutdown.Length - 1; i >= 0; i--)
+            {
+                await ShutdownPluginBoundedAsync(pluginsToShutdown[i]).ConfigureAwait(false);
+            }
+
+            DisposeOwnedComponents();
+        }
+
+        // Shared by Dispose and DisposeAsync: the single CompareExchange makes the first call of
+        // either kind the only one that disposes. Returns null when the client was already disposed.
+        // _disposed is set before the plugins are snapshotted and cleared under _pluginLock, so a
+        // registration that re-checks _disposed under the lock cannot add a plugin afterwards (#178).
+        private PluginRegistration[] BeginDispose()
+        {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return null;
 
             PluginRegistration[] pluginsToShutdown;
             lock (_pluginLock)
@@ -522,11 +584,11 @@ namespace TurboHTTP.Core
                 _pipeline = null;
             }
 
-            for (int i = pluginsToShutdown.Length - 1; i >= 0; i--)
-            {
-                SchedulePluginShutdownOnDispose(pluginsToShutdown[i]);
-            }
+            return pluginsToShutdown;
+        }
 
+        private void DisposeOwnedComponents()
+        {
             if (_ownsInterceptors)
                 DisposeConfiguredInterceptors();
 
@@ -543,6 +605,35 @@ namespace TurboHTTP.Core
             }
 
             // _pluginLifecycleGate is deliberately not disposed (see its declaration, #178).
+        }
+
+        // Awaits one plugin's shutdown for at most PluginShutdownTimeout. The plugin's token is
+        // cancelled at the same timeout; the extra bound only covers a plugin that ignores it, whose
+        // shutdown task is then left to ShutdownPluginOnDisposeAsync, which catches and logs
+        // everything, so nothing goes unobserved.
+        private async Task ShutdownPluginBoundedAsync(PluginRegistration plugin)
+        {
+            if (plugin == null)
+                return;
+
+            plugin.State = PluginLifecycleState.ShuttingDown;
+            Task shutdown = ShutdownPluginOnDisposeAsync(plugin);
+            if (shutdown.IsCompleted)
+            {
+                await shutdown.ConfigureAwait(false);
+                return;
+            }
+
+            using var boundCts = new CancellationTokenSource();
+            Task bound = Task.Delay(_options.PluginShutdownTimeout, boundCts.Token);
+            if (await Task.WhenAny(shutdown, bound).ConfigureAwait(false) == shutdown)
+            {
+                boundCts.Cancel();
+                return;
+            }
+
+            TurboDiagnostics.Log(
+                $"[TurboHTTP] Plugin dispose did not complete within {_options.PluginShutdownTimeout.TotalMilliseconds:F0}ms ({plugin.Name}); continuing client disposal");
         }
 
         private void SchedulePluginShutdownOnDispose(PluginRegistration plugin)
