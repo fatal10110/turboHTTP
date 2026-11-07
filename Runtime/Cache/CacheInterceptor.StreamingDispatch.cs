@@ -34,8 +34,12 @@ namespace TurboHTTP.Cache
             IResponseBodySource body,
             string baseKey,
             CacheLookupResult lookup,
+            DateTime requestTimeUtc,
             CancellationToken cancellationToken)
         {
+            // RFC 9111 section 4.2.3 response_time: the 304's header fields have arrived.
+            var responseTimeUtc = GetUtcNow();
+
             // A 304 has no content (RFC 9110 section 15.4.5): release the transport body before touching storage.
             if (body != null)
                 await body.DisposeAsync().ConfigureAwait(false);
@@ -43,7 +47,13 @@ namespace TurboHTTP.Cache
             context.RecordEvent("CacheRevalidateNotModified");
 
             // RFC 9111 section 4.3.4: freshen the stored response with the 304's header fields.
-            var merged = MergeNotModifiedEntry(request, lookup.Entry, notModifiedHeaders ?? HttpHeaders.Empty, baseKey);
+            var merged = MergeNotModifiedEntry(
+                request,
+                lookup.Entry,
+                notModifiedHeaders ?? HttpHeaders.Empty,
+                baseKey,
+                requestTimeUtc,
+                responseTimeUtc);
             var setCookies = notModifiedHeaders?.GetValues("Set-Cookie");
             if (merged.Entry != null)
             {
@@ -69,6 +79,7 @@ namespace TurboHTTP.Cache
             IResponseBodySource body,
             string baseKey,
             CacheLookupResult lookup,
+            DateTime requestTimeUtc,
             CancellationToken cancellationToken)
         {
             context.RecordEvent("CacheRevalidateModified");
@@ -86,7 +97,8 @@ namespace TurboHTTP.Cache
                 throw;
             }
 
-            var storingHandler = new CacheStoringHandler(handler, this, request, baseKey, context);
+            // Built after the response arrived: request_time is the conditional request's send time.
+            var storingHandler = new CacheStoringHandler(handler, this, request, baseKey, context, requestTimeUtc);
             storingHandler.OnRequestStart(request, context);
             await storingHandler.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
         }
@@ -164,6 +176,9 @@ namespace TurboHTTP.Cache
             private readonly string _baseKey;
             private readonly CacheLookupResult _lookup;
             private readonly CancellationToken _cancellationToken;
+            // RFC 9111 section 4.2.3 request_time of the conditional request: the handler is created right before
+            // it is dispatched (#306).
+            private readonly DateTime _requestTimeUtc;
             private int _transportRequestStarted;
             private int _innerRequestStarted;
 
@@ -181,6 +196,7 @@ namespace TurboHTTP.Cache
                 _baseKey = baseKey ?? throw new ArgumentNullException(nameof(baseKey));
                 _lookup = lookup;
                 _cancellationToken = cancellationToken;
+                _requestTimeUtc = owner.GetUtcNow();
             }
 
             public void OnRequestStart(UHttpRequest request, RequestContext context)
@@ -208,6 +224,7 @@ namespace TurboHTTP.Cache
                         body,
                         _baseKey,
                         _lookup,
+                        _requestTimeUtc,
                         _cancellationToken);
                 }
 
@@ -220,6 +237,7 @@ namespace TurboHTTP.Cache
                     body,
                     _baseKey,
                     _lookup,
+                    _requestTimeUtc,
                     _cancellationToken);
             }
 

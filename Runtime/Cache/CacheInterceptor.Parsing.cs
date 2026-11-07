@@ -340,6 +340,27 @@ namespace TurboHTTP.Cache
             return 0;
         }
 
+        // RFC 9111 section 4.2.3: corrected_age_value = age_value + response_delay, with response_delay =
+        // response_time - request_time, clamped at zero so a clock stepping back never makes a response younger (#306).
+        // The stored Age then holds the corrected initial age that ResolveExpiry and ComputeCurrentAgeSeconds read.
+        // Whole seconds, rounded down like Age itself and resident_time. Without a request_time the delay is 0, and
+        // entries stored before this change already hold their uncorrected Age, so they keep the old behaviour.
+        private static void ApplyResponseDelay(HttpHeaders headers, DateTime? requestTimeUtc, DateTime responseTimeUtc)
+        {
+            if (!requestTimeUtc.HasValue || responseTimeUtc <= requestTimeUtc.Value)
+                return;
+
+            var delaySeconds = (responseTimeUtc - requestTimeUtc.Value).Ticks / TimeSpan.TicksPerSecond;
+            if (delaySeconds <= 0)
+                return;
+
+            var correctedAgeSeconds = (long)ParseAgeSeconds(headers) + delaySeconds;
+            if (correctedAgeSeconds > int.MaxValue)
+                correctedAgeSeconds = int.MaxValue;
+
+            headers.Set("Age", correctedAgeSeconds.ToString(CultureInfo.InvariantCulture));
+        }
+
         private static int ComputeCurrentAgeSeconds(CacheEntry entry, DateTime nowUtc)
         {
             var correctedInitialAge = ParseAgeSeconds(entry.Headers);
