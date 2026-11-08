@@ -13,6 +13,7 @@ function world(cap, scen) {
   const boxes = {}
   const state = {}
   const labels = []
+  const prompts = [] // [label, prompt] per call
   const types = [] // [label, agentType] per call, and the calls refused for a missing type
   const refused = []
   const rev = {} // per-lane review memory that survives a reviewer restart (the review files)
@@ -104,6 +105,7 @@ function world(cap, scen) {
   async function body(prompt, opts) {
     const label = opts.label || ''
     labels.push(label)
+    prompts.push([label, prompt])
     const [kind, rest] = label.split(':')
     const slug = (rest || '').split('#')[0]
     if (kind === 'status') return { lines: scen.$status || [] }
@@ -150,7 +152,7 @@ function world(cap, scen) {
     }
   }
   const parallel = thunks => Promise.all(thunks.map(t => t().catch(() => null)))
-  return { agent, parallel, labels, types, refused, state, rev, models, peak: () => peak, preload: (slug, b, kind) => post(slug, b, kind, {}) }
+  return { agent, parallel, labels, prompts, types, refused, state, rev, models, peak: () => peak, preload: (slug, b, kind) => post(slug, b, kind, {}) }
 }
 
 async function run(args, scen, cap = 2) {
@@ -316,6 +318,12 @@ const count = (w, prefix) => w.labels.filter(l => l === prefix || l.startsWith(p
   const m = await run({ run: 'sim', role: 'merger', plan }, { $take: [[{ id: 'm1', type: 'merge', from: 'a/review' }]] })
   // take (event), merge, take (stop), take:confirm-stop (stop) -> the broker ends.
   assert.deepEqual(m.w.types.map(([l, ty]) => ty), ['wave-coord', 'wave-merge', 'wave-coord', 'wave-coord'])
+  // The first take re-serves orphans (--requeue); every later take acknowledges the ids the previous
+  // take returned, so a poller that dropped events gets them served again.
+  const takes = m.w.prompts.filter(([l]) => l === 'take' || l === 'take:confirm-stop').map(([, p]) => p)
+  assert.ok(/FIRST run only.*--requeue/s.test(takes[0]) && !/--ack/.test(takes[0]), 'the first take requeues, without --ack')
+  assert.match(takes[1], /--ack m1 --wait/)
+  assert.match(takes[2], /--ack - --wait 5/, 'the confirming take follows a take without events')
 
   // An unconfirmed stop does not end the broker: the confirming take's events are served.
   const fake = await run({ run: 'sim', role: 'merger', plan }, {
