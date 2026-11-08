@@ -282,14 +282,8 @@ public static class TurboHttpSmokeRows
         var provider = TlsProviderSelector.GetProvider(backend);
         var reported = provider.IsAlpnSupported();
         var runtime = reported && (backend != TlsBackend.SslStream || SslStreamReportsAlpn());
-        using (var tcp = new TcpClient())
+        using (var tcp = await ConnectAsync(AlpnHost, 443, ct))
         {
-            // ConnectAsync takes no token here: disposing the client on cancellation ends the connect.
-            using (ct.Register(tcp.Dispose))
-            {
-                await tcp.ConnectAsync(AlpnHost, 443);
-            }
-
             var result = await provider.WrapAsync(tcp.GetStream(), AlpnHost, AlpnOffer, ct);
             using (result.SecureStream)
             {
@@ -305,6 +299,38 @@ public static class TurboHttpSmokeRows
                 return detail;
             }
         }
+    }
+
+    // One client per resolved address, in order, each in that address's family: a parameterless TcpClient is
+    // IPv4-only on Mono, which an IPv6-only (NAT64) network cannot reach.
+    private static async Task<TcpClient> ConnectAsync(string host, int port, CancellationToken ct)
+    {
+        Exception last = null;
+        foreach (var address in await System.Net.Dns.GetHostAddressesAsync(host))
+        {
+            ct.ThrowIfCancellationRequested();
+            var tcp = new TcpClient(address.AddressFamily);
+            try
+            {
+                // ConnectAsync takes no token here: disposing the client on cancellation ends the connect.
+                using (ct.Register(tcp.Dispose))
+                {
+                    await tcp.ConnectAsync(address, port);
+                }
+
+                return tcp;
+            }
+            catch (Exception ex) when (ex is SocketException || ex is ObjectDisposedException)
+            {
+                tcp.Dispose();
+                ct.ThrowIfCancellationRequested();
+                last = ex;
+            }
+        }
+
+        if (last == null)
+            throw new SocketException((int)SocketError.HostNotFound);
+        throw new InvalidOperationException("no address of " + host + " accepted a connection", last);
     }
 
     // Unity's Mono class library throws PlatformNotSupportedException from NegotiatedApplicationProtocol
