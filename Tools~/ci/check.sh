@@ -57,6 +57,7 @@ if [ "$full" = 1 ]; then
   python3 "Tools~/ci/test_shadow_build_tests.py" -q || fail "shadow build of Tests/ (Unity NUnit) gate test"
   python3 "Tools~/ci/test_il2cpp_filter_check.py" -q || fail "il2cppfilter invariant test"
   python3 "Tools~/ci/test_unitask_pin.py" -q || fail "UniTask pin gate test"
+  python3 "Tools~/unity/test_platform_matrix.py" -q || fail "Unity platform matrix tool test"
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"
   step "waves orchestration simulation"
   if command -v node >/dev/null; then node .claude/skills/turbohttp-waves/waves_sim.mjs >/dev/null || fail "waves_sim"

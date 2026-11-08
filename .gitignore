@@ -43,3 +43,6 @@ Tests/Benchmarks/*.observed.json
 
 # Python bytecode from the agent tools
 __pycache__/
+
+# Unity platform certification matrix (Tools~/unity/platform_matrix.py, #105)
+TestResults~/

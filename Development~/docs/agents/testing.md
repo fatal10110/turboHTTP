@@ -201,6 +201,27 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    with iOS Build Support there (the script sets the ARM64 simulator architecture) and record the editor
    version with the results, since it is not the 2021.3 baseline. A simulator run does not replace the
    device rows (ATS, NAT64, ALPN, suspension stay `needs-device-validation`).
+6. **Certification matrix (Phase 15.6, #105).** `UnityReliabilitySuiteTests` (dispatcher flood,
+   cancel-before-drain, the domain-reload transition), `UnityStressSuiteTests` (texture and audio
+   bursts) and `UnityPerformanceBudgetTests` are the certification suites. Their budgets live in
+   `Tests/Runtime/Unity/ReliabilityBudgets.cs`, per profile (`editor`, `standalone`, `mobile`; the mobile
+   values are estimates until device runs, #99). Frame time is the dispatcher's measured per-frame
+   drain (`MainThreadDispatcher.GetDrainStats`), never a sleep. Each budget prints one line in the
+   test's NUnit output: `TURBOHTTP_METRIC name=<id> value=<n> budget=<n> unit=<u> profile=<p> result=pass|fail`.
+   After the runs, collect the result XMLs from the runners' cache folder into the matrix:
+   `python3 'Tools~/unity/platform_matrix.py' <cache>/results-PlayMode-<ts>.xml <cache>/results-Android-High-x86_64-api33-<serial>-<ts>.xml`.
+   It writes `TestResults~/unity-platform-matrix.json` (gitignored; `--out` elsewhere) and prints a
+   summary for the PR or journal. The runners' file names give each row its target, backend,
+   stripping, arch and API level; anything else takes `--set key=value` (an iOS simulator
+   `results.xml`: `--set target=iOS --set backend=IL2CPP --set device=simulator --set unity_version=<editor>`).
+   Rows already in the file stay unless a new row has the same id (`--fresh` starts over); `--gate`
+   exits 1 when a cell fails. The cells are fixed and their ids stable (schema
+   `turbohttp.unity-platform-matrix` version 1; fields are only added): `editor-editmode-mono`,
+   `editor-playmode-mono`, `standalone-*`, `android-il2cpp-arm64`, `android-il2cpp-x86_64-emulator`,
+   `ios-il2cpp` and `webgl`. A cell no row reached reads `not-run`, `needs-device-validation` (arm64
+   phone, iOS, macOS) or `policy-disabled` (WebGL: no socket transport). A cell that ran lists the
+   certification suites it missed. Its unit tests (`Tools~/unity/test_platform_matrix.py`) run in
+   `check.sh`. CI does not build the matrix: it has no Unity license (#188).
 
 From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
 Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and
