@@ -215,13 +215,14 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    stripping, arch and API level; anything else takes `--set key=value` (an iOS simulator
    `results.xml`: `--set target=iOS --set backend=IL2CPP --set device=simulator --set unity_version=<editor>`).
    Rows already in the file stay unless a new row has the same id (`--fresh` starts over); `--gate`
-   exits 1 when a cell fails. The cells are fixed and their ids stable (schema
+   exits 1 when a cell is `fail` or `incomplete`. The cells are fixed and their ids stable (schema
    `turbohttp.unity-platform-matrix` version 1; fields are only added): `editor-editmode-mono`,
    `editor-playmode-mono`, `standalone-*`, `android-il2cpp-arm64`, `android-il2cpp-x86_64-emulator`,
    `ios-il2cpp` and `webgl`. A cell no row reached reads `not-run`, `needs-device-validation` (arm64
    phone, iOS, macOS) or `policy-disabled` (WebGL: no socket transport). A cell that ran lists the
-   certification suites it missed. Its unit tests (`Tools~/unity/test_platform_matrix.py`) run in
-   `check.sh`. CI does not build the matrix: it has no Unity license (#188).
+   certification suites it missed; a certifying cell (every cell but EditMode) whose rows passed
+   without all of them reads `incomplete`, not `pass` (a `--filter` run certifies nothing). Its unit
+   tests (`Tools~/unity/test_platform_matrix.py`) run in `check.sh --full`. CI does not build the matrix: it has no Unity license (#188).
 
 From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
 Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and

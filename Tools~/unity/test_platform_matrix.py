@@ -98,7 +98,7 @@ class PlatformMatrixTests(unittest.TestCase):
         cells = {c["id"]: c for c in matrix["cells"]}
         self.assertEqual(matrix["schema"], "turbohttp.unity-platform-matrix")
         self.assertEqual(matrix["schema_version"], 1)
-        self.assertEqual(cells["android-il2cpp-x86_64-emulator"]["status"], "pass")
+        self.assertEqual(cells["android-il2cpp-x86_64-emulator"]["status"], "incomplete")
         self.assertEqual(cells["android-il2cpp-x86_64-emulator"]["rows"], ["android-il2cpp-x86_64-api33-high-emulator"])
         self.assertEqual(cells["android-il2cpp-x86_64-emulator"]["missing_certification_suites"],
                          ["UnityStressSuiteTests", "UnityPerformanceBudgetTests"])
@@ -143,6 +143,32 @@ class PlatformMatrixTests(unittest.TestCase):
             self.assertEqual([r["id"] for r in json.load(fh)["rows"]], ["editor-playmode"])
         self.assertEqual(code, 0)
 
+    def test_certifying_cell_without_the_suites_is_incomplete_and_fails_the_gate(self):
+        out = os.path.join(self.tmp.name, "gate.json")
+        filtered = self.write("results-PlayMode-20261108-101500.xml", results_xml(case("Http2Tests", "Frames")))
+        code, stdout, _ = self.run_main("--out", out, "--gate", filtered)
+        self.assertEqual(code, 1, "a green row that skipped the certification suites must not pass the gate")
+        with open(out, encoding="utf-8") as fh:
+            cell = next(c for c in json.load(fh)["cells"] if c["id"] == "editor-playmode-mono")
+        self.assertEqual(cell["status"], "incomplete")
+        self.assertEqual(cell["missing_certification_suites"], list(pm.CERTIFICATION_SUITES))
+        self.assertIn("incomplete", stdout)
+
+        full = self.write("results-PlayMode-20261108-111500.xml", results_xml(
+            *[case(suite, "A") for suite in pm.CERTIFICATION_SUITES]))
+        code, _, _ = self.run_main("--out", out, "--fresh", "--gate", full)
+        self.assertEqual(code, 0)
+        with open(out, encoding="utf-8") as fh:
+            cell = next(c for c in json.load(fh)["cells"] if c["id"] == "editor-playmode-mono")
+        self.assertEqual((cell["status"], cell["missing_certification_suites"]), ("pass", []))
+
+    def test_inconclusive_case_fails_row_like_its_suite(self):
+        path = self.write("results-PlayMode-20261108-101500.xml", results_xml(
+            case("UnityStressSuiteTests", "A"), case("UnityStressSuiteTests", "B", result="Inconclusive")))
+        row = pm.build_row(path)
+        self.assertEqual(row["suites"][f"{NS}.UnityStressSuiteTests"]["status"], "fail")
+        self.assertEqual(row["status"], "fail", "the row status counts inconclusive cases like its suites do")
+
     def test_set_overrides_name_and_rejects_unknown_keys(self):
         ios = self.write("results.xml", results_xml(case("UnityReliabilitySuiteTests", "Flood")))
         out = os.path.join(self.tmp.name, "m.json")
@@ -155,7 +181,7 @@ class PlatformMatrixTests(unittest.TestCase):
         with open(out, encoding="utf-8") as fh:
             matrix = json.load(fh)
         cell = next(c for c in matrix["cells"] if c["id"] == "ios-il2cpp")
-        self.assertEqual(cell["status"], "pass")
+        self.assertEqual(cell["status"], "incomplete", "only one certification suite ran")
         self.assertEqual(matrix["rows"][0]["unity_version"], "6000.0.40f1")
         code, _, err = self.run_main("--out", out, "--set", "color=red", ios)
         self.assertEqual(code, 2)

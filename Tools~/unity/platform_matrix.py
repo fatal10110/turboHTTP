@@ -17,13 +17,15 @@ id, so separate runs add their rows one by one (--fresh starts over). The file h
 
   schema / schema_version   "turbohttp.unity-platform-matrix", 1 (fields are only ever added)
   cells                      the fixed certification cells of the 15.6 plan with a status:
-                             pass | fail | no-tests | not-run | needs-device-validation | policy-disabled
+                             pass | fail | incomplete | no-tests | not-run | needs-device-validation |
+                             policy-disabled; "incomplete" is a certifying cell whose rows passed but did
+                             not run every certification suite (a --filter run, for example)
   rows                       per run: target, backend, stripping, arch, api, device, unity_version,
                              commit, totals, status, per-suite counts and the TURBOHTTP_METRIC lines
                              the budget tests print (Tests/Runtime/Unity/ReliabilityBudgets.cs)
 
 Usage: platform_matrix.py [--out FILE] [--fresh] [--set key=value]... [--gate] [results.xml ...]
-Exit: 0 written; 1 with --gate when a cell is fail; 2 bad arguments or unreadable input.
+Exit: 0 written; 1 with --gate when a cell is fail or incomplete; 2 bad arguments or unreadable input.
 """
 import argparse
 import datetime
@@ -40,6 +42,7 @@ METRIC_PREFIX = "TURBOHTTP_METRIC"
 CERTIFICATION_SUITES = ("UnityReliabilitySuiteTests", "UnityStressSuiteTests", "UnityPerformanceBudgetTests")
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_OUT = os.path.join("TestResults~", "unity-platform-matrix.json")
+GATE_FAILING = ("fail", "incomplete")  # cell statuses that make --gate exit 1
 
 # The certification cells of the 15.6 plan (Step 3). The ids are stable: dashboards parse them.
 # "match" selects the rows of a cell; "absent" is the status of a cell no row reached.
@@ -176,7 +179,7 @@ def parse_results(xml_path):
         "started": root.get("start-time"),
         "duration_s": _float(root.get("duration")),
         "totals": totals,
-        "status": _status(totals["passed"], totals["failed"], totals["total"]),
+        "status": _status(totals["passed"], totals["failed"] + totals["inconclusive"], totals["total"]),
         "suites": dict(sorted(suites.items())),
         "metrics": [metrics[k] for k in sorted(metrics)],
     }
@@ -235,7 +238,10 @@ def build_cells(rows):
             cell["rows"] = [r["id"] for r in matched]
             if spec.get("certifies", True):
                 ran = {s for r in matched for s in r.get("certification_suites", [])}
-                cell["missing_certification_suites"] = [s for s in CERTIFICATION_SUITES if s not in ran]
+                missing = [s for s in CERTIFICATION_SUITES if s not in ran]
+                cell["missing_certification_suites"] = missing
+                if missing and cell["status"] != "fail":
+                    cell["status"] = "incomplete"  # green rows without the suites certify nothing
         cells.append(cell)
     return cells
 
@@ -283,7 +289,7 @@ def main(argv=None):
     parser.add_argument("--fresh", action="store_true", help="drop the rows already in the output file")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                         help="row metadata for every XML given: " + ", ".join(METADATA_KEYS))
-    parser.add_argument("--gate", action="store_true", help="exit 1 when any cell is fail")
+    parser.add_argument("--gate", action="store_true", help="exit 1 when any cell is fail or incomplete")
     args = parser.parse_args(argv)
 
     overrides = {}
@@ -320,7 +326,7 @@ def main(argv=None):
     print(f"platform_matrix: {out}")
     for line in summary_lines(matrix):
         print(line)
-    if args.gate and any(c["status"] == "fail" for c in matrix["cells"]):
+    if args.gate and any(c["status"] in GATE_FAILING for c in matrix["cells"]):
         return 1
     return 0
 
