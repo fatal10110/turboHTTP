@@ -168,7 +168,7 @@ namespace TurboHTTP.Tests.Performance
                 Interceptors = new List<IHttpInterceptor> { interceptor }
             });
 
-            UHttpStreamingResponse response;
+            UHttpStreamingResponse response = null;
             try
             {
                 prime?.Invoke(client);
@@ -178,6 +178,7 @@ namespace TurboHTTP.Tests.Performance
             }
             catch
             {
+                response?.Dispose();
                 client.Dispose();
                 throw;
             }

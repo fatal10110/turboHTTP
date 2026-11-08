@@ -9,6 +9,7 @@ baseline (`baseline.json`). It replaces the temporary harness the Phase 22a jour
 'Tools~/bench/run.sh' --heavy                 # also the 100 MiB and 10 x 10 MiB memory rows (~10 s more)
 'Tools~/bench/run.sh' --only h1-get-1k-buffered,h2-get-1k-buffered --rounds 3
 'Tools~/bench/run.sh' --record --heavy        # write this run as the new baseline.json
+'Tools~/bench/run.sh' --gate-latency         # also gate p50 latency (a quiet machine with its own baseline)
 ```
 
 Needs the .NET 8 SDK (with its ASP.NET Core shared framework) and the Unity managed DLLs the shadow build
@@ -54,15 +55,18 @@ guardrail).
 With `baseline.json` present, `run.sh` compares every scenario. A **gated** row (the small buffered round
 trips: the plan's "<= 5 % latency regression for buffered small-body paths") fails the run when:
 
-- its p50 is more than `--budget` percent (default 5) above the baseline, but only when the baseline was
-  recorded on the same machine shape (OS, architecture, processor count): loopback latency does not transfer
-  between machines, so elsewhere the latency delta is printed as advisory;
-- its managed bytes per request exceed the baseline by more than the budget plus 64 bytes. Allocation does
-  transfer between machines, so this part is gated everywhere.
+- its managed bytes per request exceed the baseline by more than `--budget` percent (default 5) plus 64
+  bytes. Allocation transfers between machines and barely moves between runs (under 2 % on the gated rows),
+  so this is always gated;
+- with `--gate-latency` only: its p50 is more than the budget above the baseline, and the baseline was
+  recorded on the same machine shape (OS, architecture, processor count). Without the flag, or on another
+  machine, latency deltas are printed as advisory.
 
-The other rows print their deltas for information. Latency on a shared or busy machine is noisy: rerun, or
-use `--rounds 9`, before reading a single over-budget latency row as a regression, and record a new baseline
-(`--record --heavy`) on the machine that will do the comparing.
+Latency is opt-in because loopback latency on a shared host is not repeatable to 5 %: on the 4-CPU WSL2
+machine that recorded the baseline, identical back-to-back runs moved the gated p50s by -43 % to +8 % while
+other jobs ran (load average 6 to 10). Use `--gate-latency` on a quiet machine (the run warns when the load
+average exceeds half the processors), with a baseline recorded there (`--record --heavy`), and rerun before
+reading one over-budget row as a regression. The other rows print their deltas for information.
 
 ## The committed baseline
 

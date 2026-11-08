@@ -27,6 +27,8 @@ namespace TurboHTTP.Tools.Bench
         public string ComparePath;
         public string WriteBaselinePath;
         public double BudgetPercent = 5;
+        public bool GateLatency;
+        public double? LoadAverage;
     }
 
     /// <summary>
@@ -54,6 +56,7 @@ namespace TurboHTTP.Tools.Bench
         public async Task<int> RunAsync()
         {
             Directory.CreateDirectory(_options.OutDir);
+            _options.LoadAverage = BenchMachine.ReadLoadAverage();
             var (h1Port, tlsPort) = await StartServerAsync().ConfigureAwait(false);
             _h1 = "http://127.0.0.1:" + h1Port.ToString(CultureInfo.InvariantCulture);
             _h2 = "https://127.0.0.1:" + tlsPort.ToString(CultureInfo.InvariantCulture);
@@ -88,7 +91,7 @@ namespace TurboHTTP.Tools.Bench
                 var report = BenchReport.Create(results, _options);
                 int exit = 0;
                 if (_options.ComparePath != null)
-                    exit = BenchReport.Compare(report, BenchReport.Load(_options.ComparePath), _options.BudgetPercent);
+                    exit = BenchReport.Compare(report, BenchReport.Load(_options.ComparePath), _options.BudgetPercent, _options.GateLatency);
                 File.WriteAllText(Path.Combine(_options.OutDir, "result.json"), BenchReport.Serialize(report));
                 if (_options.WriteBaselinePath != null)
                 {

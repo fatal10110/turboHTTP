@@ -52,11 +52,33 @@ namespace TurboHTTP.Tools.Bench
         public string Arch { get; set; }
         public string Runtime { get; set; }
         public int Processors { get; set; }
+        /// <summary>1-minute load average when the run started (Linux /proc/loadavg), else null.</summary>
+        public double? LoadAverage { get; set; }
 
         public bool SameAs(BenchMachine other) =>
             other != null && Os == other.Os && Arch == other.Arch && Processors == other.Processors;
 
         public override string ToString() => Os + " " + Arch + " x" + Processors + " " + Runtime;
+
+        /// <summary>The 1-minute load average from /proc/loadavg, or null where it does not exist.</summary>
+        public static double? ReadLoadAverage()
+        {
+            try
+            {
+                if (!File.Exists("/proc/loadavg"))
+                    return null;
+                var first = File.ReadAllText("/proc/loadavg").Split(' ')[0];
+                return double.Parse(first, NumberStyles.Float, CultureInfo.InvariantCulture);
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (FormatException)
+            {
+                return null;
+            }
+        }
     }
 
     internal sealed class BenchReportData
@@ -73,8 +95,8 @@ namespace TurboHTTP.Tools.Bench
 
     /// <summary>
     /// result.json / baseline.json and the regression check. A budgeted scenario regresses when its p50
-    /// latency exceeds the baseline by more than the budget (latency is only gated when the baseline was
-    /// recorded on the same machine shape: loopback latency does not transfer between machines), or when its
+    /// latency exceeds the baseline by more than the budget (only with --gate-latency and a baseline recorded on
+    /// the same machine shape: loopback latency does not transfer between machines or survive a busy host), or when its
     /// managed bytes per request exceed the baseline by more than the budget plus <see cref="AllocSlackBytes"/>
     /// (allocation does transfer, so it is gated everywhere).
     /// </summary>
@@ -104,6 +126,7 @@ namespace TurboHTTP.Tools.Bench
                     Arch = RuntimeInformation.ProcessArchitecture.ToString(),
                     Runtime = RuntimeInformation.FrameworkDescription,
                     Processors = Environment.ProcessorCount,
+                    LoadAverage = options.LoadAverage,
                 },
                 Options = new Dictionary<string, int>
                 {
@@ -122,15 +145,19 @@ namespace TurboHTTP.Tools.Bench
         public static string Serialize(BenchReportData report) => JsonSerializer.Serialize(report, s_json) + "\n";
 
         /// <summary>Prints one line per scenario present in both; returns 1 when a budgeted scenario regressed.</summary>
-        public static int Compare(BenchReportData current, BenchReportData baseline, double budgetPercent)
+        public static int Compare(BenchReportData current, BenchReportData baseline, double budgetPercent, bool gateLatencyRequested)
         {
-            bool gateLatency = current.Machine.SameAs(baseline.Machine);
+            bool sameMachine = current.Machine.SameAs(baseline.Machine);
+            bool gateLatency = gateLatencyRequested && sameMachine;
             var lines = new List<string>();
-            if (!gateLatency)
-            {
+            if (!gateLatencyRequested)
+                lines.Add("latency deltas are advisory (pass --gate-latency on a quiet machine to gate them); allocation is gated");
+            else if (!sameMachine)
                 lines.Add("baseline machine (" + baseline.Machine + ") differs from this one (" + current.Machine +
                           "): latency deltas are advisory, allocation is still gated");
-            }
+            if (gateLatency && current.Machine.LoadAverage > current.Machine.Processors / 2.0)
+                lines.Add("warning: load average " + current.Machine.LoadAverage + " on " + current.Machine.Processors +
+                          " processors; latency results on a busy machine are not reliable");
 
             double factor = 1 + budgetPercent / 100.0;
             bool failed = false;

@@ -6,7 +6,10 @@
 #   Tools~/bench/run.sh --record            write this run as the new baseline (no comparison)
 #   Tools~/bench/run.sh --only h1-get-1k-buffered,h2-get-1k-buffered --rounds 3
 #
-# Harness flags: --iterations N, --warmup N, --rounds N, --only a,b, --budget PERCENT (default 5), --heavy.
+#   Tools~/bench/run.sh --gate-latency      also fail on p50 latency over the budget (quiet machine only)
+#
+# Harness flags: --iterations N, --warmup N, --rounds N, --only a,b, --budget PERCENT (default 5), --heavy,
+# --gate-latency.
 # Script flags: --record, --no-compare, --no-shadow-build. Needs dotnet (SDK 8 with the ASP.NET Core shared
 # framework) and the Unity managed DLLs the shadow build uses (Tools~/ci/fetch-unity-dlls.sh, or UNITY_DLLS /
 # UNITY_PATH). The per-run test root is trusted only through SSL_CERT_FILE/SSL_CERT_DIR. Output:
@@ -24,7 +27,7 @@ while [ $# -gt 0 ]; do
     --no-shadow-build) shadow=0; shift ;;
     --no-compare) compare=0; shift ;;
     --record) record=1; compare=0; shift ;;
-    --heavy) args+=("$1"); shift ;;
+    --heavy|--gate-latency) args+=("$1"); shift ;;
     --out|--compare|--write-baseline) echo "run.sh: $1 is set by the script" >&2; exit 2 ;;
     --*) [ $# -ge 2 ] || { echo "run.sh: $1 needs a value" >&2; exit 2; }; args+=("$1" "$2"); shift 2 ;;
     *) echo "usage: $0 [--record] [--no-compare] [--no-shadow-build] [--heavy] [--iterations N] [--rounds N] [--only a,b] [...]" >&2; exit 2 ;;

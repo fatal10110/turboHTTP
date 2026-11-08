@@ -15,7 +15,7 @@ namespace TurboHTTP.Tools.Bench
             "usage: TurboHTTP.Bench generate <dir>\n" +
             "       TurboHTTP.Bench serve <dir>\n" +
             "       TurboHTTP.Bench run <dir> --out DIR [--iterations N] [--warmup N] [--rounds N] [--heavy]\n" +
-            "                              [--only a,b] [--compare baseline.json] [--budget PERCENT] [--write-baseline FILE]";
+            "                              [--only a,b] [--compare baseline.json] [--budget PERCENT] [--gate-latency] [--write-baseline FILE]";
 
         private static async Task<int> Main(string[] args)
         {
@@ -42,6 +42,7 @@ namespace TurboHTTP.Tools.Bench
                     case "--budget" when value != null:
                         options.BudgetPercent = double.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture); i++; break;
                     case "--heavy": options.Heavy = true; break;
+                    case "--gate-latency": options.GateLatency = true; break;
                     default:
                         Console.Error.WriteLine(Usage);
                         return 2;
