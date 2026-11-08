@@ -402,9 +402,10 @@ Return the events (id, type, from only), timeout and stop fields of the last run
 
 // A poller that goes off-script can report a stop it never saw (run w1030: the merger exited mid-run).
 // A broker ends only when a second, single take confirms the stop; its events are served otherwise.
-async function confirmStop(broker, phaseName) {
-  // It follows a take that returned no events, so it acknowledges none.
-  const c = await agentAs('coord', takePrompt(broker, false, true, []), { label: 'take:confirm-stop', phase: phaseName, model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
+async function confirmStop(broker, phaseName, acked) {
+  // The poller that reported the stop may never have run take, so the ids received before it
+  // are still the acknowledgement: acking none would re-serve requests that are in flight.
+  const c = await agentAs('coord', takePrompt(broker, false, true, acked), { label: 'take:confirm-stop', phase: phaseName, model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
   if (c && c.stop) return null
   log(`${broker} broker: a poller reported stop but the check did not confirm it; serving on`)
   return c || { events: [], timeout: true }
@@ -723,15 +724,17 @@ async function mergerMain() {
   phase('Merge')
   const handled = []
   let requeued = false
-  let acked = [] // ids the last take that returned handed to this script; a failed take changes nothing
+  let acked = [] // ids of the last take that returned events; a take without events changes nothing
   log(`merger: serving merge requests for tracks ${TRACKS.join(',')}`)
   for (let i = 0; i < 900; i++) {
     let t = await agentAs('coord', takePrompt('merge', !requeued, false, acked), { label: 'take', phase: 'Merge', model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
     if (!t) continue
     requeued = true // only a take that actually ran has re-served the orphans
     // Events are served even when stop is set (a real take never prints both); the next take re-reports a real stop.
-    if (t.stop && !(t.events || []).length && !(t = await confirmStop('merge', 'Merge'))) break
-    acked = (t.events || []).map(ev => String(ev.id))
+    if (t.stop && !(t.events || []).length && !(t = await confirmStop('merge', 'Merge', acked))) break
+    // Only a take that returned events changes the acknowledgement. A poller that reports none may
+    // never have run take, and every take that does run resets the ledger, so a repeated ack is harmless.
+    if ((t.events || []).length) acked = t.events.map(ev => String(ev.id))
     for (const ev of (t.events || [])) {
       const slug = String(ev.from).split('/')[0]
       const L = LANE_BY[slug] || { slug, issues: [] }
@@ -766,15 +769,17 @@ async function helperMain() {
   const helperRun = ev => HELPER_ROLE[ev.type]
     ? agentAs(HELPER_ROLE[ev.type], helperPrompt(ev), helperOpts(ev))
     : Promise.resolve(`ERROR: unknown helper type ${ev.type}. Use cs-scout, rfc-researcher or runner.`)
-  let acked = [] // ids the last take that returned handed to this script; a failed take changes nothing
+  let acked = [] // ids of the last take that returned events; a take without events changes nothing
   log(`helper broker: serving helper requests for tracks ${TRACKS.join(',')}`)
   for (let i = 0; i < 900; i++) {
     let t = await agentAs('coord', takePrompt('helper', !requeued, false, acked), { label: 'take', phase: 'Helpers', model: M.coord, effort: 'low', schema: TAKE_SCHEMA })
     if (!t) continue
     requeued = true // only a take that actually ran has re-served the orphans
     // Events are served even when stop is set (a real take never prints both); the next take re-reports a real stop.
-    if (t.stop && !(t.events || []).length && !(t = await confirmStop('helper', 'Helpers'))) break
-    acked = (t.events || []).map(ev => String(ev.id))
+    if (t.stop && !(t.events || []).length && !(t = await confirmStop('helper', 'Helpers', acked))) break
+    // Only a take that returned events changes the acknowledgement. A poller that reports none may
+    // never have run take, and every take that does run resets the ledger, so a repeated ack is harmless.
+    if ((t.events || []).length) acked = t.events.map(ev => String(ev.id))
     for (const ev of (t.events || [])) {
       const lane = String(ev.from).split('/')[0]
       if (ev.type === 'rfc-researcher') {
