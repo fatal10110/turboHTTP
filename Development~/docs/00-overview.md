@@ -71,7 +71,7 @@ The early review notes on this page (connectivity, platform networking, security
 
 | Topic | State |
 | --- | --- |
-| Proxy support (HTTP/HTTPS, CONNECT) | Shipped (Phase 14, 22b); HTTP/2 through CONNECT is negotiated today; must ship off by default (#103, required before 1.0.0) |
+| Proxy support (HTTP/HTTPS, CONNECT) | Shipped (Phase 14, 22b); HTTP/2 through CONNECT is off by default, opt-in via `Http2Options.EnableHttp2ThroughConnectTunnels`; device validation open (#103) |
 | IPv6 dual-stack | Shipped (Happy Eyeballs, Phase 14); NAT64 on device is part of #99 |
 | iOS ATS, Android Network Security Config | Documented in `Documentation~/`; device checks in #99 |
 | Decompression (gzip, deflate), cookies, multipart | Shipped (`TurboHTTP.Middleware`, `TurboHTTP.Files` multipart builder); Brotli not implemented, tracked in #121 |
@@ -128,7 +128,7 @@ The plan is organized into numbered phases; the list below covers every phase an
 ### Protocol and Runtime Rewrites (Phases 18-22c)
 
 - **[Phase 18](phases/phase-18-websocket-client.md):** WebSocket Client
-- **[Phase 18a](phases/phase-18a-websocket-advanced.md):** Advanced WebSocket (permessage-deflate; experimental until #104)
+- **[Phase 18a](phases/phase-18a-websocket-advanced.md):** Advanced WebSocket (permessage-deflate; opt-in via `WithCompression`, Editor (Mono) verified, IL2CPP/device rows open, #99/#104)
 - **[Phase 19](phases/phase-19-async-runtime-refactor.md):** Async Runtime Refactor
 - **[Phase 19a](phases/phase-19a-zero-allocation.md):** Zero-Allocation Hot Path
 - **Phase 19b:** Unified pipeline (plan in `phases/phase19b/`)
@@ -136,7 +136,7 @@ The plan is organized into numbered phases; the list below covers every phase an
 - **Phase 22:** Interceptor rewrite (plans in `phases/phase22/`)
 - **[Phase 22a](phases/phase-22a-end-to-end-streaming.md):** End-to-End Streaming
 - **[Phase 22b](phases/phase-22b-streaming-extensions.md):** Streaming Extensions (Expect: 100-continue, proxy streaming, trailers)
-- **[Phase 22c](phases/phase-22c-proxy-http2-alpn.md):** HTTP/2 through CONNECT (negotiated today; must ship off by default, #103)
+- **[Phase 22c](phases/phase-22c-proxy-http2-alpn.md):** HTTP/2 through CONNECT (off by default, opt-in via `Http2Options.EnableHttp2ThroughConnectTunnels`; device validation open, #103)
 - **Phase 22d:** HTTP/2 proxy leg and proxy-aware pooling (post-1.0, v2.0; plan docs pending, #160, plan fix #125)
 
 ### Post-1.0 Plans (feature freeze until GA)
@@ -162,8 +162,8 @@ The roadmap uses the GitHub milestones; the old `M0`-`M5` labels are retired. A 
 
 - **Feature freeze until v1.0 GA:** bug fixes, validation and docs only. Phases 16, 19c, 22d, 23, 24 (except decompression, already shipped) and 25 stay post-1.0 (v1.1/v1.2/v2.0).
 - **v1.0 ships everything in the repository today, with these gates:**
-  - HTTP/2 through CONNECT (Phase 22c) is negotiated today (`Runtime/Transport/RawSocketTransport.cs`, `s_connectTunnelAlpnProtocols`); it must ship off by default (#103, required before 1.0.0).
-  - Advanced WebSocket (Phase 18a, permessage-deflate) is experimental until #104.
+  - HTTP/2 through CONNECT (Phase 22c) is off by default, opt-in via `Http2Options.EnableHttp2ThroughConnectTunnels` (`Runtime/Core/Http2Options.cs`); device validation open (#103).
+  - Advanced WebSocket (Phase 18a, permessage-deflate) ships as opt-in `WithCompression`; Editor (Mono) verified, IL2CPP/device rows open (#99/#104).
   - Background networking (Phase 14.3) is experimental and opt-in (`TURBOHTTP_BACKGROUND_NETWORKING`, #265).
   - BouncyCastle is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
 - **Release train:** `1.0.0-pre.N` tags from `main` (Git URL / OpenUPM preview) while the device matrix waits for hardware. `1.0.0` GA comes after #99 and a green full host-editor run.
