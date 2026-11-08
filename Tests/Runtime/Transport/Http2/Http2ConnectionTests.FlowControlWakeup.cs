@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -318,15 +319,20 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var clientStream = new PostWriteHoldStream(duplex.ClientStream);
                 var conn = new Http2Connection(clientStream, "test.example.com", 443);
                 var serverCodec = new Http2FrameCodec(duplex.ServerStream);
+                var response = new StrongBox<UHttpStreamingResponse>();
                 try
                 {
-                    await PeerUsesCreditBeforeWindowUpdateWriteReturnsAsync(conn, clientStream, serverCodec, duplex, cts.Token);
+                    await PeerUsesCreditBeforeWindowUpdateWriteReturnsAsync(
+                        conn, clientStream, serverCodec, duplex, response, cts.Token);
                 }
                 finally
                 {
                     // A failed run must not leave the held write (and with it _writeLock) blocked.
                     clientStream.Release();
                     conn.Dispose();
+                    // Disposed only now: before the held write is released, disposing would wait for
+                    // it. The connection is gone, so this only releases the response (#366).
+                    response.Value?.Dispose();
                 }
             });
         }
@@ -336,6 +342,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             PostWriteHoldStream clientStream,
             Http2FrameCodec serverCodec,
             TestDuplexStream duplex,
+            StrongBox<UHttpStreamingResponse> responseOwner,
             CancellationToken ct)
         {
             const int frameHeaderSize = 9;
@@ -351,8 +358,9 @@ namespace TurboHTTP.Tests.Transport.Http2
             var responseHeaders = BuildResponseHeadersFrame(streamId, 200);
             clientBytesRead += frameHeaderSize + responseHeaders.Length;
             await serverCodec.WriteFrameAsync(responseHeaders, ct);
-            // Not disposed here: on failure that would wait for the held write. conn.Dispose() ends it.
+            // The caller disposes it after releasing the held write and disposing the connection.
             var response = await WithWatchdogResult(responseTask, ct);
+            responseOwner.Value = response;
 
             // Use the whole stream receive window; the streaming consumer has not read anything.
             Assert.IsTrue(GetActiveStreams(conn).TryGetValue(streamId, out var stream));

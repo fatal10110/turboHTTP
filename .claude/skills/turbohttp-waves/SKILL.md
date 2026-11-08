@@ -29,7 +29,7 @@ the repository specifics are turboHTTP's.
      into the implementation agent's prompt, so the expensive agent starts coding instead of
      exploring (`brief: false` turns it off).
   1. **Implementation agent** (session model, or the lane's `implModel`). It implements (regression
-     test first), runs the local gate, adds the lane's implementation-journal file and opens the PR;
+     test first), runs the local gate and opens the PR;
      the implementation side then fixes every review round, CI failure and merge conflict. It hands
      over at checkpoints (right after the first push, and whenever its context has grown long): it
      returns `checkpoint` and a fresh agent continues from the worklog, because cost is

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -24,6 +25,9 @@ namespace TurboHTTP.WebSocket
             AbortCore(validateDisposed: false);
         }
 
+        /// <summary>How long <see cref="DisposeAsync"/> waits for the closing handshake before it aborts.</summary>
+        private static readonly TimeSpan DisposeCloseBudget = TimeSpan.FromSeconds(1);
+
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
@@ -31,10 +35,14 @@ namespace TurboHTTP.WebSocket
 
             try
             {
-                if (State == WebSocketState.Open || State == WebSocketState.Closing)
+                var state = State;
+                if (state == WebSocketState.Open || state == WebSocketState.Closing)
                 {
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-                    await CloseAsync(WebSocketCloseCode.NormalClosure, "Disposing connection.", cts.Token)
+                    // The close core, not CloseAsync: CloseAsync rejects the disposed connection, so the Close
+                    // frame was never sent and the peer saw an abnormal closure (#301). The budget bounds the
+                    // wait for the peer's Close and FIN; when it expires the canceled close aborts (#86).
+                    using var cts = new CancellationTokenSource(DisposeCloseBudget);
+                    await CloseCoreAsync(WebSocketCloseCode.NormalClosure, "Disposing connection.", cts.Token)
                         .ConfigureAwait(false);
                 }
                 else
@@ -73,6 +81,19 @@ namespace TurboHTTP.WebSocket
             var handler = StateChanged;
             handler?.Invoke(this, next);
             return true;
+        }
+
+        /// <summary>
+        /// Records the receive loop, which may still await a read on the stream about to be closed, until
+        /// it ends: on IL2CPP that read keeps its I/O job keyed by the descriptor number, so no socket is
+        /// created before it ended (#375). Called right before the stream is closed under the loop (the
+        /// close-handshake timeout, <see cref="FinalizeClose"/>); records the loop once. A loop that has
+        /// not started or has ended is not recorded.
+        /// </summary>
+        private void TrackAbandonedReceiveLoop()
+        {
+            if (Interlocked.Exchange(ref _receiveLoopTracked, 1) == 0)
+                AbandonedSocketIo.Track(Volatile.Read(ref _receiveLoopTask));
         }
 
         private void FinalizeClose(WebSocketCloseStatus status, Exception terminalError)
@@ -131,6 +152,7 @@ namespace TurboHTTP.WebSocket
 
             // Disposing the stream faults any pending read or write, so the receive loop and an in-flight
             // send finish; the writer, extensions and assembler go when the last of them releases (#84).
+            TrackAbandonedReceiveLoop();
             SafeDispose(Interlocked.Exchange(ref _stream, null));
             ReleaseResources();
 

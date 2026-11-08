@@ -13,7 +13,7 @@ Public API (`UHttpClient`, `UHttpRequest`, `UHttpResponse`/`UHttpStreamingRespon
 ## Assemblies and allowed references
 
 Enforced by `Tools~/ci/check_repo.py asmdef`. Expanding an exception needs an architecture decision
-recorded in the journal and in this table.
+recorded in the PR and in this table.
 
 | Assembly | References | Notes |
 | --- | --- | --- |

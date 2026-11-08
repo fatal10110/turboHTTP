@@ -84,4 +84,4 @@ Load for TLS, sockets, IL2CPP/AOT, iOS/Android behavior, timeouts or device vali
 Editor PlayMode results never prove device behavior. The matrix (iOS/Android IL2CPP, stripping
 levels, ALPN on both providers, NAT64, network switches, suspension) is tracked in #99; HTTP/2 through
 CONNECT on BouncyCastle in #103. Mark affected issues `needs-device-validation` and record device,
-OS, Unity version, backend and stripping level in the journal when you run it.
+OS, Unity version, backend and stripping level in a journal run record when you run it.

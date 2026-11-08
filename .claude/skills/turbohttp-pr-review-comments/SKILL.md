@@ -83,8 +83,8 @@ cd <worktree> && './Tools~/ci/check.sh'
 cd <worktree> && './Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter '<affected tests>'   # when UNITY_PATH is set
 ```
 
-Re-apply the specialist rubric checklist that covers the finding's area. Update the PR's journal
-file if a decision changed. Commit messages name the behavior fixed (not "address review"); push
+Re-apply the specialist rubric checklist that covers the finding's area. Update the PR body's
+Decisions if a decision changed. Commit messages name the behavior fixed (not "address review"); push
 (never force-push).
 
 ## 4. Reply and resolve

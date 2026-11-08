@@ -61,6 +61,58 @@ namespace TurboHTTP.Core.Internal
         }
 
         /// <summary>
+        /// The host proxy bypass matching, the cleartext policy, the connection pool and DNS see
+        /// (#368, #378): the wire host of <paramref name="uri"/> (an IDN in A-label form, RFC 5890
+        /// Section 2.3.2.1; lookups use the A-label, RFC 5891 Section 5; ASCII names and IPv4
+        /// literals unchanged), but an IPv6 literal without brackets (RFC 3986 Section 3.2.2: the
+        /// brackets belong to URI text; Unity Mono's <see cref="Uri.Host"/> already drops them, .NET
+        /// keeps them). A host without a wire form (callers that have not validated it, such as a
+        /// proxy address) falls back to <see cref="Uri.Host"/>.
+        /// </summary>
+        internal static string LookupHost(Uri uri)
+        {
+            if (uri == null) throw new ArgumentNullException(nameof(uri));
+
+            if (uri.HostNameType == UriHostNameType.IPv6)
+                return StripBrackets(uri.Host);
+
+            return TryFromUri(uri, out var wireHost, out _) ? wireHost : uri.Host;
+        }
+
+        /// <summary>
+        /// <see cref="LookupHost(Uri)"/> for a caller that already has <paramref name="uri"/>'s
+        /// validated wire host (<see cref="TryFromUri"/>), without computing it again.
+        /// </summary>
+        internal static string LookupHost(Uri uri, string wireHost)
+        {
+            if (uri == null) throw new ArgumentNullException(nameof(uri));
+
+            return uri.HostNameType == UriHostNameType.IPv6 ? StripBrackets(uri.Host) : wireHost;
+        }
+
+        /// <summary>
+        /// A non-ASCII name in A-label form (RFC 5890 Section 2.3.2.1); anything else (ASCII, or a
+        /// name without a valid A-label form, which then matches only its own spelling) unchanged.
+        /// Used to compare user-written host rules with <see cref="LookupHost"/>. Allocation-free
+        /// for ASCII input.
+        /// </summary>
+        internal static string ToALabel(string name)
+        {
+            if (string.IsNullOrEmpty(name) || IsAscii(name))
+                return name;
+
+            return TryFormat(name, out var aLabel, out _) ? aLabel : name;
+        }
+
+        /// <summary>The host without one pair of enclosing IPv6 brackets; anything else unchanged.</summary>
+        internal static string StripBrackets(string host)
+        {
+            return host != null && host.Length > 2 && host[0] == '[' && host[host.Length - 1] == ']'
+                ? host.Substring(1, host.Length - 2)
+                : host;
+        }
+
+        /// <summary>
         /// The wire form of a host string as <see cref="Uri.Host"/> or <see cref="Uri.IdnHost"/>
         /// returns it: an IPv6 literal in one pair of brackets without a zone id
         /// (<c>"::1"</c>, <c>"[::1]"</c> and <c>"fe80::1%eth0"</c> become <c>"[::1]"</c> /
@@ -198,7 +250,8 @@ namespace TurboHTTP.Core.Internal
             return true;
         }
 
-        private static bool IsAscii(string value)
+        /// <summary>True when every character of <paramref name="value"/> is ASCII.</summary>
+        internal static bool IsAscii(string value)
         {
             for (int i = 0; i < value.Length; i++)
             {

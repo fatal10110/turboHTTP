@@ -279,6 +279,8 @@ namespace TurboHTTP.Transport.Tcp
         private readonly TlsBackend _tlsBackend;
         // Test seam: replaces TlsProviderSelector.GetProvider when set (internal ctor only).
         private readonly Func<TlsBackend, ITlsProvider> _tlsProviderResolver;
+        // Test seam: replaces Dns.GetHostAddressesAsync when set (internal ctor only, #378).
+        private readonly Func<string, Task<IPAddress[]>> _dnsResolver;
         private readonly int _dnsTimeoutMs;
         private readonly TimeSpan _connectTimeout;
 
@@ -384,6 +386,20 @@ namespace TurboHTTP.Transport.Tcp
         {
             _tlsProviderResolver = tlsProviderResolver
                 ?? throw new ArgumentNullException(nameof(tlsProviderResolver));
+        }
+
+        /// <summary>
+        /// Test-only constructor: <paramref name="dnsResolver"/> replaces
+        /// <see cref="Dns.GetHostAddressesAsync(string)"/> (the DNS timeout still applies). Localhost
+        /// names never reach it (RFC 6761 Section 6.3).
+        /// </summary>
+        internal TcpConnectionPool(
+            TlsBackend tlsBackend,
+            TimeSpan? dnsTimeout,
+            Func<string, Task<IPAddress[]>> dnsResolver)
+            : this(tlsBackend: tlsBackend, dnsTimeout: dnsTimeout)
+        {
+            _dnsResolver = dnsResolver ?? throw new ArgumentNullException(nameof(dnsResolver));
         }
 
         /// <summary>
@@ -701,7 +717,7 @@ namespace TurboHTTP.Transport.Tcp
 
             // Dns.GetHostAddressesAsync has no CancellationToken in .NET Standard 2.1.
             // Wrap with a timeout to prevent 30+ second hangs on mobile networks.
-            var dnsTask = Dns.GetHostAddressesAsync(host);
+            var dnsTask = _dnsResolver != null ? _dnsResolver(host) : Dns.GetHostAddressesAsync(host);
             var timeoutTask = Task.Delay(_dnsTimeoutMs, ct);
             var completed = await Task.WhenAny(dnsTask, timeoutTask).ConfigureAwait(false);
 
@@ -718,7 +734,7 @@ namespace TurboHTTP.Transport.Tcp
                 // Check cancellation FIRST — distinguish user cancellation from DNS timeout.
                 ct.ThrowIfCancellationRequested();
                 throw new UHttpException(new UHttpError(UHttpErrorType.Timeout,
-                    $"DNS resolution for '{host}' timed out after {_dnsTimeoutMs}ms"));
+                    $"DNS resolution timed out after {_dnsTimeoutMs}ms"));
             }
 
             return await dnsTask.ConfigureAwait(false);

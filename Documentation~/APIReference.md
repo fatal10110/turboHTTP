@@ -39,7 +39,7 @@ Snippets assume the usual Unity script header (`using System; using System.Threa
 
 Main HTTP client class. Thread-safe and reusable. **Create one instance per application or module** and dispose it when you are done.
 
-`UHttpClient` implements `IDisposable`.
+`UHttpClient` is sealed and implements `IDisposable` and `IAsyncDisposable`. Prefer `await client.DisposeAsync()`: it waits for every plugin's `ShutdownAsync` (each bounded by `PluginShutdownTimeout`) before it disposes owned interceptors and the owned transport. `Dispose()` never blocks: it starts plugin shutdown without waiting and disposes the owned components at once.
 
 **Constructor:**
 
@@ -64,7 +64,8 @@ var configured = new UHttpClient(options);
 | `SendStreamingAsync(request, ct)` | Send a request and stream the body (`Task<UHttpStreamingResponse>`) |
 | `RegisterPluginAsync(plugin, ct)` | Register an `IHttpPlugin` (see Plugins) |
 | `GetOptionsSnapshot()` | A copy of the options the client runs with |
-| `Dispose()` | Release the connection pool and other resources |
+| `DisposeAsync()` | Wait for plugin shutdown (bounded by `PluginShutdownTimeout`), then release owned interceptors, the connection pool and other resources |
+| `Dispose()` | Same release without waiting: plugin shutdown is started but not awaited |
 
 ### UHttpRequest
 

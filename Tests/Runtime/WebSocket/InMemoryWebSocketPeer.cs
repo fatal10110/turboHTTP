@@ -50,6 +50,12 @@ namespace TurboHTTP.Tests.WebSocket
         /// </summary>
         public bool CloseTransportAfterCloseHandshake { get; set; } = true;
 
+        /// <summary>
+        /// When true (the default) the server answers the client's Close frame. Set false for a silent peer:
+        /// the Close is recorded and the server keeps reading, but neither replies nor closes the transport.
+        /// </summary>
+        public bool ReplyToClose { get; set; } = true;
+
         /// <summary>Completes when the server stops reading (client EOF, close or error).</summary>
         public Task ReaderCompleted => _readerDone.Task;
 
@@ -174,6 +180,9 @@ namespace TurboHTTP.Tests.WebSocket
 
                         if (frame.Opcode == WebSocketOpcode.Close)
                         {
+                            if (!ReplyToClose)
+                                continue;
+
                             if (Interlocked.CompareExchange(ref _serverCloseSent, 1, 0) == 0)
                             {
                                 await SendFrameAsync(WebSocketOpcode.Close, frame.Payload.ToArray(), fin: true)

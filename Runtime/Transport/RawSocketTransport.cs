@@ -448,9 +448,10 @@ namespace TurboHTTP.Transport
 
             // #340: the wire host (Host, :authority, absolute-form, CONNECT) must be an RFC 3986
             // host; checked here so an empty or malformed one fails before any socket opens.
+            string wireHost;
             try
             {
-                HttpAuthority.HostFromUri(request.Uri);
+                wireHost = HttpAuthority.HostFromUri(request.Uri);
             }
             catch (HttpFieldValidationException invalidHost)
             {
@@ -458,7 +459,11 @@ namespace TurboHTTP.Transport
                     UHttpErrorType.InvalidRequest, invalidHost.Message, invalidHost));
             }
 
-            var host = request.Uri.Host;
+            // #378: the cleartext policy, the connection pool / HTTP/2 keys, DNS and TLS use the lookup
+            // host: the wire host (A-label for an IDN, RFC 5891 Section 5) with an IPv6 literal bare.
+            // The TLS providers normalize it like Uri.Host before (TlsHostName.ToTargetHost), so the
+            // server name and the certificate reference identity are unchanged.
+            var host = WireHost.LookupHost(request.Uri, wireHost);
             var port = request.Uri.Port;
             var secure = string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase);
             var proxy = ResolveProxySettings(request);
@@ -467,19 +472,20 @@ namespace TurboHTTP.Transport
             // cleartext policy, so the policy is applied here, before any socket. The leg to an
             // http:// proxy is cleartext even for an https:// target.
             var allowCleartext = ResolveAllowCleartext(request);
+            // The messages never contain the host (#378, CLAUDE.md section 3).
             if (!secure && !CleartextTrafficPolicy.IsPermitted(host, allowCleartext))
             {
                 throw new UHttpException(new UHttpError(
                     UHttpErrorType.InvalidRequest,
-                    $"Cleartext http:// request to '{host}' is not permitted. Use https://, or set " +
+                    "Cleartext http:// request is not permitted. Use https://, or set " +
                     "UHttpClientOptions.AllowCleartext = true (the platform cleartext policy must also permit the host)."));
             }
 
-            if (proxy?.Address != null && !CleartextTrafficPolicy.IsPermitted(proxy.Address.Host, allowCleartext))
+            if (proxy?.Address != null && !CleartextTrafficPolicy.IsPermitted(WireHost.LookupHost(proxy.Address), allowCleartext))
             {
                 throw new UHttpException(new UHttpError(
                     UHttpErrorType.InvalidRequest,
-                    $"Cleartext connection to http:// proxy '{proxy.Address.Host}' is not permitted. Set " +
+                    "Cleartext connection to the http:// proxy is not permitted. Set " +
                     "UHttpClientOptions.AllowCleartext = true (the platform cleartext policy must also permit the host)."));
             }
 
@@ -488,13 +494,18 @@ namespace TurboHTTP.Transport
 
             // 4. Dispatch. An HTTP/2 failure marked retryable (stream refused or above a GOAWAY
             // last-stream-id, or the connection failed before the response started) is replayed on a
-            // fresh attempt, bounded, within the same timeout.
-            for (int h2Attempt = 0; ; h2Attempt++)
+            // fresh attempt, bounded, within the same timeout. An HTTP/1.1 early 417 to a replayable
+            // request is repeated once without Expect (RFC 9110 Section 10.1.1, #214): the copy has
+            // no Expect header, so it cannot raise the signal again. One filtered clause, not two:
+            // IL2CPP nests the clauses of a filtered try (#320).
+            var dispatchRequest = request;
+            int h2Attempt = 0;
+            while (true)
             {
                 try
                 {
                     await DispatchAttemptAsync(
-                            request,
+                            dispatchRequest,
                             handler,
                             context,
                             host,
@@ -507,12 +518,21 @@ namespace TurboHTTP.Transport
                     return;
                 }
                 catch (Exception ex) when (
-                    Volatile.Read(ref _disposed) == 0 &&
-                    ShouldRetryH2Request(FindH2Retryable(ex), request, h2Attempt, ct))
+                    ex is ExpectationFailedRetrySignal ||
+                    (Volatile.Read(ref _disposed) == 0 &&
+                     ShouldRetryH2Request(FindH2Retryable(ex), dispatchRequest, h2Attempt, ct)))
                 {
+                    if (ex is ExpectationFailedRetrySignal)
+                    {
+                        dispatchRequest = dispatchRequest.CopyWithSharedContent().WithExpectContinue(false);
+                        context.UpdateRequest(dispatchRequest);
+                        continue;
+                    }
+
                     context.RecordEvent(FindH2Retryable(ex).RequestNotProcessed
                         ? "TransportH2RetryUnprocessed"
                         : "TransportH2StaleRetry");
+                    h2Attempt++;
                 }
             }
         }
@@ -545,10 +565,13 @@ namespace TurboHTTP.Transport
                     return;
                 }
 
-                // 4a. HTTP/2 fast path (TLS only)
+                // 4a. HTTP/2 fast path (TLS only). extraDial: this request dials the one extra
+                // connection of a saturated origin (MaxConnectionsPerOrigin > 1, #238); released as soon
+                // as the dial ended, and by the finally below on every other path.
+                Http2ConnectionManager.ExtraDialClaim extraDial = null;
                 if (secure)
                 {
-                    var h2Conn = _h2Manager.GetIfExists(host, port);
+                    var h2Conn = _h2Manager.GetIfExists(host, port, out extraDial);
                     if (h2Conn != null)
                     {
                         context.RecordEvent("TransportH2Reuse");
@@ -563,21 +586,52 @@ namespace TurboHTTP.Transport
                 ConnectionLease lease = null;
                 try
                 {
-                    lease = await _pool.GetConnectionAsync(host, port, secure, ct)
-                        .ConfigureAwait(false);
+                    Http2Connection dialFallback = null;
+                    try
+                    {
+                        lease = await _pool.GetConnectionAsync(host, port, secure, ct)
+                            .ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        dialFallback = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                        if (dialFallback == null)
+                            throw;
+                    }
+
+                    if (dialFallback != null)
+                    {
+                        await DispatchOnH2ConnectionAsync(dialFallback, request, handler, context, ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
 
                     // 4c. Protocol routing based on ALPN
                     if (lease.Connection.NegotiatedAlpnProtocol == "h2")
                     {
                         context.RecordEvent("TransportH2Init");
                         lease.TransferOwnership();
-                        var h2Conn = await _h2Manager.GetOrCreateAsync(
-                            host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                        Http2Connection h2Conn;
+                        try
+                        {
+                            h2Conn = await _h2Manager.GetOrCreateAsync(
+                                host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            h2Conn = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                            if (h2Conn == null)
+                                throw;
+                        }
+
                         lease = null;
+                        _h2Manager.ReleaseExtraDial(ref extraDial);
                         await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
                             .ConfigureAwait(false);
                         return;
                     }
+
+                    _h2Manager.ReleaseExtraDial(ref extraDial);
 
                     // 4d. HTTP/1.1 path
                     var requestWriteState = new Http11RequestWriteState();
@@ -671,6 +725,7 @@ namespace TurboHTTP.Transport
                 finally
                 {
                     lease?.Dispose();
+                    _h2Manager.ReleaseExtraDial(ref extraDial);
                 }
             }
             catch (Exception ex)
@@ -780,14 +835,16 @@ namespace TurboHTTP.Transport
                     "Proxy address is required."));
             }
 
-            var proxyHost = proxy.Address.Host;
+            // Same lookup host as the cleartext check (#378): pool key and DNS use the A-label.
+            var proxyHost = WireHost.LookupHost(proxy.Address);
             var proxyPort = proxy.Address.IsDefaultPort
                 ? 80
                 : proxy.Address.Port;
 
+            Http2ConnectionManager.ExtraDialClaim extraDial = null;
             if (secure)
             {
-                var existingH2 = _h2Manager.GetIfExists(host, port, proxyHost, proxyPort);
+                var existingH2 = _h2Manager.GetIfExists(host, port, proxyHost, proxyPort, out extraDial);
                 if (existingH2 != null)
                 {
                     var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
@@ -851,38 +908,67 @@ namespace TurboHTTP.Transport
             try
             {
                 context.RecordEvent("TransportProxyConnecting");
-                lease = await AcquirePreparedProxyLeaseAsync(
-                        proxyHost,
-                        proxyPort,
-                        tunnelPoolKey,
-                        establishTunnel: true,
-                        host,
-                        port,
-                        proxy,
-                        context,
-                        ct)
-                    .ConfigureAwait(false);
+                Http2Connection dialFallback = null;
+                try
+                {
+                    lease = await AcquirePreparedProxyLeaseAsync(
+                            proxyHost,
+                            proxyPort,
+                            tunnelPoolKey,
+                            establishTunnel: true,
+                            host,
+                            port,
+                            proxy,
+                            context,
+                            ct)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    dialFallback = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                    if (dialFallback == null)
+                        throw;
+                }
 
                 var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
+                if (dialFallback != null)
+                {
+                    await DispatchOnH2ConnectionAsync(dialFallback, tunneledRequest, handler, context, ct)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
                 if (IsHttp2Tunnel(lease))
                 {
                     context.RecordEvent("TransportProxyH2Init");
                     lease.TransferOwnership();
-                    var h2Conn = await _h2Manager.GetOrCreateAsync(
-                            host,
-                            port,
-                            proxyHost,
-                            proxyPort,
-                            lease.Connection.Stream,
-                            ct)
-                        .ConfigureAwait(false);
-                    lease = null;
+                    Http2Connection h2Conn;
+                    try
+                    {
+                        h2Conn = await _h2Manager.GetOrCreateAsync(
+                                host,
+                                port,
+                                proxyHost,
+                                proxyPort,
+                                lease.Connection.Stream,
+                                ct)
+                            .ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        h2Conn = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                        if (h2Conn == null)
+                            throw;
+                    }
 
+                    lease = null;
+                    _h2Manager.ReleaseExtraDial(ref extraDial);
                     await DispatchOnH2ConnectionAsync(h2Conn, tunneledRequest, handler, context, ct)
                         .ConfigureAwait(false);
                     return;
                 }
 
+                _h2Manager.ReleaseExtraDial(ref extraDial);
                 context.RecordEvent("TransportProxyH1Dispatch");
                 await DispatchProxyHttp11WithRetryAsync(
                         proxyHost,
@@ -904,7 +990,34 @@ namespace TurboHTTP.Transport
             finally
             {
                 lease?.Dispose();
+                _h2Manager.ReleaseExtraDial(ref extraDial);
             }
+        }
+
+        /// <summary>
+        /// The dial of the extra connection <paramref name="extraDial"/> claimed failed (#238): unless the
+        /// request was cancelled or timed out, it falls back to the connection it would have queued on
+        /// with one connection per origin (a refused extra connection, e.g. by a per-client connection
+        /// cap, must not fail a request the saturated connection can still serve). Releases the claim.
+        /// Null when there was no claim, on cancellation, or when no connection accepts streams any more:
+        /// the caller rethrows the dial failure.
+        /// </summary>
+        private Http2Connection FallBackAfterFailedExtraDial(
+            ref Http2ConnectionManager.ExtraDialClaim extraDial,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            if (extraDial == null || ct.IsCancellationRequested)
+            {
+                _h2Manager.ReleaseExtraDial(ref extraDial);
+                return null;
+            }
+
+            var fallback = _h2Manager.ReleaseExtraDialAndFallBack(ref extraDial);
+            if (fallback != null)
+                context.RecordEvent("TransportH2ExtraDialFallback");
+
+            return fallback;
         }
 
         /// <summary>
@@ -1493,6 +1606,43 @@ namespace TurboHTTP.Transport
             return keepAlive;
         }
 
+        /// <summary>
+        /// Raised by <see cref="DispatchOnLeaseAsync"/> for a 417 that <see cref="DispatchCoreAsync"/>
+        /// repeats without <c>Expect</c> (#214). A <see cref="UHttpException"/> that is not a network
+        /// error, so <see cref="MapDispatchAttemptFailure"/> passes it through unchanged and it still
+        /// fits the error model if it ever escaped.
+        /// </summary>
+        private sealed class ExpectationFailedRetrySignal : UHttpException
+        {
+            internal ExpectationFailedRetrySignal()
+                : base(new UHttpError(
+                    UHttpErrorType.Unknown,
+                    "The server rejected Expect: 100-continue (417); the request is repeated without it."))
+            {
+            }
+        }
+
+        /// <summary>
+        /// RFC 9110 Section 10.1.1: a 417 to a request with a 100-continue expectation SHOULD be
+        /// repeated without it. Only when the 417 arrived before any body byte was sent (an early
+        /// final response; after a 100 or the wait timeout the body went out and the 417 is the
+        /// server's answer to the whole request), 100-continue was the only expectation, and the
+        /// body can be sent again. The repeat carries no <c>Expect</c>, so a second 417 is returned.
+        /// </summary>
+        internal static bool ShouldRetryWithoutExpectation(
+            ParsedResponseHead head,
+            UHttpRequest request,
+            Http11RequestWriteState requestWriteState)
+        {
+            return head != null &&
+                (int)head.StatusCode == 417 &&
+                requestWriteState != null &&
+                !requestWriteState.HasCommittedBodyBytes &&
+                ExpectContinueHelper.ShouldAwaitExpectContinue(request) &&
+                ExpectContinueHelper.HasOnlyExpectContinueExpectation(request.Headers) &&
+                request.Content.Replayability != RequestBodyReplayability.NonReplayable;
+        }
+
         /// <summary>How <see cref="DispatchOnLeaseAsync"/> left its lease.</summary>
         private enum LeaseDispatchResult
         {
@@ -1621,6 +1771,15 @@ namespace TurboHTTP.Transport
             }
 
             using var head = parsedHead;
+
+            if (ShouldRetryWithoutExpectation(head, request, requestWriteState))
+            {
+                // RFC 9110 Section 10.1.1 (#214): the 417 never reaches the handler. The head and its
+                // unread body go with this lease, which the caller destroys (KeepAlive is false, the
+                // body was never sent); DispatchCoreAsync repeats the request without Expect.
+                context.RecordEvent("TransportExpectationFailedRetry");
+                throw new ExpectationFailedRetrySignal();
+            }
 
             if (interceptBasicProxyChallenge && IsBasicProxyChallenge(head))
             {

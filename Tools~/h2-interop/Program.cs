@@ -3,11 +3,12 @@
 //   adversarial [--row <filter>]                       the scripted adversarial-server scenarios (in memory)
 //   generate <dir>                                     writes the throwaway PKI and the served files into <dir>
 //   interop <dir> <server> <port> [--row <filter>]     the interop rows against a running server
-//                                                      (nghttpd, nginx: docker, started by run.sh; port 0 for
-//                                                      kestrel, which the harness hosts itself)
+//                                                      (nghttpd, nginx, h2o, go, envoy, nghttpx: docker, started
+//                                                      by run.sh; port 0 for kestrel, which the harness hosts itself)
 //
 // Interop needs SSL_CERT_FILE=<dir>/root.pem (run.sh sets it) so the platform verifier trusts the per-run root.
-// Exit 0 when every row passes, 1 when a row or a precondition fails, 2 on usage errors. Nothing skips.
+// Exit 0 when every row passes, 1 when a row or a precondition fails, 2 on usage errors. Nothing skips: a row a server
+// cannot serve prints N/A, a row on a filed defect prints KNOWN-FAIL with the issue.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -63,8 +64,14 @@ namespace TurboHTTP.Tools.H2Interop
             return await RunRowsAsync(rows).ConfigureAwait(false);
         }
 
-        /// <summary>Runs each row under a watchdog token; a row that ignores the token still fails after twice the watchdog.</summary>
-        internal static async Task<int> RunRowsAsync(IReadOnlyList<(string Name, Func<CancellationToken, Task> Run)> rows)
+        /// <summary>
+        /// Runs each row under a watchdog token; a row that ignores the token still fails after twice the watchdog.
+        /// A row in <paramref name="knownFailures"/> (row name to issue number) that fails prints KNOWN-FAIL and does not
+        /// fail the run; one that passes fails the run, so a fixed defect cannot hide behind a stale entry.
+        /// </summary>
+        internal static async Task<int> RunRowsAsync(
+            IReadOnlyList<(string Name, Func<CancellationToken, Task> Run)> rows,
+            IReadOnlyDictionary<string, int> knownFailures = null)
         {
             if (rows.Count == 0)
             {
@@ -72,9 +79,11 @@ namespace TurboHTTP.Tools.H2Interop
                 return 1;
             }
 
-            int failed = 0;
+            int passed = 0, failed = 0, known = 0;
             foreach (var (name, run) in rows)
             {
+                int issue = 0;
+                bool isKnown = knownFailures != null && knownFailures.TryGetValue(name, out issue);
                 using var watchdog = new CancellationTokenSource(RowWatchdog);
                 var task = Task.Run(() => run(watchdog.Token));
                 try
@@ -82,7 +91,21 @@ namespace TurboHTTP.Tools.H2Interop
                     if (await Task.WhenAny(task, Task.Delay(RowWatchdog + RowWatchdog)).ConfigureAwait(false) != task)
                         throw new TimeoutException("the row ignored its watchdog token");
                     await task.ConfigureAwait(false);
-                    Console.WriteLine("PASS " + name);
+                    if (isKnown)
+                    {
+                        failed++;
+                        Console.WriteLine("FAIL " + name + ": passed, but is listed as a known failure (#" + issue + "); remove the entry");
+                    }
+                    else
+                    {
+                        passed++;
+                        Console.WriteLine("PASS " + name);
+                    }
+                }
+                catch (Exception ex) when (isKnown)
+                {
+                    known++;
+                    Console.WriteLine("KNOWN-FAIL " + name + " (#" + issue + "): " + Describe(ex));
                 }
                 catch (Exception ex)
                 {
@@ -91,7 +114,7 @@ namespace TurboHTTP.Tools.H2Interop
                 }
             }
 
-            Console.WriteLine((rows.Count - failed) + "/" + rows.Count + " rows passed");
+            Console.WriteLine(passed + "/" + rows.Count + " rows passed" + (known > 0 ? ", " + known + " known failure(s)" : ""));
             return failed == 0 ? 0 : 1;
         }
 

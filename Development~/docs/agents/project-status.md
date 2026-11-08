@@ -2,7 +2,7 @@
 
 Remaining work is tracked as GitHub issues by milestone (v1.0-alpha → v1.0-beta → v1.0 GA → v1.1 →
 v1.2 → v2.0) and in three projects (v1.0 Release, Protocol & Security, Post-1.0 Roadmap). This file
-only maps phases to their plans and journal entries; issue state on GitHub wins over it.
+only maps phases to their plans and (historical) journal entries; issue state on GitHub wins over it.
 
 Plans: `Development~/docs/phases/`. Journal: `Development~/docs/implementation-journal/` (find a
 phase's entries with `ls Development~/docs/implementation-journal | grep phase<N>`).

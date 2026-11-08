@@ -101,7 +101,6 @@ before concluding either way. "Looks intentional" is not a clearance.
 - **Tests** — every new branch has a deterministic regression test that fails on the old code;
   hostile-path fixes are tested in the hostile direction; no sleeps as synchronization, no external
   network outside `[Category("ExternalNetwork")]`. New files have `.meta` files.
-- **Journal** — the PR adds its implementation-journal file (CLAUDE.md requirement).
 - **Over-engineering** — when the diff adds a type, interface, option or more than ~200 non-test
   lines, look for the smaller change; post survivors as `[should-fix]`.
 
@@ -132,7 +131,7 @@ race, leak or security hole is never demoted to style.
 | Tag | Meaning | Blocks merge? |
 |-----|---------|---------------|
 | `[blocker]` | protocol violation, security hole, data loss/corruption, race, unmet acceptance criterion, forbidden module dependency, artifact that should not exist | yes |
-| `[must-fix]` | real bug, missing regression test for a new branch, failing local gate, missing .meta/journal | yes |
+| `[must-fix]` | real bug, missing regression test for a new branch, failing local gate, missing .meta | yes |
 | `[should-fix]` | correctness-adjacent or maintainability issue worth fixing in this PR | no, but action expected |
 | `[nit]` | small style/naming/cleanup | no, but action expected unless marked optional |
 | `[note]` | pre-existing gap or follow-up candidate; say where it is tracked | no |

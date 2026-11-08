@@ -1,0 +1,59 @@
+# Envoy HTTP/2 over TLS for the h2-interop rows (Tools~/h2-interop/run.sh mounts the per-run dir on /pki).
+# Envoy serves no static files: each path is a direct_response (the files are read once at startup), and
+# /headers is a Lua local reply.
+static_resources:
+  listeners:
+  - name: h2
+    address:
+      socket_address: { address: 0.0.0.0, port_value: 8443 }
+    filter_chains:
+    - transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            alpn_protocols: [h2]
+            tls_certificates:
+            - certificate_chain: { filename: /pki/leaf-valid.pem }
+              private_key: { filename: /pki/leaf.key }
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: h2
+          codec_type: HTTP2
+          route_config:
+            max_direct_response_body_size_bytes: 3145728
+            virtual_hosts:
+            - name: interop
+              domains: ["*"]
+              routes:
+              - match: { path: /small.txt }
+                direct_response: { status: 200, body: { filename: /pki/www/small.txt } }
+              - match: { path: /large.bin }
+                direct_response: { status: 200, body: { filename: /pki/www/large.bin } }
+              - match: { path: /upload }
+                direct_response: { status: 200, body: { inline_string: "uploaded\n" } }
+              - match: { path: /headers }
+                direct_response: { status: 200, body: { inline_string: "headers\n" } }
+          http_filters:
+          - name: envoy.filters.http.lua
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+              default_source_code:
+                inline_string: |
+                  -- x-h-<i> = 200 x chr('a' + i % 26) (InteropRows.ResponseHeaderValue) on /headers.
+                  function envoy_on_request(request_handle)
+                    request_handle:streamInfo():dynamicMetadata():set("interop", "path", request_handle:headers():get(":path"))
+                  end
+                  function envoy_on_response(response_handle)
+                    local meta = response_handle:streamInfo():dynamicMetadata():get("interop")
+                    if meta ~= nil and meta["path"] == "/headers" then
+                      for i = 0, 39 do
+                        response_handle:headers():add("x-h-" .. i, string.rep(string.char(97 + i % 26), 200))
+                      end
+                    end
+                  end
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

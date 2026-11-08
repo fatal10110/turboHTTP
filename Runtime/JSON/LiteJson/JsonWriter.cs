@@ -32,9 +32,10 @@ namespace TurboHTTP.JSON.Lite
         /// </summary>
         /// <param name="value">Value to serialize</param>
         /// <returns>JSON string</returns>
-        /// <exception cref="JsonSerializationException">
-        /// Type is not supported for serialization
+        /// <exception cref="NotSupportedException">
+        /// A custom (POCO) type is not supported for serialization; the message names the alternatives
         /// </exception>
+        /// <exception cref="JsonSerializationException">Nesting deeper than the depth limit</exception>
         public string Write(object value)
         {
             _sb.Clear();
@@ -135,9 +136,7 @@ namespace TurboHTTP.JSON.Lite
                     break;
 
                 default:
-                    throw new JsonSerializationException(
-                        $"Type '{value.GetType().Name}' is not supported. " +
-                        "Use a dictionary or register a custom serializer.");
+                    throw new NotSupportedException(LiteJsonSerializer.UnsupportedSerializeMessage(value.GetType()));
             }
         }
 

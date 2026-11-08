@@ -135,7 +135,7 @@ namespace TurboHTTP.Tests.JSON
         {
             var writer = new JsonWriter();
             Assert.That(() => writer.Write(new CustomClass()),
-                Throws.TypeOf<JsonSerializationException>());
+                Throws.TypeOf<NotSupportedException>().With.Message.Contains("System.Text.Json"));
         }
 
         // === Depth Limit Tests ===
