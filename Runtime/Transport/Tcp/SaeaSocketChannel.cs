@@ -300,6 +300,8 @@ namespace TurboHTTP.Transport.Tcp
                 // Leak the SAEAs and buffers on purpose: the kernel may still write into them,
                 // so returning them to the shared pool could corrupt another renter's data.
                 Interlocked.Increment(ref s_buffersLeakedOnDispose);
+                ByteArrayPool.Abandon(_recvBuffer);
+                ByteArrayPool.Abandon(_sendBuffer);
                 TurboDiagnostics.LogOnce(
                     TurboDiagnostics.OnceSaeaDisposeDrainTimeout,
                     "[TurboHTTP] SAEA socket operation did not complete within " + DisposeDrainTimeoutMs +

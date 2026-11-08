@@ -328,6 +328,8 @@ namespace TurboHTTP.WebSocket
                 // An abandoned read may still write into readBuffer: it goes to the GC, not the pool.
                 if (abandonedRead == null || abandonedRead.IsCompleted)
                     ByteArrayPool.Return(readBuffer);
+                else
+                    ByteArrayPool.Abandon(readBuffer);
                 ByteArrayPool.Return(headerBuffer);
             }
         }
@@ -908,8 +910,10 @@ namespace TurboHTTP.WebSocket
                 _buffer = null;
                 _prefetched = Array.Empty<byte>();
                 var abandonedRead = _abandonedRead;
-                if (buffer != null && (abandonedRead == null || abandonedRead.IsCompleted))
+                if (abandonedRead == null || abandonedRead.IsCompleted)
                     ByteArrayPool.Return(buffer);
+                else
+                    ByteArrayPool.Abandon(buffer);
             }
         }
 

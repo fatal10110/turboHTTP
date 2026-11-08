@@ -1,6 +1,8 @@
+using System;
 using System.IO;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
@@ -28,6 +30,53 @@ namespace TurboHTTP.Tests.Performance
 
             ByteArrayPool.Return(buffer);
             Assert.That(Active() - baseline, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void Abandon_LeavesArrayToGc_IsNotOutstanding()
+        {
+            var before = ByteArrayPool.GetDiagnostics();
+
+            var buffer = ByteArrayPool.Rent(128);
+            ByteArrayPool.Abandon(buffer);
+
+            var after = ByteArrayPool.GetDiagnostics();
+            Assert.That(after.ActiveCount - before.ActiveCount, Is.EqualTo(0));
+            Assert.That(after.AbandonCount - before.AbandonCount, Is.EqualTo(1));
+            Assert.That(after.ReturnCount - before.ReturnCount, Is.EqualTo(0), "an abandoned array is not returned");
+        }
+
+        [Test]
+        public void BufferedStreamReader_AbandonedRead_DisposeCountsBufferAsAbandoned()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var before = ByteArrayPool.GetDiagnostics();
+                var stream = new StuckReadStream();
+                using var cts = new CancellationTokenSource();
+                var reader = new Http11ResponseParser.BufferedStreamReader(stream);
+                Assert.That(Active() - before.ActiveCount, Is.EqualTo(1));
+
+                var wait = reader.EnsureBufferedAsync(cts.Token);
+                await stream.ReadPending.ConfigureAwait(false);
+                cts.Cancel();
+                try
+                {
+                    await wait.ConfigureAwait(false);
+                    Assert.Fail("the cancelled read must fail");
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                // The abandoned read still targets the buffer, so Dispose leaves it to the GC: that is
+                // deliberate, not a leak, and must not stay outstanding.
+                reader.Dispose();
+                var after = ByteArrayPool.GetDiagnostics();
+                Assert.That(after.ActiveCount - before.ActiveCount, Is.EqualTo(0));
+                Assert.That(after.AbandonCount - before.AbandonCount, Is.EqualTo(1));
+                stream.EndRead();
+            }, TimeSpan.FromSeconds(15));
         }
 
         [Test]
@@ -93,6 +142,39 @@ namespace TurboHTTP.Tests.Performance
 
             owner.Dispose();
             Assert.That(Active() - baseline, Is.EqualTo(0));
+        }
+
+        /// <summary>One read that ignores its token; it ends only when the test calls <see cref="EndRead"/>.</summary>
+        private sealed class StuckReadStream : Stream
+        {
+            private readonly TaskCompletionSource<int> _read = new TaskCompletionSource<int>();
+            private readonly TaskCompletionSource<bool> _readPending =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _readCount;
+
+            public Task ReadPending => _readPending.Task;
+
+            public void EndRead() => _read.TrySetResult(0);
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                if (Interlocked.Increment(ref _readCount) > 1)
+                    return Task.FromResult(0);
+
+                _readPending.TrySetResult(true);
+                return _read.Task;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         }
     }
 }

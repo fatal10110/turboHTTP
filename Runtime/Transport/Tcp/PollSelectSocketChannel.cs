@@ -519,6 +519,11 @@ namespace TurboHTTP.Transport.Tcp
                 ByteArrayPool.Return(_recvBuffer);
                 ByteArrayPool.Return(_sendBuffer);
             }
+            else
+            {
+                ByteArrayPool.Abandon(_recvBuffer);
+                ByteArrayPool.Abandon(_sendBuffer);
+            }
             // If the thread is still alive after 500ms (pathological case), the buffers
             // are not returned. This is a deliberate safety trade-off: a small one-time
             // allocation leak is preferable to corrupting a rented buffer from another

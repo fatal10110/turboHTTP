@@ -1097,10 +1097,13 @@ namespace TurboHTTP.Transport.Http1
                 // A head read (#293) or body read (#345) abandoned on cancellation may still write
                 // into the reader's buffers: they go to the GC instead of the pool.
                 var raceRead = _raceRead;
-                if (raceRead != null && !raceRead.IsCompleted)
+                if ((raceRead != null && !raceRead.IsCompleted) ||
+                    Volatile.Read(ref _bodyReadState) != BodyReadIdle)
+                {
+                    ByteArrayPool.Abandon(_buffer);
+                    ByteArrayPool.Abandon(_bodyBuffer);
                     return;
-                if (Volatile.Read(ref _bodyReadState) != BodyReadIdle)
-                    return;
+                }
 
                 ByteArrayPool.Return(_buffer);
                 if (_bodyBuffer != null)

@@ -15,19 +15,28 @@ namespace TurboHTTP.Core.Internal
         public readonly long ReturnCount;
         /// <summary>Total number of returns with <c>clearArray = true</c> since last reset.</summary>
         public readonly long ClearOnReturnCount;
-        /// <summary>Estimated number of arrays currently outstanding (RentCount - ReturnCount).</summary>
+        /// <summary>
+        /// Total number of <see cref="ByteArrayPool.Abandon"/> calls since last reset: rented arrays
+        /// deliberately left to the GC because abandoned I/O may still write into them.
+        /// </summary>
+        public readonly long AbandonCount;
+        /// <summary>
+        /// Number of arrays currently outstanding (RentCount - ReturnCount - AbandonCount). With nothing
+        /// in flight and no connection holding buffers, a nonzero value is a missing return (#292).
+        /// </summary>
         public readonly long ActiveCount;
 
-        internal ByteArrayPoolDiagnostics(long rent, long ret, long clear)
+        internal ByteArrayPoolDiagnostics(long rent, long ret, long clear, long abandon)
         {
             RentCount = rent;
             ReturnCount = ret;
             ClearOnReturnCount = clear;
-            ActiveCount = rent - ret;
+            AbandonCount = abandon;
+            ActiveCount = rent - ret - abandon;
         }
 
         public override string ToString() =>
-            $"ByteArrayPool — Rent={RentCount}, Return={ReturnCount}, Active={ActiveCount}, ClearOnReturn={ClearOnReturnCount}";
+            $"ByteArrayPool — Rent={RentCount}, Return={ReturnCount}, Abandon={AbandonCount}, Active={ActiveCount}, ClearOnReturn={ClearOnReturnCount}";
     }
 
     /// <summary>
@@ -35,6 +44,13 @@ namespace TurboHTTP.Core.Internal
     /// Provides bounded, thread-safe byte array pooling with optional
     /// clear-on-return for security-sensitive buffers.
     /// </summary>
+    /// <remarks>
+    /// Every runtime byte-array rent and return goes through this class (#292), so
+    /// <see cref="ByteArrayPoolDiagnostics.ActiveCount"/> is the leak oracle the soak harness checks.
+    /// An array rented here must be returned here (or passed to <see cref="Abandon"/>), never to
+    /// <c>ArrayPool&lt;byte&gt;.Shared</c> directly, or the count drifts. The counters cost one
+    /// <see cref="Interlocked"/> increment per call and allocate nothing.
+    /// </remarks>
     internal static class ByteArrayPool
     {
         private static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Shared;
@@ -42,6 +58,7 @@ namespace TurboHTTP.Core.Internal
         private static long _rentCount;
         private static long _returnCount;
         private static long _clearOnReturnCount;
+        private static long _abandonCount;
 
         /// <summary>
         /// Rent a byte array of at least the specified length.
@@ -84,6 +101,20 @@ namespace TurboHTTP.Core.Internal
         }
 
         /// <summary>
+        /// Records that a rented array is deliberately not returned: abandoned I/O (a cancelled read, a
+        /// socket operation that never completed) may still write into it, so it goes to the GC instead
+        /// of the shared pool. Nothing is returned to the pool; only the outstanding count drops.
+        /// </summary>
+        /// <param name="array">The rented array. Null and zero-length arrays are ignored.</param>
+        public static void Abandon(byte[] array)
+        {
+            if (array == null || array.Length == 0)
+                return;
+
+            Interlocked.Increment(ref _abandonCount);
+        }
+
+        /// <summary>
         /// Returns a diagnostics snapshot of this pool's activity counters.
         /// All counters are read atomically (individual fields, not as a group).
         /// </summary>
@@ -91,7 +122,8 @@ namespace TurboHTTP.Core.Internal
             new ByteArrayPoolDiagnostics(
                 Interlocked.Read(ref _rentCount),
                 Interlocked.Read(ref _returnCount),
-                Interlocked.Read(ref _clearOnReturnCount));
+                Interlocked.Read(ref _clearOnReturnCount),
+                Interlocked.Read(ref _abandonCount));
 
         /// <summary>
         /// Resets all diagnostic counters to zero.
@@ -102,6 +134,7 @@ namespace TurboHTTP.Core.Internal
             Interlocked.Exchange(ref _rentCount, 0);
             Interlocked.Exchange(ref _returnCount, 0);
             Interlocked.Exchange(ref _clearOnReturnCount, 0);
+            Interlocked.Exchange(ref _abandonCount, 0);
         }
     }
 }
