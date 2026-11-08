@@ -57,8 +57,9 @@ Every change answers three questions in the PR body, from evidence:
    tracked.
 3. **Research.** Read the RFC section(s) yourself (https://www.rfc-editor.org/rfc/rfcNNNN.txt) —
    never act on a citation you have not read. Read the newest implementation-journal entries that
-   touch these files (`rg -l '<FileName>' Development~/docs/implementation-journal | tail -5`) so
-   you do not undo an earlier decision. Map every caller of each method you will change.
+   touch these files (`rg -l '<FileName>' Development~/docs/implementation-journal | tail -5`) and
+   the PRs of their latest commits (`git log --oneline -5 -- <path>`) so you do not undo an earlier
+   decision. Map every caller of each method you will change.
 4. **Worktree.** Never write in the primary checkout:
 
    ```bash
@@ -130,13 +131,14 @@ Every change answers three questions in the PR body, from evidence:
       - `'./Tools~/ci/check.sh'` at <sha>: pass
       - Unity EditMode --filter '<regex>': <pass | Unity unavailable locally>
       - Unity PlayMode --filter '<regex>': <pass | Unity unavailable locally>
+      - IL2CPP / device: <run: result | not run>
       Unity tests: host editor (periodic)
 
       ## Specialist rubrics
       Infrastructure: <clean | findings fixed: ...>; Network: <clean | findings fixed: ...>
 
       ## Follow-ups
-      <issue numbers filed or amended, or "none">
+      <#n: what is deferred and why, or "none">
 
       🤖 Generated with [Claude Code](https://claude.com/claude-code)
       ```

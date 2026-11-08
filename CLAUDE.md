@@ -109,7 +109,8 @@ Work comes from GitHub issues, ordered by milestone (v1.0-alpha â†’ v1.0-beta â†
    false positives), fix, re-run gates and the rubrics again (fix rounds have introduced sibling bugs).
 5. **Record in the PR, not a journal.** Decisions, deferrals with issue numbers, and what was
    *not* run (Unity EditMode/PlayMode, IL2CPP, device) go in the PR body. `implementation-journal/`
-   is frozen history: add no files; its "fixed"/"PASS" claims are leads, not evidence.
+   takes no per-change entries, only test-run and device-validation records (testing.md,
+   platform.md); its older "fixed"/"PASS" claims are leads, not evidence.
 6. **Deliver.** One PR per issue (or wave lane) against `main`, body per
    `.github/pull_request_template.md`, `Closes #N` only for fully met criteria. Never merge without
    authorization (a `turbohttp-waves` invocation authorizes its merges).
@@ -137,5 +138,5 @@ Guides live in `Development~/docs/agents/` unless noted. Load only the one the t
 | [`tooling.md`](Development~/docs/agents/tooling.md) | installing tools, CI, the shadow build, analyzer baseline, secrets, rulesets |
 | [`project-status.md`](Development~/docs/agents/project-status.md) | which phases are done, partial or planned; where their plans and journals are |
 | [`Development~/docs/phases/`](Development~/docs/phases/) | implementing or changing a planned phase (read its plan first) |
-| [`implementation-journal/`](Development~/docs/implementation-journal/) | changing code an earlier entry decided on (`rg -l <File> Development~/docs/implementation-journal`) |
+| [`implementation-journal/`](Development~/docs/implementation-journal/) | changing code an earlier decision covers (`rg -l <File> Development~/docs/implementation-journal`; newer decisions live in PRs: `git log --oneline -5 -- <path>`) |
 | [`review-2026-10-full-library-review.md`](Development~/docs/review-2026-10-full-library-review.md) | context behind an issue seeded from the 2026-10 review |
