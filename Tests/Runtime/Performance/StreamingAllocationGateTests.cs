@@ -22,7 +22,7 @@ namespace TurboHTTP.Tests.Performance
 {
     [TestFixture]
     [Category("Benchmark")]
-    public sealed class StreamingAllocationGateTests
+    public sealed partial class StreamingAllocationGateTests
     {
         private const int Http11ChunkBytes = 1024;
         private const int Http11ChunkCount = 1024;
