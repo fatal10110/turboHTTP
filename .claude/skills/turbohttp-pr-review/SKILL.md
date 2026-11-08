@@ -4,7 +4,7 @@ description: >
   Produce a first-pass review of an open pull request in fatal10110/turboHTTP — whether it meets
   the acceptance criteria of the issues it closes, RFC correctness, security, IL2CPP/AOT and
   mobile safety, thread safety and the ARM64 memory model, pooling/ownership, module boundaries,
-  and tests — apply both specialist rubrics, submit every evidence-backed defect as an inline
+  and tests — apply both specialist rubrics and the turbohttp-perf-compat-review pass, submit every evidence-backed defect as an inline
   GitHub review comment, and end with an explicit bottom line saying whether anything must change
   before merge. Use when the user says "review PR N" for turboHTTP, or when a turbohttp-waves
   review prompt names this skill. Do not use for answering comments on your own PR
@@ -117,8 +117,8 @@ cd <review-root> && './Tools~/unity/run-tests.sh' --platform EditMode|PlayMode -
 
 Apply `.claude/agents/unity-infrastructure-architect.md` and
 `.claude/agents/unity-network-architect.md` to the diff — as subagents when you can spawn them,
-otherwise read both files and work their checklists yourself. Their findings go through §6 like any
-other.
+otherwise read both files and work their checklists yourself. Then run
+`.claude/skills/turbohttp-perf-compat-review/SKILL.md`. All findings go through §6.
 
 ## 6. Gate every finding before posting
 
@@ -164,6 +164,9 @@ Do not modify, commit, push, merge or close anything on the PR.
 
    ## Specialist rubrics
    Infrastructure: <clean | items>; Network: <clean | items>
+
+   ## Performance and compatibility
+   <the section turbohttp-perf-compat-review "Output" defines>
 
    ## Other findings
    <one line each, path:line, severity>

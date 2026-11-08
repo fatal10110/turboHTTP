@@ -280,7 +280,7 @@ const count = (w, prefix) => w.labels.filter(l => l === prefix || l.startsWith(p
   assert.equal(mo['cs-scout'], 'haiku')
 }
 
-// 6b. Prompts point at the turboHTTP gates and skills, and the reviewer applies both rubrics.
+// 6b. Prompts point at the turboHTTP gates and skills, and the reviewer applies both rubrics and the perf-compat pass.
 {
   const one = { tracks: ['A'], waves: [{ name: '1', lanes: [lane('a', 'A')] }] }
   const sa = { reviewRounds: 0 }
@@ -292,6 +292,7 @@ const count = (w, prefix) => w.labels.filter(l => l === prefix || l.startsWith(p
   const rp = w.rev.a.prompts[0]
   assert.ok(rp.includes('unity-infrastructure-architect.md') && rp.includes('unity-network-architect.md'))
   assert.ok(rp.includes('turbohttp-pr-review/SKILL.md'))
+  assert.ok(rp.includes('turbohttp-perf-compat-review/SKILL.md'), 'reviewer runs the perf-compat pass')
 }
 
 // 7. The example plan runs on both tracks.
