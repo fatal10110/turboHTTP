@@ -40,7 +40,9 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>
         /// Human-readable name of the async I/O completion model expected on this platform.
-        /// Used for diagnostics only.
+        /// Used in diagnostics and, through <see cref="CloseAbortsPendingIo"/>, to pick the
+        /// socket close order (<see cref="SocketHandleHold"/> and the SAEA dispose path, #384),
+        /// so a change to the returned names must keep <c>"IOCP"</c> for Windows.
         /// </summary>
         public static string CompletionModelName
         {
