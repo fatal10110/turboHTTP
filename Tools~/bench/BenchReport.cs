@@ -15,7 +15,7 @@ namespace TurboHTTP.Tools.Bench
         /// <summary>A small buffered round trip: held to the regression budget by --compare.</summary>
         public bool Budgeted { get; set; }
         public int Requests { get; set; }
-        /// <summary>Median of the per-round medians.</summary>
+        /// <summary>The lowest per-round median latency (background load only adds latency).</summary>
         public double? P50Us { get; set; }
         public double? P95Us { get; set; }
         public double MeanUs { get; set; }

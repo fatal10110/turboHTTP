@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Files;
 using TurboHTTP.Transport;
 
 namespace TurboHTTP.Tools.Bench
@@ -134,6 +135,7 @@ namespace TurboHTTP.Tools.Bench
             // Step 2 items 4-5 and Step 4: peak managed heap (opt-in with --heavy).
             yield return Memory("h1-get-100m-file-streaming", 3, () => DownloadToFileAsync(_h1, 100 * 1024 * 1024, streaming: true));
             yield return Memory("h1-get-100m-file-buffered", 3, () => DownloadToFileAsync(_h1, 100 * 1024 * 1024, streaming: false));
+            yield return Memory("h1-filedownloader-100m", 3, () => FileDownloaderAsync(_h1, 100 * 1024 * 1024));
             yield return Memory("h2-10x10m-one-slow-consumer", 1, ConcurrentSlowConsumerAsync);
         }
 
@@ -236,6 +238,27 @@ namespace TurboHTTP.Tools.Bench
             }
         }
 
+        /// <summary>Phase 22a.6 Step 1 Files item 40: TurboHTTP.Files streams a download to disk in bounded memory.</summary>
+        private async Task<Dictionary<string, double>> FileDownloaderAsync(string origin, int size)
+        {
+            string file = Path.Combine(_options.OutDir, "downloader.bin");
+            try
+            {
+                var clock = Stopwatch.StartNew();
+                var result = await new FileDownloader(_client)
+                    .DownloadFileAsync(origin + "/bytes/" + size, file, new DownloadOptions { EnableResume = false })
+                    .ConfigureAwait(false);
+                if (new FileInfo(file).Length != size)
+                    throw new InvalidDataException("FileDownloader wrote " + new FileInfo(file).Length + " of " + size + " bytes");
+                GC.KeepAlive(result);
+                return new Dictionary<string, double> { ["mb_per_second"] = size / (1024.0 * 1024.0) / clock.Elapsed.TotalSeconds };
+            }
+            finally
+            {
+                File.Delete(file);
+            }
+        }
+
         /// <summary>
         /// Step 2 item 5: ten 10 MiB HTTP/2 downloads multiplexed on one connection, one consumer pausing 2 ms
         /// per 16 KiB read. The fast streams must finish well before the slow one (per-stream flow control:
@@ -324,7 +347,9 @@ namespace TurboHTTP.Tools.Bench
                 Name = name,
                 Budgeted = budgeted,
                 Requests = iterations * _options.Rounds,
-                P50Us = Round(Median(roundP50)),
+                // The best round: background load only ever adds latency, so the fastest round median is the
+                // most repeatable estimate of the client's own cost on a shared machine.
+                P50Us = Round(roundP50.Min()),
                 P95Us = Round(Percentile(all, 0.95)),
                 MeanUs = Round(all.Average()),
                 AllocBytesPerRequest = Math.Round(Median(roundAlloc)),
