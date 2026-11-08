@@ -103,7 +103,8 @@ jobs:
   # HTTP/2 adversarial server and interop (#111): the scripted adversarial-server scenarios
   # (Tests/Runtime/Transport/Http2/Adversarial, compiled into a plain .NET harness against the
   # shadow-built DLLs) and the production RawSocketTransport over TLS + ALPN h2 against Kestrel,
-  # nghttpd and nginx (docker, pinned images). Unity is not needed (Tools~/h2-interop/run.sh).
+  # nghttpd, nginx, h2o, Go net/http, Envoy and nghttpx (docker, images pinned by digest, #288).
+  # Unity is not needed (Tools~/h2-interop/run.sh).
   h2-interop:
     runs-on: ubuntu-latest
     timeout-minutes: 20

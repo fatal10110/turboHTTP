@@ -261,9 +261,10 @@ namespace TurboHTTP.Tests.Transport
         /// <summary>
         /// Runs <paramref name="abandon"/>, which must leave one read of <paramref name="stream"/>
         /// abandoned, then starts a real connect: it must not create its socket before the test ends
-        /// that read. The read is ended on every path, so no entry outlives the test.
+        /// that read. The read is ended on every path, so no entry outlives the test. Shared with
+        /// <see cref="AbandonedLoopGateTests"/>.
         /// </summary>
-        private static void RunOrderingTest(AbandonedReadStream stream, Func<Task> abandon)
+        internal static void RunOrderingTest(AbandonedReadStream stream, Func<Task> abandon)
         {
             var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
@@ -312,7 +313,7 @@ namespace TurboHTTP.Tests.Transport
             }
         }
 
-        private static async Task WaitUntilAsync(Func<bool> condition, string message)
+        internal static async Task WaitUntilAsync(Func<bool> condition, string message)
         {
             var deadline = DateTime.UtcNow + Guard;
             while (!condition())
@@ -324,7 +325,7 @@ namespace TurboHTTP.Tests.Transport
             }
         }
 
-        private static async Task AssertCompletesAsync(Task task, string message)
+        internal static async Task AssertCompletesAsync(Task task, string message)
         {
             var winner = await Task.WhenAny(task, Task.Delay(Guard));
             Assert.AreSame(task, winner, message);

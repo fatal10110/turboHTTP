@@ -3,19 +3,21 @@
 #
 #   Tools~/h2-interop/run.sh                        full job: shadow build, harness build, every row
 #   Tools~/h2-interop/run.sh --only adversarial     only the scripted adversarial-server scenarios (no docker, no TLS)
-#   Tools~/h2-interop/run.sh --only interop         only the interop rows (kestrel, nghttpd, nginx)
+#   Tools~/h2-interop/run.sh --only interop         only the interop rows (kestrel, nghttpd, nginx, h2o, go, envoy, nghttpx)
 #   Tools~/h2-interop/run.sh --row <filter>         only rows whose name contains <filter>
 #   Tools~/h2-interop/run.sh --no-shadow-build      reuse the existing .build/shadow DLLs
 #
 # Adversarial rows: Tests/Runtime/Transport/Http2/Adversarial (the NUnit suite runs the same scenarios in the
 # host editor) drive a real Http2Connection in memory with hostile frame sequences. Interop rows: the
-# production RawSocketTransport (SslStream, ALPN h2) against Kestrel (in-process), nghttpd and nginx (docker,
-# pinned images) over TLS on loopback; the per-run root (Tools~/tls-interop/TestPki.cs) is trusted only
-# through SSL_CERT_FILE/SSL_CERT_DIR. The bc-* rows repeat this with BouncyCastle, directly and through an
-# in-harness CONNECT proxy (#255); BouncyCastle trusts the root through the test-anchor hook. Needs dotnet (SDK 8 with the ASP.NET Core runtime), docker for the
-# nghttpd/nginx rows and the Unity managed DLLs the shadow build uses (Tools~/ci/fetch-unity-dlls.sh, or
-# UNITY_DLLS / UNITY_PATH). Output lands in .build/h2-interop/run.
-# Exit 0 = every row passed; 1 = a row or a precondition failed (never a skip); 2 = usage; 3 = tool missing.
+# production RawSocketTransport (SslStream, ALPN h2) against Kestrel (in-process), nghttpd, nginx, h2o, Go net/http,
+# Envoy and nghttpx (docker, pinned images, Tools~/h2-interop/docker) over TLS on loopback; the per-run root
+# (Tools~/tls-interop/TestPki.cs) is trusted only through SSL_CERT_FILE/SSL_CERT_DIR. The bc-* rows repeat this with
+# BouncyCastle, directly and through an in-harness CONNECT proxy (#255); BouncyCastle trusts the root through the
+# test-anchor hook. Needs dotnet (SDK 8 with the ASP.NET Core runtime), docker for the containerized rows and the
+# Unity managed DLLs the shadow build uses (Tools~/ci/fetch-unity-dlls.sh, or UNITY_DLLS / UNITY_PATH). Output lands
+# in .build/h2-interop/run (interop.log, docker-<server>.log).
+# Exit 0 = every row passed (KNOWN-FAIL rows name a filed defect, N/A rows a server that cannot serve them);
+# 1 = a row or a precondition failed (never a skip); 2 = usage; 3 = tool missing.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -63,15 +65,31 @@ fi
 
 if [ "$only" != adversarial ]; then
   dotnet "$dll" generate "$out"
-  docker build -q -t turbohttp-h2-interop-nghttpd "Tools~/h2-interop/docker/nghttpd" >/dev/null
-  nghttpd=$(docker run -d -p 127.0.0.1::8443 -v "$out:/pki:ro" turbohttp-h2-interop-nghttpd \
-    --echo-upload --htdocs=/pki/www 8443 /pki/leaf.key /pki/leaf-valid.pem)
-  containers+=("$nghttpd")
-  nginx=$(docker run -d -p 127.0.0.1::8443 -v "$out:/pki:ro" \
-    -v "$PWD/Tools~/h2-interop/docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
-    -v "$PWD/Tools~/h2-interop/docker/nginx/h2-headers.conf:/etc/nginx/h2-headers.conf:ro" \
-    nginx:1.27.3-alpine@sha256:814a8e88df978ade80e584cc5b333144b9372a8e3c98872d07137dbf3b44d0e4)
-  containers+=("$nginx")
+  # Every server listens on 8443 inside its container with the per-run dir mounted read-only on /pki
+  # (leaf-valid.pem, leaf.key, www/). Images are pinned by digest, directly or through their Dockerfile's FROM.
+  docker_dir="$PWD/Tools~/h2-interop/docker"
+  nginx_image=nginx:1.27.3-alpine@sha256:814a8e88df978ade80e584cc5b333144b9372a8e3c98872d07137dbf3b44d0e4
+  envoy_image=envoyproxy/envoy:v1.32.1@sha256:11c73026f1ba7f92e8a6a093e9902465ad10f6ae7d17dd63a5c075bc09f1c93d
+  docker pull -q "$nginx_image" >/dev/null
+  docker pull -q "$envoy_image" >/dev/null
+  for image in nghttpd nghttpx h2o go; do
+    docker build -q -t "turbohttp-h2-interop-$image" "$docker_dir/$image" >/dev/null
+  done
+  servers=()
+  start() {
+    local name="$1" id
+    shift
+    id=$(docker run -d -p 127.0.0.1::8443 -v "$out:/pki:ro" "$@")
+    containers+=("$id")
+    servers+=("$name")
+  }
+  start nghttpd turbohttp-h2-interop-nghttpd --echo-upload --htdocs=/pki/www 8443 /pki/leaf.key /pki/leaf-valid.pem
+  start nginx -v "$docker_dir/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+    -v "$docker_dir/nginx/h2-headers.conf:/etc/nginx/h2-headers.conf:ro" "$nginx_image"
+  start h2o turbohttp-h2-interop-h2o
+  start go turbohttp-h2-interop-go
+  start envoy -e ENVOY_UID=0 -v "$docker_dir/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro" "$envoy_image"
+  start nghttpx turbohttp-h2-interop-nghttpx
   port() { docker port "$1" 8443/tcp | head -n1 | sed 's/.*://'; }
 
   # The run phase trusts only the per-run root: SSL_CERT_FILE replaces the system bundle and
@@ -81,9 +99,10 @@ if [ "$only" != adversarial ]; then
       dotnet "$dll" interop "$out" "$1" "$2" "${row[@]}" | tee -a "$out/interop.log" || status=1
   }
   interop kestrel 0
-  interop nghttpd "$(port "$nghttpd")"
-  interop nginx "$(port "$nginx")"
-  for c in "${containers[@]}"; do docker logs "$c" >"$out/docker-${c:0:12}.log" 2>&1 || true; done
+  for i in "${!servers[@]}"; do
+    interop "${servers[$i]}" "$(port "${containers[$i]}")"
+  done
+  for i in "${!servers[@]}"; do docker logs "${containers[$i]}" >"$out/docker-${servers[$i]}.log" 2>&1 || true; done
 fi
 
 exit "$status"

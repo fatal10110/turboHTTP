@@ -58,6 +58,9 @@ namespace TurboHTTP.WebSocket
         private CancellationTokenSource _lifecycleCts;
         private CancellationTokenSource _keepAliveCts;
         private Task _receiveLoopTask;
+
+        // Set once the receive loop was recorded as abandoned socket I/O (TrackAbandonedReceiveLoop, #375).
+        private int _receiveLoopTracked;
         private Task _keepAliveTask;
 
         private Exception _terminalError;
