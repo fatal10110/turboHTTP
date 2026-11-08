@@ -63,7 +63,12 @@ namespace TurboHTTP.Tests.Transport
                 using var cts = new CancellationTokenSource();
                 try
                 {
-                    channel.TestHookReceiveFailing = () => cts.Cancel();
+                    int failures = 0;
+                    channel.TestHookReceiveFailing = () =>
+                    {
+                        Interlocked.Increment(ref failures);
+                        cts.Cancel();
+                    };
                     var receive = channel.ReceiveAsync(new byte[16], 0, 16, cts.Token).AsTask();
 
                     // An abortive close (RST): the poll thread's receive fails with ConnectionReset.
@@ -71,6 +76,12 @@ namespace TurboHTTP.Tests.Transport
                     pair.Server.Close();
 
                     await AssertEndsAsync(receive, "the receive never ended");
+                    if (await EndedWithoutFailureAsync(receive))
+                    {
+                        Assert.AreEqual(0, Volatile.Read(ref failures), "a receive that ended normally never failed");
+                        return;
+                    }
+
                     var oce = await AssertCanceledAsync(receive);
                     Assert.AreEqual(cts.Token, oce.CancellationToken, "cancelled with the caller's token");
                     Assert.IsInstanceOf<SocketException>(oce.InnerException, "the poll thread's error is kept as the cause");
@@ -101,6 +112,9 @@ namespace TurboHTTP.Tests.Transport
                     pair.Server.Close();
 
                     await AssertEndsAsync(receive, "the receive never ended");
+                    if (await EndedWithoutFailureAsync(receive))
+                        return;
+
                     var oce = await AssertCanceledAsync(receive);
                     Assert.AreEqual(cts.Token, oce.CancellationToken, "cancelled with the caller's token");
                     Assert.IsInstanceOf<SocketException>(oce.InnerException, "the socket error is kept as the cause");
@@ -116,6 +130,22 @@ namespace TurboHTTP.Tests.Transport
         {
             var winner = await Task.WhenAny(task, Task.Delay(Guard));
             Assert.AreSame(task, winner, message);
+        }
+
+        /// <summary>
+        /// True when the receive ended with end of stream instead of failing. On the Android IL2CPP
+        /// player (emulator, API 33) the peer's abortive close ends the receive with end of stream (a
+        /// FIN ahead of the RST), so there is no failure to race there. The wrapper under test is the
+        /// same managed code on every runtime, and the Editor and the Mono players drive the reset.
+        /// </summary>
+        private static async Task<bool> EndedWithoutFailureAsync(Task<int> receive)
+        {
+            if (receive.Status != TaskStatus.RanToCompletion)
+                return false;
+
+            Assert.AreEqual(0, await receive, "only the peer's close ends this receive");
+            TestContext.WriteLine("the peer's FIN arrived before its reset: no failure to race on this runtime");
+            return true;
         }
 
         private static async Task<OperationCanceledException> AssertCanceledAsync(Task task)
