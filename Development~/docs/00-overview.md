@@ -71,7 +71,7 @@ The early review notes on this page (connectivity, platform networking, security
 
 | Topic | State |
 | --- | --- |
-| Proxy support (HTTP/HTTPS, CONNECT) | Shipped (Phase 14, 22b); HTTP/2 through CONNECT is negotiated today; must ship off by default (#103, required before 1.0.0) |
+| Proxy support (HTTP/HTTPS, CONNECT) | Shipped (Phase 14, 22b); HTTP/2 through CONNECT is off by default, opt-in via `Http2Options.EnableHttp2ThroughConnectTunnels`; device validation open (#103) |
 | IPv6 dual-stack | Shipped (Happy Eyeballs, Phase 14); NAT64 on device is part of #99 |
 | iOS ATS, Android Network Security Config | Documented in `Documentation~/`; device checks in #99 |
 | Decompression (gzip, deflate), cookies, multipart | Shipped (`TurboHTTP.Middleware`, `TurboHTTP.Files` multipart builder); Brotli not implemented, tracked in #121 |
@@ -136,7 +136,7 @@ The plan is organized into numbered phases; the list below covers every phase an
 - **Phase 22:** Interceptor rewrite (plans in `phases/phase22/`)
 - **[Phase 22a](phases/phase-22a-end-to-end-streaming.md):** End-to-End Streaming
 - **[Phase 22b](phases/phase-22b-streaming-extensions.md):** Streaming Extensions (Expect: 100-continue, proxy streaming, trailers)
-- **[Phase 22c](phases/phase-22c-proxy-http2-alpn.md):** HTTP/2 through CONNECT (negotiated today; must ship off by default, #103)
+- **[Phase 22c](phases/phase-22c-proxy-http2-alpn.md):** HTTP/2 through CONNECT (off by default, opt-in via `Http2Options.EnableHttp2ThroughConnectTunnels`; device validation open, #103)
 - **Phase 22d:** HTTP/2 proxy leg and proxy-aware pooling (post-1.0, v2.0; plan docs pending, #160, plan fix #125)
 
 ### Post-1.0 Plans (feature freeze until GA)
