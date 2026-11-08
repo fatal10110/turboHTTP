@@ -32,7 +32,8 @@ namespace TurboHTTP.Tests.Transport.Http1
                 await DisposeUnreadBodyAsync(stream, cts.Token, TimeSpan.FromSeconds(30), source =>
                 {
                     Assert.IsTrue(stream.Reads > 0, "the dispose drain did not read");
-                    Assert.IsTrue(stream.SawCancelledToken, "the drain token is not linked to the request's transport token");
+                    // The token was already cancelled, so the read observed it synchronously.
+                    Assert.IsTrue(stream.ReadCancelled.IsCompleted, "the drain token is not linked to the request's transport token");
                     AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await source.ReadAsync(new byte[1], CancellationToken.None));
                 });
             });
@@ -52,9 +53,14 @@ namespace TurboHTTP.Tests.Transport.Http1
                 {
                     Assert.IsTrue(stream.Reads > 0, "the dispose drain did not read");
                     Assert.IsTrue(stream.AllTokensCancellable, "the drain read without the 2 s timeout token");
-                    Assert.IsTrue(stream.SawCancelledToken, "the stalled drain read was not ended by the drain timeout");
                     AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await source.ReadAsync(new byte[1], CancellationToken.None));
                 });
+
+                // The reader abandons the pending read on the same token (#345). Its callback was registered
+                // last, so it runs first and the drain can finish before the stream's own callback has run:
+                // wait for that callback instead of reading a flag right after the dispose (#411). Only the
+                // drain timeout can cancel this token; the bound fails the test if it never does.
+                await stream.ReadCancelled.ConfigureAwait(false);
             }, TimeSpan.FromSeconds(10));
         }
 
@@ -88,8 +94,14 @@ namespace TurboHTTP.Tests.Transport.Http1
         /// </summary>
         private sealed class ObservingStream : Stream
         {
+            private readonly TaskCompletionSource<bool> _readCancelled =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
             internal int Reads { get; private set; }
-            internal bool SawCancelledToken { get; private set; }
+
+            /// <summary>Completes once a read saw its token cancelled (on the canceling thread for a pending read).</summary>
+            internal Task ReadCancelled => _readCancelled.Task;
+
             internal bool AllTokensCancellable { get; private set; } = true;
             internal bool PendUntilCancelled { get; set; }
 
@@ -128,7 +140,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 AllTokensCancellable &= token.CanBeCanceled;
                 if (token.IsCancellationRequested)
                 {
-                    SawCancelledToken = true;
+                    _readCancelled.TrySetResult(true);
                     return Task.FromCanceled<int>(token);
                 }
 
@@ -138,7 +150,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 var pending = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var registration = token.Register(() =>
                 {
-                    SawCancelledToken = true;
+                    _readCancelled.TrySetResult(true);
                     pending.TrySetCanceled(token);
                 });
                 return AwaitAndRelease(pending.Task, registration);

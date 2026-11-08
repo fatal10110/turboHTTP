@@ -4,7 +4,6 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -593,16 +592,12 @@ namespace TurboHTTP.Tests.Performance
 
             internal static ManagedBytesCounter Create()
             {
-                var api = typeof(GC).GetMethod(
-                    "GetAllocatedBytesForCurrentThread",
-                    BindingFlags.Public | BindingFlags.Static,
-                    binder: null,
-                    types: Type.EmptyTypes,
-                    modifiers: null);
-
-                if (api != null && api.ReturnType == typeof(long))
+                // Null where the API is missing, and on runtimes where reading it kills the player (#414):
+                // those measure with the heap-size fallback and its budgets.
+                var read = ManagedAllocationCounter.TryGetThreadCounter();
+                if (read != null)
                 {
-                    var read = (Func<long>)Delegate.CreateDelegate(typeof(Func<long>), api);
+                    ManagedAllocationCounter.LogRead("GC.GetAllocatedBytesForCurrentThread");
                     return new ManagedBytesCounter(
                         "GC.GetAllocatedBytesForCurrentThread",
                         read,
