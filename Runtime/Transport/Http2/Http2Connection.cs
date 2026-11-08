@@ -279,11 +279,25 @@ namespace TurboHTTP.Transport.Http2
         /// Callers are responsible for invoking <see cref="IHttpHandler.OnRequestStart"/> before
         /// dispatching when they bypass <see cref="RawSocketTransport"/>.
         /// </summary>
+        public Task DispatchAsync(
+            UHttpRequest request,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken ct) =>
+            DispatchAsync(request, handler, context, ct, ct);
+
+        /// <summary>
+        /// As above; <paramref name="ct"/> may also carry the request deadline, and
+        /// <paramref name="callerToken"/> is the caller's own token (linked into <paramref name="ct"/>). A
+        /// cancellation of <paramref name="ct"/> alone, after the response started, fails the body with
+        /// <see cref="UHttpErrorType.Timeout"/> instead of an <see cref="OperationCanceledException"/>.
+        /// </summary>
         public async Task DispatchAsync(
             UHttpRequest request,
             IHttpHandler handler,
             RequestContext context,
-            CancellationToken ct)
+            CancellationToken ct,
+            CancellationToken callerToken)
         {
             context.SetState(TransportBehaviorFlags.SelfDrainsResponseBody, true);
 
@@ -412,7 +426,7 @@ namespace TurboHTTP.Transport.Http2
                 // Registered only once HEADERS are on the wire, so the cancellation RST_STREAM can
                 // never precede them (an RST_STREAM on an idle stream is a connection error,
                 // RFC 9113 Section 6.4). An already-cancelled token runs the callback here.
-                stream.SetRequestCancellationToken(ct);
+                stream.SetRequestCancellationToken(ct, callerToken);
                 stream.SetCancellationRegistration(ct.Register(
                     s_requestCancellationCallback,
                     stream,

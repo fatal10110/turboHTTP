@@ -91,6 +91,19 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void CancellationWithoutCallerOrDeadline_IsNetworkError()
+        {
+            // #409: an internal cancellation (connection or stream teardown) is not the caller's.
+            foreach (var shape in new Exception[] { new OperationCanceledException(), new TaskCanceledException() })
+            {
+                var mapped = Map(shape, callerCanceled: false, deadlineExpired: false);
+                Assert.IsInstanceOf<UHttpException>(mapped, shape.GetType().Name);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ((UHttpException)mapped).HttpError.Type, shape.GetType().Name);
+                Assert.AreSame(shape, mapped.InnerException, shape.GetType().Name);
+            }
+        }
+
+        [Test]
         public void UncanceledFailures_KeepTheirMapping()
         {
             AssertError(Map(new IOException("reset"), false, false), UHttpErrorType.NetworkError);

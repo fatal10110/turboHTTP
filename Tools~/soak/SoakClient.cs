@@ -34,7 +34,11 @@ namespace TurboHTTP.Tools.Soak
     internal sealed class SoakClient
     {
         private static readonly TimeSpan OpWatchdog = TimeSpan.FromSeconds(120);
-        private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
+        // Above the slowest legitimate operation, below the watchdog: on the lossy profile a 1 MiB HTTP/2
+        // echo shares the server's 64 KiB connection window with the other uploads, and every stall also
+        // delays the WINDOW_UPDATEs queued behind the downloads, so a few echoes needed more than 30 s
+        // (#409). A flow-control wait that never wakes still fails here, as a typed Timeout.
+        private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(90);
 
         private readonly SoakOptions _options;
         private readonly ConcurrentDictionary<string, long> _outcomes = new ConcurrentDictionary<string, long>();
