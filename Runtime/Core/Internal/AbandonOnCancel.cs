@@ -7,8 +7,9 @@ namespace TurboHTTP.Core.Internal
     /// <summary>
     /// Awaits an operation that does not honor a <see cref="CancellationToken"/> itself (socket
     /// connect, the token-less <c>SslStream.AuthenticateAsClientAsync</c> overload) and abandons it
-    /// when the token fires. An abandoned task still runs until the caller disposes the resource
-    /// it works on, and then usually faults; <see cref="WaitAsync(Task, CancellationToken, IDisposable)"/> attaches an observer before
+    /// when the token fires. An abandoned task still runs until the caller shuts down or disposes the
+    /// resource it works on, and then usually ends (a socket stream keeps its descriptor open until
+    /// then, #384); <see cref="WaitAsync(Task, CancellationToken, IDisposable)"/> attaches an observer before
     /// returning so that fault never surfaces as <see cref="TaskScheduler.UnobservedTaskException"/>
     /// (#172), and records it in <see cref="AbandonedSocketIo"/>, which holds back the next socket until it
     /// ended (#369). It lives in Core so the WebSocket handshake reads (#226/#345), which may not reference
