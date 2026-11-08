@@ -1,6 +1,6 @@
 // Soak and lossy-network harness (#114). `run` drives TurboHTTP (HTTP/1.1, HTTP/2, streaming, WebSocket,
 // cancellations) against a separate `serve` process (Kestrel + fault proxies) for a fixed duration and
-// fails on unexpected errors, hangs, managed-heap growth, outstanding pooled objects or leaked sockets.
+// fails on unexpected errors, hangs, managed-heap growth, outstanding pooled objects or byte buffers, or leaked sockets.
 // Run through run.sh (README.md); `generate` writes the per-run PKI that run.sh trusts via SSL_CERT_FILE.
 using System;
 using System.Globalization;

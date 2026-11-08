@@ -1,11 +1,11 @@
 using System;
-using System.Buffers;
 using System.IO;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Transport.Tcp;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http1
 {
@@ -235,7 +235,7 @@ namespace TurboHTTP.Transport.Http1
 
             Interlocked.Exchange(ref _hasReadData, 1);
 
-            var buffer = ArrayPool<byte>.Shared.Rent(_drainBufferBytes);
+            var buffer = ByteArrayPool.Rent(_drainBufferBytes);
             try
             {
                 while (Volatile.Read(ref _terminalState) == 0)
@@ -247,7 +247,7 @@ namespace TurboHTTP.Transport.Http1
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
             }
         }
 
@@ -475,7 +475,7 @@ namespace TurboHTTP.Transport.Http1
                 return false;
             }
 
-            var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(_drainBufferBytes, _bufferedDrainReuseThresholdBytes));
+            var buffer = ByteArrayPool.Rent(Math.Min(_drainBufferBytes, _bufferedDrainReuseThresholdBytes));
             long remainingBudget = _bufferedDrainReuseThresholdBytes;
             try
             {
@@ -500,7 +500,7 @@ namespace TurboHTTP.Transport.Http1
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
             }
         }
 

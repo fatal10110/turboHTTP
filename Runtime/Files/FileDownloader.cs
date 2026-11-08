@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Globalization;
 using System.IO;
 using System.Net;
@@ -8,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Files
 {
@@ -288,7 +288,7 @@ namespace TurboHTTP.Files
                                     options.EnableResume ? SelectStrongValidator(response.Headers) : null);
                             }
 
-                            byte[] buffer = ArrayPool<byte>.Shared.Rent(DownloadBufferSize);
+                            byte[] buffer = ByteArrayPool.Rent(DownloadBufferSize);
                             try
                             {
                                 while (true)
@@ -317,7 +317,7 @@ namespace TurboHTTP.Files
                             }
                             finally
                             {
-                                ArrayPool<byte>.Shared.Return(buffer);
+                                ByteArrayPool.Return(buffer);
                             }
 
                             await fileStream.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -681,7 +681,7 @@ namespace TurboHTTP.Files
                 DownloadBufferSize,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(DownloadBufferSize);
+            byte[] buffer = ByteArrayPool.Rent(DownloadBufferSize);
             try
             {
                 while (true)
@@ -698,7 +698,7 @@ namespace TurboHTTP.Files
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
             }
         }
 

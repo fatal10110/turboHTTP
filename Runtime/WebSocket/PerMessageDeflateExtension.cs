@@ -330,8 +330,8 @@ namespace TurboHTTP.WebSocket
                     ex);
             }
 
-            byte[] compressedWithTail = ArrayPool<byte>.Shared.Rent(inputLength);
-            byte[] chunk = ArrayPool<byte>.Shared.Rent(16 * 1024);
+            byte[] compressedWithTail = ByteArrayPool.Rent(inputLength);
+            byte[] chunk = ByteArrayPool.Rent(16 * 1024);
 
             try
             {
@@ -389,8 +389,8 @@ namespace TurboHTTP.WebSocket
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(chunk);
-                ArrayPool<byte>.Shared.Return(compressedWithTail);
+                ByteArrayPool.Return(chunk);
+                ByteArrayPool.Return(compressedWithTail);
             }
         }
 

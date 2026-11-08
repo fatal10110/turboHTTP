@@ -1,5 +1,5 @@
 using System;
-using System.Buffers;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -77,7 +77,7 @@ namespace TurboHTTP.WebSocket
             _length = 0;
 
             if (_returnToPool)
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
         }
 
         public static WebSocketMessage CreateDetachedCopy(WebSocketMessage source)

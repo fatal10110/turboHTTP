@@ -371,7 +371,7 @@ namespace TurboHTTP.Transport.Http1
             int streamingSendBufferBytes,
             CancellationToken ct)
         {
-            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(streamingSendBufferBytes);
+            var buffer = ByteArrayPool.Rent(streamingSendBufferBytes);
             try
             {
                 long remaining = knownLength;
@@ -400,7 +400,7 @@ namespace TurboHTTP.Transport.Http1
             }
             finally
             {
-                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
             }
         }
 
@@ -412,8 +412,8 @@ namespace TurboHTTP.Transport.Http1
             int streamingSendBufferBytes,
             CancellationToken ct)
         {
-            var bodyBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(streamingSendBufferBytes);
-            var headerBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(MaxChunkHeaderBytes);
+            var bodyBuffer = ByteArrayPool.Rent(streamingSendBufferBytes);
+            var headerBuffer = ByteArrayPool.Rent(MaxChunkHeaderBytes);
             try
             {
                 while (true)
@@ -442,8 +442,8 @@ namespace TurboHTTP.Transport.Http1
             }
             finally
             {
-                System.Buffers.ArrayPool<byte>.Shared.Return(bodyBuffer);
-                System.Buffers.ArrayPool<byte>.Shared.Return(headerBuffer);
+                ByteArrayPool.Return(bodyBuffer);
+                ByteArrayPool.Return(headerBuffer);
             }
         }
 

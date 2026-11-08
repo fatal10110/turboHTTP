@@ -26,7 +26,10 @@ namespace TurboHTTP.Tools.Soak
     /// <see cref="UHttpClient"/> (plus a <see cref="WebSocketClient"/> per WebSocket operation) to the
     /// clean server and to every fault proxy. Checkpoints pause the workers, wait until nothing is in
     /// flight, force a full GC and record the managed heap, the client's socket count and the pooled
-    /// objects still outstanding, so every checkpoint compares the same (idle) load level.
+    /// objects still outstanding, so every checkpoint compares the same (idle) load level. Pooled byte
+    /// buffers (<see cref="ByteArrayPool"/>, #292) are recorded at every checkpoint, but idle pooled
+    /// connections legitimately hold their socket and read buffers, so they must be back to the pre-client
+    /// count only once the client and transport are disposed.
     /// </summary>
     internal sealed class SoakClient
     {
@@ -46,6 +49,7 @@ namespace TurboHTTP.Tools.Soak
         private long _ops;
         private long _failureCount;
         private long _unobserved;
+        private long _byteBuffersBefore;
         private int _inFlight;
         private volatile bool _stop;
 
@@ -58,7 +62,7 @@ namespace TurboHTTP.Tools.Soak
         {
             Directory.CreateDirectory(_options.OutDir);
             _samples = new StreamWriter(Path.Combine(_options.OutDir, "samples.csv")) { AutoFlush = true };
-            _samples.WriteLine("seconds,ops,failures,heap_bytes,sockets,h2_stream_active,parsed_active,scratch_active,gen0,gen1,gen2");
+            _samples.WriteLine("seconds,ops,failures,heap_bytes,sockets,h2_stream_active,parsed_active,scratch_active,byte_buffers_held,gen0,gen1,gen2");
             TaskScheduler.UnobservedTaskException += (_, e) =>
             {
                 Interlocked.Increment(ref _unobserved);
@@ -76,6 +80,9 @@ namespace TurboHTTP.Tools.Soak
 
             // No Unity bootstrap runs in a plain .NET process, so the raw-socket WebSocket transport registers here.
             RawSocketWebSocketTransport.EnsureRegistered();
+            // Byte buffers the library holds before the client exists (none expected); the harness's own rents
+            // in Ops.cs use ArrayPool<byte>.Shared directly and are not counted.
+            _byteBuffersBefore = ByteArrayPool.GetDiagnostics().ActiveCount;
             var transport = new RawSocketTransport();
             _client = new UHttpClient(new UHttpClientOptions
             {
@@ -128,11 +135,13 @@ namespace TurboHTTP.Tools.Soak
             _client.Dispose();
             transport.Dispose();
             int socketsAfter = await WaitForAsync(SocketCount, v => v <= socketsBefore).ConfigureAwait(false);
+            // Connection teardown returns the socket-channel and read-loop buffers as the loops exit.
+            long byteBuffersAfter = await WaitForAsync(ByteBuffersHeld, v => v == 0, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
             var serverStats = await WaitForAsync(ReadServerStats,
                 s => s["h1Open"] == 0 && s["tlsOpen"] == 0 && s["proxyOpen"] == 0, TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             StopServer();
 
-            return Report(clock.Elapsed, warmup, baselineTaken, socketsBefore, socketsAfter, serverStats);
+            return Report(clock.Elapsed, warmup, baselineTaken, socketsBefore, socketsAfter, byteBuffersAfter, serverStats);
         }
 
         // ---- workers ----
@@ -233,6 +242,7 @@ namespace TurboHTTP.Tools.Soak
             var pools = await WaitForAsync(PoolActive, p => p.All(kv => kv.Value == 0), TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             long heap = ForcedGcHeap();
             int sockets = SocketCount();
+            long byteBuffers = ByteBuffersHeld();
             var serverStats = ReadServerStats();
             var checkpoint = new Dictionary<string, object>
             {
@@ -242,12 +252,13 @@ namespace TurboHTTP.Tools.Soak
                 ["heap_bytes"] = heap,
                 ["sockets"] = sockets,
                 ["pool_active"] = pools,
+                ["byte_buffers_held"] = byteBuffers,
                 ["server"] = serverStats,
             };
             _checkpoints.Add(checkpoint);
             Console.WriteLine("checkpoint " + label + ": t=" + checkpoint["seconds"] + "s ops=" + checkpoint["ops"] +
                               " heap=" + Mb(heap) + "MB sockets=" + sockets + " pools=" + JsonSerializer.Serialize(pools) +
-                              " server=" + JsonSerializer.Serialize(serverStats));
+                              " byte_buffers=" + byteBuffers + " server=" + JsonSerializer.Serialize(serverStats));
             foreach (var kv in pools.Where(kv => kv.Value != 0))
                 Fail(label + " checkpoint: " + kv.Value + " pooled " + kv.Key + " not returned with nothing in flight");
             if (sockets > _options.MaxSockets)
@@ -263,7 +274,7 @@ namespace TurboHTTP.Tools.Soak
             _samples.WriteLine(string.Join(",", new object[]
             {
                 Math.Round(seconds, 1).ToString(CultureInfo.InvariantCulture), Interlocked.Read(ref _ops), Interlocked.Read(ref _failureCount),
-                heap, sockets, pools["Http2Stream"], pools["ParsedResponse"], pools["HeaderParseScratch"],
+                heap, sockets, pools["Http2Stream"], pools["ParsedResponse"], pools["HeaderParseScratch"], ByteBuffersHeld(),
                 GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
             }));
             Console.WriteLine("t=" + Math.Round(seconds) + "s ops=" + Interlocked.Read(ref _ops) + " failures=" + Interlocked.Read(ref _failureCount) +
@@ -276,6 +287,9 @@ namespace TurboHTTP.Tools.Soak
             ["ParsedResponse"] = ParsedResponsePool.GetDiagnostics().ActiveCount,
             ["HeaderParseScratch"] = HeaderParseScratchPool.GetDiagnostics().ActiveCount,
         };
+
+        // Library byte buffers outstanding beyond the count before the client was created (#292).
+        private long ByteBuffersHeld() => ByteArrayPool.GetDiagnostics().ActiveCount - _byteBuffersBefore;
 
         private static long ForcedGcHeap()
         {
@@ -378,7 +392,7 @@ namespace TurboHTTP.Tools.Soak
         // ---- report ----
 
         private int Report(TimeSpan elapsed, int warmup, bool baselineTaken, int socketsBefore, int socketsAfter,
-            Dictionary<string, long> serverAfter)
+            long byteBuffersAfter, Dictionary<string, long> serverAfter)
         {
             var problems = new List<string>();
             long baselineHeap = baselineTaken ? (long)_checkpoints.First()["heap_bytes"] : -1;
@@ -395,6 +409,9 @@ namespace TurboHTTP.Tools.Soak
                 problems.Add(Interlocked.Read(ref _failureCount) + " failure(s)");
             if (socketsBefore >= 0 && socketsAfter > socketsBefore)
                 problems.Add((socketsAfter - socketsBefore) + " client socket(s) still open after dispose");
+            if (byteBuffersAfter != 0)
+                problems.Add(byteBuffersAfter + " pooled byte buffer(s) not returned after the client and transport were disposed " +
+                             "(ByteArrayPool rents minus returns; negative means a return without a counted rent)");
             // The fault proxies close a connection as soon as either side does, so an open proxied connection
             // means the client kept its socket. Kestrel may tear its own side down later (it drains HTTP/2
             // handlers); its count is the oracle only where the client's own socket count is unavailable.
@@ -421,6 +438,7 @@ namespace TurboHTTP.Tools.Soak
                 ["max_growth_mb"] = _options.MaxGrowthMb,
                 ["sockets_before"] = socketsBefore,
                 ["sockets_after_dispose"] = socketsAfter,
+                ["byte_buffers_after_dispose"] = byteBuffersAfter,
                 ["server_after_dispose"] = serverAfter,
                 ["unobserved_task_exceptions"] = Interlocked.Read(ref _unobserved),
                 ["checkpoints"] = _checkpoints,

@@ -70,7 +70,7 @@ namespace TurboHTTP.WebSocket
         public static ArrayPoolMemoryOwner<byte> Compress(ReadOnlySpan<byte> input, int compressionLevel)
         {
             int storedLength = StoredLength(input.Length);
-            byte[] output = ArrayPool<byte>.Shared.Rent(storedLength + OutputSlack);
+            byte[] output = ByteArrayPool.Rent(storedLength + OutputSlack);
             try
             {
                 int written = -1;
@@ -95,7 +95,7 @@ namespace TurboHTTP.WebSocket
             finally
             {
                 if (output != null)
-                    ArrayPool<byte>.Shared.Return(output);
+                    ByteArrayPool.Return(output);
             }
         }
 

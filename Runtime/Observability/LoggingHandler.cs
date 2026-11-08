@@ -1,10 +1,10 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Observability
 {
@@ -174,7 +174,7 @@ namespace TurboHTTP.Observability
                 return;
 
             if (_bodyPreview == null)
-                _bodyPreview = ArrayPool<byte>.Shared.Rent(MaxPreviewBytes);
+                _bodyPreview = ByteArrayPool.Rent(MaxPreviewBytes);
 
             var remaining = MaxPreviewBytes - _bodyPreviewLength;
             if (remaining > 0)
@@ -244,7 +244,7 @@ namespace TurboHTTP.Observability
             if (_bodyPreview == null)
                 return;
 
-            ArrayPool<byte>.Shared.Return(_bodyPreview, clearArray: true);
+            ByteArrayPool.Return(_bodyPreview, clearArray: true);
             _bodyPreview = null;
             _bodyPreviewLength = 0;
             _bodyPreviewTruncated = false;

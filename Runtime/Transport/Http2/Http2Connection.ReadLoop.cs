@@ -1,11 +1,11 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -579,11 +579,11 @@ namespace TurboHTTP.Transport.Http2
                 return;
 
             int grown = Math.Min(HeaderBlockByteLimit, Math.Max(4096, (current?.Length ?? 0) * 2));
-            var next = ArrayPool<byte>.Shared.Rent(Math.Max(required, grown));
+            var next = ByteArrayPool.Rent(Math.Max(required, grown));
             if (current != null)
             {
                 Buffer.BlockCopy(current, 0, next, 0, _headerBlockLength);
-                ArrayPool<byte>.Shared.Return(current);
+                ByteArrayPool.Return(current);
             }
 
             _headerBlockBuffer = next;
@@ -598,7 +598,7 @@ namespace TurboHTTP.Transport.Http2
             _headerBlockEndStream = false;
             _headerBlockIsPushPromise = false;
             if (buffer != null)
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
         }
 
         private void ApplyDecodedHeaders(Http2Stream stream, bool isTrailingHeaders, bool endStream)

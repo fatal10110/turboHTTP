@@ -5,6 +5,7 @@ using System.IO;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -31,7 +32,7 @@ namespace TurboHTTP.WebSocket
                 return;
             }
 
-            byte[] payloadBuffer = ArrayPool<byte>.Shared.Rent(byteCount);
+            byte[] payloadBuffer = ByteArrayPool.Rent(byteCount);
             try
             {
                 int written = WebSocketConstants.StrictUtf8.GetBytes(
@@ -48,7 +49,7 @@ namespace TurboHTTP.WebSocket
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(payloadBuffer);
+                ByteArrayPool.Return(payloadBuffer);
             }
         }
 
@@ -277,7 +278,7 @@ namespace TurboHTTP.WebSocket
                             catch (Exception ex)
                             {
                                 if (buffer != null)
-                                    ArrayPool<byte>.Shared.Return(buffer);
+                                    ByteArrayPool.Return(buffer);
 
                                 throw new WebSocketProtocolException(
                                     WebSocketError.InvalidUtf8,
@@ -552,7 +553,7 @@ namespace TurboHTTP.WebSocket
                 },
                 (this, stream));
 
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(256);
+            byte[] buffer = ByteArrayPool.Rent(256);
             try
             {
                 while (await stream.ReadAsync(buffer, 0, buffer.Length, timeoutCts.Token).ConfigureAwait(false) > 0)
@@ -565,7 +566,7 @@ namespace TurboHTTP.WebSocket
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
             }
         }
 
@@ -959,7 +960,7 @@ namespace TurboHTTP.WebSocket
                     long pingCounter = Interlocked.Increment(ref _pingCounter);
                     long pingTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
 
-                    byte[] pingPayload = ArrayPool<byte>.Shared.Rent(8);
+                    byte[] pingPayload = ByteArrayPool.Rent(8);
                     try
                     {
                         BinaryPrimitives.WriteUInt64BigEndian(
@@ -991,7 +992,7 @@ namespace TurboHTTP.WebSocket
                     }
                     finally
                     {
-                        ArrayPool<byte>.Shared.Return(pingPayload);
+                        ByteArrayPool.Return(pingPayload);
                     }
 
                     Interlocked.Exchange(ref _lastPingTimestamp, pingTimestamp);

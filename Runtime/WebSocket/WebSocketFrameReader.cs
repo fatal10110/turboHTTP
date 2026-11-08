@@ -4,6 +4,7 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -79,7 +80,7 @@ namespace TurboHTTP.WebSocket
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
 
-            byte[] headerBuffer = ArrayPool<byte>.Shared.Rent(14);
+            byte[] headerBuffer = ByteArrayPool.Rent(14);
             byte[] payloadBuffer = null;
 
             try
@@ -234,7 +235,7 @@ namespace TurboHTTP.WebSocket
                 int frameByteCount = checked(headerByteCount + payloadLengthInt);
                 if (payloadLengthInt > 0)
                 {
-                    payloadBuffer = ArrayPool<byte>.Shared.Rent(payloadLengthInt);
+                    payloadBuffer = ByteArrayPool.Rent(payloadLengthInt);
                     if (!await ReadExactAsync(stream, payloadBuffer, 0, payloadLengthInt, ct).ConfigureAwait(false))
                         throw new IOException("Unexpected end of stream while reading frame payload.");
 
@@ -272,7 +273,7 @@ namespace TurboHTTP.WebSocket
                 // caught by a later one (#320). The payload buffer goes back on every failure, the
                 // cancellation-mapped ones included.
                 if (payloadBuffer != null)
-                    ArrayPool<byte>.Shared.Return(payloadBuffer);
+                    ByteArrayPool.Return(payloadBuffer);
 
                 if (ct.IsCancellationRequested && (ex is ObjectDisposedException || ex is IOException))
                     throw new OperationCanceledException("WebSocket frame read was canceled.", ct);
@@ -281,7 +282,7 @@ namespace TurboHTTP.WebSocket
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(headerBuffer);
+                ByteArrayPool.Return(headerBuffer);
             }
         }
 
@@ -364,7 +365,7 @@ namespace TurboHTTP.WebSocket
 
             _payloadBuffer = null;
             _payloadLength = 0;
-            ArrayPool<byte>.Shared.Return(buffer);
+            ByteArrayPool.Return(buffer);
         }
 
         internal byte[] DetachPayloadBuffer(out int length)

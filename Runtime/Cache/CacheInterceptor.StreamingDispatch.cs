@@ -1,9 +1,9 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Cache
 {
@@ -291,7 +291,7 @@ namespace TurboHTTP.Cache
                 }
 
                 var completed = false;
-                var buffer = ArrayPool<byte>.Shared.Rent(ReadBufferBytes);
+                var buffer = ByteArrayPool.Rent(ReadBufferBytes);
                 try
                 {
                     long total = 0;
@@ -317,7 +317,7 @@ namespace TurboHTTP.Cache
                 }
                 finally
                 {
-                    ArrayPool<byte>.Shared.Return(buffer);
+                    ByteArrayPool.Return(buffer);
                 }
 
                 if (completed)

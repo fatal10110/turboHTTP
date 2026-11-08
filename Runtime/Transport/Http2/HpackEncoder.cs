@@ -180,7 +180,7 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
-            var raw = ArrayPool<byte>.Shared.Rent(rawLength);
+            var raw = ByteArrayPool.Rent(rawLength);
             try
             {
                 int bytesWritten = EncodingHelper.Latin1.GetBytes(s, 0, s.Length, raw, 0);
@@ -190,7 +190,7 @@ namespace TurboHTTP.Transport.Http2
                 {
                     // Encode Huffman directly into a pooled scratch buffer to avoid
                     // allocating an intermediate byte[] for each header value.
-                    var huffmanBuf = ArrayPool<byte>.Shared.Rent(huffmanLength);
+                    var huffmanBuf = ByteArrayPool.Rent(huffmanLength);
                     try
                     {
                         HpackHuffman.EncodeInto(raw, 0, bytesWritten, huffmanBuf, 0);
@@ -199,7 +199,7 @@ namespace TurboHTTP.Transport.Http2
                     }
                     finally
                     {
-                        ArrayPool<byte>.Shared.Return(huffmanBuf);
+                        ByteArrayPool.Return(huffmanBuf);
                     }
                 }
                 else
@@ -210,7 +210,7 @@ namespace TurboHTTP.Transport.Http2
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(raw);
+                ByteArrayPool.Return(raw);
             }
         }
 

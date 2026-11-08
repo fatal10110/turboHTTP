@@ -356,7 +356,7 @@ namespace TurboHTTP.Middleware
                 if (Volatile.Read(ref _completed) != 0)
                     return;
 
-                var buffer = ArrayPool<byte>.Shared.Rent(DrainBufferBytes);
+                var buffer = ByteArrayPool.Rent(DrainBufferBytes);
                 try
                 {
                     while (await ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false) != 0)
@@ -365,7 +365,7 @@ namespace TurboHTTP.Middleware
                 }
                 finally
                 {
-                    ArrayPool<byte>.Shared.Return(buffer);
+                    ByteArrayPool.Return(buffer);
                 }
             }
 
@@ -574,7 +574,7 @@ namespace TurboHTTP.Middleware
                         "BodySourceStream.Read should not block a pumping SynchronizationContext.");
                     // Same invariant as Read(byte[],...): async callers with a SynchronizationContext
                     // are offloaded before they reach this synchronous bridge.
-                    var rented = ArrayPool<byte>.Shared.Rent(buffer.Length);
+                    var rented = ByteArrayPool.Rent(buffer.Length);
                     try
                     {
                         var read = _inner.ReadAsync(
@@ -589,7 +589,7 @@ namespace TurboHTTP.Middleware
                     }
                     finally
                     {
-                        ArrayPool<byte>.Shared.Return(rented);
+                        ByteArrayPool.Return(rented);
                     }
                 }
 

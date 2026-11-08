@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -93,7 +92,7 @@ namespace TurboHTTP.Transport.Http2
             CancellationToken ct,
             Action<byte[]> fillPayload)
         {
-            var payload = ArrayPool<byte>.Shared.Rent(payloadLength);
+            var payload = ByteArrayPool.Rent(payloadLength);
             try
             {
                 fillPayload?.Invoke(payload);
@@ -124,7 +123,7 @@ namespace TurboHTTP.Transport.Http2
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(payload);
+                ByteArrayPool.Return(payload);
             }
         }
 

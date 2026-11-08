@@ -1,9 +1,9 @@
 using System;
-using System.Buffers;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Tcp
 {
@@ -59,7 +59,7 @@ namespace TurboHTTP.Transport.Tcp
             if (!MemoryMarshal.TryGetArray((ReadOnlyMemory<byte>)buffer, out var segment))
             {
                 // Non-array-backed Memory — use a pooled temp array and copy result back.
-                var tmp = ArrayPool<byte>.Shared.Rent(buffer.Length);
+                var tmp = ByteArrayPool.Rent(buffer.Length);
                 var vt = _channel.ReceiveAsync(tmp, 0, tmp.Length, cancellationToken);
                 return CopyAndReturnPooledAsync(vt, tmp, buffer);
             }
@@ -77,7 +77,7 @@ namespace TurboHTTP.Transport.Tcp
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(tmp);
+                ByteArrayPool.Return(tmp);
             }
         }
 

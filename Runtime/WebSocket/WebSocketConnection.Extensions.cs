@@ -146,7 +146,7 @@ namespace TurboHTTP.WebSocket
                 return detachedBuffer;
             }
 
-            var buffer = ArrayPool<byte>.Shared.Rent(payloadLength);
+            var buffer = ByteArrayPool.Rent(payloadLength);
             transformedMemory.CopyTo(new Memory<byte>(buffer, 0, payloadLength));
             return buffer;
         }

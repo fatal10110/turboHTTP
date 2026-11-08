@@ -29,8 +29,9 @@ namespace TurboHTTP.Observability
     /// UI or Unity objects must marshal to the main thread themselves.
     /// </para>
     /// <para>
-    /// <b>Diagnostic counter scope:</b> <see cref="ByteArrayPool"/> counters track rentals
-    /// via the raw-array API (<c>ByteArrayPool.Rent/Return</c>). Rentals made through
+    /// <b>Diagnostic counter scope:</b> <see cref="ByteArrayPool"/> counters track every
+    /// raw byte-array rent and return made by the runtime modules (transport, Core buffers,
+    /// WebSocket, middleware, cache, files, JSON, observability, testing); see #292. Rentals made through
     /// <c>MemoryPool&lt;byte&gt;.Shared</c> (backing <see cref="PooledBuffer{T}"/>) are not
     /// reflected in those counters — the two pools are separate diagnostic surfaces even
     /// though both draw from <c>ArrayPool&lt;byte&gt;.Shared</c> under the hood.
