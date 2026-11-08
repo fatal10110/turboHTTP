@@ -1,6 +1,6 @@
 # Phase 18a: Advanced WebSocket Features
 
-**Milestone:** v1.0 GA: Docs, validation & release (shipped, experimental until #104)
+**Milestone:** v1.0 GA: Docs, validation & release (shipped; opt-in `WithCompression`, Editor (Mono) verified, IL2CPP/device rows open, #99/#104)
 **Dependencies:** Phase 18 (all sub-phases — core WebSocket fully implemented)
 **Estimated Complexity:** High
 **Estimated Effort:** 4-6 weeks
