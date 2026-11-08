@@ -21,6 +21,8 @@ namespace TurboHTTP.Tools.Bench
         public double MeanUs { get; set; }
         /// <summary>Median over rounds of process-wide managed bytes allocated per request.</summary>
         public double? AllocBytesPerRequest { get; set; }
+        /// <summary>Absolute allocation allowance on top of the budget percentage (run-to-run noise of this row).</summary>
+        public double? AllocSlackBytes { get; set; }
         public double? MbPerSecond { get; set; }
         public double? PeakHeapGrowthMb { get; set; }
         public Dictionary<string, double> Extra { get; set; }
@@ -97,13 +99,19 @@ namespace TurboHTTP.Tools.Bench
     /// result.json / baseline.json and the regression check. A budgeted scenario regresses when its p50
     /// latency exceeds the baseline by more than the budget (only with --gate-latency and a baseline recorded on
     /// the same machine shape: loopback latency does not transfer between machines or survive a busy host), or when its
-    /// managed bytes per request exceed the baseline by more than the budget plus <see cref="AllocSlackBytes"/>
+    /// managed bytes per request exceed the baseline by more than the budget plus the row's allocation slack
     /// (allocation does transfer, so it is gated everywhere).
     /// </summary>
     internal static class BenchReport
     {
-        /// <summary>Absolute allowance on top of the percentage: rounding and runtime-internal jitter.</summary>
+        /// <summary>Default absolute allowance on top of the percentage: rounding and runtime-internal jitter.</summary>
         public const double AllocSlackBytes = 64;
+
+        /// <summary>
+        /// HTTP/2 rows: managed bytes per request moved by up to ~1.2 KB between identical runs (the peer's DATA
+        /// framing and the number of read-loop suspensions vary with scheduling), so they get a wider allowance.
+        /// </summary>
+        public const double Http2AllocSlackBytes = 1536;
 
         private static readonly JsonSerializerOptions s_json = new JsonSerializerOptions
         {
@@ -178,7 +186,7 @@ namespace TurboHTTP.Tools.Bench
 
                 if (now.AllocBytesPerRequest != null && then.AllocBytesPerRequest != null)
                 {
-                    bool over = now.AllocBytesPerRequest > then.AllocBytesPerRequest * factor + AllocSlackBytes;
+                    bool over = now.AllocBytesPerRequest > then.AllocBytesPerRequest * factor + (then.AllocSlackBytes ?? AllocSlackBytes);
                     notes.Add("alloc " + then.AllocBytesPerRequest + " -> " + now.AllocBytesPerRequest + " B" + (over && budgeted ? " OVER BUDGET" : ""));
                     failed |= over && budgeted;
                 }

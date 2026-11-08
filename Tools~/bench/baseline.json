@@ -1,14 +1,14 @@
 {
   "schema": 1,
   "note": "TurboHTTP streaming benchmark (Tools~/bench, Phase 22a.6). Loopback Kestrel peer in a separate process; alloc_bytes_per_request is process-wide and includes the caller\u0027s own async state machine.",
-  "recorded_utc": "2026-11-08T12:23:51Z",
-  "commit": "113994f",
+  "recorded_utc": "2026-11-08T12:34:59Z",
+  "commit": "6452794",
   "machine": {
     "os": "Ubuntu 24.04.5 LTS",
     "arch": "X64",
     "runtime": ".NET 8.0.33",
     "processors": 4,
-    "load_average": 4.18
+    "load_average": 6.4
   },
   "options": {
     "iterations": 2000,
@@ -20,190 +20,207 @@
       "name": "h1-get-1k-buffered",
       "budgeted": true,
       "requests": 10000,
-      "p50_us": 141.5,
-      "p95_us": 249.6,
-      "mean_us": 182.7,
-      "alloc_bytes_per_request": 14073
+      "p50_us": 158.4,
+      "p95_us": 257.7,
+      "mean_us": 184.4,
+      "alloc_bytes_per_request": 14054,
+      "alloc_slack_bytes": 64
     },
     {
       "name": "h1-get-32k-buffered",
       "budgeted": true,
       "requests": 5000,
-      "p50_us": 158.7,
-      "p95_us": 388.5,
-      "mean_us": 269.9,
-      "alloc_bytes_per_request": 15393
+      "p50_us": 177.7,
+      "p95_us": 287.7,
+      "mean_us": 212.3,
+      "alloc_bytes_per_request": 15394,
+      "alloc_slack_bytes": 64
     },
     {
       "name": "h1-post-1k-buffered",
       "budgeted": true,
       "requests": 10000,
-      "p50_us": 140.9,
-      "p95_us": 242.5,
-      "mean_us": 175.4,
-      "alloc_bytes_per_request": 13725
+      "p50_us": 174.1,
+      "p95_us": 266,
+      "mean_us": 195.7,
+      "alloc_bytes_per_request": 13712,
+      "alloc_slack_bytes": 64
     },
     {
       "name": "h1-get-1k-streaming",
       "budgeted": false,
       "requests": 10000,
-      "p50_us": 140.4,
-      "p95_us": 465.5,
-      "mean_us": 284.9,
-      "alloc_bytes_per_request": 13895
+      "p50_us": 163.4,
+      "p95_us": 252.4,
+      "mean_us": 184.9,
+      "alloc_bytes_per_request": 13884,
+      "alloc_slack_bytes": 64
     },
     {
       "name": "h1-get-1m-streaming",
       "budgeted": false,
       "requests": 200,
-      "p50_us": 800.4,
-      "p95_us": 4108,
-      "mean_us": 1387.1,
-      "alloc_bytes_per_request": 49336,
-      "mb_per_second": 720.9,
+      "p50_us": 828.1,
+      "p95_us": 1266.6,
+      "mean_us": 1045.7,
+      "alloc_bytes_per_request": 53591,
+      "alloc_slack_bytes": 64,
+      "mb_per_second": 956.3,
       "extra": {
-        "throughput_vs_raw": 0.867
+        "throughput_vs_raw": 1.244
       }
     },
     {
       "name": "h1-post-5m-buffered",
       "budgeted": false,
       "requests": 100,
-      "p50_us": 4708.7,
-      "p95_us": 17972.1,
-      "mean_us": 8274.6,
-      "alloc_bytes_per_request": 15327,
-      "mb_per_second": 604.3
+      "p50_us": 3943.8,
+      "p95_us": 7105.1,
+      "mean_us": 4705.7,
+      "alloc_bytes_per_request": 15284,
+      "alloc_slack_bytes": 64,
+      "mb_per_second": 1062.5
     },
     {
       "name": "h1-post-5m-stream",
       "budgeted": false,
       "requests": 100,
-      "p50_us": 5170.6,
-      "p95_us": 15984.5,
-      "mean_us": 7356.1,
-      "alloc_bytes_per_request": 15511,
-      "mb_per_second": 679.7
+      "p50_us": 4249.6,
+      "p95_us": 6105.6,
+      "mean_us": 4646.5,
+      "alloc_bytes_per_request": 15501,
+      "alloc_slack_bytes": 64,
+      "mb_per_second": 1076.1
     },
     {
       "name": "h2-get-1k-buffered",
       "budgeted": true,
       "requests": 10000,
-      "p50_us": 243.8,
-      "p95_us": 416.7,
-      "mean_us": 349.2,
-      "alloc_bytes_per_request": 9842
+      "p50_us": 277.3,
+      "p95_us": 490.6,
+      "mean_us": 346.5,
+      "alloc_bytes_per_request": 10185,
+      "alloc_slack_bytes": 1536
     },
     {
       "name": "h2-get-32k-buffered",
       "budgeted": true,
       "requests": 5000,
-      "p50_us": 376.6,
-      "p95_us": 1214,
-      "mean_us": 552.2,
-      "alloc_bytes_per_request": 11729
+      "p50_us": 361.6,
+      "p95_us": 621.9,
+      "mean_us": 461.4,
+      "alloc_bytes_per_request": 12976,
+      "alloc_slack_bytes": 1536
     },
     {
       "name": "h2-post-1k-buffered",
       "budgeted": true,
       "requests": 10000,
-      "p50_us": 304.8,
-      "p95_us": 502.6,
-      "mean_us": 402.4,
-      "alloc_bytes_per_request": 10728
+      "p50_us": 330.9,
+      "p95_us": 524.8,
+      "mean_us": 391.2,
+      "alloc_bytes_per_request": 11051,
+      "alloc_slack_bytes": 1536
     },
     {
       "name": "h2-get-1k-streaming",
       "budgeted": false,
       "requests": 10000,
-      "p50_us": 272.5,
-      "p95_us": 406.9,
-      "mean_us": 333.4,
-      "alloc_bytes_per_request": 10715
+      "p50_us": 312.6,
+      "p95_us": 2929.7,
+      "mean_us": 684.8,
+      "alloc_bytes_per_request": 10815,
+      "alloc_slack_bytes": 1536
     },
     {
       "name": "h2-get-1m-streaming",
       "budgeted": false,
       "requests": 200,
-      "p50_us": 6687.2,
-      "p95_us": 33288.9,
-      "mean_us": 11752.6,
-      "alloc_bytes_per_request": 130355,
-      "mb_per_second": 85.1
+      "p50_us": 5902.9,
+      "p95_us": 50677.8,
+      "mean_us": 15984.1,
+      "alloc_bytes_per_request": 138839,
+      "alloc_slack_bytes": 1536,
+      "mb_per_second": 62.6
     },
     {
       "name": "h2-post-5m-buffered",
       "budgeted": false,
       "requests": 100,
-      "p50_us": 20898.6,
-      "p95_us": 98479.7,
-      "mean_us": 38526.2,
-      "alloc_bytes_per_request": 90376,
-      "mb_per_second": 129.8
+      "p50_us": 12311,
+      "p95_us": 23851.1,
+      "mean_us": 16309.1,
+      "alloc_bytes_per_request": 90724,
+      "alloc_slack_bytes": 1536,
+      "mb_per_second": 306.6
     },
     {
       "name": "h2-post-5m-stream",
       "budgeted": false,
       "requests": 100,
-      "p50_us": 13998.9,
-      "p95_us": 33658.4,
-      "mean_us": 19445.4,
-      "alloc_bytes_per_request": 126463,
-      "mb_per_second": 257.1
+      "p50_us": 17319.8,
+      "p95_us": 31893.6,
+      "mean_us": 20387.7,
+      "alloc_bytes_per_request": 126487,
+      "alloc_slack_bytes": 1536,
+      "mb_per_second": 245.2
     },
     {
       "name": "h1tls-get-1k-buffered",
       "budgeted": false,
       "requests": 10000,
-      "p50_us": 192.2,
-      "p95_us": 303.5,
-      "mean_us": 243.8,
-      "alloc_bytes_per_request": 14206
+      "p50_us": 258,
+      "p95_us": 658.1,
+      "mean_us": 397.8,
+      "alloc_bytes_per_request": 14278,
+      "alloc_slack_bytes": 64
     },
     {
       "name": "h1tls-get-1m-streaming",
       "budgeted": false,
       "requests": 200,
-      "p50_us": 1671.3,
-      "p95_us": 2801.9,
-      "mean_us": 1965.1,
-      "alloc_bytes_per_request": 58684,
-      "mb_per_second": 508.9
+      "p50_us": 2723.1,
+      "p95_us": 11515,
+      "mean_us": 4884.7,
+      "alloc_bytes_per_request": 58309,
+      "alloc_slack_bytes": 64,
+      "mb_per_second": 204.7
     },
     {
       "name": "raw-h1-get-1m",
       "budgeted": false,
       "requests": 200,
-      "p50_us": 671,
-      "p95_us": 4114.3,
-      "mean_us": 1203,
+      "p50_us": 624,
+      "p95_us": 3976.8,
+      "mean_us": 1300.4,
       "alloc_bytes_per_request": 272,
-      "mb_per_second": 831.2
+      "alloc_slack_bytes": 64,
+      "mb_per_second": 768.9
     },
     {
       "name": "h1-get-100m-file-streaming",
       "budgeted": false,
       "requests": 3,
-      "mean_us": 116683.8,
-      "mb_per_second": 1108.6,
-      "peak_heap_growth_mb": 10.5,
+      "mean_us": 185954.2,
+      "mb_per_second": 914.9,
+      "peak_heap_growth_mb": 10.7,
       "extra": {}
     },
     {
       "name": "h1-get-100m-file-buffered",
       "budgeted": false,
       "requests": 3,
-      "mean_us": 173926.8,
-      "mb_per_second": 746.3,
-      "peak_heap_growth_mb": 164.1,
+      "mean_us": 241050.4,
+      "mb_per_second": 389.8,
+      "peak_heap_growth_mb": 201.7,
       "extra": {}
     },
     {
       "name": "h1-filedownloader-100m",
       "budgeted": false,
       "requests": 3,
-      "mean_us": 168755.9,
-      "mb_per_second": 637.2,
+      "mean_us": 134346.4,
+      "mb_per_second": 839.6,
       "peak_heap_growth_mb": 5.3,
       "extra": {}
     },
@@ -211,11 +228,11 @@
       "name": "h2-10x10m-one-slow-consumer",
       "budgeted": false,
       "requests": 1,
-      "mean_us": 2903978.9,
-      "peak_heap_growth_mb": 13.3,
+      "mean_us": 3903947.3,
+      "peak_heap_growth_mb": 15.3,
       "extra": {
-        "fast_streams_max_ms": 849.5929,
-        "slow_stream_ms": 2896.1184
+        "fast_streams_max_ms": 626.4519,
+        "slow_stream_ms": 3897.501
       }
     }
   ]

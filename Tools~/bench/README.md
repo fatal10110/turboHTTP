@@ -56,9 +56,10 @@ guardrail).
 With `baseline.json` present, `run.sh` compares every scenario. A **gated** row (the small buffered round
 trips: the plan's "<= 5 % latency regression for buffered small-body paths") fails the run when:
 
-- its managed bytes per request exceed the baseline by more than `--budget` percent (default 5) plus 64
-  bytes. Allocation transfers between machines and barely moves between runs (under 2 % on the gated rows),
-  so this is always gated;
+- its managed bytes per request exceed the baseline by more than `--budget` percent (default 5) plus the
+  row's `alloc_slack_bytes`: 64 bytes for HTTP/1.1 (those rows move by about 20 bytes between runs) and
+  1536 bytes for HTTP/2 (the peer's DATA framing and the number of read-loop suspensions vary with scheduling,
+  moving those rows by up to about 1.2 KB). Allocation transfers between machines, so this is always gated;
 - with `--gate-latency` only: its p50 is more than the budget above the baseline, and the baseline was
   recorded on the same machine shape (OS, architecture, processor count). Without the flag, or on another
   machine, latency deltas are printed as advisory.

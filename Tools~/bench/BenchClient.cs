@@ -362,6 +362,7 @@ namespace TurboHTTP.Tools.Bench
                 P95Us = Round(Percentile(all, 0.95)),
                 MeanUs = Round(all.Average()),
                 AllocBytesPerRequest = Math.Round(Median(roundAlloc)),
+                AllocSlackBytes = name.StartsWith("h2-", StringComparison.Ordinal) ? BenchReport.Http2AllocSlackBytes : BenchReport.AllocSlackBytes,
                 MbPerSecond = bytes >= 1024 * 1024 ? Round(bytes * (double)iterations * _options.Rounds / (1024.0 * 1024.0) / seconds) : (double?)null,
             };
         }
