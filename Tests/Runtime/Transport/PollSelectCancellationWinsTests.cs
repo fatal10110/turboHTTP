@@ -1,0 +1,129 @@
+using System;
+using System.Buffers;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
+using NUnit.Framework;
+using TurboHTTP.Transport.Tcp;
+using LoopbackPair = TurboHTTP.Tests.Transport.SocketChannelLifecycleTests.LoopbackPair;
+
+namespace TurboHTTP.Tests.Transport
+{
+    /// <summary>
+    /// #415: the poll thread can fail a pending operation with a plain socket error after the caller
+    /// cancelled it (the cancellation's dispose left the socket shut down but not yet closed). The
+    /// caller's cancellation must still win. Each test makes the poll thread's own socket call fail,
+    /// and cancels the token from the failure hook, before that failure completes the operation.
+    /// </summary>
+    [TestFixture]
+    public class PollSelectCancellationWinsTests
+    {
+        // Guard only: every step ends long before this; it never synchronizes the test.
+        private static readonly TimeSpan Guard = TimeSpan.FromSeconds(15);
+
+        [Test]
+        public void SendAsync_PollThreadHitsShutDownSocketAfterCancel_CompletesCanceledWithTheCallersToken()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var pair = await LoopbackPair.CreateAsync();
+                var channel = new PollSelectSocketChannel(pair.Client);
+                using var cts = new CancellationTokenSource();
+                try
+                {
+                    // The cancellation's teardown, frozen half way: the socket is shut down, not closed.
+                    pair.Client.Shutdown(SocketShutdown.Send);
+                    channel.TestHookSendFailing = () => cts.Cancel();
+
+                    // Memory that is not array-backed skips the inline attempt, so the poll thread
+                    // makes the send call and meets the shut-down socket (WSAESHUTDOWN / EPIPE).
+                    using var payload = new NonArrayMemory(1024);
+                    var send = channel.SendAsync(payload.Memory, cts.Token).AsTask();
+
+                    await AssertEndsAsync(send, "the send never ended");
+                    var oce = await AssertCanceledAsync(send);
+                    Assert.AreEqual(cts.Token, oce.CancellationToken, "cancelled with the caller's token");
+                    Assert.IsInstanceOf<SocketException>(oce.InnerException, "the poll thread's error is kept as the cause");
+                }
+                finally
+                {
+                    channel.Dispose();
+                }
+            });
+        }
+
+        [Test]
+        public void ReceiveAsync_PollThreadHitsResetAfterCancel_CompletesCanceledWithTheCallersToken()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var pair = await LoopbackPair.CreateAsync();
+                var channel = new PollSelectSocketChannel(pair.Client);
+                using var cts = new CancellationTokenSource();
+                try
+                {
+                    channel.TestHookReceiveFailing = () => cts.Cancel();
+                    var receive = channel.ReceiveAsync(new byte[16], 0, 16, cts.Token).AsTask();
+
+                    // An abortive close (RST): the poll thread's receive fails with ConnectionReset.
+                    pair.Server.LingerState = new LingerOption(true, 0);
+                    pair.Server.Close();
+
+                    await AssertEndsAsync(receive, "the receive never ended");
+                    var oce = await AssertCanceledAsync(receive);
+                    Assert.AreEqual(cts.Token, oce.CancellationToken, "cancelled with the caller's token");
+                    Assert.IsInstanceOf<SocketException>(oce.InnerException, "the poll thread's error is kept as the cause");
+                }
+                finally
+                {
+                    channel.Dispose();
+                }
+            });
+        }
+
+        private static async Task AssertEndsAsync(Task task, string message)
+        {
+            var winner = await Task.WhenAny(task, Task.Delay(Guard));
+            Assert.AreSame(task, winner, message);
+        }
+
+        private static async Task<OperationCanceledException> AssertCanceledAsync(Task task)
+        {
+            try
+            {
+                await task;
+            }
+            catch (OperationCanceledException e)
+            {
+                return e;
+            }
+            catch (Exception e)
+            {
+                Assert.Fail($"expected a cancelled operation, got {task.Status}: {e}");
+            }
+
+            Assert.Fail("the operation did not fail");
+            return null;
+        }
+
+        /// <summary>Memory with no backing array (MemoryMarshal.TryGetArray is false).</summary>
+        private sealed class NonArrayMemory : MemoryManager<byte>
+        {
+            private readonly byte[] _buffer;
+
+            public NonArrayMemory(int length) => _buffer = new byte[length];
+
+            public override Span<byte> GetSpan() => _buffer;
+
+            public override MemoryHandle Pin(int elementIndex = 0) => throw new NotSupportedException();
+
+            public override void Unpin()
+            {
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+            }
+        }
+    }
+}

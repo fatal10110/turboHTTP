@@ -56,7 +56,10 @@ namespace TurboHTTP.Transport.Tcp
     /// <para>
     /// <b>Cancellation:</b> Cancelling an operation disposes the socket, so the next poll throws
     /// <see cref="ObjectDisposedException"/>, which is surfaced as
-    /// <see cref="OperationCanceledException"/>.
+    /// <see cref="OperationCanceledException"/>. Cancellation wins: an operation whose token was
+    /// cancelled completes as cancelled with that token whatever error the poll thread hit first,
+    /// e.g. a send that reached the socket while the cancellation was tearing it down and failed
+    /// with "socket shut down" (#415).
     /// </para>
     /// </remarks>
     internal sealed class PollSelectSocketChannel : IDisposable
@@ -124,6 +127,15 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal Action TestHookBeforeRegister { get; set; }
 
+        /// <summary>
+        /// Test hook: runs on the poll thread when a pending send failed, before the failure
+        /// completes it, so a test can cancel the send's token in between (#415).
+        /// </summary>
+        internal Action TestHookSendFailing { get; set; }
+
+        /// <summary>Test hook: as <see cref="TestHookSendFailing"/>, for a pending receive.</summary>
+        internal Action TestHookReceiveFailing { get; set; }
+
         // ── Public API ────────────────────────────────────────────────────────
 
         /// <summary>
@@ -188,6 +200,8 @@ namespace TurboHTTP.Transport.Tcp
                 catch (Exception ex)
                 {
                     lock (_sendLock) { _sendBusy = false; }
+                    if (IsLostToCancellation(ex, ct))
+                        throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
                     ThrowMapped(ex, ct);
                 }
 
@@ -434,6 +448,8 @@ namespace TurboHTTP.Transport.Tcp
 
         private void FailRecv(Exception ex)
         {
+            TestHookReceiveFailing?.Invoke();
+
             PollSelectSource src;
             lock (_recvLock)
             {
@@ -447,6 +463,8 @@ namespace TurboHTTP.Transport.Tcp
 
         private void FailSend(Exception ex)
         {
+            TestHookSendFailing?.Invoke();
+
             PollSelectSource src;
             lock (_sendLock)
             {
@@ -578,11 +596,15 @@ namespace TurboHTTP.Transport.Tcp
             throw mapped;
         }
 
+        // Cancellation wins (#415): once the caller's token is cancelled, any failure of the
+        // operation is reported as that cancellation. The registration disposes the socket, and
+        // the poll thread can meet it half torn down (shut down, not yet closed), so the error it
+        // reports is not always an abort.
         private static async ValueTask<int> WrapWithCancellationCleanup(
             ValueTask<int> task, CancellationTokenRegistration reg, CancellationToken ct)
         {
             try { return await task.ConfigureAwait(false); }
-            catch (OperationCanceledException ex) when (ct.IsCancellationRequested && ex.CancellationToken != ct)
+            catch (Exception ex) when (IsLostToCancellation(ex, ct))
             {
                 throw new OperationCanceledException(ex.Message, ex, ct);
             }
@@ -593,12 +615,15 @@ namespace TurboHTTP.Transport.Tcp
             ValueTask task, CancellationTokenRegistration reg, CancellationToken ct)
         {
             try { await task.ConfigureAwait(false); }
-            catch (OperationCanceledException ex) when (ct.IsCancellationRequested && ex.CancellationToken != ct)
+            catch (Exception ex) when (IsLostToCancellation(ex, ct))
             {
                 throw new OperationCanceledException(ex.Message, ex, ct);
             }
             finally { reg.Dispose(); }
         }
+
+        private static bool IsLostToCancellation(Exception ex, CancellationToken ct) =>
+            ct.IsCancellationRequested && !(ex is OperationCanceledException oce && oce.CancellationToken == ct);
     }
 
     // ── PollSelectSource ──────────────────────────────────────────────────────
