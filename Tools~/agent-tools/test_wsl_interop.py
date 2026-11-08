@@ -221,9 +221,43 @@ class WslInteropTests(unittest.TestCase):
         for name, args, tag in (("build-player.sh", ["--target", "android-il2cpp"], "build-player"),
                                 ("run-device-tests.sh", [], "run-device-tests"),
                                 ("run-emulator-tests.sh", ["--api", "29"], "run-emulator-tests"),
-                                ("run-samples.sh", [], "run-samples")):
+                                ("run-samples.sh", [], "run-samples"),
+                                ("build-ios-test-player.sh", ["--out", str(self.root / "handoff" / "xcode")],
+                                 "build-ios-test-player")):
             with self.subTest(name):
+                self.ios_support()
                 self.assert_interop_exit(self.run_script(name, *args), tag)
+
+    # --- build-ios-test-player.sh (#355 remainder): lookup and Unity start through the helper ---
+
+    def ios_support(self):
+        (self.unity.parent / "Data" / "PlaybackEngines" / "iOSSupport").mkdir(parents=True, exist_ok=True)
+
+    def ios_env(self):
+        env = self.project_env()
+        return dict(UNITY_IOS_TEST_PROJECT=env["UNITY_TEST_PROJECT"], UNITY_IOS_PACKAGE_COPY=env["UNITY_PACKAGE_COPY"])
+
+    def run_ios(self, **env):
+        self.ios_support()
+        return self.run_script("build-ios-test-player.sh", "--out", str(self.root / "handoff" / "xcode"),
+                               **dict(self.ios_env(), **env))
+
+    def test_ios_build_survives_a_short_outage_at_lookup_and_unity_start(self):
+        # The fake Unity writes a log but no Xcode project: past the outage it is an ordinary build failure.
+        self.plan("cmd", "fail fail ok")
+        self.plan("unity", "fail fail ok")
+        result = self.run_ios()
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("build-ios-test-player: player build failed", result.stdout)
+        self.assertNotIn(INTEROP, result.stderr)
+        self.assertEqual(len(self.calls("cmd")), 3)
+        self.assertEqual(len(self.calls("unity")), 3)
+
+    def test_ios_build_reports_a_unity_that_never_starts_as_interop_unavailable(self):
+        self.plan("unity", "fail*")
+        result = self.run_ios()
+        self.assert_interop_exit(result, "build-ios-test-player")
+        self.assertNotIn("player build failed", result.stdout)
 
     def test_adb_readiness_survives_a_short_outage(self):
         # The lookup answers, then adb.exe and the cmd.exe probe both fail twice: an outage, not a missing device.
@@ -258,7 +292,8 @@ class WslInteropTests(unittest.TestCase):
         self.assertIn(f"run-emulator-tests: {INTEROP}", result.stderr)
 
     def test_scripts_start_unity_through_the_helper(self):
-        for name in ("run-tests.sh", "build-player.sh", "run-device-tests.sh", "run-samples.sh"):
+        for name in ("run-tests.sh", "build-player.sh", "run-device-tests.sh", "run-samples.sh",
+                     "build-ios-test-player.sh"):
             with self.subTest(name):
                 text = (UNITY_DIR / name).read_text()
                 self.assertTrue('. "$repo/Tools~/unity/wsl-interop.sh"' in text, f"{name} does not source wsl-interop.sh")

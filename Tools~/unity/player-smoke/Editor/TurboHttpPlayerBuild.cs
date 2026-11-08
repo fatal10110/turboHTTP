@@ -1,6 +1,7 @@
 // Editor half of Tools~/unity/build-player.sh, copied to the throwaway project's
 // Assets/TurboHttpSmoke/Editor/ (Assembly-CSharp-Editor). Run with
 //   -executeMethod TurboHttpPlayerBuild.Build -smokeTarget <target> -smokeOutput <path> -smokeBouncyCastle 0|1
+//     [-smokeArch arm64|x86_64]   (Android only: x86_64 is for the emulators; default arm64)
 // It sets the scripting backend and managed stripping level for the target, checks that the
 // TURBOHTTP_BOUNCYCASTLE define matches the request (the script writes it into ProjectSettings
 // before Unity starts), builds one empty scene, copies the generated TurboHTTP link.xml next to
@@ -38,6 +39,7 @@ public static class TurboHttpPlayerBuild
         var target = Arg("-smokeTarget");
         var output = Arg("-smokeOutput");
         var bouncyCastle = Arg("-smokeBouncyCastle") == "1";
+        var x86_64 = Arg("-smokeArch") == "x86_64";
 
         BuildTarget buildTarget;
         BuildTargetGroup group;
@@ -83,7 +85,18 @@ public static class TurboHttpPlayerBuild
         if (buildTarget == BuildTarget.Android)
         {
             PlayerSettings.SetApplicationIdentifier(group, "com.turbohttp.playersmoke");
-            PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
+            PlayerSettings.Android.targetArchitectures = x86_64 ? AndroidArchitecture.X86_64 : AndroidArchitecture.ARM64;
+            // The --network rows open sockets from Assembly-CSharp: never depend on Unity's INTERNET auto-detection.
+            PlayerSettings.Android.forceInternetPermission = true;
+            // As run-device-tests.sh: emulator images (x86_64) get GLES (API 23-25 lack GLES3, Vulkan froze the
+            // headless emulator); phones keep the default graphics APIs.
+            PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, !x86_64);
+            if (x86_64)
+            {
+                PlayerSettings.SetGraphicsAPIs(BuildTarget.Android,
+                    new[] { UnityEngine.Rendering.GraphicsDeviceType.OpenGLES3, UnityEngine.Rendering.GraphicsDeviceType.OpenGLES2 });
+            }
+
             EditorUserBuildSettings.buildAppBundle = false;
             EditorUserBuildSettings.exportAsGoogleAndroidProject = false;
         }
@@ -92,7 +105,9 @@ public static class TurboHttpPlayerBuild
         EditorSceneManager.SaveScene(scene, ScenePath);
 
         Debug.Log("TURBOHTTP_BUILD start target=" + target + " backend=" + backend + " stripping=" +
-                  PlayerSettings.GetManagedStrippingLevel(group) + " defines='" + defines + "' output=" + output);
+                  PlayerSettings.GetManagedStrippingLevel(group) +
+                  (buildTarget == BuildTarget.Android ? " arch=" + PlayerSettings.Android.targetArchitectures : string.Empty) +
+                  " defines='" + defines + "' output=" + output);
         var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
         {
             scenes = new[] { ScenePath },
