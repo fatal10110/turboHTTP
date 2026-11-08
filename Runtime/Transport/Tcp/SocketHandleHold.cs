@@ -1,0 +1,306 @@
+using System;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace TurboHTTP.Transport.Tcp
+{
+    /// <summary>
+    /// Single owner of one socket's handle for the stream that wraps it (#384). Closing shuts the
+    /// socket down at once, so the peer sees the close and a pending receive ends with end of stream,
+    /// but releases the handle (closes the descriptor) only once every operation that was pending on
+    /// it ended, or after <see cref="HoldTimeout"/> for an operation that never ends.
+    /// <para>
+    /// IL2CPP's socket close does not remove a pending receive from the runtime's I/O selector,
+    /// which keys its jobs by descriptor number (libil2cpp <c>Socket::Close_icall</c> never calls
+    /// <c>threadpool_ms_io_remove_socket</c>). A socket closed under a pending read leaves that job
+    /// behind; a new socket that reuses the number queues its own receive behind the stale job and
+    /// loses it (#369, #384). While the handle is held the operating system cannot hand the number
+    /// to another socket, and a shut-down socket is readable (end of stream), so the selector
+    /// dispatches the stale job and the read ends before the number is released.
+    /// </para>
+    /// <para>
+    /// Trade-off of the fallback: where an operation never ends (Mono #293), its descriptor (a
+    /// socket already shut down, so no traffic) stays open for <see cref="HoldTimeout"/> before it
+    /// is closed anyway. Nothing is held when no operation was pending at close, which is every
+    /// close outside a cancellation.
+    /// </para>
+    /// <para>
+    /// Only selector platforms hold (<see cref="HoldsPendingIo"/>). On Windows a shutdown does not end
+    /// a pending receive, so a hold would keep the request's abandoned read (and the connection gate
+    /// waiting on it) until <see cref="HoldTimeout"/>; there the close itself aborts the pending
+    /// operation, as before #384.
+    /// </para>
+    /// <para>
+    /// The owning stream brackets every read and write with <see cref="EnterIo"/> and
+    /// <see cref="ExitIo"/>. One read and one write may be pending at a time (the stream contract);
+    /// a pending operation is remembered without a continuation, so the I/O path allocates nothing.
+    /// </para>
+    /// </summary>
+    internal sealed class SocketHandleHold
+    {
+        private static readonly Action<Task, object> s_operationEnded =
+            static (task, state) => ((SocketHandleHold)state).OnOperationEnded(task);
+
+        private static readonly TimerCallback s_bound = static state => ((SocketHandleHold)state).Release(atBound: true);
+
+        // Ticks, so a 32-bit runtime never reads a torn value (Interlocked.Read/Exchange).
+        private static long s_holdTimeoutTicks = TimeSpan.FromSeconds(30).Ticks;
+
+        /// <summary><see cref="ReleaseKind"/>: the handle is still open.</summary>
+        internal const int NotReleased = 0;
+
+        /// <summary><see cref="ReleaseKind"/>: released at close (nothing pending, or a platform that does not hold).</summary>
+        internal const int ReleasedAtClose = 1;
+
+        /// <summary><see cref="ReleaseKind"/>: held, then released when the pending operations ended.</summary>
+        internal const int ReleasedAfterEnd = 2;
+
+        /// <summary><see cref="ReleaseKind"/>: held, then released by <see cref="HoldTimeout"/> with an operation still pending.</summary>
+        internal const int ReleasedAtBound = 3;
+
+        // Volatile: 1 = hold the handle for pending operations (selector platforms), 0 = close at once.
+        private static int s_holdsPendingIo = SaeaPlatformDetection.CloseAbortsPendingIo ? 0 : 1;
+
+        // Interlocked: handles held past their close, and how each hold ended.
+        private static int s_heldCount;
+        private static long s_releasedAfterEndCount;
+        private static long s_releasedAtBoundCount;
+
+        private readonly Socket _socket;
+        private readonly object _lock = new object();
+
+        // Guarded by _lock.
+        private int _starting;
+        private Task _pendingRead;
+        private Task _pendingWrite;
+        private bool _closeRequested;
+        private int _holders;
+
+        // Interlocked: 0 while the handle is open, 1 once released.
+        private int _released;
+
+        // Volatile: how the handle was released (Release* constants), written by the releaser.
+        private int _releaseKind;
+
+        // Written once by Close (Volatile); disposed by whichever of Close/Release runs last.
+        private Timer _bound;
+
+        internal SocketHandleHold(Socket socket)
+        {
+            _socket = socket ?? throw new ArgumentNullException(nameof(socket));
+        }
+
+        /// <summary>
+        /// How long a closed socket's handle is held for an operation that never ended. Longer than
+        /// <see cref="TurboHTTP.Core.Internal.AbandonedSocketIo.SettleTimeout"/> (the gate on new
+        /// sockets), because releasing the handle is what lets the descriptor number be reused.
+        /// Tests set it.
+        /// </summary>
+        internal static TimeSpan HoldTimeout
+        {
+            get => new TimeSpan(Interlocked.Read(ref s_holdTimeoutTicks));
+            set => Interlocked.Exchange(ref s_holdTimeoutTicks, value.Ticks);
+        }
+
+        /// <summary>
+        /// True where a close keeps the handle until the pending operations ended: the selector
+        /// platforms (kqueue/epoll), where a shutdown ends a pending receive and IL2CPP's selector
+        /// keys jobs by descriptor. False on Windows, where the shutdown does not end the receive and
+        /// the close aborts it. Tests set it.
+        /// </summary>
+        internal static bool HoldsPendingIo
+        {
+            get => Volatile.Read(ref s_holdsPendingIo) != 0;
+            set => Volatile.Write(ref s_holdsPendingIo, value ? 1 : 0);
+        }
+
+        /// <summary>Handles closed with an operation pending that are still held.</summary>
+        internal static int HeldCount => Volatile.Read(ref s_heldCount);
+
+        /// <summary>Held handles released because their pending operations ended.</summary>
+        internal static long ReleasedAfterEndCount => Interlocked.Read(ref s_releasedAfterEndCount);
+
+        /// <summary>Held handles released by <see cref="HoldTimeout"/> while an operation was still pending.</summary>
+        internal static long ReleasedAtBoundCount => Interlocked.Read(ref s_releasedAtBoundCount);
+
+        /// <summary>True once the handle was released (the socket disposed).</summary>
+        internal bool IsReleased => Volatile.Read(ref _released) != 0;
+
+        /// <summary>How this hold's handle was released: one of the <c>Release*</c> constants. Tests read it.</summary>
+        internal int ReleaseKind => Volatile.Read(ref _releaseKind);
+
+        /// <summary>
+        /// An operation is about to start on the socket. Always paired with <see cref="ExitIo"/>, which
+        /// gets the result: true when the operation counts toward the hold, false when it starts after
+        /// <see cref="Close"/> (it fails on the disposed stream, and the close never counted it).
+        /// </summary>
+        internal bool EnterIo()
+        {
+            lock (_lock)
+            {
+                if (_closeRequested)
+                    return false;
+
+                _starting++;
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// The operation started by the matching <see cref="EnterIo"/> returned: <paramref name="counted"/>
+        /// is what <see cref="EnterIo"/> returned, <paramref name="operation"/> its task when it is still
+        /// pending, null when it completed or threw.
+        /// </summary>
+        internal void ExitIo(bool counted, Task operation, bool write)
+        {
+            // Started after the close: the close did not count it, so it can release nothing.
+            if (!counted)
+                return;
+
+            bool pending = operation != null && !operation.IsCompleted;
+            bool releaseNow = false;
+            lock (_lock)
+            {
+                _starting--;
+                if (!_closeRequested)
+                {
+                    if (pending)
+                    {
+                        if (write)
+                            _pendingWrite = operation;
+                        else
+                            _pendingRead = operation;
+                    }
+
+                    return;
+                }
+
+                // Released at close (this platform does not hold).
+                if (IsReleased)
+                    return;
+
+                // Close ran while this operation was starting: it counted the operation as a holder.
+                if (!pending)
+                    releaseNow = --_holders == 0;
+            }
+
+            if (pending)
+                AttachEnd(operation);
+            else if (releaseNow)
+                Release(atBound: false);
+        }
+
+        /// <summary>
+        /// Shuts the socket down now and releases its handle once every pending operation ended, or
+        /// after <see cref="HoldTimeout"/>. Idempotent.
+        /// </summary>
+        internal void Close()
+        {
+            bool holdsPendingIo = HoldsPendingIo;
+            Task read;
+            Task write;
+            int holders;
+            bool releaseHere = false;
+            lock (_lock)
+            {
+                if (_closeRequested)
+                    return;
+
+                _closeRequested = true;
+                read = Incomplete(_pendingRead);
+                write = Incomplete(_pendingWrite);
+                _pendingRead = null;
+                _pendingWrite = null;
+                holders = holdsPendingIo ? _starting + (read != null ? 1 : 0) + (write != null ? 1 : 0) : 0;
+                _holders = holders;
+
+                if (holders != 0)
+                {
+                    // Counted before any holder can release it (releases take this lock first).
+                    Interlocked.Increment(ref s_heldCount);
+                }
+                else
+                {
+                    // Nothing pending, or a platform where the close aborts what is pending: the
+                    // descriptor goes right after the shutdown. Marked under the lock, so an
+                    // operation still starting sees it in ExitIo and holds nothing.
+                    releaseHere = Interlocked.Exchange(ref _released, 1) == 0;
+                }
+            }
+
+            // The peer sees the close now, and a pending receive ends with end of stream while the
+            // descriptor is still ours.
+            try { _socket.Shutdown(SocketShutdown.Both); } catch { /* not connected or already closed */ }
+
+            if (holders == 0)
+            {
+                if (releaseHere)
+                {
+                    Volatile.Write(ref _releaseKind, ReleasedAtClose);
+                    ReleaseHandle();
+                }
+
+                return;
+            }
+
+            var bound = HoldTimeout;
+            if (bound != Timeout.InfiniteTimeSpan)
+            {
+                var timer = new Timer(s_bound, this, bound < TimeSpan.Zero ? TimeSpan.Zero : bound, Timeout.InfiniteTimeSpan);
+                Volatile.Write(ref _bound, timer);
+                if (IsReleased)
+                    timer.Dispose();
+            }
+
+            if (read != null)
+                AttachEnd(read);
+            if (write != null)
+                AttachEnd(write);
+        }
+
+        private static Task Incomplete(Task task) => task != null && !task.IsCompleted ? task : null;
+
+        private void AttachEnd(Task operation)
+        {
+            _ = operation.ContinueWith(
+                s_operationEnded,
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private void OnOperationEnded(Task operation)
+        {
+            // The operation's result was discarded with the stream: observe a fault.
+            _ = operation.Exception;
+            bool releaseNow;
+            lock (_lock)
+                releaseNow = --_holders == 0;
+
+            if (releaseNow)
+                Release(atBound: false);
+        }
+
+        private void Release(bool atBound)
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+                return;
+
+            Volatile.Read(ref _bound)?.Dispose();
+            ReleaseHandle();
+            Volatile.Write(ref _releaseKind, atBound ? ReleasedAtBound : ReleasedAfterEnd);
+            Interlocked.Decrement(ref s_heldCount);
+            if (atBound)
+                Interlocked.Increment(ref s_releasedAtBoundCount);
+            else
+                Interlocked.Increment(ref s_releasedAfterEndCount);
+        }
+
+        private void ReleaseHandle()
+        {
+            try { _socket.Dispose(); } catch { /* best effort */ }
+        }
+    }
+}

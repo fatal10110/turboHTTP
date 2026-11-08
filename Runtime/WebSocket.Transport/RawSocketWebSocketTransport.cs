@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Connection;
+using TurboHTTP.Transport.Tcp;
 using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.WebSocket.Transport
@@ -137,7 +138,8 @@ namespace TurboHTTP.WebSocket.Transport
                     ex);
             }
 
-            Stream stream = new NetworkStream(socket, ownsSocket: true);
+            // The stream owns the socket; it keeps the handle until a read pending at disposal ended (#384).
+            Stream stream = new HoldingNetworkStream(socket);
 
             // #226 (same pattern as #162 in RawSocketTransport): Mono/IL2CPP NetworkStream ignores the
             // token once a read is pending, so a proxy that never answers CONNECT or a server that
@@ -258,9 +260,11 @@ namespace TurboHTTP.WebSocket.Transport
             // Connect path only (not per frame): the boxed pair is one allocation per connect.
             return ct.Register(static state =>
             {
+                // Shut down, not dispose: the stream owns the handle and releases it once the read
+                // abandoned here ended (#384).
                 var (ownedStream, ownedSocket) = ((Stream, Socket))state;
+                try { ownedSocket.Shutdown(SocketShutdown.Both); } catch { }
                 try { ownedStream.Dispose(); } catch { }
-                try { ownedSocket.Dispose(); } catch { }
             }, (stream, socket));
         }
 

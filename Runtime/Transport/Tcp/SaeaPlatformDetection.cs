@@ -40,7 +40,9 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>
         /// Human-readable name of the async I/O completion model expected on this platform.
-        /// Used for diagnostics only.
+        /// Used in diagnostics and, through <see cref="CloseAbortsPendingIo"/>, to pick the
+        /// socket close order (<see cref="SocketHandleHold"/> and the SAEA dispose path, #384),
+        /// so a change to the returned names must keep <c>"IOCP"</c> for Windows.
         /// </summary>
         public static string CompletionModelName
         {
@@ -59,6 +61,13 @@ namespace TurboHTTP.Transport.Tcp
 #endif
             }
         }
+
+        /// <summary>
+        /// True where closing a socket aborts its pending operations (IOCP, Windows) and a shutdown
+        /// does not end a pending receive. False on the selector platforms (kqueue/epoll), where a
+        /// shutdown ends it with end of stream (#384).
+        /// </summary>
+        internal static bool CloseAbortsPendingIo => CompletionModelName == "IOCP";
 
         // ── Logging ───────────────────────────────────────────────────────────
 

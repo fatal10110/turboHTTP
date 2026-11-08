@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Streaming benchmark harness (Phase 22a.6, #102). Not a Unity assembly: Tools~ is ignored by Unity. It links
+    the shadow-build DLLs (Tools~/ci/shadow_build.py, editor variant) so it measures the netstandard2.1
+    assemblies the analyzers checked, through the public API only (no InternalsVisibleTo grant).
+
+    One executable, two processes: `run` (the TurboHTTP client under test) starts `serve` (Kestrel from the
+    ASP.NET Core shared framework: HTTP/1.1 cleartext, HTTP/1.1 + HTTP/2 over TLS with ALPN), so the
+    process-wide allocation counter and heap hold nothing but the client. Run it through Tools~/bench/run.sh
+    (README.md).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>TurboHTTP.Bench</AssemblyName>
+    <RootNamespace>TurboHTTP.Tools.Bench</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Workstation, non-concurrent GC: heap and allocation numbers compare like a game client's. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <!-- Fully optimized code from the first call: no tier-up during a measured round. -->
+    <TieredCompilation>false</TieredCompilation>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepoRoot>
+    <ShadowBin Condition="'$(ShadowBin)' == ''">$(RepoRoot).build/shadow/editor/bin/Debug/netstandard2.1/</ShadowBin>
+    <UnityManaged Condition="'$(UnityManaged)' == ''">$(RepoRoot).tools/unity-managed/$([System.IO.File]::ReadAllText('$(RepoRoot)Tools~/ci/unity-version').Trim())/</UnityManaged>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The per-run throwaway PKI of the soak harness (root + 127.0.0.1 leaf), trusted only via SSL_CERT_FILE. -->
+    <Compile Include="../soak/SoakPki.cs" Link="SoakPki.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="TurboHTTP.Core" HintPath="$(ShadowBin)TurboHTTP.Core.dll" />
+    <Reference Include="TurboHTTP.Transport" HintPath="$(ShadowBin)TurboHTTP.Transport.dll" />
+    <Reference Include="TurboHTTP.Files" HintPath="$(ShadowBin)TurboHTTP.Files.dll" />
+    <!-- TurboHTTP.Core links UnityEngine (PlatformInfo/PlatformConfig); the client paths never call it. -->
+    <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
+  </ItemGroup>
+</Project>

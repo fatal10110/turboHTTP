@@ -152,9 +152,10 @@ namespace TurboHTTP.Core
         /// When no response byte arrives within this time, the connection is closed and the request
         /// is sent once more on a fresh connection, like a connection the server closed while idle
         /// (RFC 9112 section 9.3.1). It applies only to idempotent methods with a replayable body
-        /// (RFC 9110 section 9.2.2) on a reused connection; a POST, a fresh connection and HTTP/2
-        /// keep waiting until the request timeout. The request timeout still bounds the whole
-        /// request. <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> disables it. Values must
+        /// (RFC 9110 section 9.2.2) on a reused connection. The fresh connection of that one retry is
+        /// bounded by the same time; when it stays silent too, the request fails with no further
+        /// attempt. A POST, any other fresh connection and HTTP/2 keep waiting until the request
+        /// timeout. The request timeout still bounds the whole request. <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> disables it. Values must
         /// be positive and at most <see cref="int.MaxValue"/> milliseconds.
         /// </remarks>
         public TimeSpan ReusedConnectionFirstByteTimeout

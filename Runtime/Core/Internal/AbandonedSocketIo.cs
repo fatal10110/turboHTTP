@@ -17,20 +17,28 @@ namespace TurboHTTP.Core.Internal
     /// FIN), drops the rest, so the new socket's receive is lost and waits for its timeout. An
     /// abandoned operation ends only once the selector dispatched its job, so a socket created after
     /// every abandoned operation ended can never sit behind a stale job. The races of #293/#345/#346
-    /// return before that, which is why the creation of the next socket waits here instead.
+    /// return before that, which is why the creation of the next socket waits here.
     /// </para>
     /// <para>
-    /// Every entry is bounded by <see cref="SettleTimeout"/>: a platform that never ends the
-    /// operation (#293) delays the next socket by at most that long, and an entry that outlived it
-    /// stops counting. The state is an O(1) counter; nothing here runs unless an operation was
-    /// abandoned, so the connect fast path is one volatile read.
+    /// This gate is not what keeps a descriptor safe. IL2CPP does not always end the read soon
+    /// after its socket closed: on the iOS simulator it outlived the 1 s bound in 53 of 600 abandons
+    /// and ended only once a new socket on the same number received data (#384). The socket stream
+    /// therefore keeps the handle until the read ended (Transport's <c>HoldingNetworkStream</c>), so
+    /// the number cannot be reused under the stale job; the gate only spares the next socket the
+    /// work of racing a read that is about to end.
+    /// </para>
+    /// <para>
+    /// Every entry is bounded by <see cref="SettleTimeout"/>: an operation that has not ended by then
+    /// stops counting and the next socket is created anyway. <see cref="ExpiredCount"/> and
+    /// <see cref="SettledCount"/> tell the two outcomes apart. The state is an O(1) counter; nothing
+    /// here runs unless an operation was abandoned, so the connect fast path is one volatile read.
     /// </para>
     /// </summary>
     internal static class AbandonedSocketIo
     {
         private static readonly object s_settledLock = new object();
         private static readonly Action<Task, object> s_endOnCompletion = static (_, state) => ((Entry)state).End();
-        private static readonly TimerCallback s_expire = static state => ((Entry)state).End();
+        private static readonly TimerCallback s_expire = static state => ((Entry)state).Expire();
 
         // Ticks, so a 32-bit runtime never reads a torn value (Interlocked.Read/Exchange).
         private static long s_settleTimeoutTicks = TimeSpan.FromSeconds(1).Ticks;
@@ -38,14 +46,19 @@ namespace TurboHTTP.Core.Internal
         // Interlocked: abandoned operations that neither ended nor expired.
         private static int s_pending;
 
+        // Interlocked: entries released by their operation's end, and by the settle bound.
+        private static long s_settledCount;
+        private static long s_expiredCount;
+
         // Guarded by s_settledLock: completed (and cleared) when s_pending drops to zero.
         private static TaskCompletionSource<bool> s_settled;
 
         /// <summary>
-        /// How long one abandoned operation may hold back the creation of new sockets. On IL2CPP the
-        /// operation ends within milliseconds of its socket's disposal (the disposal shuts the socket
-        /// down, which wakes the selector); the bound only applies where it never ends (#293).
-        /// Tests set it.
+        /// How long one abandoned operation may hold back the creation of new sockets. The operation
+        /// usually ends soon after its socket was shut down, but not always: IL2CPP has been seen to
+        /// end it only after this bound (#384), and Mono may never end it (#293). An entry that
+        /// reaches the bound stops counting (<see cref="ExpiredCount"/>); the descriptor itself stays
+        /// held by the socket stream until the operation ended. Tests set it.
         /// </summary>
         internal static TimeSpan SettleTimeout
         {
@@ -55,6 +68,15 @@ namespace TurboHTTP.Core.Internal
 
         /// <summary>Abandoned operations that have neither ended nor expired.</summary>
         internal static int PendingCount => Volatile.Read(ref s_pending);
+
+        /// <summary>Abandoned operations released because they ended (process lifetime). Tests read it.</summary>
+        internal static long SettledCount => Interlocked.Read(ref s_settledCount);
+
+        /// <summary>
+        /// Abandoned operations released by <see cref="SettleTimeout"/> before they ended (process
+        /// lifetime): each one let a socket be created while the operation was still pending. Tests read it.
+        /// </summary>
+        internal static long ExpiredCount => Interlocked.Read(ref s_expiredCount);
 
         /// <summary>True while a socket creation waits in <see cref="WaitForSettledAsync"/>. Tests read it.</summary>
         internal static bool HasWaiters
@@ -96,7 +118,7 @@ namespace TurboHTTP.Core.Internal
 
             var bound = SettleTimeout;
             if (bound <= TimeSpan.Zero && bound != Timeout.InfiniteTimeSpan)
-                entry.End();
+                entry.Expire();
             else if (bound != Timeout.InfiniteTimeSpan)
                 entry.ArmExpiry(bound);
 
@@ -183,13 +205,19 @@ namespace TurboHTTP.Core.Internal
                     timer.Dispose();
             }
 
-            /// <summary>The operation ended (or its bound expired): it no longer holds back new sockets.</summary>
-            internal void End()
+            /// <summary>The operation ended: it no longer holds back new sockets (<see cref="SettledCount"/>).</summary>
+            internal void End() => Finish(expired: false);
+
+            /// <summary>The settle bound expired first (<see cref="ExpiredCount"/>).</summary>
+            internal void Expire() => Finish(expired: true);
+
+            private void Finish(bool expired)
             {
                 if (Interlocked.Exchange(ref _ended, 1) != 0)
                     return;
 
                 Volatile.Read(ref _expiry)?.Dispose();
+                Interlocked.Increment(ref expired ? ref s_expiredCount : ref s_settledCount);
                 Release();
             }
         }

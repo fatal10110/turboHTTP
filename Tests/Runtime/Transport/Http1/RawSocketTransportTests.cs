@@ -18,7 +18,7 @@ using TurboHTTP.Transport.Tcp;
 namespace TurboHTTP.Tests.Transport.Http1
 {
     [TestFixture]
-    public class RawSocketTransportTests
+    public partial class RawSocketTransportTests
     {
         private sealed class HttpServer : IDisposable
         {

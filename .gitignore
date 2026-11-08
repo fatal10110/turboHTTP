@@ -24,6 +24,8 @@ MemoryCaptures/
 !Tools~/fuzz/*.csproj
 # The soak and lossy-network harness (Tools~/soak, #114) is a committed plain .NET project.
 !Tools~/soak/*.csproj
+# The streaming benchmark harness (Tools~/bench, #102) is a committed plain .NET project.
+!Tools~/bench/*.csproj
 *.sln
 *.suo
 *.user
