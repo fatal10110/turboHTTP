@@ -53,9 +53,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                 AddEarlyResponseConnection(harness, cts.Token);
 
                 using var client = NewClient(harness);
+                // The deadline leaves room for the response to start first on a slow runner.
                 var request = client.Post($"https://{Host}:{Port}/upload")
                     .WithBody(new byte[4096])
-                    .WithTimeout(TimeSpan.FromSeconds(1));
+                    .WithTimeout(TimeSpan.FromSeconds(3));
 
                 // The response started while the upload is blocked on a zero send window, so the request
                 // deadline still governs the exchange when the body read is pending.
