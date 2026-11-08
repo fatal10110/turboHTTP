@@ -44,6 +44,11 @@
 #   20 HeadReadCancellationTests.EnsureBuffered_AbandonedReadFaultsLater_FaultIsObserved
 #   21 WebSocketHandshakeReadCancellationTests.Upgrade_AbandonedReadFaultsLater_FaultIsObserved
 # Raised from 18 to 21 (#365): 19-21 are new tests from #346 and #357, not tests that stopped running.
+# A Unity 2021.3 IL2CPP iOS player (the x86_64 simulator player) skips 2 more [env] cases (#414): reading a
+# managed allocation counter kills that player with SIGILL, so the allocation meter never runs there:
+#   22 DecompressionLimitAndAllocationTests.BufferedGzip_10MbBody_AllocatesAboutTheBodySize
+#   23 DecompressionLimitAndAllocationTests.BufferedGzipBomb_FailsBeforeAllocatingPastTheLimit
+# StreamingAllocationGateTests runs there with its GC.GetTotalMemory fallback. The Unity 6 count stays 21.
 # <run target> <max skipped>
 EditMode 0
 PlayMode 3
