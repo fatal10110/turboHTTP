@@ -107,16 +107,16 @@ Work comes from GitHub issues, ordered by milestone (v1.0-alpha → v1.0-beta �
    `.claude/agents/unity-network-architect.md` to the diff (as subagents, or by working their
    checklists yourself); verify each finding in the code before acting (reviews have produced
    false positives), fix, re-run gates and the rubrics again (fix rounds have introduced sibling bugs).
-5. **Journal.** Add one file `Development~/docs/implementation-journal/YYYY-MM-<slug>.md`:
-   what, files, decisions, deferrals with issue numbers, how verified — and what was *not* run
-   (Unity EditMode/PlayMode, IL2CPP, device). Earlier entries often claim "fixed"/"PASS" without
-   evidence; treat them as leads and check the code.
+5. **Record in the PR, not a journal.** Decisions, deferrals with issue numbers, and what was
+   *not* run (Unity EditMode/PlayMode, IL2CPP, device) go in the PR body. `implementation-journal/`
+   takes no per-change entries, only test-run and device-validation records (testing.md,
+   platform.md); its older "fixed"/"PASS" claims are leads, not evidence.
 6. **Deliver.** One PR per issue (or wave lane) against `main`, body per
    `.github/pull_request_template.md`, `Closes #N` only for fully met criteria. Never merge without
    authorization (a `turbohttp-waves` invocation authorizes its merges).
 
 **Done** means: acceptance criteria met with tests, rubrics clean, gates pass, every gap has a
-milestone-assigned issue, the diff is scoped, the journal entry exists and the PR is open.
+milestone-assigned issue, the diff is scoped and the PR is open.
 
 ## 8. Skills and agents
 
@@ -138,5 +138,5 @@ Guides live in `Development~/docs/agents/` unless noted. Load only the one the t
 | [`tooling.md`](Development~/docs/agents/tooling.md) | installing tools, CI, the shadow build, analyzer baseline, secrets, rulesets |
 | [`project-status.md`](Development~/docs/agents/project-status.md) | which phases are done, partial or planned; where their plans and journals are |
 | [`Development~/docs/phases/`](Development~/docs/phases/) | implementing or changing a planned phase (read its plan first) |
-| [`implementation-journal/`](Development~/docs/implementation-journal/) | changing code an earlier entry decided on (`rg -l <File> Development~/docs/implementation-journal`) |
+| [`implementation-journal/`](Development~/docs/implementation-journal/) | changing code an earlier decision covers (`rg -l <File> Development~/docs/implementation-journal`; newer decisions live in PRs: `git log --oneline -5 -- <path>`) |
 | [`review-2026-10-full-library-review.md`](Development~/docs/review-2026-10-full-library-review.md) | context behind an issue seeded from the 2026-10 review |

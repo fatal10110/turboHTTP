@@ -18,6 +18,7 @@ Closes #<!-- n; one line per fully resolved issue, "Part of #n" otherwise -->
 - `'./Tools~/ci/check.sh'` at <!-- sha -->:
 - Unity EditMode `--filter`: <!-- pass | Unity unavailable locally -->
 - Unity PlayMode `--filter`: <!-- pass | Unity unavailable locally -->
+- IL2CPP / device: <!-- run: result | not run -->
 
 Unity tests: host editor (periodic)
 
@@ -25,4 +26,4 @@ Unity tests: host editor (periodic)
 Infrastructure: <!-- clean | findings fixed -->; Network: <!-- clean | findings fixed -->
 
 ## Follow-ups
-<!-- issues filed or amended, or "none" -->
+<!-- #n: what is deferred and why, or "none" -->
