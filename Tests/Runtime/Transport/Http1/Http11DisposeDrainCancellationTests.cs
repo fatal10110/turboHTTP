@@ -29,7 +29,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 cts.Cancel();
                 var stream = new ObservingStream();
 
-                await DisposeUnreadBodyAsync(stream, cts.Token, async source =>
+                await DisposeUnreadBodyAsync(stream, cts.Token, TimeSpan.FromSeconds(30), source =>
                 {
                     Assert.IsTrue(stream.Reads > 0, "the dispose drain did not read");
                     Assert.IsTrue(stream.SawCancelledToken, "the drain token is not linked to the request's transport token");
@@ -39,25 +39,30 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public void DisposeDrain_WithoutRequestToken_ReadsUnderTheDrainTimeoutToken()
+        public void DisposeDrain_WithoutRequestToken_TheDrainTimeoutEndsAStalledDrain()
         {
+            // The peer never sends the rest of the body and never closes: only the 2 s drain timeout
+            // (Http11ResponseBodySource.DrainTimeout) can end the drain. The request timeout is 60 s and the
+            // bound 10 s, so a drain without the timeout token pends past the bound and fails the test.
             AssertAsync.Run(async () =>
             {
-                var stream = new ObservingStream();
+                var stream = new ObservingStream { PendUntilCancelled = true };
 
-                await DisposeUnreadBodyAsync(stream, CancellationToken.None, async source =>
+                await DisposeUnreadBodyAsync(stream, CancellationToken.None, TimeSpan.FromSeconds(60), source =>
                 {
                     Assert.IsTrue(stream.Reads > 0, "the dispose drain did not read");
                     Assert.IsTrue(stream.AllTokensCancellable, "the drain read without the 2 s timeout token");
+                    Assert.IsTrue(stream.SawCancelledToken, "the stalled drain read was not ended by the drain timeout");
                     AssertAsync.ThrowsAsync<ObjectDisposedException>(async () => await source.ReadAsync(new byte[1], CancellationToken.None));
                 });
-            });
+            }, TimeSpan.FromSeconds(10));
         }
 
         private static async Task DisposeUnreadBodyAsync(
             ObservingStream stream,
             CancellationToken transportToken,
-            Func<Http11ResponseBodySource, Task> assertAfterDispose)
+            TimeSpan requestTimeout,
+            Action<Http11ResponseBodySource> assertAfterDispose)
         {
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             var head = new ParsedResponseHead(new Http11ResponseParser.BufferedStreamReader(stream))
@@ -69,22 +74,24 @@ namespace TurboHTTP.Tests.Transport.Http1
                 ContentLength = 100
             };
             var lease = new ConnectionLease(null, new SemaphoreSlim(0, 1), new PooledConnection(socket, stream, "drain.local", 80, false));
-            var source = new Http11ResponseBodySource(head, lease, transportToken, TimeSpan.FromSeconds(30));
+            var source = new Http11ResponseBodySource(head, lease, transportToken, requestTimeout);
             head.Dispose();
 
             await source.DisposeAsync();
-            await assertAfterDispose(source);
+            assertAfterDispose(source);
         }
 
         /// <summary>
-        /// Records the token of every read. A cancelled token ends the read with OperationCanceledException;
-        /// otherwise the read fails as a stalled-then-reset peer would, so the test never waits on a timer.
+        /// Records the token of every read. A cancelled token ends the read with OperationCanceledException.
+        /// Otherwise the read fails as a stalled-then-reset peer would or, with <see cref="PendUntilCancelled"/>,
+        /// pends like a stalled peer until its token is cancelled.
         /// </summary>
         private sealed class ObservingStream : Stream
         {
             internal int Reads { get; private set; }
             internal bool SawCancelledToken { get; private set; }
             internal bool AllTokensCancellable { get; private set; } = true;
+            internal bool PendUntilCancelled { get; set; }
 
             public override bool CanRead => true;
             public override bool CanSeek => false;
@@ -125,7 +132,22 @@ namespace TurboHTTP.Tests.Transport.Http1
                     return Task.FromCanceled<int>(token);
                 }
 
-                return Task.FromException<int>(new IOException("peer stalled and reset"));
+                if (!PendUntilCancelled)
+                    return Task.FromException<int>(new IOException("peer stalled and reset"));
+
+                var pending = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var registration = token.Register(() =>
+                {
+                    SawCancelledToken = true;
+                    pending.TrySetCanceled(token);
+                });
+                return AwaitAndRelease(pending.Task, registration);
+            }
+
+            private static async Task<int> AwaitAndRelease(Task<int> pending, CancellationTokenRegistration registration)
+            {
+                using (registration)
+                    return await pending.ConfigureAwait(false);
             }
         }
     }
