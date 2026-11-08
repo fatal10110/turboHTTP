@@ -1,8 +1,8 @@
 using System;
-using System.Buffers;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http2
 {
@@ -27,7 +27,7 @@ namespace TurboHTTP.Transport.Http2
             if (buffer != null)
             {
                 _rentedPayload = null;
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
             }
         }
     }
@@ -132,14 +132,14 @@ namespace TurboHTTP.Transport.Http2
             {
                 try
                 {
-                    rentedBuffer = ArrayPool<byte>.Shared.Rent(length);
+                    rentedBuffer = ByteArrayPool.Rent(length);
                     await ReadExactAsync(rentedBuffer, length, ct);
                     payload = rentedBuffer;
                 }
                 catch
                 {
                     if (rentedBuffer != null)
-                        ArrayPool<byte>.Shared.Return(rentedBuffer);
+                        ByteArrayPool.Return(rentedBuffer);
                     throw;
                 }
             }

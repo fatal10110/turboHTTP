@@ -5,6 +5,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -84,7 +85,7 @@ namespace TurboHTTP.WebSocket
                 return;
             }
 
-            byte[] payloadBuffer = ArrayPool<byte>.Shared.Rent(byteCount);
+            byte[] payloadBuffer = ByteArrayPool.Rent(byteCount);
             try
             {
                 int written = WebSocketConstants.StrictUtf8.GetBytes(
@@ -102,7 +103,7 @@ namespace TurboHTTP.WebSocket
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(payloadBuffer);
+                ByteArrayPool.Return(payloadBuffer);
             }
         }
 
@@ -157,7 +158,7 @@ namespace TurboHTTP.WebSocket
             }
 
             int payloadLength = 2 + reasonBytes;
-            byte[] closePayload = ArrayPool<byte>.Shared.Rent(payloadLength);
+            byte[] closePayload = ByteArrayPool.Rent(payloadLength);
             try
             {
                 BinaryPrimitives.WriteUInt16BigEndian(
@@ -183,7 +184,7 @@ namespace TurboHTTP.WebSocket
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(closePayload);
+                ByteArrayPool.Return(closePayload);
             }
         }
 

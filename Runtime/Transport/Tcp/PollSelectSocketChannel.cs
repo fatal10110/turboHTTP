@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
@@ -7,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Tcp
 {
@@ -103,8 +103,8 @@ namespace TurboHTTP.Transport.Tcp
             _socket = socket ?? throw new ArgumentNullException(nameof(socket));
             _socket.Blocking = false; // Required for non-blocking Poll-based I/O.
 
-            _recvBuffer = ArrayPool<byte>.Shared.Rent(BufferSize);
-            _sendBuffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+            _recvBuffer = ByteArrayPool.Rent(BufferSize);
+            _sendBuffer = ByteArrayPool.Rent(BufferSize);
 
             int id = Interlocked.Increment(ref s_threadCounter);
             _pollThread = new Thread(RunPollLoop)
@@ -516,8 +516,13 @@ namespace TurboHTTP.Transport.Tcp
 
             if (!_pollThread.IsAlive)
             {
-                ArrayPool<byte>.Shared.Return(_recvBuffer);
-                ArrayPool<byte>.Shared.Return(_sendBuffer);
+                ByteArrayPool.Return(_recvBuffer);
+                ByteArrayPool.Return(_sendBuffer);
+            }
+            else
+            {
+                ByteArrayPool.Abandon(_recvBuffer);
+                ByteArrayPool.Abandon(_sendBuffer);
             }
             // If the thread is still alive after 500ms (pathological case), the buffers
             // are not returned. This is a deliberate safety trade-off: a small one-time

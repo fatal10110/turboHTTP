@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -269,7 +268,7 @@ namespace TurboHTTP.Transport.Http2
                             return totalBytesSent;
 
                         if (buffer == null)
-                            buffer = ArrayPool<byte>.Shared.Rent(_streamingSendBufferBytes);
+                            buffer = ByteArrayPool.Rent(_streamingSendBufferBytes);
 
                         int bytesToRead = remaining.Value > buffer.Length
                             ? buffer.Length
@@ -313,7 +312,7 @@ namespace TurboHTTP.Transport.Http2
                         return totalBytesSent;
 
                     if (buffer == null)
-                        buffer = ArrayPool<byte>.Shared.Rent(_streamingSendBufferBytes);
+                        buffer = ByteArrayPool.Rent(_streamingSendBufferBytes);
 
                     int bytesRead = await session.ReadAsync(
                             new Memory<byte>(buffer, 0, buffer.Length),
@@ -347,7 +346,7 @@ namespace TurboHTTP.Transport.Http2
             finally
             {
                 if (buffer != null)
-                    ArrayPool<byte>.Shared.Return(buffer);
+                    ByteArrayPool.Return(buffer);
             }
         }
 

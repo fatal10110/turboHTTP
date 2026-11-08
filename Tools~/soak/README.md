@@ -1,7 +1,7 @@
 # Soak and lossy-network harness (#114)
 
 An hour of mixed traffic through TurboHTTP, with the leak checks the 1.0 criterion asks for: less than
-10 MB managed-heap growth, no pooled object left outstanding, no socket left open.
+10 MB managed-heap growth, no pooled object or pooled byte buffer left outstanding, no socket left open.
 
 ```bash
 'Tools~/soak/run.sh'                                  # 1 h, every profile (the release gate)
@@ -49,8 +49,10 @@ hold nothing but TurboHTTP:
 Every `--checkpoint` seconds (default 600, the first after the warm-up, min(60 s, duration / 5)), and at
 the end, the workers pause until nothing is in flight; the harness then forces a full GC and records the
 managed heap, the client's sockets (`/proc/self/fd`), the server's open connections and the outstanding
-count (`Rent - Return - Discard`) of the HTTP/2 stream, parsed-response and header-scratch pools. All
-checkpoints compare the same idle load, with the pooled connections still open. The run fails when:
+count (`Rent - Return - Discard`) of the HTTP/2 stream, parsed-response and header-scratch pools, plus
+the library's pooled byte buffers held (`ByteArrayPool` rents minus returns since before the client was
+created, #292). All checkpoints compare the same idle load, with the pooled connections still open, so the
+byte-buffer count there includes the socket and read buffers idle connections keep. The run fails when:
 
 - any operation fails unexpectedly (a non-`UHttpException`/`WebSocketException` error anywhere, any
   error outside the `reset` profile, a wrong status or body byte, an intended cancellation that does not
@@ -58,7 +60,8 @@ checkpoints compare the same idle load, with the pooled connections still open. 
 - the heap at the final checkpoint exceeds the baseline checkpoint by more than `--max-growth-mb` (10);
 - a pool has an outstanding item at a checkpoint, or a checkpoint has more than `--max-sockets` (256)
   client sockets;
-- after the client and transport are disposed, the client still holds a socket, or a fault proxy still
+- after the client and transport are disposed, a pooled byte buffer is still outstanding (a rent with no
+  return: some path broke the one-owner, return-once rule), the client still holds a socket, or a fault proxy still
   holds a connection (the proxy closes as soon as either side does). Kestrel's own open-connection count
   is reported; it is the oracle only where the client socket count is unavailable, because Kestrel may
   finish tearing down HTTP/2 connections later than the client.

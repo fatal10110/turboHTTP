@@ -172,7 +172,7 @@ namespace TurboHTTP.Core
                 }
                 else
                 {
-                    rented = ArrayPool<byte>.Shared.Rent(16 * 1024);
+                    rented = ByteArrayPool.Rent(16 * 1024);
                     bufferedBody = new SegmentedBuffer();
                     long totalRead = 0;
                     while (true)
@@ -255,7 +255,7 @@ namespace TurboHTTP.Core
             finally
             {
                 if (rented != null)
-                    ArrayPool<byte>.Shared.Return(rented);
+                    ByteArrayPool.Return(rented);
 
                 if (!detached)
                 {

@@ -266,8 +266,8 @@ namespace TurboHTTP.WebSocket
             CancellationToken ct,
             int maxResponseHeaderBytes)
         {
-            var headerBuffer = ArrayPool<byte>.Shared.Rent(maxResponseHeaderBytes);
-            var readBuffer = ArrayPool<byte>.Shared.Rent(Math.Min(1024, maxResponseHeaderBytes));
+            var headerBuffer = ByteArrayPool.Rent(maxResponseHeaderBytes);
+            var readBuffer = ByteArrayPool.Rent(Math.Min(1024, maxResponseHeaderBytes));
             Task<int> abandonedRead = null;
 
             try
@@ -327,8 +327,10 @@ namespace TurboHTTP.WebSocket
             {
                 // An abandoned read may still write into readBuffer: it goes to the GC, not the pool.
                 if (abandonedRead == null || abandonedRead.IsCompleted)
-                    ArrayPool<byte>.Shared.Return(readBuffer);
-                ArrayPool<byte>.Shared.Return(headerBuffer);
+                    ByteArrayPool.Return(readBuffer);
+                else
+                    ByteArrayPool.Abandon(readBuffer);
+                ByteArrayPool.Return(headerBuffer);
             }
         }
 
@@ -843,7 +845,7 @@ namespace TurboHTTP.WebSocket
                 if (_bufferOffset >= _bufferCount)
                 {
                     if (_buffer == null)
-                        _buffer = ArrayPool<byte>.Shared.Rent(1024);
+                        _buffer = ByteArrayPool.Rent(1024);
 
                     _bufferOffset = 0;
                     _bufferCount = 0;
@@ -908,8 +910,10 @@ namespace TurboHTTP.WebSocket
                 _buffer = null;
                 _prefetched = Array.Empty<byte>();
                 var abandonedRead = _abandonedRead;
-                if (buffer != null && (abandonedRead == null || abandonedRead.IsCompleted))
-                    ArrayPool<byte>.Shared.Return(buffer);
+                if (abandonedRead == null || abandonedRead.IsCompleted)
+                    ByteArrayPool.Return(buffer);
+                else
+                    ByteArrayPool.Abandon(buffer);
             }
         }
 

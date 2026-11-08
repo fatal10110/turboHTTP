@@ -5,7 +5,7 @@ namespace TurboHTTP.Core.Internal
 {
     /// <summary>
     /// A node in a pooled segment chain. Extends <see cref="ReadOnlySequenceSegment{T}"/>
-    /// and owns one rented slice from <see cref="ArrayPool{T}.Shared"/>.
+    /// and owns one rented slice from <see cref="ByteArrayPool"/>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -30,7 +30,7 @@ namespace TurboHTTP.Core.Internal
         /// </summary>
         internal PooledSegment(int minCapacity, long runningIndex)
         {
-            _array = ArrayPool<byte>.Shared.Rent(minCapacity);
+            _array = ByteArrayPool.Rent(minCapacity);
             _written = 0;
             RunningIndex = runningIndex;
             Memory = ReadOnlyMemory<byte>.Empty;
@@ -80,7 +80,7 @@ namespace TurboHTTP.Core.Internal
         internal void SetNext(PooledSegment next) => Next = next;
 
         /// <summary>
-        /// Returns the rented array to <see cref="ArrayPool{byte}.Shared"/>.
+        /// Returns the rented array to <see cref="ByteArrayPool"/>.
         /// After disposal the segment must not be used.
         /// </summary>
         internal void ReturnToPool()
@@ -88,7 +88,7 @@ namespace TurboHTTP.Core.Internal
             var array = _array;
             _array = null;
             if (array != null)
-                ArrayPool<byte>.Shared.Return(array);
+                ByteArrayPool.Return(array);
         }
     }
 }

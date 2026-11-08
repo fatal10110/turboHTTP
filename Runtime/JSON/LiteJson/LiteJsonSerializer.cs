@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.JSON.Lite
 {
@@ -267,7 +268,7 @@ namespace TurboHTTP.JSON.Lite
             {
                 // Multi-segment: copy to a pooled array, then decode.
                 var length = (int)input.Length;
-                var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
+                var buffer = ByteArrayPool.Rent(length);
                 try
                 {
                     input.CopyTo(buffer);
@@ -275,7 +276,7 @@ namespace TurboHTTP.JSON.Lite
                 }
                 finally
                 {
-                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                    ByteArrayPool.Return(buffer);
                 }
             }
 

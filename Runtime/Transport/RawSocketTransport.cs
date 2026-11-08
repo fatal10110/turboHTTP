@@ -1712,7 +1712,7 @@ namespace TurboHTTP.Transport
             if (remaining < 0 || remaining > MaxProxyChallengeDrainBytes)
                 return false;
 
-            var buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(remaining, 16 * 1024));
+            var buffer = ByteArrayPool.Rent((int)Math.Min(remaining, 16 * 1024));
             try
             {
                 while (remaining > 0)
@@ -1733,7 +1733,7 @@ namespace TurboHTTP.Transport
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
             }
         }
 

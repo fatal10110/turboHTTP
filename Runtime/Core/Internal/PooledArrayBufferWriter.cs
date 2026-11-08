@@ -63,7 +63,7 @@ namespace TurboHTTP.Core.Internal
                 throw new ArgumentOutOfRangeException(nameof(initialCapacity), initialCapacity,
                     "Initial capacity must be greater than zero.");
 
-            _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+            _buffer = ByteArrayPool.Rent(initialCapacity);
             _written = 0;
             _detached = false;
         }
@@ -155,7 +155,7 @@ namespace TurboHTTP.Core.Internal
             {
                 // Return the rented array immediately; hand back an empty owner.
                 if (array != null && array.Length > 0)
-                    ArrayPool<byte>.Shared.Return(array);
+                    ByteArrayPool.Return(array);
                 return new ArrayPoolMemoryOwner<byte>(Array.Empty<byte>(), 0);
             }
 
@@ -175,7 +175,7 @@ namespace TurboHTTP.Core.Internal
                 // Re-acquire from pool.
                 if (newInitialCapacity <= 0)
                     newInitialCapacity = DefaultInitialCapacity;
-                _buffer = ArrayPool<byte>.Shared.Rent(newInitialCapacity);
+                _buffer = ByteArrayPool.Rent(newInitialCapacity);
                 _detached = false;
             }
             _written = 0;
@@ -196,7 +196,7 @@ namespace TurboHTTP.Core.Internal
             _detached = true; // treat disposed as unusable
 
             if (buffer != null && buffer.Length > 0)
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
         }
 
         // ── Internal helpers ──────────────────────────────────────────────────────
@@ -227,11 +227,11 @@ namespace TurboHTTP.Core.Internal
                 }
             }
 
-            var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+            var newBuffer = ByteArrayPool.Rent(newSize);
             if (_written > 0)
                 Buffer.BlockCopy(_buffer, 0, newBuffer, 0, _written);
 
-            ArrayPool<byte>.Shared.Return(_buffer);
+            ByteArrayPool.Return(_buffer);
             _buffer = newBuffer;
         }
 

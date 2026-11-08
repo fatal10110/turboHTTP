@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
@@ -267,7 +266,7 @@ namespace TurboHTTP.Cache
             byte[] rented = null;
             try
             {
-                rented = ArrayPool<byte>.Shared.Rent(16 * 1024);
+                rented = ByteArrayPool.Rent(16 * 1024);
                 while (await ReadAsync(rented, ct).ConfigureAwait(false) != 0)
                 {
                 }
@@ -275,7 +274,7 @@ namespace TurboHTTP.Cache
             finally
             {
                 if (rented != null)
-                    ArrayPool<byte>.Shared.Return(rented);
+                    ByteArrayPool.Return(rented);
             }
         }
 

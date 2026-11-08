@@ -1,11 +1,11 @@
 using System;
-using System.Buffers;
 using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.Transport.Internal;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http1
 {
@@ -329,8 +329,8 @@ namespace TurboHTTP.Transport.Http1
                 _stream = stream;
                 _budget = budget;
                 _budgetMessage = budgetMessage;
-                _line = ArrayPool<byte>.Shared.Rent(MaxLineBytes);
-                _single = ArrayPool<byte>.Shared.Rent(1);
+                _line = ByteArrayPool.Rent(MaxLineBytes);
+                _single = ByteArrayPool.Rent(1);
             }
 
             /// <summary>
@@ -396,9 +396,9 @@ namespace TurboHTTP.Transport.Http1
                 _line = null;
                 _single = null;
                 if (line != null)
-                    ArrayPool<byte>.Shared.Return(line);
+                    ByteArrayPool.Return(line);
                 if (single != null)
-                    ArrayPool<byte>.Shared.Return(single);
+                    ByteArrayPool.Return(single);
             }
 
             private void Charge(int bytes)

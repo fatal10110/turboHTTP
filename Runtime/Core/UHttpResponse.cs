@@ -4,6 +4,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
@@ -292,10 +293,10 @@ namespace TurboHTTP.Core
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
 
-            // Return the pooled byte[] back to ArrayPool. ArrayPool.Return is
-            // documented as thread-safe and safe to call from the finalizer thread.
+            // Return the pooled byte[] through the counting ByteArrayPool (#292). ArrayPool.Return
+            // and the Interlocked counter are thread-safe and safe to call from the finalizer thread.
             if (_bodyBufferRented && _pooledBodyBuffer != null)
-                ArrayPool<byte>.Shared.Return(_pooledBodyBuffer);
+                ByteArrayPool.Return(_pooledBodyBuffer);
 
             // Release the detached body owner (for example SegmentedBuffer or an
             // ArrayPool-backed response-body owner). ArrayPool-backed disposal is

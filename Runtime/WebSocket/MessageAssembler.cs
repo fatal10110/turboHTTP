@@ -1,6 +1,6 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
@@ -215,7 +215,7 @@ namespace TurboHTTP.WebSocket
             {
                 if (payloadLength > 0)
                 {
-                    payload = ArrayPool<byte>.Shared.Rent(payloadLength);
+                    payload = ByteArrayPool.Rent(payloadLength);
 
                     int copyOffset = 0;
                     for (int i = 0; i < _fragments.Count; i++)
@@ -237,7 +237,7 @@ namespace TurboHTTP.WebSocket
             catch
             {
                 if (payload != null)
-                    ArrayPool<byte>.Shared.Return(payload);
+                    ByteArrayPool.Return(payload);
 
                 Reset();
                 throw;
@@ -279,7 +279,7 @@ namespace TurboHTTP.WebSocket
             public void Dispose()
             {
                 if (Buffer != null)
-                    ArrayPool<byte>.Shared.Return(Buffer);
+                    ByteArrayPool.Return(Buffer);
             }
         }
     }
@@ -370,7 +370,7 @@ namespace TurboHTTP.WebSocket
 
             _payloadBuffer = null;
             _payloadLength = 0;
-            ArrayPool<byte>.Shared.Return(buffer);
+            ByteArrayPool.Return(buffer);
         }
     }
 }

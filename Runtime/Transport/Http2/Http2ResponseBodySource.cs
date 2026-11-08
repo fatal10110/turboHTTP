@@ -176,7 +176,7 @@ namespace TurboHTTP.Transport.Http2
                     for (var i = 0; i < detachedChunks.Count; i++)
                     {
                         if (detachedChunks[i].Buffer != null)
-                            ArrayPool<byte>.Shared.Return(detachedChunks[i].Buffer);
+                            ByteArrayPool.Return(detachedChunks[i].Buffer);
                     }
                 }
 
@@ -293,7 +293,7 @@ namespace TurboHTTP.Transport.Http2
             if (!TryReserveBufferedBytes(length))
                 return Http2ResponseBodyEnqueueResult.BufferFull;
 
-            var buffer = ArrayPool<byte>.Shared.Rent(length);
+            var buffer = ByteArrayPool.Rent(length);
             try
             {
                 Buffer.BlockCopy(source, offset, buffer, 0, length);
@@ -324,7 +324,7 @@ namespace TurboHTTP.Transport.Http2
             finally
             {
                 if (buffer != null)
-                    ArrayPool<byte>.Shared.Return(buffer);
+                    ByteArrayPool.Return(buffer);
             }
 
             Interlocked.Add(ref _bufferedBytes, -length);
@@ -405,7 +405,7 @@ namespace TurboHTTP.Transport.Http2
         {
             if (chunk.Buffer != null)
             {
-                ArrayPool<byte>.Shared.Return(chunk.Buffer);
+                ByteArrayPool.Return(chunk.Buffer);
                 Interlocked.Add(ref _bufferedBytes, -chunk.Length);
                 _connection.OnResponseBytesConsumed(chunk.FlowControlledLength);
             }
@@ -478,7 +478,7 @@ namespace TurboHTTP.Transport.Http2
             {
                 released.DataBytes += currentChunk.Length;
                 released.FlowControlledBytes += currentChunk.FlowControlledLength;
-                ArrayPool<byte>.Shared.Return(currentChunk.Buffer);
+                ByteArrayPool.Return(currentChunk.Buffer);
             }
 
             while (_queue.TryRead(out var chunk))
@@ -488,7 +488,7 @@ namespace TurboHTTP.Transport.Http2
 
                 released.DataBytes += chunk.Length;
                 released.FlowControlledBytes += chunk.FlowControlledLength;
-                ArrayPool<byte>.Shared.Return(chunk.Buffer);
+                ByteArrayPool.Return(chunk.Buffer);
             }
 
             if (released.DataBytes > 0)
@@ -577,7 +577,7 @@ namespace TurboHTTP.Transport.Http2
             if (chunk.Buffer == null)
                 return;
 
-            ArrayPool<byte>.Shared.Return(chunk.Buffer);
+            ByteArrayPool.Return(chunk.Buffer);
             Interlocked.Add(ref _bufferedBytes, -chunk.Length);
             _connection.OnResponseBytesReleased(chunk.FlowControlledLength);
         }
@@ -627,7 +627,7 @@ namespace TurboHTTP.Transport.Http2
                 for (var i = 0; i < chunks.Length; i++)
                 {
                     if (chunks[i].Buffer != null)
-                        ArrayPool<byte>.Shared.Return(chunks[i].Buffer);
+                        ByteArrayPool.Return(chunks[i].Buffer);
                 }
             }
 

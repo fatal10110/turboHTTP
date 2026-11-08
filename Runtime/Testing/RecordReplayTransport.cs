@@ -906,7 +906,7 @@ namespace TurboHTTP.Testing
             private async ValueTask<long> DrainIntoBufferAsync(IResponseBodySource body)
             {
                 var max = _owner._maxRecordBytes;
-                var chunk = ArrayPool<byte>.Shared.Rent(DrainChunkBytes);
+                var chunk = ByteArrayPool.Rent(DrainChunkBytes);
                 try
                 {
                     long total = 0;
@@ -929,7 +929,7 @@ namespace TurboHTTP.Testing
                 }
                 finally
                 {
-                    ArrayPool<byte>.Shared.Return(chunk);
+                    ByteArrayPool.Return(chunk);
                 }
             }
 

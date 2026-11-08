@@ -8,7 +8,9 @@ namespace TurboHTTP.Core.Internal
 {
     /// <summary>
     /// <see cref="IMemoryOwner{T}"/> backed by <see cref="ArrayPool{T}.Shared"/> with an
-    /// explicit logical length. Dispose returns the rented array to the pool.
+    /// explicit logical length. Dispose returns the rented array to the pool. Byte arrays are
+    /// rented and returned through <see cref="ByteArrayPool"/> so they are counted; a byte array
+    /// handed to the constructor must therefore come from <see cref="ByteArrayPool.Rent"/>.
     /// </summary>
     /// <remarks>
     /// The <see cref="Memory"/> property is sliced to the requested logical length so
@@ -44,7 +46,12 @@ namespace TurboHTTP.Core.Internal
             if (length == 0)
                 return new ArrayPoolMemoryOwner<T>(Array.Empty<T>(), 0);
 
-            return new ArrayPoolMemoryOwner<T>(ArrayPool<T>.Shared.Rent(length), length);
+            // Byte arrays go through the counting ByteArrayPool so the leak oracle (#292) sees them;
+            // the typeof check is a JIT/IL2CPP constant per instantiation and the casts are reference casts.
+            T[] array = typeof(T) == typeof(byte)
+                ? (T[])(object)ByteArrayPool.Rent(length)
+                : ArrayPool<T>.Shared.Rent(length);
+            return new ArrayPoolMemoryOwner<T>(array, length);
         }
 
         /// <summary>
@@ -100,7 +107,10 @@ namespace TurboHTTP.Core.Internal
             if (array == null || array.Length == 0)
                 return;
 
-            ArrayPool<T>.Shared.Return(array);
+            if (typeof(T) == typeof(byte))
+                ByteArrayPool.Return((byte[])(object)array);
+            else
+                ArrayPool<T>.Shared.Return(array);
         }
     }
 }

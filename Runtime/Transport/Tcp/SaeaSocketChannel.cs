@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,7 +24,7 @@ namespace TurboHTTP.Transport.Tcp
     /// </para>
     /// <para>
     /// <b>Buffer ownership:</b> Both pinned buffers are rented from
-    /// <see cref="ArrayPool{T}.Shared"/> at construction. They are NOT returned until any
+    /// <see cref="ByteArrayPool"/> at construction. They are NOT returned until any
     /// in-flight SAEA operations have completed (the kernel is done with the buffer), ensuring
     /// no memory-corruption window between socket-disposal-triggered OperationAborted and
     /// the caller-side ArrayPool return.
@@ -75,8 +74,8 @@ namespace TurboHTTP.Transport.Tcp
         {
             _socket = socket ?? throw new ArgumentNullException(nameof(socket));
 
-            _recvBuffer = ArrayPool<byte>.Shared.Rent(BufferSize);
-            _sendBuffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+            _recvBuffer = ByteArrayPool.Rent(BufferSize);
+            _sendBuffer = ByteArrayPool.Rent(BufferSize);
 
             _recvSource = new SaeaCompletionSource();
             _sendSource = new SaeaCompletionSource();
@@ -301,6 +300,8 @@ namespace TurboHTTP.Transport.Tcp
                 // Leak the SAEAs and buffers on purpose: the kernel may still write into them,
                 // so returning them to the shared pool could corrupt another renter's data.
                 Interlocked.Increment(ref s_buffersLeakedOnDispose);
+                ByteArrayPool.Abandon(_recvBuffer);
+                ByteArrayPool.Abandon(_sendBuffer);
                 TurboDiagnostics.LogOnce(
                     TurboDiagnostics.OnceSaeaDisposeDrainTimeout,
                     "[TurboHTTP] SAEA socket operation did not complete within " + DisposeDrainTimeoutMs +
@@ -312,8 +313,8 @@ namespace TurboHTTP.Transport.Tcp
             _recvSaea.Dispose();
             _sendSaea.Dispose();
 
-            ArrayPool<byte>.Shared.Return(_recvBuffer);
-            ArrayPool<byte>.Shared.Return(_sendBuffer);
+            ByteArrayPool.Return(_recvBuffer);
+            ByteArrayPool.Return(_sendBuffer);
             Volatile.Write(ref _buffersReleased, 1);
         }
 

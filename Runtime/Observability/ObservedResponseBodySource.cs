@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Observability
 {
@@ -101,7 +102,7 @@ namespace TurboHTTP.Observability
             byte[] rented = null;
             try
             {
-                rented = ArrayPool<byte>.Shared.Rent(16 * 1024);
+                rented = ByteArrayPool.Rent(16 * 1024);
                 while (await ReadAsync(rented, ct).ConfigureAwait(false) != 0)
                 {
                 }
@@ -109,7 +110,7 @@ namespace TurboHTTP.Observability
             finally
             {
                 if (rented != null)
-                    ArrayPool<byte>.Shared.Return(rented);
+                    ByteArrayPool.Return(rented);
             }
         }
 

@@ -66,14 +66,14 @@ namespace TurboHTTP.Transport.Http1
 
         internal void ReleaseBodyBuffers()
         {
-            // Fixed-body responses currently wrap a direct ArrayPool<byte> rent in
+            // Fixed-body responses currently wrap a direct ByteArrayPool rent in
             // ReadOnlyMemory<byte>, so TryGetArray succeeds here. If the storage model
             // changes in a future phase, this release path must be updated too.
             if (BodyFromPool &&
                 MemoryMarshal.TryGetArray(Body, out ArraySegment<byte> bodySegment) &&
                 bodySegment.Array != null)
             {
-                ArrayPool<byte>.Shared.Return(bodySegment.Array);
+                ByteArrayPool.Return(bodySegment.Array);
             }
 
             SegmentedBody?.Dispose();
@@ -856,7 +856,7 @@ namespace TurboHTTP.Transport.Http1
         {
             long totalBodyBytes = 0;
             // Read 8KB at a time into a temporary rent; copy directly into the segmented buffer.
-            byte[] readBuf = ArrayPool<byte>.Shared.Rent(8192);
+            byte[] readBuf = ByteArrayPool.Rent(8192);
             var segBuffer = new SegmentedBuffer();
 
             try
@@ -909,7 +909,7 @@ namespace TurboHTTP.Transport.Http1
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(readBuf);
+                ByteArrayPool.Return(readBuf);
             }
         }
 
@@ -975,7 +975,7 @@ namespace TurboHTTP.Transport.Http1
             if (length > MaxResponseBodySize)
                 throw new IOException("Response body exceeds maximum size");
 
-            var buffer = ArrayPool<byte>.Shared.Rent(length);
+            var buffer = ByteArrayPool.Rent(length);
             try
             {
                 await reader.ReadExactAsync(buffer, 0, length, ct).ConfigureAwait(false);
@@ -983,7 +983,7 @@ namespace TurboHTTP.Transport.Http1
             }
             catch
             {
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
                 throw;
             }
         }
@@ -997,7 +997,7 @@ namespace TurboHTTP.Transport.Http1
             BufferedStreamReader reader,
             CancellationToken ct)
         {
-            byte[] readBuffer = ArrayPool<byte>.Shared.Rent(8192);
+            byte[] readBuffer = ByteArrayPool.Rent(8192);
             var segBuffer = new SegmentedBuffer();
             long totalRead = 0;
 
@@ -1031,7 +1031,7 @@ namespace TurboHTTP.Transport.Http1
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(readBuffer);
+                ByteArrayPool.Return(readBuffer);
             }
         }
 
@@ -1084,7 +1084,7 @@ namespace TurboHTTP.Transport.Http1
                 _stream = stream ?? throw new ArgumentNullException(nameof(stream));
                 if (bufferSize <= 0)
                     throw new ArgumentOutOfRangeException(nameof(bufferSize), bufferSize, "Must be > 0.");
-                _buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
+                _buffer = ByteArrayPool.Rent(bufferSize);
             }
 
             public void Dispose()
@@ -1097,14 +1097,17 @@ namespace TurboHTTP.Transport.Http1
                 // A head read (#293) or body read (#345) abandoned on cancellation may still write
                 // into the reader's buffers: they go to the GC instead of the pool.
                 var raceRead = _raceRead;
-                if (raceRead != null && !raceRead.IsCompleted)
+                if ((raceRead != null && !raceRead.IsCompleted) ||
+                    Volatile.Read(ref _bodyReadState) != BodyReadIdle)
+                {
+                    ByteArrayPool.Abandon(_buffer);
+                    ByteArrayPool.Abandon(_bodyBuffer);
                     return;
-                if (Volatile.Read(ref _bodyReadState) != BodyReadIdle)
-                    return;
+                }
 
-                ArrayPool<byte>.Shared.Return(_buffer);
+                ByteArrayPool.Return(_buffer);
                 if (_bodyBuffer != null)
-                    ArrayPool<byte>.Shared.Return(_bodyBuffer);
+                    ByteArrayPool.Return(_bodyBuffer);
             }
 
             /// <summary>
@@ -1198,7 +1201,7 @@ namespace TurboHTTP.Transport.Http1
                         // clearArray: true — accumulator may contain sensitive header values
                         // (Authorization, Cookie, etc.). Clearing before pool return prevents
                         // stale data from being visible to the next renter.
-                        ArrayPool<byte>.Shared.Return(accumulator, clearArray: true);
+                        ByteArrayPool.Return(accumulator, clearArray: true);
                 }
             }
 
@@ -1260,7 +1263,7 @@ namespace TurboHTTP.Transport.Http1
                 finally
                 {
                     if (accumulator != null)
-                        ArrayPool<byte>.Shared.Return(accumulator, clearArray: true);
+                        ByteArrayPool.Return(accumulator, clearArray: true);
                 }
             }
 
@@ -1314,7 +1317,7 @@ namespace TurboHTTP.Transport.Http1
                         return await _stream.ReadAsync(destination, ct).ConfigureAwait(false);
 
                     // A read that can be abandoned targets reader-owned memory, never the caller's.
-                    var bodyBuffer = _bodyBuffer ??= ArrayPool<byte>.Shared.Rent(
+                    var bodyBuffer = _bodyBuffer ??= ByteArrayPool.Rent(
                         Math.Min(destination.Length, MaxBodyReadBufferBytes));
                     int direct = await ReadBodyAsync(
                         bodyBuffer,
@@ -1580,14 +1583,14 @@ namespace TurboHTTP.Transport.Http1
             {
                 if (buffer == null)
                 {
-                    buffer = ArrayPool<byte>.Shared.Rent(Math.Max(256, required));
+                    buffer = ByteArrayPool.Rent(Math.Max(256, required));
                     return;
                 }
 
                 if (buffer.Length >= required)
                     return;
 
-                var resized = ArrayPool<byte>.Shared.Rent(Math.Max(required, buffer.Length * 2));
+                var resized = ByteArrayPool.Rent(Math.Max(required, buffer.Length * 2));
                 try
                 {
                     if (bytesToCopy > 0)
@@ -1595,11 +1598,11 @@ namespace TurboHTTP.Transport.Http1
                 }
                 catch
                 {
-                    ArrayPool<byte>.Shared.Return(resized);
+                    ByteArrayPool.Return(resized);
                     throw;
                 }
 
-                ArrayPool<byte>.Shared.Return(buffer);
+                ByteArrayPool.Return(buffer);
                 buffer = resized;
             }
         }
