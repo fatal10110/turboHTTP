@@ -30,7 +30,8 @@ round trip. Cold = config, startup, editor. Review hot code first; cold code get
 - Rent what is needed, return once; logging allocates nothing when off; no per-request timers or polling.
 
 Evidence: the allocation gates (`Tests/Runtime/Performance/*AllocationGateTests.cs`, baselines in
-`Tests/Benchmarks/`), run scoped with `--filter 'AllocationGate'`; a raised baseline needs a reason.
+`Tests/Benchmarks/`), run with `--platform PlayMode --filter 'AllocationGate'` (EditMode finds 0
+tests and still exits 0: report the test count); a raised baseline needs a reason.
 An ungated new hot path gets a gate test or a follow-up.
 
 Severity: regression on an allocation-free hot path or O(n²) on peer input → `[must-fix]`;
@@ -47,16 +48,17 @@ verify) and list it as `[note] #N`. "Too much work" without an issue number is n
   list patterns); no `init`/records (Unity lacks `IsExternalInit`); no .NET 5+ APIs (`ThrowIfNull`,
   cancellable `Socket.ConnectAsync`, `ReadExactly`, `Random.Shared`, `Convert.ToHexString`).
   The shadow build in `check.sh` is the reference.
-- **IL2CPP:** banned APIs fail the build; also `dynamic`, reflection by name, new value-type generic
-  instantiations (needs a device check), `[Preserve]` for reflection targets, no `[ModuleInitializer]`.
+- **IL2CPP:** banned APIs fail the build; also `dynamic`, reflection by name; new generic
+  `ValueTask<T>`/channel instantiations need a device check; `[Preserve]` for reflection targets;
+  registration goes through `TurboHttpBootstrap` (`[ModuleInitializer]` is only a secondary path).
 - **Platforms:** `Volatile`/`Interlocked` for shared fields, `Interlocked.Read` for 64-bit on 32-bit;
   cleartext policy is ours (#85); IPv6/NAT64; suspension; Unity APIs on the main thread only; no
   socket types in modules that must build on WebGL. Device-only claims → `needs-device-validation`.
-- **Customers:** a public API break (signature, default parameter value, new interface member,
-  `sealed`/`virtual`) or a changed behavior default needs explicit approval and a PR, docs and
-  `CHANGELOG.md` mention, else `[blocker]`.
+- **Customers:** public API changes need XML docs and a PR mention (CLAUDE.md §4). A break
+  (signature, default parameter value, new interface member, `sealed`/`virtual`) or a changed
+  behavior default must be asked for by the issue, else `[blocker]`.
 - **Wire:** RFC-correct but rejecting a common lenient peer needs a reason; sending what a strict
-  peer rejects is `[must-fix]`.
+  peer rejects is a protocol violation (`[blocker]`).
 
 ## Output
 

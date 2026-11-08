@@ -167,7 +167,7 @@ Do not modify, commit, push, merge or close anything on the PR.
    Infrastructure: <clean | items>; Network: <clean | items>
 
    ## Performance and compatibility
-   <the section turbohttp-perf-compat-review §3 defines>
+   <the section turbohttp-perf-compat-review "Output" defines>
 
    ## Other findings
    <one line each, path:line, severity>
