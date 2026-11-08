@@ -60,6 +60,13 @@ namespace TurboHTTP.Transport.Tcp
             }
         }
 
+        /// <summary>
+        /// True where closing a socket aborts its pending operations (IOCP, Windows) and a shutdown
+        /// does not end a pending receive. False on the selector platforms (kqueue/epoll), where a
+        /// shutdown ends it with end of stream (#384).
+        /// </summary>
+        internal static bool CloseAbortsPendingIo => CompletionModelName == "IOCP";
+
         // ── Logging ───────────────────────────────────────────────────────────
 
         /// <summary>

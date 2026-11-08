@@ -49,7 +49,7 @@ namespace TurboHTTP.Transport.Tcp
         internal const int DisposeDrainTimeoutMs = 500;
 
         // Only IOCP aborts a pending operation on close; the selector platforms end it on shutdown.
-        private static readonly bool s_closeAbortsPendingIo = SaeaPlatformDetection.CompletionModelName == "IOCP";
+        private static readonly bool s_closeAbortsPendingIo = SaeaPlatformDetection.CloseAbortsPendingIo;
 
         private static long s_buffersLeakedOnDispose;
 

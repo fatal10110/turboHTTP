@@ -26,6 +26,12 @@ namespace TurboHTTP.Transport.Tcp
     /// close outside a cancellation.
     /// </para>
     /// <para>
+    /// Only selector platforms hold (<see cref="HoldsPendingIo"/>). On Windows a shutdown does not end
+    /// a pending receive, so a hold would keep the request's abandoned read (and the connection gate
+    /// waiting on it) until <see cref="HoldTimeout"/>; there the close itself aborts the pending
+    /// operation, as before #384.
+    /// </para>
+    /// <para>
     /// The owning stream brackets every read and write with <see cref="EnterIo"/> and
     /// <see cref="ExitIo"/>. One read and one write may be pending at a time (the stream contract);
     /// a pending operation is remembered without a continuation, so the I/O path allocates nothing.
@@ -40,6 +46,9 @@ namespace TurboHTTP.Transport.Tcp
 
         // Ticks, so a 32-bit runtime never reads a torn value (Interlocked.Read/Exchange).
         private static long s_holdTimeoutTicks = TimeSpan.FromSeconds(30).Ticks;
+
+        // Volatile: 1 = hold the handle for pending operations (selector platforms), 0 = close at once.
+        private static int s_holdsPendingIo = SaeaPlatformDetection.CloseAbortsPendingIo ? 0 : 1;
 
         // Interlocked: handles held past their close, and how each hold ended.
         private static int s_heldCount;
@@ -77,6 +86,18 @@ namespace TurboHTTP.Transport.Tcp
         {
             get => new TimeSpan(Interlocked.Read(ref s_holdTimeoutTicks));
             set => Interlocked.Exchange(ref s_holdTimeoutTicks, value.Ticks);
+        }
+
+        /// <summary>
+        /// True where a close keeps the handle until the pending operations ended: the selector
+        /// platforms (kqueue/epoll), where a shutdown ends a pending receive and IL2CPP's selector
+        /// keys jobs by descriptor. False on Windows, where the shutdown does not end the receive and
+        /// the close aborts it. Tests set it.
+        /// </summary>
+        internal static bool HoldsPendingIo
+        {
+            get => Volatile.Read(ref s_holdsPendingIo) != 0;
+            set => Volatile.Write(ref s_holdsPendingIo, value ? 1 : 0);
         }
 
         /// <summary>Handles closed with an operation pending that are still held.</summary>
@@ -122,6 +143,10 @@ namespace TurboHTTP.Transport.Tcp
                     return;
                 }
 
+                // Released at close (nothing to hold, or this platform does not hold).
+                if (IsReleased)
+                    return;
+
                 // Close ran while this operation was starting: it counted the operation as a holder.
                 if (!pending)
                     releaseNow = --_holders == 0;
@@ -139,6 +164,7 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal void Close()
         {
+            bool holdsPendingIo = HoldsPendingIo;
             Task read;
             Task write;
             int holders;
@@ -152,7 +178,7 @@ namespace TurboHTTP.Transport.Tcp
                 write = Incomplete(_pendingWrite);
                 _pendingRead = null;
                 _pendingWrite = null;
-                holders = _starting + (read != null ? 1 : 0) + (write != null ? 1 : 0);
+                holders = holdsPendingIo ? _starting + (read != null ? 1 : 0) + (write != null ? 1 : 0) : 0;
                 _holders = holders;
 
                 // Counted before any holder can release it (releases take this lock first).
@@ -166,9 +192,14 @@ namespace TurboHTTP.Transport.Tcp
 
             if (holders == 0)
             {
-                // Nothing pending: the descriptor can go at once (an operation started after this
-                // point fails on the disposed stream before it reaches the socket).
-                if (Interlocked.Exchange(ref _released, 1) == 0)
+                // Nothing pending, or a platform where the close aborts what is pending: the
+                // descriptor can go at once (an operation started after this point fails on the
+                // disposed stream or socket). Set under the lock, so an operation still starting
+                // sees it in ExitIo and holds nothing.
+                bool releaseHere;
+                lock (_lock)
+                    releaseHere = Interlocked.Exchange(ref _released, 1) == 0;
+                if (releaseHere)
                     ReleaseHandle();
                 return;
             }

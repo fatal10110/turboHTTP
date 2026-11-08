@@ -28,23 +28,29 @@ namespace TurboHTTP.Tests.Transport
 
         private TimeSpan _savedHold;
         private TimeSpan _savedSettle;
+        private bool _savedHoldsPendingIo;
 
         [SetUp]
         public void SetUp()
         {
             _savedHold = SocketHandleHold.HoldTimeout;
+            _savedHoldsPendingIo = SocketHandleHold.HoldsPendingIo;
             _savedSettle = AbandonedSocketIo.SettleTimeout;
             AssertAsync.Run(async () =>
                 await AbandonedSocketIoTests.WaitUntilAsync(
                     () => AbandonedSocketIo.PendingCount == 0, "earlier abandoned operations never settled"),
                 Guard);
             SocketHandleHold.HoldTimeout = LongHold;
+
+            // The selector-platform behavior under test, on every host (Windows does not hold).
+            SocketHandleHold.HoldsPendingIo = true;
         }
 
         [TearDown]
         public void TearDown()
         {
             SocketHandleHold.HoldTimeout = _savedHold;
+            SocketHandleHold.HoldsPendingIo = _savedHoldsPendingIo;
             AbandonedSocketIo.SettleTimeout = _savedSettle;
         }
 
@@ -76,6 +82,41 @@ namespace TurboHTTP.Tests.Transport
                     Assert.IsTrue(IsClosed(client));
                     Assert.AreEqual(held, SocketHandleHold.HeldCount);
                     Assert.AreEqual(releasedAfterEnd + 1, SocketHandleHold.ReleasedAfterEndCount);
+                }
+            }, Guard);
+        }
+
+        [Test]
+        public void Close_ReadPending_PlatformThatDoesNotHold_ReleasesTheHandleAtOnce()
+        {
+            // Windows: a shutdown does not end the pending receive and the close aborts it, so a hold
+            // would keep the abandoned read, and the connection gate waiting on it, until the bound.
+            AssertAsync.Run(async () =>
+            {
+                SocketHandleHold.HoldsPendingIo = false;
+                var (client, server) = await ConnectPairAsync();
+                using (server)
+                {
+                    var hold = new SocketHandleHold(client);
+                    var read = new TaskCompletionSource<int>();
+                    int held = SocketHandleHold.HeldCount;
+                    long releasedAfterEnd = SocketHandleHold.ReleasedAfterEndCount;
+
+                    hold.EnterIo();
+                    hold.ExitIo(read.Task, write: false);
+                    hold.Close();
+
+                    Assert.IsTrue(hold.IsReleased, "the handle is released at close");
+                    Assert.IsTrue(IsClosed(client));
+                    Assert.AreEqual(0, await ReceiveAsync(server), "the peer sees the close");
+                    Assert.AreEqual(held, SocketHandleHold.HeldCount, "nothing was held");
+
+                    // An operation that reaches the hold after the close holds nothing either.
+                    hold.EnterIo();
+                    hold.ExitIo(null, write: true);
+                    read.SetResult(0);
+                    Assert.AreEqual(held, SocketHandleHold.HeldCount);
+                    Assert.AreEqual(releasedAfterEnd, SocketHandleHold.ReleasedAfterEndCount);
                 }
             }, Guard);
         }
