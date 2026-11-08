@@ -15,7 +15,7 @@ phase's entries with `ls Development~/docs/implementation-journal | grep phase<N
 | 3C BouncyCastle TLS fallback | re-vendored (strip v2, #223); Auto fails closed (#195); opt-in via `TURBOHTTP_BOUNCYCASTLE` (#259) | chain validation + RFC 6125 matching (#240); native iOS/Android verifiers merged (#253), device rows #239/#33 in #99; **desktop verifier fails on Unity Mono (ECDSA, no root store): owner decision #248**; strip roots drift #249; TLS interop job + negative suite (#274) |
 | 4 Pipeline, 5 Content handlers | done | later rewritten as interceptors (22.x); pre-22 phase docs still use old names (#108); old `docs/architecture.md` removed (#107, #189) |
 | 6 Performance & hardening, 7 Testing infra | done | soak test (#114) |
-| 8 Docs & samples | rewritten against the interceptor API (#269); snippets and samples compile in CI | sample import-and-run #268, README JSON quick start #271 (#98 stays open for them) |
+| 8 Docs & samples | rewritten against the interceptor API (#269); snippets and samples compile in CI | sample import-and-run recorded in the Editor host run (#268, `2026-11-samples-host-run.md`); README JSON quick start done (#271); #98 closed |
 | 9 Platform compatibility | partial (detection/config only) | device matrix #99 |
 | 10 Advanced middleware (cache, redirect, cookies) | done | module findings in v1.0-beta/v1.1 |
 | 11 Unity integration | done | — |
@@ -24,12 +24,12 @@ phase's entries with `ls Development~/docs/implementation-journal | grep phase<N
 | 15 Unity runtime hardening | implemented | certification matrix #105 |
 | 16 Rate limiting, WebGL, security/privacy, GraphQL, parallel helpers | planned | #118, #130, #117, #131, #119 |
 | 17 CI/CD & release | CI done (lint, CodeQL, TLS interop job #274, manual Autobahn workflow #272); PR CI does not run Unity tests (no license, #188); release process done (tag-triggered GitHub Release, Git URL + OpenUPM, `release-checklist.md`, #101), no tag cut yet | full suites run in the periodic host-editor run (`testing.md`); host player builds `Tools~/unity/build-player.sh` (#273); CI player builds #100; #101 |
-| 18 WebSocket client, 18a advanced WebSocket | done / implemented, verification pending | beta fixes merged (#201, #218, #237, #257); Autobahn 517 cases, 0 failed (#272); left: Mono deflate flush #270, #104 |
+| 18 WebSocket client, 18a advanced WebSocket | done / implemented, Editor (Mono) verified | beta fixes merged (#201, #218, #237, #257); Autobahn 517 cases, 0 failed (#272); WebSocket PlayMode 182/182 (Editor, Mono); Mono compresses through the managed `SyncFlushDeflater` (#295); permessage-deflate ships in v1.0 as opt-in `WithCompression`; left: IL2CPP/device rows of #270 and #104 (#99) |
 | 19, 19a (zero-alloc), 19b (unified pipeline) | done | 19c planned (#120) |
 | 22 Interceptor rewrite (22.1–22.4) | done | — |
 | 22a End-to-end streaming | 22a.1–22a.5 done | 22a.6 validation #102 |
 | 22b Expect 100-continue, proxy streaming, trailers | done | plan/semantics fixes #109 |
-| 22c HTTP/2 through CONNECT | Editor-validated, device validation pending | #103 |
+| 22c HTTP/2 through CONNECT | Editor-validated, device validation pending | h2 inside CONNECT tunnels is default-off (`Http2Options.EnableHttp2ThroughConnectTunnels`, #103); device validation pending (#103/#99) |
 | 22d HTTP/2 proxy leg + proxy-aware H2 pooling | planned (clean-break proxy refactor allowed) | plan fixes #125, then #126–#129 (v2.0) |
 | 23 API config, 24 content handlers, 25 gRPC | planned | #121, #122–#124, #132 |
 

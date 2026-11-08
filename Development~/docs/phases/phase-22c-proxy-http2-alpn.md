@@ -1,6 +1,6 @@
 # Phase 22c: HTTP/2 Through CONNECT Proxy Tunnels
 
-**Milestone:** v1.0 GA: Docs, validation & release (shipped; h2 is negotiated in tunnels today, default-off option required before 1.0.0, #103)
+**Milestone:** v1.0 GA: Docs, validation & release (shipped; h2 inside CONNECT tunnels is default off, opt-in via `Http2Options.EnableHttp2ThroughConnectTunnels`; device validation open, #103/#99)
 **Dependencies:** Phase 22a (end-to-end streaming), Phase 22b.2 (streaming through proxy connections)
 **Estimated Complexity:** High
 **Critical:** No — HTTP/2 through proxies is a performance optimization, not a correctness fix. HTTP/1.1 through CONNECT tunnels works correctly today.

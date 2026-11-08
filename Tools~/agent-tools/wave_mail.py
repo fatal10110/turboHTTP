@@ -415,10 +415,44 @@ def requeue_orphans(run, types):
     return n
 
 
+def delivery_ledger(run, broker):
+    return run_dir(run) / "requests" / f"delivered-{broker}.json"
+
+
+def requeue_unacked(run, broker, acked):
+    """Put back requests a take delivered that the workflow says it never received.
+
+    A poller agent can run `take`, receive events and still report none (run w1110: a merge
+    request sat taken and unanswered for three hours while its lane waited). The workflow passes
+    the ids it did receive with --ack; every other id an earlier take delivered, and that has no
+    answer yet, goes back to new/ so this take serves it again.
+    """
+    ledger = delivery_ledger(run, broker)
+    n = 0
+    for rid in read_json(ledger, []):
+        if not isinstance(rid, str) or not ID_RE.fullmatch(rid) or rid in acked or answer_path(run, rid).exists():
+            continue
+        try:
+            os.replace(req_dir(run, "taken") / f"{rid}.json", req_dir(run, "new") / f"{rid}.json")
+            n += 1
+        except FileNotFoundError:
+            pass
+    write_atomic(ledger, "[]")
+    return n
+
+
 def cmd_take(a):
     tracks = [t for t in (a.tracks or "").split(",") if t]
     types = BROKER_TYPES[a.broker]
-    requeued = requeue_orphans(a.run, types) if a.requeue else 0
+    ledger = delivery_ledger(a.run, a.broker)
+    if a.requeue:
+        # A new broker instance re-serves every unanswered request, so earlier deliveries are moot.
+        requeued = requeue_orphans(a.run, types)
+        write_atomic(ledger, "[]")
+    elif a.ack is not None:
+        requeued = requeue_unacked(a.run, a.broker, {x for x in a.ack.split(",") if x and x != "-"})
+    else:
+        requeued = 0
     alive = run_dir(a.run) / f"broker-{a.broker}.alive"
     deadline = now() + wait_secs(a.wait)
     while True:
@@ -435,6 +469,7 @@ def cmd_take(a):
             events.append({"id": ev["id"], "type": ev["type"], "from": ev["from"],
                            "worktree": ev.get("worktree", ""), "question": ev["question"]})
         if events:
+            write_atomic(ledger, json.dumps(read_json(ledger, []) + [e["id"] for e in events]))
             out({"events": events, "timeout": False, "stop": False, "requeued": requeued})
             return
         if stop_requested(a.run) or (tracks and tracks_finished(a.run, a.epoch, tracks)):
@@ -975,6 +1010,8 @@ def main(argv=None):
     s.add_argument("--broker", choices=sorted(BROKER_TYPES), default="helper")
     s.add_argument("--epoch", default="1")
     s.add_argument("--requeue", action="store_true", help="first call of a broker instance: re-serve unanswered requests an earlier instance took")
+    s.add_argument("--ack", help="comma-separated ids the workflow received from the previous take ('-' for none); "
+                   "unanswered requests an earlier take delivered outside this list are served again")
     s.add_argument("--tracks", default="")
     s.add_argument("--wait", type=float, default=MAX_WAIT)
 

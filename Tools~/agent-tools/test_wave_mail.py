@@ -105,6 +105,42 @@ class WaveMailTest(unittest.TestCase):
         got = self.run_cli("take", "--run", "r", "--broker", "merge", "--requeue", "--wait", "0")
         self.assertEqual(([e["id"] for e in got["events"]], got["requeued"]), ([m2["id"]], 1))
 
+    def _merge_request_taken(self):
+        self.run_cli("take", "--run", "r", "--broker", "merge", "--wait", "0")
+        m = self.run_cli("ask", "--run", "r", "--from", "a/review", "--type", "merge", "--question", "{}", "--nowait")
+        got = self.run_cli("take", "--run", "r", "--broker", "merge", "--ack", "-", "--wait", "0")
+        self.assertEqual([e["id"] for e in got["events"]], [m["id"]])
+        return m
+
+    def test_take_reserves_a_delivered_request_the_workflow_did_not_ack(self):
+        # run w1110: the poller agent received a merge request and reported no events; the
+        # request stayed taken and unanswered while the lane waited on it for three hours.
+        m = self._merge_request_taken()
+        got = self.run_cli("take", "--run", "r", "--broker", "merge", "--ack", "-", "--wait", "0")
+        self.assertEqual(([e["id"] for e in got["events"]], got["requeued"]), ([m["id"]], 1))
+        # the workflow got it the second time: acknowledged, it is not served a third time
+        again = self.run_cli("take", "--run", "r", "--broker", "merge", "--ack", m["id"], "--wait", "0")
+        self.assertTrue(again["timeout"])
+        self.assertTrue(self.run_cli("answer-wait", "--run", "r", "--id", m["id"], "--wait", "0")["pending"])
+
+    def test_take_does_not_reserve_acked_or_answered_requests(self):
+        m = self._merge_request_taken()
+        self.assertTrue(self.run_cli("take", "--run", "r", "--broker", "merge", "--ack", f"x,{m['id']}", "--wait", "0")["timeout"])
+        n = self._merge_request_taken()
+        self.run_cli("answer", "--run", "r", "--id", n["id"], "--text", "{}")
+        self.assertTrue(self.run_cli("take", "--run", "r", "--broker", "merge", "--ack", "-", "--wait", "0")["timeout"])
+
+    def test_take_without_ack_keeps_the_old_behaviour(self):
+        self._merge_request_taken()
+        self.assertTrue(self.run_cli("take", "--run", "r", "--broker", "merge", "--wait", "0")["timeout"])
+
+    def test_requeue_clears_the_delivery_ledger(self):
+        m = self._merge_request_taken()
+        got = self.run_cli("take", "--run", "r", "--broker", "merge", "--requeue", "--wait", "0")
+        self.assertEqual([e["id"] for e in got["events"]], [m["id"]])
+        # the relaunched broker's next take acknowledges it: no second delivery
+        self.assertTrue(self.run_cli("take", "--run", "r", "--broker", "merge", "--ack", m["id"], "--wait", "0")["timeout"])
+
     def test_requeue_skips_ended_lanes_and_old_requests(self):
         self.run_cli("take", "--run", "r", "--broker", "helper", "--wait", "0")
         old = self.run_cli("ask", "--run", "r", "--from", "a/impl", "--type", "runner", "--question", "x", "--nowait")

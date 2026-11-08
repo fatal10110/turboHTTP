@@ -13,6 +13,7 @@ function world(cap, scen) {
   const boxes = {}
   const state = {}
   const labels = []
+  const prompts = [] // [label, prompt] per call
   const types = [] // [label, agentType] per call, and the calls refused for a missing type
   const refused = []
   const rev = {} // per-lane review memory that survives a reviewer restart (the review files)
@@ -104,6 +105,7 @@ function world(cap, scen) {
   async function body(prompt, opts) {
     const label = opts.label || ''
     labels.push(label)
+    prompts.push([label, prompt])
     const [kind, rest] = label.split(':')
     const slug = (rest || '').split('#')[0]
     if (kind === 'status') return { lines: scen.$status || [] }
@@ -126,6 +128,8 @@ function world(cap, scen) {
     if (kind === 'take') {
       const evs = scen.$take.shift()
       if (evs === 'FAKE_STOP') return { events: [], stop: true } // a poller that reports a stop it never saw
+      if (evs === 'NULL') return null // a poller agent that failed
+      if (evs === 'EMPTY') return { events: [], timeout: true, stop: false } // a poller that reports no events (it may never have run take)
       if (evs && evs.stopWith) return { events: evs.stopWith, stop: true } // an off-script poller: events and stop together
       return evs ? { events: evs, stop: false } : { events: [], stop: true }
     }
@@ -150,7 +154,7 @@ function world(cap, scen) {
     }
   }
   const parallel = thunks => Promise.all(thunks.map(t => t().catch(() => null)))
-  return { agent, parallel, labels, types, refused, state, rev, models, peak: () => peak, preload: (slug, b, kind) => post(slug, b, kind, {}) }
+  return { agent, parallel, labels, prompts, types, refused, state, rev, models, peak: () => peak, preload: (slug, b, kind) => post(slug, b, kind, {}) }
 }
 
 async function run(args, scen, cap = 2) {
@@ -317,6 +321,24 @@ const count = (w, prefix) => w.labels.filter(l => l === prefix || l.startsWith(p
   const m = await run({ run: 'sim', role: 'merger', plan }, { $take: [[{ id: 'm1', type: 'merge', from: 'a/review' }]] })
   // take (event), merge, take (stop), take:confirm-stop (stop) -> the broker ends.
   assert.deepEqual(m.w.types.map(([l, ty]) => ty), ['wave-coord', 'wave-merge', 'wave-coord', 'wave-coord'])
+  // The first take re-serves orphans (--requeue); every later take acknowledges the ids the previous
+  // take returned, so a poller that dropped events gets them served again.
+  const takes = m.w.prompts.filter(([l]) => l === 'take' || l === 'take:confirm-stop').map(([, p]) => p)
+  assert.ok(/FIRST run only.*--requeue/s.test(takes[0]) && !/--ack/.test(takes[0]), 'the first take requeues, without --ack')
+  assert.match(takes[1], /--ack m1 --wait/)
+  assert.match(takes[2], /--ack m1 --wait 5/, 'the stop may be fake: the confirming take still acks m1')
+
+  // A take that reports no events, or fails, may never have run take: the next take acks the same ids,
+  // so a request that is still in flight is not served a second time.
+  const ackOf = (w, i) => (w.prompts.filter(([l]) => l.startsWith('take')).map(([, p]) => p)[i].match(/--ack (\S+)/) || [])[1]
+  const nul = await run({ run: 'sim', role: 'merger', plan }, { $take: [[{ id: 'm1', type: 'merge', from: 'a/review' }], 'NULL'] })
+  assert.equal(ackOf(nul.w, 2), 'm1', 'after a failed take the merger still acks m1')
+  const empty = await run({ run: 'sim', role: 'helper', plan: { tracks: ['A'], waves: [] } }, {
+    $take: [[{ id: 'x1', type: 'runner', from: 'a/impl' }], 'EMPTY', [{ id: 'x2', type: 'runner', from: 'a/impl' }]],
+  })
+  assert.deepEqual([1, 2, 3].map(i => ackOf(empty.w, i)), ['x1', 'x1', 'x2'], 'helper: an empty report keeps the ack; new events replace it')
+  const hstop = await run({ run: 'sim', role: 'helper', plan: { tracks: ['A'], waves: [] } }, { $take: [[{ id: 'x1', type: 'runner', from: 'a/impl' }], 'FAKE_STOP'] })
+  assert.equal(ackOf(hstop.w, 2), 'x1', 'helper: the stop confirmation after a fake stop acks x1')
 
   // An unconfirmed stop does not end the broker: the confirming take's events are served.
   const fake = await run({ run: 'sim', role: 'merger', plan }, {
