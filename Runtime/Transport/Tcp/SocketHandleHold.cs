@@ -8,8 +8,9 @@ namespace TurboHTTP.Transport.Tcp
     /// <summary>
     /// Single owner of one socket's handle for the stream that wraps it (#384). Closing shuts the
     /// socket down at once, so the peer sees the close and a pending receive ends (end of stream, or
-    /// <c>Interrupted</c> on Mono and IL2CPP, #410), but releases the handle (closes the descriptor) only once every operation that was pending on
-    /// it ended, or after <see cref="HoldTimeout"/> for an operation that never ends.
+    /// <c>Interrupted</c> on Mono and IL2CPP, #410), but releases the handle (closes the descriptor)
+    /// only once every operation that was pending on it ended, or after <see cref="HoldTimeout"/>
+    /// for an operation that never ends.
     /// <para>
     /// IL2CPP's socket close does not remove a pending receive from the runtime's I/O selector,
     /// which keys its jobs by descriptor number (libil2cpp <c>Socket::Close_icall</c> never calls

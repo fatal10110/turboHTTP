@@ -331,8 +331,8 @@ namespace TurboHTTP.Transport.Tcp
                 // socket layers turn a 0-byte read after a local SHUT_RD into EINTR, which maps to
                 // OperationCanceledException like an abort (#410). IL2CPP's close does not remove
                 // a pending job from its selector, so closing first would let a new socket reuse
-                // the number behind the stale job (#384). An operation that did not end within the drain bound falls
-                // back to closing it (the pre-#384 order) before draining once more.
+                // the number behind the stale job (#384). An operation that did not end within the
+                // drain bound falls back to closing it (the pre-#384 order) before draining once more.
                 try { _socket.Shutdown(SocketShutdown.Both); } catch { }
                 drained = WaitForInFlightOperations(drainTimeoutMs);
                 try { _socket.Dispose(); } catch { }
