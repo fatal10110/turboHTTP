@@ -47,6 +47,26 @@ namespace TurboHTTP.Unity
     }
 
     /// <summary>
+    /// High-water marks of the dispatcher's per-frame drain (#105): the most items one frame ran, the
+    /// longest main-thread time one frame spent on queued work, and how far past the time cap
+    /// (<see cref="MainThreadDispatcherSettings.MaxWorkTimeMs"/>) any item was started (at most the
+    /// dequeue cost when the cap holds; the item that crosses the cap still runs to completion).
+    /// </summary>
+    internal readonly struct MainThreadDrainStats
+    {
+        public MainThreadDrainStats(int maxItemsPerFrame, long maxDrainTicks, long maxLateStartTicks)
+        {
+            MaxItemsPerFrame = maxItemsPerFrame;
+            MaxDrainMs = maxDrainTicks * 1000d / Stopwatch.Frequency;
+            MaxLateStartMs = Math.Max(0L, maxLateStartTicks) * 1000d / Stopwatch.Frequency;
+        }
+
+        public int MaxItemsPerFrame { get; }
+        public double MaxDrainMs { get; }
+        public double MaxLateStartMs { get; }
+    }
+
+    /// <summary>
     /// Dispatches work onto Unity's main thread.
     /// </summary>
     /// <remarks>
@@ -99,6 +119,13 @@ namespace TurboHTTP.Unity
         private static long _dispatchExceptions;
         private static long _queueLatencyTicksTotal;
         private static long _queueLatencySamples;
+
+        // Per-frame drain high-water marks for the reliability budgets (#105). Written only by the
+        // main-thread drain loop and reset on the main thread; Interlocked keeps the 64-bit values
+        // untorn for readers on 32-bit IL2CPP.
+        private static int _maxDrainItems;
+        private static long _maxDrainTicks;
+        private static long _maxDrainLateStartTicks;
 
         private static MainThreadDispatcherLifecycleState State =>
             (MainThreadDispatcherLifecycleState)Volatile.Read(ref _state);
@@ -164,8 +191,32 @@ namespace TurboHTTP.Unity
                 queue: queue);
         }
 
+        /// <summary>
+        /// High-water marks of the per-frame drain since the last <see cref="ResetDrainStats"/>, for the
+        /// reliability and performance-budget suites (#105).
+        /// </summary>
+        internal static MainThreadDrainStats GetDrainStats()
+        {
+            return new MainThreadDrainStats(
+                Volatile.Read(ref _maxDrainItems),
+                Interlocked.Read(ref _maxDrainTicks),
+                Interlocked.Read(ref _maxDrainLateStartTicks));
+        }
+
+        /// <summary>Clears the drain high-water marks. Call on the main thread.</summary>
+        internal static void ResetDrainStats()
+        {
+            Volatile.Write(ref _maxDrainItems, 0);
+            Interlocked.Exchange(ref _maxDrainTicks, 0);
+            Interlocked.Exchange(ref _maxDrainLateStartTicks, 0);
+        }
+
+        /// <summary>
+        /// The domain-reload reset of the static state (SubsystemRegistration). Internal so the
+        /// reliability suite can drive a reload transition without reloading the domain (#105).
+        /// </summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        private static void ResetStaticState()
+        internal static void ResetStaticState()
         {
             TryUninstallPlayerLoop();
 
@@ -181,6 +232,7 @@ namespace TurboHTTP.Unity
             Interlocked.Exchange(ref _dispatchExceptions, 0);
             Interlocked.Exchange(ref _queueLatencyTicksTotal, 0);
             Interlocked.Exchange(ref _queueLatencySamples, 0);
+            ResetDrainStats();
 
             WorkQueue.FailAll(new OperationCanceledException(
                 "MainThreadDispatcher static state reset during domain reload."));
@@ -723,7 +775,11 @@ namespace TurboHTTP.Unity
                    typeName.IndexOf("UnitySynchronizationContext", StringComparison.Ordinal) >= 0;
         }
 
-        private static void BeginShutdown(string reason, MainThreadDispatcherLifecycleState terminalState)
+        /// <summary>
+        /// Moves to a terminal state (Disposing or Reloading), rejects new work and fails queued work.
+        /// Internal so the reliability suite can drive the editor reload transition (#105).
+        /// </summary>
+        internal static void BeginShutdown(string reason, MainThreadDispatcherLifecycleState terminalState)
         {
             lock (LifecycleLock)
             {
@@ -879,6 +935,7 @@ namespace TurboHTTP.Unity
 
             var processed = 0;
             var startTicks = Stopwatch.GetTimestamp();
+            var lastItemStartTicks = startTicks;
 
             while (processed < maxItems)
             {
@@ -889,6 +946,7 @@ namespace TurboHTTP.Unity
                     break;
 
                 var now = Stopwatch.GetTimestamp();
+                lastItemStartTicks = now;
                 var latencyTicks = now - dequeued.EnqueueTimestamp;
                 if (latencyTicks > 0)
                 {
@@ -912,6 +970,20 @@ namespace TurboHTTP.Unity
 
                 processed++;
             }
+
+            if (processed > 0)
+                RecordDrain(processed, Stopwatch.GetTimestamp() - startTicks, lastItemStartTicks - startTicks - budgetTicks);
+        }
+
+        private static void RecordDrain(int processed, long drainTicks, long lateStartTicks)
+        {
+            // Main thread only (the drain loop), so plain compare-then-write cannot race another writer.
+            if (processed > Volatile.Read(ref _maxDrainItems))
+                Volatile.Write(ref _maxDrainItems, processed);
+            if (drainTicks > Interlocked.Read(ref _maxDrainTicks))
+                Interlocked.Exchange(ref _maxDrainTicks, drainTicks);
+            if (lateStartTicks > Interlocked.Read(ref _maxDrainLateStartTicks))
+                Interlocked.Exchange(ref _maxDrainLateStartTicks, lateStartTicks);
         }
 
         private static void HandleLowMemory()
