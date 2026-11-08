@@ -22,8 +22,8 @@ over the budget, 2 usage, 3 tool missing. The default set takes about a minute.
 `run` (the client under test) starts `serve` as a second process, so the process-wide allocation counter
 and the heap hold nothing but the client:
 
-- **Server**: Kestrel (ASP.NET Core 8) on loopback: HTTP/1.1 cleartext, and HTTP/1.1 + HTTP/2 over TLS with
-  ALPN, using the soak harness's per-run PKI (`Tools~/soak/SoakPki.cs`, trusted only through
+- **Server**: Kestrel (ASP.NET Core 8) on loopback: HTTP/1.1 cleartext, HTTP/1.1 + HTTP/2 over TLS with
+  ALPN (the h2 rows) and HTTP/1.1-only TLS (the h1tls rows), using the soak harness's per-run PKI (`Tools~/soak/SoakPki.cs`, trusted only through
   `SSL_CERT_FILE`/`SSL_CERT_DIR`; certificate validation is unchanged). Routes: `GET /bytes/N`,
   `POST /echo`, `POST /sink`. Every response carries `x-bench-protocol`, so an HTTP/2 row that fell back
   to HTTP/1.1 fails.
@@ -37,6 +37,7 @@ and the heap hold nothing but the client:
 | `h1-`/`h2-get-1k-buffered`, `-get-32k-buffered`, `-post-1k-buffered` | 1, 2: small buffered round trips | yes |
 | `h1-`/`h2-get-1k-streaming`, `-get-1m-streaming` | streaming read path, throughput | no |
 | `h1-`/`h2-post-5m-buffered`, `-post-5m-stream` | 3: 5 MB upload, byte[] vs stream body | no |
+| `h1tls-get-1k-buffered`, `h1tls-get-1m-streaming` | HTTP/1.1 over TLS: the TLS share of the h2 rows | no |
 | `raw-h1-get-1m` | the raw-socket floor for the streaming guardrail | no |
 | `h1-get-100m-file-streaming`, `-file-buffered` (`--heavy`) | 4, Step 4: 100 MB download to file, peak heap | no |
 | `h1-filedownloader-100m` (`--heavy`) | Step 1 Files item 40: `FileDownloader` to disk in bounded memory | no |

@@ -19,7 +19,7 @@ namespace TurboHTTP.Tools.Bench
 {
     /// <summary>
     /// The `serve` process: Kestrel on loopback, HTTP/1.1 cleartext on one port and HTTP/1.1 + HTTP/2 over TLS
-    /// (ALPN) on another. Routes: <c>GET /bytes/N</c> (N pattern bytes, Content-Length framed),
+    /// (ALPN) on another, HTTP/1.1-only TLS on a third. Routes: <c>GET /bytes/N</c> (N pattern bytes, Content-Length framed),
     /// <c>POST /echo</c> (the body back, up to <see cref="MaxEchoBytes"/>), <c>POST /sink</c> (reads and
     /// discards the body, answers its length). Every response carries <c>x-bench-protocol</c> so the client
     /// can prove an HTTP/2 row did not fall back to HTTP/1.1. Prints one READY line; exits when stdin closes.
@@ -33,6 +33,8 @@ namespace TurboHTTP.Tools.Bench
         public static async Task<int> RunAsync(string pkiDir)
         {
             var certificate = SoakPki.LoadServerCertificate(pkiDir);
+            ListenOptions h2Listen = null;
+            ListenOptions h1TlsListen = null;
             var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = Array.Empty<string>(), ContentRootPath = pkiDir });
             builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(kestrel =>
@@ -45,6 +47,14 @@ namespace TurboHTTP.Tools.Bench
                 {
                     listen.Protocols = HttpProtocols.Http1AndHttp2;
                     listen.UseHttps(certificate);
+                    h2Listen = listen;
+                });
+                // HTTP/1.1-only TLS (ALPN offers no h2): separates the TLS cost from the HTTP/2 cost.
+                kestrel.Listen(IPAddress.Loopback, 0, listen =>
+                {
+                    listen.Protocols = HttpProtocols.Http1;
+                    listen.UseHttps(certificate);
+                    h1TlsListen = listen;
                 });
             });
 
@@ -54,8 +64,10 @@ namespace TurboHTTP.Tools.Bench
 
             var addresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses;
             int h1Port = addresses.Select(a => new Uri(a)).First(u => u.Scheme == "http").Port;
-            int tlsPort = addresses.Select(a => new Uri(a)).First(u => u.Scheme == "https").Port;
-            Console.Out.WriteLine("READY " + JsonSerializer.Serialize(new { h1 = h1Port, tls = tlsPort }));
+            // Kestrel writes the bound endpoint back into each ListenOptions when it binds port 0.
+            int tlsPort = ((IPEndPoint)h2Listen.EndPoint).Port;
+            int tls1Port = ((IPEndPoint)h1TlsListen.EndPoint).Port;
+            Console.Out.WriteLine("READY " + JsonSerializer.Serialize(new { h1 = h1Port, tls = tlsPort, tls1 = tls1Port }));
             Console.Out.Flush();
 
             while (await Console.In.ReadLineAsync().ConfigureAwait(false) != null)

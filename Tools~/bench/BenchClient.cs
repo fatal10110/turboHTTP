@@ -47,6 +47,7 @@ namespace TurboHTTP.Tools.Bench
         private UHttpClient _client;
         private string _h1;
         private string _h2;
+        private string _h1Tls;
 
         public BenchClient(BenchOptions options)
         {
@@ -57,9 +58,10 @@ namespace TurboHTTP.Tools.Bench
         {
             Directory.CreateDirectory(_options.OutDir);
             _options.LoadAverage = BenchMachine.ReadLoadAverage();
-            var (h1Port, tlsPort) = await StartServerAsync().ConfigureAwait(false);
+            var (h1Port, tlsPort, tls1Port) = await StartServerAsync().ConfigureAwait(false);
             _h1 = "http://127.0.0.1:" + h1Port.ToString(CultureInfo.InvariantCulture);
             _h2 = "https://127.0.0.1:" + tlsPort.ToString(CultureInfo.InvariantCulture);
+            _h1Tls = "https://127.0.0.1:" + tls1Port.ToString(CultureInfo.InvariantCulture);
             try
             {
                 _client = new UHttpClient(new UHttpClientOptions
@@ -131,6 +133,10 @@ namespace TurboHTTP.Tools.Bench
                 yield return Latency(proto + "-post-5m-buffered", false, Math.Max(10, large / 2), body5m.Length, v => UploadAsync(origin, body5m, stream: false, expected));
                 yield return Latency(proto + "-post-5m-stream", false, Math.Max(10, large / 2), body5m.Length, v => UploadAsync(origin, body5m, stream: true, expected));
             }
+
+            // HTTP/1.1 over TLS: separates the TLS cost from the HTTP/2 cost in the h2 rows.
+            yield return Latency("h1tls-get-1k-buffered", false, n, 1024, v => BufferedGetAsync(_h1Tls, 1024, "HTTP/1.1", v));
+            yield return Latency("h1tls-get-1m-streaming", false, large, 1024 * 1024, v => StreamingGetAsync(_h1Tls, 1024 * 1024, "HTTP/1.1", v));
 
             // The raw-socket floor for the streaming throughput guardrail: same server, same route, no client.
             yield return Latency("raw-h1-get-1m", false, large, 1024 * 1024, v => raw.GetAsync(1024 * 1024));
@@ -462,7 +468,7 @@ namespace TurboHTTP.Tools.Bench
 
         // ---- server process ----
 
-        private async Task<(int H1, int Tls)> StartServerAsync()
+        private async Task<(int H1, int Tls, int Tls1)> StartServerAsync()
         {
             var start = new ProcessStartInfo(Environment.ProcessPath)
             {
@@ -483,7 +489,7 @@ namespace TurboHTTP.Tools.Bench
             }
 
             var ready = JsonSerializer.Deserialize<Dictionary<string, int>>(readLine.Result.Substring(6));
-            return (ready["h1"], ready["tls"]);
+            return (ready["h1"], ready["tls"], ready["tls1"]);
         }
 
         private void StopServer()
