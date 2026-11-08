@@ -71,6 +71,8 @@ namespace TurboHTTP.Tests.Transport
                 await AssertCompletesAsync(receive, "the receive never ended");
                 await AssertReceiveEndedByShutdownAsync(receive);
 
+                TestContext.WriteLine($"receive ended with {(SocketError)Volatile.Read(ref endedWith)}, " +
+                                      $"socket open then: {Volatile.Read(ref openWhenEnded) == 1}");
                 Assert.AreEqual(1, Volatile.Read(ref openWhenEnded),
                     $"the socket was closed before the receive ended ({(SocketError)Volatile.Read(ref endedWith)})");
                 Assert.That((SocketError)Volatile.Read(ref endedWith),
