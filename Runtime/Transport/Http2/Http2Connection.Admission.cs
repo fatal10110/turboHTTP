@@ -19,8 +19,22 @@ namespace TurboHTTP.Transport.Http2
         private int _pendingAdmissions;
         private int _admissionWaiterCount;
 
-        /// <summary>Requests waiting for a stream slot (test and diagnostics only).</summary>
+        /// <summary>Requests waiting for a stream slot (connection selection, tests and diagnostics).</summary>
         internal int QueuedAdmissionCount => Volatile.Read(ref _admissionWaiterCount);
+
+        /// <summary>
+        /// True when a new request would get a stream slot at once: nobody is queued and open streams
+        /// plus reserved slots are below the peer's limit. A snapshot: Http2ConnectionManager uses it to
+        /// decide whether another connection to the origin is worth opening.
+        /// </summary>
+        internal bool HasFreeStreamSlot
+        {
+            get
+            {
+                lock (_streamCreateLock)
+                    return _admissionWaiters.Count == 0 && FreeStreamSlotsLocked() > 0;
+            }
+        }
 
         // GOAWAY received or stream ids used up: no new streams, the open ones finish, then the
         // connection closes itself (TryCompleteDrain).
