@@ -60,6 +60,14 @@ the repository specifics are turboHTTP's.
     compressed result.
   The helper agent types are read-only, so a Haiku deliver agent writes each answer back.
 
+Both brokers collect requests through a Haiku poller that runs `wave_mail.py take`. `take` records
+every request it hands out, and each later `take` (the stop confirmation too) gets `--ack` with the
+ids of the last poller that returned events to the script. A poller that reports none, fails or
+reports a stop leaves the ack as it was, because it may never have run `take`. A request that was
+handed out, never acknowledged and never
+answered goes back in the queue, so a poller that drops events cannot strand a lane. The first
+`take` of a broker instance uses `--requeue` instead and re-serves every unanswered request.
+
 The loop per lane:
 
 1. The implementation agent implements and pushes.
