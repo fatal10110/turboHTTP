@@ -46,7 +46,8 @@ options.ConnectionPool.MaxConnectionsPerHost = 4;
 
 A reused HTTP/1.1 connection that sends no response byte within `ReusedConnectionFirstByteTimeout` after an
 idempotent request (GET, HEAD, PUT, DELETE, OPTIONS, TRACE with a replayable body) is closed and the request is
-sent once more on a fresh connection; a POST is never replayed and keeps waiting until the request timeout.
+sent once more on a fresh connection. That fresh connection gets the same bound: if it stays silent too, the
+request fails, with no further attempt. A POST is never replayed and keeps waiting until the request timeout.
 `Timeout.InfiniteTimeSpan` turns this off.
 
 ## Known limitation: TLS server name for IP-address hosts

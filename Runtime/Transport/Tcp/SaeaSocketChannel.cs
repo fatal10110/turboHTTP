@@ -48,6 +48,10 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal const int DisposeDrainTimeoutMs = 500;
 
+        // Volatile: 1 = shut down, drain, then close (selector platforms end a pending operation on
+        // shutdown); 0 = close first (IOCP aborts it on close).
+        private static int s_shutdownBeforeClose = SaeaPlatformDetection.CloseAbortsPendingIo ? 0 : 1;
+
         private static long s_buffersLeakedOnDispose;
 
         private readonly Socket _socket;
@@ -102,6 +106,19 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>Channels whose Dispose hit the drain bound and leaked their buffers (process-wide).</summary>
         internal static long BuffersLeakedOnDispose => Interlocked.Read(ref s_buffersLeakedOnDispose);
+
+        /// <summary>
+        /// The dispose order: true (selector platforms) shuts the socket down and closes it only once
+        /// pending operations drained (#384); false (IOCP) closes it first. Tests set it.
+        /// </summary>
+        internal static bool ShutdownBeforeClose
+        {
+            get => Volatile.Read(ref s_shutdownBeforeClose) != 0;
+            set => Volatile.Write(ref s_shutdownBeforeClose, value ? 1 : 0);
+        }
+
+        /// <summary>Test hook: the bound <see cref="Dispose"/> waits for in-flight operations, per drain.</summary>
+        internal void SetDrainTimeoutForTest(int drainTimeoutMs) => Volatile.Write(ref _drainTimeoutMs, drainTimeoutMs);
 
         /// <summary>
         /// Test hook: marks a receive as submitted to the OS without submitting one, i.e. a
@@ -286,15 +303,34 @@ namespace TurboHTTP.Transport.Tcp
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            // Dispose the socket first. On IOCP (Windows) and kqueue (iOS/macOS), this
-            // posts an OperationAborted completion that will fire OnRecv/OnSendCompleted,
-            // clearing the active flags and delivering an exception to any awaiter.
-            try { _socket.Dispose(); } catch { }
+            int drainTimeoutMs = Volatile.Read(ref _drainTimeoutMs);
+            bool drained;
+            if (!ShutdownBeforeClose)
+            {
+                // IOCP (Windows): disposing the socket posts an OperationAborted completion that
+                // fires OnRecv/OnSendCompleted, clearing the active flags and delivering an
+                // exception to any awaiter. IOCP has no descriptor-keyed selector to go stale.
+                try { _socket.Dispose(); } catch { }
+                drained = WaitForInFlightOperations(drainTimeoutMs);
+            }
+            else
+            {
+                // Selector platforms (Mono/IL2CPP on kqueue/epoll): shut down first, so a pending
+                // receive ends with end of stream while the descriptor is still open, and close
+                // only after it ended. IL2CPP's close does not remove a pending job from its
+                // selector, so closing first would let a new socket reuse the number behind the
+                // stale job (#384). An operation that did not end within the drain bound falls
+                // back to closing it (the pre-#384 order) before draining once more.
+                try { _socket.Shutdown(SocketShutdown.Both); } catch { }
+                drained = WaitForInFlightOperations(drainTimeoutMs);
+                try { _socket.Dispose(); } catch { }
+                if (!drained)
+                    drained = WaitForInFlightOperations(drainTimeoutMs);
+            }
 
-            // Wait, bounded, until in-flight operations complete. OperationAborted normally
-            // fires essentially immediately after socket disposal. We must not return the
-            // ArrayPool buffers while the OS/IOCP thread still holds a reference to them.
-            if (!WaitForInFlightOperations(Volatile.Read(ref _drainTimeoutMs)))
+            // We must not return the ArrayPool buffers while the OS/IOCP thread still holds a
+            // reference to them.
+            if (!drained)
             {
                 // Some runtimes (Mono/IL2CPP) may never post the aborted completion (#168).
                 // Leak the SAEAs and buffers on purpose: the kernel may still write into them,

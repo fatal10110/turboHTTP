@@ -294,11 +294,14 @@ namespace TurboHTTP.Transport
         }
 
         /// <summary>
-        /// Disposes the connection (stream and socket) when <paramref name="ct"/> fires. Mono and
+        /// Shuts the socket down and disposes the connection when <paramref name="ct"/> fires. Mono and
         /// IL2CPP <see cref="NetworkStream"/> ignore the token once a read is pending, so a peer that
         /// accepts and never writes would otherwise hold the request, the lease and the per-host and
-        /// global permits past the request timeout (#162). The caller disposes the registration
-        /// before the connection is pooled or handed to a response body source.
+        /// global permits past the request timeout (#162). The shutdown ends the pending read and
+        /// tells the peer at once; the socket handle itself belongs to the base stream, which releases
+        /// it only after that read ended (#384), so this never disposes the socket directly. The
+        /// caller disposes the registration before the connection is pooled or handed to a response
+        /// body source.
         /// </summary>
         private static CancellationTokenRegistration RegisterDisposeOnCancel(
             PooledConnection connection,
@@ -310,8 +313,8 @@ namespace TurboHTTP.Transport
             return ct.Register(static state =>
             {
                 var pooled = (PooledConnection)state;
+                try { pooled.Socket?.Shutdown(SocketShutdown.Both); } catch { /* not connected or already closed */ }
                 try { pooled.Dispose(); } catch { /* best effort */ }
-                try { pooled.Socket?.Dispose(); } catch { /* best effort */ }
             }, connection);
         }
 
@@ -326,13 +329,15 @@ namespace TurboHTTP.Transport
         }
 
         /// <summary>
-        /// The first-byte watchdog for an HTTP/1.1 attempt (#47): armed only on a reused connection
-        /// for an idempotent, replayable request, where a silent connection is retried once on a
-        /// fresh one. <see cref="Timeout.InfiniteTimeSpan"/> = not armed.
+        /// The first-byte watchdog for an HTTP/1.1 attempt (#47): armed on a reused connection for an
+        /// idempotent, replayable request, where a silent connection is retried once on a fresh one.
+        /// <paramref name="retryLease"/> arms it on that fresh retry connection too (#364/#384
+        /// stopgap): a receive lost on the retry fails at the first-byte bound instead of waiting for
+        /// the request timeout. <see cref="Timeout.InfiniteTimeSpan"/> = not armed.
         /// </summary>
-        private TimeSpan GetReusedConnectionFirstByteTimeout(ConnectionLease lease, UHttpRequest request)
+        private TimeSpan GetReusedConnectionFirstByteTimeout(ConnectionLease lease, UHttpRequest request, bool retryLease = false)
         {
-            if (!lease.Connection.IsReused ||
+            if ((!lease.Connection.IsReused && !retryLease) ||
                 !request.Method.IsIdempotent() ||
                 request.Content.Replayability == RequestBodyReplayability.NonReplayable)
             {
@@ -666,7 +671,8 @@ namespace TurboHTTP.Transport
                         try
                         {
                             // A newly connected socket, not the next idle one: a NAT drop kills every
-                            // idle connection to the host at once, and this lease is not armed (#47).
+                            // idle connection to the host at once (#47). The retry is armed too, but
+                            // its watchdog fails the request instead of retrying again.
                             freshLease = await _pool.GetNewConnectionAsync(host, port, secure, ct)
                                 .ConfigureAwait(false);
 
@@ -691,7 +697,9 @@ namespace TurboHTTP.Transport
                                         handler,
                                         context,
                                         retryWriteState,
-                                        ct)
+                                        ct,
+                                        firstByteTimeout: GetReusedConnectionFirstByteTimeout(
+                                            freshLease, request, retryLease: true))
                                     .ConfigureAwait(false);
                                 freshLease = null;
 
@@ -1942,12 +1950,15 @@ namespace TurboHTTP.Transport
         }
 
         /// <summary>
-        /// Waits for the first response byte on a reused connection (#47). Mono and IL2CPP ignore a
+        /// Waits for the first response byte on a reused connection (#47), or on the fresh connection
+        /// of its retry (#364/#384 stopgap). Mono and IL2CPP ignore a
         /// read token once the read is pending, so expiry disposes the connection (as
         /// <see cref="RegisterDisposeOnCancel"/> does) and surfaces as an <see cref="IOException"/>,
         /// which the stale-connection retry treats like a connection the server closed while idle.
-        /// The head read the watchdog abandoned is recorded by the race (<see cref="AbandonedSocketIo"/>),
-        /// so the retry socket is created only once that read ended or its bound expired (#364, #369).
+        /// The head read the watchdog abandoned keeps the old socket's descriptor open until it ended
+        /// (HoldingNetworkStream, #384), so the retry socket cannot reuse its number while IL2CPP's
+        /// selector still holds the read's job; the read is also recorded by the race
+        /// (<see cref="AbandonedSocketIo"/>), which delays the retry socket by at most its settle bound.
         /// Caller cancellation and the request timeout keep their own handling.
         /// </summary>
         private static async Task AwaitFirstResponseByteAsync(
@@ -1976,14 +1987,15 @@ namespace TurboHTTP.Transport
             {
                 ct.ThrowIfCancellationRequested();
                 throw new IOException(
-                    "Reused connection sent no response byte within " +
+                    (connection.IsReused ? "Reused connection" : "Retry connection") + " sent no response byte within " +
                     firstByteTimeout.TotalMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ms.",
                     silentFailure);
             }
 
             // The watchdog may have fired (and disposed the connection) just after the first byte.
             if (watchdog.IsCancellationRequested && !ct.IsCancellationRequested)
-                throw new IOException("Reused connection was closed by the first-byte timeout.");
+                throw new IOException(
+                    (connection.IsReused ? "Reused connection" : "Retry connection") + " was closed by the first-byte timeout.");
         }
 
         private async Task<ParsedResponseHead> SendOnLeaseWithExpectContinueAsync(

@@ -130,9 +130,11 @@ namespace TurboHTTP.Transport.Tcp
         }
 
         /// <summary>
-        /// Dispose Stream only. Since we use NetworkStream(socket, ownsSocket: true) and
-        /// SslStream(innerStream, leaveInnerStreamOpen: false), the disposal chain handles
-        /// everything: SslStream -> NetworkStream -> Socket.
+        /// Dispose Stream only. The base stream owns the socket (HoldingNetworkStream, SaeaStream or
+        /// PollSelectStream) and SslStream/BouncyCastle do not leave the inner stream open, so the
+        /// disposal chain handles everything: TLS stream -> base stream -> Socket. Nothing else
+        /// disposes <see cref="Socket"/>: HoldingNetworkStream keeps the handle until a read pending at
+        /// disposal ended (#384).
         /// </summary>
         public void Dispose()
         {
@@ -652,7 +654,9 @@ namespace TurboHTTP.Transport.Tcp
                 ct).ConfigureAwait(false);
 
             // Build the base stream based on the configured socket I/O mode.
-            // All three streams close the socket when disposed (via ownsSocket or channel ownership).
+            // All three streams own and close the socket when disposed (the hold of
+            // HoldingNetworkStream, or channel ownership). HoldingNetworkStream releases the handle
+            // only once a read pending at disposal ended (#384).
             Stream stream;
             switch (_socketIoMode)
             {
@@ -663,7 +667,7 @@ namespace TurboHTTP.Transport.Tcp
                     stream = new PollSelectStream(new PollSelectSocketChannel(socket));
                     break;
                 default: // NetworkStream
-                    stream = new NetworkStream(socket, ownsSocket: true);
+                    stream = new HoldingNetworkStream(socket);
                     break;
             }
             string negotiatedAlpn = null;
