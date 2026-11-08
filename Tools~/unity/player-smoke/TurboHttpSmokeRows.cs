@@ -3,6 +3,9 @@
 // reaches public API only.
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Net.Security;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading;
@@ -11,6 +14,7 @@ using TurboHTTP.Auth;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
 using TurboHTTP.Retry;
+using TurboHTTP.Transport.Tls;
 using TurboHTTP.WebSocket;
 using UnityEngine.Scripting;
 
@@ -24,6 +28,11 @@ public static class TurboHttpSmokeRows
 
     // The --network rows: one GET per TLS provider; any HTTP status proves the handshake (default validation).
     public const string NetworkUrl = "https://example.com/";
+
+    // #413: a host that serves h2. HTTP/2 over TLS is selected only through ALPN (RFC 9113 section 3.2),
+    // so each TLS row also offers [h2, http/1.1] here through the forced provider and logs the selection.
+    public const string AlpnHost = "www.google.com";
+    private static readonly string[] AlpnOffer = { "h2", "http/1.1" };
 
     private const string BouncyCastleProvider =
         "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle";
@@ -250,13 +259,74 @@ public static class TurboHttpSmokeRows
         return "T=struct id=2";
     }
 
-    // --network: one request through the forced provider. A certificate the platform rejects fails the row.
+    // --network: one request through the forced provider, then its ALPN selection against AlpnHost. A
+    // certificate the platform rejects fails the row, and so does a provider that can negotiate ALPN on this
+    // runtime but does not get h2 from an h2 host (an ALPN offer that was dropped, #413).
     public static async Task<string> TlsRequestAsync(TlsBackend backend, CancellationToken ct)
     {
+        string request;
         using (var client = new UHttpClient(new UHttpClientOptions { TlsBackend = backend }))
         using (var response = await client.Get(NetworkUrl).SendBufferedAsync(ct))
         {
-            return "backend=" + backend + " host=" + new Uri(NetworkUrl).Host + " status=" + (int)response.StatusCode;
+            request = "backend=" + backend + " host=" + new Uri(NetworkUrl).Host + " status=" + (int)response.StatusCode;
+        }
+
+        return request + " " + await NegotiateAlpnAsync(backend, ct);
+    }
+
+    // The protocol the server selected for the forced provider's [h2, http/1.1] offer: the public response
+    // does not carry its HTTP version, so the row runs the provider's handshake itself and reads its result.
+    // alpn-reported is the provider's claim, alpn-runtime whether this runtime can negotiate at all.
+    private static async Task<string> NegotiateAlpnAsync(TlsBackend backend, CancellationToken ct)
+    {
+        var provider = TlsProviderSelector.GetProvider(backend);
+        var reported = provider.IsAlpnSupported();
+        var runtime = reported && (backend != TlsBackend.SslStream || SslStreamReportsAlpn());
+        using (var tcp = new TcpClient())
+        {
+            // ConnectAsync takes no token here: disposing the client on cancellation ends the connect.
+            using (ct.Register(tcp.Dispose))
+            {
+                await tcp.ConnectAsync(AlpnHost, 443);
+            }
+
+            var result = await provider.WrapAsync(tcp.GetStream(), AlpnHost, AlpnOffer, ct);
+            using (result.SecureStream)
+            {
+                var negotiated = result.NegotiatedAlpn ?? "none";
+                var detail = "alpn-host=" + AlpnHost + " alpn-reported=" + (reported ? "true" : "false") +
+                             " alpn-runtime=" + (runtime ? "true" : "false") + " alpn=" + negotiated;
+                if (runtime && negotiated != "h2")
+                    throw new InvalidOperationException(
+                        provider.ProviderName + " can negotiate ALPN but " + AlpnHost + " selected " + negotiated +
+                        " instead of h2 (" + detail + ")");
+                if (reported && !runtime)
+                    detail += " (#418: this runtime's SslStream has no ALPN, mono#12880)";
+                return detail;
+            }
+        }
+    }
+
+    // Unity's Mono class library throws PlatformNotSupportedException from NegotiatedApplicationProtocol
+    // (mono#12880) and ignores the ALPN options, although the provider's probe reports ALPN (#418).
+    private static bool SslStreamReportsAlpn()
+    {
+        using (var sslStream = new SslStream(new MemoryStream()))
+        {
+            try
+            {
+                _ = sslStream.NegotiatedApplicationProtocol;
+                return true;
+            }
+            catch (PlatformNotSupportedException)
+            {
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                // A runtime with ALPN may refuse the read before a handshake; it still has the API.
+                return true;
+            }
         }
     }
 

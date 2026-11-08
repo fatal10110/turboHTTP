@@ -9,9 +9,9 @@ namespace TurboHTTP.Tests.Transport.Tls
 {
     /// <summary>
     /// Self-signed <c>CN=localhost</c> test identity with a validity period Apple accepts (397 days,
-    /// 2026-11-03 to 2027-12-05), for the cases that expect "no trust anchor" (#332). Apple rejects the
-    /// 100-year <see cref="TestLocalhostCertificate"/> for its validity period (-67901) before the
-    /// anchor check. Unlike that certificate, loading this one registers no test trust anchor.
+    /// 2026-11-03 to 2027-12-05), for the cases that expect "no trust anchor" (#332). Apple rejects a
+    /// long-lived certificate issued today for its validity period (-67901) before the anchor check.
+    /// Unlike <see cref="TestLocalhostCertificate"/>, loading this one registers no test trust anchor.
     /// </summary>
     /// <remarks>
     /// Test material, not a secret: SAN localhost, 127.0.0.1, ::1, serverAuth, RSA 2048, PKCS#12 with

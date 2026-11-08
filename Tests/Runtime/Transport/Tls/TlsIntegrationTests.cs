@@ -126,22 +126,8 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 bool usedHttp2 = TryHasHttp2Connection(transport, ValidChainHost, 443);
                 string negotiatedAlpn = TryGetNegotiatedAlpn(pool, ValidChainHost);
-                if (string.Equals(negotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
-                {
-                    Assert.IsTrue(
-                        usedHttp2,
-                        "Negotiated ALPN was h2 but HTTP/2 connection was not established.");
-                }
-                else
-                {
-                    Assert.IsFalse(
-                        usedHttp2,
-                        "Negotiated ALPN was not h2; expected HTTP/1.1 fallback.");
-                    Assert.That(
-                        negotiatedAlpn,
-                        Is.Null.Or.EqualTo("http/1.1"),
-                        "Expected ALPN fallback to be null or http/1.1.");
-                }
+                // #413: h2 where the pool's provider reports ALPN, an honest skip where it has none.
+                AlpnAssert.UsedHttp2(PoolProvider(pool, ValidChainHost), negotiatedAlpn, usedHttp2, ValidChainHost);
             }).GetAwaiter().GetResult();
         }
 
@@ -177,6 +163,14 @@ namespace TurboHTTP.Tests.Transport.Tls
             return pool.TryGetTlsProviderName(hostFragment, out var providerName)
                 ? providerName
                 : null;
+        }
+
+        private static ITlsProvider PoolProvider(TcpConnectionPool pool, string hostFragment)
+        {
+            string providerName = TryGetProviderName(pool, hostFragment);
+            Assert.IsNotNull(providerName, "Expected to capture TLS provider name from pooled connection");
+            return TlsProviderSelector.GetProvider(
+                providerName == "BouncyCastle" ? TlsBackend.BouncyCastle : TlsBackend.SslStream);
         }
 
         private static string TryGetNegotiatedAlpn(TcpConnectionPool pool, string hostFragment)
