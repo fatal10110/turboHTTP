@@ -17,6 +17,8 @@ namespace TurboHTTP.Core
         private TimeSpan _pingInterval = DefaultPingInterval;
         private TimeSpan _pingTimeout = DefaultPingTimeout;
         private bool _enableHttp2ThroughConnectTunnels;
+        private int _maxConnectionsPerOrigin = 1;
+        private TimeSpan _reuseProbeIdleThreshold = TimeSpan.Zero;
         // 0 = no transport cap (#147). IsDefault compares against the same constant (#275).
         internal const long DefaultMaxResponseBodySize = 0;
         internal static readonly TimeSpan DefaultPingInterval = TimeSpan.FromSeconds(30);
@@ -174,6 +176,47 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Most HTTP/2 connections kept per origin (per origin and proxy for CONNECT tunnels). Defaults
+        /// to 1: one connection per origin, as RFC 9113 Section 9.1 recommends ("Clients SHOULD NOT
+        /// open more than one HTTP/2 connection to a given host and port pair").
+        /// Above 1, a request opens another connection only when every connection of the origin is
+        /// saturated: the peer's SETTINGS_MAX_CONCURRENT_STREAMS is reached, so the request would wait
+        /// for a stream slot (RFC 9113 Section 5.1.2). The count never exceeds this maximum; at the
+        /// maximum, requests wait for a slot on the least-queued connection. Raise it only for servers
+        /// that advertise a low concurrent-stream limit. Must be at least 1.
+        /// </summary>
+        public int MaxConnectionsPerOrigin
+        {
+            get => _maxConnectionsPerOrigin;
+            set
+            {
+                if (value < 1) throw new ArgumentOutOfRangeException(nameof(value), "Must be at least 1.");
+                _maxConnectionsPerOrigin = value;
+            }
+        }
+
+        /// <summary>
+        /// Optional PING probe before an idle connection is reused (RFC 9113 Section 6.7). When greater
+        /// than zero, a request about to use a connection that has received no frame for at least this
+        /// long first sends one PING and waits up to <see cref="PingTimeout"/> for the ACK (any other
+        /// inbound frame in that time also proves the peer alive). Concurrent requests share one probe.
+        /// Without an answer the connection is closed and the request is sent on a fresh connection
+        /// instead of failing (a request body that cannot be replayed fails with a network error).
+        /// Defaults to <see cref="TimeSpan.Zero"/>, which disables the probe: PINGs on idle connections
+        /// cost battery, and frequent PINGs may be treated as abuse by the peer (RFC 9113 Section 10.5).
+        /// </summary>
+        public TimeSpan ReuseProbeIdleThreshold
+        {
+            get => _reuseProbeIdleThreshold;
+            set
+            {
+                if (value < TimeSpan.Zero || value.TotalMilliseconds > int.MaxValue)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Must be between zero and int.MaxValue milliseconds.");
+                _reuseProbeIdleThreshold = value;
+            }
+        }
+
+        /// <summary>
         /// Returns a copy of these options.
         /// </summary>
         public Http2Options Clone()
@@ -190,6 +233,8 @@ namespace TurboHTTP.Core
                 _pingInterval = _pingInterval,
                 _pingTimeout = _pingTimeout,
                 _enableHttp2ThroughConnectTunnels = _enableHttp2ThroughConnectTunnels,
+                _maxConnectionsPerOrigin = _maxConnectionsPerOrigin,
+                _reuseProbeIdleThreshold = _reuseProbeIdleThreshold,
                 TestPerStreamReceiveBufferBytesOverride = TestPerStreamReceiveBufferBytesOverride,
                 TestMaxConnectionBufferedBytesOverride = TestMaxConnectionBufferedBytesOverride,
                 TestStallTimeoutMillisecondsOverride = TestStallTimeoutMillisecondsOverride,
@@ -209,6 +254,8 @@ namespace TurboHTTP.Core
                    _pingInterval == DefaultPingInterval &&
                    _pingTimeout == DefaultPingTimeout &&
                    !_enableHttp2ThroughConnectTunnels &&
+                   _maxConnectionsPerOrigin == 1 &&
+                   _reuseProbeIdleThreshold == TimeSpan.Zero &&
                    TestPerStreamReceiveBufferBytesOverride == 0 &&
                    TestMaxConnectionBufferedBytesOverride == 0 &&
                    TestStallTimeoutMillisecondsOverride == 0 &&

@@ -42,6 +42,8 @@ namespace TurboHTTP.Transport.Http2
 
                         // Any inbound frame proves the peer is alive (see RunLivenessCycleAsync).
                         Interlocked.Increment(ref _inboundFrameCount);
+                        if (_reuseProbeIdleTicks != 0)
+                            RecordInboundActivity();
 
                         if (!_serverPrefaceReceived)
                         {
