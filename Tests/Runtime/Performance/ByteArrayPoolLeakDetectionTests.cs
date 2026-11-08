@@ -20,6 +20,19 @@ namespace TurboHTTP.Tests.Performance
     {
         private static long Active() => ByteArrayPool.GetDiagnostics().ActiveCount;
 
+        /// <summary>
+        /// Undisposed responses from earlier tests return their pooled body segments from
+        /// <c>~UHttpResponse</c> on the finalizer thread; drain those before every baseline so a
+        /// late finalizer cannot shift a delta mid-test.
+        /// </summary>
+        [SetUp]
+        public void DrainFinalizers()
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+
         [Test]
         public void Rent_NotReturned_IsReportedActive_UntilReturned()
         {
