@@ -113,6 +113,7 @@ class PlatformMatrixTests(unittest.TestCase):
         matrix = pm.build_matrix([pm.build_row(path)])
         cell = next(c for c in matrix["cells"] if c["id"] == "editor-editmode-mono")
         self.assertEqual(cell["status"], "no-tests")
+        self.assertNotIn("missing_certification_suites", cell, "EditMode does not run the runtime suites")
 
     def test_main_merges_rows_by_id_and_gates_on_fail(self):
         out = os.path.join(self.tmp.name, "out", "matrix.json")

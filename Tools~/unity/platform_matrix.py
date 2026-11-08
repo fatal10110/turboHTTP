@@ -45,17 +45,18 @@ DEFAULT_OUT = os.path.join("TestResults~", "unity-platform-matrix.json")
 # "match" selects the rows of a cell; "absent" is the status of a cell no row reached.
 CELLS = (
     {"id": "editor-editmode-mono", "target": "Editor", "backend": "Mono",
-     "match": {"target": "Editor", "run": "EditMode"}, "absent": "not-run"},
+     "match": {"target": "Editor", "run": "EditMode"}, "absent": "not-run",
+     "certifies": False},  # the runtime certification suites run in PlayMode only
     {"id": "editor-playmode-mono", "target": "Editor", "backend": "Mono",
      "match": {"target": "Editor", "run": "PlayMode"}, "absent": "not-run"},
     {"id": "standalone-windows", "target": "StandaloneWindows64", "backend": "Mono|IL2CPP",
      "match": {"target": "StandaloneWindows64"}, "absent": "not-run",
-     "reason": "no script runs the test suite in a standalone player yet (build-player.sh runs the smoke rows)"},
+     "reason": "no script runs the test suite in a standalone player yet (#404); build-player.sh runs the smoke rows"},
     {"id": "standalone-macos", "target": "StandaloneOSX", "backend": "Mono|IL2CPP",
      "match": {"target": "StandaloneOSX"}, "absent": "needs-device-validation", "reason": "needs a Mac (#99)"},
     {"id": "standalone-linux", "target": "StandaloneLinux64", "backend": "Mono|IL2CPP",
      "match": {"target": "StandaloneLinux64"}, "absent": "not-run",
-     "reason": "no script runs the test suite in a standalone player yet"},
+     "reason": "no script runs the test suite in a standalone player yet (#404)"},
     {"id": "android-il2cpp-arm64", "target": "Android", "backend": "IL2CPP",
      "match": {"target": "Android", "arch": "arm64"}, "absent": "needs-device-validation",
      "reason": "physical arm64 device run (#99)"},
@@ -232,8 +233,9 @@ def build_cells(rows):
             statuses = [r["status"] for r in matched]
             cell["status"] = ("fail" if "fail" in statuses else "pass" if "pass" in statuses else "no-tests")
             cell["rows"] = [r["id"] for r in matched]
-            ran = {s for r in matched for s in r.get("certification_suites", [])}
-            cell["missing_certification_suites"] = [s for s in CERTIFICATION_SUITES if s not in ran]
+            if spec.get("certifies", True):
+                ran = {s for r in matched for s in r.get("certification_suites", [])}
+                cell["missing_certification_suites"] = [s for s in CERTIFICATION_SUITES if s not in ran]
         cells.append(cell)
     return cells
 
