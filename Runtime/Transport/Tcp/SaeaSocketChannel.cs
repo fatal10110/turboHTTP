@@ -394,20 +394,12 @@ namespace TurboHTTP.Transport.Tcp
         }
 
         /// <summary>
-        /// A token cancelled between the entry check and the socket call disposes the socket
-        /// through its registration (inline when already cancelled), so the socket call throws
-        /// <see cref="ObjectDisposedException"/> or reports an abort. That is a cancellation (#170).
+        /// Cancellation wins: once <paramref name="ct"/> is cancelled, any failure of the operation is
+        /// reported as that cancellation. The registration disposes the socket, so the socket call
+        /// throws <see cref="ObjectDisposedException"/> or reports an abort (#170), and an operation
+        /// that ends with another error while the token is cancelled lost the race to it too (#415).
         /// </summary>
-        private static bool IsCancellationRace(Exception ex, CancellationToken ct)
-        {
-            if (!ct.IsCancellationRequested)
-                return false;
-            if (ex is OperationCanceledException oce)
-                return oce.CancellationToken != ct;
-            return ex is ObjectDisposedException ||
-                   (ex is SocketException se &&
-                    (se.SocketErrorCode == SocketError.OperationAborted ||
-                     se.SocketErrorCode == SocketError.Interrupted));
-        }
+        private static bool IsCancellationRace(Exception ex, CancellationToken ct) =>
+            ct.IsCancellationRequested && !(ex is OperationCanceledException oce && oce.CancellationToken == ct);
     }
 }

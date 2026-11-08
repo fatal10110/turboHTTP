@@ -10,13 +10,14 @@ using LoopbackPair = TurboHTTP.Tests.Transport.SocketChannelLifecycleTests.Loopb
 namespace TurboHTTP.Tests.Transport
 {
     /// <summary>
-    /// #415: the poll thread can fail a pending operation with a plain socket error after the caller
-    /// cancelled it (the cancellation's dispose left the socket shut down but not yet closed). The
-    /// caller's cancellation must still win. Each test makes the poll thread's own socket call fail,
-    /// and cancels the token from the failure hook, before that failure completes the operation.
+    /// #415: a pending operation can fail with a plain socket error after the caller cancelled it
+    /// (PollSelect's poll thread met the socket the cancellation had shut down but not yet closed).
+    /// The caller's cancellation must still win. Each test makes the channel's own socket call fail,
+    /// and cancels the token from a hook that runs after that failure and before it completes the
+    /// operation.
     /// </summary>
     [TestFixture]
-    public class PollSelectCancellationWinsTests
+    public class SocketChannelCancellationWinsTests
     {
         // Guard only: every step ends long before this; it never synchronizes the test.
         private static readonly TimeSpan Guard = TimeSpan.FromSeconds(15);
@@ -73,6 +74,36 @@ namespace TurboHTTP.Tests.Transport
                     var oce = await AssertCanceledAsync(receive);
                     Assert.AreEqual(cts.Token, oce.CancellationToken, "cancelled with the caller's token");
                     Assert.IsInstanceOf<SocketException>(oce.InnerException, "the poll thread's error is kept as the cause");
+                }
+                finally
+                {
+                    channel.Dispose();
+                }
+            });
+        }
+
+        [Test]
+        public void Saea_ReceiveEndsWithResetAfterCancel_CompletesCanceledWithTheCallersToken()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var pair = await LoopbackPair.CreateAsync();
+                var channel = new SaeaSocketChannel(pair.Client);
+                using var cts = new CancellationTokenSource();
+                try
+                {
+                    channel.TestHookReceiveEnded = _ => cts.Cancel();
+                    var receive = channel.ReceiveAsync(new byte[16], 0, 16, cts.Token).AsTask();
+                    Assert.IsFalse(receive.IsCompleted, "nothing was sent: the receive is pending");
+
+                    // An abortive close (RST): the receive completes with ConnectionReset.
+                    pair.Server.LingerState = new LingerOption(true, 0);
+                    pair.Server.Close();
+
+                    await AssertEndsAsync(receive, "the receive never ended");
+                    var oce = await AssertCanceledAsync(receive);
+                    Assert.AreEqual(cts.Token, oce.CancellationToken, "cancelled with the caller's token");
+                    Assert.IsInstanceOf<SocketException>(oce.InnerException, "the socket error is kept as the cause");
                 }
                 finally
                 {
