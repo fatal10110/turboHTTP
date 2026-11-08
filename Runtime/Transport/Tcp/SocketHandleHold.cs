@@ -47,6 +47,18 @@ namespace TurboHTTP.Transport.Tcp
         // Ticks, so a 32-bit runtime never reads a torn value (Interlocked.Read/Exchange).
         private static long s_holdTimeoutTicks = TimeSpan.FromSeconds(30).Ticks;
 
+        /// <summary><see cref="ReleaseKind"/>: the handle is still open.</summary>
+        internal const int NotReleased = 0;
+
+        /// <summary><see cref="ReleaseKind"/>: released at close (nothing pending, or a platform that does not hold).</summary>
+        internal const int ReleasedAtClose = 1;
+
+        /// <summary><see cref="ReleaseKind"/>: held, then released when the pending operations ended.</summary>
+        internal const int ReleasedAfterEnd = 2;
+
+        /// <summary><see cref="ReleaseKind"/>: held, then released by <see cref="HoldTimeout"/> with an operation still pending.</summary>
+        internal const int ReleasedAtBound = 3;
+
         // Volatile: 1 = hold the handle for pending operations (selector platforms), 0 = close at once.
         private static int s_holdsPendingIo = SaeaPlatformDetection.CloseAbortsPendingIo ? 0 : 1;
 
@@ -67,6 +79,9 @@ namespace TurboHTTP.Transport.Tcp
 
         // Interlocked: 0 while the handle is open, 1 once released.
         private int _released;
+
+        // Volatile: how the handle was released (Release* constants), written by the releaser.
+        private int _releaseKind;
 
         // Written once by Close (Volatile); disposed by whichever of Close/Release runs last.
         private Timer _bound;
@@ -112,19 +127,37 @@ namespace TurboHTTP.Transport.Tcp
         /// <summary>True once the handle was released (the socket disposed).</summary>
         internal bool IsReleased => Volatile.Read(ref _released) != 0;
 
-        /// <summary>An operation is about to start on the socket. Always paired with <see cref="ExitIo"/>.</summary>
-        internal void EnterIo()
+        /// <summary>How this hold's handle was released: one of the <c>Release*</c> constants. Tests read it.</summary>
+        internal int ReleaseKind => Volatile.Read(ref _releaseKind);
+
+        /// <summary>
+        /// An operation is about to start on the socket. Always paired with <see cref="ExitIo"/>, which
+        /// gets the result: true when the operation counts toward the hold, false when it starts after
+        /// <see cref="Close"/> (it fails on the disposed stream, and the close never counted it).
+        /// </summary>
+        internal bool EnterIo()
         {
             lock (_lock)
+            {
+                if (_closeRequested)
+                    return false;
+
                 _starting++;
+                return true;
+            }
         }
 
         /// <summary>
-        /// The operation started by the matching <see cref="EnterIo"/> returned: <paramref name="operation"/>
-        /// is its task when it is still pending, null when it completed or threw.
+        /// The operation started by the matching <see cref="EnterIo"/> returned: <paramref name="counted"/>
+        /// is what <see cref="EnterIo"/> returned, <paramref name="operation"/> its task when it is still
+        /// pending, null when it completed or threw.
         /// </summary>
-        internal void ExitIo(Task operation, bool write)
+        internal void ExitIo(bool counted, Task operation, bool write)
         {
+            // Started after the close: the close did not count it, so it can release nothing.
+            if (!counted)
+                return;
+
             bool pending = operation != null && !operation.IsCompleted;
             bool releaseNow = false;
             lock (_lock)
@@ -143,7 +176,7 @@ namespace TurboHTTP.Transport.Tcp
                     return;
                 }
 
-                // Released at close (nothing to hold, or this platform does not hold).
+                // Released at close (this platform does not hold).
                 if (IsReleased)
                     return;
 
@@ -168,6 +201,7 @@ namespace TurboHTTP.Transport.Tcp
             Task read;
             Task write;
             int holders;
+            bool releaseHere = false;
             lock (_lock)
             {
                 if (_closeRequested)
@@ -181,9 +215,18 @@ namespace TurboHTTP.Transport.Tcp
                 holders = holdsPendingIo ? _starting + (read != null ? 1 : 0) + (write != null ? 1 : 0) : 0;
                 _holders = holders;
 
-                // Counted before any holder can release it (releases take this lock first).
                 if (holders != 0)
+                {
+                    // Counted before any holder can release it (releases take this lock first).
                     Interlocked.Increment(ref s_heldCount);
+                }
+                else
+                {
+                    // Nothing pending, or a platform where the close aborts what is pending: the
+                    // descriptor goes right after the shutdown. Marked under the lock, so an
+                    // operation still starting sees it in ExitIo and holds nothing.
+                    releaseHere = Interlocked.Exchange(ref _released, 1) == 0;
+                }
             }
 
             // The peer sees the close now, and a pending receive ends with end of stream while the
@@ -192,15 +235,12 @@ namespace TurboHTTP.Transport.Tcp
 
             if (holders == 0)
             {
-                // Nothing pending, or a platform where the close aborts what is pending: the
-                // descriptor can go at once (an operation started after this point fails on the
-                // disposed stream or socket). Set under the lock, so an operation still starting
-                // sees it in ExitIo and holds nothing.
-                bool releaseHere;
-                lock (_lock)
-                    releaseHere = Interlocked.Exchange(ref _released, 1) == 0;
                 if (releaseHere)
+                {
+                    Volatile.Write(ref _releaseKind, ReleasedAtClose);
                     ReleaseHandle();
+                }
+
                 return;
             }
 
@@ -250,6 +290,7 @@ namespace TurboHTTP.Transport.Tcp
 
             Volatile.Read(ref _bound)?.Dispose();
             ReleaseHandle();
+            Volatile.Write(ref _releaseKind, atBound ? ReleasedAtBound : ReleasedAfterEnd);
             Interlocked.Decrement(ref s_heldCount);
             if (atBound)
                 Interlocked.Increment(ref s_releasedAtBoundCount);

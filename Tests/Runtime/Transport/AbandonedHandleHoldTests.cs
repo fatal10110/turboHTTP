@@ -64,24 +64,21 @@ namespace TurboHTTP.Tests.Transport
                 {
                     var hold = new SocketHandleHold(client);
                     var read = new TaskCompletionSource<int>();
-                    long releasedAfterEnd = SocketHandleHold.ReleasedAfterEndCount;
-                    int held = SocketHandleHold.HeldCount;
 
-                    hold.EnterIo();
-                    hold.ExitIo(read.Task, write: false);
+                    Assert.IsTrue(hold.EnterIo());
+                    hold.ExitIo(true, read.Task, write: false);
                     hold.Close();
 
                     Assert.AreEqual(0, await ReceiveAsync(server), "the peer must see the close at once");
                     Assert.IsFalse(hold.IsReleased, "the handle must stay open while the read is pending");
                     Assert.IsFalse(IsClosed(client), "the descriptor must not be released before the read ended");
-                    Assert.AreEqual(held + 1, SocketHandleHold.HeldCount);
+                    Assert.AreEqual(SocketHandleHold.NotReleased, hold.ReleaseKind);
 
                     read.SetResult(0);
 
                     Assert.IsTrue(hold.IsReleased, "the handle is released once the read ended");
                     Assert.IsTrue(IsClosed(client));
-                    Assert.AreEqual(held, SocketHandleHold.HeldCount);
-                    Assert.AreEqual(releasedAfterEnd + 1, SocketHandleHold.ReleasedAfterEndCount);
+                    Assert.AreEqual(SocketHandleHold.ReleasedAfterEnd, hold.ReleaseKind);
                 }
             }, Guard);
         }
@@ -99,24 +96,52 @@ namespace TurboHTTP.Tests.Transport
                 {
                     var hold = new SocketHandleHold(client);
                     var read = new TaskCompletionSource<int>();
-                    int held = SocketHandleHold.HeldCount;
-                    long releasedAfterEnd = SocketHandleHold.ReleasedAfterEndCount;
 
-                    hold.EnterIo();
-                    hold.ExitIo(read.Task, write: false);
+                    Assert.IsTrue(hold.EnterIo());
+                    hold.ExitIo(true, read.Task, write: false);
                     hold.Close();
 
                     Assert.IsTrue(hold.IsReleased, "the handle is released at close");
                     Assert.IsTrue(IsClosed(client));
                     Assert.AreEqual(0, await ReceiveAsync(server), "the peer sees the close");
-                    Assert.AreEqual(held, SocketHandleHold.HeldCount, "nothing was held");
+                    Assert.AreEqual(SocketHandleHold.ReleasedAtClose, hold.ReleaseKind, "nothing was held");
 
                     // An operation that reaches the hold after the close holds nothing either.
-                    hold.EnterIo();
-                    hold.ExitIo(null, write: true);
+                    Assert.IsFalse(hold.EnterIo());
+                    hold.ExitIo(false, null, write: true);
                     read.SetResult(0);
-                    Assert.AreEqual(held, SocketHandleHold.HeldCount);
-                    Assert.AreEqual(releasedAfterEnd, SocketHandleHold.ReleasedAfterEndCount);
+                    Assert.AreEqual(SocketHandleHold.ReleasedAtClose, hold.ReleaseKind);
+                }
+            }, Guard);
+        }
+
+        [Test]
+        public void Close_ReadPending_AnOperationStartedAfterTheClose_DoesNotReleaseTheHandle()
+        {
+            // A caller that still touches the disposed stream fails inside the bracket; the close
+            // never counted that call, so it must not count down the held read's claim.
+            AssertAsync.Run(async () =>
+            {
+                var (client, server) = await ConnectPairAsync();
+                using (server)
+                {
+                    var hold = new SocketHandleHold(client);
+                    var read = new TaskCompletionSource<int>();
+
+                    Assert.IsTrue(hold.EnterIo());
+                    hold.ExitIo(true, read.Task, write: false);
+                    hold.Close();
+
+                    bool counted = hold.EnterIo();
+                    Assert.IsFalse(counted, "an operation after the close is not counted");
+                    hold.ExitIo(counted, null, write: false);
+                    Assert.IsFalse(hold.IsReleased, "the held read is still pending");
+                    Assert.IsFalse(IsClosed(client));
+
+                    read.SetResult(0);
+                    Assert.IsTrue(hold.IsReleased);
+                    Assert.AreEqual(SocketHandleHold.ReleasedAfterEnd, hold.ReleaseKind);
+                    Assert.IsTrue(IsClosed(client));
                 }
             }, Guard);
         }
@@ -132,25 +157,19 @@ namespace TurboHTTP.Tests.Transport
                 {
                     var hold = new SocketHandleHold(client);
                     var read = new TaskCompletionSource<int>();
-                    long releasedAtBound = SocketHandleHold.ReleasedAtBoundCount;
-                    long releasedAfterEnd = SocketHandleHold.ReleasedAfterEndCount;
-                    int held = SocketHandleHold.HeldCount;
 
-                    hold.EnterIo();
-                    hold.ExitIo(read.Task, write: false);
+                    Assert.IsTrue(hold.EnterIo());
+                    hold.ExitIo(true, read.Task, write: false);
                     hold.Close();
                     Assert.IsFalse(hold.IsReleased);
 
                     await AbandonedSocketIoTests.WaitUntilAsync(() => hold.IsReleased, "the hold bound never released the handle");
                     Assert.IsTrue(IsClosed(client));
-                    Assert.AreEqual(held, SocketHandleHold.HeldCount);
-                    Assert.AreEqual(releasedAtBound + 1, SocketHandleHold.ReleasedAtBoundCount);
+                    Assert.AreEqual(SocketHandleHold.ReleasedAtBound, hold.ReleaseKind);
 
                     // The read ending late releases nothing twice.
                     read.SetException(new ObjectDisposedException("socket"));
-                    Assert.AreEqual(releasedAtBound + 1, SocketHandleHold.ReleasedAtBoundCount);
-                    Assert.AreEqual(releasedAfterEnd, SocketHandleHold.ReleasedAfterEndCount);
-                    Assert.AreEqual(held, SocketHandleHold.HeldCount);
+                    Assert.AreEqual(SocketHandleHold.ReleasedAtBound, hold.ReleaseKind);
                 }
             }, Guard);
         }
@@ -164,16 +183,15 @@ namespace TurboHTTP.Tests.Transport
                 using (server)
                 {
                     var hold = new SocketHandleHold(client);
-                    int held = SocketHandleHold.HeldCount;
 
                     // A completed operation leaves nothing to wait for.
-                    hold.EnterIo();
-                    hold.ExitIo(Task.FromResult(5), write: false);
+                    Assert.IsTrue(hold.EnterIo());
+                    hold.ExitIo(true, Task.FromResult(5), write: false);
                     hold.Close();
 
                     Assert.IsTrue(hold.IsReleased);
                     Assert.IsTrue(IsClosed(client));
-                    Assert.AreEqual(held, SocketHandleHold.HeldCount);
+                    Assert.AreEqual(SocketHandleHold.ReleasedAtClose, hold.ReleaseKind);
                     Assert.AreEqual(0, await ReceiveAsync(server));
                 }
             }, Guard);
@@ -193,13 +211,13 @@ namespace TurboHTTP.Tests.Transport
 
                     // A write is pending and a read is between its start and its return when the
                     // stream is disposed: both hold the handle.
-                    hold.EnterIo();
-                    hold.ExitIo(write.Task, write: true);
-                    hold.EnterIo();
+                    Assert.IsTrue(hold.EnterIo());
+                    hold.ExitIo(true, write.Task, write: true);
+                    Assert.IsTrue(hold.EnterIo());
                     hold.Close();
                     Assert.IsFalse(hold.IsReleased);
 
-                    hold.ExitIo(read.Task, write: false);
+                    hold.ExitIo(true, read.Task, write: false);
                     Assert.IsFalse(hold.IsReleased);
 
                     write.SetResult(true);
@@ -222,11 +240,11 @@ namespace TurboHTTP.Tests.Transport
                 {
                     var hold = new SocketHandleHold(client);
 
-                    hold.EnterIo();
+                    Assert.IsTrue(hold.EnterIo());
                     hold.Close();
                     Assert.IsFalse(hold.IsReleased);
 
-                    hold.ExitIo(null, write: false);
+                    hold.ExitIo(true, null, write: false);
                     Assert.IsTrue(hold.IsReleased);
                     Assert.IsTrue(IsClosed(client));
                 }

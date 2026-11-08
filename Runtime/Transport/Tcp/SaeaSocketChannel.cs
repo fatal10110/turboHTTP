@@ -48,8 +48,9 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal const int DisposeDrainTimeoutMs = 500;
 
-        // Only IOCP aborts a pending operation on close; the selector platforms end it on shutdown.
-        private static readonly bool s_closeAbortsPendingIo = SaeaPlatformDetection.CloseAbortsPendingIo;
+        // Volatile: 1 = shut down, drain, then close (selector platforms end a pending operation on
+        // shutdown); 0 = close first (IOCP aborts it on close).
+        private static int s_shutdownBeforeClose = SaeaPlatformDetection.CloseAbortsPendingIo ? 0 : 1;
 
         private static long s_buffersLeakedOnDispose;
 
@@ -105,6 +106,19 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>Channels whose Dispose hit the drain bound and leaked their buffers (process-wide).</summary>
         internal static long BuffersLeakedOnDispose => Interlocked.Read(ref s_buffersLeakedOnDispose);
+
+        /// <summary>
+        /// The dispose order: true (selector platforms) shuts the socket down and closes it only once
+        /// pending operations drained (#384); false (IOCP) closes it first. Tests set it.
+        /// </summary>
+        internal static bool ShutdownBeforeClose
+        {
+            get => Volatile.Read(ref s_shutdownBeforeClose) != 0;
+            set => Volatile.Write(ref s_shutdownBeforeClose, value ? 1 : 0);
+        }
+
+        /// <summary>Test hook: the bound <see cref="Dispose"/> waits for in-flight operations, per drain.</summary>
+        internal void SetDrainTimeoutForTest(int drainTimeoutMs) => Volatile.Write(ref _drainTimeoutMs, drainTimeoutMs);
 
         /// <summary>
         /// Test hook: marks a receive as submitted to the OS without submitting one, i.e. a
@@ -291,7 +305,7 @@ namespace TurboHTTP.Transport.Tcp
 
             int drainTimeoutMs = Volatile.Read(ref _drainTimeoutMs);
             bool drained;
-            if (s_closeAbortsPendingIo)
+            if (!ShutdownBeforeClose)
             {
                 // IOCP (Windows): disposing the socket posts an OperationAborted completion that
                 // fires OnRecv/OnSendCompleted, clearing the active flags and delivering an

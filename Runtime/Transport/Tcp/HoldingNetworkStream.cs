@@ -36,29 +36,29 @@ namespace TurboHTTP.Transport.Tcp
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try { return base.Read(buffer, offset, count); }
-            finally { _hold.ExitIo(null, write: false); }
+            finally { _hold.ExitIo(counted, null, write: false); }
         }
 
         public override int Read(Span<byte> buffer)
         {
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try { return base.Read(buffer); }
-            finally { _hold.ExitIo(null, write: false); }
+            finally { _hold.ExitIo(counted, null, write: false); }
         }
 
         public override int ReadByte()
         {
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try { return base.ReadByte(); }
-            finally { _hold.ExitIo(null, write: false); }
+            finally { _hold.ExitIo(counted, null, write: false); }
         }
 
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             Task<int> task = null;
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try
             {
                 task = base.ReadAsync(buffer, offset, count, cancellationToken);
@@ -66,14 +66,14 @@ namespace TurboHTTP.Transport.Tcp
             }
             finally
             {
-                _hold.ExitIo(task, write: false);
+                _hold.ExitIo(counted, task, write: false);
             }
         }
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             Task<int> task = null;
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try
             {
                 var read = base.ReadAsync(buffer, cancellationToken);
@@ -86,35 +86,35 @@ namespace TurboHTTP.Transport.Tcp
             }
             finally
             {
-                _hold.ExitIo(task, write: false);
+                _hold.ExitIo(counted, task, write: false);
             }
         }
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try { base.Write(buffer, offset, count); }
-            finally { _hold.ExitIo(null, write: true); }
+            finally { _hold.ExitIo(counted, null, write: true); }
         }
 
         public override void Write(ReadOnlySpan<byte> buffer)
         {
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try { base.Write(buffer); }
-            finally { _hold.ExitIo(null, write: true); }
+            finally { _hold.ExitIo(counted, null, write: true); }
         }
 
         public override void WriteByte(byte value)
         {
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try { base.WriteByte(value); }
-            finally { _hold.ExitIo(null, write: true); }
+            finally { _hold.ExitIo(counted, null, write: true); }
         }
 
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             Task task = null;
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try
             {
                 task = base.WriteAsync(buffer, offset, count, cancellationToken);
@@ -122,14 +122,14 @@ namespace TurboHTTP.Transport.Tcp
             }
             finally
             {
-                _hold.ExitIo(task, write: true);
+                _hold.ExitIo(counted, task, write: true);
             }
         }
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
             Task task = null;
-            _hold.EnterIo();
+            bool counted = _hold.EnterIo();
             try
             {
                 var write = base.WriteAsync(buffer, cancellationToken);
@@ -141,7 +141,7 @@ namespace TurboHTTP.Transport.Tcp
             }
             finally
             {
-                _hold.ExitIo(task, write: true);
+                _hold.ExitIo(counted, task, write: true);
             }
         }
 
