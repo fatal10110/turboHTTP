@@ -271,6 +271,8 @@ namespace TurboHTTP.Tests.Performance
         /// </summary>
         private static AllocationMeasurement MeasureUpload(string name, bool knownLength)
         {
+            SkipPerReadGateWithoutPreciseCounter();
+
             var options = new StreamingOptions { DefaultStreamingSendBufferBytes = UploadSendBufferBytes };
             WriteUpload(knownLength, options, measure: false);
 

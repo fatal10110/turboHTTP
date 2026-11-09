@@ -12,6 +12,7 @@ using TurboHTTP.Cache;
 using TurboHTTP.Core;
 using TurboHTTP.Middleware;
 using TurboHTTP.Testing;
+using TurboHTTP.Tests.Transport;
 using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http1;
 using TurboHTTP.Transport.Http2;
@@ -218,6 +219,8 @@ namespace TurboHTTP.Tests.Performance
             if (factory == null)
                 throw new ArgumentNullException(nameof(factory));
 
+            SkipPerReadGateWithoutPreciseCounter();
+
             using (var warmup = factory())
             {
                 DrainTarget(warmup);
@@ -265,6 +268,19 @@ namespace TurboHTTP.Tests.Performance
             }
 
             return reads;
+        }
+
+        /// <summary>
+        /// A per-read gate needs the per-thread counter. Where reading it kills the player (#414), the
+        /// GC.GetTotalMemory(true) fallback cannot stand in: its forced collection frees the per-read garbage
+        /// before it is counted, so the gate would pass without measuring. Skip it there instead. The
+        /// response-start gates keep the fallback, which still sees a retained body.
+        /// </summary>
+        private static void SkipPerReadGateWithoutPreciseCounter()
+        {
+            var unsafeReason = ManagedAllocationCounter.UnsafeRuntimeReason;
+            if (unsafeReason != null)
+                TestRequirements.IgnoreEnvironment(unsafeReason);
         }
 
         private static void AssertMeasurementBudget(
@@ -593,7 +609,7 @@ namespace TurboHTTP.Tests.Performance
             internal static ManagedBytesCounter Create()
             {
                 // Null where the API is missing, and on runtimes where reading it kills the player (#414):
-                // those measure with the heap-size fallback and its budgets.
+                // those measure with the heap-size fallback (the per-read gates skip there instead).
                 var read = ManagedAllocationCounter.TryGetThreadCounter();
                 if (read != null)
                 {

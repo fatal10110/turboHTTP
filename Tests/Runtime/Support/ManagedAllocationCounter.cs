@@ -16,13 +16,14 @@ namespace TurboHTTP.Tests
         /// reads one (#414). A signal cannot be caught in managed code, so the counter is never called
         /// there: neither <c>GC.GetAllocatedBytesForCurrentThread</c> nor the profiler's GC counters. A test
         /// that has no other counter skips with this reason instead of taking the player down. Unity 6 iOS
-        /// players and Unity 2021.3 Android IL2CPP players read the counter and pass.
+        /// players and Unity 2021.3 Android IL2CPP players read the counter and pass. The guard covers 2021.3
+        /// only, the version the crash was seen on; 2022.x and 2023.x are untested.
         /// </summary>
         internal static string UnsafeRuntimeReason
         {
             get
             {
-#if UNITY_IOS && ENABLE_IL2CPP && !UNITY_EDITOR && !UNITY_6000_0_OR_NEWER
+#if UNITY_IOS && ENABLE_IL2CPP && !UNITY_EDITOR && !UNITY_2022_1_OR_NEWER
                 return "Reading a managed allocation counter kills Unity 2021.3 IL2CPP iOS players with SIGILL (#414).";
 #else
                 return null;
@@ -33,8 +34,8 @@ namespace TurboHTTP.Tests
         /// <summary>
         /// <c>GC.GetAllocatedBytesForCurrentThread</c>, resolved by reflection because the .NET Standard 2.1
         /// profile does not expose it. Returns null where the method is missing or
-        /// <see cref="UnsafeRuntimeReason"/> applies. Callers still check that it counts: Unity's Mono
-        /// returns 0.
+        /// <see cref="UnsafeRuntimeReason"/> applies. It does not check that the counter counts: Unity's Mono
+        /// returns 0, which the allocation meter probes for and the streaming gates do not yet (#426).
         /// </summary>
         internal static Func<long> TryGetThreadCounter()
         {

@@ -44,13 +44,21 @@
 #   20 HeadReadCancellationTests.EnsureBuffered_AbandonedReadFaultsLater_FaultIsObserved
 #   21 WebSocketHandshakeReadCancellationTests.Upgrade_AbandonedReadFaultsLater_FaultIsObserved
 # Raised from 18 to 21 (#365): 19-21 are new tests from #346 and #357, not tests that stopped running.
-# A Unity 2021.3 IL2CPP iOS player (the x86_64 simulator player) skips 2 more [env] cases (#414): reading a
-# managed allocation counter kills that player with SIGILL, so the allocation meter never runs there:
-#   22 DecompressionLimitAndAllocationTests.BufferedGzip_10MbBody_AllocatesAboutTheBodySize
-#   23 DecompressionLimitAndAllocationTests.BufferedGzipBomb_FailsBeforeAllocatingPastTheLimit
-# StreamingAllocationGateTests runs there with its GC.GetTotalMemory fallback. The Unity 6 count stays 21.
+#
+# Player-iOS-2021.3 32: a Unity 2021.3 IL2CPP iOS player (the x86_64 simulator player; no script reads this key
+# yet). Reading a managed allocation counter kills that player with SIGILL (#414), so every test that needs the
+# per-thread counter skips there with "[env] Reading a managed allocation counter kills Unity 2021.3 IL2CPP iOS
+# players with SIGILL (#414).": the Player-iOS list 1-21, plus
+#   22-23 DecompressionLimitAndAllocationTests: BufferedGzip_10MbBody_AllocatesAboutTheBodySize,
+#         BufferedGzipBomb_FailsBeforeAllocatingPastTheLimit
+#   24-32 StreamingAllocationGateTests per-read gates: Http11StreamingRead_*, Http2StreamingRead_*,
+#         DecompressionStreamingRead_*, RetriedStreamingRead_*, RedirectedStreamingRead_*, CacheReplayStreamingRead_*,
+#         Http11ChunkedStreamingReadWithoutTrailers_*, Http11StreamedUploadKnownLengthWithoutExpect_*,
+#         Http11StreamedUploadChunkedWithoutTrailers_* (the GC.GetTotalMemory(true) fallback frees per-read garbage
+#         before counting it, so these would pass without measuring); the two *_ResponseStart_* gates still run there.
 # <run target> <max skipped>
 EditMode 0
 PlayMode 3
 Player-Android 16
 Player-iOS 21
+Player-iOS-2021.3 32
