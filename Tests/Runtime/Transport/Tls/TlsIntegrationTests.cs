@@ -98,11 +98,8 @@ namespace TurboHTTP.Tests.Transport.Tls
                 Assert.That(providerName, Is.EqualTo("BouncyCastle").Or.EqualTo("SslStream"));
 #endif
 #if UNITY_IOS || UNITY_ANDROID
-                var sslProvider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
-                if (!sslProvider.IsAlpnSupported() && TlsProviderSelector.IsBouncyCastleAvailable())
-                    Assert.AreEqual("BouncyCastle", providerName);
-                else
-                    Assert.AreEqual("SslStream", providerName);
+                // Auto never switches provider (#34), with or without SslStream ALPN (#418).
+                Assert.AreEqual("SslStream", providerName);
 #endif
             }).GetAwaiter().GetResult();
         }

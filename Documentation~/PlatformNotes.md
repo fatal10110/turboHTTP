@@ -6,8 +6,8 @@ TurboHTTP is designed to run reliably across major Unity platforms, supporting b
 
 | Platform | Scripting Backend | Status | Notes |
 | :--- | :--- | :--- | :--- |
-| **Windows** | Mono / IL2CPP | ✅ Supported | Full HTTP/2 and TLS 1.3 support. |
-| **macOS** | Mono / IL2CPP | ✅ Supported | Full HTTP/2 and TLS 1.3 support. |
+| **Windows** | Mono / IL2CPP | ✅ Supported | TLS 1.3 where the OS offers it. HTTP/2 with `TlsBackend.BouncyCastle` (see below). |
+| **macOS** | Mono / IL2CPP | ✅ Supported | TLS 1.3 where the OS offers it. HTTP/2 with `TlsBackend.BouncyCastle` (see below). |
 | **Linux** | Mono / IL2CPP | ✅ Supported | Verified on Ubuntu 20.04+. |
 | **iOS** | IL2CPP | ✅ Supported | Requires AOT-safe configuration. |
 | **Android** | IL2CPP | ✅ Supported | ARM64/ARMv7. Restrictions on cleartext apply. |
@@ -49,6 +49,19 @@ idempotent request (GET, HEAD, PUT, DELETE, OPTIONS, TRACE with a replayable bod
 sent once more on a fresh connection. That fresh connection gets the same bound: if it stays silent too, the
 request fails, with no further attempt. A POST is never replayed and keeps waiting until the request timeout.
 `Timeout.InfiniteTimeSpan` turns this off.
+
+## HTTP/2 needs the BouncyCastle backend
+
+HTTP/2 over TLS is selected only through ALPN (RFC 9113 section 3.2). Unity's `SslStream` (Mono with
+UnityTls, in the Editor and in Mono and IL2CPP players on every platform) accepts the ALPN options but
+never sends them and cannot report a negotiated protocol (mono#12880). With the default `TlsBackend.Auto`
+(or `TlsBackend.SslStream`) every HTTPS connection therefore uses HTTP/1.1, and TurboHTTP reports no
+ALPN and no HTTP/2 capability for it (`PlatformConfig.SupportsHttp2` is false without BouncyCastle).
+`Auto` never switches to BouncyCastle by itself.
+
+To use HTTP/2, add `TURBOHTTP_BOUNCYCASTLE` to Player Settings > Scripting Define Symbols and set
+`UHttpClientOptions.TlsBackend = TlsBackend.BouncyCastle`; see [Transport](Modules/Transport.md) for its
+certificate validation per platform.
 
 ## Known limitation: TLS server name for IP-address hosts
 

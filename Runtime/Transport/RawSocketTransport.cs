@@ -123,14 +123,19 @@ namespace TurboHTTP.Transport
             internal static readonly Func<TransportCapabilities> Capabilities = ProbeCapabilities;
         }
 
-        // HTTP/2 needs ALPN: SslStream exposes it on this runtime, or the BouncyCastle provider is
-        // present. Read lazily (HttpTransportFactory.Capabilities), so registration at startup does
+        // HTTP/2 needs ALPN: SslStream negotiates it on this runtime (never on Unity's runtimes), or
+        // the BouncyCastle provider is present. Read lazily (HttpTransportFactory.Capabilities), so registration at startup does
         // not initialize the TLS providers.
         private static TransportCapabilities ProbeCapabilities()
         {
-            return SslStreamTlsProvider.Instance.IsAlpnSupported() || TlsProviderSelector.IsBouncyCastleAvailable()
-                ? TransportCapabilities.Http2
-                : TransportCapabilities.None;
+            return CapabilitiesFor(
+                SslStreamTlsProvider.Instance.IsAlpnSupported(),
+                TlsProviderSelector.IsBouncyCastleAvailable());
+        }
+
+        internal static TransportCapabilities CapabilitiesFor(bool sslStreamAlpn, bool bouncyCastleAvailable)
+        {
+            return sslStreamAlpn || bouncyCastleAvailable ? TransportCapabilities.Http2 : TransportCapabilities.None;
         }
 
         public async Task DispatchAsync(

@@ -40,8 +40,9 @@ namespace TurboHTTP.Transport.Tls
         /// Check if this provider supports ALPN negotiation on the current platform.
         /// </summary>
         /// <remarks>
-        /// SslStream may not support ALPN on all platforms (IL2CPP, iOS, Android).
-        /// BouncyCastle always returns true.
+        /// SslStream reports false on Unity's runtimes (Editor and players), which cannot negotiate
+        /// ALPN through it, and wherever the ALPN options cannot be built. BouncyCastle always
+        /// returns true.
         /// </remarks>
         bool IsAlpnSupported();
 

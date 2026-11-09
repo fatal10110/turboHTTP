@@ -18,6 +18,9 @@ namespace TurboHTTP.Transport.Tls
     /// sites make IL2CPP generate <c>List&lt;SslApplicationProtocol&gt;</c> and keep the members
     /// (link.xml preserves them as well). If building the options still fails on a runtime
     /// (missing AOT code or metadata), TLS works without ALPN (HTTP/1.1 fallback).
+    /// Unity's runtimes (Editor and players) build the options but ignore them and cannot report
+    /// a negotiated protocol (mono#12880), so they count as having no ALPN: HTTP/2 there needs the
+    /// BouncyCastle provider.
     /// ALPN is a negotiation (RFC 7301): when the caller also offers "http/1.1", a runtime
     /// without ALPN performs a plain handshake and reports no negotiated protocol (HTTP/1.1).
     /// Only a request that cannot fall back to HTTP/1.1 (e.g. "h2" alone) fails without ALPN.
@@ -76,7 +79,8 @@ namespace TurboHTTP.Transport.Tls
         public string ProviderName => "SslStream";
 
         // Set once by the type initializer: true when this runtime can build the ALPN options
-        // (the same builder every connection uses), false when it throws (#303).
+        // (the same builder every connection uses; false when it throws, #303) and can report the
+        // negotiated protocol (false where reading it throws PlatformNotSupportedException).
         private static readonly bool _alpnSupported;
 
         // Cached so WrapAsync allocates no delegate per connection.
@@ -84,7 +88,7 @@ namespace TurboHTTP.Transport.Tls
 
         static SslStreamTlsProvider()
         {
-            _alpnSupported = ProbeAlpnOptions();
+            _alpnSupported = ProbeAlpnOptions() && ProbeNegotiatedProtocol();
         }
 
         // A type initializer must never throw: any failure only means "no ALPN" (HTTP/1.1 fallback,
@@ -94,6 +98,57 @@ namespace TurboHTTP.Transport.Tls
             try
             {
                 return BuildAlpnOptionsObject("localhost", AlpnProtocols.H2AndHttp11) != null;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        // A runtime that accepts the ALPN options but ignores them throws
+        // PlatformNotSupportedException when the result is read (Unity's Mono class library,
+        // mono#12880): the extension never reaches the wire, so it can never select h2. The read
+        // happens on a stream that never handshakes, so the probe touches no socket.
+        private static bool ProbeNegotiatedProtocol()
+        {
+            try
+            {
+                using var probe = new SslStream(Stream.Null);
+                return ReportsNegotiatedProtocol(() => ReadNegotiatedProtocol(probe));
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void ReadNegotiatedProtocol(SslStream sslStream)
+        {
+            _ = sslStream.NegotiatedApplicationProtocol;
+        }
+
+        /// <summary>
+        /// Whether a runtime reports the ALPN result, judged by one read of
+        /// <c>NegotiatedApplicationProtocol</c> before any handshake: a value, or
+        /// <see cref="InvalidOperationException"/> (not authenticated yet), means it does;
+        /// <see cref="PlatformNotSupportedException"/> means it has no ALPN. Any other failure
+        /// also counts as no ALPN (HTTP/1.1), never as weaker TLS.
+        /// </summary>
+        internal static bool ReportsNegotiatedProtocol(Action readNegotiatedProtocol)
+        {
+            try
+            {
+                readNegotiatedProtocol();
+                return true;
+            }
+            catch (PlatformNotSupportedException)
+            {
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                return true;
             }
             catch (Exception)
             {

@@ -17,9 +17,9 @@ By default, `UHttpClient` uses the `RawSocketTransport`. It handles:
 
 | Value | Behavior |
 | :--- | :--- |
-| `Auto` (default) | Uses `SslStream` and never falls back to another provider: a certificate or handshake failure is reported to the caller as a `UHttpException`. Without `SslStream` ALPN support, connections use HTTP/1.1. |
-| `SslStream` | Forces `System.Net.Security.SslStream`; ALPN (and so HTTP/2) may be unavailable on some platforms. |
-| `BouncyCastle` | Opt-in. Uses the bundled BouncyCastle TLS stack, which negotiates ALPN everywhere. |
+| `Auto` (default) | Uses `SslStream` and never falls back to another provider: a certificate or handshake failure is reported to the caller as a `UHttpException`. Unity's `SslStream` has no ALPN, so connections use HTTP/1.1. |
+| `SslStream` | Forces `System.Net.Security.SslStream`. Unity's `SslStream` (Editor and players) has no ALPN, so there is no HTTP/2: connections use HTTP/1.1, and an `h2`-only offer fails with `PlatformNotSupportedException`. |
+| `BouncyCastle` | Opt-in (`TURBOHTTP_BOUNCYCASTLE`). Uses the bundled BouncyCastle TLS stack, which negotiates ALPN everywhere: the backend HTTP/2 needs on Unity. |
 
 The platform validates certificates with `SslStream`; TurboHTTP never accepts a certificate the platform would reject, and no option disables validation. BouncyCastle is a transport fallback, never a way around certificate checks.
 

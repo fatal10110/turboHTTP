@@ -4,12 +4,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 [![Platform: All](https://img.shields.io/badge/Platform-Win%20%7C%20Mac%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey)](Documentation~/PlatformNotes.md)
 
-**TurboHTTP** is a production-grade, modular HTTP client for Unity, designed for reliability, performance, and advanced observability. It serves as a modern alternative to `UnityWebRequest`, offering HTTP/2 support, detailed timeline tracing, and a fluent API.
+**TurboHTTP** is a production-grade, modular HTTP client for Unity, designed for reliability, performance, and advanced observability. It serves as a modern alternative to `UnityWebRequest`, offering HTTP/2 support (with the opt-in BouncyCastle TLS backend), detailed timeline tracing, and a fluent API.
 
 ## Key Features
 
 *   **Modular Architecture:** Core client with optional specific modules (Retry, Cache, etc.) and a zero-overhead plugin system.
-*   **Modern Transport:** Raw socket-based transport supporting HTTP/1.1 and **HTTP/2** (with multiplexing).
+*   **Modern Transport:** Raw socket-based transport supporting HTTP/1.1 and **HTTP/2** (with multiplexing). HTTP/2 needs ALPN, which Unity's `SslStream` lacks: define `TURBOHTTP_BOUNCYCASTLE` and select `TlsBackend.BouncyCastle` to use it; the default (`Auto`, `SslStream`) runs HTTP/1.1.
 *   **Resilience & Routing:** Happy Eyeballs dual-stack, HTTP proxy support (CONNECT tunnels, environment variables), and adaptive timeouts based on network quality (`TurboHTTP.Unity`).
 *   **Authentication:** OAuth 2.0 & OIDC support with PKCE and automated token refresh.
 *   **Mobile Readiness:** IL2CPP-safe on iOS and Android; experimental, opt-in background networking.

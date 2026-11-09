@@ -146,7 +146,7 @@ Configuration options for `UHttpClient`.
 | `Http2` | `Http2Options` | HTTP/2 specific settings |
 | `ConnectionPool` | `ConnectionPoolOptions` | Connection pool configuration |
 | `Proxy` | `ProxySettings` | HTTP proxy configuration; environment variables are used when unset |
-| `TlsBackend` | `TlsBackend` | `Auto` (default, SslStream), `SslStream` or `BouncyCastle` (opt-in); see [Transport](Modules/Transport.md) |
+| `TlsBackend` | `TlsBackend` | `Auto` (default, SslStream), `SslStream` or `BouncyCastle` (opt-in, needed for HTTP/2 on Unity); see [Transport](Modules/Transport.md) |
 | `AllowCleartext` | `bool` | Allow `http://` and `http://` proxies (default `false` on iOS/Android players) |
 | `Streaming` | `StreamingOptions` | Streaming response settings |
 | `PluginShutdownTimeout` | `TimeSpan` | How long plugin shutdown callbacks may take |

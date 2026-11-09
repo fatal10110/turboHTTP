@@ -338,7 +338,7 @@ public static class TurboHttpSmokeRows
     }
 
     // Unity's Mono class library throws PlatformNotSupportedException from NegotiatedApplicationProtocol
-    // (mono#12880) and ignores the ALPN options, although the provider's probe reports ALPN (#418).
+    // (mono#12880) and ignores the ALPN options; the provider reports no ALPN there either (#418).
     private static bool SslStreamReportsAlpn()
     {
         using (var sslStream = new SslStream(new MemoryStream()))
@@ -365,11 +365,13 @@ public static class TurboHttpSmokeRows
         return new UHttpClient(new UHttpClientOptions { Transport = new OfflineTransport(), DisposeTransport = true });
     }
 
-    // SslStream ALPN probe (#303): the provider's type initializer builds the ALPN options
-    // (SslClientAuthenticationOptions with a List<SslApplicationProtocol>) once; "true" means the
-    // IL2CPP player has the AOT code and members for them, "false" means TLS runs without ALPN
-    // (HTTP/1.1). The provider is internal, so the probe goes through reflection; "n/a" means the
-    // type or member was not found. It says nothing about what a server negotiates (device row).
+    // SslStream ALPN probe (#303, #418): the provider's type initializer builds the ALPN options
+    // (SslClientAuthenticationOptions with a List<SslApplicationProtocol>) once and checks that the
+    // runtime reports the negotiated protocol; "true" means the player has the AOT code and members
+    // for them and its SslStream can negotiate ALPN, "false" means TLS runs without ALPN (HTTP/1.1),
+    // as on every Unity runtime (mono#12880). The provider is internal, so the probe goes through
+    // reflection; "n/a" means the type or member was not found. It says nothing about what a server
+    // negotiates (device row).
     private static string ProbeSslStreamAlpn()
     {
         var type = Type.GetType("TurboHTTP.Transport.Tls.SslStreamTlsProvider, TurboHTTP.Transport");
