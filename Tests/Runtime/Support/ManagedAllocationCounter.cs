@@ -31,11 +31,15 @@ namespace TurboHTTP.Tests
             }
         }
 
+        /// <summary>The size of the block a probe allocates; a counter that counts sees at least this much.</summary>
+        internal const int ProbeBytes = 512 * 1024;
+
         /// <summary>
         /// <c>GC.GetAllocatedBytesForCurrentThread</c>, resolved by reflection because the .NET Standard 2.1
         /// profile does not expose it. Returns null where the method is missing or
         /// <see cref="UnsafeRuntimeReason"/> applies. It does not check that the counter counts: Unity's Mono
-        /// returns 0, which the allocation meter probes for and the streaming gates do not yet (#426).
+        /// (Boehm GC) has the method and always returns 0. Measure with
+        /// <see cref="TryGetCountingThreadCounter"/> instead.
         /// </summary>
         internal static Func<long> TryGetThreadCounter()
         {
@@ -52,6 +56,37 @@ namespace TurboHTTP.Tests
                 return null;
 
             return (Func<long>)Delegate.CreateDelegate(typeof(Func<long>), api);
+        }
+
+        /// <summary>
+        /// The per-thread counter, or null where <see cref="TryGetThreadCounter"/> has none or the counter does
+        /// not count a known allocation (Unity's Mono reads 0). The counter is per thread, so call this on the
+        /// thread that measures, not from a static initializer.
+        /// </summary>
+        internal static Func<long> TryGetCountingThreadCounter()
+        {
+            var counter = TryGetThreadCounter();
+            if (counter == null)
+                return null;
+
+            LogRead("GC.GetAllocatedBytesForCurrentThread");
+            return Counts(counter) ? counter : null;
+        }
+
+        /// <summary>
+        /// True when <paramref name="counter"/> grows by at least <see cref="ProbeBytes"/> across an allocation
+        /// of that size on the calling thread.
+        /// </summary>
+        internal static bool Counts(Func<long> counter)
+        {
+            if (counter == null)
+                throw new ArgumentNullException(nameof(counter));
+
+            var before = counter();
+            var probe = new byte[ProbeBytes];
+            var delta = counter() - before;
+            GC.KeepAlive(probe);
+            return delta >= ProbeBytes;
         }
 
         /// <summary>

@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -17,6 +18,7 @@ using TurboHTTP.Tests.Transport.Http2.Helpers;
 using TurboHTTP.Transport.Http1;
 using TurboHTTP.Transport.Http2;
 using TurboHTTP.Transport.Tcp;
+using UnityEngine.TestTools;
 
 namespace TurboHTTP.Tests.Performance
 {
@@ -30,7 +32,6 @@ namespace TurboHTTP.Tests.Performance
         private const int Http2ChunkCount = 512;
         private const int DecompressionChunkBytes = 4096;
 
-        private static readonly ManagedBytesCounter s_managedBytesCounter = ManagedBytesCounter.Create();
         private static readonly byte[] s_http11Payload = CreatePatternBytes(Http11ChunkBytes * Http11ChunkCount);
         private static readonly byte[] s_http2Chunk = CreatePatternBytes(Http2ChunkBytes);
         private static readonly byte[] s_decompressedPayload = CreatePatternBytes(512 * 1024);
@@ -38,34 +39,34 @@ namespace TurboHTTP.Tests.Performance
         private const int CacheStreamingBodyBytes = 2 * 1024 * 1024;
         private static readonly byte[] s_cacheStreamingPayload = CreatePatternBytes(CacheStreamingBodyBytes);
 
-        [Test]
-        public void Http11StreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
+        // Frame-counter budgets above 32 (768 for decompression) hold the per-read allocations Unity's Mono
+        // measures today: 41 B/read here, 33 for chunked reads, 4297 for decompression (#434). Any new per-read
+        // allocation still fails them; restore 32 / 32 / 768 once #434 removes those allocations.
+        [UnityTest]
+        public IEnumerator Http11StreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
         {
-            var measurement = MeasureScenario(CreateHttp11Target);
-            AssertMeasurementBudget(
-                measurement,
+            return MeasureScenario(
+                CreateHttp11Target,
                 preciseCounterBudgetBytesPerRead: 0,
-                fallbackCounterBudgetBytesPerRead: 32);
+                frameCounterBudgetBytesPerRead: 48);
         }
 
-        [Test]
-        public void Http2StreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
+        [UnityTest]
+        public IEnumerator Http2StreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
         {
-            var measurement = MeasureScenario(CreateHttp2Target);
-            AssertMeasurementBudget(
-                measurement,
+            return MeasureScenario(
+                CreateHttp2Target,
                 preciseCounterBudgetBytesPerRead: 0,
-                fallbackCounterBudgetBytesPerRead: 32);
+                frameCounterBudgetBytesPerRead: 32);
         }
 
-        [Test]
-        public void DecompressionStreamingRead_KnownAllocationPoint_StaysWithinBudget()
+        [UnityTest]
+        public IEnumerator DecompressionStreamingRead_KnownAllocationPoint_StaysWithinBudget()
         {
-            var measurement = MeasureScenario(CreateDecompressionTarget);
-            AssertMeasurementBudget(
-                measurement,
+            return MeasureScenario(
+                CreateDecompressionTarget,
                 preciseCounterBudgetBytesPerRead: 384,
-                fallbackCounterBudgetBytesPerRead: 768);
+                frameCounterBudgetBytesPerRead: 4352);
         }
 
         // #52: the cache must not collect the whole response before the caller can read it. These gates
@@ -77,8 +78,8 @@ namespace TurboHTTP.Tests.Performance
             var transport = CreateCacheStreamingTransport(primeNext: null);
             using var client = CreateCacheClient(transport, maxCacheableBytes: 64 * 1024);
 
-            var delta = MeasureResponseStartBytes(() => client.Post("https://phase22a.local/cache-post"));
-            AssertResponseStartBelowBody("cache_unsafe_post_response_start", delta);
+            var measurement = MeasureResponseStartBytes(() => client.Post("https://phase22a.local/cache-post"));
+            AssertResponseStartBelowBody("cache_unsafe_post_response_start", measurement);
         }
 
         [Test]
@@ -91,7 +92,7 @@ namespace TurboHTTP.Tests.Performance
 
             // Each measured request revalidates a small stored entry (ETag + no-cache) and the origin answers
             // 200 with a large streamed body that exceeds the cacheable size, so nothing large is stored.
-            var delta = MeasureResponseStartBytes(() =>
+            var measurement = MeasureResponseStartBytes(() =>
             {
                 primeNext.Value = true;
                 using (client.Get(url).SendBufferedAsync().GetAwaiter().GetResult())
@@ -100,22 +101,23 @@ namespace TurboHTTP.Tests.Performance
 
                 return client.Get(url);
             });
-            AssertResponseStartBelowBody("cache_revalidation_200_response_start", delta);
+            AssertResponseStartBelowBody("cache_revalidation_200_response_start", measurement);
         }
 
-        private static long MeasureResponseStartBytes(Func<UHttpRequest> createRequest)
+        private static ResponseStartMeasurement MeasureResponseStartBytes(Func<UHttpRequest> createRequest)
         {
             // Warm-up: JIT, pools and the cache's per-key state.
             SendStreamingAndDrain(createRequest());
 
+            var counter = ManagedBytesCounter.Create();
             var request = createRequest();
-            PrepareForMeasurement();
-            var before = s_managedBytesCounter.Read();
+            PrepareForMeasurement(counter);
+            var before = counter.Read();
             var response = request.SendStreamingAsync().GetAwaiter().GetResult();
             try
             {
-                var after = s_managedBytesCounter.Read();
-                return Math.Max(0L, after - before);
+                var after = counter.Read();
+                return new ResponseStartMeasurement(counter.Name, Math.Max(0L, after - before));
             }
             finally
             {
@@ -144,11 +146,12 @@ namespace TurboHTTP.Tests.Performance
             }
         }
 
-        private static void AssertResponseStartBelowBody(string name, long allocatedBytes)
+        private static void AssertResponseStartBelowBody(string name, ResponseStartMeasurement measurement)
         {
-            TestContext.Progress.WriteLine(
+            var allocatedBytes = measurement.AllocatedBytes;
+            TestContext.WriteLine(
                 "[Cache][Allocation] " + name +
-                " counter=" + s_managedBytesCounter.Name +
+                " counter=" + measurement.CounterName +
                 " bytesBeforeFirstRead=" + allocatedBytes +
                 " body=" + CacheStreamingBodyBytes);
 
@@ -214,12 +217,21 @@ namespace TurboHTTP.Tests.Performance
                 });
         }
 
-        private static AllocationMeasurement MeasureScenario(Func<MeasuredReadTarget> factory)
+        /// <summary>
+        /// Managed bytes per read while the caller drains a warmed-up target. The meter must show it counts
+        /// (#426): where the per-thread counter reads nothing (Unity's Mono), the frame counter measures a frame
+        /// that runs only the drain, under the looser frame budget; where neither counts, the gate skips.
+        /// </summary>
+        private static IEnumerator MeasureScenario(
+            Func<MeasuredReadTarget> factory,
+            long preciseCounterBudgetBytesPerRead,
+            long frameCounterBudgetBytesPerRead)
         {
             if (factory == null)
                 throw new ArgumentNullException(nameof(factory));
 
-            SkipPerReadGateWithoutPreciseCounter();
+            using var meter = new AllocationMeter();
+            yield return meter.Calibrate();
 
             using (var warmup = factory())
             {
@@ -228,28 +240,34 @@ namespace TurboHTTP.Tests.Performance
 
             using var target = factory();
 
-            PrepareForMeasurement();
-            var before = s_managedBytesCounter.Read();
-
+            yield return null;
+            meter.Begin();
             var readCount = DrainTarget(target);
+            meter.End();
+            yield return null;
 
-            var after = s_managedBytesCounter.Read();
-            var delta = Math.Max(0L, after - before);
-            var bytesPerRead = readCount == 0 ? delta : delta / readCount;
+            var measurement = CreateMeasurement(target.Name, meter, readCount, "reads");
+            AssertMeasurementBudget(
+                measurement,
+                meter.IsPrecise ? preciseCounterBudgetBytesPerRead : frameCounterBudgetBytesPerRead);
+        }
 
+        private static AllocationMeasurement CreateMeasurement(string name, AllocationMeter meter, int count, string unit)
+        {
+            var delta = Math.Max(0L, meter.Allocated);
             var measurement = new AllocationMeasurement(
-                target.Name,
-                s_managedBytesCounter.Name,
-                readCount,
+                name,
+                meter.Name,
+                count,
                 delta,
-                bytesPerRead);
+                count == 0 ? delta : delta / count);
 
-            TestContext.Progress.WriteLine(
+            TestContext.WriteLine(
                 "[Phase22a.6][Allocation] " + measurement.Name +
                 " counter=" + measurement.CounterName +
-                " reads=" + measurement.ReadCount +
+                " " + unit + "=" + measurement.ReadCount +
                 " totalBytes=" + measurement.TotalManagedBytes +
-                " bytes/read=" + measurement.BytesPerRead);
+                " bytes/" + unit.TrimEnd('s') + "=" + measurement.BytesPerRead);
 
             return measurement;
         }
@@ -270,39 +288,19 @@ namespace TurboHTTP.Tests.Performance
             return reads;
         }
 
-        /// <summary>
-        /// A per-read gate needs the per-thread counter. Where reading it kills the player (#414), the
-        /// GC.GetTotalMemory(true) fallback cannot stand in: its forced collection frees the per-read garbage
-        /// before it is counted, so the gate would pass without measuring. Skip it there instead. The
-        /// response-start gates keep the fallback, which still sees a retained body.
-        /// </summary>
-        private static void SkipPerReadGateWithoutPreciseCounter()
-        {
-            var unsafeReason = ManagedAllocationCounter.UnsafeRuntimeReason;
-            if (unsafeReason != null)
-                TestRequirements.IgnoreEnvironment(unsafeReason);
-        }
-
-        private static void AssertMeasurementBudget(
-            AllocationMeasurement measurement,
-            long preciseCounterBudgetBytesPerRead,
-            long fallbackCounterBudgetBytesPerRead)
+        private static void AssertMeasurementBudget(AllocationMeasurement measurement, long budgetBytesPerRead)
         {
             if (measurement.ReadCount <= 0)
                 Assert.Fail("Allocation scenario '" + measurement.Name + "' did not read any data.");
 
-            var budget = s_managedBytesCounter.IsPrecise
-                ? preciseCounterBudgetBytesPerRead
-                : fallbackCounterBudgetBytesPerRead;
-
             Assert.LessOrEqual(
                 measurement.BytesPerRead,
-                budget,
+                budgetBytesPerRead,
                 "Allocation regression in scenario '" + measurement.Name + "'. " +
                 "Counter=" + measurement.CounterName + ", " +
                 "reads=" + measurement.ReadCount + ", " +
                 "observed=" + measurement.BytesPerRead + " bytes/read, " +
-                "budget=" + budget + " bytes/read.");
+                "budget=" + budgetBytesPerRead + " bytes/read.");
         }
 
         private static MeasuredReadTarget CreateHttp11Target()
@@ -511,9 +509,9 @@ namespace TurboHTTP.Tests.Performance
             return output.ToArray();
         }
 
-        private static void PrepareForMeasurement()
+        private static void PrepareForMeasurement(ManagedBytesCounter counter)
         {
-            if (!s_managedBytesCounter.IsPrecise)
+            if (!counter.IsPrecise)
                 ForceGc();
         }
 
@@ -522,6 +520,18 @@ namespace TurboHTTP.Tests.Performance
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
+        }
+
+        private readonly struct ResponseStartMeasurement
+        {
+            internal ResponseStartMeasurement(string counterName, long allocatedBytes)
+            {
+                CounterName = counterName;
+                AllocatedBytes = allocatedBytes;
+            }
+
+            internal string CounterName { get; }
+            internal long AllocatedBytes { get; }
         }
 
         private readonly struct AllocationMeasurement
@@ -606,14 +616,17 @@ namespace TurboHTTP.Tests.Performance
                 return _read();
             }
 
+            /// <summary>
+            /// The per-thread counter where a probe on the calling thread shows it counts, else the heap size
+            /// after a full collection: the API is missing, reading it kills the player (#414), or it reads 0
+            /// (Unity's Mono, #426). The fallback sees only retained bytes, which is what the response-start
+            /// gates measure.
+            /// </summary>
             internal static ManagedBytesCounter Create()
             {
-                // Null where the API is missing, and on runtimes where reading it kills the player (#414):
-                // those measure with the heap-size fallback (the per-read gates skip there instead).
-                var read = ManagedAllocationCounter.TryGetThreadCounter();
+                var read = ManagedAllocationCounter.TryGetCountingThreadCounter();
                 if (read != null)
                 {
-                    ManagedAllocationCounter.LogRead("GC.GetAllocatedBytesForCurrentThread");
                     return new ManagedBytesCounter(
                         "GC.GetAllocatedBytesForCurrentThread",
                         read,

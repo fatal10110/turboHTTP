@@ -45,7 +45,7 @@
 #   21 WebSocketHandshakeReadCancellationTests.Upgrade_AbandonedReadFaultsLater_FaultIsObserved
 # Raised from 18 to 21 (#365): 19-21 are new tests from #346 and #357, not tests that stopped running.
 #
-# Player-iOS-2021.3 32: a Unity 2021.3 IL2CPP iOS player (the x86_64 simulator player; no script reads this key
+# Player-iOS-2021.3 33: a Unity 2021.3 IL2CPP iOS player (the x86_64 simulator player; no script reads this key
 # yet). Reading a managed allocation counter kills that player with SIGILL (#414), so every test that needs the
 # per-thread counter skips there with "[env] Reading a managed allocation counter kills Unity 2021.3 IL2CPP iOS
 # players with SIGILL (#414).": the Player-iOS list 1-21, plus
@@ -54,11 +54,15 @@
 #   24-32 StreamingAllocationGateTests per-read gates: Http11StreamingRead_*, Http2StreamingRead_*,
 #         DecompressionStreamingRead_*, RetriedStreamingRead_*, RedirectedStreamingRead_*, CacheReplayStreamingRead_*,
 #         Http11ChunkedStreamingReadWithoutTrailers_*, Http11StreamedUploadKnownLengthWithoutExpect_*,
-#         Http11StreamedUploadChunkedWithoutTrailers_* (the GC.GetTotalMemory(true) fallback frees per-read garbage
-#         before counting it, so these would pass without measuring); the two *_ResponseStart_* gates still run there.
+#         Http11StreamedUploadChunkedWithoutTrailers_* (AllocationMeter.Calibrate skips before reading any counter,
+#         since the GC.GetTotalMemory(true) fallback frees per-read garbage before counting it and would pass
+#         without measuring); the two *_ResponseStart_* gates still run there.
+#   33    AllocationMeterTests.Calibrated_CountsAKnownAllocation (AllocationMeter.Calibrate skips, as for 24-32)
+# Raised from 32 to 33 (#426): 33 is a new test that checks the meter counts a known allocation, not a test
+# that stopped running.
 # <run target> <max skipped>
 EditMode 0
 PlayMode 3
 Player-Android 16
 Player-iOS 21
-Player-iOS-2021.3 32
+Player-iOS-2021.3 33
