@@ -267,11 +267,12 @@ namespace TurboHTTP.Transport
             UHttpRequest request,
             IHttpHandler handler,
             RequestContext context,
-            CancellationToken ct)
+            CancellationToken ct,
+            CancellationToken callerToken)
         {
             try
             {
-                await connection.DispatchAsync(request, handler, context, ct).ConfigureAwait(false);
+                await connection.DispatchAsync(request, handler, context, ct, callerToken).ConfigureAwait(false);
             }
             catch (Exception) when (!connection.AcceptsNewStreams)
             {
@@ -571,7 +572,8 @@ namespace TurboHTTP.Transport
                         port,
                         secure,
                         proxy,
-                        ct).ConfigureAwait(false);
+                        ct,
+                        cancellationToken).ConfigureAwait(false);
                     return;
                 }
 
@@ -585,7 +587,7 @@ namespace TurboHTTP.Transport
                     if (h2Conn != null)
                     {
                         context.RecordEvent("TransportH2Reuse");
-                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
+                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
                             .ConfigureAwait(false);
                         return;
                     }
@@ -611,7 +613,7 @@ namespace TurboHTTP.Transport
 
                     if (dialFallback != null)
                     {
-                        await DispatchOnH2ConnectionAsync(dialFallback, request, handler, context, ct)
+                        await DispatchOnH2ConnectionAsync(dialFallback, request, handler, context, ct, cancellationToken)
                             .ConfigureAwait(false);
                         return;
                     }
@@ -636,7 +638,7 @@ namespace TurboHTTP.Transport
 
                         lease = null;
                         _h2Manager.ReleaseExtraDial(ref extraDial);
-                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
+                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
                             .ConfigureAwait(false);
                         return;
                     }
@@ -688,7 +690,7 @@ namespace TurboHTTP.Transport
                                 var h2Conn = await _h2Manager.GetOrCreateAsync(
                                     host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
                                 freshLease = null;
-                                await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct)
+                                await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
                                     .ConfigureAwait(false);
                                 return;
                             }
@@ -789,6 +791,11 @@ namespace TurboHTTP.Transport
                 case HandlerCallbackException handlerFault:
                     context.RecordEvent("RequestFailed");
                     return handlerFault.InnerException ?? handlerFault;
+                case OperationCanceledException _ when !timedOut && !callerCanceled:
+                    // Neither the caller nor the deadline cancelled: a library-internal cancellation (a
+                    // connection or stream torn down) is a network failure, never an
+                    // OperationCanceledException the caller did not ask for (#409).
+                    return new UHttpException(new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
                 case OperationCanceledException _:
                 case IOException _ when timedOut || callerCanceled:
                 case SocketException _ when timedOut || callerCanceled:
@@ -839,7 +846,8 @@ namespace TurboHTTP.Transport
             int port,
             bool secure,
             ProxySettings proxy,
-            CancellationToken ct)
+            CancellationToken ct,
+            CancellationToken callerToken)
         {
             if (proxy?.Address == null)
             {
@@ -862,7 +870,7 @@ namespace TurboHTTP.Transport
                 {
                     var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
                     context.RecordEvent("TransportProxyH2Reuse");
-                    await DispatchOnH2ConnectionAsync(existingH2, tunneledRequest, handler, context, ct)
+                    await DispatchOnH2ConnectionAsync(existingH2, tunneledRequest, handler, context, ct, callerToken)
                         .ConfigureAwait(false);
                     return;
                 }
@@ -892,6 +900,7 @@ namespace TurboHTTP.Transport
                         handler,
                         context,
                         ct,
+                        callerToken,
                         interceptBasicProxyChallenge: answerBasicChallenge)
                     .ConfigureAwait(false);
                 if (delivered)
@@ -911,7 +920,8 @@ namespace TurboHTTP.Transport
                         request,
                         handler,
                         context,
-                        ct)
+                        ct,
+                        callerToken)
                     .ConfigureAwait(false);
                 return;
             }
@@ -946,7 +956,7 @@ namespace TurboHTTP.Transport
                 var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
                 if (dialFallback != null)
                 {
-                    await DispatchOnH2ConnectionAsync(dialFallback, tunneledRequest, handler, context, ct)
+                    await DispatchOnH2ConnectionAsync(dialFallback, tunneledRequest, handler, context, ct, callerToken)
                         .ConfigureAwait(false);
                     return;
                 }
@@ -976,7 +986,7 @@ namespace TurboHTTP.Transport
 
                     lease = null;
                     _h2Manager.ReleaseExtraDial(ref extraDial);
-                    await DispatchOnH2ConnectionAsync(h2Conn, tunneledRequest, handler, context, ct)
+                    await DispatchOnH2ConnectionAsync(h2Conn, tunneledRequest, handler, context, ct, callerToken)
                         .ConfigureAwait(false);
                     return;
                 }
@@ -996,6 +1006,7 @@ namespace TurboHTTP.Transport
                         handler,
                         context,
                         ct,
+                        callerToken,
                         lease)
                     .ConfigureAwait(false);
                 lease = null;
@@ -1053,6 +1064,7 @@ namespace TurboHTTP.Transport
             IHttpHandler handler,
             RequestContext context,
             CancellationToken ct,
+            CancellationToken callerToken,
             ConnectionLease preparedLease = null,
             bool interceptBasicProxyChallenge = false)
         {
@@ -1132,7 +1144,7 @@ namespace TurboHTTP.Transport
                                 .ConfigureAwait(false);
                             freshLease = null;
 
-                            await DispatchOnH2ConnectionAsync(h2Conn, dispatchRequest, handler, context, ct)
+                            await DispatchOnH2ConnectionAsync(h2Conn, dispatchRequest, handler, context, ct, callerToken)
                                 .ConfigureAwait(false);
                             return true;
                         }
