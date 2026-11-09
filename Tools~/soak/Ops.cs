@@ -54,8 +54,24 @@ namespace TurboHTTP.Tools.Soak
             return false;
         }
 
+        /// <summary>
+        /// Whether the profile stalls whole directions of a connection: the HTTP/2 rows there get
+        /// <see cref="SoakClient"/>'s longer budget, every other row keeps the client's default timeout.
+        /// </summary>
+        public static bool Stalls(string profile)
+        {
+            foreach (var p in FaultProfile.All())
+            {
+                if (p.Name == profile)
+                    return p.StallChance > 0;
+            }
+
+            return false;
+        }
+
+        /// <param name="h2Timeout">The request timeout of the HTTP/2 data rows, or null for the client's default.</param>
         public static Task<string> RunAsync(string op, UHttpClient client, Ports ports, Random random,
-            CancellationTokenSource cancel, CancellationToken watchdog)
+            CancellationTokenSource cancel, CancellationToken watchdog, TimeSpan? h2Timeout = null)
         {
             string h1 = "http://127.0.0.1:" + ports.H1;
             string h2 = "https://127.0.0.1:" + ports.Tls;
@@ -65,11 +81,11 @@ namespace TurboHTTP.Tools.Soak
                 case "h1-get": return GetAsync(client, h1, Between(random, 1, 64 * 1024), cancel.Token);
                 case "h1-echo": return EchoAsync(client, h1, Between(random, 1, 256 * 1024), random, cancel.Token);
                 case "h1-stream": return StreamAsync(client, h1 + "/chunked/", Between(random, 64 * 1024, 1024 * 1024), cancel.Token);
-                case "h2-get": return GetAsync(client, h2, Between(random, 1, 64 * 1024), cancel.Token);
-                case "h2-get-large": return GetAsync(client, h2, Between(random, 512 * 1024, 3 * 1024 * 1024), cancel.Token);
-                case "h2-echo": return EchoAsync(client, h2, Between(random, 16 * 1024, 1024 * 1024), random, cancel.Token);
-                case "h2-stream": return StreamAsync(client, h2 + "/chunked/", Between(random, 256 * 1024, 2 * 1024 * 1024), cancel.Token);
-                case "h2-burst": return BurstAsync(client, h2, random, cancel.Token);
+                case "h2-get": return GetAsync(client, h2, Between(random, 1, 64 * 1024), cancel.Token, h2Timeout);
+                case "h2-get-large": return GetAsync(client, h2, Between(random, 512 * 1024, 3 * 1024 * 1024), cancel.Token, h2Timeout);
+                case "h2-echo": return EchoAsync(client, h2, Between(random, 16 * 1024, 1024 * 1024), random, cancel.Token, h2Timeout);
+                case "h2-stream": return StreamAsync(client, h2 + "/chunked/", Between(random, 256 * 1024, 2 * 1024 * 1024), cancel.Token, h2Timeout);
+                case "h2-burst": return BurstAsync(client, h2, random, cancel.Token, h2Timeout);
                 case "cancel-early": return CancelEarlyAsync(client, any, random, cancel);
                 case "cancel-mid-body": return CancelMidBodyAsync(client, any, random, cancel);
                 case "ws-echo": return WebSocketAsync("ws://127.0.0.1:" + ports.H1 + "/ws", random, close: true, cancel.Token);
@@ -78,28 +94,31 @@ namespace TurboHTTP.Tools.Soak
             }
         }
 
-        private static async Task<string> GetAsync(UHttpClient client, string origin, int size, CancellationToken ct)
+        private static UHttpRequest WithTimeout(UHttpRequest request, TimeSpan? timeout) =>
+            timeout.HasValue ? request.WithTimeout(timeout.Value) : request;
+
+        private static async Task<string> GetAsync(UHttpClient client, string origin, int size, CancellationToken ct, TimeSpan? timeout = null)
         {
-            using var response = await client.SendBufferedAsync(client.Get(origin + "/bytes/" + size), ct).ConfigureAwait(false);
+            using var response = await client.SendBufferedAsync(WithTimeout(client.Get(origin + "/bytes/" + size), timeout), ct).ConfigureAwait(false);
             Check(response.StatusCode, response.Headers, origin);
             VerifyPattern(response.Body, size);
             return "ok";
         }
 
-        private static async Task<string> EchoAsync(UHttpClient client, string origin, int size, Random random, CancellationToken ct)
+        private static async Task<string> EchoAsync(UHttpClient client, string origin, int size, Random random, CancellationToken ct, TimeSpan? timeout = null)
         {
             var body = new byte[size];
             random.NextBytes(body);
-            using var response = await client.SendBufferedAsync(client.Post(origin + "/echo").WithBody(body), ct).ConfigureAwait(false);
+            using var response = await client.SendBufferedAsync(WithTimeout(client.Post(origin + "/echo").WithBody(body), timeout), ct).ConfigureAwait(false);
             Check(response.StatusCode, response.Headers, origin);
             if (response.Body.Length != size || !response.Body.ToArray().AsSpan().SequenceEqual(body))
                 throw new VerificationException("echo body differs (" + response.Body.Length + " of " + size + " bytes back)");
             return "ok";
         }
 
-        private static async Task<string> StreamAsync(UHttpClient client, string prefix, int size, CancellationToken ct)
+        private static async Task<string> StreamAsync(UHttpClient client, string prefix, int size, CancellationToken ct, TimeSpan? timeout = null)
         {
-            using var response = await client.SendStreamingAsync(client.Get(prefix + size), ct).ConfigureAwait(false);
+            using var response = await client.SendStreamingAsync(WithTimeout(client.Get(prefix + size), timeout), ct).ConfigureAwait(false);
             Check(response.StatusCode, response.Headers, prefix);
             long total = await ReadVerifiedAsync(response, long.MaxValue, ct).ConfigureAwait(false);
             if (total != size)
@@ -108,11 +127,11 @@ namespace TurboHTTP.Tools.Soak
         }
 
         /// <summary>16 concurrent requests: on the HTTP/2 rows they multiplex on one connection.</summary>
-        private static async Task<string> BurstAsync(UHttpClient client, string origin, Random random, CancellationToken ct)
+        private static async Task<string> BurstAsync(UHttpClient client, string origin, Random random, CancellationToken ct, TimeSpan? timeout = null)
         {
             var tasks = new Task<string>[16];
             for (int i = 0; i < tasks.Length; i++)
-                tasks[i] = GetAsync(client, origin, Between(random, 1, 32 * 1024), ct);
+                tasks[i] = GetAsync(client, origin, Between(random, 1, 32 * 1024), ct, timeout);
             try
             {
                 await Task.WhenAll(tasks).ConfigureAwait(false);

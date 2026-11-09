@@ -38,6 +38,11 @@ hold nothing but TurboHTTP:
   A user-space proxy cannot drop single packets: the kernel retransmits below it. "Loss" here is the
   stall that retransmission causes, or a reset. This is not a packet-loss validation; kernel `tc netem`
   (root or CAP_NET_ADMIN) is not used.
+
+  Requests time out after 30 s, except the HTTP/2 rows of `lossy`, which get 90 s. The proxy delivers each
+  direction in order and stalls it as a whole, so the server's WINDOW_UPDATEs wait behind download DATA,
+  and the test server pins its flow-control windows at 65,535 bytes. A 1 MiB HTTP/2 echo can therefore
+  legitimately need more than 30 s there (#409). Both limits are below the 120 s operation watchdog.
 - **Client workers** (8 by default) draw operations from a seeded mix, each against a random profile:
   buffered GETs and echo POSTs on both protocols, streamed chunked downloads, 512 KiB to 3 MiB HTTP/2
   downloads and 1 MiB uploads (flow control), bursts of 16 multiplexed HTTP/2 requests, cancellation
