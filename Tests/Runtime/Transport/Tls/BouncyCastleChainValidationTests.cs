@@ -105,6 +105,15 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void Loopback_SelfSignedWithoutAnchor_FailsWithAuthenticationException()
         {
+            // Linux has no verifier, so the handshake fails with certificate_unknown before any anchor
+            // question; VerificationFailClosedTests.Linux_ProductionConfiguration_RejectsWithNoVerifier
+            // covers that rejection.
+            if (ServerCertificateVerifier.CurrentPlatform == VerifierPlatform.Linux)
+            {
+                TestRequirements.IgnoreEnvironment("BouncyCastle has no certificate verifier on Linux (#248).");
+                return;
+            }
+
             var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
             using var server = StartShortLivedServer();
             if (server == null)
