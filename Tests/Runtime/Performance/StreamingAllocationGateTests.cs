@@ -31,6 +31,7 @@ namespace TurboHTTP.Tests.Performance
         private const int Http2ChunkBytes = 1024;
         private const int Http2ChunkCount = 512;
         private const int DecompressionChunkBytes = 4096;
+        private const int MeasurementRounds = 5;
 
         private static readonly byte[] s_http11Payload = CreatePatternBytes(Http11ChunkBytes * Http11ChunkCount);
         private static readonly byte[] s_http2Chunk = CreatePatternBytes(Http2ChunkBytes);
@@ -39,16 +40,19 @@ namespace TurboHTTP.Tests.Performance
         private const int CacheStreamingBodyBytes = 2 * 1024 * 1024;
         private static readonly byte[] s_cacheStreamingPayload = CreatePatternBytes(CacheStreamingBodyBytes);
 
-        // Frame-counter budgets above 32 (768 for decompression) hold the per-read allocations Unity's Mono
-        // measures today: 41 B/read here, 33 for chunked reads, 4297 for decompression (#434). Any new per-read
-        // allocation still fails them; restore 32 / 32 / 768 once #434 removes those allocations.
+        // Optimized-frame budgets above 32 (768 for decompression) hold the per-read allocations Unity's Mono
+        // editor measures today: 40 B/read here, 32 for chunked reads, 4244-4265 for decompression (#434). Any
+        // new per-read allocation still fails them; restore 32 / 32 / 768 once #434 removes those allocations.
+        // The unoptimized budgets are what the Test Runner's development players measure (#438): with the
+        // optimizer off every async method on the read path allocates its state machine, 72 B per call on the
+        // Linux Mono player and about 98 on arm64 IL2CPP. Linux Mono: 694 B/read here, 1349 chunked, 394 HTTP/2,
+        // 4327-4348 decompression (#434). arm64 IL2CPP: 705, 1371, 411, 4104-4127 (#416).
         [UnityTest]
         public IEnumerator Http11StreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
         {
             return MeasureScenario(
                 CreateHttp11Target,
-                preciseCounterBudgetBytesPerRead: 0,
-                frameCounterBudgetBytesPerRead: 48);
+                new AllocationBudget(precise: 0, optimizedFrame: 48, unoptimizedMonoFrame: 712, unoptimizedIl2CppFrame: 728));
         }
 
         [UnityTest]
@@ -56,8 +60,7 @@ namespace TurboHTTP.Tests.Performance
         {
             return MeasureScenario(
                 CreateHttp2Target,
-                preciseCounterBudgetBytesPerRead: 0,
-                frameCounterBudgetBytesPerRead: 32);
+                new AllocationBudget(precise: 0, optimizedFrame: 32, unoptimizedMonoFrame: 416, unoptimizedIl2CppFrame: 432));
         }
 
         [UnityTest]
@@ -65,8 +68,7 @@ namespace TurboHTTP.Tests.Performance
         {
             return MeasureScenario(
                 CreateDecompressionTarget,
-                preciseCounterBudgetBytesPerRead: 384,
-                frameCounterBudgetBytesPerRead: 4352);
+                new AllocationBudget(precise: 384, optimizedFrame: 4352, unoptimizedMonoFrame: 4384, unoptimizedIl2CppFrame: 4160));
         }
 
         // #52: the cache must not collect the whole response before the caller can read it. These gates
@@ -219,13 +221,12 @@ namespace TurboHTTP.Tests.Performance
 
         /// <summary>
         /// Managed bytes per read while the caller drains a warmed-up target. The meter must show it counts
-        /// (#426): where the per-thread counter reads nothing (Unity's Mono), the frame counter measures a frame
-        /// that runs only the drain, under the looser frame budget; where neither counts, the gate skips.
+        /// (#426). Each of <see cref="MeasurementRounds"/> rounds drains a fresh target in a frame of its own and
+        /// the smallest round is judged (#438): other work only adds to a reading. Where the per-thread counter
+        /// does not measure (Unity's Mono, IL2CPP), the frame counter does, and idle frames show what the rest of
+        /// a frame costs; where neither counts, the gate skips.
         /// </summary>
-        private static IEnumerator MeasureScenario(
-            Func<MeasuredReadTarget> factory,
-            long preciseCounterBudgetBytesPerRead,
-            long frameCounterBudgetBytesPerRead)
+        private static IEnumerator MeasureScenario(Func<MeasuredReadTarget> factory, AllocationBudget budget)
         {
             if (factory == null)
                 throw new ArgumentNullException(nameof(factory));
@@ -235,47 +236,94 @@ namespace TurboHTTP.Tests.Performance
 
             using (var warmup = factory())
             {
-                DrainTarget(warmup);
+                DrainTarget(warmup, new byte[warmup.BufferSize]);
             }
 
-            using var target = factory();
+            var rounds = new AllocationRounds();
+            yield return RecordIdleFrames(meter, rounds);
 
-            yield return null;
-            meter.Begin();
-            var readCount = DrainTarget(target);
-            meter.End();
-            yield return null;
+            string name = null;
+            for (var round = 0; round < MeasurementRounds; round++)
+            {
+                using var target = factory();
+                name = target.Name;
+                var buffer = new byte[target.BufferSize];
 
-            var measurement = CreateMeasurement(target.Name, meter, readCount, "reads");
-            AssertMeasurementBudget(
-                measurement,
-                meter.IsPrecise ? preciseCounterBudgetBytesPerRead : frameCounterBudgetBytesPerRead);
+                yield return null;
+                meter.Begin();
+                var readCount = DrainTarget(target, buffer);
+                meter.End();
+                yield return null;
+
+                if (readCount <= 0)
+                    Assert.Fail("Allocation scenario '" + name + "' did not read any data.");
+
+                rounds.AddRound(meter.Allocated, readCount);
+            }
+
+            AssertWithinBudget(name, "read", meter, rounds, budget);
         }
 
-        private static AllocationMeasurement CreateMeasurement(string name, AllocationMeter meter, int count, string unit)
+        /// <summary>
+        /// Frames that run nothing but this coroutine, read by the frame counter: the smallest is what the rest of
+        /// a frame allocates on its own. A precise counter sees only the section, so it needs none.
+        /// </summary>
+        private static IEnumerator RecordIdleFrames(AllocationMeter meter, AllocationRounds rounds)
         {
-            var delta = Math.Max(0L, meter.Allocated);
-            var measurement = new AllocationMeasurement(
-                name,
-                meter.Name,
-                count,
-                delta,
-                count == 0 ? delta : delta / count);
+            if (meter.IsPrecise)
+                yield break;
+
+            yield return null;
+            for (var i = 0; i < MeasurementRounds; i++)
+            {
+                yield return null;
+                rounds.AddIdleFrame(meter.Allocated);
+            }
+        }
+
+        private static void AssertWithinBudget(
+            string name,
+            string unit,
+            AllocationMeter meter,
+            AllocationRounds rounds,
+            AllocationBudget budget)
+        {
+            var profile = AllocationBudget.CurrentProfile(meter.IsPrecise);
+            var limit = budget.For(profile);
+            var reading =
+                "Counter=" + meter.Name + ", profile=" + profile + ", " + unit + "s=" + rounds.Units +
+                ", observed=" + rounds.BytesPerUnit + " bytes/" + unit +
+                " (smallest of " + MeasurementRounds + " rounds), budget=" + limit + " bytes/" + unit +
+                ", foreign floor=" + rounds.ForeignFloorBytes + " bytes/frame, " + rounds.Describe() + ".";
 
             TestContext.WriteLine(
-                "[Phase22a.6][Allocation] " + measurement.Name +
-                " counter=" + measurement.CounterName +
-                " " + unit + "=" + measurement.ReadCount +
-                " totalBytes=" + measurement.TotalManagedBytes +
-                " bytes/" + unit.TrimEnd('s') + "=" + measurement.BytesPerRead);
+                "[Phase22a.6][Allocation] " + name +
+                " counter=" + meter.Name +
+                " profile=" + profile +
+                " " + unit + "s=" + rounds.Units +
+                " totalBytes=" + rounds.TotalBytes +
+                " bytes/" + unit + "=" + rounds.BytesPerUnit +
+                " budget=" + limit +
+                " " + rounds.Describe());
 
-            return measurement;
+            switch (rounds.Judge(limit))
+            {
+                case AllocationVerdict.Within:
+                    return;
+                case AllocationVerdict.Unresolved:
+                    TestRequirements.IgnoreEnvironment(
+                        "Other work in the measured frames allocates enough to hide whether scenario '" + name +
+                        "' is within budget. " + reading);
+                    return;
+                default:
+                    Assert.Fail("Allocation regression in scenario '" + name + "'. " + reading);
+                    return;
+            }
         }
 
-        private static int DrainTarget(MeasuredReadTarget target)
+        private static int DrainTarget(MeasuredReadTarget target, byte[] buffer)
         {
             var reads = 0;
-            var buffer = new byte[target.BufferSize];
             while (true)
             {
                 var read = target.Read(buffer);
@@ -286,21 +334,6 @@ namespace TurboHTTP.Tests.Performance
             }
 
             return reads;
-        }
-
-        private static void AssertMeasurementBudget(AllocationMeasurement measurement, long budgetBytesPerRead)
-        {
-            if (measurement.ReadCount <= 0)
-                Assert.Fail("Allocation scenario '" + measurement.Name + "' did not read any data.");
-
-            Assert.LessOrEqual(
-                measurement.BytesPerRead,
-                budgetBytesPerRead,
-                "Allocation regression in scenario '" + measurement.Name + "'. " +
-                "Counter=" + measurement.CounterName + ", " +
-                "reads=" + measurement.ReadCount + ", " +
-                "observed=" + measurement.BytesPerRead + " bytes/read, " +
-                "budget=" + budgetBytesPerRead + " bytes/read.");
         }
 
         private static MeasuredReadTarget CreateHttp11Target()
@@ -532,29 +565,6 @@ namespace TurboHTTP.Tests.Performance
 
             internal string CounterName { get; }
             internal long AllocatedBytes { get; }
-        }
-
-        private readonly struct AllocationMeasurement
-        {
-            internal AllocationMeasurement(
-                string name,
-                string counterName,
-                int readCount,
-                long totalManagedBytes,
-                long bytesPerRead)
-            {
-                Name = name;
-                CounterName = counterName;
-                ReadCount = readCount;
-                TotalManagedBytes = totalManagedBytes;
-                BytesPerRead = bytesPerRead;
-            }
-
-            internal string Name { get; }
-            internal string CounterName { get; }
-            internal int ReadCount { get; }
-            internal long TotalManagedBytes { get; }
-            internal long BytesPerRead { get; }
         }
 
         private sealed class MeasuredReadTarget : IDisposable
