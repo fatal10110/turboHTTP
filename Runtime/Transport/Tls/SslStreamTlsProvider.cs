@@ -108,12 +108,14 @@ namespace TurboHTTP.Transport.Tls
         // A runtime that accepts the ALPN options but ignores them throws
         // PlatformNotSupportedException when the result is read (Unity's Mono class library,
         // mono#12880): the extension never reaches the wire, so it can never select h2. The read
-        // happens on a stream that never handshakes, so the probe touches no socket.
+        // happens on a stream that never handshakes, so the probe touches no socket. The inner
+        // stream is a MemoryStream: .NET rejects Stream.Null as an SslStream inner stream
+        // (ArgumentNullException), which would read as "no ALPN" on every runtime.
         private static bool ProbeNegotiatedProtocol()
         {
             try
             {
-                using var probe = new SslStream(Stream.Null);
+                using var probe = new SslStream(new MemoryStream());
                 return ReportsNegotiatedProtocol(() => ReadNegotiatedProtocol(probe));
             }
             catch (Exception)
