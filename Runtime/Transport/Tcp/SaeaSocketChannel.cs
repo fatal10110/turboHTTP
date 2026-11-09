@@ -101,6 +101,14 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal Action TestHookBeforeRegister { get; set; }
 
+        /// <summary>
+        /// Test hook: runs on the completing thread when a pending receive ends, with its socket error,
+        /// before the channel marks the receive as ended. <see cref="Dispose"/> cannot close the socket
+        /// on the shutdown-first path until this returned, so a test can check the descriptor's state
+        /// at the exact moment the receive ended (#410).
+        /// </summary>
+        internal Action<SocketError> TestHookReceiveEnded { get; set; }
+
         /// <summary>True once <see cref="Dispose"/> returned the pooled buffers (test hook, #168).</summary>
         internal bool BuffersReleased => Volatile.Read(ref _buffersReleased) != 0;
 
@@ -267,6 +275,8 @@ namespace TurboHTTP.Transport.Tcp
 
         private void OnRecvCompleted(object sender, SocketAsyncEventArgs saea)
         {
+            TestHookReceiveEnded?.Invoke(saea.SocketError);
+
             // Clear active flag BEFORE delivering result so Dispose()'s spin-wait unblocks.
             _recvActive = 0;
             ResolveFromSaea(saea, _recvSource);
@@ -316,11 +326,13 @@ namespace TurboHTTP.Transport.Tcp
             else
             {
                 // Selector platforms (Mono/IL2CPP on kqueue/epoll): shut down first, so a pending
-                // receive ends with end of stream while the descriptor is still open, and close
-                // only after it ended. IL2CPP's close does not remove a pending job from its
-                // selector, so closing first would let a new socket reuse the number behind the
-                // stale job (#384). An operation that did not end within the drain bound falls
-                // back to closing it (the pre-#384 order) before draining once more.
+                // receive ends while the descriptor is still open, and close only after it ended.
+                // The receive reports Interrupted there, not end of stream: the Mono and IL2CPP
+                // socket layers turn a 0-byte read after a local SHUT_RD into EINTR, which maps to
+                // OperationCanceledException like an abort (#410). IL2CPP's close does not remove
+                // a pending job from its selector, so closing first would let a new socket reuse
+                // the number behind the stale job (#384). An operation that did not end within the
+                // drain bound falls back to closing it (the pre-#384 order) before draining once more.
                 try { _socket.Shutdown(SocketShutdown.Both); } catch { }
                 drained = WaitForInFlightOperations(drainTimeoutMs);
                 try { _socket.Dispose(); } catch { }
@@ -382,20 +394,12 @@ namespace TurboHTTP.Transport.Tcp
         }
 
         /// <summary>
-        /// A token cancelled between the entry check and the socket call disposes the socket
-        /// through its registration (inline when already cancelled), so the socket call throws
-        /// <see cref="ObjectDisposedException"/> or reports an abort. That is a cancellation (#170).
+        /// Cancellation wins: once <paramref name="ct"/> is cancelled, any failure of the operation is
+        /// reported as that cancellation. The registration disposes the socket, so the socket call
+        /// throws <see cref="ObjectDisposedException"/> or reports an abort (#170), and an operation
+        /// that ends with another error while the token is cancelled lost the race to it too (#415).
         /// </summary>
-        private static bool IsCancellationRace(Exception ex, CancellationToken ct)
-        {
-            if (!ct.IsCancellationRequested)
-                return false;
-            if (ex is OperationCanceledException oce)
-                return oce.CancellationToken != ct;
-            return ex is ObjectDisposedException ||
-                   (ex is SocketException se &&
-                    (se.SocketErrorCode == SocketError.OperationAborted ||
-                     se.SocketErrorCode == SocketError.Interrupted));
-        }
+        private static bool IsCancellationRace(Exception ex, CancellationToken ct) =>
+            ct.IsCancellationRequested && !(ex is OperationCanceledException oce && oce.CancellationToken == ct);
     }
 }
