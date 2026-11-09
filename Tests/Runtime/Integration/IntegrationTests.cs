@@ -12,6 +12,7 @@ using TurboHTTP.JSON;
 using TurboHTTP.Middleware;
 using TurboHTTP.Testing;
 using TurboHTTP.Tests;
+using TurboHTTP.Tests.Transport.Tls;
 using TurboHTTP.Transport;
 using TurboHTTP.Transport.Tcp;
 using TurboHTTP.Transport.Tls;
@@ -613,23 +614,17 @@ namespace TurboHTTP.Tests.Integration
 
                 bool usedHttp2 = TryHasHttp2Connection(transport, "httpbin.org", 443);
                 string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "httpbin.org");
-                if (string.Equals(negotiatedAlpn, "h2", StringComparison.OrdinalIgnoreCase))
-                {
-                    Assert.IsTrue(
-                        usedHttp2,
-                        "Negotiated ALPN was h2 but HTTP/2 connection was not established.");
-                }
-                else
-                {
-                    Assert.IsFalse(
-                        usedHttp2,
-                        "Negotiated ALPN was not h2; expected HTTP/1.1 fallback.");
-                    Assert.That(
-                        negotiatedAlpn,
-                        Is.Null.Or.EqualTo("http/1.1"),
-                        "Expected ALPN fallback to be null or http/1.1.");
-                }
+                // #413: h2 where the pool's provider can negotiate ALPN, else the asserted HTTP/1.1 fallback.
+                AlpnAssert.UsedHttp2(PoolProvider(pool, "httpbin.org"), negotiatedAlpn, usedHttp2, "httpbin.org");
             }).GetAwaiter().GetResult();
+        }
+
+        private static ITlsProvider PoolProvider(TcpConnectionPool pool, string hostFragment)
+        {
+            Assert.IsTrue(pool.TryGetTlsProviderName(hostFragment, out var providerName) && providerName != null,
+                "Expected to capture TLS provider name from pooled connection");
+            return TlsProviderSelector.GetProvider(
+                providerName == "BouncyCastle" ? TlsBackend.BouncyCastle : TlsBackend.SslStream);
         }
 
         private static string TryGetNegotiatedAlpn(TcpConnectionPool pool, string hostFragment)

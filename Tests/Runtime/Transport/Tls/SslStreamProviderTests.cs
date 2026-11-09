@@ -79,20 +79,18 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         [Category("Integration")]
         [Category("ExternalNetwork")]
-        public void WrapAsync_WithAlpn_NegotiatesH2()        {
-            Task.Run(async () =>
+        public void WrapAsync_WithAlpn_NegotiatesH2()
+        {
+            AssertAsync.Run(async () =>
             {
                 var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
                 var result = await WrapAsync("www.google.com", "www.google.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
 
                 Assert.IsNotNull(result.SecureStream);
                 Assert.AreEqual("SslStream", result.ProviderName);
-                if (provider.IsAlpnSupported())
-                {
-                    // Some environments/proxies can complete TLS without surfacing ALPN selection.
-                    Assert.That(result.NegotiatedAlpn, Is.EqualTo("h2").Or.EqualTo("http/1.1").Or.Null);
-                }
-            }).GetAwaiter().GetResult();
+                // #413: strict where the runtime can negotiate ALPN, a skip naming the reason where it cannot.
+                AlpnAssert.NegotiatedH2(provider, result.NegotiatedAlpn, "www.google.com");
+            });
         }
 
         [Test]
