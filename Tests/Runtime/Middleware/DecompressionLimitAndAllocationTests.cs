@@ -4,7 +4,6 @@ using System.Collections;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -282,7 +281,8 @@ namespace TurboHTTP.Tests.Middleware
         /// (resolved by reflection like the allocation gates) where it counts; Unity's Mono (Boehm GC) returns
         /// no data there, so the meter falls back to the profiler's "GC Allocated In Frame" counter around a
         /// frame that runs only the measured section (an upper bound: other work in that frame adds to it).
-        /// A runtime with neither skips the test instead of passing it vacuously.
+        /// A runtime with neither, or one where reading a counter kills the player (#414), skips the test
+        /// instead of passing it vacuously.
         /// </summary>
         private sealed class AllocationMeter : IDisposable
         {
@@ -299,15 +299,15 @@ namespace TurboHTTP.Tests.Middleware
 
             internal IEnumerator Calibrate()
             {
-                var api = typeof(GC).GetMethod(
-                    "GetAllocatedBytesForCurrentThread",
-                    BindingFlags.Public | BindingFlags.Static,
-                    binder: null,
-                    types: Type.EmptyTypes,
-                    modifiers: null);
-                if (api != null && api.ReturnType == typeof(long))
+                // Neither counter below may run here: the player would die instead of reporting (#414).
+                var unsafeReason = ManagedAllocationCounter.UnsafeRuntimeReason;
+                if (unsafeReason != null)
+                    TestRequirements.IgnoreEnvironment(unsafeReason);
+
+                var counter = ManagedAllocationCounter.TryGetThreadCounter();
+                if (counter != null)
                 {
-                    var counter = (Func<long>)Delegate.CreateDelegate(typeof(Func<long>), api);
+                    ManagedAllocationCounter.LogRead("GC.GetAllocatedBytesForCurrentThread");
                     var before = counter();
                     var probe = new byte[ProbeBytes];
                     var delta = counter() - before;
@@ -320,6 +320,7 @@ namespace TurboHTTP.Tests.Middleware
                     }
                 }
 
+                ManagedAllocationCounter.LogRead("ProfilerRecorder(GC Allocated In Frame)");
                 _frameRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Memory, "GC Allocated In Frame");
                 if (!_frameRecorder.Valid)
                     TestRequirements.IgnoreEnvironment("No managed allocation counter is available on this runtime.");

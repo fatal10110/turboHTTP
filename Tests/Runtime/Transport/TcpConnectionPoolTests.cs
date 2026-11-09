@@ -848,8 +848,8 @@ namespace TurboHTTP.Tests.Transport
                     var result = await wrapTask;
                     Assert.IsNotNull(result.SecureStream);
                     Assert.AreEqual("SslStream", result.ProviderName);
-                    Assert.That(result.NegotiatedAlpn, Is.EqualTo("h2").Or.EqualTo("http/1.1").Or.Null);
                     Assert.That(result.TlsVersion, Is.EqualTo("1.2").Or.EqualTo("1.3"));
+                    Tls.AlpnAssert.NegotiatedH2(provider, result.NegotiatedAlpn, "www.google.com");
                 }
                 finally
                 {

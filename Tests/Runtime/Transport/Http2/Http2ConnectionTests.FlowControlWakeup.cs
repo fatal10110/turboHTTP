@@ -319,7 +319,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var clientStream = new PostWriteHoldStream(duplex.ClientStream);
                 var conn = new Http2Connection(clientStream, "test.example.com", 443);
                 var serverCodec = new Http2FrameCodec(duplex.ServerStream);
-                var response = new StrongBox<UHttpStreamingResponse>();
+                var response = new StrongBox<Task<UHttpStreamingResponse>>();
                 try
                 {
                     await PeerUsesCreditBeforeWindowUpdateWriteReturnsAsync(
@@ -332,7 +332,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                     conn.Dispose();
                     // Disposed only now: before the held write is released, disposing would wait for
                     // it. The connection is gone, so this only releases the response (#366).
-                    response.Value?.Dispose();
+                    DisposeWhenCompleted(response.Value);
                 }
             });
         }
@@ -342,7 +342,7 @@ namespace TurboHTTP.Tests.Transport.Http2
             PostWriteHoldStream clientStream,
             Http2FrameCodec serverCodec,
             TestDuplexStream duplex,
-            StrongBox<UHttpStreamingResponse> responseOwner,
+            StrongBox<Task<UHttpStreamingResponse>> responseOwner,
             CancellationToken ct)
         {
             const int frameHeaderSize = 9;
@@ -352,6 +352,9 @@ namespace TurboHTTP.Tests.Transport.Http2
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/download"));
             var responseTask = conn.SendStreamingRequestAsync(request, new RequestContext(request), ct)
                 .AsTask();
+            // The caller owns the response from here on, including one that completes only after a failed
+            // assertion or watchdog below has ended this helper.
+            responseOwner.Value = responseTask;
             var headers = await ReadFrameMatchingAsync(serverCodec, f => f.Type == Http2FrameType.Headers, ct);
             int streamId = headers.StreamId;
 
@@ -360,7 +363,6 @@ namespace TurboHTTP.Tests.Transport.Http2
             await serverCodec.WriteFrameAsync(responseHeaders, ct);
             // The caller disposes it after releasing the held write and disposing the connection.
             var response = await WithWatchdogResult(responseTask, ct);
-            responseOwner.Value = response;
 
             // Use the whole stream receive window; the streaming consumer has not read anything.
             Assert.IsTrue(GetActiveStreams(conn).TryGetValue(streamId, out var stream));
@@ -446,6 +448,26 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         // --- helpers ---
+
+        // Releases the streaming response of pending: at once when it already completed, otherwise when the
+        // disposed connection ends it. A failed request has no response; its fault is observed (#366).
+        private static void DisposeWhenCompleted(Task<UHttpStreamingResponse> pending)
+        {
+            if (pending == null)
+                return;
+
+            _ = pending.ContinueWith(
+                static t =>
+                {
+                    if (t.Status == TaskStatus.RanToCompletion)
+                        t.Result?.Dispose();
+                    else
+                        _ = t.Exception;
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
 
         private static Task<UHttpResponse> SendPostAsync(
             Http2Connection conn, string path, int bodyLength, CancellationToken ct)

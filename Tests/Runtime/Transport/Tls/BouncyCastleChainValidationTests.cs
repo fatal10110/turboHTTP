@@ -105,6 +105,15 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void Loopback_SelfSignedWithoutAnchor_FailsWithAuthenticationException()
         {
+            // Linux has no verifier, so the handshake fails with certificate_unknown before any anchor
+            // question; VerificationFailClosedTests.Linux_ProductionConfiguration_RejectsWithNoVerifier
+            // covers that rejection.
+            if (ServerCertificateVerifier.CurrentPlatform == VerifierPlatform.Linux)
+            {
+                TestRequirements.IgnoreEnvironment("BouncyCastle has no certificate verifier on Linux (#248).");
+                return;
+            }
+
             var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
             using var server = StartShortLivedServer();
             if (server == null)
@@ -174,9 +183,10 @@ namespace TurboHTTP.Tests.Transport.Tls
             return server;
         }
 
-        // Self-signed with a validity period Apple accepts (#332): on Apple the 100-year
-        // TestLocalhostCertificate fails with bad_certificate (-67901) before the anchor check, so
-        // the "no anchor" cases use this one to reach unknown_ca on every platform.
+        // Self-signed with a validity period Apple accepts (#332; a long period on a certificate issued
+        // today fails with bad_certificate, -67901, before the anchor check) and, unlike
+        // TestLocalhostCertificate, registering no test anchor when loaded: the "no anchor" cases use
+        // this one to reach unknown_ca on every platform.
         private static BouncyCastleLoopbackServer StartShortLivedServer()
         {
             var certificate = TestShortLivedLocalhostCertificate.TryLoad();

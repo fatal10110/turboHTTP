@@ -62,18 +62,20 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         [Category("Integration")]
         [Category("ExternalNetwork")]
-        public void WrapAsync_WithAlpn_NegotiatesH2()        {
-            Task.Run(async () =>
+        public void WrapAsync_WithAlpn_NegotiatesH2()
+        {
+            AssertAsync.Run(async () =>
             {
-                TestRequirements.RequireBouncyCastle();
+                var provider = TestRequirements.RequireBouncyCastleProvider();
 
                 var result = await WrapAsync("www.google.com", "www.google.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
 
                 Assert.IsNotNull(result.SecureStream);
                 Assert.AreEqual("BouncyCastle", result.ProviderName);
-                Assert.That(result.NegotiatedAlpn, Is.EqualTo("h2").Or.EqualTo("http/1.1"));
                 Assert.IsNotNull(result.CipherSuite);
-            }).GetAwaiter().GetResult();
+                // #413: BouncyCastle always offers ALPN, so www.google.com must select h2.
+                AlpnAssert.NegotiatedH2(provider, result.NegotiatedAlpn, "www.google.com");
+            });
         }
 
         [Test]
