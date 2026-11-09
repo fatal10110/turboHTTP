@@ -102,6 +102,7 @@ namespace TurboHTTP.Tests.Transport
             }
             catch (SocketException e) when (e.SocketErrorCode == SocketError.Shutdown)
             {
+                // WSAESHUTDOWN (Windows): ended by the shutdown while the descriptor was open.
             }
             catch (OperationCanceledException)
             {

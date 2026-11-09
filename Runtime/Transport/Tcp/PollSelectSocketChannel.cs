@@ -128,8 +128,9 @@ namespace TurboHTTP.Transport.Tcp
         internal Action TestHookBeforeRegister { get; set; }
 
         /// <summary>
-        /// Test hook: runs on the poll thread when a pending send failed, before the failure
-        /// completes it, so a test can cancel the send's token in between (#415).
+        /// Test hook: runs when a send failed, before the failure completes it, so a test can cancel
+        /// the send's token in between (#415). It runs on the caller's thread for the inline attempt
+        /// and on the poll thread for a queued send.
         /// </summary>
         internal Action TestHookSendFailing { get; set; }
 
@@ -199,6 +200,7 @@ namespace TurboHTTP.Transport.Tcp
                 }
                 catch (Exception ex)
                 {
+                    TestHookSendFailing?.Invoke();
                     lock (_sendLock) { _sendBusy = false; }
                     if (IsLostToCancellation(ex, ct))
                         throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
@@ -606,7 +608,7 @@ namespace TurboHTTP.Transport.Tcp
             try { return await task.ConfigureAwait(false); }
             catch (Exception ex) when (IsLostToCancellation(ex, ct))
             {
-                throw new OperationCanceledException(ex.Message, ex, ct);
+                throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
             }
             finally { reg.Dispose(); }
         }
@@ -617,7 +619,7 @@ namespace TurboHTTP.Transport.Tcp
             try { await task.ConfigureAwait(false); }
             catch (Exception ex) when (IsLostToCancellation(ex, ct))
             {
-                throw new OperationCanceledException(ex.Message, ex, ct);
+                throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
             }
             finally { reg.Dispose(); }
         }

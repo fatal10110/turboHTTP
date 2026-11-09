@@ -45,6 +45,39 @@ namespace TurboHTTP.Tests.Transport
                     var oce = await AssertCanceledAsync(send);
                     Assert.AreEqual(cts.Token, oce.CancellationToken, "cancelled with the caller's token");
                     Assert.IsInstanceOf<SocketException>(oce.InnerException, "the poll thread's error is kept as the cause");
+                    StringAssert.StartsWith("Socket I/O was cancelled", oce.Message, "the cancellation's message, not the socket error's");
+                }
+                finally
+                {
+                    channel.Dispose();
+                }
+            });
+        }
+
+        [Test]
+        public void SendAsync_InlineSendHitsShutDownSocketAfterCancel_CompletesCanceledWithTheCallersToken()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var pair = await LoopbackPair.CreateAsync();
+                var channel = new PollSelectSocketChannel(pair.Client);
+                using var cts = new CancellationTokenSource();
+                try
+                {
+                    // The socket is shut down, not closed (as by another operation's cancellation on
+                    // the same token), and the token is cancelled while the inline send fails.
+                    pair.Client.Shutdown(SocketShutdown.Send);
+                    channel.TestHookSendFailing = () => cts.Cancel();
+
+                    // Array-backed memory: the caller's thread makes the send call (inline attempt),
+                    // and its failure is thrown from SendAsync itself; the async lambda captures it.
+                    Func<Task> start = async () => await channel.SendAsync(new byte[1024], cts.Token);
+                    var send = start();
+
+                    await AssertEndsAsync(send, "the send never ended");
+                    var oce = await AssertCanceledAsync(send);
+                    Assert.AreEqual(cts.Token, oce.CancellationToken, "cancelled with the caller's token");
+                    Assert.IsInstanceOf<SocketException>(oce.InnerException, "the inline send's error is kept as the cause");
                 }
                 finally
                 {
