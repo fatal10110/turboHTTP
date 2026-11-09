@@ -50,6 +50,8 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=Tools~/unity/wsl-interop.sh
 . "$repo/Tools~/unity/wsl-interop.sh"
+# shellcheck source=Tools~/unity/android-adb.sh
+. "$repo/Tools~/unity/android-adb.sh"
 target=""; bouncycastle=0; background=0; run=0; network=0; serial=""; arch=""; apk=""
 usage="usage: $0 --target win64-mono|win64-il2cpp|android-il2cpp [--bouncycastle] [--background] [--network]
        [--run] [--serial <adb serial>] [--arch arm64|x86_64] [--apk <built APK>]   (the last four: android-il2cpp)"
@@ -189,19 +191,9 @@ if [ "$run" = 1 ]; then
   fi
 
   pkg_id=com.turbohttp.playersmoke
-  # y while the smoke's process exists, n when it does not; fails when adb fails (ps as in run-device-tests.sh).
-  smoke_running() {
-    local ps_out
-    ps_out="$(adbr shell "ps -A 2>/dev/null; ps 2>/dev/null")" || return 1
-    if printf '%s\n' "$ps_out" | grep -q "[[:space:]]$pkg_id\$"; then echo y; else echo n; fi
-  }
-  # True while the lock screen shows; false when unknown. Field names differ across Android versions
-  # (API 33 prints KeyguardShowing= and mDreamingLockscreen=; older ones mShowingLockscreen= or isStatusBarKeyguard=).
-  keyguard_showing() {
-    local windows
-    windows="$(adbr shell dumpsys window)" || return 1
-    printf '%s\n' "$windows" | grep -qE '(mShowingLockscreen|mDreamingLockscreen|isStatusBarKeyguard|KeyguardShowing)=true'
-  }
+  sdk="$(adbr shell getprop ro.build.version.sdk || true)"
+  # y while the smoke's process exists, n on a complete answer without it, empty when unknown (android-adb.sh).
+  smoke_running() { android_process_state "$pkg_id" "$sdk"; }
   # Installs APK $1, launches it, waits for the aggregate marker, keeps logcat in $2 and checks it (fail=1).
   android_run() {
     local apk_file="$1" logcat="$2" rc out deadline gone=0 extra=()
@@ -209,7 +201,7 @@ if [ "$run" = 1 ]; then
     adbr shell am force-stop "$pkg_id" >/dev/null || adb_failed "$?" "am force-stop"
     adbr shell input keyevent KEYCODE_WAKEUP >/dev/null || adb_failed "$?" "input keyevent KEYCODE_WAKEUP"
     adbr shell wm dismiss-keyguard >/dev/null || true
-    if keyguard_showing; then
+    if android_keyguard_showing; then
       echo "build-player: ${serial:-the device} shows its lock screen: unlock it and keep the screen on" \
         "(Developer options > Stay awake); an app behind the lock screen may be frozen (#325)" >&2
       exit 2
@@ -227,7 +219,7 @@ if [ "$run" = 1 ]; then
       wsl_exit_if_interop "$rc" build-player "adb.exe did not start (logcat)"
       grep -qE "TURBOHTTP_SMOKE (PASS|FAIL)" "$logcat" && break
       # Gone on two adb checks in a row without a marker: crashed or quit early. A failed check does not count.
-      case "$(smoke_running || true)" in
+      case "$(smoke_running)" in
         n) gone=$((gone + 1)) ;;
         y) gone=0 ;;
       esac
