@@ -76,6 +76,14 @@ namespace TurboHTTP.Tools.H2Interop
                 return 1;
             }
 
+            // Every SslStream row offers ALPN h2; a runtime probe that wrongly reports no ALPN would turn
+            // them all into HTTP/1.1 failures, so name the cause up front (#418).
+            if (!SslStreamTlsProvider.Instance.IsAlpnSupported())
+            {
+                Console.WriteLine("FAIL precondition: SslStreamTlsProvider reports no ALPN on this runtime (#418)");
+                return 1;
+            }
+
             // BouncyCastle has no platform verifier on Linux (#248) and would reject every chain; trust the
             // per-run root through the test-anchor hook (as Tools~/tls-interop does). SslStream ignores it and
             // keeps trusting the root through SSL_CERT_FILE.

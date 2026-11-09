@@ -21,7 +21,8 @@ namespace TurboHTTP.Tests.Transport.Tls
         /// <summary>
         /// False on Unity's Mono class library (Editor and IL2CPP players): its
         /// <c>SslStream.NegotiatedApplicationProtocol</c> always throws PlatformNotSupportedException
-        /// (mono#12880) and the ALPN options are ignored, while the provider still reports ALPN (#418).
+        /// (mono#12880) and the ALPN options are ignored, so the provider reports no ALPN (#418).
+        /// Probed here independently of the provider, as the oracle for its report.
         /// </summary>
         public static bool SslStreamReportsAlpn => s_sslStreamReportsAlpn.Value;
 
@@ -58,8 +59,9 @@ namespace TurboHTTP.Tests.Transport.Tls
                 Assert.IsNull(negotiatedAlpn, provider.ProviderName + " cannot negotiate ALPN here, so nothing can be selected.");
                 if (reported)
                 {
-                    Assert.Ignore("#418 " + provider.ProviderName +
-                                  " reports ALPN but this runtime's SslStream has none (mono#12880): HTTP/1.1, h2 unproven here.");
+                    // The provider claims ALPN its runtime cannot negotiate (#418 regression).
+                    Assert.Fail(provider.ProviderName +
+                                " reports ALPN but this runtime's SslStream has none (mono#12880): the report must say no ALPN.");
                 }
 
                 TestRequirements.IgnoreEnvironment(

@@ -102,8 +102,9 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Test]
         public void IsAlpnSupported_ProbeBuildsOptionsOnThisRuntime()
         {
-            // The type initializer probes the same builder; it succeeds wherever the builder does.
-            Assert.IsTrue(SslStreamTlsProvider.Instance.IsAlpnSupported());
+            // The type initializer probes the same builder (it succeeds wherever the builder does)
+            // and whether the runtime reports the result: Unity's runtimes do not (#418).
+            Assert.AreEqual(AlpnAssert.SslStreamReportsAlpn, SslStreamTlsProvider.Instance.IsAlpnSupported());
         }
     }
 }

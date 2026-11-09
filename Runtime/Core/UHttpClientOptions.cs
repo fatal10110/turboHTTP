@@ -157,8 +157,10 @@ namespace TurboHTTP.Core
         /// <remarks>
         /// - Auto: Uses SslStream. Auto never selects BouncyCastle and never switches providers
         ///   after a handshake failure; the error is reported to the caller.
-        /// - SslStream: Force use of System.Net.Security.SslStream (may not support ALPN on all platforms)
-        /// - BouncyCastle: Force use of BouncyCastle TLS (guaranteed ALPN support everywhere).
+        /// - SslStream: Force use of System.Net.Security.SslStream. Unity's SslStream has no ALPN,
+        ///   so its connections use HTTP/1.1.
+        /// - BouncyCastle: Force use of BouncyCastle TLS (negotiates ALPN everywhere; needed for
+        ///   HTTP/2 on Unity).
         ///   Requires the <c>TURBOHTTP_BOUNCYCASTLE</c> scripting define symbol; without it every
         ///   TLS connection fails with a <see cref="UHttpException"/> whose inner exception is an
         ///   <see cref="System.InvalidOperationException"/> naming the define.
