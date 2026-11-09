@@ -120,9 +120,9 @@ namespace TurboHTTP.Tests.Platform
 
                 var candidates = new[]
                 {
+                    "https://www.google.com/generate_204",
                     "https://httpbingo.org/status/204",
-                    "https://httpbin.org/status/204",
-                    "https://www.google.com/generate_204"
+                    "https://httpbin.org/status/204"
                 };
 
                 Exception lastError = null;

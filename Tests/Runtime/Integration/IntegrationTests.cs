@@ -572,7 +572,7 @@ namespace TurboHTTP.Tests.Integration
         }
 
         // #439: the target must chain to a root Android 6 (API 23) trusts. httpbin.org ends at an
-        // Amazon root that API 23 lacks, so a correct rejection failed these tests. www.google.com
+        // Amazon or ISRG root that API 23 lacks, so a correct rejection failed these tests. www.google.com
         // chains to GlobalSign Root CA (same host as TlsIntegrationTests, #361).
         private const string TrustedHost = "www.google.com";
         private const string TrustedHostUrl = "https://www.google.com/";
