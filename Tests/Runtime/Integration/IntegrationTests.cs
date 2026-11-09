@@ -614,7 +614,7 @@ namespace TurboHTTP.Tests.Integration
 
                 bool usedHttp2 = TryHasHttp2Connection(transport, "httpbin.org", 443);
                 string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "httpbin.org");
-                // #413: h2 where the pool's provider reports ALPN, an honest skip where it has none.
+                // #413: h2 where the pool's provider can negotiate ALPN, else the asserted HTTP/1.1 fallback.
                 AlpnAssert.UsedHttp2(PoolProvider(pool, "httpbin.org"), negotiatedAlpn, usedHttp2, "httpbin.org");
             }).GetAwaiter().GetResult();
         }

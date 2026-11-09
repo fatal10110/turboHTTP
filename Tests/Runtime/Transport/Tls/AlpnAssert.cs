@@ -33,9 +33,20 @@ namespace TurboHTTP.Tests.Transport.Tls
             return provider.ProviderName != "SslStream" || SslStreamReportsAlpn;
         }
 
+        /// <summary>
+        /// Fails when this runtime's SslStream has ALPN but the SslStream provider reports none: the
+        /// provider lost it (e.g. its ALPN options could not be built, #303), and the offer is dropped.
+        /// </summary>
+        public static void FailIfProviderLostAlpn(ITlsProvider provider)
+        {
+            if (provider.ProviderName == "SslStream" && SslStreamReportsAlpn && !provider.IsAlpnSupported())
+                Assert.Fail("This runtime's SslStream has ALPN but the SslStream provider reports none (#303): h2 is never offered.");
+        }
+
         /// <summary>A TLS handshake that offered h2 and http/1.1 to an h2 host.</summary>
         public static void NegotiatedH2(ITlsProvider provider, string negotiatedAlpn, string host)
         {
+            FailIfProviderLostAlpn(provider);
             bool reported = provider.IsAlpnSupported();
             bool canNegotiate = CanNegotiate(provider);
             TestContext.WriteLine(
@@ -66,6 +77,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         /// </summary>
         public static void UsedHttp2(ITlsProvider provider, string negotiatedAlpn, bool usedHttp2, string host)
         {
+            FailIfProviderLostAlpn(provider);
             bool canNegotiate = CanNegotiate(provider);
             TestContext.WriteLine(
                 $"ALPN {provider.ProviderName} host={host} runtime={canNegotiate} negotiated={negotiatedAlpn ?? "none"} " +

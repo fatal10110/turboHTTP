@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Generates the committed short-lived self-signed localhost certificate (#332).
 
-Apple's trust evaluation rejects a TLS server certificate whose validity period is longer than
-398 days (errSecCertificateValidityPeriodTooLong, -67901) before it checks the anchor, so a
-long-lived certificate issued today cannot show "no trust anchor" on iOS or macOS. The two
+Apple's trust evaluation rejects a TLS server certificate issued on or after 2019-07-01 (its
+NotBefore) whose validity period is longer than 825 days (errSecCertificateValidityPeriodTooLong,
+-67901) before it checks the anchor, so a long-lived certificate issued today cannot show "no trust
+anchor" on iOS or macOS. (The stricter 398-day limit covers only certificates from Apple's
+preinstalled roots; staying under it as well is a deliberate margin.) The two
 self-signed-without-anchor tests use this certificate instead: same identity (CN=localhost, SAN
 localhost, 127.0.0.1, ::1, serverAuth, RSA 2048), valid for 397 days from the day before
 generation.
@@ -29,7 +31,7 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 PASSWORD = "turbohttp-test"
-VALIDITY_DAYS = 397  # Apple's limit is 398 days; one day of margin for how the period is counted.
+VALIDITY_DAYS = 397  # Under Apple's 825-day cap, and by choice under the 398-day public-root limit too.
 
 
 def build(not_before=None, not_after=None, authority_key_id=False):
@@ -104,7 +106,7 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// </remarks>
     internal static class TestShortLivedLocalhostCertificate
     {{
-        /// <summary>Validity period in days the generator writes; Apple's limit is 398.</summary>
+        /// <summary>Validity period in days the generator writes: under Apple's 825-day cap, and by choice under 398.</summary>
         internal const int ValidityDays = {VALIDITY_DAYS};
 
         private const string Password = "{PASSWORD}";

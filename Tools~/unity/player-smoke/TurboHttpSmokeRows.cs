@@ -281,7 +281,11 @@ public static class TurboHttpSmokeRows
     {
         var provider = TlsProviderSelector.GetProvider(backend);
         var reported = provider.IsAlpnSupported();
-        var runtime = reported && (backend != TlsBackend.SslStream || SslStreamReportsAlpn());
+        var sslStreamAlpn = backend != TlsBackend.SslStream || SslStreamReportsAlpn();
+        if (backend == TlsBackend.SslStream && sslStreamAlpn && !reported)
+            throw new InvalidOperationException(
+                "this runtime's SslStream has ALPN but the SslStream provider reports none (#303): h2 is never offered");
+        var runtime = reported && sslStreamAlpn;
         using (var tcp = await ConnectAsync(AlpnHost, 443, ct))
         {
             var result = await provider.WrapAsync(tcp.GetStream(), AlpnHost, AlpnOffer, ct);

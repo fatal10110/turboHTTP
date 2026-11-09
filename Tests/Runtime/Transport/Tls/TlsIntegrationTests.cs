@@ -126,7 +126,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 bool usedHttp2 = TryHasHttp2Connection(transport, ValidChainHost, 443);
                 string negotiatedAlpn = TryGetNegotiatedAlpn(pool, ValidChainHost);
-                // #413: h2 where the pool's provider reports ALPN, an honest skip where it has none.
+                // #413: h2 where the pool's provider can negotiate ALPN, else the asserted HTTP/1.1 fallback.
                 AlpnAssert.UsedHttp2(PoolProvider(pool, ValidChainHost), negotiatedAlpn, usedHttp2, ValidChainHost);
             }).GetAwaiter().GetResult();
         }

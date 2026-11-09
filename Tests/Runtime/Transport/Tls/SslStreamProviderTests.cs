@@ -88,7 +88,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 Assert.IsNotNull(result.SecureStream);
                 Assert.AreEqual("SslStream", result.ProviderName);
-                // #413: strict where the runtime reports ALPN, an honest skip where it has none.
+                // #413: strict where the runtime can negotiate ALPN, a skip naming the reason where it cannot.
                 AlpnAssert.NegotiatedH2(provider, result.NegotiatedAlpn, "www.google.com");
             });
         }

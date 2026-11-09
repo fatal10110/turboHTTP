@@ -21,7 +21,7 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// </remarks>
     internal static class TestShortLivedLocalhostCertificate
     {
-        /// <summary>Validity period in days the generator writes; Apple's limit is 398.</summary>
+        /// <summary>Validity period in days the generator writes: under Apple's 825-day cap, and by choice under 398.</summary>
         internal const int ValidityDays = 397;
 
         private const string Password = "turbohttp-test";
