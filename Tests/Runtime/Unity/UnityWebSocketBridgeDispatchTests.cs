@@ -19,6 +19,7 @@ namespace TurboHTTP.Tests.UnityModule
     public class UnityWebSocketBridgeDispatchTests
     {
         private const int MaxFrames = 300;
+        private const float WaitBoundSeconds = 10f;
 
         [UnityTest]
         public IEnumerator Reject_DroppedMessagesRaiseOnMessageDropped_AndOnClosedIsStillDelivered()
@@ -111,7 +112,14 @@ namespace TurboHTTP.Tests.UnityModule
                 fake.EmitMessage("m5");
                 fake.EmitMessage("m6");
 
-                for (int frame = 0; frame < MaxFrames && (delivered < 2 || closed < 1 || errors < 1); frame++)
+                // An eviction faults the evicted item's task, whose continuations run on the thread pool
+                // (the dispatcher's completion sources run continuations asynchronously): OnMessageDropped
+                // and the control-lane re-dispatch arrive off the frame loop. A fast player loop (a headless
+                // standalone player has no frame cap) can run any number of frames before them, so wait for
+                // the drop count itself, bounded in time rather than in frames (#411).
+                var deadline = Time.realtimeSinceStartup + WaitBoundSeconds;
+                while (Time.realtimeSinceStartup < deadline &&
+                       (delivered < 2 || closed < 1 || errors < 1 || Volatile.Read(ref dropped) < 5))
                     yield return null;
 
                 yield return null;

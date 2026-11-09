@@ -11,8 +11,10 @@
 // reflection-targets (#8), ws-json (#192), oauth-refresh (#67), json-coroutine-class/-struct (#95), and
 // tls-sslstream / tls-bouncycastle (#141, #258 AC2). Every row but the TLS rows is offline: the HTTP rows
 // use an in-process transport (TurboHttpSmokeRows.OfflineTransport). The TLS rows send one HTTPS request
-// per provider to a public host with default certificate validation, only when the run asks for the
-// network (Windows: the -turbohttpSmokeNetwork argument; Android: the turbohttp_smoke_network=1 intent
+// per provider to a public host with default certificate validation and log the protocol an h2 host
+// selects for that provider's ALPN offer (alpn=h2|http/1.1|none; FAIL when the provider can negotiate
+// ALPN on this runtime and the selection is not h2, #413; Unity's SslStream cannot, #418), only when the
+// run asks for the network (Windows: the -turbohttpSmokeNetwork argument; Android: the turbohttp_smoke_network=1 intent
 // extra that build-player.sh --network passes to am start); otherwise they are SKIP.
 // QuickStartExample is compiled, never attached to a scene.
 using System;

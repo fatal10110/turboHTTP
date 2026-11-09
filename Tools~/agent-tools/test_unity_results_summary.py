@@ -90,7 +90,7 @@ class SummarizeResultsTest(unittest.TestCase):
         self.assertIn("FAIL N.T.Bad: boom", out)
 
     def test_committed_baseline_covers_every_run_target(self):
-        for key in ("EditMode", "PlayMode", "Player-Android", "Player-iOS"):
+        for key in ("EditMode", "PlayMode", "Player-Android", "Player-iOS", "Player-iOS-2021.3"):
             self.assertIsNotNone(self.module.read_baseline(str(BASELINE), key), key)
 
     def test_baseline_key_selects_the_run_target_entry(self):

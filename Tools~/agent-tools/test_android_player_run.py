@@ -1,8 +1,9 @@
 """Tests for build-player.sh --run on Android (#325) and the player smoke's link.xml list (#8 row).
 
 Reuses the fakes of test_wsl_interop.py (stub cmd.exe, wslpath, Unity.exe; plan files make a tool fail N times)
-with an adb.exe stub that also answers the calls --run makes: getprop, dumpsys window, am start, ps and
-logcat -d (which prints <state>.logcat, the player's log lines). --apk runs a prepared APK without a build.
+with an adb.exe stub that also answers the calls --run makes: getprop, dumpsys window, am start, pidof (API 26+,
+FAKE_ADB_SDK, default 31), ps (older levels: a header, the player unless FAKE_ADB_GONE, the end marker the script asks
+for) and logcat -d (which prints <state>.logcat, the player's log lines). --apk runs a prepared APK without a build.
 """
 import pathlib
 import re
@@ -17,11 +18,16 @@ ADB = wsl.PRELUDE + r"""echo "$*" >> "$FAKE_WSL.adb.calls"
 case "$*" in
   *" install "*|install*) printf 'Success\r\n' ;;
   *get-state*) printf 'device\r\n' ;;
+  *"getprop ro.build.version.sdk"*) printf '%s\r\n' "${FAKE_ADB_SDK:-31}" ;;
   *getprop*) printf '%s\r\n' "${FAKE_ADB_ABI:-x86_64}" ;;
   *"dumpsys window"*) printf '    mShowingDream=false mDreamingLockscreen=%s\r\n' "${FAKE_ADB_LOCKED:-false}" ;;
   *"logcat -d"*) [ ! -f "$FAKE_WSL.logcat" ] || sed 's/$/\r/' "$FAKE_WSL.logcat" ;;
   *"am start"*) printf 'Starting: Intent { cmp=com.turbohttp.playersmoke/com.unity3d.player.UnityPlayerActivity }\r\nStatus: ok\r\n' ;;
-  *"ps -A"*) [ -n "${FAKE_ADB_GONE:-}" ] || printf 'u0_a1  4242  1 0 0 S com.turbohttp.playersmoke\r\n' ;;
+  *"pidof "*) if [ -n "${FAKE_ADB_GONE:-}" ]; then printf 'none\r\n'; else printf '4242\r\n'; fi ;;
+  *"ps -A"*)
+    printf 'USER  PID  PPID VSZ RSS S NAME\r\n'
+    [ -n "${FAKE_ADB_GONE:-}" ] || printf 'u0_a1  4242  1 0 0 S com.turbohttp.playersmoke\r\n'
+    case "$*" in *"echo turbohttp-ps-end"*) printf 'turbohttp-ps-end\r\n' ;; esac ;;
 esac
 """
 
@@ -90,10 +96,12 @@ class AndroidPlayerRunTests(unittest.TestCase):
 
     def test_no_marker_from_a_player_that_is_gone_exits_nonzero(self):
         self.logcat(["TURBOHTTP_SMOKE ROW registration PASS #1 http=x"])
-        result = self.run_apk(FAKE_ADB_GONE="1")
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("exited without a marker", result.stdout)
-        self.assertIn("no TURBOHTTP_SMOKE marker", result.stdout)
+        for sdk in ("31", "23"):  # pidof, then the ps listing of older levels
+            with self.subTest(sdk=sdk):
+                result = self.run_apk(FAKE_ADB_GONE="1", FAKE_ADB_SDK=sdk)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("exited without a marker", result.stdout)
+                self.assertIn("no TURBOHTTP_SMOKE marker", result.stdout)
 
     def test_no_marker_within_the_bound_exits_nonzero(self):
         result = self.run_apk(TURBOHTTP_SMOKE_WAIT_S="0")

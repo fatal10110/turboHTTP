@@ -7,16 +7,17 @@ namespace TurboHTTP.Transport.Tcp
 {
     /// <summary>
     /// Single owner of one socket's handle for the stream that wraps it (#384). Closing shuts the
-    /// socket down at once, so the peer sees the close and a pending receive ends with end of stream,
-    /// but releases the handle (closes the descriptor) only once every operation that was pending on
-    /// it ended, or after <see cref="HoldTimeout"/> for an operation that never ends.
+    /// socket down at once, so the peer sees the close and a pending receive ends (end of stream, or
+    /// <c>Interrupted</c> on Mono and IL2CPP, #410), but releases the handle (closes the descriptor)
+    /// only once every operation that was pending on it ended, or after <see cref="HoldTimeout"/>
+    /// for an operation that never ends.
     /// <para>
     /// IL2CPP's socket close does not remove a pending receive from the runtime's I/O selector,
     /// which keys its jobs by descriptor number (libil2cpp <c>Socket::Close_icall</c> never calls
     /// <c>threadpool_ms_io_remove_socket</c>). A socket closed under a pending read leaves that job
     /// behind; a new socket that reuses the number queues its own receive behind the stale job and
     /// loses it (#369, #384). While the handle is held the operating system cannot hand the number
-    /// to another socket, and a shut-down socket is readable (end of stream), so the selector
+    /// to another socket, and a shut-down socket is readable, so the selector
     /// dispatches the stale job and the read ends before the number is released.
     /// </para>
     /// <para>
@@ -229,8 +230,8 @@ namespace TurboHTTP.Transport.Tcp
                 }
             }
 
-            // The peer sees the close now, and a pending receive ends with end of stream while the
-            // descriptor is still ours.
+            // The peer sees the close now, and a pending receive ends (end of stream, or Interrupted
+            // on Mono and IL2CPP, #410) while the descriptor is still ours.
             try { _socket.Shutdown(SocketShutdown.Both); } catch { /* not connected or already closed */ }
 
             if (holders == 0)

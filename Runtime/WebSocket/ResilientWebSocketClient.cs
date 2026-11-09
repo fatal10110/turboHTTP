@@ -27,6 +27,10 @@ namespace TurboHTTP.WebSocket
         private int _reconnectLoopActive;
         private int _closedEventRaised;
         private int _nextReconnectAttempt = 1;
+
+        // Guarded by _sync: a disconnect of the current connection that arrived while the reconnect loop
+        // was active. The loop owner runs the loop again for it instead of releasing the loop (#417).
+        private PendingDisconnect _pendingDisconnect;
         private WebSocketMetrics _latestMetrics;
         private WebSocketHealthSnapshot _latestHealth;
 
@@ -467,92 +471,163 @@ namespace TurboHTTP.WebSocket
             WebSocketException terminalError,
             CancellationToken ct)
         {
-            if (Interlocked.CompareExchange(ref _reconnectLoopActive, 1, 0) != 0)
+            if (!TryEnterReconnectLoop(disconnectedClient, terminalError, ct))
                 return;
 
-            try
+            while (true)
             {
-                if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _manualClose) != 0)
+                PendingDisconnect next;
+                bool loopCompleted = false;
+                try
                 {
-                    CompleteAndDrainQueue(terminalError);
-                    RaiseClosed(
-                        terminalError.CloseCode ?? WebSocketCloseCode.AbnormalClosure,
-                        terminalError.CloseReason ?? string.Empty);
+                    await RunReconnectLoopAsync(terminalError, ct).ConfigureAwait(false);
+                    loopCompleted = true;
+                }
+                finally
+                {
+                    next = ExitReconnectLoop(handOff: loopCompleted);
+                    await ReleaseDisconnectedClientAsync(disconnectedClient).ConfigureAwait(false);
+                }
+
+                if (next == null)
                     return;
-                }
 
-                RaiseError(terminalError);
+                // The replacement this loop connected dropped before the loop finished; its own pump could
+                // not take the loop, so it is handled here, counting as the next attempt.
+                disconnectedClient = next.Client;
+                terminalError = next.Error;
+                ct = next.Token;
+            }
+        }
 
-                WebSocketReconnectPolicy policy = _options?.ReconnectPolicy ?? WebSocketReconnectPolicy.None;
-                int attempt = Volatile.Read(ref _nextReconnectAttempt);
-                if (attempt < 1)
-                    attempt = 1;
-
-                while (!ct.IsCancellationRequested && policy.ShouldReconnect(attempt, terminalError.CloseCode))
+        /// <summary>
+        /// Takes ownership of the reconnect loop. When another disconnect already owns it, a disconnect of the
+        /// current connection is recorded for that owner instead of being dropped; a disconnect of a connection
+        /// the loop already replaced is stale and ignored.
+        /// </summary>
+        private bool TryEnterReconnectLoop(IWebSocketClient client, WebSocketException error, CancellationToken ct)
+        {
+            lock (_sync)
+            {
+                if (_reconnectLoopActive == 0)
                 {
-                    TimeSpan delay = policy.ComputeDelay(attempt);
-                    var reconnectingHandler = OnReconnecting;
-                    reconnectingHandler?.Invoke(attempt, delay);
-
-                    await Task.Delay(delay, ct).ConfigureAwait(false);
-
-                    var current = Interlocked.Exchange(ref _client, null);
-                    if (current != null)
-                    {
-                        current.OnMetricsUpdated -= HandleChildMetricsUpdated;
-                        current.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
-                        await current.DisposeAsync().ConfigureAwait(false);
-                    }
-
-                    try
-                    {
-                        await ConnectReplacementClientAsync(
-                            initialConnect: false,
-                            externalCt: ct,
-                            stopPreviousReceivePump: false).ConfigureAwait(false);
-                        Interlocked.Exchange(ref _nextReconnectAttempt, attempt + 1);
-                        return;
-                    }
-                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                    {
-                        return;
-                    }
-                    catch (Exception ex)
-                    {
-                        terminalError = ex as WebSocketException ??
-                            new WebSocketException(WebSocketError.ConnectionClosed, ex.Message, ex);
-                        RaiseError(terminalError);
-                        attempt++;
-                        Interlocked.Exchange(ref _nextReconnectAttempt, attempt);
-
-                        if (IsPermanentConnectFailure(terminalError))
-                            break;
-                    }
+                    Volatile.Write(ref _reconnectLoopActive, 1);
+                    return true;
                 }
 
+                if (ReferenceEquals(client, Volatile.Read(ref _client)))
+                    _pendingDisconnect = new PendingDisconnect(client, error, ct);
+
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Releases the reconnect loop, or keeps it and returns the recorded disconnect when that is still
+        /// the current connection's and the loop finished normally, so no disconnect is lost between the
+        /// replacement's pump starting and the loop ending.
+        /// </summary>
+        private PendingDisconnect ExitReconnectLoop(bool handOff)
+        {
+            lock (_sync)
+            {
+                var pending = _pendingDisconnect;
+                _pendingDisconnect = null;
+
+                if (handOff &&
+                    pending != null &&
+                    !pending.Token.IsCancellationRequested &&
+                    ReferenceEquals(pending.Client, Volatile.Read(ref _client)))
+                {
+                    return pending;
+                }
+
+                Volatile.Write(ref _reconnectLoopActive, 0);
+                return null;
+            }
+        }
+
+        private async Task RunReconnectLoopAsync(WebSocketException terminalError, CancellationToken ct)
+        {
+            if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _manualClose) != 0)
+            {
                 CompleteAndDrainQueue(terminalError);
                 RaiseClosed(
                     terminalError.CloseCode ?? WebSocketCloseCode.AbnormalClosure,
                     terminalError.CloseReason ?? string.Empty);
+                return;
             }
-            finally
-            {
-                Interlocked.Exchange(ref _reconnectLoopActive, 0);
 
-                if (!ReferenceEquals(disconnectedClient, _client))
+            RaiseError(terminalError);
+
+            WebSocketReconnectPolicy policy = _options?.ReconnectPolicy ?? WebSocketReconnectPolicy.None;
+            int attempt = Volatile.Read(ref _nextReconnectAttempt);
+            if (attempt < 1)
+                attempt = 1;
+
+            while (!ct.IsCancellationRequested && policy.ShouldReconnect(attempt, terminalError.CloseCode))
+            {
+                TimeSpan delay = policy.ComputeDelay(attempt);
+                var reconnectingHandler = OnReconnecting;
+                reconnectingHandler?.Invoke(attempt, delay);
+
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+
+                var current = Interlocked.Exchange(ref _client, null);
+                if (current != null)
                 {
-                    disconnectedClient.OnMetricsUpdated -= HandleChildMetricsUpdated;
-                    disconnectedClient.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
-                    try
-                    {
-                        await disconnectedClient.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        disconnectedClient.Abort();
-                        disconnectedClient.Dispose();
-                    }
+                    current.OnMetricsUpdated -= HandleChildMetricsUpdated;
+                    current.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
+                    await current.DisposeAsync().ConfigureAwait(false);
                 }
+
+                try
+                {
+                    await ConnectReplacementClientAsync(
+                        initialConnect: false,
+                        externalCt: ct,
+                        stopPreviousReceivePump: false).ConfigureAwait(false);
+                    Interlocked.Exchange(ref _nextReconnectAttempt, attempt + 1);
+                    return;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    terminalError = ex as WebSocketException ??
+                        new WebSocketException(WebSocketError.ConnectionClosed, ex.Message, ex);
+                    RaiseError(terminalError);
+                    attempt++;
+                    Interlocked.Exchange(ref _nextReconnectAttempt, attempt);
+
+                    if (IsPermanentConnectFailure(terminalError))
+                        break;
+                }
+            }
+
+            CompleteAndDrainQueue(terminalError);
+            RaiseClosed(
+                terminalError.CloseCode ?? WebSocketCloseCode.AbnormalClosure,
+                terminalError.CloseReason ?? string.Empty);
+        }
+
+        private async Task ReleaseDisconnectedClientAsync(IWebSocketClient disconnectedClient)
+        {
+            if (ReferenceEquals(disconnectedClient, Volatile.Read(ref _client)))
+                return;
+
+            disconnectedClient.OnMetricsUpdated -= HandleChildMetricsUpdated;
+            disconnectedClient.OnConnectionQualityChanged -= HandleChildConnectionQualityChanged;
+            try
+            {
+                await disconnectedClient.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                disconnectedClient.Abort();
+                disconnectedClient.Dispose();
             }
         }
 
@@ -662,6 +737,22 @@ namespace TurboHTTP.WebSocket
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(ResilientWebSocketClient));
+        }
+
+        private sealed class PendingDisconnect
+        {
+            public PendingDisconnect(IWebSocketClient client, WebSocketException error, CancellationToken token)
+            {
+                Client = client;
+                Error = error;
+                Token = token;
+            }
+
+            public IWebSocketClient Client { get; }
+
+            public WebSocketException Error { get; }
+
+            public CancellationToken Token { get; }
         }
     }
 }

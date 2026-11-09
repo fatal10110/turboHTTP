@@ -112,9 +112,9 @@ namespace TurboHTTP.Tests.Transport.Tls
             AssertStatus(CertificateVerificationStatus.UntrustedRoot, Verify(Certs.LeafFromRogue, Certs.RogueRoot));
         }
 
-        // The short-lived certificate (#332): Apple rejects the 100-year TestLocalhostCertificate for
-        // its validity period (-67901, Invalid) before it would report the missing anchor. Verified at
-        // a time inside its validity, so only the anchor is missing.
+        // The short-lived certificate (#332): Apple rejects a long validity period on a certificate
+        // issued today (-67901, Invalid) before it would report the missing anchor, and loading it
+        // registers no test anchor. Verified at a time inside its validity, so only the anchor is missing.
         [Test]
         public void SelfSignedLeaf_WithoutAnchor_IsUntrusted()
         {

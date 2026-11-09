@@ -5,7 +5,9 @@ namespace TurboHTTP.Tests.Transport.Tls
 {
     /// <summary>
     /// #332: guards of the committed short-lived test certificate. Apple rejects a server
-    /// certificate valid for more than 398 days (-67901) before its anchor check, and an expired
+    /// certificate issued since 2019-07-01 and valid for more than 825 days (-67901) before its anchor
+    /// check; the fixture also stays under the 398-day limit of Apple's preinstalled roots by choice.
+    /// An expired
     /// certificate turns every "no trust anchor" case into a validity failure, so the fixture must
     /// stay inside both limits. This fails 30 days before NotAfter to leave time to regenerate.
     /// </summary>
