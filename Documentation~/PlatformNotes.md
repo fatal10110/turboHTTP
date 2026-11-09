@@ -206,3 +206,24 @@ If issues persist:
 1.  Enable **Development Build** and **Script Debugging**.
 2.  Check Player Logs for `ExecutionEngineException` or `MissingMethodException`.
 3.  Run the package's PlayMode tests (`TurboHTTP.Tests.Runtime`, `PlatformTests`) in a development player: they include the IL2CPP/AOT smoke checks (the `IL2CPPCompatibility` helper is internal since 1.0).
+
+## Managed allocations per body read
+
+Reading a streaming response body allocates little managed memory per read in optimized code. The
+package's allocation tests measure it per read, with a budget for each runtime:
+
+| Build | Counter | HTTP/1.1 read | HTTP/1.1 chunked read | HTTP/2 read | gzip read (4 KiB) |
+| --- | --- | --- | --- | --- | --- |
+| Editor (Mono, optimized code) | GC Allocated In Frame | 40 B | 32 B | 1 B | ~4.2 KB |
+| Development player, Mono (Linux x86_64) | GC Allocated In Frame | 694 B | 1349 B | 394 B | ~4.3 KB |
+| Development player, IL2CPP (Android arm64) | GC Allocated In Frame | 705 B | 1371 B | 411 B | ~4.1 KB |
+
+- A development build compiles your scripts and the package without optimization. Every `async` method
+  then allocates its state machine, even when it completes without waiting (72 B per call on Mono, about
+  98 B on arm64 IL2CPP). That is most of the difference between the editor and the development
+  players. A release build compiles with optimization and does not have it.
+- The remaining per-read allocations are tracked for a release after 1.0: Mono in #434, IL2CPP in #416.
+- On Unity 2021.3 IL2CPP, `GC.GetAllocatedBytesForCurrentThread` counts in 4 KiB steps and includes
+  allocations made on other threads. Do not use it to measure small allocations; use the profiler's
+  "GC Allocated In Frame" counter over a frame that runs only the code you measure, and repeat the
+  measurement.
