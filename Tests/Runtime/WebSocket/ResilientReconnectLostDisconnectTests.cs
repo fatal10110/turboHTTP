@@ -58,6 +58,7 @@ namespace TurboHTTP.Tests.WebSocket
 
                 await client.ConnectAsync(TestUri, CreateOptions(maxRetries: 1), CancellationToken.None)
                     .ConfigureAwait(false);
+                var initialPump = CurrentReceivePump(client);
 
                 await using var enumerator = client.ReceiveAllAsync(CancellationToken.None).GetAsyncEnumerator();
                 var moveNext = enumerator.MoveNextAsync().AsTask();
@@ -71,6 +72,9 @@ namespace TurboHTTP.Tests.WebSocket
                     .ConfigureAwait(false);
                 await WebSocketReceiveBackpressureTests.WaitWithTimeout(moveNext, Guard,
                     "ReceiveAllAsync did not complete after the retries were exhausted.").ConfigureAwait(false);
+
+                // The reconnect loop runs on the initial pump; it has fully exited once that pump completes.
+                await WaitForReconnectLoopExit(initialPump).ConfigureAwait(false);
 
                 Assert.IsFalse(moveNext.Result, "The receive stream must end once the retries are exhausted.");
                 Assert.AreEqual(1, Volatile.Read(ref closedCount), "OnClosed must be raised exactly once.");
@@ -111,12 +115,17 @@ namespace TurboHTTP.Tests.WebSocket
 
                 await client.ConnectAsync(TestUri, CreateOptions(maxRetries: 3), CancellationToken.None)
                     .ConfigureAwait(false);
+                var initialPump = CurrentReceivePump(client);
 
                 await transport.Peer(0).SendFrameAsync(WebSocketOpcode.Close, new byte[] { 0x03, 0xE9 }, fin: true)
                     .ConfigureAwait(false);
 
                 await WebSocketReceiveBackpressureTests.WaitWithTimeout(reconnectedTwice.Task, Guard,
                     "The replacement's disconnect was lost: the client did not reconnect again.").ConfigureAwait(false);
+
+                // OnReconnected fires before the loop exits; the loop (and its hand-off) runs on the initial
+                // pump, so State is only settled once that pump completes.
+                await WaitForReconnectLoopExit(initialPump).ConfigureAwait(false);
 
                 // The second replacement (peer 2) is live: its messages reach the caller.
                 await transport.Peer(2).SendTextAsync("after-second-reconnect").ConfigureAwait(false);
@@ -131,6 +140,19 @@ namespace TurboHTTP.Tests.WebSocket
                     CollectionAssert.AreEqual(new[] { 1, 2 }, reconnectingAttempts,
                         "A replacement that drops right after its reconnect counts as the next attempt.");
             });
+        }
+
+        private static Task CurrentReceivePump(ResilientWebSocketClient client)
+        {
+            var pump = (Task)ReceivePumpField.GetValue(client);
+            Assert.IsNotNull(pump, "The receive pump must be running after ConnectAsync.");
+            return pump;
+        }
+
+        private static Task WaitForReconnectLoopExit(Task initialPump)
+        {
+            return WebSocketReceiveBackpressureTests.WaitWithTimeout(initialPump, Guard,
+                "The reconnect loop did not exit.");
         }
 
         /// <summary>
