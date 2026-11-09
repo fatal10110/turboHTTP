@@ -103,7 +103,7 @@ in `tooling.md`.
   (`tooling.md`, "UniTask pin", also for bumping the version).
 - Read the skipped count in the result XML: a skip is not a pass (CONNECT tunnel tests skip today, #151).
 - A journal or PR that says "Unity not run" or "isolated .NET harness only" is unverified. Record
-  exactly which lane ran: EditMode, PlayMode, IL2CPP player, device.
+  exactly which lane ran: EditMode, PlayMode, IL2CPP player, Linux player, device.
 
 ## Host-editor gates (periodic host-editor runs)
 
@@ -231,6 +231,23 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    certification suites it missed; a certifying cell (every cell but EditMode) whose rows passed
    without all of them reads `incomplete`, not `pass` (a `--filter` run certifies nothing). Its unit
    tests (`Tools~/unity/test_platform_matrix.py`) run in `check.sh --full`. CI does not build the matrix: it has no Unity license (#188).
+
+7. **Linux standalone player (Mono, #423).** Unity 2021.3's Mono runtime sometimes dies with SIGSEGV in the
+   Boehm GC (`GC_mark_from`) while the Test Runner builds the test tree, before any test runs. The log has
+   `Caught fatal signal` and no `TURBOHTTP_DEVICE_RUN started`. On WSL2 this happened in 10 of 140 launches
+   with incremental GC on and 0 of 140 with it off, and also with every TurboHTTP startup hook removed, so it
+   is a runtime issue, not package code. Run the player (built by the Test Runner, `-runTests -testPlatform
+   StandaloneLinux64`, on the project `build-ios-test-player.sh` writes) through
+   `'./Tools~/unity/run-linux-player-tests.sh' [--out <dir>] [--attempts <n>] <player folder | .x86_64 binary>`.
+   It relaunches a launch that crashed before `started`, up to `--attempts` launches in all (default 3, env
+   `TURBOHTTP_LINUX_PLAYER_ATTEMPTS`; `TURBOHTTP_LINUX_PLAYER_TIMEOUT` bounds each launch, default 3600 s).
+   A crash, timeout or exit after `started` is a real result and is never relaunched. Exit codes as
+   `run-tests.sh`: 0 pass, 1 failures, 2 setup error (no player; every launch crashed before the run; a pre-run timeout or
+   non-crash exit; a crash, timeout or exit after `started` without a finished line, partial results at the
+   player's persistentDataPath/results.xml; no results file; the runner's stderr line names the case).
+   `--out` receives `player-<k>.log`, `player-<k>.out` per launch and `results.xml`. The runner leaves the GC
+   mode as built; turning incremental GC off for a crash-free row is a build choice (#404). It does not use
+   `wsl-interop.sh`. Whether a native non-WSL2 Linux host also crashes is untested (follow-up #436).
 
 From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
 Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and
