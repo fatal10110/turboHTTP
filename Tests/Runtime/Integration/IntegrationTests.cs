@@ -571,6 +571,12 @@ namespace TurboHTTP.Tests.Integration
             }).GetAwaiter().GetResult();
         }
 
+        // #439: the target must chain to a root Android 6 (API 23) trusts. httpbin.org ends at an
+        // Amazon root that API 23 lacks, so a correct rejection failed these tests. www.google.com
+        // chains to GlobalSign Root CA (same host as TlsIntegrationTests, #361).
+        private const string TrustedHost = "www.google.com";
+        private const string TrustedHostUrl = "https://www.google.com/";
+
         [Test]
         [Category("ExternalNetwork")]
         public void ExternalNetwork_HttpBin_Get()
@@ -583,7 +589,7 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true
                 });
 
-                var response = await client.Get("https://httpbin.org/get")
+                var response = await client.Get(TrustedHostUrl)
                     .WithTimeout(TimeSpan.FromSeconds(20))
                     .SendBufferedAsync();
 
@@ -606,16 +612,16 @@ namespace TurboHTTP.Tests.Integration
                     DisposeTransport = true
                 });
 
-                var response = await client.Get("https://httpbin.org/get")
+                var response = await client.Get(TrustedHostUrl)
                     .WithTimeout(TimeSpan.FromSeconds(25))
                     .SendBufferedAsync();
 
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
 
-                bool usedHttp2 = TryHasHttp2Connection(transport, "httpbin.org", 443);
-                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, "httpbin.org");
+                bool usedHttp2 = TryHasHttp2Connection(transport, TrustedHost, 443);
+                string negotiatedAlpn = TryGetNegotiatedAlpn(pool, TrustedHost);
                 // #413: h2 where the pool's provider can negotiate ALPN, else the asserted HTTP/1.1 fallback.
-                AlpnAssert.UsedHttp2(PoolProvider(pool, "httpbin.org"), negotiatedAlpn, usedHttp2, "httpbin.org");
+                AlpnAssert.UsedHttp2(PoolProvider(pool, TrustedHost), negotiatedAlpn, usedHttp2, TrustedHost);
             }).GetAwaiter().GetResult();
         }
 

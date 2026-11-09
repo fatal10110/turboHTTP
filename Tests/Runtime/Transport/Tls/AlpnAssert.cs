@@ -7,7 +7,7 @@ using TurboHTTP.Transport.Tls;
 namespace TurboHTTP.Tests.Transport.Tls
 {
     /// <summary>
-    /// #413: the ALPN outcome against a public host that serves h2 (www.google.com, httpbin.org).
+    /// #413: the ALPN outcome against a public host that serves h2 (www.google.com).
     /// Where the runtime can negotiate ALPN, an [h2, http/1.1] offer must select h2: http/1.1 or
     /// nothing means the offer was dropped, which fails. Where it cannot, nothing can be selected
     /// (HTTP/1.1, RFC 7301 section 3.1): the provider-level h2 tests assert that and skip, because
