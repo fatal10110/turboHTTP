@@ -65,6 +65,7 @@ namespace TurboHTTP.Transport.Http2
         private bool _cancellationRegistrationReleased;
         private Http2ResponseBodySource _responseBodySource;
         private CancellationToken _requestCancellationToken;
+        private CancellationToken _callerCancellationToken;
         private TaskCompletionSource<bool> _expectContinueSource;
         private ManualResetValueTaskSourceCore<VoidResult> _completionSource;
 
@@ -188,6 +189,7 @@ namespace TurboHTTP.Transport.Http2
             HeadersReceived = false;
             State = Http2StreamState.Idle;
             _requestCancellationToken = default;
+            _callerCancellationToken = default;
             _sendWindowSize = initialSendWindowSize;
             _recvWindowSize = initialRecvWindowSize;
             _expectContinueSource = null;
@@ -227,6 +229,7 @@ namespace TurboHTTP.Transport.Http2
             HeadersReceived = false;
             State = Http2StreamState.Idle;
             _requestCancellationToken = default;
+            _callerCancellationToken = default;
             _sendWindowSize = 0;
             _recvWindowSize = 0;
             TryCancelExpectContinueWait();
@@ -451,9 +454,15 @@ namespace TurboHTTP.Transport.Http2
             ResponseBodySource?.SetTrailers(trailers ?? HttpHeaders.Empty);
         }
 
-        internal void SetRequestCancellationToken(CancellationToken cancellationToken)
+        /// <summary>
+        /// Stores the request token (<paramref name="cancellationToken"/>, which may also carry the request
+        /// deadline) and the caller's own token, so a cancellation after the response started can tell the
+        /// caller's cancellation from the deadline. Written before the token registration publishes them.
+        /// </summary>
+        internal void SetRequestCancellationToken(CancellationToken cancellationToken, CancellationToken callerToken)
         {
             _requestCancellationToken = cancellationToken;
+            _callerCancellationToken = callerToken;
         }
 
         internal void HandleRequestCancellation()
@@ -518,17 +527,40 @@ namespace TurboHTTP.Transport.Http2
             AbortRequestBody();
             TryCancelExpectContinueWait(cancellationToken);
 
-            // Request/transport cancellation keeps its native cancellation shape so
-            // streaming consumers can distinguish it from transport/network faults.
+            // Once the response started, its body is read outside the transport's failure mapping, so the
+            // cause is resolved here: the caller's cancellation keeps its cancellation shape, the request
+            // deadline is a Timeout, as in every earlier phase of the request.
             var responseBodySource = ResponseBodySource;
             if (responseBodySource != null)
             {
-                responseBodySource.Fault(new OperationCanceledException(cancellationToken));
+                responseBodySource.Fault(CreateResponseBodyCancellation(cancellationToken));
                 return;
             }
 
             State = Http2StreamState.Closed;
             TrySetException(new OperationCanceledException(cancellationToken));
+        }
+
+        /// <summary>
+        /// The request token fired while the caller's did not: only the request deadline cancels it then.
+        /// A dispatch whose caller token is the request token itself always reports a cancellation.
+        /// </summary>
+        private Exception CreateResponseBodyCancellation(CancellationToken cancellationToken)
+        {
+            var callerToken = _callerCancellationToken;
+            if (callerToken.IsCancellationRequested)
+                return new OperationCanceledException(callerToken);
+
+            var request = _request;
+            if (cancellationToken.IsCancellationRequested && request != null)
+            {
+                return new UHttpException(new UHttpError(
+                    UHttpErrorType.Timeout,
+                    $"Request timed out after {request.Timeout.TotalSeconds}s",
+                    new OperationCanceledException(cancellationToken)));
+            }
+
+            return new OperationCanceledException(cancellationToken);
         }
 
         public void Fail(Exception exception)

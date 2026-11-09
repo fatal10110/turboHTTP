@@ -34,7 +34,15 @@ namespace TurboHTTP.Tools.Soak
     internal sealed class SoakClient
     {
         private static readonly TimeSpan OpWatchdog = TimeSpan.FromSeconds(120);
+        // The client's request timeout: the latency alarm of every row.
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
+
+        // The HTTP/2 rows of a stalling profile (lossy) only. The fault proxy delivers each direction in
+        // order and stalls it as a whole, so the server's WINDOW_UPDATEs wait behind download DATA, while
+        // the test server pins its windows at 65,535 bytes: a 1 MiB echo that shares the connection window
+        // with other uploads can legitimately need more than 30 s (#409). Still below the watchdog, so a
+        // flow-control wait that never wakes fails as a typed Timeout.
+        private static readonly TimeSpan StallingProfileH2Timeout = TimeSpan.FromSeconds(90);
 
         private readonly SoakOptions _options;
         private readonly ConcurrentDictionary<string, long> _outcomes = new ConcurrentDictionary<string, long>();
@@ -195,7 +203,8 @@ namespace TurboHTTP.Tools.Soak
             using var cancel = CancellationTokenSource.CreateLinkedTokenSource(watchdog);
             try
             {
-                string outcome = await Ops.RunAsync(op, _client, ports, random, cancel, watchdog).ConfigureAwait(false);
+                TimeSpan? h2Timeout = Ops.Stalls(profile) ? StallingProfileH2Timeout : (TimeSpan?)null;
+                string outcome = await Ops.RunAsync(op, _client, ports, random, cancel, watchdog, h2Timeout).ConfigureAwait(false);
                 Count(op, profile, outcome);
             }
             catch (VerificationException ex)
