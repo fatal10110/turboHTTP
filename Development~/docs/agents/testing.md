@@ -242,7 +242,9 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    It relaunches a launch that crashed before `started`, up to `--attempts` launches in all (default 3, env
    `TURBOHTTP_LINUX_PLAYER_ATTEMPTS`; `TURBOHTTP_LINUX_PLAYER_TIMEOUT` bounds each launch, default 3600 s).
    A crash, timeout or exit after `started` is a real result and is never relaunched. Exit codes as
-   `run-tests.sh`: 0 pass, 1 failures, 2 setup error (every launch crashed before the run, no results).
+   `run-tests.sh`: 0 pass, 1 failures, 2 setup error (no player; every launch crashed before the run; a pre-run timeout or
+   non-crash exit; a crash, timeout or exit after `started` without a finished line, partial results at the
+   player's persistentDataPath/results.xml; no results file; the runner's stderr line names the case).
    `--out` receives `player-<k>.log`, `player-<k>.out` per launch and `results.xml`. The runner leaves the GC
    mode as built; turning incremental GC off for a crash-free row is a build choice (#404). It does not use
    `wsl-interop.sh`. Whether a native non-WSL2 Linux host also crashes is untested (follow-up #436).
