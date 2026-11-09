@@ -183,9 +183,10 @@ namespace TurboHTTP.Tests.Transport.Tls
             return server;
         }
 
-        // Self-signed with a validity period Apple accepts (#332): on Apple the 100-year
-        // TestLocalhostCertificate fails with bad_certificate (-67901) before the anchor check, so
-        // the "no anchor" cases use this one to reach unknown_ca on every platform.
+        // Self-signed with a validity period Apple accepts (#332; a long period on a certificate issued
+        // today fails with bad_certificate, -67901, before the anchor check) and, unlike
+        // TestLocalhostCertificate, registering no test anchor when loaded: the "no anchor" cases use
+        // this one to reach unknown_ca on every platform.
         private static BouncyCastleLoopbackServer StartShortLivedServer()
         {
             var certificate = TestShortLivedLocalhostCertificate.TryLoad();
