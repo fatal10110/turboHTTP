@@ -570,10 +570,8 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
-                if (!provider.IsAlpnSupported())
-                    TestRequirements.IgnoreEnvironment("SslStream ALPN is unavailable in this runtime.");
-
+                // No ALPN requirement: the default tunnel offer is http/1.1 only, so a runtime
+                // without SslStream ALPN runs the plain handshake into the same failing stream.
                 using var transport = new RawSocketTransport(tlsBackend: TlsBackend.SslStream);
                 var stream = new ConnectThenFailTlsStream();
 
@@ -620,10 +618,8 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             AssertAsync.Run(async () =>
             {
-                var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
-                if (!provider.IsAlpnSupported())
-                    TestRequirements.IgnoreEnvironment("SslStream ALPN is unavailable in this runtime.");
-
+                // No ALPN requirement: the default tunnel offer is http/1.1 only, so a runtime
+                // without SslStream ALPN runs the plain handshake into the same failing stream.
                 using var transport = new RawSocketTransport(tlsBackend: TlsBackend.SslStream);
                 var stream = new ConnectAuthChallengeThenFailTlsStream();
                 var proxy = new ProxySettings
