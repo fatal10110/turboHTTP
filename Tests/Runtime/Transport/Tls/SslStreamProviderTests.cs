@@ -126,7 +126,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             {
                 using var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
 
-                socket.Connect("httpbin.org", 443);
+                socket.Connect("www.google.com", 443);
                 using var stream = new NetworkStream(socket, true);
 
                 using var cts = new CancellationTokenSource();
@@ -135,7 +135,7 @@ namespace TurboHTTP.Tests.Transport.Tls
                 var provider = TlsProviderSelector.GetProvider(TlsBackend.SslStream);
 
                 AssertAsync.ThrowsAsync<OperationCanceledException>(async () =>
-                    await provider.WrapAsync(stream, "httpbin.org", new[] { "h2" }, cts.Token));
+                    await provider.WrapAsync(stream, "www.google.com", new[] { "h2" }, cts.Token));
             }).GetAwaiter().GetResult();
         }
 
