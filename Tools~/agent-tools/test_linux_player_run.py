@@ -9,6 +9,7 @@ repeats the word forever) and writes the log the real player writes to its -logF
   midcrash   started, one test, then "Caught fatal signal" and no finished line (a crash during the run)
   quit       exits 1 with neither a started line nor a crash report
   hang       never logs started and never exits (the launch timeout ends it)
+  crashhang  logs the crash report before the run started, then hangs in the crash handler (the timeout ends it)
 """
 import os
 import pathlib
@@ -46,6 +47,7 @@ case "$word" in
   crash) crash ;;
   quit) exit 1 ;;
   hang) exec sleep 30 ;;
+  crashhang) echo "Caught fatal signal - signo:11 code:1 errno:0 addr:0x7eb67fff78d8" >> "$log"; exec sleep 30 ;;
 esac
 echo "TURBOHTTP_DEVICE_RUN started tests=3 unity=2021.3.45f2" >> "$log"
 echo "TURBOHTTP_DEVICE_TEST A.B.C" >> "$log"
@@ -151,6 +153,12 @@ class LinuxPlayerRunTests(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertEqual(self.launches(), ["hang"])
         self.assertIn("within 1s", r.stderr)
+
+    def test_crash_then_hang_before_the_run_is_relaunched(self):
+        r = self.run_script("crashhang pass", env={"TURBOHTTP_LINUX_PLAYER_TIMEOUT": "1"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.launches(), ["crashhang", "pass"])
+        self.assertIn("crashed before the run started (then hung until the 1s timeout", r.stdout)
 
     def test_bad_arguments_launch_nothing(self):
         for args, target in ((["--attempts", "0"], None), ([], self.dir / "missing")):

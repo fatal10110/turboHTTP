@@ -69,17 +69,21 @@ for ((k = 1; k <= attempts; k++)); do
   code=0
   timeout -k 10 "$limit" "$player" -batchmode -nographics -logFile "$log" >"$console" 2>&1 || code=$?
   if grep -qF "$started" "$log" 2>/dev/null; then break; fi
-  if [ "$code" = 124 ]; then
-    echo "run-linux-player-tests: the player logged no '$started' within ${limit}s; see $log" >&2
-    exit 2
-  fi
+  # The crash report is checked before the timeout: after a fatal signal the crash handler may hang (it collects a
+  # native backtrace), so a launch that crashed before the run and then timed out is still a pre-run crash.
   if ! crash_report >/dev/null; then
+    if [ "$code" = 124 ]; then
+      echo "run-linux-player-tests: the player logged no '$started' within ${limit}s; see $log" >&2
+      exit 2
+    fi
     echo "run-linux-player-tests: the player exited (code $code) without starting the run and without a crash" \
       "report; not relaunched; see $log" >&2
     exit 2
   fi
-  echo "run-linux-player-tests: the player crashed before the run started (code $code, $(crash_report));" \
-    "a known Mono GC crash during test discovery (#423)"
+  how="code $code"
+  [ "$code" = 124 ] && how="then hung until the ${limit}s timeout"
+  echo "run-linux-player-tests: the player crashed before the run started ($how, $(crash_report));" \
+    "a pre-run crash carries no result (the known cause is a Mono GC crash during test discovery, #423)"
   if [ "$k" = "$attempts" ]; then
     echo "run-linux-player-tests: all $attempts launches crashed before the run started; no results; logs in $out" >&2
     exit 2
