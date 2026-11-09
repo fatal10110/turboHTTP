@@ -161,8 +161,16 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    [--arch arm64|armv7|x86_64] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
    installs it and runs it on the device. Results come back over the player connection when it works;
    otherwise (LAN or firewall: the Editor needs an inbound rule for the Private profile) the script waits
-   for the XML the player writes on the device and pulls it over adb. That wait ends when the player
-   finishes or its process is gone, and is capped by `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120).
+   for the XML the player writes on the device and pulls it over adb. That wait ends when the result file
+   appears or the player's process is gone (three complete answers without it, 20 s apart: about a minute;
+   an empty, failed or truncated `pidof`/`ps` answer counts as unknown, never as gone, #412), and is capped by
+   `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120). A player that wrote its results but did not quit is then
+   force-stopped. The device log of every run is kept as `logcat-Android-<tag>-<ts>.txt` in the cache. A
+   run refuses (exit 2) to start while the player of an earlier run is still running its tests on the device
+   (no result file yet), so a queued run never kills it; with `--serial`, a launch that starts no process (a
+   lock screen, or a parental-control screen holding the focus) exits 2 naming the focused window, and a
+   player whose process runs but never starts its tests (left behind the launcher) is relaunched once, then
+   exits 2. Both verdicts need complete adb answers; an unanswered check hands over to the wait.
    The device-only test project (`UNITY_DEVICE_TEST_PROJECT`, never `run-tests.sh`'s `UNITY_TEST_PROJECT`)
    opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. The player
    smoke runs next to it: `'./Tools~/unity/build-player.sh' --target android-il2cpp [--bouncycastle] --run
