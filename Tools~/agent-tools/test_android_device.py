@@ -10,6 +10,9 @@ file (<state>.proc.plan, one word per process check; a trailing "*" repeats the 
   fail    adb fails (the script's adbr retries 5 times; each try takes a word)
   finish  the player runs and has just written its result file
 The result file exists once a "finish" word was used, or (FAKE_RESULT_ON_LAUNCH=1) once the player was launched.
+A launch brings the player to the foreground (its Unity log shows TURBOHTTP_DEVICE_RUN) unless it is one of the
+first FAKE_STUCK_LAUNCHES launches. FAKE_DOWN_AFTER_LAUNCH=N fails the N adb calls after the first launch (an adb or
+WSL interop outage); FAKE_DROP_AFTER_RESULT=1 drops every result-file answer after the first "y".
 The script runs with --serial --skip-build (no Unity), its poll pauses at 0 seconds.
 """
 import os
@@ -19,7 +22,7 @@ import subprocess
 import tempfile
 import unittest
 
-from test_wsl_interop import PRELUDE
+from test_wsl_interop import CMD, PRELUDE, WSLPATH
 
 REPO = pathlib.Path(__file__).resolve().parents[1].parent
 UNITY_DIR = REPO / "Tools~" / "unity"
@@ -28,6 +31,10 @@ SERIAL = "80917dd4"
 
 ADB = PRELUDE + r"""[ "$1" = -s ] && shift 2
 echo "$*" >> "$FAKE_WSL.adb.calls"
+if [ -s "$FAKE_WSL.down" ]; then
+  left="$(cat "$FAKE_WSL.down")"
+  if [ "$left" -gt 0 ]; then echo $((left - 1)) > "$FAKE_WSL.down"; echo "$*" >> "$FAKE_WSL.failed.calls"; outage; fi
+fi
 pkg=com.turbohttp.devicetests
 listing() {  # $1: with the player (y/n), $2: lines
   local i
@@ -72,7 +79,8 @@ case "$*" in
   'shell pidof '*) proc pidof "$*" ;;
   'shell ps '*) proc ps "$*" ;;
   'shell [ -s '*)
-    if [ -f "$FAKE_WSL.finished" ]; then echo y
+    if [ -f "$FAKE_WSL.answered-y" ] && [ "${FAKE_DROP_AFTER_RESULT:-0}" = 1 ]; then exit 0; fi
+    if [ -f "$FAKE_WSL.finished" ]; then echo y; touch "$FAKE_WSL.answered-y"
     else case "$*" in *'echo n') echo n ;; esac
     fi ;;
   'exec-out cat '*)
@@ -84,7 +92,16 @@ XML
     ;;
   'shell dumpsys window') windows ;;
   'shell rm -f '*) if [ "${FAKE_CLEAR_ON_RM:-0}" = 1 ]; then rm -f "$FAKE_WSL.finished"; fi ;;
-  'shell monkey '*) if [ "${FAKE_RESULT_ON_LAUNCH:-0}" = 1 ]; then touch "$FAKE_WSL.finished"; fi ;;
+  'shell monkey '*)
+    echo x >> "$FAKE_WSL.launches"
+    n="$(wc -l < "$FAKE_WSL.launches")"
+    if [ "$n" -gt "${FAKE_STUCK_LAUNCHES:-0}" ]; then touch "$FAKE_WSL.foreground"; fi
+    if [ "$n" = 1 ] && [ "${FAKE_DOWN_AFTER_LAUNCH:-0}" -gt 0 ]; then echo "$FAKE_DOWN_AFTER_LAUNCH" > "$FAKE_WSL.down"; fi
+    if [ "${FAKE_RESULT_ON_LAUNCH:-0}" = 1 ]; then touch "$FAKE_WSL.finished"; fi ;;
+  'logcat -d -s Unity:V')
+    if [ -f "$FAKE_WSL.foreground" ]; then
+      echo "11-08 20:30:05.000 26650 26700 I Unity   : TURBOHTTP_DEVICE_RUN started tests=1"
+    fi ;;
   'logcat -d -b events')
     if [ "${FAKE_PROC_START:-0}" = 1 ]; then
       echo "11-08 20:30:01.000  1133  1200 I am_proc_start: [0,26650,10073,$pkg,pre-top-activity,{$pkg/com.unity3d.player.UnityPlayerActivity}]"
@@ -245,6 +262,70 @@ class DeviceRunLivenessTests(unittest.TestCase):
         self.plan("empty empty gone live finish")
         result = self.run_device()
         self.assert_pulled(result)
+
+    # --- review round 1: unknown answers after the launch, a player left behind the launcher, a dropped pull ---
+
+    def test_adb_outage_right_after_the_launch_is_not_a_blocked_launch(self):
+        # 200 failed calls cover the whole launch window (30 checks x 5 tries, then the result and event checks).
+        self.plan("gone live live finish live*")
+        result = self.run_device(FAKE_DOWN_AFTER_LAUNCH="200")
+        self.assertGreaterEqual(len(self.calls("failed")), 160)
+        self.assertNotIn("the player did not start", result.stderr)
+        self.assertIn("adb did not answer every launch check", result.stdout)
+        self.assert_pulled(result)
+
+    def test_player_left_behind_the_launcher_is_relaunched_once(self):
+        self.plan("gone live live live finish live*")
+        result = self.run_device(FAKE_STUCK_LAUNCHES="1")
+        self.assertIn("did not start its tests (focused window: u0 com.android.launcher3/.Launcher); relaunching",
+                      result.stdout)
+        adb = self.calls("adb")
+        launches = [i for i, c in enumerate(adb) if c.startswith("shell monkey ")]
+        self.assertEqual(len(launches), 2, adb)
+        self.assertIn(f"shell am force-stop {PKG}", adb[launches[0]:launches[1]])
+        self.assert_pulled(result)
+
+    def test_player_that_never_reaches_the_foreground_is_reported(self):
+        self.plan("gone live*")
+        result = self.run_device(FAKE_STUCK_LAUNCHES="2")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("did not reach the foreground after a relaunch (focused window: "
+                      "u0 com.android.launcher3/.Launcher)", result.stderr)
+        self.assertEqual(sum(c.startswith("shell monkey ") for c in self.calls("adb")), 2)
+        self.assertNotIn("waiting for the device-side result file", result.stdout)
+
+    def test_player_in_front_without_its_marker_yet_is_not_relaunched(self):
+        focus = f"Window{{77 u0 {PKG}/com.unity3d.player.UnityPlayerActivity}}"
+        self.plan("gone live live finish live*")
+        result = self.run_device(FAKE_STUCK_LAUNCHES="1", FAKE_FOCUS=focus)
+        self.assertNotIn("relaunching", result.stdout)
+        self.assertEqual(sum(c.startswith("shell monkey ") for c in self.calls("adb")), 1)
+        self.assert_pulled(result)
+
+    def test_dropped_answer_after_the_result_file_was_seen_still_pulls(self):
+        self.plan("gone live live finish live*")
+        result = self.run_device(FAKE_DROP_AFTER_RESULT="1")
+        self.assert_pulled(result)
+
+    def test_wsl_interop_outage_after_the_launch_exits_5(self):
+        # A Windows editor from WSL: adb.exe and cmd.exe stop answering after the launch (#355 contract: exit 5).
+        bin_dir = self.root / "bin"
+        self.write_exe(bin_dir / "cmd.exe", CMD)
+        self.write_exe(bin_dir / "wslpath", WSLPATH)
+        unity = self.root / "WinEditor" / "Unity.exe"
+        self.write_exe(unity, "#!/usr/bin/env bash\nexit 99\n")
+        self.write_exe(unity.parent / "Data" / "PlaybackEngines" / "AndroidPlayer" / "SDK" / "platform-tools" / "adb.exe",
+                       ADB)
+        localappdata = self.root / "localappdata"
+        (localappdata / "turbohttp").mkdir(parents=True)
+        (localappdata / "turbohttp" / "device-tests-High-arm64.apk").write_text("apk")
+        pathlib.Path(f"{self.state}.cmd.plan").write_text("ok fail*\n")
+        self.plan("gone live*")
+        result = self.run_device(UNITY_PATH=str(unity), FAKE_LOCALAPPDATA=str(localappdata),
+                                 PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", FAKE_DOWN_AFTER_LAUNCH="1000")
+        self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
+        self.assertIn("run-device-tests: WSL interop unavailable", result.stderr)
+        self.assertNotIn("the player did not start", result.stderr)
 
     # --- no script pipes a captured adb answer into grep -q ---
 

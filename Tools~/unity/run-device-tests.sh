@@ -22,8 +22,10 @@
 # A player of an earlier run still running its tests on the device is never replaced: the script exits 2 before
 # it touches the device (stop it with adb shell am force-stop com.turbohttp.devicetests). With --serial, a launch
 # that starts no process (a parental-control or other lock screen holding the focus) exits 2 naming the
-# focused window; a player that dies is reported about a minute after its process is gone (three complete
-# process listings without it, device_poll_s apart).
+# focused window (only on complete adb answers: an unanswered check hands over to the wait), and a player whose
+# process runs but logs no TURBOHTTP_DEVICE_RUN within about a minute while another app holds the focus is
+# relaunched once, then exits 2; a player that dies is reported about a minute after its process is gone (three
+# complete process listings without it, device_poll_s apart).
 # Exit codes as run-tests.sh: 0 pass, 1 failures, 2 setup error, 3 Unity unavailable, 4 skip gate (an unfiltered
 # run is held to the Player-Android entry of Tools~/unity/skip-baseline.txt, #341), 5 WSL interop unavailable
 # (from WSL: cmd.exe, adb.exe or Unity.exe did not start through about two minutes of retries, wsl-interop.sh, #355).
@@ -338,14 +340,90 @@ serial_listed() {
   printf '%s\n' "$list" | awk -v s="$serial" '$1 == s { f = 1 } END { print (f ? "y" : "n") }'
 }
 # The player writes the result file once, when its run ends (written aside and renamed), so it marks the end.
-results_on_device() { [ "$(adbr shell "[ -s $device_file ] && echo y || echo n" || true)" = y ]; }
-pull_results() { if results_on_device; then adbr exec-out cat "$device_file" > "$xml" || true; fi; }
+# Prints y when it is on the device, n when it is not, nothing when adb gave no answer (returning adbr's code).
+results_state() {
+  local out rc=0
+  out="$(adbr shell "[ -s $device_file ] && echo y || echo n")" || rc=$?
+  case "$out" in y | n) echo "$out" ;; esac
+  return "$rc"
+}
+results_on_device() { [ "$(results_state || true)" = y ]; }
+# Copies the device-side result file to $xml ($1 = 1: the file was already seen there). An unknown answer or an
+# empty copy is tried again, three times; only a complete "not there" ends it early.
+pull_results() {
+  local seen="${1:-0}" state
+  for _ in 1 2 3; do
+    if [ "$seen" = 1 ]; then state=y; else state="$(results_state || true)"; fi
+    case "$state" in
+      n) return 0 ;;
+      y)
+        seen=1
+        adbr exec-out cat "$device_file" > "$xml" || true
+        [ ! -s "$xml" ] || return 0
+        ;;
+    esac
+    sleep "$launch_poll_s"
+  done
+}
+# Exits 5 for a WSL interop outage (adbr status $1), naming the adb step $2; any other status returns.
+interop_exit() { wsl_exit_if_interop "$1" run-device-tests "adb.exe did not start ($2)"; }
+# Wakes the screen and stops on a lock screen that stays: an app behind the lock screen may be frozen (#325).
+wake_screen() {
+  adbr shell input keyevent KEYCODE_WAKEUP >/dev/null || true
+  adbr shell wm dismiss-keyguard >/dev/null || true
+  if android_keyguard_showing; then
+    echo "run-device-tests: $serial shows its lock screen: unlock it and keep the screen on" \
+      "(Developer options > Stay awake)" >&2
+    exit 2
+  fi
+}
+launch_player() {
+  adbr shell monkey -p "$pkg_id" -c android.intent.category.LAUNCHER 1 >/dev/null || {
+    rc=$?; interop_exit "$rc" "launching $pkg_id"
+    echo "run-device-tests: launching $pkg_id on $serial failed" >&2; exit 2
+  }
+}
+# After a launch: y once the process shows (launch_poll_s apart, 30 checks), n when every check gave a complete
+# answer without it, and nothing when some check got no answer (unknown: never read as "did not start").
+await_process() {
+  local complete=0 state rc
+  for _ in $(seq 1 30); do
+    rc=0; state="$(player_running)" || rc=$?
+    interop_exit "$rc" "checking for the $pkg_id process"
+    case "$state" in
+      y) echo y; return 0 ;;
+      n) complete=$((complete + 1)) ;;
+    esac
+    sleep "$launch_poll_s"
+  done
+  if [ "$complete" = 30 ]; then echo n; fi
+}
+# After the process showed: y once the player logs TURBOHTTP_DEVICE_RUN, has written its result file or holds
+# the focus; n when 30 complete log answers (launch_poll_s apart) lacked the marker and another app holds the
+# focus (a process left behind the launcher never starts its run); nothing when adb did not answer.
+await_run_start() {
+  local logged rc complete=0 focus
+  for _ in $(seq 1 30); do
+    rc=0; logged="$(android_unity_logged TURBOHTTP_DEVICE_RUN)" || rc=$?
+    interop_exit "$rc" "logcat"
+    case "$logged" in
+      y) echo y; return 0 ;;
+      n) complete=$((complete + 1)) ;;
+    esac
+    sleep "$launch_poll_s"
+  done
+  if results_on_device; then echo y; return 0; fi
+  focus="$(android_focused_window)"
+  case "$focus" in *"$pkg_id/"*) echo y; return 0 ;; esac
+  if [ "$complete" = 30 ] && [ -n "$focus" ]; then echo n; fi
+}
 
 # A player of an earlier run still in progress (a queued run started too early) must not be killed by the
 # install or lose its result file: refuse. One that wrote its result file has finished (a player that did not
 # quit) and is replaced. An unknown answer is asked again, then the run goes ahead.
 for _ in 1 2 3; do
-  state="$(player_running)"
+  rc=0; state="$(player_running)" || rc=$?
+  interop_exit "$rc" "checking for the $pkg_id process"
   [ -z "$state" ] || break
   sleep "$launch_poll_s"
 done
@@ -383,30 +461,42 @@ if [ -n "$serial" ]; then
     rc=$?; wsl_exit_if_interop "$rc" run-device-tests "adb.exe did not start (adb install)"
     echo "run-device-tests: adb install on $serial failed" >&2; exit 2
   }
-  # An app behind the lock screen may be frozen (#325): wake the screen and stop on a lock screen that stays.
-  adbr shell input keyevent KEYCODE_WAKEUP >/dev/null || true
-  adbr shell wm dismiss-keyguard >/dev/null || true
-  if android_keyguard_showing; then
-    echo "run-device-tests: $serial shows its lock screen: unlock it and keep the screen on" \
-      "(Developer options > Stay awake)" >&2
-    exit 2
-  fi
-  adbr shell monkey -p "$pkg_id" -c android.intent.category.LAUNCHER 1 >/dev/null || {
-    rc=$?; wsl_exit_if_interop "$rc" run-device-tests "adb.exe did not start (launching $pkg_id)"
-    echo "run-device-tests: launching $pkg_id on $serial failed" >&2; exit 2
-  }
+  wake_screen
+  launch_player
   # monkey exits 0 even when nothing starts (a parental-control lock screen held the focus): confirm the
-  # process, or at least Android's am_proc_start for a player that quit between two checks.
-  started=n
-  for _ in $(seq 1 30); do
-    if [ "$(player_running)" = y ]; then started=y; break; fi
-    sleep "$launch_poll_s"
-  done
-  if [ "$started" = n ] && ! results_on_device && ! android_proc_started "$pkg_id"; then
-    focus="$(android_focused_window)"
-    echo "run-device-tests: the player did not start on $serial: no $pkg_id process and no am_proc_start" \
-      "after the launch (focused window: ${focus:-unknown}); a lock screen or parental control may block it" >&2
-    exit 2
+  # process, or at least Android's am_proc_start for a player that quit between two checks. Only complete
+  # answers can say "did not start"; with any unknown one the wait below takes over.
+  started="$(await_process)"
+  if [ "$started" = n ]; then
+    rc=0; on_device="$(results_state)" || rc=$?
+    interop_exit "$rc" "checking $device_file"
+    rc=0; proc_start="$(android_proc_started "$pkg_id")" || rc=$?
+    interop_exit "$rc" "logcat -b events"
+    if [ "$on_device" = n ] && [ "$proc_start" = n ]; then
+      focus="$(android_focused_window)"
+      echo "run-device-tests: the player did not start on $serial: no $pkg_id process and no am_proc_start" \
+        "after the launch (focused window: ${focus:-unknown}); a lock screen or parental control may block it" >&2
+      exit 2
+    fi
+  elif [ "$started" = y ]; then
+    # A process left behind the launcher (the screen went off, a dialog took the focus) never starts its run:
+    # relaunch it once, then give up naming the focused window instead of waiting out the whole bound.
+    if [ "$(await_run_start)" = n ]; then
+      echo "run-device-tests: the player runs but did not start its tests (focused window:" \
+        "$(android_focused_window)); relaunching it once"
+      adbr shell am force-stop "$pkg_id" >/dev/null || true
+      wake_screen
+      launch_player
+      if [ "$(await_process)" = y ] && [ "$(await_run_start)" = n ]; then
+        focus="$(android_focused_window)"
+        echo "run-device-tests: the player on $serial did not reach the foreground after a relaunch (focused" \
+          "window: ${focus:-unknown}): close what holds the screen and rerun with --skip-build" >&2
+        adbr shell am force-stop "$pkg_id" >/dev/null || true
+        exit 2
+      fi
+    fi
+  else
+    echo "run-device-tests: adb did not answer every launch check; waiting for the player"
   fi
   echo "run-device-tests: installed and launched on $serial"
 fi
@@ -418,7 +508,7 @@ fi
 if [ ! -f "$xml" ]; then
   echo "run-device-tests: no results over the player connection; waiting for the device-side result file"
   deadline=$(( $(date +%s) + ${TURBOHTTP_DEVICE_TEST_WAIT_MIN:-120} * 60 ))
-  left=0; gone=0; unknown=0
+  left=0; gone=0; unknown=0; found=0
   while :; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
       echo "run-device-tests: no result file within ${TURBOHTTP_DEVICE_TEST_WAIT_MIN:-120} minutes; the player" \
@@ -437,7 +527,7 @@ if [ ! -f "$xml" ]; then
       continue
     fi
     left=0
-    if results_on_device; then break; fi
+    if results_on_device; then found=1; break; fi
     # Only complete answers without the process mean the player is gone, three in a row; an unknown answer
     # (adb failed, empty or truncated output) neither counts nor resets, and keeps waiting.
     case "$(player_running)" in
@@ -461,7 +551,7 @@ if [ ! -f "$xml" ]; then
     sleep "$device_poll_s"
   done
   # Also after the deadline: a player that just finished may have written the file since the last check.
-  if [ "$left" -lt 2 ]; then pull_results; fi
+  if [ "$left" -lt 2 ]; then pull_results "$found"; fi
   # A player that wrote its result file is done, but it does not always quit: stop it so it does not hold
   # the device (and a next run need not replace it).
   if [ -s "$xml" ]; then adbr shell am force-stop "$pkg_id" >/dev/null || true; fi

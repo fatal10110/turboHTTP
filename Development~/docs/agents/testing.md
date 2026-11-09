@@ -168,7 +168,9 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    force-stopped. The device log of every run is kept as `logcat-Android-<tag>-<ts>.txt` in the cache. A
    run refuses (exit 2) to start while the player of an earlier run is still running its tests on the device
    (no result file yet), so a queued run never kills it; with `--serial`, a launch that starts no process (a
-   lock screen, or a parental-control screen holding the focus) exits 2 naming the focused window.
+   lock screen, or a parental-control screen holding the focus) exits 2 naming the focused window, and a
+   player whose process runs but never starts its tests (left behind the launcher) is relaunched once, then
+   exits 2. Both verdicts need complete adb answers; an unanswered check hands over to the wait.
    The device-only test project (`UNITY_DEVICE_TEST_PROJECT`, never `run-tests.sh`'s `UNITY_TEST_PROJECT`)
    opts into cleartext and points `TMPDIR` at the app cache; neither touches the package. The player
    smoke runs next to it: `'./Tools~/unity/build-player.sh' --target android-il2cpp [--bouncycastle] --run
