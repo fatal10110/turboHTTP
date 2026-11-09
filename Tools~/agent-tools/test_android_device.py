@@ -11,8 +11,9 @@ file (<state>.proc.plan, one word per process check; a trailing "*" repeats the 
   finish  the player runs and has just written its result file
 The result file exists once a "finish" word was used, or (FAKE_RESULT_ON_LAUNCH=1) once the player was launched.
 A launch brings the player to the foreground (its Unity log shows TURBOHTTP_DEVICE_RUN) unless it is one of the
-first FAKE_STUCK_LAUNCHES launches. FAKE_DOWN_AFTER_LAUNCH=N fails the N adb calls after the first launch (an adb or
-WSL interop outage); FAKE_DROP_AFTER_RESULT=1 drops every result-file answer after the first "y".
+first FAKE_STUCK_LAUNCHES launches. FAKE_DOWN_AFTER_LAUNCH=N fails N adb calls (an adb or WSL interop outage) that
+start FAKE_DOWN_DELAY calls (default 0) after launch number FAKE_DOWN_ON_LAUNCH (default 1);
+FAKE_DROP_AFTER_RESULT=1 drops every result-file answer after the first "y".
 The script runs with --serial --skip-build (no Unity), its poll pauses at 0 seconds.
 """
 import os
@@ -31,7 +32,10 @@ SERIAL = "80917dd4"
 
 ADB = PRELUDE + r"""[ "$1" = -s ] && shift 2
 echo "$*" >> "$FAKE_WSL.adb.calls"
-if [ -s "$FAKE_WSL.down" ]; then
+delay="$(cat "$FAKE_WSL.delay" 2>/dev/null || echo 0)"
+if [ "$delay" -gt 0 ]; then
+  echo $((delay - 1)) > "$FAKE_WSL.delay"
+elif [ -s "$FAKE_WSL.down" ]; then
   left="$(cat "$FAKE_WSL.down")"
   if [ "$left" -gt 0 ]; then echo $((left - 1)) > "$FAKE_WSL.down"; echo "$*" >> "$FAKE_WSL.failed.calls"; outage; fi
 fi
@@ -96,7 +100,10 @@ XML
     echo x >> "$FAKE_WSL.launches"
     n="$(wc -l < "$FAKE_WSL.launches")"
     if [ "$n" -gt "${FAKE_STUCK_LAUNCHES:-0}" ]; then touch "$FAKE_WSL.foreground"; fi
-    if [ "$n" = 1 ] && [ "${FAKE_DOWN_AFTER_LAUNCH:-0}" -gt 0 ]; then echo "$FAKE_DOWN_AFTER_LAUNCH" > "$FAKE_WSL.down"; fi
+    if [ "$n" = "${FAKE_DOWN_ON_LAUNCH:-1}" ] && [ "${FAKE_DOWN_AFTER_LAUNCH:-0}" -gt 0 ]; then
+      echo "$FAKE_DOWN_AFTER_LAUNCH" > "$FAKE_WSL.down"
+      echo "${FAKE_DOWN_DELAY:-0}" > "$FAKE_WSL.delay"
+    fi
     if [ "${FAKE_RESULT_ON_LAUNCH:-0}" = 1 ]; then touch "$FAKE_WSL.finished"; fi ;;
   'logcat -d -s Unity:V')
     if [ -f "$FAKE_WSL.foreground" ]; then
@@ -307,8 +314,8 @@ class DeviceRunLivenessTests(unittest.TestCase):
         result = self.run_device(FAKE_DROP_AFTER_RESULT="1")
         self.assert_pulled(result)
 
-    def test_wsl_interop_outage_after_the_launch_exits_5(self):
-        # A Windows editor from WSL: adb.exe and cmd.exe stop answering after the launch (#355 contract: exit 5).
+    def run_device_wsl(self, **env):
+        # A Windows editor from WSL: cmd.exe answers the %LOCALAPPDATA% lookup, then fails like adb.exe.
         bin_dir = self.root / "bin"
         self.write_exe(bin_dir / "cmd.exe", CMD)
         self.write_exe(bin_dir / "wslpath", WSLPATH)
@@ -320,12 +327,30 @@ class DeviceRunLivenessTests(unittest.TestCase):
         (localappdata / "turbohttp").mkdir(parents=True)
         (localappdata / "turbohttp" / "device-tests-High-arm64.apk").write_text("apk")
         pathlib.Path(f"{self.state}.cmd.plan").write_text("ok fail*\n")
-        self.plan("gone live*")
-        result = self.run_device(UNITY_PATH=str(unity), FAKE_LOCALAPPDATA=str(localappdata),
-                                 PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", FAKE_DOWN_AFTER_LAUNCH="1000")
+        # A lost exit 5 would end in the wait: bound it to 0 minutes so such a run ends at once with exit 2.
+        return self.run_device(UNITY_PATH=str(unity), FAKE_LOCALAPPDATA=str(localappdata),
+                               PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", FAKE_DOWN_AFTER_LAUNCH="1000",
+                               TURBOHTTP_DEVICE_TEST_WAIT_MIN="0", **env)
+
+    def assert_interop_exit(self, result):
         self.assertEqual(result.returncode, 5, result.stdout + result.stderr)
         self.assertIn("run-device-tests: WSL interop unavailable", result.stderr)
         self.assertNotIn("the player did not start", result.stderr)
+        self.assertNotIn("installed and launched", result.stdout)
+
+    def test_wsl_interop_outage_after_the_launch_exits_5(self):
+        # #355 contract: an outage is exit 5, never a blocked launch or a missing result.
+        self.plan("gone live*")
+        self.assert_interop_exit(self.run_device_wsl())
+
+    def test_wsl_interop_outage_after_the_process_showed_exits_5(self):
+        # The process check after the launch answers, then the run-start (Unity log) check meets the outage.
+        self.plan("gone live*")
+        self.assert_interop_exit(self.run_device_wsl(FAKE_DOWN_DELAY="1"))
+
+    def test_wsl_interop_outage_during_the_relaunch_exits_5(self):
+        self.plan("gone live*")
+        self.assert_interop_exit(self.run_device_wsl(FAKE_STUCK_LAUNCHES="1", FAKE_DOWN_ON_LAUNCH="2"))
 
     # --- no script pipes a captured adb answer into grep -q ---
 

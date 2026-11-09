@@ -480,14 +480,19 @@ if [ -n "$serial" ]; then
     fi
   elif [ "$started" = y ]; then
     # A process left behind the launcher (the screen went off, a dialog took the focus) never starts its run:
-    # relaunch it once, then give up naming the focused window instead of waiting out the whole bound.
-    if [ "$(await_run_start)" = n ]; then
+    # relaunch it once, then give up naming the focused window instead of waiting out the whole bound. The
+    # checks are plain assignments so that an interop exit (5) inside them ends the script under set -e.
+    run_start="$(await_run_start)"
+    if [ "$run_start" = n ]; then
       echo "run-device-tests: the player runs but did not start its tests (focused window:" \
         "$(android_focused_window)); relaunching it once"
       adbr shell am force-stop "$pkg_id" >/dev/null || true
       wake_screen
       launch_player
-      if [ "$(await_process)" = y ] && [ "$(await_run_start)" = n ]; then
+      started="$(await_process)"
+      run_start=""
+      if [ "$started" = y ]; then run_start="$(await_run_start)"; fi
+      if [ "$run_start" = n ]; then
         focus="$(android_focused_window)"
         echo "run-device-tests: the player on $serial did not reach the foreground after a relaunch (focused" \
           "window: ${focus:-unknown}): close what holds the screen and rerun with --skip-build" >&2
