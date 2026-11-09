@@ -7,10 +7,12 @@ namespace TurboHTTP.Tests
 {
     /// <summary>
     /// Managed bytes allocated by a synchronous section. Uses <c>GC.GetAllocatedBytesForCurrentThread</c> where
-    /// a probe shows it counts; Unity's Mono (Boehm GC) returns 0 there, so the meter falls back to the
-    /// profiler's "GC Allocated In Frame" counter around a frame that runs only the measured section (an upper
-    /// bound: other work in that frame adds to it). A runtime with neither, or one where reading a counter kills
-    /// the player (#414), skips the test instead of passing it vacuously (#426).
+    /// probes show it counts exactly the calling thread's allocations. Unity's Mono (Boehm GC) returns 0 there
+    /// (#426) and Unity 2021.3's IL2CPP rounds to 4 KiB and includes other threads (#438), so on both the meter
+    /// falls back to the profiler's "GC Allocated In Frame" counter around a frame that runs only the measured
+    /// section (an upper bound: other work in that frame adds to it; see <see cref="AllocationRounds"/>). A
+    /// runtime with neither, or one where reading a counter kills the player (#414), skips the test instead of
+    /// passing it vacuously (#426).
     /// </summary>
     /// <remarks>
     /// Used from a <c>[UnityTest]</c> on one thread: <c>yield return meter.Calibrate()</c>, then
@@ -31,7 +33,7 @@ namespace TurboHTTP.Tests
 
         /// <summary>
         /// True when the per-thread counter measures: it counts only the section. False for the frame counter,
-        /// which also counts the rest of the frame.
+        /// which also counts the rest of the frame, on every thread.
         /// </summary>
         internal bool IsPrecise => _threadCounter != null;
 

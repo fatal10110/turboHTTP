@@ -16,7 +16,12 @@ in `tooling.md`.
   `RecordReplayTransport` (TurboHTTP.Testing), the HTTP/2 duplex-stream harness used by
   `Tests/Runtime/Transport/Http2/Http2ConnectionTests*.cs`.
 - Allocation gates: `Tests/Runtime/Performance/StreamingAllocationGateTests.cs`,
-  `Phase19AllocationGateTests.cs` with baselines in `Tests/Benchmarks/`.
+  `Phase19AllocationGateTests.cs` with baselines in `Tests/Benchmarks/`. The streaming gates measure through
+  `AllocationMeter` (the per-thread counter only where it counts the thread exactly, else the "GC Allocated
+  In Frame" counter; IL2CPP 2021.3 rounds the per-thread counter to 4 KiB and includes other threads), judge
+  the smallest of five isolated rounds against an `AllocationBudget` per profile (optimized editor,
+  unoptimized Mono player, unoptimized IL2CPP player: Test Runner players compile without optimization,
+  #438), and skip with `[env]` when idle frames could explain the excess.
 
 ## Writing tests
 

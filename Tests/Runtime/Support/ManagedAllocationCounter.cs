@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using System.Threading;
 using UnityEngine;
 
 namespace TurboHTTP.Tests
@@ -34,6 +35,15 @@ namespace TurboHTTP.Tests
         /// <summary>The size of the block a probe allocates; a counter that counts sees at least this much.</summary>
         internal const int ProbeBytes = 512 * 1024;
 
+        /// <summary>The size of the small blocks <see cref="ResolvesSmallAllocations"/> allocates.</summary>
+        internal const int SmallProbeBytes = 64;
+
+        /// <summary>How many small blocks <see cref="ResolvesSmallAllocations"/> allocates, one per reading.</summary>
+        internal const int SmallProbeCount = 8;
+
+        /// <summary>The most a counter may add to a small block for the array's header and alignment.</summary>
+        internal const int ObjectHeaderAllowanceBytes = 64;
+
         /// <summary>
         /// <c>GC.GetAllocatedBytesForCurrentThread</c>, resolved by reflection because the .NET Standard 2.1
         /// profile does not expose it. Returns null where the method is missing or
@@ -59,9 +69,12 @@ namespace TurboHTTP.Tests
         }
 
         /// <summary>
-        /// The per-thread counter, or null where <see cref="TryGetThreadCounter"/> has none or the counter does
-        /// not count a known allocation (Unity's Mono reads 0). The counter is per thread, so call this on the
-        /// thread that measures, not from a static initializer.
+        /// The per-thread counter where it measures exactly what the calling thread allocates, else null: where
+        /// <see cref="TryGetThreadCounter"/> has none, where it does not count a known allocation (Unity's Mono
+        /// reads 0), where it misses or rounds a small one, or where it also counts another thread. Unity
+        /// 2021.3's IL2CPP has the last two: the reading moves in 4 KiB steps, from 0 to several hundred bytes
+        /// per read for the same work, and includes other threads (#438). The counter is per thread, so call
+        /// this on the thread that measures, not from a static initializer.
         /// </summary>
         internal static Func<long> TryGetCountingThreadCounter()
         {
@@ -70,7 +83,9 @@ namespace TurboHTTP.Tests
                 return null;
 
             LogRead("GC.GetAllocatedBytesForCurrentThread");
-            return Counts(counter) ? counter : null;
+            return Counts(counter) && ResolvesSmallAllocations(counter) && !SeesOtherThreads(counter)
+                ? counter
+                : null;
         }
 
         /// <summary>
@@ -87,6 +102,45 @@ namespace TurboHTTP.Tests
             var delta = counter() - before;
             GC.KeepAlive(probe);
             return delta >= ProbeBytes;
+        }
+
+        /// <summary>
+        /// True when <paramref name="counter"/> reads every one of several <see cref="SmallProbeBytes"/>-byte
+        /// allocations as that size plus at most <see cref="ObjectHeaderAllowanceBytes"/> of object header. A
+        /// counter that moves in pages reads 0 or a page instead.
+        /// </summary>
+        internal static bool ResolvesSmallAllocations(Func<long> counter)
+        {
+            if (counter == null)
+                throw new ArgumentNullException(nameof(counter));
+
+            for (var i = 0; i < SmallProbeCount; i++)
+            {
+                var before = counter();
+                var probe = new byte[SmallProbeBytes];
+                var delta = counter() - before;
+                GC.KeepAlive(probe);
+                if (delta < SmallProbeBytes || delta > SmallProbeBytes + ObjectHeaderAllowanceBytes)
+                    return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// True when <paramref name="counter"/>, read on the calling thread, grows by at least
+        /// <see cref="ProbeBytes"/> while another thread allocates that much: it counts more than the thread.
+        /// </summary>
+        internal static bool SeesOtherThreads(Func<long> counter)
+        {
+            if (counter == null)
+                throw new ArgumentNullException(nameof(counter));
+
+            var before = counter();
+            var other = new Thread(() => GC.KeepAlive(new byte[ProbeBytes]));
+            other.Start();
+            other.Join();
+            return counter() - before >= ProbeBytes;
         }
 
         /// <summary>

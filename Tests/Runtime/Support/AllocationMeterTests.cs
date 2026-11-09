@@ -35,6 +35,41 @@ namespace TurboHTTP.Tests
             Assert.IsFalse(ManagedAllocationCounter.Counts(() => reads++ * (ManagedAllocationCounter.ProbeBytes - 1L)));
         }
 
+        [Test]
+        public void ResolvesSmallAllocations_ExactCounter_IsTrue()
+        {
+            long reads = 0;
+            const int perBlock = ManagedAllocationCounter.SmallProbeBytes + 32;
+            Assert.IsTrue(ManagedAllocationCounter.ResolvesSmallAllocations(() => reads++ * perBlock));
+        }
+
+        // #438: Unity 2021.3's IL2CPP counter moves in 4 KiB steps, so one small block reads 0 or 4096.
+        [Test]
+        public void ResolvesSmallAllocations_CounterThatMovesInPages_IsFalse()
+        {
+            long reads = 0;
+            Assert.IsFalse(ManagedAllocationCounter.ResolvesSmallAllocations(() => reads++ / 4 * 4096L));
+        }
+
+        [Test]
+        public void ResolvesSmallAllocations_CounterThatReadsZero_IsFalse()
+        {
+            Assert.IsFalse(ManagedAllocationCounter.ResolvesSmallAllocations(() => 0L));
+        }
+
+        [Test]
+        public void SeesOtherThreads_CounterThatSeesTheOtherThreadsProbe_IsTrue()
+        {
+            long reads = 0;
+            Assert.IsTrue(ManagedAllocationCounter.SeesOtherThreads(() => reads++ * ManagedAllocationCounter.ProbeBytes));
+        }
+
+        [Test]
+        public void SeesOtherThreads_CounterOfTheCallingThreadOnly_IsFalse()
+        {
+            Assert.IsFalse(ManagedAllocationCounter.SeesOtherThreads(() => 0L));
+        }
+
         [UnityTest]
         public IEnumerator Calibrated_CountsAKnownAllocation()
         {

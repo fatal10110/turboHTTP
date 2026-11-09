@@ -33,6 +33,14 @@ namespace TurboHTTP.Tests.Performance
         private const int UploadSendBufferBytes = 4096;
         private const int UploadChunkCount = 512;
 
+        // Paths that allocate nothing per unit on every profile measured (#438): 32 B/unit on the frame counter
+        // leaves room for the rest of the frame, which allocates a few hundred bytes (see the idle frames).
+        private static readonly AllocationBudget NoPerUnitAllocation = new AllocationBudget(
+            precise: 0,
+            optimizedFrame: 32,
+            unoptimizedMonoFrame: 32,
+            unoptimizedIl2CppFrame: 32);
+
         private static readonly byte[] s_pipelinePayload = CreatePatternBytes(PipelineChunkBytes * PipelineChunkCount);
         private static readonly byte[] s_uploadPayload = CreatePatternBytes(UploadSendBufferBytes * UploadChunkCount);
         private static readonly byte[] s_http11ChunkedWire = CreateChunkedWire(s_http11Payload, Http11ChunkBytes);
@@ -40,38 +48,41 @@ namespace TurboHTTP.Tests.Performance
         [UnityTest]
         public IEnumerator RetriedStreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
         {
-            return MeasureScenario(CreateRetryTarget, preciseCounterBudgetBytesPerRead: 0, frameCounterBudgetBytesPerRead: 32);
+            return MeasureScenario(CreateRetryTarget, NoPerUnitAllocation);
         }
 
         [UnityTest]
         public IEnumerator RedirectedStreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
         {
-            return MeasureScenario(CreateRedirectTarget, preciseCounterBudgetBytesPerRead: 0, frameCounterBudgetBytesPerRead: 32);
+            return MeasureScenario(CreateRedirectTarget, NoPerUnitAllocation);
         }
 
         [UnityTest]
         public IEnumerator CacheReplayStreamingRead_SteadyStateManagedBytesPerRead_StaysWithinBudget()
         {
-            return MeasureScenario(CreateCacheReplayTarget, preciseCounterBudgetBytesPerRead: 0, frameCounterBudgetBytesPerRead: 32);
+            return MeasureScenario(CreateCacheReplayTarget, NoPerUnitAllocation);
         }
 
-        // Frame budget 48, not 32: Unity's Mono allocates 33 B/read on this path today (#434).
+        // Optimized-frame budget 48, not 32: Unity's Mono editor allocates 32-33 B/read on this path today (#434).
+        // Unoptimized development players (#438): 1349 B/read on Linux Mono (#434), 1371 on arm64 IL2CPP (#416).
         [UnityTest]
         public IEnumerator Http11ChunkedStreamingReadWithoutTrailers_SteadyStateManagedBytesPerRead_StaysWithinBudget()
         {
-            return MeasureScenario(CreateHttp11ChunkedTarget, preciseCounterBudgetBytesPerRead: 0, frameCounterBudgetBytesPerRead: 48);
+            return MeasureScenario(
+                CreateHttp11ChunkedTarget,
+                new AllocationBudget(precise: 0, optimizedFrame: 48, unoptimizedMonoFrame: 1368, unoptimizedIl2CppFrame: 1392));
         }
 
         [UnityTest]
         public IEnumerator Http11StreamedUploadKnownLengthWithoutExpect_ManagedBytesPerChunk_StaysWithinBudget()
         {
-            return MeasureUpload("http11_streamed_upload_content_length", knownLength: true, preciseCounterBudgetBytesPerWrite: 0, frameCounterBudgetBytesPerWrite: 32);
+            return MeasureUpload("http11_streamed_upload_content_length", knownLength: true, budget: NoPerUnitAllocation);
         }
 
         [UnityTest]
         public IEnumerator Http11StreamedUploadChunkedWithoutTrailers_ManagedBytesPerChunk_StaysWithinBudget()
         {
-            return MeasureUpload("http11_streamed_upload_chunked", knownLength: false, preciseCounterBudgetBytesPerWrite: 0, frameCounterBudgetBytesPerWrite: 32);
+            return MeasureUpload("http11_streamed_upload_chunked", knownLength: false, budget: NoPerUnitAllocation);
         }
 
         private static MeasuredReadTarget CreateRetryTarget()
@@ -263,15 +274,11 @@ namespace TurboHTTP.Tests.Performance
 
         /// <summary>
         /// Managed bytes allocated while <see cref="Http11RequestSerializer.SerializeBodyAsync"/> streams the
-        /// upload, divided by the number of body writes. The request, its read session and the warm-up run sit
-        /// outside the measured window; the sink and the source complete synchronously, so the whole write runs
-        /// on the measuring thread.
+        /// upload, divided by the number of body writes, judged as <see cref="MeasureScenario"/> judges reads.
+        /// Each round's request, its read session and the warm-up run sit outside the measured frame; the sink and
+        /// the source complete synchronously, so the whole write runs on the measuring thread.
         /// </summary>
-        private static IEnumerator MeasureUpload(
-            string name,
-            bool knownLength,
-            long preciseCounterBudgetBytesPerWrite,
-            long frameCounterBudgetBytesPerWrite)
+        private static IEnumerator MeasureUpload(string name, bool knownLength, AllocationBudget budget)
         {
             using var meter = new AllocationMeter();
             yield return meter.Calibrate();
@@ -283,20 +290,25 @@ namespace TurboHTTP.Tests.Performance
                 warmup.AssertFraming();
             }
 
-            using var run = new UploadRun(knownLength);
+            var rounds = new AllocationRounds();
+            yield return RecordIdleFrames(meter, rounds);
 
-            yield return null;
-            meter.Begin();
-            run.Write(options);
-            meter.End();
-            yield return null;
+            for (var round = 0; round < MeasurementRounds; round++)
+            {
+                using var run = new UploadRun(knownLength);
 
-            run.AssertFraming();
-            var measurement = CreateMeasurement(name, meter, run.Writes, "writes");
-            Assert.GreaterOrEqual(run.Writes, UploadChunkCount, name + ": the body was not streamed in send-buffer chunks");
-            AssertMeasurementBudget(
-                measurement,
-                meter.IsPrecise ? preciseCounterBudgetBytesPerWrite : frameCounterBudgetBytesPerWrite);
+                yield return null;
+                meter.Begin();
+                run.Write(options);
+                meter.End();
+                yield return null;
+
+                run.AssertFraming();
+                Assert.GreaterOrEqual(run.Writes, UploadChunkCount, name + ": the body was not streamed in send-buffer chunks");
+                rounds.AddRound(meter.Allocated, run.Writes);
+            }
+
+            AssertWithinBudget(name, "write", meter, rounds, budget);
         }
 
         /// <summary>One streamed upload of the payload into a counting sink, with its request and read session.</summary>
