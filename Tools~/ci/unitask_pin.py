@@ -95,8 +95,26 @@ def adapter_cases(path):
     return len(executed), len(cases)
 
 
+def clean_git_env(keep=()):
+    """os.environ without the variables that pin git to a repository (`git rev-parse --local-env-vars`).
+
+    git exports GIT_DIR and GIT_INDEX_FILE to hooks (in a linked worktree GIT_DIR is the worktree's
+    admin directory), so a git call that works in another directory would otherwise act on the
+    committing repository. `keep` names variables to leave in place.
+    """
+    try:
+        names = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
+                               check=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        names = ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+                 "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+                 "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+                 "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"]
+    return {k: v for k, v in os.environ.items() if k not in names or k in keep}
+
+
 def _git(args, cwd=None):
-    proc = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(["git"] + args, cwd=cwd, env=clean_git_env(), capture_output=True, text=True)
     if proc.returncode != 0:
         raise PinError(f"git {' '.join(args)}: {(proc.stderr or proc.stdout).strip()[-500:]}")
     return proc.stdout.strip()
