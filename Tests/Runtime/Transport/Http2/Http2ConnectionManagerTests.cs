@@ -287,6 +287,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                     OriginPort,
                     ProxyAHost,
                     ProxyAPort));
+                // The GOAWAY makes the read loop dispose the drained connection itself: IsAlive turns false
+                // at its _cts.Cancel(), before that thread reaches the stream dispose (#445).
+                await AbandonedSocketIoTests.WaitUntilAsync(
+                    () => trackingStream.DisposeCallCount > 0, "the stale connection's stream was never disposed");
                 Assert.AreEqual(1, trackingStream.DisposeCallCount);
                 Assert.IsFalse(manager.HasConnection(OriginHost, OriginPort, ProxyAHost, ProxyAPort));
             });
@@ -529,7 +533,9 @@ namespace TurboHTTP.Tests.Transport.Http2
             private readonly Stream _inner;
 
             public bool DisposeCalled { get; private set; }
-            public int DisposeCallCount { get; private set; }
+            // Interlocked/Volatile: the read loop may dispose the stream while the test thread polls (#445).
+            private int _disposeCallCount;
+            public int DisposeCallCount => Volatile.Read(ref _disposeCallCount);
 
             public DisposeTrackingStream(Stream inner)
             {
@@ -597,7 +603,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 if (disposing)
                 {
                     DisposeCalled = true;
-                    DisposeCallCount++;
+                    Interlocked.Increment(ref _disposeCallCount);
                     _inner.Dispose();
                 }
 
