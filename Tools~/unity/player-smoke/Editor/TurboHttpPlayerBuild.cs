@@ -2,6 +2,7 @@
 // Assets/TurboHttpSmoke/Editor/ (Assembly-CSharp-Editor). Run with
 //   -executeMethod TurboHttpPlayerBuild.Build -smokeTarget <target> -smokeOutput <path> -smokeBouncyCastle 0|1
 //     [-smokeArch arm64|x86_64]   (Android only: x86_64 is for the emulators; default arm64)
+//     [-smokeStripping Disabled|Low|Medium|High]   (default High for IL2CPP, Disabled for Mono)
 // It sets the scripting backend and managed stripping level for the target, checks that the
 // TURBOHTTP_BOUNCYCASTLE define matches the request (the script writes it into ProjectSettings
 // before Unity starts), builds one empty scene, copies the generated TurboHTTP link.xml next to
@@ -40,6 +41,7 @@ public static class TurboHttpPlayerBuild
         var output = Arg("-smokeOutput");
         var bouncyCastle = Arg("-smokeBouncyCastle") == "1";
         var x86_64 = Arg("-smokeArch") == "x86_64";
+        var strippingArg = Arg("-smokeStripping");
 
         BuildTarget buildTarget;
         BuildTargetGroup group;
@@ -77,11 +79,18 @@ public static class TurboHttpPlayerBuild
 
         PlayerSettings.productName = "TurboHttpSmoke";
         PlayerSettings.SetScriptingBackend(group, backend);
-        // IL2CPP builds use High, the level #8 AC2 and #196 AC1 are about; Mono keeps Unity's default
-        // (Disabled), so the Mono player proves registration, not linker preservation.
-        PlayerSettings.SetManagedStrippingLevel(
-            group,
-            backend == ScriptingImplementation.IL2CPP ? ManagedStrippingLevel.High : ManagedStrippingLevel.Disabled);
+        // Without -smokeStripping, IL2CPP builds use High, the level #8 AC2 and #196 AC1 are about, and Mono
+        // keeps Unity's default (Disabled), so that player proves registration, not linker preservation.
+        // Mono at High is the #450 row: SslStream's configuration init must survive the Mono linker run.
+        var stripping = backend == ScriptingImplementation.IL2CPP ? ManagedStrippingLevel.High : ManagedStrippingLevel.Disabled;
+        if (!string.IsNullOrEmpty(strippingArg) &&
+            (!Enum.TryParse(strippingArg, false, out stripping) || !Enum.IsDefined(typeof(ManagedStrippingLevel), stripping)))
+        {
+            Debug.LogError("TURBOHTTP_BUILD error unknown -smokeStripping '" + strippingArg + "'");
+            return 1;
+        }
+
+        PlayerSettings.SetManagedStrippingLevel(group, stripping);
         if (buildTarget == BuildTarget.Android)
         {
             PlayerSettings.SetApplicationIdentifier(group, "com.turbohttp.playersmoke");

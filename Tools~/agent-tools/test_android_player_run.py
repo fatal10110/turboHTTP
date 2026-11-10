@@ -179,10 +179,35 @@ class AndroidPlayerRunTests(unittest.TestCase):
     def test_usage_errors(self):
         for args in (["--target", "win64-mono", "--run"], ["--target", "android-il2cpp", "--arch", "armv7"],
                      ["--target", "android-il2cpp", "--network"], ["--target", "android-il2cpp", "--serial"],
-                     ["--target", "android-il2cpp", "--apk", str(self.root / "missing.apk")]):
+                     ["--target", "android-il2cpp", "--apk", str(self.root / "missing.apk")],
+                     ["--target", "win64-il2cpp", "--stripping", "Disabled"], ["--target", "win64-mono", "--stripping"],
+                     ["--target", "win64-mono", "--stripping", "Minimal"],
+                     ["--target", "android-il2cpp", "--stripping", "Low", "--apk", str(self.root / "missing.apk")]):
             with self.subTest(args):
                 self.assertEqual(self.run_script("build-player.sh", *args).returncode, 2)
         self.assertEqual(self.calls("adb"), [])
+
+    def test_stripping_reaches_the_build_and_names_a_non_default_variant(self):
+        # #450: Mono builds at a chosen level; the fake Unity writes no player, so each run stops at the assembly check.
+        (self.unity.parent / "Data" / "PlaybackEngines" / "windowsstandalonesupport" / "Variations" /
+         "win64_player_nondevelopment_mono").mkdir(parents=True)
+        work = self.root / "smoke"
+        proj = work / "testproj"
+        (proj / "ProjectSettings").mkdir(parents=True)
+        (proj / "Packages").mkdir()
+        (proj / "ProjectSettings" / "ProjectSettings.asset").write_text("PlayerSettings:\n  scriptingDefineSymbols: {}\n")
+        (proj / "Packages" / "manifest.json").write_text("{}")
+        for args, stripping, variant in ((["--stripping", "High"], "High", "win64-mono-high-nobc-"),
+                                         ([], "Disabled", "win64-mono-nobc-"),
+                                         (["--stripping", "Disabled"], "Disabled", "win64-mono-nobc-")):
+            with self.subTest(args):
+                before = len(self.calls("unity"))
+                result = self.run_script("build-player.sh", "--target", "win64-mono", *args, UNITY_SMOKE_DIR=str(work))
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                build = [c for c in self.calls("unity")[before:] if "-executeMethod TurboHttpPlayerBuild.Build" in c]
+                self.assertEqual(len(build), 1, self.calls("unity"))
+                self.assertIn("-smokeStripping " + stripping + " ", build[0])
+                self.assertIn(variant, build[0])
 
     def test_run_builds_for_the_device_abi_before_launching(self):
         # A prepared project; the fake Unity writes its log but no APK, so the run stops at the assembly check.
@@ -226,7 +251,11 @@ class SmokeReflectionTargetTests(unittest.TestCase):
 
     def test_smoke_list_matches_the_link_xml_rules(self):
         expected = set().union(*(self.link_xml_types(rel) for rel in SMOKE_LINK_XML))
-        self.assertEqual(self.smoke_list("LinkXmlTargets"), expected)
+        # Mono-only rules (#450: the configuration host IL2CPP's class library lacks) are their own list.
+        everywhere, mono_only = self.smoke_list("LinkXmlTargets"), self.smoke_list("MonoLinkXmlTargets")
+        self.assertEqual(everywhere | mono_only, expected)
+        self.assertFalse(everywhere & mono_only)
+        self.assertEqual(mono_only, {"System.Configuration.ExeConfigurationHost, System.Configuration"})
         self.assertEqual(self.smoke_list("BouncyCastleLinkXmlTargets"), self.link_xml_types(BC_LINK_XML))
 
     def test_every_runtime_link_xml_is_classified(self):

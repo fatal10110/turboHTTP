@@ -8,10 +8,11 @@
 //   TURBOHTTP_SMOKE PASS http=<transport type> ws=<transport type> json=ok bc=<present|absent> alpn=<true|false|n/a> rows=<n> skipped=<n>
 //   TURBOHTTP_SMOKE FAIL rows=<failed row ids>
 // Rows: registration (#1: the bootstrap registered the default transports by itself in a player),
-// reflection-targets (#8), ws-json (#192), oauth-refresh (#67), json-coroutine-class/-struct (#95), and
+// reflection-targets (#8), ws-json (#192), net-config (#450: ServicePointManager's configuration init,
+// which every SslStream handshake runs first, survives the stripping level), oauth-refresh (#67), json-coroutine-class/-struct (#95), and
 // tls-sslstream / tls-bouncycastle (#141, #258 AC2). Every row but the TLS rows is offline: the HTTP rows
 // use an in-process transport (TurboHttpSmokeRows.OfflineTransport). The TLS rows send one HTTPS request
-// per provider to a public host with default certificate validation and log the protocol an h2 host
+// per provider to a public host with default certificate validation, require a 200 (#450) and log the protocol an h2 host
 // selects for that provider's ALPN offer (alpn=h2|http/1.1|none; FAIL when the provider can negotiate
 // ALPN on this runtime and the selection is not h2, #413; Unity's SslStream cannot, #418), only when the
 // run asks for the network (Windows: the -turbohttpSmokeNetwork argument; Android: the turbohttp_smoke_network=1 intent
@@ -60,6 +61,7 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
         Row("registration", "#1", () => summary = TurboHttpSmokeRows.Registration());
         Row("reflection-targets", "#8", TurboHttpSmokeRows.ReflectionTargets);
         Row("ws-json", "#192", TurboHttpSmokeRows.WebSocketJson);
+        Row("net-config", "#450", TurboHttpSmokeRows.NetworkConfiguration);
         yield return AsyncRow("oauth-refresh", "#67", TurboHttpSmokeRows.OAuthRefreshAsync);
         yield return JsonCoroutineRow<TurboHttpSmokeRows.ClassPayload>(
             "json-coroutine-class", TurboHttpSmokeRows.ClassPath, TurboHttpSmokeRows.VerifyClassPayload);

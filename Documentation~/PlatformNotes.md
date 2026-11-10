@@ -186,6 +186,15 @@ UnityLinker does not read `link.xml` files inside packages, so TurboHTTP ships a
 `IUnityLinkerProcessor` (`TurboHttpLinkerProcessor`) that passes the package's own preserve rules
 to every player build. Each module's rules apply only when that module's assembly is in the build.
 
+On the **Mono** backend, `SslStream`'s first handshake initializes the runtime's configuration system,
+which creates its host and the `system.net` configuration sections by reflection. Managed Stripping
+Level Medium or High would strip their constructors and fail every `SslStream` (and `TlsBackend.Auto`)
+request with an authentication error that looks like a certificate problem. The package's rules keep
+them, so Mono players work at Low, Medium and High. If a Mono player still logs `Default constructor
+not found for type System.Configuration.ExeConfigurationHost`, the package's linker processor did not
+run for that build: copy the `#450` rules of the package's `Runtime/Transport/link.xml` into your
+project's `link.xml`.
+
 If you still encounter missing methods or types, add a `link.xml` to your project's `Assets` folder.
 On Unity, `SslStream` and the other `System.Net.Security` types live in the `System` assembly:
 
