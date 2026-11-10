@@ -131,6 +131,7 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
 './Tools~/unity/run-tests.sh' --platform PlayMode --category ExternalNetwork   # 2. internet tests
 './Tools~/unity/run-tests.sh' --platform PlayMode --with-unitask --filter 'UniTaskCancellationTests'  # 2b. UniTask adapters
 './Tools~/unity/build-player.sh' --target win64-mono                    # 3. player builds
+'./Tools~/unity/build-player.sh' --target win64-mono --stripping High --network   #    Mono + Stripping High (#450)
 './Tools~/unity/build-player.sh' --target android-il2cpp                #    (+ --bouncycastle; win64-il2cpp when the SDK is installed)
 './Tools~/unity/build-player.sh' --target android-il2cpp --run [--serial <id>] [--network]  # 4. player smoke on a device/emulator
 ```
@@ -159,8 +160,12 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    registration #1, link.xml reflection targets #8, WebSocket JSON DTO with a nested list and dictionary
    #192, OAuth refresh #67, `GetJsonCoroutine<T>` for a class and a struct #95, offline through an
    in-process transport; with `--network` one HTTPS request per TLS provider, #141/#258) and one aggregate
-   `TURBOHTTP_SMOKE PASS|FAIL` line the script requires. iOS and device rows stay
-   `needs-device-validation` (#99).
+   `TURBOHTTP_SMOKE PASS|FAIL` line the script requires. Mono at `--stripping High --network` is a
+   required release-candidate row (#450): the offline `net-config` row runs `ServicePointManager`'s
+   configuration init and `tls-sslstream` must complete a handshake with a 200, both of which fail when
+   UnityLinker strips what that init creates by reflection (`Runtime/Transport/link.xml` keeps it).
+   `--stripping Low|Medium` take the same path when a stripping change needs them. iOS and device
+   rows stay `needs-device-validation` (#99).
 4. **Android device run (#99).** With one Android device on `adb` (unlocked, screen kept on:
    Developer options → Stay awake), `'./Tools~/unity/run-device-tests.sh' [--stripping Low|High]
    [--arch arm64|armv7|x86_64] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,

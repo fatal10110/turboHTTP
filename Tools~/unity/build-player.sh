@@ -4,7 +4,8 @@
 # checks its marker lines (Windows targets always; Android with --run, on an adb device or emulator).
 #
 #   UNITY_PATH=<Unity 2021.3 editor binary> \
-#     Tools~/unity/build-player.sh --target win64-mono|win64-il2cpp|android-il2cpp [--bouncycastle] [--background] [--network]
+#     Tools~/unity/build-player.sh --target win64-mono|win64-il2cpp|android-il2cpp [--stripping Disabled|Low|Medium|High]
+#       [--bouncycastle] [--background] [--network]
 #     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --run [--serial <adb serial>] [--arch arm64|x86_64] [--network]
 #     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --apk <built APK> [--serial <adb serial>] [--network]
 #
@@ -14,17 +15,21 @@
 # OAuth refresh (#67) and GetJsonCoroutine<T> (#95) offline, and with --network one HTTPS request per
 # TLS provider (#141, #258 AC2). It logs one "TURBOHTTP_SMOKE ROW <id> PASS|FAIL|SKIP" line per row and
 # one aggregate "TURBOHTTP_SMOKE PASS|FAIL" line, which this script requires to be PASS;
-# Editor/TurboHttpPlayerBuild.cs sets the backend (IL2CPP targets: Managed Stripping Level High)
-# and calls BuildPipeline.BuildPlayer. TURBOHTTP_BOUNCYCASTLE is set for the target's group only
+# Editor/TurboHttpPlayerBuild.cs sets the backend and the Managed Stripping Level (--stripping; default
+# High for IL2CPP targets and Unity's default Disabled for Mono; IL2CPP takes Low|Medium|High) and calls
+# BuildPipeline.BuildPlayer. TURBOHTTP_BOUNCYCASTLE is set for the target's group only
 # with --bouncycastle and removed otherwise (#196, #258); TURBOHTTP_BACKGROUND_NETWORKING likewise with
 # --background, which on Android also checks that the TurboHttpBackground.androidlib classes and the
 # WorkManager dependency reached the APK without any Gradle template edit (#89).
 #
 # Checks: TurboHTTP.Core/Transport/WebSocket.Transport/Complete/JSON/Retry/Auth are in every build.
-# Without --bouncycastle, TurboHTTP.Transport.BouncyCastle is absent from every build and, on IL2CPP
-# (the linker output, Library/Bee/artifacts/*/ManagedStripped), TurboHTTP.SecureProtocol too (#8 AC2,
-# #196 AC1); with it, both are present. Mono keeps stripping Disabled and copies every compiled
-# assembly, so its SecureProtocol presence is reported, not asserted. Windows players are started
+# Without --bouncycastle, TurboHTTP.Transport.BouncyCastle is absent from every build and, at Stripping
+# High (IL2CPP: the linker output, Library/Bee/artifacts/*/ManagedStripped; Mono: <name>_Data/Managed),
+# TurboHTTP.SecureProtocol too (#8 AC2, #196 AC1); with it, both are present. Below High its
+# SecureProtocol presence is reported, not asserted (Mono Disabled copies every compiled assembly). Every
+# build that runs UnityLinker (any level but Disabled) must have received TurboHTTP.link.xml. Mono at
+# High with --network is the #450 gate: its tls-sslstream row fails when the linker strips what
+# SslStream's configuration init creates by reflection. Windows players are started
 # with -batchmode -nographics. Android --run (#325) checks that one device is on adb before the build
 # (--serial picks one of several, an emulator too; --arch defaults to the device's ABI, else arm64), then
 # installs the APK (adb install -r), force-stops it, wakes the screen (fails on a lock screen it cannot
@@ -52,15 +57,17 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$repo/Tools~/unity/wsl-interop.sh"
 # shellcheck source=Tools~/unity/android-adb.sh
 . "$repo/Tools~/unity/android-adb.sh"
-target=""; bouncycastle=0; background=0; run=0; network=0; serial=""; arch=""; apk=""
-usage="usage: $0 --target win64-mono|win64-il2cpp|android-il2cpp [--bouncycastle] [--background] [--network]
+target=""; stripping=""; bouncycastle=0; background=0; run=0; network=0; serial=""; arch=""; apk=""
+usage="usage: $0 --target win64-mono|win64-il2cpp|android-il2cpp [--stripping Disabled|Low|Medium|High]
+       [--bouncycastle] [--background] [--network]
        [--run] [--serial <adb serial>] [--arch arm64|x86_64] [--apk <built APK>]   (the last four: android-il2cpp)"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --target|--serial|--arch|--apk)
+    --target|--stripping|--serial|--arch|--apk)
       if [ $# -lt 2 ] || [ -z "$2" ]; then echo "$usage" >&2; exit 2; fi
       case "$1" in
         --target) target="$2" ;;
+        --stripping) stripping="$2" ;;
         --serial) serial="$2"; run=1 ;;
         --arch) arch="$2" ;;
         --apk) apk="$2"; run=1 ;;
@@ -79,6 +86,20 @@ case "$target" in
   android-il2cpp) group=Android; buildtarget=Android; product=TurboHttpSmoke.apk; stripped=Android ;;
   *) echo "build-player: --target win64-mono|win64-il2cpp|android-il2cpp required" >&2; exit 2 ;;
 esac
+# Default levels: IL2CPP High (#8 AC2, #196 AC1), Mono Unity's default Disabled. IL2CPP has no Disabled.
+strip_default=High; [ "$target" = win64-mono ] && strip_default=Disabled
+case "${stripping:-$strip_default}" in
+  Disabled|Low|Medium|High) ;;
+  *) echo "build-player: --stripping Disabled|Low|Medium|High" >&2; exit 2 ;;
+esac
+if [ "$stripping" = Disabled ] && [ "$target" != win64-mono ]; then
+  echo "build-player: --stripping Disabled applies to Mono (IL2CPP always runs UnityLinker: Low|Medium|High)" >&2; exit 2
+fi
+if [ -n "$stripping" ] && [ -n "$apk" ]; then
+  echo "build-player: --stripping does not apply to --apk (the APK is already built)" >&2; exit 2
+fi
+explicit_stripping="$stripping"
+stripping="${stripping:-$strip_default}"
 if [ "$target" != android-il2cpp ] && { [ "$run" = 1 ] || [ -n "$arch" ]; }; then
   echo "build-player: --run, --serial, --arch and --apk apply to --target android-il2cpp (Windows players always run)" >&2; exit 2
 fi
@@ -258,6 +279,10 @@ work="${UNITY_SMOKE_DIR:-$cache/player-smoke}"
 proj="$work/testproj"; pkg="$work/package"
 variant="$target"
 [ "$arch" = x86_64 ] && variant="$target-x86_64"
+# A non-default level is in the name, so its build directory never passes for the default one.
+if [ -n "$explicit_stripping" ] && [ "$stripping" != "$strip_default" ]; then
+  variant="$variant-$(printf '%s' "$stripping" | tr '[:upper:]' '[:lower:]')"
+fi
 if [ "$bouncycastle" = 1 ]; then variant="$variant-bc"; else variant="$variant-nobc"; fi
 [ "$background" = 1 ] && variant="$variant-bg"
 out="$work/builds/$variant-$(date +%Y%m%d-%H%M%S)"
@@ -330,7 +355,7 @@ echo "build-player: $variant -> $out"
 wsl_unity_launch build-player "$log" \
   "$unity" -batchmode -nographics -projectPath "$(topath "$proj")" -buildTarget "$buildtarget" \
   -executeMethod TurboHttpPlayerBuild.Build -smokeTarget "$target" -smokeOutput "$(topath "$out/$product")" \
-  -smokeBouncyCastle "$bouncycastle" -smokeArch "${arch:-arm64}" -logFile "$(topath "$log")"
+  -smokeBouncyCastle "$bouncycastle" -smokeArch "${arch:-arm64}" -smokeStripping "$stripping" -logFile "$(topath "$log")"
 code="$unity_code"
 grep -E "TURBOHTTP_BUILD|error CS[0-9]+" "$log" | head -20 || true
 
@@ -365,8 +390,8 @@ if [ "$bouncycastle" = 1 ]; then
 else
   has TurboHTTP.Transport.BouncyCastle && { echo "build-player: FAIL TurboHTTP.Transport.BouncyCastle.dll present without TURBOHTTP_BOUNCYCASTLE"; fail=1; }
   if has TurboHTTP.SecureProtocol; then
-    if [ "$target" = win64-mono ]; then
-      echo "build-player: note TurboHTTP.SecureProtocol.dll present (Mono, stripping Disabled: every compiled assembly is copied)"
+    if [ "$stripping" != High ]; then
+      echo "build-player: note TurboHTTP.SecureProtocol.dll present (stripping $stripping; asserted absent at High only)"
     else
       echo "build-player: FAIL TurboHTTP.SecureProtocol.dll survived Stripping High without TURBOHTTP_BOUNCYCASTLE"; fail=1
     fi
@@ -374,8 +399,8 @@ else
 fi
 if [ -f "$out/TurboHTTP.link.xml" ]; then
   echo "build-player: UnityLinker received $out/TurboHTTP.link.xml (assemblies: $(grep -oE '<assembly fullname="[^"]+"' "$out/TurboHTTP.link.xml" | sed 's/.*="//;s/"$//' | sort -u | tr '\n' ' '))"
-elif [ "$target" != win64-mono ]; then
-  echo "build-player: FAIL no TurboHTTP.link.xml from TurboHttpLinkerProcessor"; fail=1
+elif [ "$stripping" != Disabled ]; then
+  echo "build-player: FAIL no TurboHTTP.link.xml from TurboHttpLinkerProcessor (stripping $stripping runs UnityLinker)"; fail=1
 fi
 
 if [ "$toolchain" = 1 ]; then

@@ -26,7 +26,7 @@ public static class TurboHttpSmokeRows
     public const string StructPath = "/json/struct";
     public const string TokenPath = "/oauth/token";
 
-    // The --network rows: one GET per TLS provider; any HTTP status proves the handshake (default validation).
+    // The --network rows: one GET per TLS provider (default validation), which must complete with 200.
     public const string NetworkUrl = "https://example.com/";
 
     // #413: a host that serves h2. HTTP/2 over TLS is selected only through ALPN (RFC 9113 section 3.2),
@@ -55,6 +55,9 @@ public static class TurboHttpSmokeRows
         "System.Net.Security.SslStream, System",
         "System.Net.Security.SslClientAuthenticationOptions, System",
         "System.Net.Security.SslApplicationProtocol, System",
+        "System.Net.Configuration.NetSectionGroup, System",
+        "System.Net.Configuration.ConnectionManagementSection, System",
+        "System.Net.Configuration.ConnectionManagementElementCollection, System",
         "System.Collections.Generic.List`1, mscorlib",
         "System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1, mscorlib",
         "TurboHTTP.Transport.Http2.SingleReaderChannel`1, TurboHTTP.Transport",
@@ -76,6 +79,13 @@ public static class TurboHttpSmokeRows
         "System.Security.Cryptography.RandomNumberGenerator, mscorlib",
         "TurboHTTP.WebSocket.Transport.WebSocketTransportModuleInitializer, TurboHTTP.WebSocket.Transport",
         "TurboHTTP.WebSocket.Transport.RawSocketWebSocketTransport, TurboHTTP.WebSocket.Transport",
+    };
+
+    // Rules for the configuration system only Mono's class library has (#450): IL2CPP's has no
+    // ExeConfigurationHost, so these are checked only in a Mono player.
+    private static readonly string[] MonoLinkXmlTargets =
+    {
+        "System.Configuration.ExeConfigurationHost, System.Configuration",
     };
 
     // Runtime/Transport/BouncyCastle/link.xml: checked only in a --bouncycastle build.
@@ -131,6 +141,9 @@ public static class TurboHttpSmokeRows
     {
         var missing = new List<string>();
         var count = Resolve(LinkXmlTargets, missing);
+#if ENABLE_MONO
+        count += Resolve(MonoLinkXmlTargets, missing);
+#endif
         var bouncyCastle = BouncyCastlePresent;
         if (bouncyCastle)
             count += Resolve(BouncyCastleLinkXmlTargets, missing);
@@ -154,6 +167,29 @@ public static class TurboHttpSmokeRows
         }
 
         return names.Length;
+    }
+
+    // #450: the first SslStream handshake runs ServicePointManager's type initializer, which on Mono builds the
+    // runtime's configuration system and the system.net sections by reflection. A Managed Stripping Level that
+    // removes what that init creates fails every SslStream request before it reaches the server, so this
+    // offline row touches the same initializer and fails the default (no --network) run too.
+    public static string NetworkConfiguration()
+    {
+        int limit;
+        try
+        {
+            limit = System.Net.ServicePointManager.DefaultConnectionLimit;
+        }
+        catch (TypeInitializationException ex)
+        {
+            Exception inner = ex;
+            while (inner.InnerException != null)
+                inner = inner.InnerException;
+            throw new InvalidOperationException(
+                "ServicePointManager initializer failed (" + inner.GetType().Name + ": " + inner.Message + ")", ex);
+        }
+
+        return "ServicePointManager initialized default-connection-limit=" + limit;
     }
 
     // #192: JsonWebSocketSerializer<T> with a DTO holding a nested list and a dictionary, and a dictionary
@@ -269,6 +305,9 @@ public static class TurboHttpSmokeRows
         using (var response = await client.Get(NetworkUrl).SendBufferedAsync(ct))
         {
             request = "backend=" + backend + " host=" + new Uri(NetworkUrl).Host + " status=" + (int)response.StatusCode;
+            // #450: the handshake completed only if the request did; a status other than 200 is no proof of it.
+            if ((int)response.StatusCode != 200)
+                throw new InvalidOperationException("expected 200 after the handshake (" + request + ")");
         }
 
         return request + " " + await NegotiateAlpnAsync(backend, ct);

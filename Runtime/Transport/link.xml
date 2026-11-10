@@ -19,6 +19,30 @@
   </assembly>
 
   <!--
+    #450: SslStream's first handshake runs ServicePointManager's type initializer, which on Mono players
+    builds the configuration system and reads system.net/connectionManagement. The configuration host,
+    the system.net section group, the section and its element collection are all created by reflection
+    from type names (the host's type, machine.config), so Managed Stripping Level Medium or High
+    removes their constructors and every SslStream request fails before it reaches the server (reported
+    as a certificate error). The host is reached only through its interface, so it keeps every member;
+    the system.net types need only the constructor the configuration system calls.
+  -->
+  <assembly fullname="System.Configuration">
+    <type fullname="System.Configuration.ExeConfigurationHost" preserve="all"/>
+  </assembly>
+  <assembly fullname="System">
+    <type fullname="System.Net.Configuration.NetSectionGroup">
+      <method signature="System.Void .ctor()"/>
+    </type>
+    <type fullname="System.Net.Configuration.ConnectionManagementSection">
+      <method signature="System.Void .ctor()"/>
+    </type>
+    <type fullname="System.Net.Configuration.ConnectionManagementElementCollection">
+      <method signature="System.Void .ctor()"/>
+    </type>
+  </assembly>
+
+  <!--
     Generic templates for IL2CPP/AOT. List<SslApplicationProtocol> is instantiated by a static
     call site in SslStreamTlsProvider.BuildAlpnOptions (#303), which is what makes IL2CPP generate
     its AOT code; preserving the open List<> template keeps its members against stripping.
