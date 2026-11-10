@@ -25,6 +25,69 @@ namespace TurboHTTP.Tests.Transport.Http1
     {
         private static readonly TimeSpan ShortFirstByte = TimeSpan.FromMilliseconds(200);
 
+        // #384 loop: the retry after a first-byte timeout must never lose its response to the
+        // abandoned read's stale I/O job. One iteration passes on most runs even with the defect
+        // (IL2CPP failed about 1 in 20 before #405), so only many iterations show it; too slow
+        // for the default suite, run it by name or with --category Stress on a device or simulator.
+        private const int LoopIterations = 200;
+        private static readonly TimeSpan LoopRequestTimeout = TimeSpan.FromSeconds(2);
+
+        [Test, Explicit("200 iterations, about 45 s; device and simulator validation (#384)")]
+        [Category("Stress")]
+        public void Loop384_OneSilentIdle_MaxOnePerHost_200x() =>
+            RunLoop("one-silent", silentConnections: 1, maxPerHost: 1, expectedAccepts: 2);
+
+        [Test, Explicit("200 iterations, about 45 s; device and simulator validation (#384)")]
+        [Category("Stress")]
+        public void Loop384_TwoSilentIdle_MaxTwoPerHost_200x() =>
+            RunLoop("two-silent", silentConnections: 2, maxPerHost: 2, expectedAccepts: 3);
+
+        private static void RunLoop(string name, int silentConnections, int maxPerHost, int expectedAccepts)
+        {
+            var failures = new List<string>();
+            for (int i = 1; i <= LoopIterations; i++)
+            {
+                int accepts = -1;
+                string outcome = "ok";
+                try
+                {
+                    AssertAsync.Run(async () =>
+                    {
+                        using var server = new SilentThenOkServer(silentConnections);
+                        try
+                        {
+                            var pool = new TcpConnectionPool(
+                                maxConnectionsPerHost: maxPerHost,
+                                reusedConnectionFirstByteTimeout: ShortFirstByte);
+                            using var client = CreateClient(new RawSocketTransport(pool));
+                            for (int c = 0; c < silentConnections; c++)
+                                await InjectIdleConnectionAsync(pool, server.Port);
+
+                            using var response = await client.Get(server.Url("/"))
+                                .WithTimeout(LoopRequestTimeout)
+                                .SendBufferedAsync();
+                            if (response.StatusCode != HttpStatusCode.OK)
+                                outcome = "status " + (int)response.StatusCode;
+                        }
+                        finally
+                        {
+                            accepts = server.AcceptCount;
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    outcome = ex.GetType().Name + ": " + ex.Message;
+                }
+
+                if (outcome != "ok" || accepts != expectedAccepts)
+                    failures.Add("it=" + i + " " + outcome + " accepts=" + accepts);
+            }
+
+            TestContext.WriteLine(name + ": " + (LoopIterations - failures.Count) + "/" + LoopIterations + " passed");
+            Assert.IsEmpty(failures, name + ": " + failures.Count + " of " + LoopIterations + " failed");
+        }
+
         [Test]
         public void ConnectedSocket_HasKeepAliveEnabled()
         {
@@ -166,7 +229,9 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             var tcp = new TcpClient();
             await tcp.ConnectAsync(IPAddress.Loopback, port);
-            var connection = new PooledConnection(tcp.Client, tcp.GetStream(), "127.0.0.1", port, false);
+            // The stream the pool itself builds in NetworkStream mode (#448): a plain NetworkStream would
+            // release the descriptor at once when the watchdog abandons its read, bypassing #405.
+            var connection = new PooledConnection(tcp.Client, new HoldingNetworkStream(tcp.Client), "127.0.0.1", port, false);
 
             var idleField = typeof(TcpConnectionPool).GetField(
                 "_idleConnections",
