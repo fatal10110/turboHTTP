@@ -34,6 +34,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import unitask_pin  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Top-level entries Unity would import but that are not meant to ship. Empty since #6 renamed
@@ -61,7 +64,9 @@ ENGINE_FREE = {"TurboHTTP.Transport", "TurboHTTP.SecureProtocol", "TurboHTTP.JSO
 
 
 def tracked():
-    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout
+    # cwd=ROOT locates the repository; the hook's GIT_INDEX_FILE (partial commit) stays so the staged tree is checked.
+    env = unitask_pin.clean_git_env(keep=("GIT_INDEX_FILE",))
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, env=env, capture_output=True, check=True).stdout
     return [p for p in out.decode().split("\0") if p and os.path.exists(os.path.join(ROOT, p))]
 
 

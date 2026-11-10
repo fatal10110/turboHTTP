@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shadow_build  # noqa: E402
@@ -165,6 +166,26 @@ class Fetch(unittest.TestCase):
         # Cached: no remote needed the second time.
         shutil.rmtree(self.remote)
         self.assertEqual(unitask_pin.fetch(self.cache, self.url, self.sha, "2.0.0"), pkg)
+
+    def test_fetch_ignores_the_hooks_git_environment(self):
+        # git exports GIT_DIR/GIT_INDEX_FILE to hooks; the fetch must not act on that repository.
+        victim = os.path.join(self.dir, "victim")
+        os.makedirs(victim)
+        git(victim, "init", "-q")
+        git(victim, "remote", "add", "origin", "https://example.invalid/victim.git")
+        config = os.path.join(victim, ".git", "config")
+        with open(config, "rb") as fh:
+            before = fh.read()
+        listing = git(victim, "config", "--list", "--show-origin")
+        hook_env = {"GIT_DIR": os.path.join(victim, ".git"), "GIT_INDEX_FILE": os.path.join(victim, ".git", "index")}
+        with mock.patch.dict(os.environ, hook_env):
+            pkg = unitask_pin.fetch(self.cache, self.url, self.sha, "2.0.0")
+        self.assertTrue(os.path.isfile(os.path.join(pkg, "Runtime", "UniTask.asmdef")))
+        self.assertTrue(pkg.startswith(self.cache))
+        with open(config, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertEqual(git(victim, "config", "--list", "--show-origin"), listing)
+        self.assertEqual(git(os.path.join(self.cache, self.sha), "rev-parse", "HEAD"), self.sha)
 
     def test_a_tag_that_moved_away_from_the_sha_fails(self):
         with self.assertRaisesRegex(unitask_pin.PinError, "tag 2.0.0 is"):
