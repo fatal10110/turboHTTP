@@ -17,7 +17,8 @@ namespace TurboHTTP.Tests
         /// reads one (#414). A signal cannot be caught in managed code, so the counter is never called
         /// there: neither <c>GC.GetAllocatedBytesForCurrentThread</c> nor the profiler's GC counters. A test
         /// that has no other counter skips with this reason instead of taking the player down. Unity 6 iOS
-        /// players and Unity 2021.3 Android IL2CPP players read the counter and pass. The guard covers 2021.3
+        /// players read the counter and pass; other 2021.3 IL2CPP players skip only the per-thread counter
+        /// (<see cref="Il2CppLacksThreadCounter"/>) and measure with the profiler's. The guard covers 2021.3
         /// only, the version the crash was seen on; 2022.x and 2023.x are untested.
         /// </summary>
         internal static string UnsafeRuntimeReason
@@ -28,6 +29,27 @@ namespace TurboHTTP.Tests
                 return "Reading a managed allocation counter kills Unity 2021.3 IL2CPP iOS players with SIGILL (#414).";
 #else
                 return null;
+#endif
+            }
+        }
+
+        /// <summary>
+        /// True on a Unity 2021.3 IL2CPP player. Its libil2cpp leaves the internal call behind
+        /// <c>GC.GetAllocatedBytesForCurrentThread</c> unimplemented
+        /// (<c>icalls/mscorlib/System/GC.cpp</c>: <c>IL2CPP_NOT_IMPLEMENTED_ICALL</c> then
+        /// <c>IL2CPP_UNREACHABLE</c>). A release build compiles that body to <c>__builtin_unreachable()</c>, so
+        /// calling it is undefined behavior: a <c>brk</c> trap (SIGTRAP) on the Apple arm64 macOS player, SIGILL
+        /// on the x86_64 iOS simulator player (#414), and on players whose compiler emits no trap, whatever the
+        /// code that follows leaves (likely the 4 KiB, all-thread readings of #438). Unity 6 iOS players read it.
+        /// </summary>
+        private static bool Il2CppLacksThreadCounter
+        {
+            get
+            {
+#if ENABLE_IL2CPP && !UNITY_EDITOR && !UNITY_2022_1_OR_NEWER
+                return true;
+#else
+                return false;
 #endif
             }
         }
@@ -46,14 +68,14 @@ namespace TurboHTTP.Tests
 
         /// <summary>
         /// <c>GC.GetAllocatedBytesForCurrentThread</c>, resolved by reflection because the .NET Standard 2.1
-        /// profile does not expose it. Returns null where the method is missing or
-        /// <see cref="UnsafeRuntimeReason"/> applies. It does not check that the counter counts: Unity's Mono
-        /// (Boehm GC) has the method and always returns 0. Measure with
-        /// <see cref="TryGetCountingThreadCounter"/> instead.
+        /// profile does not expose it. Returns null where the method is missing, where
+        /// <see cref="UnsafeRuntimeReason"/> applies, or on a Unity 2021.3 IL2CPP player, which never implemented
+        /// the internal call (#414). It does not check that the counter counts: Unity's Mono (Boehm GC) has the
+        /// method and always returns 0. Measure with <see cref="TryGetCountingThreadCounter"/> instead.
         /// </summary>
         internal static Func<long> TryGetThreadCounter()
         {
-            if (UnsafeRuntimeReason != null)
+            if (UnsafeRuntimeReason != null || Il2CppLacksThreadCounter)
                 return null;
 
             var api = typeof(GC).GetMethod(

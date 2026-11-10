@@ -163,7 +163,10 @@ namespace TurboHTTP.Tests.Transport
                     hold.Close();
                     Assert.IsFalse(hold.IsReleased);
 
-                    await AbandonedSocketIoTests.WaitUntilAsync(() => hold.IsReleased, "the hold bound never released the handle");
+                    // ReleaseKind, not IsReleased: the bound releases on the timer thread, and IsReleased flips
+                    // before that thread disposes the socket; ReleaseKind is written after the dispose (#442).
+                    await AbandonedSocketIoTests.WaitUntilAsync(
+                        () => hold.ReleaseKind != SocketHandleHold.NotReleased, "the hold bound never released the handle");
                     Assert.IsTrue(IsClosed(client));
                     Assert.AreEqual(SocketHandleHold.ReleasedAtBound, hold.ReleaseKind);
 
