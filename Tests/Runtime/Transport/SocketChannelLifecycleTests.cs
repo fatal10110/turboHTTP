@@ -33,6 +33,9 @@ namespace TurboHTTP.Tests.Transport
                     var finished = await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(10)));
                     Assert.AreSame(dispose, finished, "Dispose did not return within its bound");
                     await dispose;
+
+                    // The buffers are given up at the bound, after Dispose returned (#384).
+                    await AbandonedSocketIoTests.WaitUntilAsync(() => channel.IsReleased, "the bound never released the channel");
                 }
                 finally
                 {

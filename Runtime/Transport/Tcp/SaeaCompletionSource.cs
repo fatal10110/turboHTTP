@@ -1,5 +1,6 @@
 using System;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks.Sources;
 
 namespace TurboHTTP.Transport.Tcp
@@ -16,7 +17,7 @@ namespace TurboHTTP.Transport.Tcp
     ///   <item>Call <see cref="Reset"/> to prepare for the next operation.</item>
     ///   <item>Issue the socket call (e.g. <c>Socket.ReceiveAsync(saea)</c>).</item>
     ///   <item>If the call returns <c>false</c> (synchronous completion), call
-    ///         <see cref="SetResult"/> directly — the <c>Completed</c> event is NOT raised
+    ///         <see cref="TrySetResult"/> directly — the <c>Completed</c> event is NOT raised
     ///         for synchronous completions (BCL contract), so there is no double-SetResult risk.</item>
     ///   <item>Otherwise await <see cref="AsValueTask"/>.</item>
     /// </list>
@@ -36,23 +37,46 @@ namespace TurboHTTP.Transport.Tcp
     {
         private ManualResetValueTaskSourceCore<int> _core;
 
+        // Interlocked: 0 until the current operation's result is set, 1 after. The OS completion and
+        // the channel's dispose (#384) may both try to end the same operation; the first one wins.
+        private int _completed;
+
         /// <summary>
         /// Prepares the source for a new operation. Must be called before each socket call.
         /// </summary>
-        public void Reset() => _core.Reset();
+        public void Reset()
+        {
+            _core.Reset();
+            Volatile.Write(ref _completed, 0);
+        }
 
         /// <summary>
         /// Returns a <see cref="System.Threading.Tasks.ValueTask{T}"/> that completes when
-        /// <see cref="SetResult"/> or <see cref="SetException"/> is called.
+        /// <see cref="TrySetResult"/> or <see cref="TrySetException"/> is called.
         /// </summary>
         public System.Threading.Tasks.ValueTask<int> AsValueTask()
             => new System.Threading.Tasks.ValueTask<int>(this, _core.Version);
 
-        /// <summary>Signals successful completion with the number of bytes transferred.</summary>
-        public void SetResult(int bytesTransferred) => _core.SetResult(bytesTransferred);
+        /// <summary>
+        /// Signals successful completion with the number of bytes transferred, unless the operation
+        /// already ended; returns whether this call ended it.
+        /// </summary>
+        public bool TrySetResult(int bytesTransferred)
+        {
+            if (Interlocked.Exchange(ref _completed, 1) != 0)
+                return false;
+            _core.SetResult(bytesTransferred);
+            return true;
+        }
 
-        /// <summary>Signals faulted completion.</summary>
-        public void SetException(Exception exception) => _core.SetException(exception);
+        /// <summary>Signals faulted completion unless the operation already ended; returns whether this call ended it.</summary>
+        public bool TrySetException(Exception exception)
+        {
+            if (Interlocked.Exchange(ref _completed, 1) != 0)
+                return false;
+            _core.SetException(exception);
+            return true;
+        }
 
         // ── IValueTaskSource<int> ──────────────────────────────────────────────
 
