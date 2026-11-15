@@ -514,8 +514,10 @@ namespace TurboHTTP.WebSocket
                 }
                 finally
                 {
+                    // No release of disconnectedClient here: whoever takes a child out of _client owns and
+                    // disposes it (this loop before it connects a replacement, CloseAsync, Abort, Dispose).
+                    // Releasing it here raced a CloseAsync that had just taken it and was still closing it.
                     next = ExitReconnectLoop(handOff: loopCompleted);
-                    await ReleaseDisconnectedClientAsync(disconnectedClient).ConfigureAwait(false);
                 }
 
                 if (next == null)
@@ -690,14 +692,6 @@ namespace TurboHTTP.WebSocket
                 child.Abort();
                 child.Dispose();
             }
-        }
-
-        private async Task ReleaseDisconnectedClientAsync(IWebSocketClient disconnectedClient)
-        {
-            if (ReferenceEquals(disconnectedClient, Volatile.Read(ref _client)))
-                return;
-
-            await ReleaseChildAsync(disconnectedClient).ConfigureAwait(false);
         }
 
         /// <summary>

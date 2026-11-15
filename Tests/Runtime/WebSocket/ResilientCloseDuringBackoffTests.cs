@@ -32,6 +32,18 @@ namespace TurboHTTP.Tests.WebSocket
         private static readonly FieldInfo ReceivePumpField =
             typeof(ResilientWebSocketClient).GetField("_receivePumpTask", BindingFlags.Instance | BindingFlags.NonPublic);
 
+        private static readonly FieldInfo ClientField =
+            typeof(ResilientWebSocketClient).GetField("_client", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        private static readonly FieldInfo ManualCloseField =
+            typeof(ResilientWebSocketClient).GetField("_manualClose", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        private static readonly FieldInfo ReconnectCtsField =
+            typeof(ResilientWebSocketClient).GetField("_reconnectCts", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        private static readonly FieldInfo ChildDisposedField =
+            typeof(WebSocketClient).GetField("_disposed", BindingFlags.Instance | BindingFlags.NonPublic);
+
         // 1001 Going Away is a reconnect close code.
         private static readonly byte[] GoingAway = { 0x03, 0xE9 };
 
@@ -60,6 +72,109 @@ namespace TurboHTTP.Tests.WebSocket
 
                 events.AssertClosedOnce(WebSocketCloseCode.NormalClosure);
                 AssertNoReconnect(client, transport, events, expectedConnects: 1);
+            });
+        }
+
+        [Test]
+        public void CloseAsync_DuringBackoffOnNonDefaultSynchronizationContext_ClosesOnceAndEndsReceive()
+        {
+            // Under a non-default SynchronizationContext (the Unity main thread) the cancelled backoff resumes on
+            // the thread pool instead of inline, so the loop exits while CloseAsync is still closing the child it
+            // took. The loop used to dispose that child too, and CloseAsync then failed with
+            // ObjectDisposedException before completing the queue and raising OnClosed. The race is timing and
+            // runtime dependent (it may not reproduce at all), so this covers the end-to-end contract; the
+            // deterministic regression check is the ownership test below.
+            AssertAsync.Run(async () =>
+            {
+                for (int iteration = 0; iteration < 20; iteration++)
+                {
+                    using var transport = new CountingTransport();
+                    await using var client = new ResilientWebSocketClient(transport);
+                    var events = new EventLog(client);
+                    var reconnecting = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    client.OnReconnecting += (_, _) => reconnecting.TrySetResult(true);
+
+                    await client.ConnectAsync(TestUri, CreateOptions(LongBackoff), CancellationToken.None)
+                        .ConfigureAwait(false);
+                    var initialPump = CurrentReceivePump(client);
+                    var receive = client.ReceiveAsync().AsTask();
+
+                    await transport.Peer(0).SendFrameAsync(WebSocketOpcode.Close, GoingAway, fin: true)
+                        .ConfigureAwait(false);
+                    await WebSocketReceiveBackpressureTests.WaitWithTimeout(reconnecting.Task, Guard,
+                        "The client did not enter its reconnect backoff.").ConfigureAwait(false);
+
+                    Task close;
+                    var previousContext = SynchronizationContext.Current;
+                    SynchronizationContext.SetSynchronizationContext(new NonInliningSynchronizationContext());
+                    try
+                    {
+                        close = client.CloseAsync();
+                    }
+                    finally
+                    {
+                        SynchronizationContext.SetSynchronizationContext(previousContext);
+                    }
+
+                    await WebSocketReceiveBackpressureTests.WaitWithTimeout(close, Guard,
+                        "CloseAsync did not complete.").ConfigureAwait(false);
+                    await WaitForReconnectLoopExit(initialPump).ConfigureAwait(false);
+
+                    events.AssertClosedOnce(WebSocketCloseCode.NormalClosure);
+                    try
+                    {
+                        await WebSocketReceiveBackpressureTests.WaitWithTimeout(receive, Guard,
+                            "The parked ReceiveAsync did not end after CloseAsync.").ConfigureAwait(false);
+                        Assert.Fail("Expected ConnectionClosed from the parked ReceiveAsync, got a message.");
+                    }
+                    catch (WebSocketException ex)
+                    {
+                        Assert.AreEqual(WebSocketError.ConnectionClosed, ex.Error);
+                    }
+                    AssertNoReconnect(client, transport, events, expectedConnects: 1);
+                }
+            });
+        }
+
+        [Test]
+        public void ReconnectLoop_EndedByCallerClose_DoesNotDisposeTheChildTheCloserTook()
+        {
+            // Deterministic form of the race above: the closer's first steps (flag, cancel, take the child) are
+            // replayed and the child is held as a CloseAsync in flight would hold it. The reconnect loop exits
+            // and must leave that child to its owner.
+            AssertAsync.Run(async () =>
+            {
+                using var transport = new CountingTransport();
+                await using var client = new ResilientWebSocketClient(transport);
+                var reconnecting = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                client.OnReconnecting += (_, _) => reconnecting.TrySetResult(true);
+
+                await client.ConnectAsync(TestUri, CreateOptions(LongBackoff), CancellationToken.None)
+                    .ConfigureAwait(false);
+                var initialPump = CurrentReceivePump(client);
+
+                await transport.Peer(0).SendFrameAsync(WebSocketOpcode.Close, GoingAway, fin: true).ConfigureAwait(false);
+                await WebSocketReceiveBackpressureTests.WaitWithTimeout(reconnecting.Task, Guard,
+                    "The client did not enter its reconnect backoff.").ConfigureAwait(false);
+
+                ManualCloseField.SetValue(client, 1);
+                var reconnectCts = (CancellationTokenSource)ReconnectCtsField.GetValue(client);
+                Assert.IsNotNull(reconnectCts, "The reconnect loop must be in its backoff.");
+                var child = (WebSocketClient)ClientField.GetValue(client);
+                Assert.IsNotNull(child, "The dropped child must still be the current connection.");
+                ClientField.SetValue(client, null);
+                reconnectCts.Cancel();
+
+                try
+                {
+                    await WaitForReconnectLoopExit(initialPump).ConfigureAwait(false);
+                    Assert.AreEqual(0, (int)ChildDisposedField.GetValue(child),
+                        "The reconnect loop disposed a child that the closer had taken and still owned.");
+                }
+                finally
+                {
+                    child.Dispose();
+                }
             });
         }
 
@@ -200,6 +315,18 @@ namespace TurboHTTP.Tests.WebSocket
                 maxDelay: backoff,
                 backoffMultiplier: 1.0,
                 jitterFactor: 0.0));
+        }
+
+        /// <summary>
+        /// Any SynchronizationContext subclass stops awaits with ConfigureAwait(false) from resuming inline on the
+        /// thread that completes the awaited task, as on the Unity main thread.
+        /// </summary>
+        private sealed class NonInliningSynchronizationContext : SynchronizationContext
+        {
+            public override void Post(SendOrPostCallback d, object state)
+            {
+                ThreadPool.QueueUserWorkItem(_ => d(state));
+            }
         }
 
         private sealed class EventLog
