@@ -4,7 +4,7 @@ The `TurboHTTP.Auth` module attaches credentials to requests, from a simple stat
 
 ## AuthInterceptor
 
-`AuthInterceptor` asks an `IAuthTokenProvider` for a token and sets `Authorization: <scheme> <token>` on each request (`Bearer` unless you pass another scheme). A provider that returns `null` or an empty string skips authentication for that request.
+`AuthInterceptor` asks an `IAuthTokenProvider` for a token and sets `Authorization: <scheme> <token>` on each request (`Bearer` unless you pass another scheme). A provider that returns `null` or an empty string skips authentication for that request. A request that already carries an `Authorization` header, such as one set with `WithBearerToken`, is sent unchanged and the provider is not asked.
 
 <!-- snippet: with IAuthTokenProvider myTokenProvider = null; -->
 ```csharp
@@ -15,9 +15,25 @@ options.Interceptors.Add(new AuthInterceptor(myTokenProvider));
 var client = new UHttpClient(options);
 ```
 
-The credential stays with its origin: for each call the interceptor binds to the scheme, host and port of the original request and never attaches the token to a hop for another origin, such as a cross-origin redirect target, as browsers do. Place it below `CookieInterceptor` and above `CacheInterceptor`; see [Interceptors](Interceptors.md) for the order. The token never appears in logs or exceptions.
+> **Warning:** without an allow-list, the interceptor attaches the token to every origin the client is used for. A `client.Get("https://cdn.example.net/...")` through the same client sends your API token to the CDN. Use a dedicated client per authenticated origin, or restrict the interceptor with `AllowedOrigins`.
 
-To authenticate a single request, use `WithBearerToken`:
+Restrict the token to the origins (scheme, host and port) that should receive it with `AuthInterceptorOptions.AllowedOrigins`. A request to any other origin passes through without an `Authorization` header from the interceptor, and the token provider is not asked:
+
+<!-- snippet: with IAuthTokenProvider myTokenProvider = null; UHttpClientOptions options = new UHttpClientOptions(); -->
+```csharp
+using System;
+using TurboHTTP.Auth;
+
+var authOptions = new AuthInterceptorOptions();
+authOptions.AllowedOrigins.Add(new Uri("https://api.example.com"));
+options.Interceptors.Add(new AuthInterceptor(myTokenProvider, authOptions));
+```
+
+Entries are origins only: an absolute `http` or `https` URI without a path, query or fragment. The port is compared too, so `https://api.example.com` does not match `http://api.example.com` or `https://api.example.com:8443`. `AuthInterceptorOptions` also carries `Scheme` and `OverrideExistingAuthorization`; the interceptor copies the options when it is constructed.
+
+Within one call the credential also stays with the original request's origin: the interceptor binds to the scheme, host and port of the first request it sees for that call and never attaches the token to a hop for another origin, such as a cross-origin redirect target, even when that origin is in `AllowedOrigins`, as browsers do. Place it below `CookieInterceptor` and above `CacheInterceptor`; see [Interceptors](Interceptors.md) for the order. The token never appears in logs or exceptions.
+
+To authenticate a single request, use `WithBearerToken`. `AuthInterceptor` leaves that header in place; set `AuthInterceptorOptions.OverrideExistingAuthorization = true` if the interceptor should replace it:
 
 <!-- snippet: with UHttpClient client = null; -->
 ```csharp
@@ -115,6 +131,26 @@ public static class OAuthSetup
 ```
 
 Set `OAuthConfig.UseOidcDiscovery` to resolve the endpoints from the issuer's discovery document. Endpoints must use HTTPS; `AllowInsecureEndpointsForDevelopment` relaxes that for local test servers only.
+
+### Rejected tokens and refresh
+
+The provider refreshes on the local clock, so a token the server revokes early still looks valid. Set `AuthInterceptorOptions.RetryOnUnauthorized` to recover from that: when a request that carried the interceptor's token gets `401 Unauthorized` from the same origin, the interceptor asks the provider for a replacement and sends the request once more (RFC 6750 section 3.1). The second response is returned as is, including a second `401`. Requests whose body cannot be sent twice (a non-seekable stream) are not retried.
+
+```csharp
+using TurboHTTP.Auth;
+
+public static class RetryingAuth
+{
+    public static AuthInterceptor Create(OAuthTokenProvider provider)
+    {
+        var options = new AuthInterceptorOptions { RetryOnUnauthorized = true };
+        options.AllowedOrigins.Add(new System.Uri("https://api.example.com"));
+        return new AuthInterceptor(provider, options);
+    }
+}
+```
+
+The provider must implement `IAuthTokenInvalidator` (`Task<string> InvalidateTokenAsync(string rejectedToken, CancellationToken)`), or the constructor throws `ArgumentException`. `OAuthTokenProvider` implements it with `OAuthClient.ForceRefreshTokenAsync(key, refreshRequest, rejectedAccessToken, ct)`, which refreshes through the token endpoint unless another request has already replaced the rejected token. `OAuthClient.RefreshTokenAsync` also always calls the token endpoint. Concurrent refreshes for one key share one token request, and its failure reaches every waiter without a retry per waiter. The interceptor waits for the provider at most the request's `Timeout`, then fails the request with `UHttpErrorType.Timeout`.
 
 ## Token stores
 

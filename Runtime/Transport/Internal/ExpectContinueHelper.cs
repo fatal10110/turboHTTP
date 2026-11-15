@@ -80,7 +80,7 @@ namespace TurboHTTP.Transport.Internal
                 while (true)
                 {
                     int comma = span.IndexOf(',');
-                    var segment = TrimWhitespace(comma >= 0 ? span.Slice(0, comma) : span);
+                    var segment = HttpFieldSyntax.TrimOws(comma >= 0 ? span.Slice(0, comma) : span);
                     if (segment.Length > 0)
                     {
                         if (!segment.Equals(tokenSpan, StringComparison.OrdinalIgnoreCase))
@@ -109,7 +109,7 @@ namespace TurboHTTP.Transport.Internal
             {
                 int comma = span.IndexOf(',');
                 var segment = comma >= 0 ? span.Slice(0, comma) : span;
-                segment = TrimWhitespace(segment);
+                segment = HttpFieldSyntax.TrimOws(segment);
                 if (segment.Equals(tokenSpan, StringComparison.OrdinalIgnoreCase))
                     return true;
 
@@ -120,21 +120,6 @@ namespace TurboHTTP.Transport.Internal
             }
 
             return false;
-        }
-
-        private static ReadOnlySpan<char> TrimWhitespace(ReadOnlySpan<char> value)
-        {
-            int start = 0;
-            while (start < value.Length && char.IsWhiteSpace(value[start]))
-                start++;
-
-            int end = value.Length - 1;
-            while (end >= start && char.IsWhiteSpace(value[end]))
-                end--;
-
-            return end >= start
-                ? value.Slice(start, end - start + 1)
-                : ReadOnlySpan<char>.Empty;
         }
     }
 }

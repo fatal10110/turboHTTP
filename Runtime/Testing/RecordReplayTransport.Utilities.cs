@@ -59,7 +59,8 @@ namespace TurboHTTP.Testing
         }
 
         // Sensitive header values in match keys are stored only as HMAC-SHA256 under the per-recording
-        // salt, so the recording file never holds the raw credential (#93).
+        // salt, so the recording file never holds the raw credential (#93). The salt is in the file too,
+        // so a low-entropy value can be guessed from the HMAC (documented on MatchHeaderNames, #1079).
         private static string ComputeKeyedValueHash(string value, byte[] key)
         {
             using var hmac = new HMACSHA256(key);
@@ -67,7 +68,9 @@ namespace TurboHTTP.Testing
         }
 
         // Without a salt (recordings written before #93) the request body hash is plain SHA-256; with one
-        // it is HMAC-SHA256, so a low-entropy body (a form with a password) cannot be guessed from it.
+        // it is HMAC-SHA256 under the salt. The salt is stored in the recording file, so the HMAC hides
+        // nothing from someone holding the file: callers pass the redacted body, so redacted values never
+        // enter the digest (#1079).
         private static string ComputeBodyHash(ReadOnlyMemory<byte> body, byte[] key)
         {
             if (body.IsEmpty)

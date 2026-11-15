@@ -16,7 +16,7 @@ namespace TurboHTTP.Core.Internal
     /// The <see cref="Memory"/> property is sliced to the requested logical length so
     /// callers never see padding bytes from pool over-allocation.
     /// </remarks>
-    internal sealed class ArrayPoolMemoryOwner<T> : IMemoryOwner<T>
+    internal sealed class ArrayPoolMemoryOwner<T> : IMemoryOwner<T>, IAbandonableBufferOwner
     {
         private T[] _array;
         private int _length;
@@ -111,6 +111,24 @@ namespace TurboHTTP.Core.Internal
                 ByteArrayPool.Return((byte[])(object)array);
             else
                 ArrayPool<T>.Shared.Return(array);
+        }
+
+        /// <inheritdoc/>
+        /// <remarks>
+        /// A byte array is counted with <see cref="ByteArrayPool.Abandon"/>; other element types are not
+        /// counted by any pool and are simply dropped.
+        /// </remarks>
+        public void AbandonToGc()
+        {
+            var array = _array;
+            _array = null;
+            _length = 0;
+
+            if (array == null || array.Length == 0)
+                return;
+
+            if (typeof(T) == typeof(byte))
+                ByteArrayPool.Abandon((byte[])(object)array);
         }
     }
 }

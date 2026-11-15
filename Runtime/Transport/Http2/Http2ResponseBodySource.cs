@@ -47,6 +47,9 @@ namespace TurboHTTP.Transport.Http2
         private int _bufferedBytes;
         private int _disposed;
         private int _hasReadData;
+        // Set (before the trailers task completes) when the stream ended with a non-empty trailer
+        // section; a detached body carries no trailers, so such a source never detaches (#539).
+        private int _hasTrailers;
         private long _lastConsumptionTick;
         private int _terminalState;
         private Task _cleanupTask;
@@ -108,6 +111,12 @@ namespace TurboHTTP.Transport.Http2
                 {
                     return false;
                 }
+
+                // RFC 9113 Section 8.1 / RFC 9110 Section 6.5: the trailing HEADERS frame belongs to the
+                // message. DetachedBufferedBody has no trailers, so the collector must read them
+                // through GetTrailersAsync on the non-detached path (#539).
+                if (Volatile.Read(ref _hasTrailers) != 0)
+                    return false;
 
                 Volatile.Write(ref _terminalState, TerminalStateDetached);
                 Interlocked.Exchange(ref _disposed, 1);
@@ -353,6 +362,11 @@ namespace TurboHTTP.Transport.Http2
 
         internal void SetTrailers(HttpHeaders trailers)
         {
+            // Published before the trailers task completes, so a detach attempt that observes the
+            // completed task also observes the flag.
+            if (trailers != null && trailers.Count != 0)
+                Volatile.Write(ref _hasTrailers, 1);
+
             _trailersSource.TrySetResult(trailers ?? HttpHeaders.Empty);
         }
 
@@ -605,7 +619,7 @@ namespace TurboHTTP.Transport.Http2
             releasedFlowControlledBytes += chunk.FlowControlledLength;
         }
 
-        private sealed class DetachedBufferedChunkOwner : IDisposable
+        private sealed class DetachedBufferedChunkOwner : IDisposable, IAbandonableBufferOwner
         {
             private Http2ResponseBodyChunk[] _chunks;
             private readonly ReadOnlySequence<byte> _sequence;
@@ -628,6 +642,21 @@ namespace TurboHTTP.Transport.Http2
                 {
                     if (chunks[i].Buffer != null)
                         ByteArrayPool.Return(chunks[i].Buffer);
+                }
+            }
+
+            // Finalizer path of UHttpResponse (#582): the detached sequence may still be read, so the
+            // chunk buffers are counted as abandoned and left to the GC instead of being returned.
+            public void AbandonToGc()
+            {
+                var chunks = Interlocked.Exchange(ref _chunks, null);
+                if (chunks == null)
+                    return;
+
+                for (var i = 0; i < chunks.Length; i++)
+                {
+                    if (chunks[i].Buffer != null)
+                        ByteArrayPool.Abandon(chunks[i].Buffer);
                 }
             }
 

@@ -74,7 +74,12 @@ namespace TurboHTTP.Middleware
                 CancellationToken cancellationToken)
             {
                 var requestForNext = request;
-                if (!request.Headers.Contains("Accept-Encoding"))
+                // RFC 9110 sections 8.4, 14.2 and 15.3.7: a range selects bytes of the selected representation, so a
+                // range of a coded representation is a slice of coded bytes no decoder can read on its own. A request
+                // carrying Range or If-Range therefore asks for no content coding (#784).
+                if (!request.Headers.Contains("Accept-Encoding") &&
+                    !request.Headers.Contains("Range") &&
+                    !request.Headers.Contains("If-Range"))
                 {
                     requestForNext = request.CopyWithSharedContent();
                     requestForNext.WithHeader("Accept-Encoding", "gzip, deflate");

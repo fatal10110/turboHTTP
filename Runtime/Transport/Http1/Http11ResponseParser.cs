@@ -541,7 +541,7 @@ namespace TurboHTTP.Transport.Http1
                 while (true)
                 {
                     int comma = span.IndexOf(',');
-                    var token = TrimWhitespace(comma >= 0 ? span.Slice(0, comma) : span);
+                    var token = HttpFieldSyntax.TrimOws(comma >= 0 ? span.Slice(0, comma) : span);
                     if (!token.IsEmpty &&
                         !token.Equals("identity".AsSpan(), StringComparison.OrdinalIgnoreCase))
                     {
@@ -575,12 +575,13 @@ namespace TurboHTTP.Transport.Http1
             {
                 for (int i = 1; i < clValues.Count; i++)
                 {
-                    if (clValues[i].Trim() != clValues[0].Trim())
+                    // Values are already SP/HTAB-trimmed by ParseResponseHeaderLine.
+                    if (!string.Equals(clValues[i], clValues[0], StringComparison.Ordinal))
                         throw new FormatException("Conflicting Content-Length values");
                 }
             }
 
-            if (!long.TryParse(contentLengthStr.Trim(), NumberStyles.None,
+            if (!long.TryParse(contentLengthStr, NumberStyles.None,
                 CultureInfo.InvariantCulture, out contentLength))
             {
                 throw new FormatException("Invalid Content-Length value");
@@ -610,8 +611,8 @@ namespace TurboHTTP.Transport.Http1
                 {
                     int comma = span.IndexOf(',');
                     var token = comma >= 0
-                        ? TrimWhitespace(span.Slice(0, comma))
-                        : TrimWhitespace(span);
+                        ? HttpFieldSyntax.TrimOws(span.Slice(0, comma))
+                        : HttpFieldSyntax.TrimOws(span);
 
                     if (!token.IsEmpty)
                     {
@@ -683,7 +684,7 @@ namespace TurboHTTP.Transport.Http1
             int secondSpace = statusCodeSpan.IndexOf(' ');
             if (secondSpace >= 0)
                 statusCodeSpan = statusCodeSpan.Slice(0, secondSpace);
-            statusCodeSpan = TrimWhitespace(statusCodeSpan);
+            statusCodeSpan = HttpFieldSyntax.TrimOws(statusCodeSpan);
 
             if (!TryParseStatusCode(statusCodeSpan, out statusCode))
                 throw new FormatException($"Invalid HTTP status code: {statusCodeSpan.ToString()}");
@@ -718,8 +719,11 @@ namespace TurboHTTP.Transport.Http1
                     throw new FormatException("Response header field name is not a valid token");
             }
 
+            var valueSpan = HttpFieldSyntax.TrimOws(lineSpan.Slice(colonIndex + 1));
+            ValidateFieldValue(valueSpan, "header");
+
             name = nameSpan.ToString();
-            value = TrimWhitespace(lineSpan.Slice(colonIndex + 1)).ToString();
+            value = valueSpan.ToString();
         }
 
         private static bool TryParseHeaderLine(string line, out string name, out string value)
@@ -733,8 +737,8 @@ namespace TurboHTTP.Transport.Http1
                 return false;
             }
 
-            name = TrimWhitespace(lineSpan.Slice(0, colonIndex)).ToString();
-            value = TrimWhitespace(lineSpan.Slice(colonIndex + 1)).ToString();
+            name = HttpFieldSyntax.TrimOws(lineSpan.Slice(0, colonIndex)).ToString();
+            value = HttpFieldSyntax.TrimOws(lineSpan.Slice(colonIndex + 1)).ToString();
             return true;
         }
 
@@ -749,7 +753,7 @@ namespace TurboHTTP.Transport.Http1
             if (!IsValidHeaderFieldName(name))
                 return false;
 
-            ValidateHeaderValue(name, value);
+            ValidateFieldValue(value.AsSpan(), "trailer");
 
             if (TrailerFieldValidator.IsProhibitedResponseTrailer(name))
                 return false;
@@ -770,26 +774,8 @@ namespace TurboHTTP.Transport.Http1
             if (spaceIndex >= 0)
                 sizeSpan = sizeSpan.Slice(0, spaceIndex);
 
-            sizeSpan = TrimWhitespace(sizeSpan);
+            sizeSpan = HttpFieldSyntax.TrimOws(sizeSpan);
             return ParseChunkSizeToken(sizeSpan);
-        }
-
-        private static ReadOnlySpan<char> TrimWhitespace(ReadOnlySpan<char> value)
-        {
-            int start = 0;
-            while (start < value.Length && char.IsWhiteSpace(value[start]))
-                start++;
-
-            int end = value.Length - 1;
-            while (end >= start && char.IsWhiteSpace(value[end]))
-                end--;
-
-            if (start == 0 && end == value.Length - 1)
-                return value;
-            if (start > end)
-                return ReadOnlySpan<char>.Empty;
-
-            return value.Slice(start, end - start + 1);
         }
 
         private static long ParseChunkSizeToken(ReadOnlySpan<char> sizeSpan)
@@ -936,8 +922,9 @@ namespace TurboHTTP.Transport.Http1
                     throw new FormatException("Response trailers exceed maximum size");
 
                 trailers ??= new HttpHeaders();
-                // Invalid or prohibited trailers are skipped for wire compatibility with
-                // permissive servers/proxies; malformed framing still throws earlier.
+                // Invalid names and prohibited trailers are skipped for wire compatibility with
+                // permissive servers/proxies; malformed framing and control characters in a
+                // value still throw (ValidateFieldValue).
                 AddResponseTrailer(trailers, line);
             }
 
@@ -946,10 +933,22 @@ namespace TurboHTTP.Transport.Http1
                 : trailers;
         }
 
-        private static void ValidateHeaderValue(string name, string value)
+        /// <summary>
+        /// The one rule for received header and trailer field values (#652): a value holding NUL,
+        /// CR, LF, another C0 control (HTAB excepted) or DEL rejects the whole message with a
+        /// <see cref="FormatException"/>, which the transport maps to a network error. RFC 9110
+        /// Section 5.5 lets a recipient either reject or replace CR/LF/NUL with SP; rejecting is
+        /// the conservative choice and also covers the other controls the grammar excludes. The
+        /// message names the character code, never the value.
+        /// </summary>
+        private static void ValidateFieldValue(ReadOnlySpan<char> value, string section)
         {
-            if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
-                throw new FormatException($"Header value for '{name}' contains CRLF characters");
+            int invalid = HttpFieldSyntax.IndexOfInvalidFieldValueChar(value);
+            if (invalid >= 0)
+            {
+                throw new FormatException(
+                    $"Response {section} field value contains control character 0x{(int)value[invalid]:X2}");
+            }
         }
 
         private static bool IsValidHeaderFieldName(string name)
@@ -1043,6 +1042,7 @@ namespace TurboHTTP.Transport.Http1
             private const int BodyReadIdle = 0;
             private const int BodyReadPending = 1;
             private const int BodyReadAbandoned = 2;
+            private const int BodyReadStarting = 3;
 
             private static readonly Action<object> s_abandonBodyRead =
                 static state => ((BufferedStreamReader)state).AbandonBodyRead();
@@ -1054,21 +1054,27 @@ namespace TurboHTTP.Transport.Http1
             private readonly byte[] _buffer;
             private int _start;
             private int _end;
-            private volatile bool _disposed;
+            private int _disposed;
             private bool _headComplete;
             private Task<int> _raceRead;
 
-            // Body phase (#345): a pending read raced against its token without a per-read Task,
-            // closure or TaskCompletionSource. This reader is the IValueTaskSource of the race; the
-            // read loop owns _bodyReadAwaiter/_bodyReadToken/_bodyReadRegistration between the start of a
-            // read and its completion, and _bodyReadState (Interlocked) decides whether the read's
-            // completion or the token wins.
+            // Body phase (#345, #656): every pending body read is raced, without a per-read Task,
+            // closure or TaskCompletionSource, against its token and against Dispose. This reader is
+            // the IValueTaskSource of the race; the reading flow owns _bodyReadCore/_bodyReadAwaiter/
+            // _bodyReadToken/_bodyReadRegistration from Idle->Starting until the read's completion,
+            // and _bodyReadState (Interlocked) decides whether the read's completion, the token or
+            // Dispose wins. Starting/Pending also mean "a read owns the reader": a second read is
+            // refused (#639) and Dispose leaves the buffers to the GC (#656).
             private ManualResetValueTaskSourceCore<int> _bodyReadCore;
             private ConfiguredTaskAwaitable<int>.ConfiguredTaskAwaiter _bodyReadAwaiter;
             private CancellationToken _bodyReadToken;
             private CancellationTokenRegistration _bodyReadRegistration;
             private Action _onBodyReadCompleted;
             private int _bodyReadState;
+
+            // Written by whichever of AbandonBodyRead/Dispose wins the Pending->Abandoned CAS, before it
+            // queues FailAbandonedBodyRead (the queue publishes it).
+            private bool _bodyReadAbandonedByDispose;
 
             // #369: the abandoned body read's entry in AbandonedSocketIo. Interlocked: AbandonBodyRead
             // (token callback) stores it, the read's completion swaps in Entry.Ended and ends it;
@@ -1087,17 +1093,33 @@ namespace TurboHTTP.Transport.Http1
                 _buffer = ByteArrayPool.Rent(bufferSize);
             }
 
+            /// <summary>
+            /// True when bytes were read from the stream but not consumed yet. After a response whose
+            /// length the framing defined, such bytes mean the connection state is unknown (RFC 9112
+            /// Section 9.3), so it must not be reused (#643). Read it before <see cref="Dispose"/>.
+            /// </summary>
+            internal bool HasBufferedData => _end > _start;
+
+            /// <summary>
+            /// Releases the buffers. A body read still pending (#656) is failed with
+            /// <see cref="ObjectDisposedException"/> at once, even when the platform never ends the
+            /// socket read: it may still write into the reader's buffers, so they go to the GC instead
+            /// of the pool, and its later end disposes the stream. Safe to call while another thread
+            /// reads; the buffers are returned to the pool at most once.
+            /// </summary>
             public void Dispose()
             {
-                if (_disposed)
+                // Full fence: a read that starts after this sees _disposed, or this sees its state.
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
                     return;
 
-                _disposed = true;
+                bool abandon = TryAbandonBodyReadOnDispose();
 
-                // A head read (#293) or body read (#345) abandoned on cancellation may still write
-                // into the reader's buffers: they go to the GC instead of the pool.
+                // A head read (#293) or body read (#345, #656) abandoned on cancellation or dispose may
+                // still write into the reader's buffers: they go to the GC instead of the pool.
                 var raceRead = _raceRead;
-                if ((raceRead != null && !raceRead.IsCompleted) ||
+                if (abandon ||
+                    (raceRead != null && !raceRead.IsCompleted) ||
                     Volatile.Read(ref _bodyReadState) != BodyReadIdle)
                 {
                     ByteArrayPool.Abandon(_buffer);
@@ -1108,6 +1130,28 @@ namespace TurboHTTP.Transport.Http1
                 ByteArrayPool.Return(_buffer);
                 if (_bodyBuffer != null)
                     ByteArrayPool.Return(_bodyBuffer);
+            }
+
+            private bool TryAbandonBodyReadOnDispose()
+            {
+                int state = Volatile.Read(ref _bodyReadState);
+                while (state == BodyReadPending || state == BodyReadStarting)
+                {
+                    int seen = Interlocked.CompareExchange(ref _bodyReadState, BodyReadAbandoned, state);
+                    if (seen != state)
+                    {
+                        state = seen;
+                        continue;
+                    }
+
+                    // A read that was still starting sees Abandoned and fails itself without
+                    // touching the stream; a pending one is failed here.
+                    if (state == BodyReadPending)
+                        BeginAbandonedBodyRead(byDispose: true);
+                    return true;
+                }
+
+                return state == BodyReadAbandoned;
             }
 
             /// <summary>
@@ -1313,10 +1357,11 @@ namespace TurboHTTP.Transport.Http1
 
                 if (destination.Length >= _buffer.Length)
                 {
-                    if (!_headComplete || !ct.CanBeCanceled)
+                    if (!_headComplete)
                         return await _stream.ReadAsync(destination, ct).ConfigureAwait(false);
 
-                    // A read that can be abandoned targets reader-owned memory, never the caller's.
+                    // Every body read can be abandoned (token or Dispose, #656), so it targets
+                    // reader-owned memory, never the caller's.
                     var bodyBuffer = _bodyBuffer ??= ByteArrayPool.Rent(
                         Math.Min(destination.Length, MaxBodyReadBufferBytes));
                     int direct = await ReadBodyAsync(
@@ -1399,33 +1444,74 @@ namespace TurboHTTP.Transport.Http1
             }
 
             /// <summary>
-            /// One body-phase read into reader-owned <paramref name="buffer"/> (#345). A read that
-            /// completes synchronously, or whose token cannot fire, is returned as is. A pending read
-            /// with a cancellable token is raced against it: Mono and IL2CPP may never end a pending
-            /// socket read after the token fired and the connection was disposed (#293), so the token
-            /// wins and the read is abandoned. The abandoned read keeps the reader's buffers out of
-            /// the pool (<see cref="Dispose"/>), its fault is observed and its end disposes the stream.
+            /// One body-phase read into reader-owned <paramref name="buffer"/> (#345, #656). A read
+            /// that completes synchronously is returned as is. A pending read is raced against its
+            /// token (when it can fire) and against <see cref="Dispose"/>: Mono and IL2CPP may never
+            /// end a pending socket read after the token fired or the connection was disposed (#293),
+            /// so the token or Dispose wins and the read is abandoned. The abandoned read keeps the
+            /// reader's buffers out of the pool, its fault is observed and its end disposes the
+            /// stream. Only one body read owns the reader at a time: a second one is refused (#639).
             /// No allocation beyond the token registration the body source used to make per read.
             /// </summary>
             private ValueTask<int> ReadBodyAsync(byte[] buffer, int count, CancellationToken ct)
             {
-                if (Volatile.Read(ref _bodyReadState) == BodyReadAbandoned)
-                    throw new ObjectDisposedException(nameof(BufferedStreamReader), "A body read was abandoned on cancellation.");
+                int state = Interlocked.CompareExchange(ref _bodyReadState, BodyReadStarting, BodyReadIdle);
+                if (state == BodyReadAbandoned)
+                    throw CreateAbandonedReadException();
+                if (state != BodyReadIdle)
+                    throw new InvalidOperationException("Another HTTP/1.1 body read is already in progress.");
 
-                var pending = _stream.ReadAsync(buffer, 0, count, ct);
-                if (!ct.CanBeCanceled || pending.IsCompleted)
-                    return new ValueTask<int>(pending);
+                // Full fence above: Dispose either sees Starting (and abandons) or is seen here.
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    Interlocked.CompareExchange(ref _bodyReadState, BodyReadIdle, BodyReadStarting);
+                    throw CreateAbandonedReadException();
+                }
 
+                // Owned by this flow until the read completes; set before Pending is published so the
+                // winner of the race completes the right operation.
                 _bodyReadCore.Reset();
-                _bodyReadAwaiter = pending.ConfigureAwait(false).GetAwaiter();
                 _bodyReadToken = ct;
-                Volatile.Write(ref _bodyReadState, BodyReadPending);
+                if (Interlocked.CompareExchange(ref _bodyReadState, BodyReadPending, BodyReadStarting) != BodyReadStarting)
+                    throw CreateAbandonedReadException(); // Dispose won before the stream was touched.
+
+                // From here Dispose may abandon the read at any time; it then fails _bodyReadCore and
+                // leaves `buffer` to the GC, so starting the stream read below is still safe.
+                // A stream that throws synchronously (a closed socket racing the read start) goes
+                // through the completed/abandoned paths below like any other fault, so an abandon that
+                // already began is ended and the state goes back to Idle.
+                Task<int> pending;
+                try
+                {
+                    pending = _stream.ReadAsync(buffer, 0, count, ct);
+                }
+                catch (Exception ex)
+                {
+                    pending = Task.FromException<int>(ex);
+                }
+
+                if (pending.IsCompleted &&
+                    Interlocked.CompareExchange(ref _bodyReadState, BodyReadIdle, BodyReadPending) == BodyReadPending)
+                {
+                    _bodyReadToken = default;
+                    return new ValueTask<int>(pending);
+                }
+
+                _bodyReadAwaiter = pending.ConfigureAwait(false).GetAwaiter();
 
                 // A token that already fired runs AbandonBodyRead inline here.
-                _bodyReadRegistration = ct.Register(s_abandonBodyRead, this);
+                if (ct.CanBeCanceled)
+                    _bodyReadRegistration = ct.Register(s_abandonBodyRead, this);
                 _bodyReadAwaiter.UnsafeOnCompleted(_onBodyReadCompleted ??= OnBodyReadCompleted);
                 return new ValueTask<int>(this, _bodyReadCore.Version);
             }
+
+            private ObjectDisposedException CreateAbandonedReadException() =>
+                new ObjectDisposedException(
+                    nameof(BufferedStreamReader),
+                    Volatile.Read(ref _disposed) != 0
+                        ? "The HTTP/1.1 response body was closed."
+                        : "A body read was abandoned on cancellation.");
 
             // Runs as the read's continuation, so GetResult never blocks (the awaiter pattern `await` uses).
             private void OnBodyReadCompleted()
@@ -1454,8 +1540,14 @@ namespace TurboHTTP.Transport.Http1
                     return;
                 }
 
-                // Abandoned: the caller already saw the cancellation. Observe the outcome and drop
-                // the stream, which can no longer be read in order.
+                // Abandoned: the caller already saw the cancellation. Drop the token registration
+                // (after Dispose it is the caller's own, possibly long-lived token, whose callback
+                // list would otherwise root this reader), observe the outcome and drop the stream,
+                // which can no longer be read in order. _bodyReadToken stays: the queued
+                // FailAbandonedBodyRead may still read it.
+                _bodyReadRegistration.Dispose();
+                _bodyReadRegistration = default;
+                _bodyReadAwaiter = default;
                 try
                 {
                     read.GetResult();
@@ -1484,6 +1576,14 @@ namespace TurboHTTP.Transport.Http1
                 if (Interlocked.CompareExchange(ref _bodyReadState, BodyReadAbandoned, BodyReadPending) != BodyReadPending)
                     return;
 
+                BeginAbandonedBodyRead(byDispose: false);
+            }
+
+            // Runs once, on the side that won the Pending->Abandoned CAS.
+            private void BeginAbandonedBodyRead(bool byDispose)
+            {
+                _bodyReadAbandonedByDispose = byDispose;
+
                 // Recorded before the caller sees the cancellation, so its next socket waits for this
                 // read (#369). A completion that already ran left Entry.Ended: end the entry at once.
                 var entry = AbandonedSocketIo.Begin();
@@ -1496,6 +1596,14 @@ namespace TurboHTTP.Transport.Http1
 
             private void FailAbandonedBodyRead()
             {
+                if (_bodyReadAbandonedByDispose)
+                {
+                    _bodyReadCore.SetException(new ObjectDisposedException(
+                        nameof(BufferedStreamReader),
+                        "The HTTP/1.1 response body was closed while a read was pending."));
+                    return;
+                }
+
                 _bodyReadCore.SetException(new OperationCanceledException(
                     "HTTP/1.1 body read was cancelled.",
                     _bodyReadToken));

@@ -55,7 +55,10 @@ namespace TurboHTTP.WebSocket
                     ? new ResilientWebSocketClient(transport)
                     : new ResilientWebSocketClient();
 
-            return new WebSocketClient(transport);
+            // #1110: no transport means the registered default factory, as for the resilient client.
+            return transport != null
+                ? new WebSocketClient(transport)
+                : new WebSocketClient();
         }
 
         public WebSocketState State
@@ -203,8 +206,8 @@ namespace TurboHTTP.WebSocket
                     _listenerTask = listenerTask;
             }
 
-            var connectedHandler = OnConnected;
-            connectedHandler?.Invoke();
+            // #1116: a throwing handler does not turn the completed connect into a failure.
+            WebSocketCallbacks.Invoke(OnConnected, "[TurboHTTP] A WebSocket OnConnected handler threw.");
         }
 
         public async Task SendAsync(string message, CancellationToken ct = default)
@@ -502,8 +505,7 @@ namespace TurboHTTP.WebSocket
                     "WebSocket OnMessage callback failed.",
                     ex);
 
-                var errorHandler = OnError;
-                errorHandler?.Invoke(error);
+                RaiseError(error);
             }
         }
 
@@ -531,20 +533,25 @@ namespace TurboHTTP.WebSocket
             var wsError = error as WebSocketException ??
                 new WebSocketException(WebSocketError.ConnectionClosed, error?.Message ?? "WebSocket error.", error);
 
-            var errorHandler = OnError;
-            errorHandler?.Invoke(wsError);
+            RaiseError(wsError);
+        }
+
+        private void RaiseError(WebSocketException error)
+        {
+            WebSocketCallbacks.Invoke(OnError, error, "[TurboHTTP] A WebSocket OnError handler threw.");
         }
 
         private void HandleConnectionMetricsUpdated(WebSocketConnection connection, WebSocketMetrics metrics)
         {
-            var handler = OnMetricsUpdated;
-            handler?.Invoke(metrics);
+            WebSocketCallbacks.Invoke(OnMetricsUpdated, metrics, "[TurboHTTP] A WebSocket OnMetricsUpdated handler threw.");
         }
 
         private void HandleConnectionQualityChanged(WebSocketConnection connection, ConnectionQuality quality)
         {
-            var handler = OnConnectionQualityChanged;
-            handler?.Invoke(quality);
+            WebSocketCallbacks.Invoke(
+                OnConnectionQualityChanged,
+                quality,
+                "[TurboHTTP] A WebSocket OnConnectionQualityChanged handler threw.");
         }
 
         private void RaiseClosedFromConnection(WebSocketConnection connection)
@@ -555,8 +562,11 @@ namespace TurboHTTP.WebSocket
             var status = connection.CloseStatus ??
                 new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure);
 
-            var closedHandler = OnClosed;
-            closedHandler?.Invoke(status.Code, status.Reason);
+            WebSocketCallbacks.Invoke(
+                OnClosed,
+                status.Code,
+                status.Reason,
+                "[TurboHTTP] A WebSocket OnClosed handler threw.");
         }
 
         private WebSocketConnection RequireConnection()

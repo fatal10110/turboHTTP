@@ -9,8 +9,9 @@ namespace TurboHTTP.Samples.Authentication
 {
     /// <summary>
     /// Example of token-based authentication using AuthInterceptor.
-    /// The interceptor attaches "Authorization: Bearer <token>" and keeps the token bound to the origin it
-    /// was first used with, so it is never sent to another host (for example after a cross-origin redirect).
+    /// The interceptor attaches "Authorization: Bearer <token>" to every request this client sends, whatever
+    /// the host, except redirect hops to another origin. Use a dedicated client per authenticated origin, or
+    /// restrict the token with AuthInterceptorOptions.AllowedOrigins.
     /// Demonstrates token injection and refresh logic.
     /// </summary>
     public class AuthenticationExample : MonoBehaviour

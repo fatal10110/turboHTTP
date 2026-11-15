@@ -31,8 +31,10 @@ RS0030|Runtime/Core/IL2CPPCompatibility.cs|var result = Task.Run(async () =>
 # plain cancellation from a typed one (a canceled Task exposes no exception otherwise); never blocks.
 RS0030|Runtime/Core/Pipeline/BufferedDispatchBridge.cs|task.GetAwaiter().GetResult();
 RS0030|Runtime/Core/Pipeline/StreamingDispatchBridge.cs|task.GetAwaiter().GetResult();
-# DecompressionHandler stream and ResponseBodyStream: synchronous Stream.Read overrides bridging to ReadAsync for sync callers;
-# the library itself reads asynchronously (DecompressionBodySource offloads when a SynchronizationContext is present).
+# DecompressionHandler stream and ResponseBodyStream: synchronous Stream.Read overrides bridging to ReadAsync. On Unity's
+# class library the platform inflater only overrides the synchronous Read, so streamed decompression reaches this bridge on
+# a pool thread (DecompressionBodySource offloads when a SynchronizationContext is present); the wait observes the token
+# of the read in progress through DecompressionBudget, and Abort aborts the inner source, so it ends on cancel (#774, #779).
 RS0030|Runtime/Middleware/DecompressionHandler.cs|return _inner.ReadAsync(
 RS0030|Runtime/Middleware/DecompressionHandler.cs|var read = _inner.ReadAsync(
 # ResponseBodyStream.Read: same synchronous Stream.Read bridge.
