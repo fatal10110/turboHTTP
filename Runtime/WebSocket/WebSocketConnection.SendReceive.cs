@@ -9,7 +9,7 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
-    public sealed partial class WebSocketConnection
+    internal sealed partial class WebSocketConnection
     {
         public async Task SendTextAsync(string message, CancellationToken ct)
         {

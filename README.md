@@ -8,7 +8,7 @@
 
 ## Key Features
 
-*   **Modular Architecture:** Core client with optional specific modules (Retry, Cache, etc.) and a zero-overhead plugin system.
+*   **Modular Architecture:** Core client with optional modules (Retry, Cache, etc.), each in its own assembly, and a plugin system (`IHttpPlugin`) that extends a client through capability-scoped registrations.
 *   **Modern Transport:** Raw socket-based transport supporting HTTP/1.1 and **HTTP/2** (with multiplexing). HTTP/2 needs ALPN, which Unity's `SslStream` lacks: define `TURBOHTTP_BOUNCYCASTLE` and select `TlsBackend.BouncyCastle` to use it; the default (`Auto`, `SslStream`) runs HTTP/1.1.
 *   **Resilience & Routing:** Happy Eyeballs dual-stack, HTTP proxy support (CONNECT tunnels, environment variables), and adaptive timeouts based on network quality (`TurboHTTP.Unity`).
 *   **Authentication:** OAuth 2.0 & OIDC support with PKCE and automated token refresh.

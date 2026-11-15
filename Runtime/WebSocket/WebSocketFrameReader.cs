@@ -12,7 +12,7 @@ namespace TurboHTTP.WebSocket
     /// Reads individual WebSocket frames from a stream.
     /// This reader is protocol-stateless; callers provide current fragmentation state.
     /// </summary>
-    public sealed class WebSocketFrameReader
+    internal sealed class WebSocketFrameReader
     {
         private readonly int _maxFrameSize;
         private readonly int _maxMessageSize;
@@ -347,7 +347,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Leases a pooled payload buffer for a parsed frame.
     /// </summary>
-    public sealed class WebSocketFrameReadLease : IDisposable
+    internal sealed class WebSocketFrameReadLease : IDisposable
     {
         private byte[] _payloadBuffer;
         private int _payloadLength;

@@ -2,18 +2,27 @@ using System;
 
 namespace TurboHTTP.WebSocket
 {
+    /// <summary>Connection quality derived from keep-alive round-trip time measurements.</summary>
     public enum ConnectionQuality
     {
+        /// <summary>Not enough measurements yet.</summary>
         Unknown = 0,
+        /// <summary>Excellent.</summary>
         Excellent = 1,
+        /// <summary>Good.</summary>
         Good = 2,
+        /// <summary>Fair.</summary>
         Fair = 3,
+        /// <summary>Poor.</summary>
         Poor = 4,
+        /// <summary>Critical.</summary>
         Critical = 5
     }
 
+    /// <summary>Point-in-time connection health: round-trip times, throughput and the derived quality.</summary>
     public readonly struct WebSocketHealthSnapshot
     {
+        /// <summary>Snapshot with no measurements.</summary>
         public static readonly WebSocketHealthSnapshot Unknown = new WebSocketHealthSnapshot(
             currentRtt: TimeSpan.Zero,
             averageRtt: TimeSpan.Zero,
@@ -21,6 +30,7 @@ namespace TurboHTTP.WebSocket
             recentThroughput: 0d,
             quality: ConnectionQuality.Unknown);
 
+        /// <summary>Creates a snapshot.</summary>
         public WebSocketHealthSnapshot(
             TimeSpan currentRtt,
             TimeSpan averageRtt,
@@ -35,14 +45,19 @@ namespace TurboHTTP.WebSocket
             Quality = quality;
         }
 
+        /// <summary>Most recent ping/pong round-trip time.</summary>
         public TimeSpan CurrentRtt { get; }
 
+        /// <summary>Average round-trip time over the recent sample window.</summary>
         public TimeSpan AverageRtt { get; }
 
+        /// <summary>Standard deviation of the recent round-trip times.</summary>
         public TimeSpan RttJitter { get; }
 
+        /// <summary>Bytes per second, sent plus received, since the previous metrics sample.</summary>
         public double RecentThroughput { get; }
 
+        /// <summary>Quality derived from the round-trip measurements.</summary>
         public ConnectionQuality Quality { get; }
     }
 

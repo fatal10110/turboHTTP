@@ -7,11 +7,17 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public enum WebSocketOpcode : byte
     {
+        /// <summary>Continuation frame of a fragmented message.</summary>
         Continuation = 0x0,
+        /// <summary>Text data frame (UTF-8).</summary>
         Text = 0x1,
+        /// <summary>Binary data frame.</summary>
         Binary = 0x2,
+        /// <summary>Close control frame.</summary>
         Close = 0x8,
+        /// <summary>Ping control frame.</summary>
         Ping = 0x9,
+        /// <summary>Pong control frame.</summary>
         Pong = 0xA
     }
 
@@ -20,23 +26,34 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public enum WebSocketCloseCode
     {
+        /// <summary>Normal closure.</summary>
         NormalClosure = 1000,
+        /// <summary>The endpoint is going away (server shutdown or client navigation).</summary>
         GoingAway = 1001,
+        /// <summary>Protocol error.</summary>
         ProtocolError = 1002,
+        /// <summary>The endpoint received a data type it cannot accept.</summary>
         UnsupportedData = 1003,
+        /// <summary>Reserved: the close frame had no status code. Never sent on the wire.</summary>
         NoStatusReceived = 1005,
+        /// <summary>Reserved: the connection closed without a close frame. Never sent on the wire.</summary>
         AbnormalClosure = 1006,
+        /// <summary>Message data was inconsistent with its type (for example invalid UTF-8).</summary>
         InvalidPayload = 1007,
+        /// <summary>The message violated the endpoint's policy.</summary>
         PolicyViolation = 1008,
+        /// <summary>The message was too big to process.</summary>
         MessageTooBig = 1009,
+        /// <summary>The client required an extension the server did not negotiate.</summary>
         MandatoryExtension = 1010,
+        /// <summary>The server hit an unexpected condition.</summary>
         InternalServerError = 1011
     }
 
     /// <summary>
     /// Immutable frame view representing a single WebSocket wire frame.
     /// </summary>
-    public readonly struct WebSocketFrame
+    internal readonly struct WebSocketFrame
     {
         public WebSocketFrame(
             WebSocketOpcode opcode,
@@ -128,7 +145,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// WebSocket close status payload.
     /// </summary>
-    public readonly struct WebSocketCloseStatus
+    internal readonly struct WebSocketCloseStatus
     {
         public WebSocketCloseStatus(WebSocketCloseCode code, string reason = null)
         {

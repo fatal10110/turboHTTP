@@ -7,7 +7,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// WebSocket protocol constants and utility helpers.
     /// </summary>
-    public static class WebSocketConstants
+    internal static class WebSocketConstants
     {
         /// <summary>
         /// GUID appended to Sec-WebSocket-Key to derive Sec-WebSocket-Accept (RFC 6455 Section 1.3, 4.2.2).
@@ -251,28 +251,51 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public enum WebSocketError
     {
+        /// <summary>The upgrade was rejected or its response failed validation (RFC 6455 section 4.1).</summary>
         HandshakeFailed,
+        /// <summary><c>Sec-WebSocket-Extensions</c> negotiation failed, or a required extension was not negotiated.</summary>
         ExtensionNegotiationFailed,
+        /// <summary>The connection closed, or the operation needs an open connection.</summary>
         ConnectionClosed,
+        /// <summary>Writing to the connection failed.</summary>
         SendFailed,
+        /// <summary>Reading from the connection failed.</summary>
         ReceiveFailed,
+        /// <summary>A message exceeded the configured message size or fragment count limit.</summary>
         MessageTooLarge,
+        /// <summary>No pong arrived within <see cref="WebSocketConnectionOptions.PongTimeout"/> after a keep-alive ping.</summary>
         PongTimeout,
+        /// <summary>The peer sent a malformed frame.</summary>
         InvalidFrame,
+        /// <summary>A frame exceeded <see cref="WebSocketConnectionOptions.MaxFrameSize"/>.</summary>
         FrameTooLarge,
+        /// <summary>A close frame carried an invalid status code or payload (RFC 6455 section 7.4).</summary>
         InvalidCloseCode,
+        /// <summary>A text message or close reason was not valid UTF-8.</summary>
         InvalidUtf8,
+        /// <summary>The server sent a masked frame (RFC 6455 section 5.1).</summary>
         MaskedServerFrame,
+        /// <summary>A continuation frame arrived without a message in progress, or a data frame interrupted a fragmented message.</summary>
         UnexpectedContinuation,
+        /// <summary>A frame used a reserved opcode.</summary>
         ReservedOpcode,
+        /// <summary>The peer or an extension violated RFC 6455 in another way.</summary>
         ProtocolViolation,
+        /// <summary>A frame declared a payload length that is invalid or too large to represent.</summary>
         PayloadLengthOverflow,
+        /// <summary>A typed serializer failed to encode or decode a message.</summary>
         SerializationFailed,
+        /// <summary>The proxy answered the CONNECT request with 407.</summary>
         ProxyAuthenticationRequired,
+        /// <summary>Connecting to the proxy failed.</summary>
         ProxyConnectionFailed,
+        /// <summary>The proxy refused or broke the CONNECT tunnel.</summary>
         ProxyTunnelFailed,
+        /// <summary>permessage-deflate failed to compress an outbound message.</summary>
         CompressionFailed,
+        /// <summary>permessage-deflate failed to decompress an inbound message.</summary>
         DecompressionFailed,
+        /// <summary>A decompressed message exceeded <see cref="WebSocketConnectionOptions.MaxMessageSize"/>.</summary>
         DecompressedMessageTooLarge,
 
         /// <summary>
@@ -317,7 +340,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Exception used for frame-level protocol violations.
     /// </summary>
-    public sealed class WebSocketProtocolException : Exception
+    internal sealed class WebSocketProtocolException : Exception
     {
         public WebSocketError Error { get; }
 

@@ -11,6 +11,7 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public interface IWebSocketTransport : IDisposable
     {
+        /// <summary>Opens a stream to the host of <paramref name="uri"/>, through the proxy and TLS settings in <paramref name="options"/>, ready for the WebSocket upgrade. The caller owns and disposes the returned stream.</summary>
         Task<Stream> ConnectAsync(
             Uri uri,
             WebSocketConnectionOptions options,

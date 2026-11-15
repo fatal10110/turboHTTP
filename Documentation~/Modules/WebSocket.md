@@ -1,6 +1,10 @@
 # WebSocket Module
 
-TurboHTTP includes a robust, zero-allocation, fully RFC 6455 compliant WebSocket client.
+TurboHTTP includes an RFC 6455 WebSocket client on its raw socket transport. Frame reads and writes
+use pooled buffers, but the receive path still allocates per message: every received message is a
+`WebSocketMessage` object, text messages carry a decoded `string`, and each `OnMessage` handler gets a
+detached copy. The protocol cases the client is checked against, and its documented deviations, are
+listed under [Interop](#interop).
 
 ## Creating a Connection
 
@@ -211,7 +215,8 @@ and 429. Protocol violations from the server keep their specific error (`Invalid
 
 ## Extensions & Compression
 
-Per-Message Deflate (`permessage-deflate`, RFC 7692) is opt-in:
+Per-Message Deflate (`permessage-deflate`, RFC 7692) is opt-in and **experimental**: its verification
+gates are still open (issue #104), so treat it as unvalidated for production traffic until they close.
 
 ```csharp
 using TurboHTTP.WebSocket;
