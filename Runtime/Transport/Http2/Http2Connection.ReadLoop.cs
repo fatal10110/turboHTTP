@@ -852,8 +852,9 @@ namespace TurboHTTP.Transport.Http2
                     _remoteSettings.Apply(id, value);
 
                     // RFC 7541 Section 4.2: every HEADER_TABLE_SIZE value counts toward the smallest size
-                    // the encoder must signal before its next block. The encoder only records the change;
-                    // it resizes its table inside Encode, under _writeLock.
+                    // the encoder must signal before its next block. The encoder clamps it to its local cap
+                    // (the peer may advertise up to 2^31-1) and only records the change; it resizes its
+                    // table inside Encode, under _writeLock.
                     if (id == Http2SettingId.HeaderTableSize)
                         _hpackEncoder.SetMaxDynamicTableSize(_remoteSettings.HeaderTableSize);
                 }
