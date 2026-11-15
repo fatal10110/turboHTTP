@@ -1717,7 +1717,8 @@ namespace TurboHTTP.Transport
         /// Consumes a forward-proxy 407 body so the connection can carry the authenticated retry.
         /// Returns <c>false</c> when the connection must be closed instead: not keep-alive, a body
         /// that is chunked, runs to close or exceeds <see cref="MaxProxyChallengeDrainBytes"/>, or
-        /// a read failure (cancellation included; the caller checks the token). A pending read
+        /// a read failure (cancellation included; the caller checks the token), or bytes left in the
+        /// reader after the body (RFC 9112 Section 9.3, #643). A pending read
         /// ends as soon as <paramref name="ct"/> fires even when the platform never ends it (#345):
         /// the reader races it into reader-owned memory, so <c>buffer</c> is never a read target
         /// that outlives this call.
@@ -1727,13 +1728,13 @@ namespace TurboHTTP.Transport
             if (!head.KeepAlive)
                 return false;
             if (head.BodyKind == Http11ResponseBodyKind.Empty)
-                return true;
+                return !head.Reader.HasBufferedData;
             if (head.BodyKind != Http11ResponseBodyKind.ContentLength)
                 return false;
 
             var remaining = head.ContentLength.GetValueOrDefault();
             if (remaining == 0)
-                return true;
+                return !head.Reader.HasBufferedData;
             if (remaining < 0 || remaining > MaxProxyChallengeDrainBytes)
                 return false;
 
@@ -1750,7 +1751,8 @@ namespace TurboHTTP.Transport
                     remaining -= read;
                 }
 
-                return true;
+                // Bytes past the 407 body: the connection state is unknown, so it is not reused.
+                return !head.Reader.HasBufferedData;
             }
             catch (Exception)
             {

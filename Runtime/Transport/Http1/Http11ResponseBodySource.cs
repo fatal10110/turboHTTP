@@ -9,8 +9,10 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Http1
 {
-    // HTTP/1.1 body sources are single-consumer. Reads and disposal/abort are expected
-    // to be serialized by the caller; cancellation/error transitions are terminal.
+    // HTTP/1.1 body sources are single-consumer: one read at a time (_readInFlight refuses a second,
+    // #639). Abort/Dispose may run while a read is pending: they never start another read, and the
+    // reader fails the pending one with ObjectDisposedException and keeps its buffers out of the pool
+    // (#656). Cancellation/error transitions are terminal.
     internal sealed class Http11ResponseBodySource : IResponseBodySource
     {
         private const int MaxChunkLineLength = 256;
@@ -38,6 +40,7 @@ namespace TurboHTTP.Transport.Http1
         private bool _awaitingChunkTerminator;
         private bool _awaitingChunkTrailers;
         private int _hasReadData;
+        private int _readInFlight; // 1 while ReadAsync owns the reader (#639); Interlocked
         private int _terminalState; // 0 = active, 1 = completed, 2 = aborted/closed
         private CancellationTokenSource _cachedReadTokenSource;
         private CancellationToken _cachedCallerToken;
@@ -132,97 +135,107 @@ namespace TurboHTTP.Transport.Http1
             if (Volatile.Read(ref _terminalState) == 1)
                 return 0;
 
+            if (Interlocked.CompareExchange(ref _readInFlight, 1, 0) != 0)
+                throw new InvalidOperationException("Another read of this HTTP/1.1 response body is already in progress.");
+
             try
             {
-                switch (_bodyKind)
+                try
                 {
-                    case Http11ResponseBodyKind.Empty:
-                        return 0;
+                    switch (_bodyKind)
+                    {
+                        case Http11ResponseBodyKind.Empty:
+                            return 0;
 
-                    case Http11ResponseBodyKind.ContentLength:
-                        return await ReadContentLengthAsync(destination, ct).ConfigureAwait(false);
+                        case Http11ResponseBodyKind.ContentLength:
+                            return await ReadContentLengthAsync(destination, ct).ConfigureAwait(false);
 
-                    case Http11ResponseBodyKind.Chunked:
-                        return await ReadChunkedAsync(destination, ct).ConfigureAwait(false);
+                        case Http11ResponseBodyKind.Chunked:
+                            return await ReadChunkedAsync(destination, ct).ConfigureAwait(false);
 
-                    case Http11ResponseBodyKind.ReadToEnd:
-                        return await ReadToEndAsync(destination, ct).ConfigureAwait(false);
+                        case Http11ResponseBodyKind.ReadToEnd:
+                            return await ReadToEndAsync(destination, ct).ConfigureAwait(false);
 
-                    default:
-                        throw new InvalidOperationException($"Unsupported HTTP/1.1 body kind: {_bodyKind}");
+                        default:
+                            throw new InvalidOperationException($"Unsupported HTTP/1.1 body kind: {_bodyKind}");
+                    }
+                }
+                catch (OperationCanceledException ex)
+                {
+                    Exception terminalException = ex;
+                    if (_transportReadToken.CanBeCanceled &&
+                        _transportReadToken.IsCancellationRequested &&
+                        !ct.IsCancellationRequested)
+                    {
+                        terminalException = CreateTimeoutException(ex);
+                    }
+
+                    TrySetTrailersException(terminalException);
+                    CloseBody();
+                    throw terminalException;
+                }
+                catch (FormatException ex)
+                {
+                    var wrapped = new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        $"Malformed HTTP response: {ex.Message}",
+                        ex));
+                    TrySetTrailersException(wrapped);
+                    CloseBody();
+                    throw wrapped;
+                }
+                catch (NotSupportedException ex)
+                {
+                    var wrapped = new UHttpException(new UHttpError(
+                        UHttpErrorType.NetworkError,
+                        $"Unsupported HTTP response: {ex.Message}",
+                        ex));
+                    TrySetTrailersException(wrapped);
+                    CloseBody();
+                    throw wrapped;
+                }
+                catch (IOException ex)
+                {
+                    Exception terminalException;
+                    if (_transportReadToken.CanBeCanceled &&
+                        _transportReadToken.IsCancellationRequested &&
+                        !ct.IsCancellationRequested)
+                    {
+                        terminalException = CreateTimeoutException(ex);
+                    }
+                    else
+                    {
+                        terminalException = new UHttpException(
+                            new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
+                    }
+
+                    TrySetTrailersException(terminalException);
+                    CloseBody();
+                    throw terminalException;
+                }
+                catch (SocketException ex)
+                {
+                    Exception terminalException;
+                    if (_transportReadToken.CanBeCanceled &&
+                        _transportReadToken.IsCancellationRequested &&
+                        !ct.IsCancellationRequested)
+                    {
+                        terminalException = CreateTimeoutException(ex);
+                    }
+                    else
+                    {
+                        terminalException = new UHttpException(
+                            new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
+                    }
+
+                    TrySetTrailersException(terminalException);
+                    CloseBody();
+                    throw terminalException;
                 }
             }
-            catch (OperationCanceledException ex)
+            finally
             {
-                Exception terminalException = ex;
-                if (_transportReadToken.CanBeCanceled &&
-                    _transportReadToken.IsCancellationRequested &&
-                    !ct.IsCancellationRequested)
-                {
-                    terminalException = CreateTimeoutException(ex);
-                }
-
-                TrySetTrailersException(terminalException);
-                CloseBody();
-                throw terminalException;
-            }
-            catch (FormatException ex)
-            {
-                var wrapped = new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    $"Malformed HTTP response: {ex.Message}",
-                    ex));
-                TrySetTrailersException(wrapped);
-                CloseBody();
-                throw wrapped;
-            }
-            catch (NotSupportedException ex)
-            {
-                var wrapped = new UHttpException(new UHttpError(
-                    UHttpErrorType.NetworkError,
-                    $"Unsupported HTTP response: {ex.Message}",
-                    ex));
-                TrySetTrailersException(wrapped);
-                CloseBody();
-                throw wrapped;
-            }
-            catch (IOException ex)
-            {
-                Exception terminalException;
-                if (_transportReadToken.CanBeCanceled &&
-                    _transportReadToken.IsCancellationRequested &&
-                    !ct.IsCancellationRequested)
-                {
-                    terminalException = CreateTimeoutException(ex);
-                }
-                else
-                {
-                    terminalException = new UHttpException(
-                        new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
-                }
-
-                TrySetTrailersException(terminalException);
-                CloseBody();
-                throw terminalException;
-            }
-            catch (SocketException ex)
-            {
-                Exception terminalException;
-                if (_transportReadToken.CanBeCanceled &&
-                    _transportReadToken.IsCancellationRequested &&
-                    !ct.IsCancellationRequested)
-                {
-                    terminalException = CreateTimeoutException(ex);
-                }
-                else
-                {
-                    terminalException = new UHttpException(
-                        new UHttpError(UHttpErrorType.NetworkError, ex.Message, ex));
-                }
-
-                TrySetTrailersException(terminalException);
-                CloseBody();
-                throw terminalException;
+                Volatile.Write(ref _readInFlight, 0);
             }
         }
 
@@ -282,7 +295,9 @@ namespace TurboHTTP.Transport.Http1
             if (state != 0)
                 return;
 
-            if (!ShouldAttemptDisposeDrain())
+            // A read still owns the reader (#639): draining would start a second read on it. Abort
+            // instead; the reader fails the pending read with ObjectDisposedException (#656).
+            if (Volatile.Read(ref _readInFlight) != 0 || !ShouldAttemptDisposeDrain())
             {
                 TrySetTrailersException(CreateDisposedTrailersException());
                 CloseBody();
@@ -663,8 +678,14 @@ namespace TurboHTTP.Transport.Http1
                 return;
 
             DisposeCachedReadTokenSource();
+
+            // RFC 9112 Section 9.3: bytes past a self-delimited message leave the connection state
+            // unknown (a desync or a smuggled response), so it is closed, not reused (#643). Read
+            // before Dispose, which leaves _start/_end as they are. Bytes still in the kernel or in
+            // TLS are not visible here; TcpConnectionPool.HasUnexpectedData stays best effort.
+            bool unreadBytes = _reader.HasBufferedData;
             _reader.Dispose();
-            if (_keepAlive)
+            if (_keepAlive && !unreadBytes)
             {
                 _lease.ReturnToPool();
                 return;
