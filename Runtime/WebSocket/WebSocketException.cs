@@ -92,8 +92,10 @@ namespace TurboHTTP.WebSocket
         /// Determines if the error represents a potentially transient state that can be retried, by the
         /// same rule as <see cref="UHttpError.IsRetryable"/>: dropped connections, network and proxy
         /// failures, DNS failures and timeouts are retryable; certificate failures, invalid requests and
-        /// protocol violations are not. A rejected opening handshake is retryable only for 408, 429 and
-        /// 5xx (RFC 9110 section 15).
+        /// protocol violations are not. A rejected opening handshake is retryable only for 5xx, matching
+        /// <see cref="UHttpError.IsRetryable"/> for <see cref="UHttpErrorType.HttpError"/>. A 408 or 429
+        /// rejection is not retryable here but is not permanent either (see
+        /// <see cref="IsPermanentConnectFailure"/>), so the resilient client still reconnects after one.
         /// </summary>
         public bool IsRetryable()
         {
@@ -110,7 +112,8 @@ namespace TurboHTTP.WebSocket
                     return true;
 
                 case WebSocketError.HandshakeFailed:
-                    return HandshakeStatusCode.HasValue && IsTransientHandshakeStatus(HandshakeStatusCode.Value);
+                    return HandshakeStatusCode.HasValue &&
+                        HandshakeStatusCode.Value >= 500 && HandshakeStatusCode.Value < 600;
 
                 case WebSocketError.InvalidFrame:
                 case WebSocketError.FrameTooLarge:
@@ -140,8 +143,8 @@ namespace TurboHTTP.WebSocket
         /// True when a connect attempt that failed with this error fails the same way on every attempt,
         /// so the resilient client stops reconnecting: a certificate failure, an invalid request, a
         /// cleartext policy refusal, a 407 from the proxy, and a 4xx rejection of the opening handshake
-        /// other than 408 and 429 (RFC 9110 section 15.5). Everything <see cref="IsRetryable"/> calls
-        /// transient is not permanent.
+        /// other than 408 and 429 (RFC 9110 section 15.5.9, RFC 6585 section 4: the server may accept a
+        /// later attempt). Everything <see cref="IsRetryable"/> calls transient is not permanent.
         /// </summary>
         internal bool IsPermanentConnectFailure()
         {

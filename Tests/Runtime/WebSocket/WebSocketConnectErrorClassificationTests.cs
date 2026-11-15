@@ -215,16 +215,27 @@ namespace TurboHTTP.Tests.WebSocket
             Assert.AreEqual(expected, ex.HttpError.IsRetryable(), "UHttpError type " + ex.HttpError.Type);
         }
 
+        [Test]
+        public void IsRetryable_AgreesWithUHttpError_ForEveryErrorWithoutStatus()
+        {
+            foreach (WebSocketError error in Enum.GetValues(typeof(WebSocketError)))
+            {
+                var ex = new WebSocketException(error, "failure");
+                Assert.AreEqual(ex.HttpError.IsRetryable(), ex.IsRetryable(), error + " -> " + ex.HttpError.Type);
+            }
+        }
+
         [TestCase(401, false, true)]
         [TestCase(403, false, true)]
-        [TestCase(408, true, false)]
-        [TestCase(429, true, false)]
+        [TestCase(408, false, false)]
+        [TestCase(429, false, false)]
         [TestCase(503, true, false)]
         public void HandshakeStatus_RetryableAndPermanentRulesAgree(int status, bool retryable, bool permanent)
         {
             var ex = new WebSocketException(WebSocketError.HandshakeFailed, "rejected", null, status);
 
             Assert.AreEqual(retryable, ex.IsRetryable());
+            Assert.AreEqual(retryable, ex.HttpError.IsRetryable(), "UHttpError type " + ex.HttpError.Type);
             Assert.AreEqual(permanent, ResilientWebSocketClient.IsPermanentConnectFailure(ex));
             Assert.AreEqual((HttpStatusCode)status, ex.HttpError.StatusCode);
         }
