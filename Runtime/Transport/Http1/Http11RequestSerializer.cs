@@ -347,6 +347,14 @@ namespace TurboHTTP.Transport.Http1
             {
                 headerWriter.Append("Transfer-Encoding: chunked\r\n");
             }
+            else if (request.Method.HasBody())
+            {
+                // RFC 9110 Section 8.6: a method that defines content (POST, PUT, PATCH) sends
+                // Content-Length: 0 when there is none, so the server does not have to guess the
+                // framing (#631). A caller-set Content-Length was skipped above, so the head
+                // carries exactly one. Other methods keep sending no framing header.
+                headerWriter.Append("Content-Length: 0\r\n");
+            }
 
             if (hasRequestTrailers)
                 AppendDeclaredTrailerHeader(headerWriter, request.Content.DeclaredTrailerNames);

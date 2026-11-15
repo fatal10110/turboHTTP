@@ -23,7 +23,7 @@ namespace TurboHTTP.Tests.Transport.Http1
     /// RFC 9110 sec 9.2.2 / RFC 9112 sec 9.3.1.
     /// </summary>
     [TestFixture]
-    public class RawSocketTransportConnectionReuseTests
+    public partial class RawSocketTransportConnectionReuseTests
     {
         private static readonly TimeSpan Guard = TimeSpan.FromSeconds(10);
 
