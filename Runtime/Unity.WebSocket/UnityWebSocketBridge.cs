@@ -32,8 +32,67 @@ namespace TurboHTTP.Unity.WebSocket
         // throttled by time, not by delivery resuming (#90).
         private const long DefaultDropWarningIntervalSeconds = 10;
 
+        // Pre-subscription buffer (#606): a bridge returned by UHttpClient.WebSocket(...) is already connected,
+        // so messages that arrive before the caller's first OnMessage subscription are held here, bounded like
+        // the client's own receive queue (WebSocketConstants.DefaultReceiveQueueCapacity / MaxBytes) with
+        // drop-oldest. An empty buffer always admits one message.
+        internal const int MaxPendingMessages = 100;
+        internal const long MaxPendingBytes = 8L * 1024 * 1024;
+
+        private const int PendingClosed = 0;
+        private const int PendingBuffering = 1;
+        private const int PendingDraining = 2;
+
+        // _onMessage, _pendingMessages and _pendingBytes are guarded by _pendingGate; _pendingState is written
+        // under it and read lock-free only for the PendingClosed fast path (Closed is terminal).
+        private readonly object _pendingGate = new object();
+        private Queue<WebSocketMessage> _pendingMessages;
+        private long _pendingBytes;
+        private int _pendingState;
+        private Action<WebSocketMessage> _onMessage;
+
         public event Action OnConnected;
-        public event Action<WebSocketMessage> OnMessage;
+
+        /// <summary>
+        /// Raised on the Unity main thread with each received message; the handler owns the message and
+        /// disposes it. A message received while no handler is subscribed is disposed, except on a bridge
+        /// returned by <c>UHttpClient.WebSocket(...)</c>: that bridge is already connected when the caller gets
+        /// it, so it holds the messages received before the first subscription (at most 100 messages or 8 MB,
+        /// oldest dropped first with <see cref="OnMessageDropped"/>) and delivers them, in order, to the first
+        /// subscriber. The hold ends at the first subscription, at the first pull receive
+        /// (<see cref="ReceiveAsync"/>, <see cref="ReceiveAllAsync"/>, <see cref="ReceiveAsCoroutine"/>), whose
+        /// queue already holds those messages, or at <see cref="Dispose"/>, which disposes what is held.
+        /// </summary>
+        public event Action<WebSocketMessage> OnMessage
+        {
+            add
+            {
+                if (value == null)
+                    return;
+
+                bool drain = false;
+                lock (_pendingGate)
+                {
+                    _onMessage += value;
+                    if (_pendingState == PendingBuffering)
+                    {
+                        Volatile.Write(ref _pendingState, PendingDraining);
+                        drain = true;
+                    }
+                }
+
+                if (drain)
+                    DrainPendingMessages();
+            }
+            remove
+            {
+                lock (_pendingGate)
+                {
+                    _onMessage -= value;
+                }
+            }
+        }
+
         public event Action<WebSocketException> OnError;
         public event Action<WebSocketCloseCode, string> OnClosed;
         public event Action<WebSocketMetrics> OnMetricsUpdated;
@@ -51,9 +110,23 @@ namespace TurboHTTP.Unity.WebSocket
         public event Action OnMessageDropped;
 
         public UnityWebSocketBridge(IWebSocketClient client)
+            : this(client, bufferMessagesUntilSubscribed: false)
+        {
+        }
+
+        /// <param name="client">The wrapped client.</param>
+        /// <param name="bufferMessagesUntilSubscribed">Hold messages received before the first
+        /// <see cref="OnMessage"/> subscription instead of disposing them (#606).</param>
+        internal UnityWebSocketBridge(IWebSocketClient client, bool bufferMessagesUntilSubscribed)
         {
             _client = client ?? throw new ArgumentNullException(nameof(client));
             _resilientClient = client as ResilientWebSocketClient;
+
+            if (bufferMessagesUntilSubscribed)
+            {
+                _pendingMessages = new Queue<WebSocketMessage>();
+                _pendingState = PendingBuffering;
+            }
 
             _client.OnConnected += HandleConnected;
             _client.OnMessage += HandleMessage;
@@ -110,12 +183,14 @@ namespace TurboHTTP.Unity.WebSocket
         public ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct = default)
         {
             ThrowIfDisposed();
+            ReleasePendingMessages(onlyWhileBuffering: true);
             return _client.ReceiveAsync(ct);
         }
 
         public IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default)
         {
             ThrowIfDisposed();
+            ReleasePendingMessages(onlyWhileBuffering: true);
             return _client.ReceiveAllAsync(ct);
         }
 
@@ -162,6 +237,7 @@ namespace TurboHTTP.Unity.WebSocket
             bool cancelOnOwnerInactive = false)
         {
             ThrowIfDisposed();
+            ReleasePendingMessages(onlyWhileBuffering: true);
             return new UnityWebSocketReceiveCoroutine(
                 _client,
                 onMessage,
@@ -177,6 +253,7 @@ namespace TurboHTTP.Unity.WebSocket
                 return;
 
             Unsubscribe();
+            ReleasePendingMessages(onlyWhileBuffering: false);
             _client.Dispose();
         }
 
@@ -186,6 +263,7 @@ namespace TurboHTTP.Unity.WebSocket
                 return;
 
             Unsubscribe();
+            ReleasePendingMessages(onlyWhileBuffering: false);
             await _client.DisposeAsync().ConfigureAwait(false);
         }
 
@@ -219,7 +297,123 @@ namespace TurboHTTP.Unity.WebSocket
             if (message == null)
                 return;
 
-            var handler = OnMessage;
+            Action<WebSocketMessage> handler;
+            if (Volatile.Read(ref _pendingState) == PendingClosed)
+            {
+                handler = Volatile.Read(ref _onMessage);
+            }
+            else
+            {
+                int evicted = 0;
+                lock (_pendingGate)
+                {
+                    if (_pendingState != PendingClosed)
+                    {
+                        // Buffering, or draining on the first subscriber's thread: queue behind the held
+                        // messages so delivery stays in arrival order.
+                        while (_pendingMessages.Count > 0 &&
+                               (_pendingMessages.Count >= MaxPendingMessages ||
+                                _pendingBytes + message.Length > MaxPendingBytes))
+                        {
+                            var oldest = _pendingMessages.Dequeue();
+                            _pendingBytes -= oldest.Length;
+                            oldest.Dispose();
+                            evicted++;
+                        }
+
+                        _pendingMessages.Enqueue(message);
+                        _pendingBytes += message.Length;
+                        message = null;
+                    }
+
+                    handler = _onMessage;
+                }
+
+                for (int i = 0; i < evicted; i++)
+                    NotifyMessageDropped();
+
+                if (message == null)
+                    return;
+            }
+
+            DeliverMessage(handler, message);
+        }
+
+        /// <summary>
+        /// Delivers the held messages to the first subscriber one at a time, in arrival order; messages that
+        /// arrive meanwhile queue behind them (#606). Runs on the subscribing thread only (the one that moved
+        /// the state to draining); the gate is never held while a handler can run.
+        /// </summary>
+        private void DrainPendingMessages()
+        {
+            while (true)
+            {
+                WebSocketMessage message;
+                Action<WebSocketMessage> handler;
+                lock (_pendingGate)
+                {
+                    if (_pendingState != PendingDraining)
+                        return;
+
+                    if (_pendingMessages.Count == 0)
+                    {
+                        _pendingMessages = null;
+                        _pendingBytes = 0;
+                        Volatile.Write(ref _pendingState, PendingClosed);
+                        return;
+                    }
+
+                    message = _pendingMessages.Dequeue();
+                    _pendingBytes -= message.Length;
+                    handler = _onMessage;
+                }
+
+                DeliverMessage(handler, message);
+            }
+        }
+
+        /// <summary>
+        /// Ends the pre-subscription hold and disposes what it holds: on dispose (any state), or on a pull
+        /// receive while no subscriber has taken the held messages (the pull queue already has them).
+        /// </summary>
+        private void ReleasePendingMessages(bool onlyWhileBuffering)
+        {
+            if (Volatile.Read(ref _pendingState) == PendingClosed)
+                return;
+
+            Queue<WebSocketMessage> released;
+            lock (_pendingGate)
+            {
+                if (_pendingState == PendingClosed ||
+                    (onlyWhileBuffering && _pendingState != PendingBuffering))
+                {
+                    return;
+                }
+
+                released = _pendingMessages;
+                _pendingMessages = null;
+                _pendingBytes = 0;
+                Volatile.Write(ref _pendingState, PendingClosed);
+            }
+
+            while (released.Count > 0)
+                released.Dequeue().Dispose();
+        }
+
+        /// <summary>Test seam: messages currently held for the first <see cref="OnMessage"/> subscriber.</summary>
+        internal int PendingMessageCount
+        {
+            get
+            {
+                lock (_pendingGate)
+                {
+                    return _pendingMessages?.Count ?? 0;
+                }
+            }
+        }
+
+        private void DeliverMessage(Action<WebSocketMessage> handler, WebSocketMessage message)
+        {
             if (handler == null)
             {
                 message.Dispose();
