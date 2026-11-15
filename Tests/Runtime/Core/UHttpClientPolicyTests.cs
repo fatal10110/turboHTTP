@@ -91,6 +91,18 @@ namespace TurboHTTP.Tests.Core
             Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
         }
 
+        [TestCase("api.example.com")]
+        [TestCase("/api")]
+        [TestCase("https://")]
+        public void CreateRequest_InvalidBaseUrl_ThrowsInvalidRequest(string baseUrl)
+        {
+            using var client = new UHttpClient(new UHttpClientOptions { BaseUrl = baseUrl });
+
+            var ex = Assert.Throws<UHttpException>(() => client.Get("/data"));
+            Assert.AreEqual(UHttpErrorType.InvalidRequest, ex.HttpError.Type);
+            StringAssert.DoesNotContain(baseUrl, ex.HttpError.Message);
+        }
+
         // ---- #564 ----
 
         [Test]

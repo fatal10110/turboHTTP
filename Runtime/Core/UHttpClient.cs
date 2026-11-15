@@ -784,7 +784,19 @@ namespace TurboHTTP.Core
             var baseUri = Volatile.Read(ref _baseUri);
             if (baseUri == null)
             {
-                baseUri = new Uri(baseUrl.EndsWith("/", StringComparison.Ordinal) ? baseUrl : baseUrl + "/", UriKind.Absolute);
+                if (!Uri.TryCreate(
+                        baseUrl.EndsWith("/", StringComparison.Ordinal) ? baseUrl : baseUrl + "/",
+                        UriKind.Absolute,
+                        out baseUri)
+                    || !HasUriScheme(baseUrl)
+                    || baseUri.Host.Length == 0)
+                {
+                    // The value is not echoed: a BaseUrl may carry user info or tokens.
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.InvalidRequest,
+                        "The configured BaseUrl is not a valid absolute URI."));
+                }
+
                 Volatile.Write(ref _baseUri, baseUri);
             }
 
