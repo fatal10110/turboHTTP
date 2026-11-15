@@ -22,6 +22,16 @@ namespace TurboHTTP.WebSocket.Transport
         private readonly Func<string, Task<IPAddress[]>> _dnsResolver;
         private int _disposed;
 
+        /// <summary>
+        /// Creates the transport.
+        /// </summary>
+        /// <param name="tlsBackend">
+        /// The TLS backend for <c>wss://</c> connections when the connection options leave
+        /// <see cref="WebSocketConnectionOptions.TlsBackend"/> at <see cref="TlsBackend.Auto"/> (#1091). A
+        /// non-<see cref="TlsBackend.Auto"/> <see cref="WebSocketConnectionOptions.TlsBackend"/> overrides
+        /// it, and <see cref="WebSocketConnectionOptions.TlsProvider"/> overrides both.
+        /// </param>
+        /// <param name="happyEyeballsOptions">Dual-stack connect options; null uses the defaults.</param>
         public RawSocketWebSocketTransport(
             TlsBackend tlsBackend = TlsBackend.Auto,
             HappyEyeballsOptions happyEyeballsOptions = null)
@@ -286,7 +296,7 @@ namespace TurboHTTP.WebSocket.Transport
         private ITlsProvider ResolveTlsProvider(WebSocketConnectionOptions options)
         {
             if (options?.TlsProvider == null)
-                return TlsProviderSelector.GetProvider(options?.TlsBackend ?? _tlsBackend);
+                return TlsProviderSelector.GetProvider(ResolveTlsBackend(options, _tlsBackend));
 
             if (options.TlsProvider is ITlsProvider provider)
                 return provider;
@@ -294,6 +304,17 @@ namespace TurboHTTP.WebSocket.Transport
             throw new ArgumentException(
                 "WebSocketConnectionOptions.TlsProvider must implement TurboHTTP.Transport.Tls.ITlsProvider.",
                 nameof(options));
+        }
+
+        /// <summary>
+        /// The backend for a connection (#1091): the options' <see cref="WebSocketConnectionOptions.TlsBackend"/>
+        /// when it is set to something other than <see cref="TlsBackend.Auto"/> (its default), otherwise the
+        /// backend this transport was created with.
+        /// </summary>
+        internal static TlsBackend ResolveTlsBackend(WebSocketConnectionOptions options, TlsBackend transportBackend)
+        {
+            TlsBackend requested = options?.TlsBackend ?? TlsBackend.Auto;
+            return requested != TlsBackend.Auto ? requested : transportBackend;
         }
 
         private async Task<Socket> ConnectSocketAsync(
@@ -340,8 +361,11 @@ namespace TurboHTTP.WebSocket.Transport
                     TaskScheduler.Default);
 
                 ct.ThrowIfCancellationRequested();
-                throw new TimeoutException(
-                    "DNS resolution timed out after " + timeoutMs + "ms.");
+                // #1139: a DNS failure, not a dropped connection nor the connect timeout.
+                throw new WebSocketException(
+                    WebSocketError.DnsResolutionFailed,
+                    "DNS resolution timed out after " + timeoutMs + "ms.",
+                    new TimeoutException("DNS resolution timed out after " + timeoutMs + "ms."));
             }
 
             return await dnsTask.ConfigureAwait(false);

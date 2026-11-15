@@ -57,7 +57,7 @@ namespace TurboHTTP.Tests.WebSocket
 
                 var wsEx = ex as WebSocketException;
                 Assert.IsNotNull(wsEx, "expected a WebSocketException, got " + ex);
-                Assert.AreEqual(WebSocketError.ConnectionClosed, wsEx.Error, wsEx.ToString());
+                Assert.AreEqual(WebSocketError.Timeout, wsEx.Error, wsEx.ToString());
                 StringAssert.Contains("timed out", wsEx.Message);
                 Assert.IsTrue(stream.IsDisposed, "the handshake stream was not disposed");
                 stream.EndRead(0);

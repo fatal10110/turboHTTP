@@ -91,7 +91,7 @@ namespace TurboHTTP.Tests.WebSocket
 
                     var terminal = connection.TerminalError as WebSocketException;
                     Assert.IsNotNull(terminal, "Expected a WebSocketException, got " + connection.TerminalError);
-                    Assert.AreEqual(WebSocketError.ProtocolViolation, terminal.Error);
+                    Assert.AreEqual(WebSocketError.ReservedOpcode, terminal.Error);
                     Assert.AreEqual(WebSocketCloseCode.ProtocolError, connection.CloseStatus?.Code);
 
                     await AssertFailsWithWebSocketExceptionAsync(sendTask, "stalled send").ConfigureAwait(false);

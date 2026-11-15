@@ -335,10 +335,13 @@ namespace TurboHTTP.WebSocket
                 ex.Error == WebSocketError.DecompressionFailed ||
                 ex.Error == WebSocketError.DecompressedMessageTooLarge)
             {
+                // RFC 6455 section 7.4.1: 1009 for a message too big to process, 1002 otherwise.
                 var protocolEx = new WebSocketProtocolException(
-                    WebSocketError.ProtocolViolation,
+                    ex.Error,
                     ex.Message,
-                    WebSocketCloseCode.ProtocolError,
+                    ex.Error == WebSocketError.DecompressedMessageTooLarge
+                        ? WebSocketCloseCode.MessageTooBig
+                        : WebSocketCloseCode.ProtocolError,
                     ex);
 
                 await TryHandleProtocolErrorAsync(protocolEx, ct).ConfigureAwait(false);
@@ -505,8 +508,9 @@ namespace TurboHTTP.WebSocket
 
         private async Task TryHandleProtocolErrorAsync(WebSocketProtocolException ex, CancellationToken ct)
         {
+            // The specific error the reader or assembler raised stays observable (#1139).
             var error = new WebSocketException(
-                WebSocketError.ProtocolViolation,
+                ex.Error,
                 ex.Message,
                 ex,
                 ex.CloseCode);

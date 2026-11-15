@@ -44,7 +44,7 @@ Harness options (`Program.cs`): `AllowCleartext` (the server is `ws://`), `MaxMe
 `MaxFrameSize` 16 MiB and `ReceiveQueueMaxBytes` 32 MiB (9.1.6/9.2.6 send 16 MiB messages),
 `MaxFragmentCount` 70000 (9.3.1/9.4.1 send 4 MiB in 64-byte fragments), `PingInterval` 0 (no
 unsolicited pings inside a case), `WithCompression()` (the default offer: `server_no_context_takeover`
-and `client_no_context_takeover`, never `client_max_window_bits`). The library defaults (4 MiB, 64
+and `client_no_context_takeover`, never `client_max_window_bits`). The library defaults (4 MiB, 4096
 fragments) would close those 9.x cases with 1009 by design.
 
 Case groups: 1 framing, 2 ping/pong, 3 reserved bits, 4 opcodes, 5 fragmentation, 6 UTF-8, 7 close

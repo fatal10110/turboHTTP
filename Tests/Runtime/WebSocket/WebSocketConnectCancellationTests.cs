@@ -133,7 +133,7 @@ namespace TurboHTTP.Tests.WebSocket
             Assert.AreNotEqual(WebSocketError.ProxyTunnelFailed, wsEx.Error, wsEx.ToString());
             Assert.AreNotEqual(WebSocketError.ProxyConnectionFailed, wsEx.Error, wsEx.ToString());
             Assert.AreNotEqual(WebSocketError.HandshakeFailed, wsEx.Error, wsEx.ToString());
-            Assert.AreEqual(WebSocketError.ConnectionClosed, wsEx.Error, wsEx.ToString());
+            Assert.AreEqual(WebSocketError.Timeout, wsEx.Error, wsEx.ToString());
             Assert.IsInstanceOf<OperationCanceledException>(wsEx.InnerException, wsEx.ToString());
             StringAssert.Contains("timed out", wsEx.Message);
         }
