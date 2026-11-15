@@ -203,7 +203,7 @@ options.Interceptors.Add(new ConcurrencyInterceptor(maxConnectionsPerHost: 6, ma
 ## Redirect-adjacent interceptors
 
 *   **`CookieInterceptor`** keeps a `CookieJar` (RFC 6265): `options.Interceptors.Add(new CookieInterceptor());` The jar is exposed as `Jar`.
-*   **`DecompressionInterceptor`** decodes `gzip` and `deflate` bodies with a bound on the decompressed size.
+*   **`DecompressionInterceptor`** decodes `gzip` and `deflate` bodies with a bound on the decompressed size (default 32 MB), which also caps the compressed input. The codings of every `Content-Encoding` field line are combined in order; a response naming any other coding (such as `br`) is passed through undecoded. At most 3 stacked codings are decoded (`identity` does not count): a longer chain fails with a `UHttpException` before decoding starts, and the inner layers of a stacked chain may produce at most 3 times the size bound in total.
 *   **`DefaultHeadersInterceptor`** adds headers to every request, optionally overriding the ones already set.
 
 ## Adaptive and background networking
