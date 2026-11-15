@@ -89,6 +89,14 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             {
                 // Destroyed while a request was in flight.
             }
+            finally
+            {
+                // The entry point owns disposal, so no continuation can touch a disposed client.
+                _cts?.Dispose();
+                _cts = null;
+                _client?.Dispose();
+                _client = null;
+            }
         }
 
         async Task Example1_Caching()
@@ -149,11 +157,9 @@ namespace TurboHTTP.Samples.AdvancedFeatures
 
         void OnDestroy()
         {
-            // Cancel first: DisposeInterceptors = true disposes the cache and the concurrency limiter
-            // with the client, which must not happen under requests that are still running.
+            // Only cancel here: DisposeInterceptors = true disposes the cache and the concurrency
+            // limiter with the client, which RunExamples does after the requests have unwound.
             _cts?.Cancel();
-            _cts?.Dispose();
-            _client?.Dispose();
         }
     }
 }

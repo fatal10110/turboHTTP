@@ -66,6 +66,14 @@ namespace TurboHTTP.Samples.JsonApi
             {
                 // Destroyed while a request was in flight.
             }
+            finally
+            {
+                // The entry point owns disposal, so no continuation can touch a disposed client.
+                _cts?.Dispose();
+                _cts = null;
+                _client?.Dispose();
+                _client = null;
+            }
         }
 
         async Task GetAllPosts()
@@ -136,8 +144,6 @@ namespace TurboHTTP.Samples.JsonApi
         void OnDestroy()
         {
             _cts?.Cancel();
-            _cts?.Dispose();
-            _client?.Dispose();
         }
     }
 }

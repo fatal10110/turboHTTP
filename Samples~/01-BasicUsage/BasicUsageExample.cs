@@ -62,6 +62,14 @@ namespace TurboHTTP.Samples.BasicUsage
             {
                 // Destroyed while a request was in flight.
             }
+            finally
+            {
+                // The entry point owns disposal, so no continuation can touch a disposed client.
+                _cts?.Dispose();
+                _cts = null;
+                _client?.Dispose();
+                _client = null;
+            }
         }
 
         async Task Example1_SimpleGet()
@@ -146,10 +154,8 @@ namespace TurboHTTP.Samples.BasicUsage
 
         void OnDestroy()
         {
-            // Cancel in-flight requests before disposing the client under them.
+            // Only cancel here: RunExamples disposes the client once the in-flight request has unwound.
             _cts?.Cancel();
-            _cts?.Dispose();
-            _client?.Dispose();
         }
     }
 }

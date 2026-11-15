@@ -57,6 +57,14 @@ namespace TurboHTTP.Samples.Authentication
             {
                 // Destroyed while a request was in flight.
             }
+            finally
+            {
+                // The entry point owns disposal, so no continuation can touch a disposed client.
+                _cts?.Dispose();
+                _cts = null;
+                _client?.Dispose();
+                _client = null;
+            }
         }
 
         async Task Example1_AuthenticatedRequest()
@@ -97,8 +105,6 @@ namespace TurboHTTP.Samples.Authentication
         void OnDestroy()
         {
             _cts?.Cancel();
-            _cts?.Dispose();
-            _client?.Dispose();
         }
     }
 

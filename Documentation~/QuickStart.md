@@ -71,18 +71,26 @@ public class Example : MonoBehaviour
         {
             // The object was destroyed while the request was in flight.
         }
+        finally
+        {
+            // The entry point owns disposal, so no continuation can touch a disposed client.
+            _cts?.Dispose();
+            _cts = null;
+            _client?.Dispose();
+            _client = null;
+        }
     }
 
     private void OnDestroy()
     {
-        // Cancel in-flight requests first, then dispose the client; disposing under a running
-        // request is not a supported way to stop it.
+        // Only cancel here. Start disposes the client in its finally block once the request
+        // has unwound, so a continuation never touches a disposed client.
         _cts?.Cancel();
-        _cts?.Dispose();
-        _client?.Dispose();
     }
 }
 ```
+
+The default client used in sections 1 to 3 logs a one-time `FollowRedirects` warning at construction, follows no redirects, requests no compression and keeps no cookies. See [What a default client does not do](#what-a-default-client-does-not-do) for the interceptors that change this.
 
 ### 2. POST JSON
 
@@ -135,13 +143,19 @@ public class PostExample : MonoBehaviour
         {
             // Destroyed while the request was in flight.
         }
+        finally
+        {
+            // The entry point owns disposal, so no continuation can touch a disposed client.
+            _cts?.Dispose();
+            _cts = null;
+            _client?.Dispose();
+            _client = null;
+        }
     }
 
     private void OnDestroy()
     {
         _cts?.Cancel();
-        _cts?.Dispose();
-        _client?.Dispose();
     }
 }
 ```
@@ -196,13 +210,19 @@ public class UserExample : MonoBehaviour
         {
             // Destroyed while the request was in flight.
         }
+        finally
+        {
+            // The entry point owns disposal, so no continuation can touch a disposed client.
+            _cts?.Dispose();
+            _cts = null;
+            _client?.Dispose();
+            _client = null;
+        }
     }
 
     private void OnDestroy()
     {
         _cts?.Cancel();
-        _cts?.Dispose();
-        _client?.Dispose();
     }
 }
 ```
