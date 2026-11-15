@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Auth
 {
@@ -30,6 +31,13 @@ namespace TurboHTTP.Auth
     /// other origin is allowed, so the interceptor order does not decide whether a token leaks.
     /// Redirects back to the original origin carry the credential again.
     /// </para>
+    /// <para>
+    /// Token provider waits (<see cref="IAuthTokenProvider.GetTokenAsync"/> and, for
+    /// <see cref="AuthInterceptorOptions.RetryOnUnauthorized"/>,
+    /// <see cref="IAuthTokenInvalidator.InvalidateTokenAsync"/>) are bounded by the request's
+    /// <see cref="UHttpRequest.Timeout"/>; a provider that does not answer in time fails the request
+    /// with <see cref="UHttpErrorType.Timeout"/>.
+    /// </para>
     /// </remarks>
     public sealed class AuthInterceptor : IHttpInterceptor, IInterceptorRole
     {
@@ -46,7 +54,13 @@ namespace TurboHTTP.Auth
 
         private static int s_nextInstanceId;
 
+        // Bound for draining the body of a 401 that is retried (same bound as the retry interceptor).
+        private static readonly TimeSpan RejectedResponseDiscardTimeout = TimeSpan.FromSeconds(2);
+
         private readonly IAuthTokenProvider _tokenProvider;
+
+        // Set only with AuthInterceptorOptions.RetryOnUnauthorized; null disables the 401 retry.
+        private readonly IAuthTokenInvalidator _invalidator;
         private readonly string _scheme;
         private readonly string _originStateKey;
 
@@ -63,7 +77,7 @@ namespace TurboHTTP.Auth
         /// <param name="tokenProvider">Provider that supplies auth tokens</param>
         /// <param name="scheme">Auth scheme (e.g., "Bearer", "Basic"). Default: "Bearer"</param>
         public AuthInterceptor(IAuthTokenProvider tokenProvider, string scheme = "Bearer")
-            : this(tokenProvider, scheme, Array.Empty<Uri>(), overrideExistingAuthorization: false)
+            : this(tokenProvider, scheme, Array.Empty<Uri>(), overrideExistingAuthorization: false, retryOnUnauthorized: false)
         {
         }
 
@@ -76,15 +90,17 @@ namespace TurboHTTP.Auth
         /// <param name="options">Scheme, allowed origins and override setting</param>
         /// <exception cref="ArgumentNullException"><paramref name="tokenProvider"/> or
         /// <paramref name="options"/> is <c>null</c>.</exception>
-        /// <exception cref="ArgumentException">The scheme contains CR or LF, or an allowed origin is
+        /// <exception cref="ArgumentException">The scheme contains CR or LF, an allowed origin is
         /// <c>null</c>, not an absolute <c>http</c>/<c>https</c> URI, or has user info, a path, a
-        /// query or a fragment.</exception>
+        /// query or a fragment, or <see cref="AuthInterceptorOptions.RetryOnUnauthorized"/> is set and
+        /// <paramref name="tokenProvider"/> does not implement <see cref="IAuthTokenInvalidator"/>.</exception>
         public AuthInterceptor(IAuthTokenProvider tokenProvider, AuthInterceptorOptions options)
             : this(
                 tokenProvider,
                 (options ?? throw new ArgumentNullException(nameof(options))).Scheme,
                 SnapshotOrigins(options),
-                options.OverrideExistingAuthorization)
+                options.OverrideExistingAuthorization,
+                options.RetryOnUnauthorized)
         {
         }
 
@@ -92,9 +108,17 @@ namespace TurboHTTP.Auth
             IAuthTokenProvider tokenProvider,
             string scheme,
             Uri[] allowedOrigins,
-            bool overrideExistingAuthorization)
+            bool overrideExistingAuthorization,
+            bool retryOnUnauthorized)
         {
             _tokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
+            if (retryOnUnauthorized)
+            {
+                _invalidator = tokenProvider as IAuthTokenInvalidator ?? throw new ArgumentException(
+                    "RetryOnUnauthorized requires a token provider that implements IAuthTokenInvalidator.",
+                    "options");
+            }
+
             if (scheme != null && (scheme.Contains('\r') || scheme.Contains('\n')))
                 throw new ArgumentException("Auth scheme must not contain CR or LF characters", nameof(scheme));
             _scheme = scheme;
@@ -124,37 +148,117 @@ namespace TurboHTTP.Auth
                     return;
                 }
 
-                var token = await _tokenProvider.GetTokenAsync(cancellationToken).ConfigureAwait(false);
-                var requestForNext = request;
+                var token = await GetProviderTokenAsync(request, rejectedToken: null, cancellationToken)
+                    .ConfigureAwait(false);
 
-                if (!string.IsNullOrEmpty(token))
+                if (_invalidator == null || string.IsNullOrEmpty(token) ||
+                    request.Content.Replayability == RequestBodyReplayability.NonReplayable)
                 {
-                    if (token.Contains('\r') || token.Contains('\n'))
-                        throw new ArgumentException("Auth token must not contain CR or LF characters");
-
-                    requestForNext = request.CopyWithSharedContent();
-                    requestForNext.WithHeader("Authorization", BuildAuthorizationValue(token));
-                    context.UpdateRequest(requestForNext);
+                    await DispatchWithTokenAsync(next, request, token, handler, context, cancellationToken)
+                        .ConfigureAwait(false);
+                    return;
                 }
 
-                Task dispatchTask;
-                try
-                {
-                    dispatchTask = next(requestForNext, handler, context, cancellationToken);
-                }
-                catch (Exception)
-                {
-                    if (!ReferenceEquals(requestForNext, request))
-                    {
-                        context.UpdateRequest(request);
-                        requestForNext.Dispose();
-                    }
+                // RFC 6750 section 3.1 / RFC 9110 section 15.5.2: a 401 to a request that carried the
+                // token refuses that token. Replace it once and resend; the second answer is final.
+                var detector = new UnauthorizedRetryHandler(handler, request.Uri, cancellationToken);
+                await DispatchWithTokenAsync(next, request, token, detector, context, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!detector.Rejected)
+                    return;
 
-                    throw;
-                }
-
-                await dispatchTask.ConfigureAwait(false);
+                var replacement = await GetProviderTokenAsync(request, token, cancellationToken)
+                    .ConfigureAwait(false);
+                detector.BeginFinalAttempt();
+                context.UpdateRequest(request);
+                await DispatchWithTokenAsync(next, request, replacement, detector, context, cancellationToken)
+                    .ConfigureAwait(false);
             };
+        }
+
+        private async Task DispatchWithTokenAsync(
+            DispatchFunc next,
+            UHttpRequest request,
+            string token,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken cancellationToken)
+        {
+            var requestForNext = request;
+
+            if (!string.IsNullOrEmpty(token))
+            {
+                if (token.Contains('\r') || token.Contains('\n'))
+                    throw new ArgumentException("Auth token must not contain CR or LF characters");
+
+                requestForNext = request.CopyWithSharedContent();
+                requestForNext.WithHeader("Authorization", BuildAuthorizationValue(token));
+                context.UpdateRequest(requestForNext);
+            }
+
+            Task dispatchTask;
+            try
+            {
+                dispatchTask = next(requestForNext, handler, context, cancellationToken);
+            }
+            catch (Exception)
+            {
+                if (!ReferenceEquals(requestForNext, request))
+                {
+                    context.UpdateRequest(request);
+                    requestForNext.Dispose();
+                }
+
+                throw;
+            }
+
+            await dispatchTask.ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Asks the provider for the token (or, with <paramref name="rejectedToken"/>, for its
+        /// replacement) and waits at most the request's timeout (#744). The transport timeout starts
+        /// only once the request is dispatched, so a hung provider would otherwise hang the request.
+        /// The provider gets the caller's token; the bound ends only this wait (a refresh shared with
+        /// other requests keeps running). No timer is created when the provider answers synchronously.
+        /// </summary>
+        private async Task<string> GetProviderTokenAsync(
+            UHttpRequest request,
+            string rejectedToken,
+            CancellationToken cancellationToken)
+        {
+            var providerTask = CallProviderAsync(rejectedToken, cancellationToken);
+            var timeout = request.Timeout;
+            if (providerTask.IsCompleted || timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > int.MaxValue)
+                return await providerTask.ConfigureAwait(false);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+            try
+            {
+                return await AuthTaskWait.WaitAsync(providerTask, timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex)
+            {
+                // One clause (IL2CPP, #320): the caller's cancellation and a provider's own
+                // cancellation propagate unchanged; only the expired request budget becomes a timeout.
+                if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested ||
+                    providerTask.IsCompleted)
+                    throw;
+
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.Timeout,
+                    "The auth token provider did not return a token within the request timeout (" +
+                    timeout.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) + " s).",
+                    ex));
+            }
+        }
+
+        private Task<string> CallProviderAsync(string rejectedToken, CancellationToken cancellationToken)
+        {
+            return rejectedToken == null
+                ? _tokenProvider.GetTokenAsync(cancellationToken)
+                : _invalidator.InvalidateTokenAsync(rejectedToken, cancellationToken);
         }
 
         private static bool IsSkipRequested(UHttpRequest request)
@@ -244,6 +348,82 @@ namespace TurboHTTP.Auth
                 return token;
 
             return _scheme + " " + token;
+        }
+
+        /// <summary>
+        /// Handler for the <see cref="AuthInterceptorOptions.RetryOnUnauthorized"/> path. On the first
+        /// attempt it swallows a 401 from the origin the token was attached for (discarding its body)
+        /// and records it; the final attempt forwards everything. <c>OnRequestStart</c> reaches the
+        /// caller's handler once. Used by one dispatch at a time, so it needs no synchronization.
+        /// </summary>
+        private sealed class UnauthorizedRetryHandler : IHttpHandler
+        {
+            private readonly IHttpHandler _inner;
+            private readonly Uri _tokenOrigin;
+            private readonly CancellationToken _dispatchCancellationToken;
+            private bool _requestStartForwarded;
+            private bool _finalAttempt;
+
+            internal UnauthorizedRetryHandler(
+                IHttpHandler inner,
+                Uri tokenOrigin,
+                CancellationToken dispatchCancellationToken)
+            {
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                _tokenOrigin = tokenOrigin;
+                _dispatchCancellationToken = dispatchCancellationToken;
+            }
+
+            internal bool Rejected { get; private set; }
+
+            internal void BeginFinalAttempt()
+            {
+                _finalAttempt = true;
+            }
+
+            public void OnRequestStart(UHttpRequest request, RequestContext context)
+            {
+                if (_requestStartForwarded)
+                    return;
+
+                _requestStartForwarded = true;
+                _inner.OnRequestStart(request, context);
+            }
+
+            public async ValueTask OnResponseStartAsync(
+                int statusCode,
+                HttpHeaders headers,
+                IResponseBodySource body,
+                RequestContext context)
+            {
+                if (!_finalAttempt && statusCode == 401 && IsTokenOrigin(context))
+                {
+                    Rejected = true;
+                    await ResponseBodyDiscardHelper
+                        .DiscardAsync(body, _dispatchCancellationToken, RejectedResponseDiscardTimeout)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+            }
+
+            public void OnResponseError(UHttpException error, RequestContext context)
+            {
+                _inner.OnResponseError(error, context);
+            }
+
+            // A 401 from a redirect hop to another origin is about that origin's credentials, which
+            // this interceptor did not send (the hop carries no token from it): deliver it.
+            private bool IsTokenOrigin(RequestContext context)
+            {
+                var responseUri = context?.Request?.Uri;
+                if (responseUri == null || _tokenOrigin == null ||
+                    !responseUri.IsAbsoluteUri || !_tokenOrigin.IsAbsoluteUri)
+                    return true;
+
+                return IsSameOrigin(_tokenOrigin, responseUri);
+            }
         }
     }
 }

@@ -41,5 +41,22 @@ namespace TurboHTTP.Auth
         /// with its own credential for the origins it authenticates.
         /// </summary>
         public bool OverrideExistingAuthorization { get; set; }
+
+        /// <summary>
+        /// When <c>true</c>, a <c>401 Unauthorized</c> response to a request that carried the
+        /// interceptor's token makes the interceptor ask the provider for a replacement
+        /// (<see cref="IAuthTokenInvalidator.InvalidateTokenAsync"/>) and send the request once more
+        /// with it (RFC 6750 section 3.1, RFC 9110 section 15.5.2). The response to that retry is
+        /// returned as is, including a second <c>401</c>. Default: <c>false</c>.
+        /// </summary>
+        /// <remarks>
+        /// The token provider must implement <see cref="IAuthTokenInvalidator"/> (as
+        /// <see cref="OAuthTokenProvider"/> does), or the interceptor constructor throws. No retry is
+        /// made when the request body cannot be sent twice, when the interceptor attached no token,
+        /// or when the <c>401</c> comes from a redirect hop to another origin. The first
+        /// <c>401</c> body is discarded. A failure of the replacement (for example a rejected refresh
+        /// token) is thrown to the caller.
+        /// </remarks>
+        public bool RetryOnUnauthorized { get; set; }
     }
 }
