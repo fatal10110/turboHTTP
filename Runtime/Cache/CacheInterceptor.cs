@@ -355,7 +355,7 @@ namespace TurboHTTP.Cache
                         {
                             context.RecordEvent("CacheHit", new Dictionary<string, object>
                             {
-                                { "key", baseKey }
+                                { "key", BuildEventKey(baseKey) }
                             });
                             await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "HIT").ConfigureAwait(false);
                             return;
@@ -365,7 +365,7 @@ namespace TurboHTTP.Cache
                         {
                             context.RecordEvent("CacheHit", new Dictionary<string, object>
                             {
-                                { "key", baseKey }
+                                { "key", BuildEventKey(baseKey) }
                             });
                             await ServeCachedEntryAsync(handler, lookup.Entry, request, context, "STALE").ConfigureAwait(false);
 
@@ -394,7 +394,7 @@ namespace TurboHTTP.Cache
 
                 context.RecordEvent("CacheMiss", new Dictionary<string, object>
                 {
-                    { "key", baseKey }
+                    { "key", BuildEventKey(baseKey) }
                 });
 
                 await next(
@@ -434,7 +434,7 @@ namespace TurboHTTP.Cache
         {
             context.RecordEvent("CacheRevalidate", new Dictionary<string, object>
             {
-                { "key", lookup.StorageKey }
+                { "key", BuildEventKey(baseKey) }
             });
 
             var conditionalHeaders = request.Headers.Clone();

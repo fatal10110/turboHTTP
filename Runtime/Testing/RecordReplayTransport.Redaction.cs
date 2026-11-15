@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Runtime.InteropServices;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Testing
 {
@@ -27,6 +28,17 @@ namespace TurboHTTP.Testing
                     if (redact && _redactionPolicy.ShouldRedactHeader(name))
                     {
                         copiedValues.Add(_redactionPolicy.RedactedValue);
+                    }
+                    else if (redact)
+                    {
+                        // Location, Content-Location, Referer, Link and Refresh carry URLs: user-info and the
+                        // sensitive query values are redacted like the match key's query (#1067), so a
+                        // replayed redirect still matches the recorded next hop.
+                        copiedValues.Add(UrlRedaction.RedactUrlHeaderValue(
+                            name,
+                            value,
+                            _redactionPolicy.ShouldRedactQueryParameter,
+                            _redactionPolicy.RedactedValue));
                     }
                     else
                     {

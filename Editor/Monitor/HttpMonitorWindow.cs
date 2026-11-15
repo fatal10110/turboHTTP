@@ -19,6 +19,12 @@ namespace TurboHTTP.Editor
 
         private const float RequestRowHeight = 22f;
 
+        /// <summary>
+        /// Initial state of the "Mask Confidential Headers" toggle: when on, displayed header values are
+        /// masked with the export policy (the active <see cref="MonitorInterceptor.RedactionPolicy"/> plus the
+        /// default sensitive headers and URL query values), which matters when capture-time redaction is
+        /// off. JSON exports are always masked, whatever the toggle.
+        /// </summary>
         public static bool DefaultMaskConfidentialHeaders { get; set; }
 
         private readonly List<HttpMonitorEvent> _historyCache = new List<HttpMonitorEvent>(1024);

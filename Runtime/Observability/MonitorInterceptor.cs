@@ -423,9 +423,12 @@ namespace TurboHTTP.Observability
                 responseBodyWasTruncated);
 
             var (error, errorType, failureKind) = ResolveError(statusCode, exception);
+            // Error text and timeline values can carry URLs (redirect hops, cache keys, exception
+            // messages): they pass through the same policy as the URL and headers (#1059, #478).
+            error = redactionPolicy.RedactText(error);
             var statusText = statusCode != 0 ? ((HttpStatusCode)statusCode).ToString() : string.Empty;
             var elapsed = context != null ? context.Elapsed : TimeSpan.Zero;
-            var timeline = CopyTimeline(context?.Timeline);
+            var timeline = CopyTimeline(context?.Timeline, redactionPolicy);
 
             return new HttpMonitorEvent(
                 id: Guid.NewGuid().ToString("N"),
@@ -691,7 +694,8 @@ namespace TurboHTTP.Observability
         }
 
         private static IReadOnlyList<HttpMonitorTimelineEvent> CopyTimeline(
-            IReadOnlyList<TimelineEvent> timeline)
+            IReadOnlyList<TimelineEvent> timeline,
+            RedactionPolicy redactionPolicy)
         {
             if (timeline == null || timeline.Count == 0)
             {
@@ -710,14 +714,15 @@ namespace TurboHTTP.Observability
                 copy.Add(new HttpMonitorTimelineEvent(
                     evt.Name,
                     evt.Timestamp,
-                    CopyTimelineData(evt.Data)));
+                    CopyTimelineData(evt.Data, redactionPolicy)));
             }
 
             return copy;
         }
 
         private static IReadOnlyDictionary<string, string> CopyTimelineData(
-            IReadOnlyDictionary<string, object> data)
+            IReadOnlyDictionary<string, object> data,
+            RedactionPolicy redactionPolicy)
         {
             if (data == null || data.Count == 0)
             {
@@ -727,10 +732,28 @@ namespace TurboHTTP.Observability
             var copy = new Dictionary<string, string>(data.Count, StringComparer.Ordinal);
             foreach (var pair in data)
             {
-                copy[pair.Key ?? string.Empty] = ConvertTimelineValue(pair.Value);
+                var key = pair.Key ?? string.Empty;
+                copy[key] = RedactTimelineValue(redactionPolicy, key, ConvertTimelineValue(pair.Value));
             }
 
             return copy;
+        }
+
+        /// <summary>
+        /// Timeline value redaction shared by capture and the Editor export: a value stored under a
+        /// sensitive header name is replaced, and every absolute URL in it has its query values and
+        /// user-info redacted.
+        /// </summary>
+        internal static string RedactTimelineValue(RedactionPolicy redactionPolicy, string key, string value)
+        {
+            if (redactionPolicy == null || string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+
+            return redactionPolicy.IsSensitiveHeader(key)
+                ? RedactionPolicy.RedactedValue
+                : redactionPolicy.RedactText(value);
         }
 
         private static string ConvertTimelineValue(object value)

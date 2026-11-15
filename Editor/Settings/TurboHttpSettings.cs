@@ -17,6 +17,7 @@ namespace TurboHTTP.Editor
         private const string MaskConfidentialHeadersKey = "TurboHTTP_MaskConfidentialHeaders";
         private const string RedactCapturedSecretsKey = "TurboHTTP_RedactCapturedSecrets";
         private const string CaptureWhileClosedKey = "TurboHTTP_CaptureWhileMonitorClosed";
+        private const string IncludeBodiesInExportKey = "TurboHTTP_MonitorExportIncludesBodies";
         private const string MaxTotalCaptureMbKey = "TurboHTTP_MaxTotalCaptureMb";
 
         private const int DefaultHistoryCapacity = 1000;
@@ -25,6 +26,7 @@ namespace TurboHTTP.Editor
         private const bool DefaultMaskConfidentialHeaders = true;
         private const bool DefaultRedactCapturedSecrets = true;
         private const bool DefaultCaptureWhileClosed = false;
+        private const bool DefaultIncludeBodiesInExport = false;
         private const int DefaultMaxTotalCaptureMb = 32;
         private const int MinMaxTotalCaptureMb = 1;
         private const int MaxMaxTotalCaptureMb = 1024;
@@ -75,6 +77,12 @@ namespace TurboHTTP.Editor
                 Mathf.Clamp(value, MinBinaryPreviewKb, MaxBinaryPreviewKb));
         }
 
+        /// <summary>
+        /// Default of the HTTP Monitor's "Mask Confidential Headers" toggle: the window masks displayed
+        /// header values with the export policy (the active <see cref="MonitorInterceptor.RedactionPolicy"/>
+        /// plus <see cref="RedactionPolicy.DefaultSensitiveHeaderNames"/> and URL query values), which matters
+        /// when "Redact Captured Secrets" is off. JSON exports are always masked. Default <c>true</c>.
+        /// </summary>
         public static bool MaskConfidentialHeaders
         {
             get => EditorPrefs.GetBool(MaskConfidentialHeadersKey, DefaultMaskConfidentialHeaders);
@@ -112,6 +120,16 @@ namespace TurboHTTP.Editor
             set => EditorPrefs.SetInt(
                 MaxTotalCaptureMbKey,
                 Mathf.Clamp(value, MinMaxTotalCaptureMb, MaxMaxTotalCaptureMb));
+        }
+
+        /// <summary>
+        /// Write captured request and response bodies into HTTP Monitor JSON exports. Default <c>false</c>:
+        /// bodies are not redacted (tokens in JSON or form bodies), so exports omit them unless opted in.
+        /// </summary>
+        internal static bool IncludeBodiesInExport
+        {
+            get => EditorPrefs.GetBool(IncludeBodiesInExportKey, DefaultIncludeBodiesInExport);
+            set => EditorPrefs.SetBool(IncludeBodiesInExportKey, value);
         }
 
         static TurboHttpSettings()
@@ -169,8 +187,18 @@ namespace TurboHTTP.Editor
                         "Capture While Monitor Closed",
                         CaptureWhileMonitorClosed);
                     var maskHeaders = EditorGUILayout.Toggle(
-                        "Mask Confidential Headers (Default)",
+                        new GUIContent(
+                            "Mask Confidential Headers (Default)",
+                            "Mask header values in the Monitor window with the active redaction policy plus the " +
+                            "default sensitive headers, even when \"Redact Captured Secrets\" is off. " +
+                            "Exports are always masked."),
                         MaskConfidentialHeaders);
+                    var includeBodiesInExport = EditorGUILayout.Toggle(
+                        new GUIContent(
+                            "Include Bodies In Export",
+                            "Write captured request and response bodies into JSON exports. Bodies are not " +
+                            "redacted, so they are omitted by default."),
+                        IncludeBodiesInExport);
 
                     if (EditorGUI.EndChangeCheck())
                     {
@@ -182,6 +210,7 @@ namespace TurboHTTP.Editor
                         RedactCapturedSecrets = redactSecrets;
                         CaptureWhileMonitorClosed = captureWhileClosed;
                         MaskConfidentialHeaders = maskHeaders;
+                        IncludeBodiesInExport = includeBodiesInExport;
                         ApplyMonitorPreferences();
                     }
 
