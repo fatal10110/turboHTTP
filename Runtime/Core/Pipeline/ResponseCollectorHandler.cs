@@ -205,6 +205,8 @@ namespace TurboHTTP.Core
                             detachedOwner,
                             context.Elapsed,
                             _request,
+                            // Sources refuse to detach when the message has trailers
+                            // (IResponseBodySource.TryDetachBufferedBody), so there are none here.
                             trailers: HttpHeaders.Empty);
                         detachedOwnershipTransferred = true;
                         detachedOwner = null;
