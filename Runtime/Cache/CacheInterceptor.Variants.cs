@@ -127,6 +127,42 @@ namespace TurboHTTP.Cache
             }
         }
 
+        // Vary variants kept per base key (#469). A header that varies per request (Vary: X-Request-Id)
+        // would otherwise add one storage key per response; the least recently stored variant is evicted.
+        internal const int DefaultMaxVariantsPerBaseKey = 32;
+
+        /// <summary>Vary variants kept per base key. Test hook: set before the first request.</summary>
+        internal int MaxVariantsPerBaseKey
+        {
+            get
+            {
+                lock (_indexLock)
+                {
+                    return _maxVariantsPerBaseKey;
+                }
+            }
+            set
+            {
+                if (value <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), value, "Must be greater than 0.");
+
+                lock (_indexLock)
+                {
+                    _maxVariantsPerBaseKey = value;
+                }
+            }
+        }
+
+        /// <summary>Number of Vary variants registered for a request target. For tests.</summary>
+        internal int GetVariantCount(HttpMethod method, Uri uri)
+        {
+            var baseKey = BuildBaseKey(method, uri);
+            lock (_indexLock)
+            {
+                return _variantIndex.TryGetValue(baseKey, out var bucket) ? bucket.VariedKeyOrder.Count : 0;
+            }
+        }
+
         /// <summary>Variant index bound. Test hook: set before the first request.</summary>
         internal int VariantIndexCapacity
         {
@@ -161,10 +197,33 @@ namespace TurboHTTP.Cache
             }
         }
 
-        private void RegisterStoredVariant(string baseKey, string signature, string storageKey)
+        // Admission check before a store (#469): a new Vary variant is refused once its full bucket has
+        // already evicted _maxVariantsPerBaseKey variants, so a per-request Vary value stops churning
+        // storage. Existing variants (a refresh or a 304 merge) and unvaried entries are always stored.
+        // Mutations of one base key are serialized, so the bucket cannot fill between this check and
+        // RegisterStoredVariant.
+        private bool ShouldStoreVariant(string baseKey, string signature, string storageKey)
+        {
+            if (string.IsNullOrEmpty(signature))
+                return true;
+
+            lock (_indexLock)
+            {
+                return !_variantIndex.TryGetValue(baseKey, out var bucket)
+                       || bucket.StorageKeys.ContainsKey(storageKey)
+                       || bucket.VariedKeyOrder.Count < _maxVariantsPerBaseKey
+                       || bucket.VariantEvictions < _maxVariantsPerBaseKey;
+            }
+        }
+
+        // Returns the storage key of a Vary variant evicted to keep the per-base-key bound, or null.
+        // The caller is the running mutation of baseKey and removes it from storage itself, so the
+        // removal is serialized with later mutations of the same key.
+        private string RegisterStoredVariant(string baseKey, string signature, string storageKey)
         {
             string evictedBaseKey = null;
             string[] evictedStorageKeys = null;
+            string evictedVariant = null;
             lock (_indexLock)
             {
                 if (!_variantIndex.TryGetValue(baseKey, out var bucket))
@@ -184,7 +243,13 @@ namespace TurboHTTP.Cache
 
                 bucket.SignatureByStorageKey[storageKey] = normalizedSignature;
                 AddSignatureRefUnsafe(bucket, normalizedSignature);
-                bucket.StorageKeys.Add(storageKey);
+                // Signature and vary key are empty together: an empty signature is the unvaried key.
+                AddStorageKeyUnsafe(bucket, storageKey, varied: normalizedSignature.Length != 0);
+
+                // Each register adds at most one variant, so one eviction keeps the per-key bound. The
+                // just-registered variant is the most recent one and never the victim.
+                if (bucket.VariedKeyOrder.Count > _maxVariantsPerBaseKey)
+                    evictedVariant = EvictOldestVariantUnsafe(bucket);
 
                 // Each register adds at most one bucket, so one eviction keeps the bound. The
                 // just-registered bucket is the most recent one and never the victim.
@@ -194,6 +259,54 @@ namespace TurboHTTP.Cache
 
             if (evictedStorageKeys != null)
                 QueueEvictedVariantRemoval(evictedBaseKey, evictedStorageKeys);
+
+            return evictedVariant;
+        }
+
+        private static void AddStorageKeyUnsafe(VariantBucket bucket, string storageKey, bool varied)
+        {
+            if (bucket.StorageKeys.TryGetValue(storageKey, out var node))
+            {
+                // A re-store makes the variant the most recently stored one.
+                if (node != null && !ReferenceEquals(node, bucket.VariedKeyOrder.Last))
+                {
+                    bucket.VariedKeyOrder.Remove(node);
+                    bucket.VariedKeyOrder.AddLast(node);
+                }
+
+                return;
+            }
+
+            bucket.StorageKeys[storageKey] = varied ? bucket.VariedKeyOrder.AddLast(storageKey) : null;
+        }
+
+        private static bool RemoveStorageKeyUnsafe(VariantBucket bucket, string storageKey)
+        {
+            if (!bucket.StorageKeys.TryGetValue(storageKey, out var node))
+                return false;
+
+            bucket.StorageKeys.Remove(storageKey);
+            if (node != null)
+                bucket.VariedKeyOrder.Remove(node);
+
+            if (bucket.SignatureByStorageKey.TryGetValue(storageKey, out var signature))
+            {
+                bucket.SignatureByStorageKey.Remove(storageKey);
+                ReleaseSignatureRefUnsafe(bucket, signature);
+            }
+
+            return true;
+        }
+
+        // Drops the least recently stored Vary variant of a bucket and returns its storage key. Like a
+        // whole-bucket eviction, it must leave storage too: an untracked Vary entry would be invisible
+        // to unsafe-method invalidation (RFC 9111 section 4.4).
+        private static string EvictOldestVariantUnsafe(VariantBucket bucket)
+        {
+            var victim = bucket.VariedKeyOrder.First.Value;
+            RemoveStorageKeyUnsafe(bucket, victim);
+            bucket.VariantEvictions++;
+            return victim;
         }
 
         private void TouchVariantBucketUnsafe(VariantBucket bucket)
@@ -228,7 +341,7 @@ namespace TurboHTTP.Cache
 
             var unvariedKey = BuildStorageKey(baseKey, string.Empty);
             List<string> varied = null;
-            foreach (var key in bucket.StorageKeys)
+            foreach (var key in bucket.StorageKeys.Keys)
             {
                 if (string.Equals(key, unvariedKey, StringComparison.Ordinal))
                     continue;
@@ -277,7 +390,7 @@ namespace TurboHTTP.Cache
             lock (_indexLock)
             {
                 return _variantIndex.TryGetValue(baseKey, out var bucket)
-                       && bucket.StorageKeys.Contains(storageKey);
+                       && bucket.StorageKeys.ContainsKey(storageKey);
             }
         }
 
@@ -288,14 +401,8 @@ namespace TurboHTTP.Cache
                 if (!_variantIndex.TryGetValue(baseKey, out var bucket))
                     return;
 
-                if (!bucket.StorageKeys.Remove(storageKey))
+                if (!RemoveStorageKeyUnsafe(bucket, storageKey))
                     return;
-
-                if (bucket.SignatureByStorageKey.TryGetValue(storageKey, out var signature))
-                {
-                    bucket.SignatureByStorageKey.Remove(storageKey);
-                    ReleaseSignatureRefUnsafe(bucket, signature);
-                }
 
                 if (bucket.StorageKeys.Count == 0)
                     RemoveVariantBucketUnsafe(baseKey, bucket);
@@ -310,7 +417,7 @@ namespace TurboHTTP.Cache
                     return Array.Empty<string>();
 
                 RemoveVariantBucketUnsafe(baseKey, bucket);
-                return bucket.StorageKeys.ToArray();
+                return bucket.StorageKeys.Keys.ToArray();
             }
         }
         private static bool IsSensitiveVaryHeader(string headerName)
