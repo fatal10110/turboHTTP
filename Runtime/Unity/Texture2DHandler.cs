@@ -34,20 +34,55 @@ namespace TurboHTTP.Unity
         public bool ValidateImageContentType { get; set; } = true;
 
         /// <summary>
-        /// Optional max payload size guard (in bytes) before decode.
+        /// Default for <see cref="MaxSourceBytes"/>: 64 MiB.
         /// </summary>
-        public long? MaxBodyBytes { get; set; }
+        public const long DefaultMaxSourceBytes = 64L * 1024 * 1024;
 
         /// <summary>
-        /// Optional max source size guard (in bytes) before decode.
-        /// Alias of <see cref="MaxBodyBytes"/> with Phase 15 naming.
+        /// Default for <see cref="MaxPixels"/>: 4096 x 4096 pixels (64 MiB as RGBA32).
         /// </summary>
-        public long? MaxSourceBytes { get; set; }
+        public const long DefaultMaxPixels = 4096L * 4096;
+
+        private long? _maxSourceBytes = DefaultMaxSourceBytes;
 
         /// <summary>
-        /// Optional max pixel count guard (width * height).
+        /// Maximum encoded payload size in bytes, checked against <c>Content-Length</c> and the
+        /// body before decode. Alias of <see cref="MaxSourceBytes"/>: both read and write the same
+        /// value, so the last assignment wins. Defaults to <see cref="DefaultMaxSourceBytes"/>;
+        /// <c>null</c> removes the limit.
         /// </summary>
-        public long? MaxPixels { get; set; }
+        public long? MaxBodyBytes
+        {
+            get => _maxSourceBytes;
+            set => _maxSourceBytes = value;
+        }
+
+        /// <summary>
+        /// Maximum encoded payload size in bytes, checked against <c>Content-Length</c> and the
+        /// body before decode. Defaults to <see cref="DefaultMaxSourceBytes"/>; <c>null</c> removes
+        /// the limit (the client's buffered-body limit still applies). Alias of
+        /// <see cref="MaxBodyBytes"/>.
+        /// </summary>
+        public long? MaxSourceBytes
+        {
+            get => _maxSourceBytes;
+            set => _maxSourceBytes = value;
+        }
+
+        /// <summary>
+        /// Maximum decoded pixel count (width * height). Defaults to <see cref="DefaultMaxPixels"/>.
+        /// The PNG or JPEG header dimensions are checked before any decode allocates the image;
+        /// while a limit is set, a payload whose dimensions cannot be read from a PNG or JPEG
+        /// header is rejected (fails closed). The decoded size is checked again after decode.
+        /// <c>null</c> removes the limit and the header requirement.
+        /// </summary>
+        /// <remarks>
+        /// A custom <see cref="Decoders.IImageDecoder"/> for a format other than PNG or JPEG
+        /// (registered with <see cref="Decoders.DecoderRegistry.RegisterImageDecoder"/>) never
+        /// receives its payload while a limit is set, because the header check rejects it first.
+        /// Such a decoder needs <c>MaxPixels = null</c> and its own decoded-size bound.
+        /// </remarks>
+        public long? MaxPixels { get; set; } = DefaultMaxPixels;
 
         /// <summary>
         /// Legacy: max concurrent decode workers for scheduler configuration.
@@ -83,7 +118,7 @@ namespace TurboHTTP.Unity
         /// </summary>
         public bool WarmupManagedDecoders { get; set; }
 
-        internal long? EffectiveMaxSourceBytes => MaxSourceBytes ?? MaxBodyBytes;
+        internal long? EffectiveMaxSourceBytes => _maxSourceBytes;
     }
 
     /// <summary>
@@ -391,9 +426,10 @@ namespace TurboHTTP.Unity
 
             ValidateContentType(response, options);
             ValidateBodyLength(response, options);
-            ValidatePixelGuardFromHeader(response.Body, options);
+            var bytes = GetDecodeBytes(response.Body);
+            ValidatePixelGuardFromHeader(bytes, options);
 
-            return new DecodeInput(GetDecodeBytes(response.Body), options);
+            return new DecodeInput(bytes, options);
         }
 
         private static void ApplyLegacySchedulerOptions(TextureOptions options)
@@ -491,14 +527,28 @@ namespace TurboHTTP.Unity
             }
         }
 
-        private static void ValidatePixelGuardFromHeader(ReadOnlySequence<byte> imageBytes, TextureOptions options)
+        private static void ValidatePixelGuardFromHeader(byte[] bytes, TextureOptions options)
         {
             if (!options.MaxPixels.HasValue)
                 return;
 
-            var bytes = GetDecodeBytes(imageBytes);
+            if (options.MaxPixels.Value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(options.MaxPixels),
+                    options.MaxPixels.Value,
+                    "MaxPixels must be greater than 0 when set.");
+            }
+
+            // Fail closed: without dimensions from the header the decoder would allocate an image
+            // of unknown size before the post-decode check could run.
             if (!TryReadImageDimensions(bytes, out var width, out var height))
-                return;
+            {
+                throw new InvalidOperationException(
+                    "Image dimensions could not be read from a PNG or JPEG header, so the " +
+                    "configured MaxPixels limit cannot be enforced before decode. Set " +
+                    "TextureOptions.MaxPixels = null to decode without a pixel limit.");
+            }
 
             var pixels = (long)width * height;
             if (pixels > options.MaxPixels.Value)
@@ -577,7 +627,7 @@ namespace TurboHTTP.Unity
             return false;
         }
 
-        private static bool TryReadImageDimensions(ReadOnlySpan<byte> bytes, out int width, out int height)
+        internal static bool TryReadImageDimensions(ReadOnlySpan<byte> bytes, out int width, out int height)
         {
             width = 0;
             height = 0;
@@ -591,7 +641,7 @@ namespace TurboHTTP.Unity
             return false;
         }
 
-        private static bool TryReadPngDimensions(ReadOnlySpan<byte> bytes, out int width, out int height)
+        internal static bool TryReadPngDimensions(ReadOnlySpan<byte> bytes, out int width, out int height)
         {
             width = 0;
             height = 0;
@@ -599,7 +649,12 @@ namespace TurboHTTP.Unity
             if (bytes.Length < 24)
                 return false;
 
-            if (!(bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47))
+            // 8-byte signature, then the IHDR chunk: length(4) "IHDR" width(4) height(4).
+            if (!(bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47 &&
+                  bytes[4] == 0x0D && bytes[5] == 0x0A && bytes[6] == 0x1A && bytes[7] == 0x0A))
+                return false;
+
+            if (!(bytes[12] == 0x49 && bytes[13] == 0x48 && bytes[14] == 0x44 && bytes[15] == 0x52))
                 return false;
 
             width = ReadInt32BigEndian(bytes, 16);
@@ -607,7 +662,7 @@ namespace TurboHTTP.Unity
             return width > 0 && height > 0;
         }
 
-        private static bool TryReadJpegDimensions(ReadOnlySpan<byte> bytes, out int width, out int height)
+        internal static bool TryReadJpegDimensions(ReadOnlySpan<byte> bytes, out int width, out int height)
         {
             width = 0;
             height = 0;
@@ -615,8 +670,11 @@ namespace TurboHTTP.Unity
             if (bytes.Length < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8)
                 return false;
 
+            // ITU-T T.81 B.1.1.2: any marker may be preceded by fill bytes (0xFF); SOI, EOI, TEM
+            // and RSTn carry no length field. Non-marker bytes between segments are skipped, as
+            // libjpeg does.
             var index = 2;
-            while (index + 9 < bytes.Length)
+            while (index < bytes.Length)
             {
                 if (bytes[index] != 0xFF)
                 {
@@ -624,16 +682,31 @@ namespace TurboHTTP.Unity
                     continue;
                 }
 
-                var marker = bytes[index + 1];
+                while (index < bytes.Length && bytes[index] == 0xFF)
+                    index++;
+
+                if (index >= bytes.Length)
+                    return false;
+
+                var marker = bytes[index];
+                index++;
+
+                if (marker == 0x00 || marker == 0x01 || marker == 0xD8 ||
+                    (marker >= 0xD0 && marker <= 0xD7))
+                {
+                    continue;
+                }
+
+                // EOI or SOS before any SOF: no frame header to read.
                 if (marker == 0xD9 || marker == 0xDA)
-                    break;
+                    return false;
 
-                if (index + 4 > bytes.Length)
-                    break;
+                if (index + 2 > bytes.Length)
+                    return false;
 
-                var segmentLength = (bytes[index + 2] << 8) | bytes[index + 3];
-                if (segmentLength < 2 || index + 2 + segmentLength > bytes.Length)
-                    break;
+                var segmentLength = (bytes[index] << 8) | bytes[index + 1];
+                if (segmentLength < 2 || index + segmentLength > bytes.Length)
+                    return false;
 
                 var isStartOfFrame =
                     marker == 0xC0 || marker == 0xC1 || marker == 0xC2 || marker == 0xC3 ||
@@ -643,12 +716,16 @@ namespace TurboHTTP.Unity
 
                 if (isStartOfFrame)
                 {
-                    height = (bytes[index + 5] << 8) | bytes[index + 6];
-                    width = (bytes[index + 7] << 8) | bytes[index + 8];
+                    // Lf(2) P(1) Y(2) X(2).
+                    if (segmentLength < 7)
+                        return false;
+
+                    height = (bytes[index + 3] << 8) | bytes[index + 4];
+                    width = (bytes[index + 5] << 8) | bytes[index + 6];
                     return width > 0 && height > 0;
                 }
 
-                index += 2 + segmentLength;
+                index += segmentLength;
             }
 
             return false;
