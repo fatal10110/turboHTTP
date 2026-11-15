@@ -658,12 +658,22 @@ namespace TurboHTTP.Transport
                     if (lease.Connection.NegotiatedAlpnProtocol == "h2")
                     {
                         context.RecordEvent("TransportH2Init");
-                        lease.TransferOwnership();
+                        // The permit stays held until the connection is published or its preface failed:
+                        // a request woken by an earlier release would find no connection yet and dial a
+                        // redundant one (#736).
+                        lease.DetachConnection();
                         Http2Connection h2Conn;
                         try
                         {
-                            h2Conn = await _h2Manager.GetOrCreateAsync(
-                                host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                            try
+                            {
+                                h2Conn = await _h2Manager.GetOrCreateAsync(
+                                    host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                lease.Dispose();
+                            }
                         }
                         catch
                         {
@@ -724,9 +734,18 @@ namespace TurboHTTP.Transport
                             if (freshLease.Connection.NegotiatedAlpnProtocol == "h2")
                             {
                                 context.RecordEvent("TransportH2Init");
-                                freshLease.TransferOwnership();
-                                var h2Conn = await _h2Manager.GetOrCreateAsync(
-                                    host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
+                                freshLease.DetachConnection(); // permit held until publish (#736)
+                                Http2Connection h2Conn;
+                                try
+                                {
+                                    h2Conn = await _h2Manager.GetOrCreateAsync(
+                                        host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    freshLease.Dispose();
+                                }
+
                                 freshLease = null;
                                 await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
                                     .ConfigureAwait(false);

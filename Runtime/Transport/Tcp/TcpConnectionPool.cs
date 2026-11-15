@@ -185,6 +185,20 @@ namespace TurboHTTP.Transport.Tcp
         }
 
         /// <summary>
+        /// Moves the connection to another owner like <see cref="TransferOwnership"/>, but keeps the
+        /// per-host permit until <see cref="Dispose"/>. An HTTP/2 dialer holds the permit until its
+        /// connection is published or its preface failed, so a request waiting for that permit sees the
+        /// published connection instead of dialing a redundant one (#736).
+        /// </summary>
+        internal void DetachConnection()
+        {
+            lock (_lock)
+            {
+                _released = true;
+            }
+        }
+
+        /// <summary>
         /// Return the connection to the pool for keep-alive reuse.
         /// Calling this method both enqueues the connection for reuse and releases the semaphore permit.
         /// If not called, Dispose() will destroy the connection (and release the semaphore instead).

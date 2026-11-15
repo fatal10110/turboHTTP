@@ -108,6 +108,50 @@ namespace TurboHTTP.Tests.Transport.Http2
         }
 
         [Test]
+        public void ColdBurst_SinglePermit_OwnDialerWaitingForThePermitReusesThePublishedConnection()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource(20000);
+                var failFirst = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var releaseSecond = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                using var origin = new ColdBurstOrigin(async (n, ct) =>
+                {
+                    if (n == 1)
+                    {
+                        await failFirst.Task;
+                        throw new IOException("first dial refused");
+                    }
+
+                    if (n == 2)
+                        await releaseSecond.Task;
+                }, maxConnectionsPerHost: 1);
+
+                var taskA = origin.SendAsync("/a", cts.Token);
+                await WaitForConditionAsync(() => origin.Handshakes == 1, cts.Token);
+                var taskB = origin.SendAsync("/b", cts.Token);
+                var taskC = origin.SendAsync("/c", cts.Token);
+                await WaitForConditionAsync(() => origin.AwaitingDial() >= 2, cts.Token);
+
+                // A's dial fails: B and C dial themselves. One holds the only permit in handshake 2, the
+                // other waits for that permit.
+                failFirst.TrySetResult(true);
+                await TestHelpers.AssertThrowsAsync<UHttpException>(() => taskA);
+                await WaitForConditionAsync(
+                    () => origin.Handshakes == 2 && origin.Connecting() >= 3,
+                    cts.Token);
+
+                // The permit is released only after the HTTP/2 connection is published, so the waiter
+                // sees it and sends on it instead of dialing a third connection.
+                releaseSecond.TrySetResult(true);
+                await AssertOkAsync(taskB);
+                await AssertOkAsync(taskC);
+                Assert.AreEqual(2, origin.Handshakes, "the permit waiter reused the published connection");
+                Assert.AreEqual(2, origin.AcceptedConnections);
+            });
+        }
+
+        [Test]
         public void ColdBurst_PermitWaitEndsAfterHttp2Publish_PoolSkipsTheDialAndReturnsThePermit()
         {
             AssertAsync.Run(async () =>
@@ -257,6 +301,11 @@ namespace TurboHTTP.Tests.Transport.Http2
             public int AwaitingDial()
             {
                 return Contexts.Sum(c => c.Timeline.Count(e => e.Name == "TransportH2AwaitDial"));
+            }
+
+            public int Connecting()
+            {
+                return Contexts.Sum(c => c.Timeline.Count(e => e.Name == "TransportConnecting"));
             }
 
             public Task<UHttpResponse> SendAsync(string path, CancellationToken ct)
