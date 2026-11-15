@@ -165,6 +165,7 @@ namespace TurboHTTP.Cache
             public readonly DateTime? ResponseTimeUtc;
             public readonly DateTime? RequestTimeUtc;
             public readonly SegmentedBuffer Body;
+            public readonly HttpHeaders LookupRequestHeaders;
 
             public StoreResponseState(
                 HttpMethod requestMethod,
@@ -175,7 +176,8 @@ namespace TurboHTTP.Cache
                 HttpHeaders trailers,
                 DateTime? responseTimeUtc,
                 DateTime? requestTimeUtc,
-                SegmentedBuffer body)
+                SegmentedBuffer body,
+                HttpHeaders lookupRequestHeaders)
             {
                 RequestMethod = requestMethod;
                 RequestUri = requestUri;
@@ -186,6 +188,7 @@ namespace TurboHTTP.Cache
                 ResponseTimeUtc = responseTimeUtc;
                 RequestTimeUtc = requestTimeUtc;
                 Body = body;
+                LookupRequestHeaders = lookupRequestHeaders;
             }
 
             public void Dispose()
@@ -576,7 +579,8 @@ namespace TurboHTTP.Cache
                 responseTimeUtc: null,
                 requestTimeUtc: null,
                 response.Request?.Uri ?? request.Uri,
-                baseKey);
+                baseKey,
+                lookupRequestHeaders: null);
         }
 
         private PreparedCacheEntry PrepareEntryForStorage(
@@ -589,8 +593,11 @@ namespace TurboHTTP.Cache
             DateTime? responseTimeUtc,
             DateTime? requestTimeUtc,
             Uri responseUrl,
-            string baseKey)
+            string baseKey,
+            HttpHeaders lookupRequestHeaders)
         {
+            // requestHeaders are the effective request's (as it left the pipeline, #495); lookupRequestHeaders are
+            // the headers the cache looked up with, or null when they are the same request.
             requestHeaders = requestHeaders ?? new HttpHeaders();
 
             var responseHeadersForStorage = responseHeaders?.Clone() ?? new HttpHeaders();
@@ -643,7 +650,16 @@ namespace TurboHTTP.Cache
                 return default;
             }
 
-            var varyKey = BuildVaryKey(requestHeaders, varyHeaders);
+            // RFC 9111 section 4.1: a stored response is selected by the lookup-time headers of later requests, but
+            // it answers the effective request. Store only when both agree on every Vary-nominated header (#495);
+            // the key is then the one a later lookup computes.
+            if (lookupRequestHeaders != null &&
+                !VaryNominatedHeadersMatch(lookupRequestHeaders, requestHeaders, varyHeaders, responseHeadersForStorage))
+            {
+                return default;
+            }
+
+            var varyKey = BuildVaryKey(lookupRequestHeaders ?? requestHeaders, varyHeaders);
             var storageKey = BuildStorageKey(baseKey, varyKey);
             var signature = BuildSignature(varyHeaders);
 
@@ -900,7 +916,8 @@ namespace TurboHTTP.Cache
             SegmentedBuffer body,
             HttpHeaders trailers = null,
             DateTime? responseTimeUtc = null,
-            DateTime? requestTimeUtc = null)
+            DateTime? requestTimeUtc = null,
+            HttpHeaders lookupRequestHeaders = null)
         {
             QueueBackgroundWork(
                 QueueMutationAsync(
@@ -919,6 +936,7 @@ namespace TurboHTTP.Cache
                             storeState.ResponseTimeUtc,
                             storeState.RequestTimeUtc,
                             storeState.Body,
+                            storeState.LookupRequestHeaders,
                             token);
                     },
                     _backgroundWorkToken,
@@ -931,7 +949,8 @@ namespace TurboHTTP.Cache
                         trailers,
                         responseTimeUtc,
                         requestTimeUtc,
-                        body)),
+                        body,
+                        lookupRequestHeaders)),
                 "store");
         }
 
@@ -946,6 +965,7 @@ namespace TurboHTTP.Cache
             DateTime? responseTimeUtc,
             DateTime? requestTimeUtc,
             SegmentedBuffer body,
+            HttpHeaders lookupRequestHeaders,
             CancellationToken cancellationToken)
         {
             // Detach from the response completion callback (and from _pendingMutationLock, which
@@ -977,7 +997,8 @@ namespace TurboHTTP.Cache
                     responseTimeUtc,
                     requestTimeUtc,
                     requestUri,
-                    baseKey);
+                    baseKey,
+                    lookupRequestHeaders);
                 if (prepared.Entry == null)
                     return;
 

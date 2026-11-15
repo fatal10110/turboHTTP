@@ -10,6 +10,7 @@ namespace TurboHTTP.Cache
     {
         private readonly IHttpHandler _inner;
         private readonly CacheInterceptor _owner;
+        // Snapshot of the request the cache looked up (method, target and headers at lookup time).
         private readonly HttpMethod _requestMethod;
         private readonly Uri _requestUri;
         private readonly HttpHeaders _requestHeaders;
@@ -17,6 +18,15 @@ namespace TurboHTTP.Cache
         private readonly long _maxCacheableResponseBodyBytes;
         // RFC 9111 section 4.2.3 request_time: when the request that elicits the response was sent (#306).
         private readonly DateTime _requestTimeUtc;
+
+        // The effective request: what the interceptors inside the cache actually sent (#494, #495). Written by
+        // OnRequestStart (once per attempt or redirect hop dispatched inside the cache) and read by
+        // OnResponseStartAsync of the same dispatch, which the transport calls after OnRequestStart; Volatile for
+        // the ARM64 and 32-bit IL2CPP memory models. _effectiveHeaders stays null when OnRequestStart never ran.
+        private HttpHeaders _effectiveHeaders;
+        // 1 once any request sent inside the cache had another method or target URI than the looked-up one
+        // (a redirect hop, a URI rewrite): the response is not the looked-up resource's and is never stored.
+        private int _targetChanged;
 
         /// <param name="requestTimeUtc">
         /// When the request was sent. Null means now: the handler is created right before the request is dispatched.
@@ -47,7 +57,45 @@ namespace TurboHTTP.Cache
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
         {
+            CaptureEffectiveRequest(request);
             _inner.OnRequestStart(request, context);
+        }
+
+        /// <summary>
+        /// Records the request as it left the pipeline. Interceptors inside the cache may copy and change the
+        /// request (add credentials, follow a redirect), so the storage guards and the Vary key must use this
+        /// request rather than the one the cache looked up (RFC 9111 sections 3, 3.5 and 4.1; #494, #495).
+        /// </summary>
+        internal void CaptureEffectiveRequest(UHttpRequest request)
+        {
+            if (request == null)
+                return;
+
+            if (!IsSameTarget(request, _requestMethod, _requestUri))
+                MarkTargetChanged();
+
+            // Cloned: the request may be mutated or returned to a pool once this hop completes.
+            Volatile.Write(ref _effectiveHeaders, request.Headers.Clone());
+        }
+
+        /// <summary>A request sent inside the cache had another target than the looked-up one (#494).</summary>
+        internal void MarkTargetChanged()
+        {
+            Volatile.Write(ref _targetChanged, 1);
+        }
+
+        /// <summary>True when <paramref name="request"/> has the looked-up method and target URI.</summary>
+        internal static bool IsSameTarget(UHttpRequest request, HttpMethod method, Uri uri)
+        {
+            if (request.Method != method)
+                return false;
+
+            var effective = request.Uri;
+            if (ReferenceEquals(effective, uri))
+                return true;
+
+            return effective != null && uri != null &&
+                   string.Equals(effective.AbsoluteUri, uri.AbsoluteUri, StringComparison.Ordinal);
         }
 
         public async ValueTask OnResponseStartAsync(
@@ -57,7 +105,10 @@ namespace TurboHTTP.Cache
             RequestContext context)
         {
             var capturedHeaders = headers?.Clone() ?? new HttpHeaders();
-            if (!CacheInterceptor.ShouldConsiderForStorage(_requestMethod, statusCode))
+            // #494: a response to another target (a redirect followed inside the cache) is not the looked-up
+            // resource's response, so it is delivered but never stored under the looked-up key.
+            if (Volatile.Read(ref _targetChanged) != 0 ||
+                !CacheInterceptor.ShouldConsiderForStorage(_requestMethod, statusCode))
             {
                 await _inner.OnResponseStartAsync(statusCode, capturedHeaders, body, context).ConfigureAwait(false);
                 return;
@@ -77,6 +128,11 @@ namespace TurboHTTP.Cache
 
             // RFC 9111 section 4.2.3 response_time: the headers have arrived.
             var responseTimeUtc = _owner.GetUtcNow();
+            // #495: the storage guards and the Vary key use the effective request; the lookup-time headers go along
+            // so the store is refused when a Vary-nominated header differs between the two.
+            var effectiveHeaders = Volatile.Read(ref _effectiveHeaders);
+            var storeRequestHeaders = effectiveHeaders ?? _requestHeaders;
+            var lookupRequestHeaders = effectiveHeaders != null ? _requestHeaders : null;
             if (body.TryGetBufferedData(out var buffered))
             {
                 if ((long)buffered.Length > _maxCacheableResponseBodyBytes)
@@ -125,14 +181,15 @@ namespace TurboHTTP.Cache
                     _owner.QueueStoreResponse(
                         _requestMethod,
                         _requestUri,
-                        _requestHeaders,
+                        storeRequestHeaders,
                         _baseKey,
                         statusCode,
                         headersToStore,
                         bodyToStore,
                         trailersToStore,
                         responseTimeUtc,
-                        _requestTimeUtc);
+                        _requestTimeUtc,
+                        lookupRequestHeaders);
                     bodyToStore = null;
                 }
                 catch (Exception ex)
@@ -149,13 +206,14 @@ namespace TurboHTTP.Cache
                 _owner,
                 _requestMethod,
                 _requestUri,
-                _requestHeaders,
+                storeRequestHeaders,
                 _baseKey,
                 statusCode,
                 capturedHeaders,
                 responseTimeUtc,
                 _requestTimeUtc,
-                _maxCacheableResponseBodyBytes);
+                _maxCacheableResponseBodyBytes,
+                lookupRequestHeaders);
 
             await _inner.OnResponseStartAsync(statusCode, capturedHeaders, tee, context).ConfigureAwait(false);
         }
@@ -175,6 +233,8 @@ namespace TurboHTTP.Cache
         private readonly HttpMethod _requestMethod;
         private readonly Uri _requestUri;
         private readonly HttpHeaders _requestHeaders;
+        // Lookup-time request headers when they may differ from _requestHeaders (the effective request), else null (#495).
+        private readonly HttpHeaders _lookupRequestHeaders;
         private readonly string _baseKey;
         private readonly int _statusCode;
         private readonly HttpHeaders _responseHeaders;
@@ -212,13 +272,15 @@ namespace TurboHTTP.Cache
             HttpHeaders responseHeaders,
             DateTime responseTimeUtc,
             DateTime requestTimeUtc,
-            long maxCacheableResponseBodyBytes)
+            long maxCacheableResponseBodyBytes,
+            HttpHeaders lookupRequestHeaders = null)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             _owner = owner ?? throw new ArgumentNullException(nameof(owner));
             _requestMethod = requestMethod;
             _requestUri = requestUri ?? throw new ArgumentNullException(nameof(requestUri));
             _requestHeaders = requestHeaders?.Clone() ?? new HttpHeaders();
+            _lookupRequestHeaders = lookupRequestHeaders?.Clone();
             _baseKey = baseKey ?? throw new ArgumentNullException(nameof(baseKey));
             _statusCode = statusCode;
             _responseHeaders = responseHeaders?.Clone() ?? new HttpHeaders();
@@ -362,7 +424,8 @@ namespace TurboHTTP.Cache
                             bodyToStore,
                             _trailersToStore,
                             _responseTimeUtc,
-                            _requestTimeUtc);
+                            _requestTimeUtc,
+                            _lookupRequestHeaders);
                         bodyToStore = null;
                     }
                     catch (Exception ex)

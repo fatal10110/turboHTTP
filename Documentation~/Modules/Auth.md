@@ -33,6 +33,8 @@ Entries are origins only: an absolute `http` or `https` URI without a path, quer
 
 Within one call the credential also stays with the original request's origin: the interceptor binds to the scheme, host and port of the first request it sees for that call and never attaches the token to a hop for another origin, such as a cross-origin redirect target, even when that origin is in `AllowedOrigins`, as browsers do. Place it below `CookieInterceptor` and above `CacheInterceptor`; see [Interceptors](Interceptors.md) for the order. The token never appears in logs or exceptions.
 
+**Credential interceptors sit outside the cache.** `UHttpClient` rejects a `CacheInterceptor` placed before `AuthInterceptor`. A custom interceptor that adds credentials (its own `Authorization` scheme, an API-key header, a per-user header) must also sit above `CacheInterceptor`; implement `TurboHTTP.Core.IInterceptorRole` and return `InterceptorRole.Auth` so the client enforces that position. A cache placed outside such an interceptor refuses to store responses whose request it added `Authorization` to, or changed a header the response names in `Vary`, but it can never give those responses a per-user entry.
+
 To authenticate a single request, use `WithBearerToken`. `AuthInterceptor` leaves that header in place; set `AuthInterceptorOptions.OverrideExistingAuthorization = true` if the interceptor should replace it:
 
 <!-- snippet: with UHttpClient client = null; -->

@@ -4,7 +4,7 @@
 # Checked by `Tools~/ci/check_repo.py coreapi` (run by Tools~/ci/check.sh and CI): the list must match the
 # source exactly, and the total may not exceed 60 (#77). Adding a public Core type means adding it here in
 # the same PR and naming it in the PR body; prefer internal (Core.Internal + InternalsVisibleTo).
-# count: 50
+# count: 52
 TurboHTTP.Core.BufferedRequestBody
 TurboHTTP.Core.CleartextTrafficPolicy
 TurboHTTP.Core.ConnectionPoolOptions
@@ -22,8 +22,10 @@ TurboHTTP.Core.IHttpHandler
 TurboHTTP.Core.IHttpInterceptor
 TurboHTTP.Core.IHttpPlugin
 TurboHTTP.Core.IHttpTransport
+TurboHTTP.Core.IInterceptorRole
 TurboHTTP.Core.IResponseBodySource
 TurboHTTP.Core.InterceptorPipeline
+TurboHTTP.Core.InterceptorRole
 TurboHTTP.Core.OwnedMemoryRequestBody
 TurboHTTP.Core.PluginCapabilities
 TurboHTTP.Core.PluginContext

@@ -19,8 +19,11 @@ namespace TurboHTTP.Middleware
     /// with the caller's own Cookie header while the redirect interceptor keeps that header
     /// (same-origin hops); cross-origin hops carry jar cookies only.
     /// </remarks>
-    public sealed class CookieInterceptor : IHttpInterceptor, IDisposable, IRedirectResponseObserver
+    public sealed class CookieInterceptor : IHttpInterceptor, IDisposable, IRedirectResponseObserver, IInterceptorRole
     {
+        // Pipeline ordering role, checked by UHttpClient (#536): the cache must sit inside it.
+        InterceptorRole IInterceptorRole.Role => InterceptorRole.Cookie;
+
         private static int s_instanceCounter;
 
         private readonly CookieJar _jar;
