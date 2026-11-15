@@ -75,6 +75,59 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
+        public void SyncRead_DeliversDataAndEndOfStream_WhenCloseNotifyReplyWriteFails()
+        {
+            var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
+            var payload = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+
+            using var server = BouncyCastleLoopbackServer.TryStartTls(stream =>
+            {
+                stream.Write(payload, 0, payload.Length);
+                stream.Flush();
+                BouncyCastleLoopbackServer.SendCloseNotify((SslStream)stream);
+                BouncyCastleLoopbackServer.DrainUntilClosed(stream);
+            });
+            if (server == null)
+            {
+                TestRequirements.IgnoreEnvironment("The committed test certificate (TestLocalhostCertificate) could not be loaded in this runtime.");
+                return;
+            }
+
+            AssertAsync.Run(async () =>
+            {
+                var inner = new FailingWriteStream(await BouncyCastleLoopbackServer.ConnectAsync(server.Port));
+                using var secure = await HandshakeAsync(provider, inner);
+                inner.ArmFailure();
+
+                // The synchronous Read flushes the reply through the inner stream's synchronous
+                // Write, which fails once armed. The reads run on a worker so the bound holds even
+                // if a read never returns.
+                var received = new MemoryStream();
+                var readAll = Task.Run(() =>
+                {
+                    var buffer = new byte[256];
+                    while (true)
+                    {
+                        int read = secure.Read(buffer, 0, buffer.Length); // threw the reply's write failure before #912
+                        if (read == 0)
+                            return;
+                        received.Write(buffer, 0, read);
+                    }
+                });
+                var winner = await Task.WhenAny(readAll, Task.Delay(Bound));
+                Assert.AreSame(readAll, winner, "The reads must complete once the server's records arrived.");
+                await readAll;
+
+                CollectionAssert.AreEqual(payload, received.ToArray(), "Every decrypted byte must be delivered.");
+                Assert.Greater(inner.FailedWrites, 0, "The close_notify reply must have been attempted on the failing socket.");
+                Assert.That(
+                    () => secure.Write(new byte[] { 1 }, 0, 1),
+                    Throws.InstanceOf<IOException>(),
+                    "A write after the failed reply must report the dead connection.");
+            });
+        }
+
+        [Test]
         public void Write_AfterFailedRecordWrite_KeepsFailing_EvenWhenTheSocketAcceptsBytesAgain()
         {
             var provider = BouncyCastleLoopbackServer.GetProviderOrFail();
