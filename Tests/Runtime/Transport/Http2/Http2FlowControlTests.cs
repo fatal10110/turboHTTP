@@ -872,14 +872,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                                  ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
                 Assert.AreEqual((uint)Http2ErrorCode.FlowControlError, errorCode);
 
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException) { /* expected */ }
-                catch (UHttpException) { /* also acceptable */ }
-                catch (ObjectDisposedException) { /* also acceptable */ }
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Http2FailureAssert.IsProtocolError(ex, Http2ErrorCode.FlowControlError);
 
                 conn.Dispose();
             });
@@ -928,14 +922,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                                  ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
                 Assert.AreEqual((uint)Http2ErrorCode.FlowControlError, errorCode);
 
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException) { /* expected */ }
-                catch (UHttpException) { /* also acceptable */ }
-                catch (ObjectDisposedException) { /* also acceptable */ }
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Http2FailureAssert.IsProtocolError(ex, Http2ErrorCode.FlowControlError);
 
                 conn.Dispose();
             });
@@ -989,14 +977,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                                  ((uint)goaway.Payload[6] << 8) | goaway.Payload[7];
                 Assert.AreEqual((uint)Http2ErrorCode.FlowControlError, errorCode);
 
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException) { /* expected */ }
-                catch (UHttpException) { /* also acceptable */ }
-                catch (ObjectDisposedException) { /* also acceptable */ }
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Http2FailureAssert.IsProtocolError(ex, Http2ErrorCode.FlowControlError);
 
                 conn.Dispose();
             });

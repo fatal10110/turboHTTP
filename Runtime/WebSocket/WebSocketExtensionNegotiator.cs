@@ -6,7 +6,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Stateless extension negotiator for Sec-WebSocket-Extensions.
     /// </summary>
-    public sealed class WebSocketExtensionNegotiator
+    internal sealed class WebSocketExtensionNegotiator
     {
         private readonly IReadOnlyList<IWebSocketExtension> _clientExtensions;
 
@@ -185,7 +185,7 @@ namespace TurboHTTP.WebSocket
         }
     }
 
-    public sealed class WebSocketExtensionNegotiationResult
+    internal sealed class WebSocketExtensionNegotiationResult
     {
         private WebSocketExtensionNegotiationResult(
             bool isSuccess,

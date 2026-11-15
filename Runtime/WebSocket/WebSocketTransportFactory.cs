@@ -11,6 +11,7 @@ namespace TurboHTTP.WebSocket
         private static volatile Func<TlsBackend, IWebSocketTransport> _backendFactory;
         private static readonly object Gate = new object();
 
+        /// <summary>Registers the factory <see cref="Create"/> uses; the last registration wins. <c>RawSocketWebSocketTransport</c> registers itself.</summary>
         public static void Register(Func<TlsBackend, IWebSocketTransport> backendFactory)
         {
             if (backendFactory == null)
@@ -22,6 +23,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <summary>Creates a transport through the registered factory. Throws <see cref="InvalidOperationException"/> when none is registered.</summary>
         public static IWebSocketTransport Create(TlsBackend tlsBackend = TlsBackend.Auto)
         {
             var factory = _backendFactory;

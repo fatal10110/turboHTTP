@@ -9,7 +9,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Default WebSocket client implementation backed by <see cref="WebSocketConnection"/>.
     /// </summary>
-    public class WebSocketClient : IWebSocketClient
+    public sealed class WebSocketClient : IWebSocketClient
     {
         private readonly object _sync = new object();
         private readonly IWebSocketTransport _providedTransport;
@@ -27,22 +27,31 @@ namespace TurboHTTP.WebSocket
         private int _receiveAllInProgress;
         private int _closeEventRaised;
 
+        /// <inheritdoc />
         public event Action OnConnected;
+        /// <inheritdoc />
         public event Action<WebSocketMessage> OnMessage;
+        /// <inheritdoc />
         public event Action<WebSocketException> OnError;
+        /// <inheritdoc />
         public event Action<WebSocketCloseCode, string> OnClosed;
+        /// <inheritdoc />
         public event Action<WebSocketMetrics> OnMetricsUpdated;
+        /// <inheritdoc />
         public event Action<ConnectionQuality> OnConnectionQualityChanged;
 
+        /// <summary>Creates a client that uses the transport registered with <see cref="WebSocketTransportFactory"/>; that transport is created at connect and disposed by the client.</summary>
         public WebSocketClient()
         {
         }
 
+        /// <summary>Creates a client over <paramref name="transport"/>; the caller keeps ownership of the transport.</summary>
         public WebSocketClient(IWebSocketTransport transport)
         {
             _providedTransport = transport ?? throw new ArgumentNullException(nameof(transport));
         }
 
+        /// <summary>Validates <paramref name="options"/> and returns a <see cref="ResilientWebSocketClient"/> when its <see cref="WebSocketConnectionOptions.ReconnectPolicy"/> is enabled, else a <see cref="WebSocketClient"/>. The options only choose the client type: pass them to <see cref="IWebSocketClient.ConnectAsync(Uri, WebSocketConnectionOptions, CancellationToken)"/> as well.</summary>
         public static IWebSocketClient Create(
             WebSocketConnectionOptions options = null,
             IWebSocketTransport transport = null)
@@ -61,6 +70,7 @@ namespace TurboHTTP.WebSocket
                 : new WebSocketClient();
         }
 
+        /// <inheritdoc />
         public WebSocketState State
         {
             get
@@ -70,6 +80,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public string SubProtocol
         {
             get
@@ -79,6 +90,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public WebSocketMetrics Metrics
         {
             get
@@ -88,6 +100,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public WebSocketHealthSnapshot Health
         {
             get
@@ -97,11 +110,13 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public Task ConnectAsync(Uri uri, CancellationToken ct = default)
         {
             return ConnectAsync(uri, new WebSocketConnectionOptions(), ct);
         }
 
+        /// <inheritdoc />
         public async Task ConnectAsync(Uri uri, WebSocketConnectionOptions options, CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -210,6 +225,7 @@ namespace TurboHTTP.WebSocket
             WebSocketCallbacks.Invoke(OnConnected, "[TurboHTTP] A WebSocket OnConnected handler threw.");
         }
 
+        /// <inheritdoc />
         public async Task SendAsync(string message, CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -221,6 +237,7 @@ namespace TurboHTTP.WebSocket
             await RequireConnection().SendTextAsync(message, ct).ConfigureAwait(false);
         }
 
+        /// <inheritdoc />
         public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -229,6 +246,7 @@ namespace TurboHTTP.WebSocket
             await RequireConnection().SendBinaryAsync(data, ct).ConfigureAwait(false);
         }
 
+        /// <inheritdoc />
         public Task SendAsync(byte[] data, CancellationToken ct = default)
         {
             if (data == null)
@@ -237,11 +255,13 @@ namespace TurboHTTP.WebSocket
             return SendAsync(new ReadOnlyMemory<byte>(data), ct);
         }
 
+        /// <inheritdoc />
         public async ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct = default)
         {
             return await ReceiveCoreAsync(ct, fromAsyncEnumerable: false).ConfigureAwait(false);
         }
 
+        /// <inheritdoc />
         public IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -313,6 +333,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public async Task CloseAsync(
             WebSocketCloseCode code = WebSocketCloseCode.NormalClosure,
             string reason = null,
@@ -330,12 +351,14 @@ namespace TurboHTTP.WebSocket
             RaiseClosedFromConnection(connection);
         }
 
+        /// <inheritdoc />
         public void Abort()
         {
             var connection = Volatile.Read(ref _connection);
             connection?.Abort();
         }
 
+        /// <inheritdoc />
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
@@ -359,6 +382,7 @@ namespace TurboHTTP.WebSocket
             _listenerCts = null;
         }
 
+        /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

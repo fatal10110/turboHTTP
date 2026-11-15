@@ -38,24 +38,35 @@ namespace TurboHTTP.WebSocket
         private WebSocketMetrics _latestMetrics;
         private WebSocketHealthSnapshot _latestHealth;
 
+        /// <inheritdoc />
         public event Action OnConnected;
+        /// <inheritdoc />
         public event Action<WebSocketMessage> OnMessage;
+        /// <inheritdoc />
         public event Action<WebSocketException> OnError;
+        /// <inheritdoc />
         public event Action<WebSocketCloseCode, string> OnClosed;
+        /// <inheritdoc />
         public event Action<WebSocketMetrics> OnMetricsUpdated;
+        /// <inheritdoc />
         public event Action<ConnectionQuality> OnConnectionQualityChanged;
+        /// <summary>Raised before each reconnect attempt with the 1-based attempt number and the delay before it.</summary>
         public event Action<int, TimeSpan> OnReconnecting;
+        /// <summary>Raised when a reconnect attempt has opened a new connection.</summary>
         public event Action OnReconnected;
 
+        /// <summary>Creates a reconnecting client that uses the transport registered with <see cref="WebSocketTransportFactory"/>.</summary>
         public ResilientWebSocketClient()
         {
         }
 
+        /// <summary>Creates a reconnecting client over <paramref name="transport"/>; the caller keeps ownership of the transport.</summary>
         public ResilientWebSocketClient(IWebSocketTransport transport)
         {
             _providedTransport = transport ?? throw new ArgumentNullException(nameof(transport));
         }
 
+        /// <inheritdoc />
         public WebSocketState State
         {
             get
@@ -71,8 +82,10 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public string SubProtocol => Volatile.Read(ref _client)?.SubProtocol;
 
+        /// <inheritdoc />
         public WebSocketMetrics Metrics
         {
             get
@@ -82,6 +95,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public WebSocketHealthSnapshot Health
         {
             get
@@ -91,11 +105,13 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public Task ConnectAsync(Uri uri, CancellationToken ct = default)
         {
             return ConnectAsync(uri, new WebSocketConnectionOptions(), ct);
         }
 
+        /// <inheritdoc />
         public async Task ConnectAsync(Uri uri, WebSocketConnectionOptions options, CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -135,6 +151,7 @@ namespace TurboHTTP.WebSocket
             await ConnectReplacementClientAsync(initialConnect: true, ct).ConfigureAwait(false);
         }
 
+        /// <inheritdoc />
         public async Task SendAsync(string message, CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -153,6 +170,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -168,6 +186,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public Task SendAsync(byte[] data, CancellationToken ct = default)
         {
             if (data == null)
@@ -176,11 +195,13 @@ namespace TurboHTTP.WebSocket
             return SendAsync(new ReadOnlyMemory<byte>(data), ct);
         }
 
+        /// <inheritdoc />
         public async ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct = default)
         {
             return await ReceiveCoreAsync(ct, fromAsyncEnumerable: false).ConfigureAwait(false);
         }
 
+        /// <inheritdoc />
         public IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -234,6 +255,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public async Task CloseAsync(
             WebSocketCloseCode code = WebSocketCloseCode.NormalClosure,
             string reason = null,
@@ -260,6 +282,7 @@ namespace TurboHTTP.WebSocket
             RaiseClosed(code, reason ?? string.Empty);
         }
 
+        /// <inheritdoc />
         public void Abort()
         {
             Interlocked.Exchange(ref _manualClose, 1);
@@ -279,6 +302,7 @@ namespace TurboHTTP.WebSocket
             RaiseClosed(WebSocketCloseCode.AbnormalClosure, string.Empty);
         }
 
+        /// <inheritdoc />
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
@@ -304,6 +328,7 @@ namespace TurboHTTP.WebSocket
             _lifecycleCts = null;
         }
 
+        /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

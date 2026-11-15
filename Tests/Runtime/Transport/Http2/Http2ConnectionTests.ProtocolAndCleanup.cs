@@ -146,8 +146,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/overflow"));
                 var context = new RequestContext(request);
 
-                AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                // Not sent: replayable on a fresh connection (RFC 9113 Section 5.1.1).
+                var notSent = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                     await conn.SendRequestAsync(request, context, cts.Token));
+                Http2FailureAssert.IsNotProcessed(notSent, "stream ID space exhausted");
 
                 Assert.AreEqual(int.MaxValue - 1, (int)nextStreamIdField.GetValue(conn));
                 conn.Dispose();
@@ -396,7 +398,16 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = headerBlock.Length
                 }, cts.Token);
 
-                AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                // RFC 9113 Section 8.1.1: a malformed response is a stream error of type PROTOCOL_ERROR.
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type, ex.ToString());
+                StringAssert.Contains("Missing :status", ex.HttpError.Message);
+                Http2FailureAssert.IsNotMarkedUnprocessed(ex);
+                var rst = await ReadMatchingFrameAsync(
+                    serverCodec,
+                    frame => frame.Type == Http2FrameType.RstStream && frame.StreamId == streamId,
+                    timeoutMs: 2000);
+                Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, ReadErrorCode(rst));
 
                 conn.Dispose();
             });
@@ -431,7 +442,16 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = headerBlock.Length
                 }, cts.Token);
 
-                AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                // RFC 9113 Section 8.1.1: a malformed response is a stream error of type PROTOCOL_ERROR.
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type, ex.ToString());
+                StringAssert.Contains("Invalid :status value: abc", ex.HttpError.Message);
+                Http2FailureAssert.IsNotMarkedUnprocessed(ex);
+                var rst = await ReadMatchingFrameAsync(
+                    serverCodec,
+                    frame => frame.Type == Http2FrameType.RstStream && frame.StreamId == streamId,
+                    timeoutMs: 2000);
+                Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, ReadErrorCode(rst));
 
                 conn.Dispose();
             });
@@ -841,17 +861,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = 3
                 }, cts.Token);
 
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException)
-                {
-                }
-                catch (UHttpException)
-                {
-                }
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Http2FailureAssert.IsProtocolError(ex, Http2ErrorCode.ProtocolError);
 
                 var rstStream = await ReadMatchingFrameAsync(
                     serverCodec,

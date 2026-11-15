@@ -98,6 +98,7 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public TimeSpan ConnectTimeout { get; set; } = Timeout.InfiniteTimeSpan;
 
+        /// <summary>Subprotocols offered in <c>Sec-WebSocket-Protocol</c>, in preference order; the server's choice is <see cref="IWebSocketClient.SubProtocol"/>.</summary>
         public IReadOnlyList<string> SubProtocols { get; set; } = Array.Empty<string>();
 
         /// <summary>
@@ -107,6 +108,7 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public IReadOnlyList<string> Extensions { get; set; } = Array.Empty<string>();
 
+        /// <summary>Factories for the structured extensions to offer; each connection creates fresh instances. Prefer <see cref="WithExtension"/> and <see cref="WithCompression()"/>.</summary>
         public IReadOnlyList<Func<IWebSocketExtension>> ExtensionFactories { get; set; } =
             Array.Empty<Func<IWebSocketExtension>>();
 
@@ -116,6 +118,7 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public bool RequireNegotiatedExtensions { get; set; }
 
+        /// <summary>Extra headers sent with the upgrade request.</summary>
         public HttpHeaders CustomHeaders { get; set; } = new HttpHeaders();
 
         /// <summary>
@@ -132,6 +135,7 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 
+        /// <summary>HTTP CONNECT proxy for the connection; <see cref="WebSocketProxySettings.None"/> connects directly.</summary>
         public WebSocketProxySettings ProxySettings { get; set; } = WebSocketProxySettings.None;
 
         /// <summary>
@@ -146,14 +150,17 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public bool AllowCleartext { get; set; } = CleartextTrafficPolicy.DefaultAllowCleartext;
 
+        /// <summary>Automatic reconnect policy, honoured only by <see cref="ResilientWebSocketClient"/>: <see cref="WebSocketClient"/> rejects an enabled policy, and <see cref="WebSocketClient.Create"/> returns a resilient client for one.</summary>
         public WebSocketReconnectPolicy ReconnectPolicy { get; set; } = WebSocketReconnectPolicy.None;
 
+        /// <summary>Sets <see cref="ReconnectPolicy"/> (null means <see cref="WebSocketReconnectPolicy.None"/>) and returns this instance.</summary>
         public WebSocketConnectionOptions WithReconnection(WebSocketReconnectPolicy policy)
         {
             ReconnectPolicy = policy ?? WebSocketReconnectPolicy.None;
             return this;
         }
 
+        /// <summary>Appends <paramref name="factory"/> to <see cref="ExtensionFactories"/> and returns this instance.</summary>
         public WebSocketConnectionOptions WithExtension(Func<IWebSocketExtension> factory)
         {
             if (factory == null)
@@ -167,17 +174,20 @@ namespace TurboHTTP.WebSocket
             return this;
         }
 
+        /// <summary>Offers permessage-deflate (RFC 7692, experimental) with default options and returns this instance. Uses the current <see cref="MaxMessageSize"/>, so set that first.</summary>
         public WebSocketConnectionOptions WithCompression()
         {
             return WithCompression(PerMessageDeflateOptions.Default);
         }
 
+        /// <summary>Like <see cref="WithCompression()"/>, and sets <see cref="RequireNegotiatedExtensions"/> so the connection fails with close code 1010 if the server declines compression.</summary>
         public WebSocketConnectionOptions WithRequiredCompression()
         {
             RequireNegotiatedExtensions = true;
             return WithCompression(PerMessageDeflateOptions.Default);
         }
 
+        /// <summary>Offers permessage-deflate (RFC 7692, experimental) with <paramref name="options"/> (null means defaults) and returns this instance. Uses the current <see cref="MaxMessageSize"/>, so set that first.</summary>
         public WebSocketConnectionOptions WithCompression(PerMessageDeflateOptions options)
         {
             var effectiveOptions = options ?? PerMessageDeflateOptions.Default;
@@ -185,6 +195,7 @@ namespace TurboHTTP.WebSocket
             return WithExtension(() => new PerMessageDeflateExtension(effectiveOptions, maxMessageSize));
         }
 
+        /// <summary>Returns a copy. Lists and <see cref="CustomHeaders"/> are copied; <see cref="TlsProvider"/>, <see cref="ProxySettings"/> and <see cref="ReconnectPolicy"/> are shared (the settings and policy are immutable).</summary>
         public WebSocketConnectionOptions Clone()
         {
             return new WebSocketConnectionOptions
@@ -220,6 +231,7 @@ namespace TurboHTTP.WebSocket
             };
         }
 
+        /// <summary>Throws <see cref="ArgumentException"/> (or <see cref="ArgumentOutOfRangeException"/>) when a setting is out of range or unsupported.</summary>
         public void Validate()
         {
             if (MaxFrameSize < 1)

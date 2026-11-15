@@ -7,7 +7,7 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
-    public sealed partial class WebSocketConnection
+    internal sealed partial class WebSocketConnection
     {
         public void Abort()
         {

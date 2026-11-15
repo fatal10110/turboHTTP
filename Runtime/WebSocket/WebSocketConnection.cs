@@ -13,7 +13,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Stateful WebSocket connection that owns stream I/O, state transitions, and close semantics.
     /// </summary>
-    public sealed partial class WebSocketConnection : IDisposable, IAsyncDisposable
+    internal sealed partial class WebSocketConnection : IDisposable, IAsyncDisposable
     {
         private static readonly IReadOnlyDictionary<WebSocketState, WebSocketState[]> AllowedTransitions =
             new Dictionary<WebSocketState, WebSocketState[]>

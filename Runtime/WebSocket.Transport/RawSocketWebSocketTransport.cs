@@ -65,6 +65,7 @@ namespace TurboHTTP.WebSocket.Transport
                 tlsBackend => new RawSocketWebSocketTransport(tlsBackend));
         }
 
+        /// <inheritdoc />
         public async Task<Stream> ConnectAsync(
             Uri uri,
             WebSocketConnectionOptions options,
@@ -288,6 +289,7 @@ namespace TurboHTTP.WebSocket.Transport
             return ct.IsCancellationRequested && !(ex is OperationCanceledException);
         }
 
+        /// <inheritdoc />
         public void Dispose()
         {
             Interlocked.Exchange(ref _disposed, 1);

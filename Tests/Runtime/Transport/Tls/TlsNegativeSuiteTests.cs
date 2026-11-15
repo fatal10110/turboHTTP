@@ -96,7 +96,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             using var server = StartServer(pfx);
             var ex = AssertAsync.ThrowsAsync<UHttpException>(() => SendAsync(backend, server.Port, host));
 
-            Assert.AreEqual(UHttpErrorType.CertificateError, ex.HttpError.Type, ex.ToString());
+            CertificateErrorAssert.IsCertificateRejection(ex, $"{identity} over {backend}");
             Assert.AreEqual(1, server.AcceptedConnections, "One handshake, no retry on another provider.");
         }
 
@@ -110,7 +110,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             var provider = RequireProvider(backend);
             using var server = StartServer(Certs.TldWildcard);
 
-            AssertAsync.ThrowsAsync<AuthenticationException>(async () =>
+            var rejected = AssertAsync.ThrowsAsync<AuthenticationException>(async () =>
             {
                 var stream = await BouncyCastleLoopbackServer.ConnectAsync(server.Port).ConfigureAwait(false);
                 TlsResult result;
@@ -128,6 +128,8 @@ namespace TurboHTTP.Tests.Transport.Tls
 
                 result.SecureStream.Dispose();
             });
+
+            CertificateErrorAssert.IsNotBrokenTlsStack(rejected, $"*.com wildcard over {backend}");
         }
 
         [Test]
@@ -151,7 +153,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
             var ex = AssertAsync.ThrowsAsync<UHttpException>(() => SendAsync(backend, server.Port, "localhost"));
 
-            Assert.AreEqual(UHttpErrorType.CertificateError, ex.HttpError.Type, ex.ToString());
+            CertificateErrorAssert.IsCertificateRejection(ex, $"TLS 1.1 server over {backend}");
             Assert.AreEqual(1, server.AcceptedConnections, "One handshake, no retry on another provider.");
         }
 
@@ -162,7 +164,7 @@ namespace TurboHTTP.Tests.Transport.Tls
 
             var ex = AssertAsync.ThrowsAsync<UHttpException>(() => SendAsync(TlsBackend.Auto, server.Port, "localhost"));
 
-            Assert.AreEqual(UHttpErrorType.CertificateError, ex.HttpError.Type, ex.ToString());
+            CertificateErrorAssert.IsCertificateRejection(ex, "self-signed over Auto");
             Assert.AreEqual(1, server.AcceptedConnections, "A BouncyCastle fallback would open a second connection.");
             Assert.IsFalse(TlsProviderSelector.IsSslStreamKnownBroken(), "A certificate failure is not a platform failure.");
             Assert.AreEqual("SslStream", TlsProviderSelector.GetProvider(TlsBackend.Auto).ProviderName);

@@ -215,8 +215,19 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 var body = handler.Body;
                 Assert.IsNotNull(body);
-                await TestHelpers.AssertThrowsAsync<UHttpException>(
+                var bodyError = await TestHelpers.AssertThrowsAsync<UHttpException>(
                     async () => await body.ReadAsync(new byte[16], cts.Token));
+                Assert.AreEqual(UHttpErrorType.NetworkError, bodyError.HttpError.Type, bodyError.ToString());
+                if (refusedStream)
+                {
+                    // The body fault still carries the REFUSED_STREAM replay marker (#1216); the replay
+                    // decision itself is asserted above (spareUsed, ResponseStartCount).
+                    StringAssert.Contains("RST_STREAM: RefusedStream", bodyError.HttpError.Message);
+                }
+                else
+                {
+                    Http2FailureAssert.IsNotMarkedUnprocessed(bodyError);
+                }
                 await body.DisposeAsync();
             });
         }
@@ -375,7 +386,10 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 manager.Dispose();
                 Assert.IsFalse(conn.IsAlive, "manager Dispose must close connections that are still draining");
-                await TestHelpers.AssertThrowsAsync<UHttpException>(() => task);
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(() => task);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type, ex.ToString());
+                // At or below the GOAWAY last-stream-id: the server may have processed it (RFC 9113 Section 6.8).
+                Http2FailureAssert.IsNotMarkedUnprocessed(ex);
             });
         }
 

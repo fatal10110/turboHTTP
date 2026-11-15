@@ -8,7 +8,7 @@ namespace TurboHTTP.WebSocket
     /// Reassembles fragmented data frames into complete messages.
     /// Control frames are surfaced immediately and do not affect fragment state.
     /// </summary>
-    public sealed class MessageAssembler
+    internal sealed class MessageAssembler
     {
         private readonly int _maxMessageSize;
         private readonly int _maxFragmentCount;
@@ -288,7 +288,7 @@ namespace TurboHTTP.WebSocket
     /// Leased assembled message payload.
     /// Dispose to return pooled payload buffer to ArrayPool.
     /// </summary>
-    public sealed class WebSocketAssembledMessage : IDisposable
+    internal sealed class WebSocketAssembledMessage : IDisposable
     {
         private byte[] _payloadBuffer;
         private int _payloadLength;
