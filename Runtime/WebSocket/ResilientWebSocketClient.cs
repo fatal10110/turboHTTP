@@ -400,16 +400,11 @@ namespace TurboHTTP.WebSocket
 
             _receivePumpTask = RunReceivePumpAsync(nextClient, lifecycle.Token);
 
+            // #1116: a throwing handler does not turn the completed (re)connect into a failure.
             if (initialConnect)
-            {
-                var connectedHandler = OnConnected;
-                connectedHandler?.Invoke();
-            }
+                WebSocketCallbacks.Invoke(OnConnected, "[TurboHTTP] A WebSocket OnConnected handler threw.");
             else
-            {
-                var reconnectedHandler = OnReconnected;
-                reconnectedHandler?.Invoke();
-            }
+                WebSocketCallbacks.Invoke(OnReconnected, "[TurboHTTP] A WebSocket OnReconnected handler threw.");
         }
 
         private async Task RunReceivePumpAsync(IWebSocketClient client, CancellationToken ct)
@@ -610,8 +605,12 @@ namespace TurboHTTP.WebSocket
                             return;
 
                         TimeSpan delay = policy.ComputeDelay(attempt);
-                        var reconnectingHandler = OnReconnecting;
-                        reconnectingHandler?.Invoke(attempt, delay);
+                        // #1116: a throwing handler must not end the loop (queue open, no OnClosed).
+                        WebSocketCallbacks.Invoke(
+                            OnReconnecting,
+                            attempt,
+                            delay,
+                            "[TurboHTTP] A WebSocket OnReconnecting handler threw.");
 
                         try
                         {
@@ -795,8 +794,7 @@ namespace TurboHTTP.WebSocket
 
         private void RaiseError(WebSocketException error)
         {
-            var handler = OnError;
-            handler?.Invoke(error);
+            WebSocketCallbacks.Invoke(OnError, error, "[TurboHTTP] A WebSocket OnError handler threw.");
         }
 
         private void HandleChildMetricsUpdated(WebSocketMetrics metrics)
@@ -804,16 +802,17 @@ namespace TurboHTTP.WebSocket
             _latestMetrics = metrics;
             _latestHealth = Health;
 
-            var handler = OnMetricsUpdated;
-            handler?.Invoke(metrics);
+            WebSocketCallbacks.Invoke(OnMetricsUpdated, metrics, "[TurboHTTP] A WebSocket OnMetricsUpdated handler threw.");
         }
 
         private void HandleChildConnectionQualityChanged(ConnectionQuality quality)
         {
             _latestHealth = Health;
 
-            var handler = OnConnectionQualityChanged;
-            handler?.Invoke(quality);
+            WebSocketCallbacks.Invoke(
+                OnConnectionQualityChanged,
+                quality,
+                "[TurboHTTP] A WebSocket OnConnectionQualityChanged handler threw.");
         }
 
         private void RaiseClosed(WebSocketCloseCode code, string reason)
@@ -821,8 +820,7 @@ namespace TurboHTTP.WebSocket
             if (Interlocked.CompareExchange(ref _closedEventRaised, 1, 0) != 0)
                 return;
 
-            var handler = OnClosed;
-            handler?.Invoke(code, reason ?? string.Empty);
+            WebSocketCallbacks.Invoke(OnClosed, code, reason ?? string.Empty, "[TurboHTTP] A WebSocket OnClosed handler threw.");
         }
 
         private void ThrowIfDisposed()
