@@ -6,9 +6,10 @@ namespace TurboHTTP.Tests.Transport.Tls
 {
     /// <summary>
     /// #929: the BouncyCastle host check never falls back to the subject CN. Server identity comes
-    /// from subjectAltName only (RFC 9525 section 6), as Android's HostnameVerifier, Apple's SSL
-    /// policy and Windows' SSL policy require, so a leaf without a subjectAltName extension is
-    /// rejected for every host, including the one its CN names. The end-to-end handshake case is
+    /// from subjectAltName only (RFC 9525 section 6), as Android's HostnameVerifier and Apple's SSL
+    /// policy require (stricter than Windows' crypt32 SSL policy, which still falls back to the CN),
+    /// so a leaf without a subjectAltName extension is rejected for every host, including the one
+    /// its CN names. The end-to-end handshake case is
     /// the <c>cn-only</c> row of <see cref="TlsNegativeSuiteTests"/>.
     /// </summary>
     [TestFixture]

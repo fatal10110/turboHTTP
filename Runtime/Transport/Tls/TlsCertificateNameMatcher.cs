@@ -20,8 +20,9 @@ namespace TurboHTTP.Transport.Tls
     /// <item>A DNS name matches a dNSName entry case-insensitively, and only a dNSName entry. A
     /// certificate without a subjectAltName extension matches no host: RFC 9525 section 6 removed
     /// the CN-ID fallback RFC 6125 6.4.4 still allowed, and Android's HostnameVerifier (the only
-    /// host check there, since the platform trust manager does not match names), Apple's SSL policy
-    /// and Windows' SSL policy all reject a CN-only leaf (#929).</item>
+    /// host check there, since the platform trust manager does not match names) and Apple's SSL
+    /// policy both reject a CN-only leaf. Windows' crypt32 SSL policy still falls back to the CN,
+    /// so this check is stricter than SslStream there (#929).</item>
     /// <item>A wildcard is honoured only as the complete left-most label (<c>*.example.com</c>),
     /// matches exactly one non-empty label, and needs at least two labels after it, so
     /// <c>*.com</c>, <c>f*.example.com</c> and <c>www.*.com</c> match nothing (RFC 6125 6.4.3).</item>

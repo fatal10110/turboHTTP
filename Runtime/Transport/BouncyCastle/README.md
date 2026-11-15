@@ -50,7 +50,8 @@ moduli 2048-8192 bits with e at most 64 bits, 32 KiB handshake-message cap.
 
 ## Certificate validation (#33)
 
-`TurboTlsAuthentication` checks, in order: RFC 6125 host identity (`TlsCertificateNameMatcher`),
+`TurboTlsAuthentication` checks, in order: RFC 6125 / RFC 9525 host identity (subjectAltName only,
+`TlsCertificateNameMatcher`),
 leaf EKU serverAuth, leaf validity, path validation outside BC (`ServerCertificateVerifier`, the
 OS verifier everywhere: Windows crypt32 and macOS SecTrust in the Editor and desktop players (#248),
 iOS SecTrust and Android `X509TrustManagerExtensions` on devices (#239); revocation and network
@@ -58,9 +59,9 @@ fetch off, any bridge failure rejects; Linux has no verifier and rejects every c
 `TlsUtilities.CheckPeerSigAlgs` on the platform-built path.
 BC APIs it uses (all present in the current Lib, so no re-sync is needed now; the next strip must
 take the new `TurboTlsAuthentication.cs` as a root): `X509Certificate`
-(`GetSubjectAlternativeNameExtension`, `GetExtendedKeyUsage`, `SubjectDN`, `NotBefore`/`NotAfter`),
+(`GetSubjectAlternativeNameExtension`, `GetExtendedKeyUsage`, `NotBefore`/`NotAfter`),
 `GeneralNames.GetNames`, `GeneralName`, `IAsn1String`, `Asn1OctetString`,
-`X509Name.GetValueList`/`X509Name.CN`, `KeyPurposeID`, `TlsCrypto.CreateCertificate(byte[])`,
+`KeyPurposeID`, `TlsCrypto.CreateCertificate(byte[])`,
 `TlsUtilities.CheckPeerSigAlgs`.
 
 ## Edge-cut list
