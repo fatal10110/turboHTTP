@@ -1007,9 +1007,10 @@ namespace TurboHTTP.Cache
                     .ConfigureAwait(false);
                 var evictedVariant = RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
                 if (evictedVariant != null)
-                    await _policy.Storage.RemoveAsync(evictedVariant, cancellationToken).ConfigureAwait(false);
+                    await RemoveEvictedVariantAsync(evictedVariant).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested || _backgroundWorkToken.IsCancellationRequested)
             {
             }
             catch (Exception ex)
@@ -1081,7 +1082,16 @@ namespace TurboHTTP.Cache
                 .ConfigureAwait(false);
             var evictedVariant = RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
             if (evictedVariant != null)
-                await _policy.Storage.RemoveAsync(evictedVariant, cancellationToken).ConfigureAwait(false);
+                await RemoveEvictedVariantAsync(evictedVariant).ConfigureAwait(false);
+        }
+
+        // The evicted variant has already left the index. A skipped storage removal would leave it
+        // reachable by its signature but invisible to unsafe-method invalidation (RFC 9111 section 4.4),
+        // so the caller's token (the request token on the 304 merge path) must not cancel it after
+        // SetAsync. Only interceptor disposal does.
+        private Task RemoveEvictedVariantAsync(string evictedVariant)
+        {
+            return _policy.Storage.RemoveAsync(evictedVariant, _backgroundWorkToken);
         }
 
         private async Task ReplaceStoredEntryCoreAsync(

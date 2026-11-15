@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Cache;
@@ -116,6 +118,133 @@ namespace TurboHTTP.Tests.Cache
                 Assert.AreEqual(2, await storage.GetCountAsync());
                 middleware.Dispose();
             }).GetAwaiter().GetResult();
+        }
+
+        [Test]
+        public void CacheInterceptor_VaryVariants_EvictionOn304Merge_RemovesEvictedVariantDespiteRequestCancel()
+        {
+            Task.Run(async () =>
+            {
+                using var requestCts = new CancellationTokenSource();
+                // The third SetAsync is the 304-merged variant, stored on the request token; it evicts "b".
+                var storage = new CancelOnSetStorage(requestCts, cancelOnSetNumber: 3);
+                var middleware = new CacheInterceptor(new CachePolicy { Storage = storage });
+                middleware.MaxVariantsPerBaseKey = 2;
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    var headers = new HttpHeaders();
+                    headers.Set("ETag", "\"v1\"");
+                    if (req.Headers.Get("If-None-Match") != null)
+                    {
+                        // A new Vary list gives the freshened entry a new signature, so it is a new variant.
+                        headers.Set("Cache-Control", "max-age=60");
+                        headers.Set("Vary", "X-Request-Id, X-Other");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.NotModified, headers, Array.Empty<byte>(), TimeSpan.Zero, req));
+                    }
+
+                    headers.Set("Cache-Control", "max-age=0");
+                    headers.Set("Vary", "X-Request-Id");
+                    return Task.FromResult(new UHttpResponse(
+                        HttpStatusCode.OK, headers, Encoding.UTF8.GetBytes("payload"), TimeSpan.Zero, req));
+                });
+                var pipeline = new TestInterceptorPipeline(new[] { middleware }, transport);
+
+                // "b" is stored first, so it is the least recently stored variant.
+                foreach (var id in new[] { "b", "a" })
+                {
+                    await SendVaryBoundRequestAsync(pipeline, id);
+                    await WaitUntilAsync(
+                        () => Task.FromResult(middleware.PendingMutationCount == 0),
+                        TimeSpan.FromSeconds(10),
+                        "Background cache mutations did not drain.");
+                }
+
+                Assert.AreEqual(2, storage.SetKeys.Count);
+                var evictedKey = storage.SetKeys[0];
+
+                var request = new UHttpRequest(HttpMethod.GET, VaryBoundUri);
+                request.Headers.Set("X-Request-Id", "a");
+                try
+                {
+                    await pipeline.ExecuteAsync(request, new RequestContext(request), requestCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // The request token was cancelled during the store; the request may surface it.
+                }
+
+                await WaitUntilAsync(
+                    () => Task.FromResult(middleware.PendingMutationCount == 0),
+                    TimeSpan.FromSeconds(10),
+                    "Background cache mutations did not drain.");
+
+                Assert.AreEqual(3, storage.SetKeys.Count, "The 304 stored a new variant.");
+                Assert.IsTrue(requestCts.IsCancellationRequested);
+                Assert.IsNull(
+                    await storage.GetAsync(evictedKey),
+                    "The evicted variant left the index, so it must leave storage too.");
+                Assert.LessOrEqual(middleware.GetVariantCount(HttpMethod.GET, VaryBoundUri), 2);
+                middleware.Dispose();
+            }).GetAwaiter().GetResult();
+        }
+
+        // Cancels a token right after the Nth SetAsync, and honours cancellation in RemoveAsync
+        // the way a real asynchronous storage would.
+        private sealed class CancelOnSetStorage : ICacheStorage
+        {
+            private readonly MemoryCacheStorage _inner = new MemoryCacheStorage(maxEntries: 1000);
+            private readonly CancellationTokenSource _cancelOnSet;
+            private readonly int _cancelOnSetNumber;
+            private readonly object _gate = new object();
+            private readonly List<string> _setKeys = new List<string>();
+
+            internal CancelOnSetStorage(CancellationTokenSource cancelOnSet, int cancelOnSetNumber)
+            {
+                _cancelOnSet = cancelOnSet;
+                _cancelOnSetNumber = cancelOnSetNumber;
+            }
+
+            internal IReadOnlyList<string> SetKeys
+            {
+                get
+                {
+                    lock (_gate)
+                        return _setKeys.ToArray();
+                }
+            }
+
+            public Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default)
+                => _inner.GetAsync(key, cancellationToken);
+
+            public async Task SetAsync(string key, CacheEntry entry, CancellationToken cancellationToken = default)
+            {
+                await _inner.SetAsync(key, entry, cancellationToken).ConfigureAwait(false);
+                int count;
+                lock (_gate)
+                {
+                    _setKeys.Add(key);
+                    count = _setKeys.Count;
+                }
+
+                if (count == _cancelOnSetNumber)
+                    _cancelOnSet.Cancel();
+            }
+
+            public Task RemoveAsync(string key, CancellationToken cancellationToken = default)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return _inner.RemoveAsync(key, cancellationToken);
+            }
+
+            public Task ClearAsync(CancellationToken cancellationToken = default)
+                => _inner.ClearAsync(cancellationToken);
+
+            public Task<int> GetCountAsync(CancellationToken cancellationToken = default)
+                => _inner.GetCountAsync(cancellationToken);
+
+            public Task<long> GetSizeAsync(CancellationToken cancellationToken = default)
+                => _inner.GetSizeAsync(cancellationToken);
         }
 
         private static MockTransport CreateVaryBoundTransport()
