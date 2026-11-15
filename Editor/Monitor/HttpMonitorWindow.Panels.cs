@@ -25,7 +25,7 @@ namespace TurboHTTP.Editor
                 GUILayout.Space(6f);
                 var newMaskValue = GUILayout.Toggle(
                     _maskConfidentialHeaders,
-                    "Mask Confidential Headers",
+                    MaskToggleContent,
                     EditorStyles.toolbarButton,
                     GUILayout.Width(180f));
                 if (newMaskValue != _maskConfidentialHeaders)
@@ -435,7 +435,7 @@ namespace TurboHTTP.Editor
             }
         }
 
-        private IEnumerable<KeyValuePair<string, string>> GetSortedHeaders(
+        private static IEnumerable<KeyValuePair<string, string>> GetSortedHeaders(
             IReadOnlyDictionary<string, string> headers)
         {
             var entries = new List<KeyValuePair<string, string>>(headers.Count);
@@ -448,14 +448,17 @@ namespace TurboHTTP.Editor
             return entries;
         }
 
+        private static readonly GUIContent MaskToggleContent = new GUIContent(
+            "Mask Confidential Headers",
+            "Mask displayed header values with the export policy (active redaction policy plus the default " +
+            "sensitive headers and URL query values). Exports are always masked.");
+
         private string FormatHeaderValue(string key, string value)
         {
-            if (_maskConfidentialHeaders && RedactionPolicy.Default.IsSensitiveHeader(key))
-            {
-                return RedactionPolicy.RedactedValue;
-            }
-
-            return value ?? string.Empty;
+            // Same policy as Export: the active capture policy plus the default sensitive headers (#1009).
+            return _maskConfidentialHeaders
+                ? ResolveExportPolicy(MonitorInterceptor.RedactionPolicy).RedactHeaderValue(key, value ?? string.Empty)
+                : value ?? string.Empty;
         }
 
         private static Color GetMethodColor(string method)

@@ -159,7 +159,13 @@ namespace TurboHTTP.Testing
             "signature",
             "sig",
             "auth",
-            "password"
+            "password",
+            // Pre-signed URL credentials (AWS SigV4, Google Cloud Storage V4).
+            "X-Amz-Signature",
+            "X-Amz-Credential",
+            "X-Amz-Security-Token",
+            "X-Goog-Signature",
+            "X-Goog-Credential"
         };
 
         // OAuth 2.0 / OIDC names (RFC 6749 sections 4.1.3, 4.3.2, 5.1, 6; RFC 7636 section 4.5; OIDC

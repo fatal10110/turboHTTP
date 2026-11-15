@@ -21,7 +21,7 @@ namespace TurboHTTP.Cache
 
             context.RecordEvent("CacheInvalidated", new Dictionary<string, object>
             {
-                { "uri", NormalizeUri(requestUri) },
+                { "uri", UrlRedaction.RedactUrl(NormalizeUri(requestUri)) },
                 { "count", invalidationTargets.Count }
             });
         }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Middleware
 {
@@ -116,7 +117,8 @@ namespace TurboHTTP.Middleware
             {
                 throw CreateRedirectError(
                     UHttpErrorType.InvalidRequest,
-                    $"Invalid redirect Location header '{location}'.",
+                    // The Location value is peer-controlled and may carry credentials or tokens (#795).
+                    $"Invalid redirect Location header in a {statusCode} response from '{UrlRedaction.Origin(currentUri)}'.",
                     ex);
             }
         }
