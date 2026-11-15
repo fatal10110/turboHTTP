@@ -61,6 +61,43 @@ namespace TurboHTTP.Unity
         /// <summary> Above this size threshold in bytes, the audio will be streamed if enabled. </summary>
         public int StreamingThresholdBytes { get; set; } = 2 * 1024 * 1024;
 
+        /// <summary> Default for <see cref="MaxSourceBytes"/>: 64 MiB. </summary>
+        public const long DefaultMaxSourceBytes = 64L * 1024 * 1024;
+
+        /// <summary>
+        /// Default for <see cref="MaxDecodedSamples"/>: 32 Mi samples (about 5.8 minutes of
+        /// 48 kHz stereo; 128 MiB as 32-bit float PCM).
+        /// </summary>
+        public const long DefaultMaxDecodedSamples = 32L * 1024 * 1024;
+
+        /// <summary>
+        /// Maximum encoded payload size in bytes. A larger body is rejected with
+        /// <see cref="InvalidOperationException"/> before any decode, temp file or decode slot is
+        /// used. Defaults to <see cref="DefaultMaxSourceBytes"/>; <c>null</c> removes the limit (the
+        /// client's buffered-body limit still applies).
+        /// </summary>
+        public long? MaxSourceBytes { get; set; } = DefaultMaxSourceBytes;
+
+        /// <summary>
+        /// Maximum number of samples (sample frames x channels) a clip may decode into memory.
+        /// Defaults to <see cref="DefaultMaxDecodedSamples"/>; <c>null</c> removes the limit.
+        /// </summary>
+        /// <remarks>
+        /// While a limit is set:
+        /// <list type="bullet">
+        /// <item><description>WAV and AIFF clips that are not streamed are checked against the
+        /// sample count their header declares before decoding; a larger or unreadable header is
+        /// rejected with <see cref="InvalidOperationException"/>. Managed threaded decode is skipped
+        /// for such clips, so a streamed load can still take them.</description></item>
+        /// <item><description>MP3 and OGG clips declare no reliable decoded size, so Unity streams
+        /// them regardless of <see cref="StreamingThresholdBytes"/> (a streamed clip keeps its temp
+        /// file until it is destroyed). With <see cref="EnableStreamingForLargeClips"/> disabled
+        /// they are rejected.</description></item>
+        /// </list>
+        /// Set <c>null</c> to restore unbounded in-memory decoding of small compressed clips.
+        /// </remarks>
+        public long? MaxDecodedSamples { get; set; } = DefaultMaxDecodedSamples;
+
         public AudioClipPipelineOptions Clone()
         {
             return new AudioClipPipelineOptions
@@ -74,7 +111,9 @@ namespace TurboHTTP.Unity
                 EnableThreadedDecode = EnableThreadedDecode,
                 ThreadedDecodeMinBytes = ThreadedDecodeMinBytes,
                 EnableStreamingForLargeClips = EnableStreamingForLargeClips,
-                StreamingThresholdBytes = StreamingThresholdBytes
+                StreamingThresholdBytes = StreamingThresholdBytes,
+                MaxSourceBytes = MaxSourceBytes,
+                MaxDecodedSamples = MaxDecodedSamples
             };
         }
 
@@ -88,6 +127,10 @@ namespace TurboHTTP.Unity
             if (CleanupRetryDelay < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(CleanupRetryDelay));
             if (ThreadedDecodeMinBytes < 1) throw new ArgumentOutOfRangeException(nameof(ThreadedDecodeMinBytes));
             if (StreamingThresholdBytes < 1) throw new ArgumentOutOfRangeException(nameof(StreamingThresholdBytes));
+            if (MaxSourceBytes.HasValue && MaxSourceBytes.Value < 1)
+                throw new ArgumentOutOfRangeException(nameof(MaxSourceBytes));
+            if (MaxDecodedSamples.HasValue && MaxDecodedSamples.Value < 1)
+                throw new ArgumentOutOfRangeException(nameof(MaxDecodedSamples));
         }
     }
 
@@ -187,12 +230,18 @@ namespace TurboHTTP.Unity
             cancellationToken.ThrowIfCancellationRequested();
 
             var options = GetOptions();
+
+            // Bounds run before the decode slot and the temp file are taken, so rejected input
+            // writes nothing to disk.
+            var plan = AudioDecodeBounds.Plan(response.Body, audioType, options);
+
             var limiter = GetDecodeLimiter();
 
             await limiter.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (options.EnableThreadedDecode &&
+                if (plan.AllowInMemoryDecode &&
+                    options.EnableThreadedDecode &&
                     response.Body.Length >= options.ThreadedDecodeMinBytes)
                 {
                     var managedClip = await TryManagedDecodeAsync(
@@ -209,7 +258,7 @@ namespace TurboHTTP.Unity
                         response,
                         audioType,
                         clipName,
-                        options,
+                        plan.Stream,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -329,7 +378,7 @@ namespace TurboHTTP.Unity
             UHttpResponse response,
             AudioClipType audioType,
             string clipName,
-            AudioClipPipelineOptions options,
+            bool shouldStream,
             CancellationToken cancellationToken)
         {
             if (!UnityTempFileManager.Shared.TryReservePath(GetExtension(audioType), out var tempPath))
@@ -346,10 +395,6 @@ namespace TurboHTTP.Unity
                 await UnityTempFileManager.Shared
                     .WriteBytesAsync(tempPath, GetBodyMemory(response.Body), cancellationToken)
                     .ConfigureAwait(false);
-
-                var shouldStream =
-                    options.EnableStreamingForLargeClips &&
-                    response.Body.Length >= options.StreamingThresholdBytes;
 
                 return await LoadAudioClipFromFileAsync(
                         lease,

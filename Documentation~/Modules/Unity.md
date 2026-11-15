@@ -27,7 +27,7 @@ Texture2D tex = await client.GetTextureAsync("https://example.com/image.png");
 Sprite sprite = await client.GetSpriteAsync("https://example.com/image.png");
 ```
 
-`TextureOptions` bounds the work (`MaxBodyBytes`, `MaxPixels`, concurrent decodes) so a hostile image cannot exhaust memory. To decode a response you already have, use `response.AsTexture2D()`, and `texture.AsSprite()` for a sprite.
+`TextureOptions` bounds the work so a hostile image cannot exhaust memory: `MaxSourceBytes` (alias `MaxBodyBytes`) defaults to 64 MiB and `MaxPixels` to 4096 x 4096. The pixel limit is checked against the PNG or JPEG header before decoding; while it is set, an image whose header dimensions cannot be read is rejected with `InvalidOperationException`. Set either limit to `null` to remove it. Concurrent decodes are bounded by `TextureDecodeScheduler`. To decode a response you already have, use `response.AsTexture2D()`, and `texture.AsSprite()` for a sprite.
 
 ### Audio clips
 
@@ -38,7 +38,12 @@ using TurboHTTP.Unity;
 AudioClip clip = await client.GetAudioClipAsync("https://example.com/sound.mp3", AudioClipType.MP3);
 ```
 
-`AudioClipType` is `WAV`, `MP3`, `OGG` or `AIFF`. Tune decoding and temp-file behavior with `AudioClipHandler.Configure(new AudioClipPipelineOptions { ... })`.
+`AudioClipType` is `WAV`, `MP3`, `OGG` or `AIFF`. Tune decoding and temp-file behavior with `AudioClipHandler.Configure(new AudioClipPipelineOptions { ... })`. Two bounds are on by default, and both reject with `InvalidOperationException` before a temp file is written:
+
+- `MaxSourceBytes` (64 MiB) limits the encoded payload.
+- `MaxDecodedSamples` (32 Mi samples, frames x channels) limits what is decoded into memory. A WAV or AIFF clip that is not streamed is checked against the sample count its header declares. MP3 and OGG declare no reliable decoded size, so they are always streamed while the limit is set. A streamed clip keeps its temp file until it is destroyed.
+
+Set either one to `null` to remove it; `MaxDecodedSamples = null` restores in-memory decoding of compressed clips below `StreamingThresholdBytes`.
 
 ### Downloads to Unity paths
 
