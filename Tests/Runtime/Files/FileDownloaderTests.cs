@@ -139,7 +139,6 @@ namespace TurboHTTP.Tests.Files
                     "https://test.com/file", dest,
                     new DownloadOptions
                     {
-                        VerifyChecksum = true,
                         ExpectedMd5 = md5
                     });
 
@@ -164,7 +163,6 @@ namespace TurboHTTP.Tests.Files
                         "https://test.com/file", dest,
                         new DownloadOptions
                         {
-                            VerifyChecksum = true,
                             ExpectedMd5 = "0000000000000000000000000000dead"
                         });
                 });
@@ -188,7 +186,6 @@ namespace TurboHTTP.Tests.Files
                     "https://test.com/file", dest,
                     new DownloadOptions
                     {
-                        VerifyChecksum = true,
                         ExpectedSha256 = sha256
                     });
 
@@ -449,7 +446,6 @@ namespace TurboHTTP.Tests.Files
                     new DownloadOptions
                     {
                         EnableResume = true,
-                        VerifyChecksum = true,
                         ExpectedSha256 = ComputeSha256(full)
                     });
 
