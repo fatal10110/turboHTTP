@@ -12,18 +12,41 @@ namespace TurboHTTP.Unity
     /// Coroutine wrappers over TurboHTTP async APIs for legacy MonoBehaviour workflows.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Cancellation suppresses callback invocation. Once canceled, success/error callbacks
     /// are skipped even if the underlying task later completes.
+    /// </para>
+    /// <para>
+    /// The returned enumerator also implements <see cref="IDisposable"/>. Unity never disposes a
+    /// coroutine enumerator it stops, so dispose it when you stop the coroutine yourself
+    /// (<c>StopCoroutine</c>, <c>StopAllCoroutines</c>, deactivating its host): that cancels the
+    /// request and disposes a response that was not delivered. Destroying
+    /// <c>callbackOwner</c>, deactivating it with <c>cancelOnOwnerInactive</c>, or canceling the
+    /// token does the same without a dispose call.
+    /// </para>
     /// </remarks>
     public static class CoroutineWrapper
     {
+        private static readonly Action<UHttpResponse> DisposeResponse = response => response?.Dispose();
+
         /// <summary>
         /// Sends a request via coroutine callback pattern.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// If <paramref name="cancellationToken"/> is canceled (or <paramref name="callbackOwner"/>
-        /// is destroyed), callbacks are intentionally suppressed.
+        /// is destroyed), callbacks are intentionally suppressed and the request is canceled.
+        /// </para>
+        /// <para>
+        /// <paramref name="onSuccess"/> owns the response and disposes it. A response that is not
+        /// handed to <paramref name="onSuccess"/> (callbacks suppressed, <paramref name="onSuccess"/>
+        /// null, coroutine disposed) is disposed by the coroutine.
+        /// </para>
         /// </remarks>
+        /// <returns>
+        /// An enumerator for <c>StartCoroutine</c> that sends the request on its first step. It
+        /// implements <see cref="IDisposable"/>: dispose it when you stop the coroutine yourself.
+        /// </returns>
         public static IEnumerator SendCoroutine(
             this UHttpRequest request,
             Action<UHttpResponse> onSuccess,
@@ -34,8 +57,9 @@ namespace TurboHTTP.Unity
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
 
-            return SendCoroutineImpl(
-                request,
+            return new CoroutineOperation<UHttpResponse>(
+                token => request.SendBufferedAsync(token).AsTask(),
+                DisposeResponse,
                 onSuccess,
                 onError,
                 cancellationToken,
@@ -59,9 +83,13 @@ namespace TurboHTTP.Unity
         /// </para>
         /// <para>
         /// If <paramref name="cancellationToken"/> is canceled (or <paramref name="callbackOwner"/>
-        /// is destroyed), callbacks are intentionally suppressed.
+        /// is destroyed), callbacks are intentionally suppressed and the request is canceled.
         /// </para>
         /// </remarks>
+        /// <returns>
+        /// An enumerator for <c>StartCoroutine</c> that sends the request on its first step. It
+        /// implements <see cref="IDisposable"/>: dispose it when you stop the coroutine yourself.
+        /// </returns>
         public static IEnumerator GetJsonCoroutine<T>(
             this UHttpClient client,
             string url,
@@ -75,9 +103,9 @@ namespace TurboHTTP.Unity
             if (string.IsNullOrWhiteSpace(url))
                 throw new ArgumentException("URL cannot be null or empty.", nameof(url));
 
-            return GetJsonCoroutineImpl(
-                client,
-                url,
+            return new CoroutineOperation<T>(
+                token => CreateJsonTask<T>(client, url, token),
+                null,
                 onSuccess,
                 onError,
                 cancellationToken,
@@ -85,151 +113,7 @@ namespace TurboHTTP.Unity
                 cancelOnOwnerInactive);
         }
 
-        private static IEnumerator SendCoroutineImpl(
-            UHttpRequest request,
-            Action<UHttpResponse> onSuccess,
-            Action<Exception> onError,
-            CancellationToken cancellationToken,
-            UnityEngine.Object callbackOwner,
-            bool cancelOnOwnerInactive)
-        {
-            var lifecycleBinding = LifecycleCancellation.Bind(
-                callbackOwner,
-                cancellationToken,
-                cancelOnOwnerInactive);
-
-            Task<UHttpResponse> task;
-            try
-            {
-                task = request.SendBufferedAsync(lifecycleBinding.Token).AsTask();
-            }
-            catch (Exception ex)
-            {
-                InvokeErrorIfEligible(onError, ex, callbackOwner, lifecycleBinding);
-                lifecycleBinding.Dispose();
-                yield break;
-            }
-
-            yield return RunTaskCoroutine(
-                task,
-                () => task.Result,
-                onSuccess,
-                onError,
-                callbackOwner,
-                lifecycleBinding);
-        }
-
-        private static IEnumerator GetJsonCoroutineImpl<T>(
-            UHttpClient client,
-            string url,
-            Action<T> onSuccess,
-            Action<Exception> onError,
-            CancellationToken cancellationToken,
-            UnityEngine.Object callbackOwner,
-            bool cancelOnOwnerInactive)
-        {
-            var lifecycleBinding = LifecycleCancellation.Bind(
-                callbackOwner,
-                cancellationToken,
-                cancelOnOwnerInactive);
-
-            Task<T> jsonTask;
-            try
-            {
-                jsonTask = CreateJsonTask<T>(client, url, lifecycleBinding.Token);
-            }
-            catch (Exception ex)
-            {
-                InvokeErrorIfEligible(onError, ex, callbackOwner, lifecycleBinding);
-                lifecycleBinding.Dispose();
-                yield break;
-            }
-
-            yield return RunTaskCoroutine(
-                jsonTask,
-                () => jsonTask.Result,
-                onSuccess,
-                onError,
-                callbackOwner,
-                lifecycleBinding);
-        }
-
-        private static IEnumerator RunTaskCoroutine<T>(
-            Task task,
-            Func<T> getResult,
-            Action<T> onSuccess,
-            Action<Exception> onError,
-            UnityEngine.Object callbackOwner,
-            LifecycleCancellationBinding lifecycleBinding)
-        {
-            var terminalState = 0;
-
-            bool TryEnterTerminal()
-            {
-                return Interlocked.CompareExchange(ref terminalState, 1, 0) == 0;
-            }
-
-            void InvokeError(Exception exception)
-            {
-                if (!TryEnterTerminal())
-                    return;
-
-                if (!ShouldInvokeCallbacks(callbackOwner, lifecycleBinding))
-                    return;
-
-                if (onError != null)
-                {
-                    onError(exception);
-                }
-                else if (exception != null)
-                {
-                    Debug.LogException(exception);
-                }
-            }
-
-            try
-            {
-                while (!task.IsCompleted)
-                {
-                    if (IsCallbackSuppressed(callbackOwner, lifecycleBinding))
-                        yield break;
-
-                    yield return null;
-                }
-
-                if (task.IsCanceled || IsCallbackSuppressed(callbackOwner, lifecycleBinding))
-                    yield break;
-
-                if (task.IsFaulted)
-                {
-                    InvokeError(UnwrapTaskException(task.Exception));
-                    yield break;
-                }
-
-                try
-                {
-                    var result = getResult();
-
-                    if (!TryEnterTerminal())
-                        yield break;
-
-                    if (ShouldInvokeCallbacks(callbackOwner, lifecycleBinding))
-                    {
-                        onSuccess?.Invoke(result);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    InvokeError(UnwrapTaskException(ex));
-                }
-            }
-            finally
-            {
-                lifecycleBinding?.Dispose();
-            }
-        }
-
-        private static bool IsCallbackSuppressed(
+        internal static bool IsCallbackSuppressed(
             UnityEngine.Object callbackOwner,
             LifecycleCancellationBinding lifecycleBinding)
         {
@@ -239,7 +123,7 @@ namespace TurboHTTP.Unity
             return !ShouldInvokeCallbacks(callbackOwner, lifecycleBinding);
         }
 
-        private static bool ShouldInvokeCallbacks(
+        internal static bool ShouldInvokeCallbacks(
             UnityEngine.Object callbackOwner,
             LifecycleCancellationBinding lifecycleBinding)
         {
@@ -249,7 +133,7 @@ namespace TurboHTTP.Unity
             return callbackOwner == null || callbackOwner;
         }
 
-        private static void InvokeErrorIfEligible(
+        internal static void InvokeErrorIfEligible(
             Action<Exception> onError,
             Exception exception,
             UnityEngine.Object callbackOwner,
@@ -268,7 +152,7 @@ namespace TurboHTTP.Unity
             }
         }
 
-        private static Exception UnwrapTaskException(Exception exception)
+        internal static Exception UnwrapTaskException(Exception exception)
         {
             if (exception == null)
                 return new InvalidOperationException("Task failed with an unknown error.");

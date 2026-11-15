@@ -82,7 +82,25 @@ IEnumerator LoadData()
 }
 ```
 
-The callback owns the response and disposes it. Pass `callbackOwner` and `cancelOnOwnerInactive: true` to cancel the request when a `MonoBehaviour` is disabled or destroyed.
+The callback owns the response and disposes it. A response the callback never receives (callbacks suppressed, no `onSuccess`, coroutine disposed) is disposed for you. Pass `callbackOwner` to cancel the request when that object is destroyed, and add `cancelOnOwnerInactive: true` to cancel it when its GameObject is deactivated.
+
+Unity never disposes a coroutine it stops, so the wrapper cannot see `StopCoroutine` or `StopAllCoroutines` by itself. The returned enumerator implements `IDisposable`: when you stop the coroutine yourself, dispose it as well. That cancels the request and disposes a response that was not delivered.
+
+<!-- snippet: with UHttpClient client = null; -->
+<!-- snippet: with MonoBehaviour host = null; -->
+```csharp
+using System;
+using TurboHTTP.Unity;
+
+var request = client.Get("https://api.example.com/data").SendCoroutine(
+    onSuccess: response => response.Dispose(),
+    callbackOwner: host);
+host.StartCoroutine(request);
+
+// Later, to cancel it:
+host.StopCoroutine(request);
+(request as IDisposable)?.Dispose();
+```
 
 ## Mobile networking
 

@@ -12,7 +12,7 @@ namespace TurboHTTP.UniTask
     public static class UHttpClientUniTaskExtensions
     {
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Get(...).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Get(...).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> GetAsync(
             this UHttpClient client,
@@ -25,7 +25,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Delete(...).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Delete(...).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> DeleteAsync(
             this UHttpClient client,
@@ -38,7 +38,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Head(...).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Head(...).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> HeadAsync(
             this UHttpClient client,
@@ -51,7 +51,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Options(...).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Options(...).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> OptionsAsync(
             this UHttpClient client,
@@ -64,7 +64,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Post(...).WithBody(byte[]).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Post(...).WithBody(byte[]).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PostAsync(
             this UHttpClient client,
@@ -78,7 +78,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Post(...).WithBody(string).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Post(...).WithBody(string).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PostAsync(
             this UHttpClient client,
@@ -92,7 +92,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Put(...).WithBody(byte[]).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Put(...).WithBody(byte[]).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PutAsync(
             this UHttpClient client,
@@ -106,7 +106,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Put(...).WithBody(string).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Put(...).WithBody(string).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PutAsync(
             this UHttpClient client,
@@ -120,7 +120,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Patch(...).WithBody(byte[]).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Patch(...).WithBody(byte[]).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PatchAsync(
             this UHttpClient client,
@@ -134,7 +134,7 @@ namespace TurboHTTP.UniTask
         }
 
         /// <summary>
-        /// Zero-overhead UniTask wrapper for UHttpClient.Patch(...).WithBody(string).SendBufferedAsync(...).
+        /// UniTask wrapper for UHttpClient.Patch(...).WithBody(string).SendBufferedAsync(...).
         /// </summary>
         public static UniTask<UHttpResponse> PatchAsync(
             this UHttpClient client,
@@ -156,8 +156,11 @@ namespace TurboHTTP.UniTask
         /// <param name="cancellationToken">Reaches the transport: cancelling it aborts the in-flight request
         /// and releases its connection. For a deadline, set <see cref="UHttpRequest.WithTimeout(System.TimeSpan)"/>
         /// on the request (enforced by the transport), or cancel this token from a timer.</param>
-        /// <param name="playerLoopTiming">Player-loop timing the result is delivered on; defaults to
-        /// <see cref="TurboHttpUniTaskOptions.DefaultPlayerLoopTiming"/>.</param>
+        /// <param name="playerLoopTiming">Player-loop timing to yield to before the result is returned; defaults
+        /// to <see cref="TurboHttpUniTaskOptions.DefaultPlayerLoopTiming"/>. <see cref="PlayerLoopTiming.Update"/>
+        /// adds no yield: the result is returned where the response await resumed, which is the main thread
+        /// only when the call started on the main thread (Unity's <c>SynchronizationContext</c>). Any other
+        /// timing resumes on the main thread in that player-loop phase.</param>
         public static UniTask<UHttpResponse> AsUniTask(
             this UHttpClient client,
             UHttpRequest request,
@@ -177,8 +180,11 @@ namespace TurboHTTP.UniTask
         /// <param name="cancellationToken">Reaches the transport: cancelling it aborts the in-flight request
         /// and releases its connection. For a deadline, set <see cref="UHttpRequest.WithTimeout(System.TimeSpan)"/>
         /// on the request (enforced by the transport), or cancel this token from a timer.</param>
-        /// <param name="playerLoopTiming">Player-loop timing the result is delivered on; defaults to
-        /// <see cref="TurboHttpUniTaskOptions.DefaultPlayerLoopTiming"/>.</param>
+        /// <param name="playerLoopTiming">Player-loop timing to yield to before the result is returned; defaults
+        /// to <see cref="TurboHttpUniTaskOptions.DefaultPlayerLoopTiming"/>. <see cref="PlayerLoopTiming.Update"/>
+        /// adds no yield: the result is returned where the response await resumed, which is the main thread
+        /// only when the call started on the main thread (Unity's <c>SynchronizationContext</c>). Any other
+        /// timing resumes on the main thread in that player-loop phase.</param>
         public static UniTask<UHttpResponse> AsUniTask(
             this UHttpRequest request,
             CancellationToken cancellationToken = default,
