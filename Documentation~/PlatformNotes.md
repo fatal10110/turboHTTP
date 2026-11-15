@@ -46,9 +46,11 @@ options.ConnectionPool.MaxConnectionsPerHost = 4;
 
 A reused HTTP/1.1 connection that sends no response byte within `ReusedConnectionFirstByteTimeout` after an
 idempotent request (GET, HEAD, PUT, DELETE, OPTIONS, TRACE with a replayable body) is closed and the request is
-sent once more on a fresh connection. That fresh connection gets the same bound: if it stays silent too, the
-request fails, with no further attempt. A POST is never replayed and keeps waiting until the request timeout.
-`Timeout.InfiniteTimeSpan` turns this off.
+sent once more on a newly connected socket, directly or through the proxy alike. That retry connection waits
+for the response until the request timeout, like any other fresh connection, and is not retried again. The
+bound is a time to first byte: a server slower than it to start answering a request sent on a reused
+connection receives the request twice, and the response arrives after the bound plus its time to first byte.
+A POST is never replayed and keeps waiting until the request timeout. `Timeout.InfiniteTimeSpan` turns this off.
 
 ## HTTP/2 needs the BouncyCastle backend
 

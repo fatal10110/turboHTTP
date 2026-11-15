@@ -341,14 +341,16 @@ namespace TurboHTTP.Transport
 
         /// <summary>
         /// The first-byte watchdog for an HTTP/1.1 attempt (#47): armed on a reused connection for an
-        /// idempotent, replayable request, where a silent connection is retried once on a fresh one.
-        /// <paramref name="retryLease"/> arms it on that fresh retry connection too (#364/#384
-        /// stopgap): a receive lost on the retry fails at the first-byte bound instead of waiting for
-        /// the request timeout. <see cref="Timeout.InfiniteTimeSpan"/> = not armed.
+        /// idempotent, replayable request, where a silent connection is retried once on a newly
+        /// connected one, directly or through the proxy (#830). The retry connection is not armed:
+        /// like any other fresh connection it waits for the request timeout, so a slow response is not
+        /// failed or sent a third time (#821). The abandoned read's descriptor hold (#384) keeps the
+        /// retry socket from losing its receive to that read. <see cref="Timeout.InfiniteTimeSpan"/> =
+        /// not armed.
         /// </summary>
-        private TimeSpan GetReusedConnectionFirstByteTimeout(ConnectionLease lease, UHttpRequest request, bool retryLease = false)
+        private TimeSpan GetReusedConnectionFirstByteTimeout(ConnectionLease lease, UHttpRequest request)
         {
-            if ((!lease.Connection.IsReused && !retryLease) ||
+            if (!lease.Connection.IsReused ||
                 !request.Method.IsIdempotent() ||
                 request.Content.Replayability == RequestBodyReplayability.NonReplayable)
             {
@@ -694,105 +696,18 @@ namespace TurboHTTP.Transport
                     _h2Manager.CompleteColdDial(ref coldDial, Http2ConnectionManager.ColdDialOutcome.NotHttp2);
 
                     // 4d. HTTP/1.1 path
-                    var requestWriteState = new Http11RequestWriteState();
-                    try
-                    {
-                        await DispatchOnLeaseAsync(
-                                lease,
-                                request,
-                                handler,
-                                context,
-                                requestWriteState,
-                                ct,
-                                firstByteTimeout: GetReusedConnectionFirstByteTimeout(lease, request))
-                            .ConfigureAwait(false);
-                        lease = null;
-
-                        return;
-                    }
-                    catch (Exception ex) when (
-                        lease != null &&
-                        lease.Connection.IsReused &&
-                        IsStaleReusedConnectionFailure(ex) &&
-                        CanRetryHttp11RequestAfterTransportFailure(request, requestWriteState))
-                    {
-                        lease.Dispose();
-                        lease = null;
-
-                        context.RecordEvent("TransportRetryStale");
-                        context.RecordEvent("TransportConnecting");
-
-                        ConnectionLease freshLease = null;
-                        try
-                        {
-                            // A newly connected socket, not the next idle one: a NAT drop kills every
-                            // idle connection to the host at once (#47). The retry is armed too, but
-                            // its watchdog fails the request instead of retrying again.
-                            freshLease = await _pool.GetNewConnectionAsync(host, port, secure, ct)
-                                .ConfigureAwait(false);
-
-                            if (freshLease.Connection.NegotiatedAlpnProtocol == "h2")
-                            {
-                                context.RecordEvent("TransportH2Init");
-                                freshLease.DetachConnection(); // permit held until publish (#736)
-                                Http2Connection h2Conn;
-                                try
-                                {
-                                    h2Conn = await _h2Manager.GetOrCreateAsync(
-                                        host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
-                                }
-                                finally
-                                {
-                                    freshLease.Dispose();
-                                }
-
-                                freshLease = null;
-                                await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
-                                    .ConfigureAwait(false);
-                                return;
-                            }
-
-                            var retryWriteState = new Http11RequestWriteState();
-                            try
-                            {
-                                await DispatchOnLeaseAsync(
-                                        freshLease,
-                                        request,
-                                        handler,
-                                        context,
-                                        retryWriteState,
-                                        ct,
-                                        firstByteTimeout: GetReusedConnectionFirstByteTimeout(
-                                            freshLease, request, retryLease: true))
-                                    .ConfigureAwait(false);
-                                freshLease = null;
-
-                                return;
-                            }
-                            catch (Exception retryEx) when (
-                                ShouldSurfaceCommittedNonReplayableBodyFailure(
-                                    request,
-                                    retryWriteState,
-                                    ct,
-                                    retryEx))
-                            {
-                                throw CreateCommittedNonReplayableBodyFailure(retryEx);
-                            }
-                        }
-                        finally
-                        {
-                            freshLease?.Dispose();
-                        }
-                    }
-                    catch (Exception ex) when (
-                        ShouldSurfaceCommittedNonReplayableBodyFailure(
+                    var h1Lease = lease;
+                    lease = null; // the stale-retry routine owns it now
+                    await DispatchHttp11WithStaleRetryAsync(
+                            Http11RetryRoute.Direct(host, port, secure),
+                            h1Lease,
                             request,
-                            requestWriteState,
+                            request,
+                            handler,
+                            context,
                             ct,
-                            ex))
-                    {
-                        throw CreateCommittedNonReplayableBodyFailure(ex);
-                    }
+                            cancellationToken)
+                        .ConfigureAwait(false);
                 }
                 finally
                 {
@@ -1051,6 +966,8 @@ namespace TurboHTTP.Transport
 
                 _h2Manager.ReleaseExtraDial(ref extraDial);
                 context.RecordEvent("TransportProxyH1Dispatch");
+                var preparedLease = lease;
+                lease = null; // owned by the dispatch from here, on every path
                 await DispatchProxyHttp11WithRetryAsync(
                         proxyHost,
                         proxyPort,
@@ -1065,9 +982,8 @@ namespace TurboHTTP.Transport
                         context,
                         ct,
                         callerToken,
-                        lease)
+                        preparedLease)
                     .ConfigureAwait(false);
-                lease = null;
             }
             finally
             {
@@ -1141,11 +1057,12 @@ namespace TurboHTTP.Transport
         }
 
         /// <summary>
-        /// Dispatches an HTTP/1.1 request through the proxy, retrying once on a fresh connection
-        /// when a reused one turns out stale. Returns <c>true</c> once the response reached
-        /// <paramref name="handler"/>; returns <c>false</c> only when
-        /// <paramref name="interceptBasicProxyChallenge"/> is set and the proxy answered with a
+        /// Dispatches an HTTP/1.1 request through the proxy, retrying once on a new proxy connection
+        /// when a reused one turns out stale (<see cref="DispatchHttp11WithStaleRetryAsync"/>). Returns
+        /// <c>true</c> once the response reached <paramref name="handler"/>; returns <c>false</c> only
+        /// when <paramref name="interceptBasicProxyChallenge"/> is set and the proxy answered with a
         /// Basic 407, which was consumed (connection pooled or closed) without reaching the handler.
+        /// <paramref name="preparedLease"/>, when given, is owned by this call from its start.
         /// </summary>
         private async Task<bool> DispatchProxyHttp11WithRetryAsync(
             string proxyHost,
@@ -1164,25 +1081,125 @@ namespace TurboHTTP.Transport
             ConnectionLease preparedLease = null,
             bool interceptBasicProxyChallenge = false)
         {
-            ConnectionLease lease = null;
+            var route = Http11RetryRoute.ViaProxy(
+                proxyHost,
+                proxyPort,
+                poolKeyOverride,
+                establishTunnel,
+                targetHost,
+                targetPort,
+                proxy);
+            var lease = preparedLease ?? await AcquirePreparedProxyLeaseAsync(
+                    route,
+                    skipIdle: false,
+                    context,
+                    ct)
+                .ConfigureAwait(false);
+
+            return await DispatchHttp11WithStaleRetryAsync(
+                    route,
+                    lease,
+                    dispatchRequest,
+                    originalRequest,
+                    handler,
+                    context,
+                    ct,
+                    callerToken,
+                    interceptBasicProxyChallenge)
+                .ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Where the one stale-connection retry of an HTTP/1.1 request gets its new connection (#830):
+        /// a newly connected socket to the origin, or a new proxy connection (with a new CONNECT tunnel
+        /// when <see cref="EstablishTunnel"/>), never the next idle one. A value, not a delegate, so the
+        /// request path allocates nothing for a retry it rarely takes.
+        /// </summary>
+        private readonly struct Http11RetryRoute
+        {
+            private Http11RetryRoute(
+                bool viaProxy,
+                string host,
+                int port,
+                bool secure,
+                string proxyHost,
+                int proxyPort,
+                string poolKeyOverride,
+                bool establishTunnel,
+                ProxySettings proxy)
+            {
+                ViaProxyConnection = viaProxy;
+                Host = host;
+                Port = port;
+                Secure = secure;
+                ProxyHost = proxyHost;
+                ProxyPort = proxyPort;
+                PoolKeyOverride = poolKeyOverride;
+                EstablishTunnel = establishTunnel;
+                Proxy = proxy;
+            }
+
+            /// <summary>True through a forward proxy or CONNECT tunnel; false for a direct connection.</summary>
+            public bool ViaProxyConnection { get; }
+
+            /// <summary>The origin (direct) or the tunnel target (null for a forward proxy).</summary>
+            public string Host { get; }
+            public int Port { get; }
+            public bool Secure { get; }
+            public string ProxyHost { get; }
+            public int ProxyPort { get; }
+            public string PoolKeyOverride { get; }
+            public bool EstablishTunnel { get; }
+            public ProxySettings Proxy { get; }
+
+            public static Http11RetryRoute Direct(string host, int port, bool secure) =>
+                new Http11RetryRoute(false, host, port, secure, null, 0, null, false, null);
+
+            public static Http11RetryRoute ViaProxy(
+                string proxyHost,
+                int proxyPort,
+                string poolKeyOverride,
+                bool establishTunnel,
+                string targetHost,
+                int targetPort,
+                ProxySettings proxy) =>
+                new Http11RetryRoute(
+                    true,
+                    targetHost,
+                    targetPort,
+                    secure: false,
+                    proxyHost,
+                    proxyPort,
+                    poolKeyOverride,
+                    establishTunnel,
+                    proxy);
+        }
+
+        /// <summary>
+        /// The one HTTP/1.1 dispatch with the stale-connection retry, for direct and proxied requests
+        /// (#830). The first attempt on <paramref name="lease"/> is armed with the first-byte watchdog
+        /// when that connection is reused (<see cref="GetReusedConnectionFirstByteTimeout"/>). When a
+        /// reused connection fails or stays silent before any response byte and the request may be
+        /// replayed (RFC 9112 section 9.3.1, RFC 9110 section 9.2.2), it is sent once more on a new
+        /// connection from <paramref name="route"/>; that retry is not armed (#821) and is not retried
+        /// again. Owns <paramref name="lease"/> and the retry lease: each is disposed, pooled or handed
+        /// to the response body exactly once. Returns <c>true</c> once the response reached
+        /// <paramref name="handler"/>; <c>false</c> only for a Basic 407 consumed under
+        /// <paramref name="interceptBasicProxyChallenge"/>.
+        /// </summary>
+        private async Task<bool> DispatchHttp11WithStaleRetryAsync(
+            Http11RetryRoute route,
+            ConnectionLease lease,
+            UHttpRequest dispatchRequest,
+            UHttpRequest originalRequest,
+            IHttpHandler handler,
+            RequestContext context,
+            CancellationToken ct,
+            CancellationToken callerToken,
+            bool interceptBasicProxyChallenge = false)
+        {
             try
             {
-                lease = preparedLease;
-                if (lease == null)
-                {
-                    lease = await AcquirePreparedProxyLeaseAsync(
-                            proxyHost,
-                            proxyPort,
-                            poolKeyOverride,
-                            establishTunnel,
-                            targetHost,
-                            targetPort,
-                            proxy,
-                            context,
-                            ct)
-                        .ConfigureAwait(false);
-                }
-
                 var writeState = new Http11RequestWriteState();
                 try
                 {
@@ -1193,7 +1210,8 @@ namespace TurboHTTP.Transport
                             context,
                             writeState,
                             ct,
-                            interceptBasicProxyChallenge)
+                            interceptBasicProxyChallenge,
+                            GetReusedConnectionFirstByteTimeout(lease, originalRequest))
                         .ConfigureAwait(false);
                     var completedLease = lease;
                     lease = null;
@@ -1209,32 +1227,49 @@ namespace TurboHTTP.Transport
                     lease = null;
 
                     context.RecordEvent("TransportRetryStale");
-                    context.RecordEvent("TransportProxyConnecting");
+                    context.RecordEvent(route.ViaProxyConnection ? "TransportProxyConnecting" : "TransportConnecting");
 
                     ConnectionLease freshLease = null;
                     try
                     {
-                        freshLease = await AcquirePreparedProxyLeaseAsync(
-                                proxyHost,
-                                proxyPort,
-                                poolKeyOverride,
-                                establishTunnel,
-                                targetHost,
-                                targetPort,
-                                proxy,
-                                context,
-                                ct)
-                            .ConfigureAwait(false);
+                        // A newly connected socket, not the next idle one: a NAT drop kills every
+                        // idle connection to the host or proxy at once (#47, #831).
+                        freshLease = route.ViaProxyConnection
+                            ? await AcquirePreparedProxyLeaseAsync(route, skipIdle: true, context, ct)
+                                .ConfigureAwait(false)
+                            : await _pool.GetNewConnectionAsync(route.Host, route.Port, route.Secure, ct)
+                                .ConfigureAwait(false);
 
-                        if (establishTunnel && IsHttp2Tunnel(freshLease))
+                        if (!route.ViaProxyConnection && freshLease.Connection.NegotiatedAlpnProtocol == "h2")
+                        {
+                            context.RecordEvent("TransportH2Init");
+                            freshLease.DetachConnection(); // permit held until publish (#736)
+                            Http2Connection h2Conn;
+                            try
+                            {
+                                h2Conn = await _h2Manager.GetOrCreateAsync(
+                                    route.Host, route.Port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                freshLease.Dispose();
+                            }
+
+                            freshLease = null;
+                            await DispatchOnH2ConnectionAsync(h2Conn, dispatchRequest, handler, context, ct, callerToken)
+                                .ConfigureAwait(false);
+                            return true;
+                        }
+
+                        if (route.ViaProxyConnection && route.EstablishTunnel && IsHttp2Tunnel(freshLease))
                         {
                             context.RecordEvent("TransportProxyH2Init");
                             freshLease.TransferOwnership();
                             var h2Conn = await _h2Manager.GetOrCreateAsync(
-                                    targetHost,
-                                    targetPort,
-                                    proxyHost,
-                                    proxyPort,
+                                    route.Host,
+                                    route.Port,
+                                    route.ProxyHost,
+                                    route.ProxyPort,
                                     freshLease.Connection.Stream,
                                     ct)
                                 .ConfigureAwait(false);
@@ -1292,6 +1327,31 @@ namespace TurboHTTP.Transport
             }
         }
 
+        private Task<ConnectionLease> AcquirePreparedProxyLeaseAsync(
+            Http11RetryRoute route,
+            bool skipIdle,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            return AcquirePreparedProxyLeaseAsync(
+                route.ProxyHost,
+                route.ProxyPort,
+                route.PoolKeyOverride,
+                route.EstablishTunnel,
+                route.Host,
+                route.Port,
+                route.Proxy,
+                context,
+                ct,
+                skipIdle);
+        }
+
+        /// <summary>
+        /// A proxy connection ready for an HTTP/1.1 request: the forward-proxy connection, or a
+        /// connection with an established CONNECT tunnel to the target. <paramref name="skipIdle"/>
+        /// (the stale retry, #831) opens new proxy connections only, for the first connection and for
+        /// the authenticated reconnect after a Basic 407 alike.
+        /// </summary>
         private async Task<ConnectionLease> AcquirePreparedProxyLeaseAsync(
             string proxyHost,
             int proxyPort,
@@ -1301,7 +1361,8 @@ namespace TurboHTTP.Transport
             int targetPort,
             ProxySettings proxy,
             RequestContext context,
-            CancellationToken ct)
+            CancellationToken ct,
+            bool skipIdle = false)
         {
             ConnectionLease lease = null;
             try
@@ -1311,13 +1372,21 @@ namespace TurboHTTP.Transport
                 var includeAuth = false;
                 while (true)
                 {
-                    lease = await _pool.GetConnectionAsync(
-                            proxyHost,
-                            proxyPort,
-                            secure: false,
-                            poolKeyOverride,
-                            ct)
-                        .ConfigureAwait(false);
+                    lease = skipIdle
+                        ? await _pool.GetNewConnectionAsync(
+                                proxyHost,
+                                proxyPort,
+                                secure: false,
+                                poolKeyOverride,
+                                ct)
+                            .ConfigureAwait(false)
+                        : await _pool.GetConnectionAsync(
+                                proxyHost,
+                                proxyPort,
+                                secure: false,
+                                poolKeyOverride,
+                                ct)
+                            .ConfigureAwait(false);
 
                     if (!establishTunnel)
                         return lease;
@@ -2088,8 +2157,7 @@ namespace TurboHTTP.Transport
         }
 
         /// <summary>
-        /// Waits for the first response byte on a reused connection (#47), or on the fresh connection
-        /// of its retry (#364/#384 stopgap). Mono and IL2CPP ignore a
+        /// Waits for the first response byte on a reused connection (#47). Mono and IL2CPP ignore a
         /// read token once the read is pending, so expiry disposes the connection (as
         /// <see cref="RegisterDisposeOnCancel"/> does) and surfaces as an <see cref="IOException"/>,
         /// which the stale-connection retry treats like a connection the server closed while idle.
@@ -2125,7 +2193,7 @@ namespace TurboHTTP.Transport
             {
                 ct.ThrowIfCancellationRequested();
                 throw new IOException(
-                    (connection.IsReused ? "Reused connection" : "Retry connection") + " sent no response byte within " +
+                    "Reused connection sent no response byte within " +
                     firstByteTimeout.TotalMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ms.",
                     silentFailure);
             }
@@ -2133,7 +2201,7 @@ namespace TurboHTTP.Transport
             // The watchdog may have fired (and disposed the connection) just after the first byte.
             if (watchdog.IsCancellationRequested && !ct.IsCancellationRequested)
                 throw new IOException(
-                    (connection.IsReused ? "Reused connection" : "Retry connection") + " was closed by the first-byte timeout.");
+                    "Reused connection was closed by the first-byte timeout.");
         }
 
         private async Task<ParsedResponseHead> SendOnLeaseWithExpectContinueAsync(

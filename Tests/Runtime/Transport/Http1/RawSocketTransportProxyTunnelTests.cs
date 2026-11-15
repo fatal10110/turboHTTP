@@ -23,7 +23,7 @@ using TurboHTTP.Transport.Tls;
 namespace TurboHTTP.Tests.Transport.Http1
 {
     [TestFixture]
-    public class RawSocketTransportProxyTunnelTests
+    public partial class RawSocketTransportProxyTunnelTests
     {
         private sealed class ConnectProxyServer : IDisposable
         {
@@ -742,94 +742,109 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
-        public void HttpsViaProxy_StaleHttp11RetryWithH2Alpn_ReroutesToHttp2()
+        public void HttpsViaProxy_StaleHttp11Retry_OpensNewProxyConnectionNotTheNextIdleTunnel()
         {
             AssertAsync.Run(async () =>
             {
-                using var cts = new CancellationTokenSource(10000);
-                var duplex = new TestDuplexStream();
-                var observedRequests = new List<List<(string Name, string Value)>>();
-                var serverTask = RunHttp2OriginAsync(
-                    duplex.ServerStream,
-                    new[] { "rerouted" },
-                    observedRequests,
-                    cts.Token);
-
-                using var staleSocketPair = await SocketPair.CreateAsync();
-                using var h2SocketPair = await SocketPair.CreateAsync();
-                using var pool = new TcpConnectionPool(maxConnectionsPerHost: 1, tlsBackend: TlsBackend.SslStream);
-                using var transport = new RawSocketTransport(
-                    pool,
-                    TlsBackend.SslStream,
-                    new Http2Options { EnableHttp2ThroughConnectTunnels = true });
-
-                var tunnelPoolKey = BuildTunnelPoolKey(h2SocketPair.Port, "example.com", 443);
-                var staleStream = new FailingStream(
-                    new NetworkStream(staleSocketPair.ClientSocket, ownsSocket: false));
-                var staleConnection = new PooledConnection(
-                    staleSocketPair.ClientSocket,
-                    staleStream,
-                    "example.com",
-                    443,
-                    true);
-                staleConnection.UpdateTransportBinding(
-                    staleStream,
-                    "example.com",
-                    443,
-                    isSecure: true,
-                    poolKey: tunnelPoolKey,
-                    tlsVersion: "1.3",
-                    tlsProviderName: "TestTls",
-                    negotiatedAlpnProtocol: "http/1.1");
-
-                var h2Connection = new PooledConnection(
-                    h2SocketPair.ClientSocket,
-                    duplex.ClientStream,
-                    "example.com",
-                    443,
-                    true);
-                h2Connection.UpdateTransportBinding(
-                    duplex.ClientStream,
-                    "example.com",
-                    443,
-                    isSecure: true,
-                    poolKey: tunnelPoolKey,
-                    tlsVersion: "1.3",
-                    tlsProviderName: "TestTls",
-                    negotiatedAlpnProtocol: "h2");
-
-                EnqueueIdleConnection(pool, tunnelPoolKey, staleConnection);
-                EnqueueIdleConnection(pool, tunnelPoolKey, h2Connection);
-
-                using var client = new UHttpClient(new UHttpClientOptions
+                // The stale retry opens a new proxy connection (#831), even when the next idle tunnel
+                // negotiated h2: a NAT drop kills every idle tunnel to the proxy at once. Here the new
+                // proxy connection refuses the CONNECT, so the request fails without touching the idle h2 tunnel.
+                var proxyListener = new TcpListener(IPAddress.Loopback, 0);
+                proxyListener.Start();
+                try
                 {
-                    AllowCleartext = true,
-                    Transport = transport,
-                    DisposeTransport = false,
-                    Proxy = new ProxySettings
+                    var proxyPort = ((IPEndPoint)proxyListener.LocalEndpoint).Port;
+                    var proxyTask = Task.Run(async () =>
                     {
-                        Address = new Uri($"http://127.0.0.1:{h2SocketPair.Port}"),
-                        UseEnvironmentVariables = false
-                    }
-                });
+                        using var proxyClient = await proxyListener.AcceptTcpClientAsync();
+                        var proxyStream = proxyClient.GetStream();
+                        var connect = await ReadRequestStartAndHeadersAsync(proxyStream, CancellationToken.None);
+                        await WriteResponseAsync(
+                            proxyStream,
+                            "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return connect.RequestLine;
+                    });
 
-                using (var response = await client
-                           .Get("https://example.com/reroute")
-                           .SendBufferedAsync())
-                {
-                    Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-                    Assert.AreEqual("rerouted", response.GetBodyAsString());
+                    using var staleSocketPair = await SocketPair.CreateAsync();
+                    using var h2SocketPair = await SocketPair.CreateAsync();
+                    using var pool = new TcpConnectionPool(maxConnectionsPerHost: 1, tlsBackend: TlsBackend.SslStream);
+                    using var transport = new RawSocketTransport(
+                        pool,
+                        TlsBackend.SslStream,
+                        new Http2Options { EnableHttp2ThroughConnectTunnels = true });
+
+                    var tunnelPoolKey = BuildTunnelPoolKey(proxyPort, "example.com", 443);
+                    var staleStream = new FailingStream(
+                        new NetworkStream(staleSocketPair.ClientSocket, ownsSocket: false));
+                    var staleConnection = new PooledConnection(
+                        staleSocketPair.ClientSocket,
+                        staleStream,
+                        "example.com",
+                        443,
+                        true);
+                    staleConnection.UpdateTransportBinding(
+                        staleStream,
+                        "example.com",
+                        443,
+                        isSecure: true,
+                        poolKey: tunnelPoolKey,
+                        tlsVersion: "1.3",
+                        tlsProviderName: "TestTls",
+                        negotiatedAlpnProtocol: "http/1.1");
+
+                    var h2Stream = new NetworkStream(h2SocketPair.ClientSocket, ownsSocket: false);
+                    var h2Connection = new PooledConnection(
+                        h2SocketPair.ClientSocket,
+                        h2Stream,
+                        "example.com",
+                        443,
+                        true);
+                    h2Connection.UpdateTransportBinding(
+                        h2Stream,
+                        "example.com",
+                        443,
+                        isSecure: true,
+                        poolKey: tunnelPoolKey,
+                        tlsVersion: "1.3",
+                        tlsProviderName: "TestTls",
+                        negotiatedAlpnProtocol: "h2");
+
+                    EnqueueIdleConnection(pool, tunnelPoolKey, staleConnection);
+                    EnqueueIdleConnection(pool, tunnelPoolKey, h2Connection);
+
+                    using var client = new UHttpClient(new UHttpClientOptions
+                    {
+                        AllowCleartext = true,
+                        Transport = transport,
+                        DisposeTransport = false,
+                        Proxy = new ProxySettings
+                        {
+                            Address = new Uri($"http://127.0.0.1:{proxyPort}"),
+                            UseEnvironmentVariables = false
+                        }
+                    });
+
+                    AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                        await client.Get("https://example.com/reroute")
+                            .WithTimeout(TimeSpan.FromSeconds(5))
+                            .SendBufferedAsync());
+
+                    Assert.AreEqual("CONNECT example.com:443 HTTP/1.1", await proxyTask,
+                        "the retry must open a new proxy connection and send CONNECT on it");
+                    Assert.IsFalse(transport.HasHttp2Connection("example.com", 443, "127.0.0.1", proxyPort),
+                        "the idle h2 tunnel must not carry the retry");
+                    var idle = (ConcurrentDictionary<string, ConcurrentQueue<PooledConnection>>)typeof(TcpConnectionPool)
+                        .GetField("_idleConnections", BindingFlags.NonPublic | BindingFlags.Instance)
+                        .GetValue(pool);
+                    Assert.IsTrue(
+                        idle.TryGetValue(tunnelPoolKey, out var idleTunnels) &&
+                        Array.IndexOf(idleTunnels.ToArray(), h2Connection) >= 0,
+                        "the idle h2 tunnel stays in the idle queue");
                 }
-
-                await serverTask;
-
-                Assert.IsTrue(transport.HasHttp2Connection(
-                    "example.com",
-                    443,
-                    "127.0.0.1",
-                    h2SocketPair.Port));
-                Assert.AreEqual(1, observedRequests.Count);
-                AssertHeader(observedRequests[0], ":path", "/reroute");
+                finally
+                {
+                    proxyListener.Stop();
+                }
             });
         }
 

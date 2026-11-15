@@ -469,6 +469,17 @@ namespace TurboHTTP.Transport.Tcp
             return GetConnectionCoreAsync(host, port, secure, poolKeyOverride: null, skipIdle: true, skipAfterPermitWait: null, ct);
         }
 
+        /// <summary>
+        /// As <see cref="GetNewConnectionAsync(string, int, bool, CancellationToken)"/>, under
+        /// <paramref name="poolKeyOverride"/> (a proxy connection or CONNECT tunnel key): the stale
+        /// retry through a proxy opens a new proxy connection instead of taking the next idle one (#831).
+        /// </summary>
+        internal ValueTask<ConnectionLease> GetNewConnectionAsync(
+            string host, int port, bool secure, string poolKeyOverride, CancellationToken ct)
+        {
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride, skipIdle: true, skipAfterPermitWait: null, ct);
+        }
+
         private ValueTask<ConnectionLease> GetConnectionCoreAsync(
             string host,
             int port,
