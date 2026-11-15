@@ -5,6 +5,10 @@
 //   interop <dir> <server> <port> [--row <filter>]     the interop rows against a running server
 //                                                      (nghttpd, nginx, h2o, go, envoy, nghttpx: docker, started
 //                                                      by run.sh; port 0 for kestrel, which the harness hosts itself)
+//   serve <dir> [port]                                 Kestrel on 127.0.0.1 (h2 and HTTP/1.1 over TLS, the generated files)
+//                                                      until SIGINT/SIGTERM, for the Unity HTTP/2-over-TLS rows (#885,
+//                                                      Tests/Runtime/Integration/Http2TlsBackendRowTests.cs); prints
+//                                                      TURBOHTTP_H2_ROWS_URL and TURBOHTTP_H2_ROWS_ROOT
 //
 // Interop needs SSL_CERT_FILE=<dir>/root.pem (run.sh sets it) so the platform verifier trusts the per-run root.
 // Exit 0 when every row passes, 1 when a row or a precondition fails, 2 on usage errors. Nothing skips: a row a server
@@ -13,6 +17,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Tests.Transport.Http2.Adversarial;
@@ -36,6 +41,12 @@ namespace TurboHTTP.Tools.H2Interop
                     return 0;
                 }
 
+                if ((args.Length == 2 || args.Length == 3) && args[0] == "serve")
+                {
+                    int port = args.Length == 3 ? int.Parse(args[2], CultureInfo.InvariantCulture) : 0;
+                    return await ServeAsync(Path.GetFullPath(args[1]), port).ConfigureAwait(false);
+                }
+
                 if (args.Length >= 4 && args[0] == "interop" && (args.Length == 4 || (args.Length == 6 && args[4] == "--row")))
                 {
                     int port = int.Parse(args[3], CultureInfo.InvariantCulture);
@@ -48,8 +59,42 @@ namespace TurboHTTP.Tools.H2Interop
             }
 
             Console.Error.WriteLine(
-                "usage: TurboHTTP.H2Interop adversarial [--row <filter>] | generate <dir> | interop <dir> <server> <port> [--row <filter>]");
+                "usage: TurboHTTP.H2Interop adversarial [--row <filter>] | generate <dir> | interop <dir> <server> <port> [--row <filter>]" +
+                " | serve <dir> [port]");
             return 2;
+        }
+
+        /// <summary>
+        /// Serves the files <c>generate</c> wrote into <paramref name="dir"/> until SIGINT or SIGTERM. The root is a
+        /// throwaway per-run certificate: only the test-anchor hook of the Unity rows trusts it.
+        /// </summary>
+        private static async Task<int> ServeAsync(string dir, int port)
+        {
+            var stop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            ConsoleCancelEventHandler onCancel = (_, e) =>
+            {
+                e.Cancel = true;
+                stop.TrySetResult();
+            };
+            Console.CancelKeyPress += onCancel;
+            using var onTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+            {
+                context.Cancel = true;
+                stop.TrySetResult();
+            });
+            try
+            {
+                await using var host = await KestrelHost.StartAsync(dir, port, allowHttp1: true).ConfigureAwait(false);
+                Console.WriteLine("TURBOHTTP_H2_ROWS_URL=https://127.0.0.1:" + host.Port.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("TURBOHTTP_H2_ROWS_ROOT=" + Path.Combine(dir, TurboHTTP.Tools.TlsInterop.TestPki.RootFile));
+                Console.WriteLine("serving until SIGINT (Ctrl+C) or SIGTERM");
+                await stop.Task.ConfigureAwait(false);
+                return 0;
+            }
+            finally
+            {
+                Console.CancelKeyPress -= onCancel;
+            }
         }
 
         private static async Task<int> RunAdversarialAsync(string filter)
