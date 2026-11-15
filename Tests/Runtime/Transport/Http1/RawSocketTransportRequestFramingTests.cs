@@ -168,8 +168,9 @@ namespace TurboHTTP.Tests.Transport.Http1
             });
         }
 
-        [Test]
-        public void BodySourceFailure_ServerStillWaiting_FailsWithoutReadingAResponse()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BodySourceFailure_ServerStillWaiting_FailsWithoutReadingAResponse(bool socketCause)
         {
             AssertAsync.Run(async () =>
             {
@@ -180,7 +181,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                     headRead.TrySetResult(true);
                 }, keepFirstConnectionOpen: true);
 
-                using var body = new FailAfterReadStream(Encoding.ASCII.GetBytes("abcdefghij"), 5);
+                using var body = new FailAfterReadStream(Encoding.ASCII.GetBytes("abcdefghij"), 5, socketCause);
                 using var client = CreateClient(new RawSocketTransport());
 
                 // The server never answers and keeps the connection open: reading a response here

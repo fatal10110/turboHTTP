@@ -748,12 +748,18 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             private readonly byte[] _data;
             private readonly int _failAfter;
+            private readonly bool _socketCause;
             private int _position;
 
-            public FailAfterReadStream(byte[] data, int failAfter)
+            /// <param name="socketCause">
+            /// Wrap a <see cref="SocketException"/> in the read failure, the shape a source backed
+            /// by another network stream (or a piped response body) fails with.
+            /// </param>
+            public FailAfterReadStream(byte[] data, int failAfter, bool socketCause = false)
             {
                 _data = data;
                 _failAfter = failAfter;
+                _socketCause = socketCause;
             }
 
             public override bool CanRead => true;
@@ -767,7 +773,13 @@ namespace TurboHTTP.Tests.Transport.Http1
             public override int Read(byte[] buffer, int offset, int count)
             {
                 if (_position >= _failAfter)
-                    throw new IOException("body-source-failure");
+                {
+                    throw _socketCause
+                        ? new IOException(
+                            "body-source-failure",
+                            new SocketException((int)SocketError.ConnectionReset))
+                        : new IOException("body-source-failure");
+                }
 
                 int n = Math.Min(count, _failAfter - _position);
                 Buffer.BlockCopy(_data, _position, buffer, offset, n);

@@ -17,6 +17,7 @@ namespace TurboHTTP.Transport.Http1
         private int _bodyWriteStarted;
         private int _messageWritten;
         private long _bodyBytesWritten;
+        private int _bodySourceFailed;
 
         internal bool HasCommittedBodyBytes => Volatile.Read(ref _bodyWriteStarted) != 0;
         internal long BodyBytesWritten => Interlocked.Read(ref _bodyBytesWritten);
@@ -30,6 +31,19 @@ namespace TurboHTTP.Transport.Http1
         /// <see cref="HasCommittedBodyBytes"/> to block a replay instead.
         /// </summary>
         internal bool HasWrittenCompleteMessage => Volatile.Read(ref _messageWritten) != 0;
+
+        /// <summary>
+        /// True once opening or reading the request body source failed (or the source ended
+        /// before the declared Content-Length). The failure is the caller's, not the connection's:
+        /// the server is still waiting for the rest of the body, so the transport must not wait
+        /// for a response to it, whatever exception type the source threw (#837).
+        /// </summary>
+        internal bool BodySourceFailed => Volatile.Read(ref _bodySourceFailed) != 0;
+
+        internal void MarkBodySourceFailed()
+        {
+            Interlocked.Exchange(ref _bodySourceFailed, 1);
+        }
 
         internal void MarkMessageWritten()
         {
@@ -104,7 +118,18 @@ namespace TurboHTTP.Transport.Http1
             // 10. Write body
             if (bodyWriteMode.Kind != RequestBodyWriteKind.None)
             {
-                using var session = await request.Content.OpenReadSessionAsync(ct).ConfigureAwait(false);
+                RequestBodyReadSession openedSession;
+                try
+                {
+                    openedSession = await request.Content.OpenReadSessionAsync(ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    writeState?.MarkBodySourceFailed();
+                    throw;
+                }
+
+                using var session = openedSession;
                 await WriteBodyAsync(
                         request.Content,
                         bodyWriteMode,
@@ -389,13 +414,23 @@ namespace TurboHTTP.Transport.Http1
                         ? buffer.Length
                         : (int)remaining;
 
-                    int bytesRead = await session.ReadAsync(
-                            new Memory<byte>(buffer, 0, bytesToRead),
-                            ct)
-                        .ConfigureAwait(false);
+                    int bytesRead;
+                    try
+                    {
+                        bytesRead = await session.ReadAsync(
+                                new Memory<byte>(buffer, 0, bytesToRead),
+                                ct)
+                            .ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        writeState?.MarkBodySourceFailed();
+                        throw;
+                    }
 
                     if (bytesRead <= 0)
                     {
+                        writeState?.MarkBodySourceFailed();
                         throw new IOException(
                             "Request body ended before the declared Content-Length was fully produced.");
                     }
@@ -426,10 +461,20 @@ namespace TurboHTTP.Transport.Http1
             {
                 while (true)
                 {
-                    int bytesRead = await session.ReadAsync(
-                            new Memory<byte>(bodyBuffer, 0, bodyBuffer.Length),
-                            ct)
-                        .ConfigureAwait(false);
+                    int bytesRead;
+                    try
+                    {
+                        bytesRead = await session.ReadAsync(
+                                new Memory<byte>(bodyBuffer, 0, bodyBuffer.Length),
+                                ct)
+                            .ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        writeState?.MarkBodySourceFailed();
+                        throw;
+                    }
+
                     if (bytesRead == 0)
                         break;
 

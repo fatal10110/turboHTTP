@@ -1936,7 +1936,9 @@ namespace TurboHTTP.Transport
                         _streamingOptions)
                     .ConfigureAwait(false);
             }
-            catch (Exception ex) when (!ct.IsCancellationRequested && IsConnectionWriteFailure(ex))
+            catch (Exception ex) when (!ct.IsCancellationRequested
+                && !(requestWriteState?.BodySourceFailed ?? false)
+                && IsConnectionWriteFailure(ex))
             {
                 sendException = ex;
             }
@@ -2275,10 +2277,12 @@ namespace TurboHTTP.Transport
         }
 
         /// <summary>
-        /// True when <paramref name="ex"/> comes from writing to the connection (a reset or broken
-        /// pipe carries a <see cref="SocketException"/> somewhere in its chain) rather than from the
-        /// request body source. A source failure leaves the server waiting for the rest of the body,
-        /// so reading a response would only wait for the request timeout.
+        /// True when <paramref name="ex"/> looks like a failed write to the connection (a reset or
+        /// broken pipe carries a <see cref="SocketException"/> somewhere in its chain). The caller
+        /// also requires <see cref="Http11RequestWriteState.BodySourceFailed"/> to be unset: a body
+        /// source backed by another socket fails with the same exception shape, and a source
+        /// failure leaves the server waiting for the rest of the body, so reading a response would
+        /// only wait for the request timeout.
         /// </summary>
         private static bool IsConnectionWriteFailure(Exception ex)
         {
