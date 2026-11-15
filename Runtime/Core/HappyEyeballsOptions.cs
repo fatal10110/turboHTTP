@@ -31,7 +31,11 @@ namespace TurboHTTP.Transport.Connection
             set { _attemptSpacingDelay = value; _explicitlySet = true; }
         }
 
-        /// <summary>Maximum connection attempts in flight at once. Default 2.</summary>
+        /// <summary>
+        /// Maximum connection attempts in flight at once. Default 2. At the cap, a due address
+        /// replaces the oldest attempt once that one has been in flight for two attempt delays
+        /// (at least 100 ms), so stalled addresses cannot keep later ones from being tried.
+        /// </summary>
         public int MaxConcurrentAttempts
         {
             get => _maxConcurrentAttempts;

@@ -33,6 +33,13 @@ namespace TurboHTTP.Transport.Connection
             public bool Success => Socket != null;
         }
 
+        // RFC 8305 section 5: "a subsequent connection MUST NOT be started within 10 milliseconds of
+        // the previous attempt". Applied to the starts that do not wait for their due time.
+        private static readonly TimeSpan MinAttemptInterval = TimeSpan.FromMilliseconds(10);
+
+        // RFC 8305 section 5 "Minimum Connection Attempt Delay": the floor of StalledAttemptAge.
+        private static readonly TimeSpan MinStalledAttemptAge = TimeSpan.FromMilliseconds(100);
+
         /// <summary>
         /// Connects to the first reachable address (RFC 8305 Happy Eyeballs v2). The address
         /// families interleave (RFC 8305 section 4): the first alternate-family address starts
@@ -40,7 +47,10 @@ namespace TurboHTTP.Transport.Connection
         /// later attempt <see cref="HappyEyeballsOptions.AttemptSpacingDelay"/> after the previous
         /// one, so an unroutable family never keeps the other family from being tried. When a slot
         /// of <see cref="HappyEyeballsOptions.MaxConcurrentAttempts"/> frees up, a family with no
-        /// attempt in flight goes first.
+        /// attempt in flight goes first. When every attempt in flight has failed, the next address
+        /// starts at once (at least 10 ms after the previous start) instead of at its due time. At
+        /// the cap, a due address replaces the oldest attempt once that one has been in flight for
+        /// two attempt delays (at least 100 ms), so stalled addresses cannot hold every slot.
         /// The first success wins; losing attempts are cancelled and their sockets disposed.
         /// </summary>
         /// <param name="addresses">Resolved addresses (duplicates and nulls are ignored).</param>
@@ -118,8 +128,11 @@ namespace TurboHTTP.Transport.Connection
         {
             CancellationTokenSource linkedCts = null;
             List<Task<AttemptResult>> activeTasks = null;
-            // Address of each in-flight attempt, index-aligned with activeTasks.
+            // Per in-flight attempt, index-aligned with activeTasks (oldest first): its address, its
+            // start time and its own token source, so the oldest one can be cancelled alone (#814).
             List<IPAddress> activeAddresses = null;
+            List<TimeSpan> activeStarts = null;
+            List<CancellationTokenSource> activeCts = null;
 
             try
             {
@@ -129,45 +142,91 @@ namespace TurboHTTP.Transport.Connection
 
                 activeTasks = new List<Task<AttemptResult>>();
                 activeAddresses = new List<IPAddress>();
+                activeStarts = new List<TimeSpan>();
+                activeCts = new List<CancellationTokenSource>();
                 var failures = new List<Exception>();
                 var started = Stopwatch.StartNew();
+                var stalledAge = StalledAttemptAge(options);
+                TimeSpan? lastStart = null;
                 int scheduleIndex = 0;
+                int cap = options.MaxConcurrentAttempts;
 
                 while (scheduleIndex < schedule.Count || activeTasks.Count > 0)
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    while (scheduleIndex < schedule.Count &&
-                           activeTasks.Count < options.MaxConcurrentAttempts &&
-                           schedule[scheduleIndex].Due <= started.Elapsed)
+                    // Every due attempt starts while a slot is free. With nothing in flight the next
+                    // address starts now instead of at its due time (#815): the failure of the only
+                    // attempt ends its Connection Attempt Delay (RFC 8305 section 5, RFC 6555), but never
+                    // within MinAttemptInterval of the previous start.
+                    while (scheduleIndex < schedule.Count && activeTasks.Count < cap)
                     {
+                        var now = started.Elapsed;
+                        if (schedule[scheduleIndex].Due > now &&
+                            (activeTasks.Count > 0 || now < EarliestNextStart(lastStart)))
+                        {
+                            break;
+                        }
+
                         PromoteIdleFamily(schedule, scheduleIndex, activeAddresses);
                         var attempt = schedule[scheduleIndex++];
-                        activeTasks.Add(AttemptAsync(attempt.Address, port, ct, connector));
+                        var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        activeCts.Add(attemptCts);
                         activeAddresses.Add(attempt.Address);
+                        activeStarts.Add(now);
+                        activeTasks.Add(AttemptAsync(attempt.Address, port, attemptCts.Token, connector));
+                        lastStart = now;
+                    }
+
+                    // When the loop next has to look at the schedule again (null: only a completion).
+                    TimeSpan? wakeAt = null;
+                    if (scheduleIndex < schedule.Count)
+                    {
+                        var due = schedule[scheduleIndex].Due;
+                        if (activeTasks.Count == 0)
+                        {
+                            var floor = EarliestNextStart(lastStart);
+                            wakeAt = due < floor ? due : floor;
+                        }
+                        else if (activeTasks.Count < cap)
+                        {
+                            wakeAt = due;
+                        }
+                        else if (!activeCts[0].IsCancellationRequested)
+                        {
+                            // #814: at the cap a due address replaces the oldest attempt once that one
+                            // has stalled; otherwise blackholed addresses hold every slot until the
+                            // connect deadline and the later addresses are never dialled. The
+                            // cancelled attempt keeps its slot until it ended, so at most
+                            // MaxConcurrentAttempts attempts are ever in flight.
+                            var preemptAt = Max(Max(due, SaturatingAdd(activeStarts[0], stalledAge)), EarliestNextStart(lastStart));
+                            if (preemptAt <= started.Elapsed)
+                                activeCts[0].Cancel();
+                            else
+                                wakeAt = preemptAt;
+                        }
                     }
 
                     if (activeTasks.Count == 0)
                     {
-                        if (scheduleIndex >= schedule.Count)
+                        if (!wakeAt.HasValue)
                             break;
 
-                        var wait = schedule[scheduleIndex].Due - started.Elapsed;
+                        var wait = wakeAt.Value - started.Elapsed;
                         if (wait > TimeSpan.Zero)
                             await Task.Delay(wait, ct).ConfigureAwait(false);
                         continue;
                     }
 
                     Task<AttemptResult> completedTask;
-                    if (scheduleIndex < schedule.Count &&
-                        activeTasks.Count < options.MaxConcurrentAttempts)
+                    if (wakeAt.HasValue)
                     {
-                        var untilNext = schedule[scheduleIndex].Due - started.Elapsed;
-                        if (untilNext <= TimeSpan.Zero)
+                        var untilWake = wakeAt.Value - started.Elapsed;
+                        if (untilWake <= TimeSpan.Zero)
                             continue;
 
                         var completionTask = Task.WhenAny(activeTasks);
-                        var scheduleTickTask = Task.Delay(untilNext, ct);
+                        var scheduleTickTask = Task.Delay(untilWake, ct);
                         var signaled = await Task.WhenAny(completionTask, scheduleTickTask)
                             .ConfigureAwait(false);
 
@@ -182,8 +241,13 @@ namespace TurboHTTP.Transport.Connection
                     }
 
                     int completedIndex = activeTasks.IndexOf(completedTask);
+                    bool preempted = activeCts[completedIndex].IsCancellationRequested;
                     activeTasks.RemoveAt(completedIndex);
                     activeAddresses.RemoveAt(completedIndex);
+                    activeStarts.RemoveAt(completedIndex);
+                    // The attempt ended, so nothing uses its token any more.
+                    activeCts[completedIndex].Dispose();
+                    activeCts.RemoveAt(completedIndex);
 
                     var result = await completedTask.ConfigureAwait(false);
                     if (result.Success)
@@ -194,7 +258,8 @@ namespace TurboHTTP.Transport.Connection
                         return result.Socket;
                     }
 
-                    if (result.Exception != null)
+                    // A replaced attempt's cancellation is not a connect failure of that address.
+                    if (result.Exception != null && !preempted)
                         failures.Add(result.Exception);
                 }
 
@@ -223,9 +288,45 @@ namespace TurboHTTP.Transport.Connection
                     await ObserveOutstandingAttemptsAsync(activeTasks).ConfigureAwait(false);
                 }
 
+                // Every attempt ended (drained or observed above), so no token is still in use.
+                if (activeCts != null)
+                {
+                    for (int i = 0; i < activeCts.Count; i++)
+                    {
+                        try { activeCts[i].Dispose(); } catch { }
+                    }
+                }
+
                 try { linkedCts?.Dispose(); } catch { }
             }
         }
+
+        /// <summary>
+        /// The earliest time the next attempt may start: RFC 8305 section 5 forbids starting a
+        /// connection within <see cref="MinAttemptInterval"/> of the previous attempt.
+        /// </summary>
+        private static TimeSpan EarliestNextStart(TimeSpan? lastStart) =>
+            lastStart.HasValue ? lastStart.Value + MinAttemptInterval : TimeSpan.Zero;
+
+        /// <summary>
+        /// How long an attempt must have been in flight before a due address may replace it at the
+        /// <see cref="HappyEyeballsOptions.MaxConcurrentAttempts"/> cap (#814): two Connection Attempt
+        /// Delays (RFC 8305 section 5 sets that delay near the first SYN retransmission, so an attempt
+        /// with no answer after two of them is stalled), never less than the RFC's 100 ms Minimum
+        /// Connection Attempt Delay. A slow but live address is not cancelled the moment the next
+        /// one is due.
+        /// </summary>
+        private static TimeSpan StalledAttemptAge(HappyEyeballsOptions options)
+        {
+            var attemptDelay = Max(options.FamilyStaggerDelay, options.AttemptSpacingDelay);
+            long doubled = attemptDelay.Ticks > long.MaxValue / 2 ? long.MaxValue : attemptDelay.Ticks * 2;
+            return Max(new TimeSpan(doubled), MinStalledAttemptAge);
+        }
+
+        private static TimeSpan Max(TimeSpan a, TimeSpan b) => a >= b ? a : b;
+
+        private static TimeSpan SaturatingAdd(TimeSpan a, TimeSpan b) =>
+            a.Ticks > TimeSpan.MaxValue.Ticks - b.Ticks ? TimeSpan.MaxValue : a + b;
 
         /// <summary>
         /// Picks the attempt that takes a free slot. RFC 8305 section 5 has no in-flight cap; with
