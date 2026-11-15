@@ -5,8 +5,8 @@ using TurboHTTP.Transport.Tls;
 namespace TurboHTTP.Tests.Transport.Tls
 {
     /// <summary>
-    /// #33: RFC 6125 section 6 server identity rules of <see cref="TlsCertificateNameMatcher"/>
-    /// (used by the BouncyCastle provider).
+    /// #33, #929: RFC 6125 section 6 / RFC 9525 section 6 server identity rules of
+    /// <see cref="TlsCertificateNameMatcher"/> (used by the BouncyCastle provider).
     /// </summary>
     [TestFixture]
     public class TlsCertificateNameMatcherTests
@@ -15,7 +15,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         private static readonly byte[] Loopback6 = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
 
         private static bool MatchDns(string host, params string[] dnsNames)
-            => TlsCertificateNameMatcher.Matches(host, true, dnsNames, Array.Empty<byte[]>(), Array.Empty<string>());
+            => TlsCertificateNameMatcher.Matches(host, dnsNames, Array.Empty<byte[]>());
 
         [TestCase("example.com", "example.com")]
         [TestCase("EXAMPLE.com", "example.COM")]
@@ -50,56 +50,41 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void IpHost_MatchesIpAddressEntry()
         {
             Assert.IsTrue(TlsCertificateNameMatcher.Matches(
-                "127.0.0.1", true, Array.Empty<string>(), new[] { Loopback4 }, Array.Empty<string>()));
+                "127.0.0.1", Array.Empty<string>(), new[] { Loopback4 }));
             Assert.IsTrue(TlsCertificateNameMatcher.Matches(
-                "[::1]", true, Array.Empty<string>(), new[] { Loopback6 }, Array.Empty<string>()));
+                "[::1]", Array.Empty<string>(), new[] { Loopback6 }));
             Assert.IsTrue(TlsCertificateNameMatcher.Matches(
-                "::1", true, Array.Empty<string>(), new[] { Loopback6 }, Array.Empty<string>()));
+                "::1", Array.Empty<string>(), new[] { Loopback6 }));
         }
 
         [Test]
         public void IpHost_DifferentAddressOrFamily_Rejected()
         {
             Assert.IsFalse(TlsCertificateNameMatcher.Matches(
-                "127.0.0.2", true, Array.Empty<string>(), new[] { Loopback4 }, Array.Empty<string>()));
+                "127.0.0.2", Array.Empty<string>(), new[] { Loopback4 }));
             Assert.IsFalse(TlsCertificateNameMatcher.Matches(
-                "[::1]", true, Array.Empty<string>(), new[] { Loopback4 }, Array.Empty<string>()));
+                "[::1]", Array.Empty<string>(), new[] { Loopback4 }));
             Assert.IsFalse(TlsCertificateNameMatcher.Matches(
-                "127.0.0.1", true, Array.Empty<string>(), new[] { Loopback6 }, Array.Empty<string>()));
-        }
-
-        [Test]
-        public void IpHost_NeverMatchesCommonName()
-        {
-            Assert.IsFalse(TlsCertificateNameMatcher.Matches(
-                "127.0.0.1", false, Array.Empty<string>(), Array.Empty<byte[]>(), new[] { "127.0.0.1" }));
+                "127.0.0.1", Array.Empty<string>(), new[] { Loopback6 }));
         }
 
         [Test]
         public void DnsHost_NeverMatchesIpAddressEntry()
         {
             Assert.IsFalse(TlsCertificateNameMatcher.Matches(
-                "localhost", true, Array.Empty<string>(), new[] { Loopback4 }, Array.Empty<string>()));
+                "localhost", Array.Empty<string>(), new[] { Loopback4 }));
         }
 
         [Test]
-        public void CommonName_UsedOnlyWithoutSubjectAltName()
+        public void NoSubjectAltName_NeverMatches()
         {
-            Assert.IsTrue(TlsCertificateNameMatcher.Matches(
-                "example.com", false, Array.Empty<string>(), Array.Empty<byte[]>(), new[] { "example.com" }));
-            Assert.IsFalse(TlsCertificateNameMatcher.Matches(
-                "example.com", true, new[] { "other.example" }, Array.Empty<byte[]>(), new[] { "example.com" }),
-                "A subjectAltName extension disables the CN fallback (RFC 6125 6.4.4).");
-            Assert.IsFalse(TlsCertificateNameMatcher.Matches(
-                "example.com", true, Array.Empty<string>(), new[] { Loopback4 }, new[] { "example.com" }),
-                "An iPAddress-only subjectAltName also disables the CN fallback.");
-        }
-
-        [Test]
-        public void CommonName_SeveralValues_Rejected()
-        {
-            Assert.IsFalse(TlsCertificateNameMatcher.Matches(
-                "example.com", false, Array.Empty<string>(), Array.Empty<byte[]>(), new[] { "other.example", "example.com" }));
+            // #929, RFC 9525 section 6: identity comes from subjectAltName only, so a leaf without one
+            // (empty or absent entry lists; the subject CN is not an input) matches no host.
+            Assert.IsFalse(TlsCertificateNameMatcher.Matches("example.com", Array.Empty<string>(), Array.Empty<byte[]>()));
+            Assert.IsFalse(TlsCertificateNameMatcher.Matches("example.com", null, null));
+            Assert.IsFalse(TlsCertificateNameMatcher.Matches("api.example.com", null, null));
+            Assert.IsFalse(TlsCertificateNameMatcher.Matches("127.0.0.1", null, null));
+            Assert.IsFalse(TlsCertificateNameMatcher.Matches("[::1]", Array.Empty<string>(), Array.Empty<byte[]>()));
         }
 
         [Test]

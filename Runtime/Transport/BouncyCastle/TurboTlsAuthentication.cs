@@ -16,8 +16,9 @@ namespace TurboHTTP.Transport.BouncyCastle
     /// <para>Order, each step failing closed with a fatal alert the provider maps to
     /// <c>AuthenticationException</c> (and the transport to <c>UHttpErrorType.CertificateError</c>):</para>
     /// <list type="number">
-    /// <item>Host identity (RFC 6125 section 6) against the leaf's subjectAltName, CN only without
-    /// one: <see cref="TlsCertificateNameMatcher"/>. Mismatch: bad_certificate.</item>
+    /// <item>Host identity (RFC 6125 section 6, RFC 9525 section 6) against the leaf's
+    /// subjectAltName only; the subject CN is never used, so a leaf without a subjectAltName fails:
+    /// <see cref="TlsCertificateNameMatcher"/>. Mismatch: bad_certificate.</item>
     /// <item>Leaf extended key usage, when present, includes serverAuth (RFC 5280 4.2.1.12).
     /// Otherwise: bad_certificate.</item>
     /// <item>Leaf validity period. Outside it: certificate_expired.</item>
@@ -108,7 +109,6 @@ namespace TurboHTTP.Transport.BouncyCastle
             bool hasSan;
             var dnsNames = new List<string>();
             var ipAddresses = new List<byte[]>();
-            IList<string> commonNames;
 
             try
             {
@@ -129,30 +129,25 @@ namespace TurboHTTP.Transport.BouncyCastle
                         }
                     }
                 }
-
-                commonNames = cert.SubjectDN.GetValueList(X509Name.CN);
             }
             catch (Exception ex) when (!(ex is TlsFatalAlert))
             {
                 // A name extension the parser rejects fails the handshake; it never reads as "no names".
                 throw new TlsFatalAlert(AlertDescription.bad_certificate,
-                    "Malformed subjectAltName or subject in server certificate", ex);
+                    "Malformed subjectAltName in server certificate", ex);
             }
 
-            if (!TlsCertificateNameMatcher.Matches(targetHost, hasSan, dnsNames, ipAddresses, ToReadOnly(commonNames)))
+            // RFC 9525 section 6: subjectAltName only. The subject CN is never read (#929).
+            if (!TlsCertificateNameMatcher.Matches(targetHost, dnsNames, ipAddresses))
             {
                 // Names only, no other certificate content; host names are not credentials.
                 throw new TlsFatalAlert(AlertDescription.bad_certificate,
-                    $"Server certificate does not match host '{targetHost}' " +
-                    $"(subjectAltName dNSName: {string.Join(", ", dnsNames)}; iPAddress entries: {ipAddresses.Count})");
+                    hasSan
+                        ? $"Server certificate does not match host '{targetHost}' " +
+                          $"(subjectAltName dNSName: {string.Join(", ", dnsNames)}; iPAddress entries: {ipAddresses.Count})"
+                        : $"Server certificate for host '{targetHost}' has no subjectAltName extension; " +
+                          "the subject CN does not identify a server (RFC 9525 section 6)");
             }
-        }
-
-        private static IReadOnlyList<string> ToReadOnly(IList<string> values)
-        {
-            if (values == null)
-                return Array.Empty<string>();
-            return values as IReadOnlyList<string> ?? new List<string>(values);
         }
 
         private static void ValidateExtendedKeyUsage(X509Certificate cert)

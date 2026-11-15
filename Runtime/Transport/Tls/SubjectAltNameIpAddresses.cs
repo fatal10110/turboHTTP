@@ -42,8 +42,7 @@ namespace TurboHTTP.Transport.Tls
                 }
             }
 
-            if (!TlsCertificateNameMatcher.Matches(
-                    host, extension != null, Array.Empty<string>(), Read(extension), Array.Empty<string>()))
+            if (!TlsCertificateNameMatcher.Matches(host, Array.Empty<string>(), Read(extension)))
             {
                 throw new AuthenticationException(
                     "The server certificate has no iPAddress subjectAltName for " + TlsHostName.StripBrackets(host) +

@@ -7,7 +7,8 @@ namespace TurboHTTP.Transport.Tls
     /// <summary>
     /// Server identity check for a TLS certificate (RFC 6125 section 6), used by providers that do
     /// not get it from the platform (#33). Input is what the certificate presents, already parsed:
-    /// the subjectAltName dNSName and iPAddress entries and the subject CN.
+    /// the subjectAltName dNSName and iPAddress entries. The subject CN is never consulted
+    /// (RFC 9525 section 6; #929).
     /// </summary>
     /// <remarks>
     /// Rules, each the conservative reading of the RFC:
@@ -16,8 +17,11 @@ namespace TurboHTTP.Transport.Tls
     /// 6.4.2, RFC 5280 7.2), the bare address for an IP literal, no trailing dot.</item>
     /// <item>An IP literal matches only an iPAddress entry of the same family and octets (RFC 6125
     /// 1.7.2, RFC 5280 4.2.1.6); never a dNSName or the CN.</item>
-    /// <item>A DNS name matches a dNSName entry case-insensitively; the CN is consulted only when the
-    /// certificate has no subjectAltName extension at all (RFC 6125 6.4.4).</item>
+    /// <item>A DNS name matches a dNSName entry case-insensitively, and only a dNSName entry. A
+    /// certificate without a subjectAltName extension matches no host: RFC 9525 section 6 removed
+    /// the CN-ID fallback RFC 6125 6.4.4 still allowed, and Android's HostnameVerifier (the only
+    /// host check there, since the platform trust manager does not match names), Apple's SSL policy
+    /// and Windows' SSL policy all reject a CN-only leaf (#929).</item>
     /// <item>A wildcard is honoured only as the complete left-most label (<c>*.example.com</c>),
     /// matches exactly one non-empty label, and needs at least two labels after it, so
     /// <c>*.com</c>, <c>f*.example.com</c> and <c>www.*.com</c> match nothing (RFC 6125 6.4.3).</item>
@@ -31,16 +35,12 @@ namespace TurboHTTP.Transport.Tls
         /// as passed to <see cref="ITlsProvider.WrapAsync"/>).
         /// </summary>
         /// <param name="host">Host the caller connected to (Uri.Host form).</param>
-        /// <param name="hasSubjectAltName">True when the certificate has a subjectAltName extension.</param>
-        /// <param name="dnsNames">The subjectAltName dNSName entries.</param>
-        /// <param name="ipAddresses">The subjectAltName iPAddress entries (raw octets).</param>
-        /// <param name="commonNames">The subject CN values.</param>
+        /// <param name="dnsNames">The subjectAltName dNSName entries (empty or null without the extension).</param>
+        /// <param name="ipAddresses">The subjectAltName iPAddress entries (raw octets; empty or null without the extension).</param>
         internal static bool Matches(
             string host,
-            bool hasSubjectAltName,
             IReadOnlyList<string> dnsNames,
-            IReadOnlyList<byte[]> ipAddresses,
-            IReadOnlyList<string> commonNames)
+            IReadOnlyList<byte[]> ipAddresses)
         {
             if (string.IsNullOrEmpty(host))
                 return false;
@@ -61,12 +61,7 @@ namespace TurboHTTP.Transport.Tls
                 }
             }
 
-            if (hasSubjectAltName || commonNames == null)
-                return false;
-
-            // RFC 6125 6.4.4: CN-ID only without any subjectAltName. A subject with several CNs is
-            // ambiguous; accept none of them rather than pick one.
-            return commonNames.Count == 1 && MatchesDnsPattern(commonNames[0], target);
+            return false;
         }
 
         private static bool MatchesIp(string address, IReadOnlyList<byte[]> ipAddresses)

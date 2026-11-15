@@ -19,7 +19,7 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// (<see cref="TlsBackend.SslStream"/>, <see cref="TlsBackend.BouncyCastle"/>,
     /// <see cref="TlsBackend.Auto"/>), as <see cref="UHttpErrorType.CertificateError"/> through the
     /// transport: self-signed, untrusted root, expired, not yet valid, wrong host, CN-only identity
-    /// when a SAN is present, an IP host without an iPAddress SAN, a missing intermediate, a
+    /// when a SAN is present, a CN-only leaf without any SAN (#929), an IP host without an iPAddress SAN, a missing intermediate, a
     /// <c>*.com</c> wildcard, and a server below TLS 1.2. Auto never falls back to BouncyCastle on
     /// a certificate failure (#34). A missing BouncyCastle provider fails the BouncyCastle cases
     /// (#140), it never skips them.
@@ -74,7 +74,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         public void BadServerIdentity_IsCertificateError(
             [Values(TlsBackend.SslStream, TlsBackend.BouncyCastle, TlsBackend.Auto)] TlsBackend backend,
             [Values("self-signed", "untrusted-root", "expired", "not-yet-valid", "wrong-host",
-                "cn-only-with-san", "ip-host-without-ip-san", "missing-intermediate")] string identity)
+                "cn-only-with-san", "cn-only", "ip-host-without-ip-san", "missing-intermediate")] string identity)
         {
             RequireProvider(backend);
             string pfx;
@@ -87,6 +87,7 @@ namespace TurboHTTP.Tests.Transport.Tls
                 case "not-yet-valid": pfx = Certs.NotYetValid; break;
                 case "wrong-host": pfx = Certs.WrongHost; break;
                 case "cn-only-with-san": pfx = Certs.CnOnlyWithSan; break;
+                case "cn-only": pfx = Certs.CnOnly; break;
                 case "ip-host-without-ip-san": pfx = Certs.IpInDnsSan; host = "127.0.0.1"; break;
                 case "missing-intermediate": pfx = Certs.ViaIntermediate; break;
                 default: throw new ArgumentOutOfRangeException(nameof(identity), identity, null);

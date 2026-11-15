@@ -88,6 +88,8 @@ leaves = [
      leaf("*.com", ROOT_CN, root_key, dns("*.com"))),
     ("CnOnlyWithSan", "Root-issued leaf with CN=localhost but SAN wrong.example (CN must be ignored).",
      leaf("localhost", ROOT_CN, root_key, dns("wrong.example"))),
+    ("CnOnly", "Root-issued leaf with CN=localhost and no subjectAltName extension (CN must be ignored, #929).",
+     leaf("localhost", ROOT_CN, root_key, None)),
     ("IpInDnsSan", "Root-issued leaf with CN=127.0.0.1 and dNSName SAN 127.0.0.1, no iPAddress SAN.",
      leaf("127.0.0.1", ROOT_CN, root_key, dns("127.0.0.1"))),
     ("ViaIntermediate", "localhost leaf issued by the intermediate; served without it (missing intermediate).",
