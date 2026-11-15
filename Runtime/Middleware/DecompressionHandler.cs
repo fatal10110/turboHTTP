@@ -17,6 +17,8 @@ namespace TurboHTTP.Middleware
         /// </summary>
         internal const int MaxContentCodings = 3;
 
+        private const int PartialContentStatusCode = 206;
+
         private readonly IHttpHandler _inner;
         private readonly long _maxDecompressedBodySizeBytes;
         private readonly long _maxCompressedBodySizeBytes;
@@ -82,7 +84,7 @@ namespace TurboHTTP.Middleware
         {
             CompressionKind[] compressionChain = null;
             var resolution = CompressionResolution.PassThrough;
-            if (body != null && !HasNoContent(statusCode, body, context))
+            if (body != null && statusCode != PartialContentStatusCode && !HasNoContent(statusCode, body, context))
                 resolution = ResolveCompression(headers, out compressionChain);
 
             if (resolution == CompressionResolution.PassThrough)
@@ -90,6 +92,9 @@ namespace TurboHTTP.Middleware
                 // RFC 9110 sections 6.4.1, 9.3.2, 15.4.5: HEAD responses and 1xx/204/304 carry no content, so
                 // Content-Encoding describes the selected representation, not bytes on the wire. Forward the
                 // response and its headers untouched instead of failing to decode an empty body.
+                // RFC 9110 sections 14.2 and 15.3.7: a 206 carries a part of the (coded) selected representation,
+                // which cannot be decoded on its own; it is forwarded undecoded with Content-Encoding,
+                // Content-Range and Content-Length intact (#784).
                 await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
                 return;
             }
@@ -298,9 +303,16 @@ namespace TurboHTTP.Middleware
             private readonly Stream _decompressionStream;
             private readonly DecompressionBudget _budget;
 
+            // Lifecycle (#779): Open -> Draining (DisposeAsync) -> Closed, or Open/Draining -> Closed (Abort). Whoever
+            // moves it to Closed ends the inner source, so it is aborted or disposed exactly once, and Abort still
+            // reaches it while DisposeAsync drains.
+            private const int LifecycleOpen = 0;
+            private const int LifecycleDraining = 1;
+            private const int LifecycleClosed = 2;
+
             private long _bytesRead;
             private int _completed;
-            private int _disposeStarted;
+            private int _lifecycle;
             private int _disposed;
 
             internal DecompressionBodySource(
@@ -430,12 +442,23 @@ namespace TurboHTTP.Middleware
 
             public void Abort()
             {
-                if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+                var previous = Interlocked.CompareExchange(ref _lifecycle, LifecycleClosed, LifecycleOpen);
+                if (previous == LifecycleOpen)
+                {
+                    Interlocked.Exchange(ref _disposed, 1);
+                    DisposeStreams();
+                    _inner.Abort();
                     return;
+                }
 
-                Interlocked.Exchange(ref _disposed, 1);
-                DisposeStreams();
-                _inner.Abort();
+                // While DisposeAsync drains, Abort still tears the inner source down (#779): that ends the pending drain
+                // read at once instead of after the drain bound. DisposeAsync owns the decoder streams and disposes them
+                // once the drain has unwound.
+                if (previous == LifecycleDraining &&
+                    Interlocked.CompareExchange(ref _lifecycle, LifecycleClosed, LifecycleDraining) == LifecycleDraining)
+                {
+                    _inner.Abort();
+                }
             }
 
             public async ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
@@ -451,7 +474,7 @@ namespace TurboHTTP.Middleware
 
             public async ValueTask DisposeAsync()
             {
-                if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+                if (Interlocked.CompareExchange(ref _lifecycle, LifecycleDraining, LifecycleOpen) != LifecycleOpen)
                     return;
 
                 var drained = false;
@@ -468,10 +491,7 @@ namespace TurboHTTP.Middleware
                 }
                 catch
                 {
-                    // Abort is the terminal transport-side release primitive for failed drain paths.
-                    // The response-body source contract requires Abort() to tear down remaining
-                    // transport state when DisposeAsync cannot complete a clean drain.
-                    _inner.Abort();
+                    // Handled below: a drain that cannot complete cleanly aborts the inner source.
                 }
                 finally
                 {
@@ -480,16 +500,26 @@ namespace TurboHTTP.Middleware
                     DisposeStreams();
                 }
 
-                if (drained)
+                // An Abort during the drain (from a caller, or from a failed drain read) already ended the inner source.
+                if (Interlocked.CompareExchange(ref _lifecycle, LifecycleClosed, LifecycleDraining) != LifecycleDraining)
+                    return;
+
+                if (!drained)
                 {
-                    try
-                    {
-                        await _inner.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        _inner.Abort();
-                    }
+                    // Abort is the terminal transport-side release primitive for failed drain paths.
+                    // The response-body source contract requires Abort() to tear down remaining
+                    // transport state when DisposeAsync cannot complete a clean drain.
+                    _inner.Abort();
+                    return;
+                }
+
+                try
+                {
+                    await _inner.DisposeAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    _inner.Abort();
                 }
             }
 

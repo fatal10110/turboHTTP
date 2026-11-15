@@ -44,6 +44,52 @@ namespace TurboHTTP.Observability
         private static long _nextCaptureErrorLogUtcTicks = DateTime.MinValue.Ticks;
         private static int _suppressedCaptureErrorCount;
 
+        /// <summary>
+        /// The request half of a monitor event, captured (redacted and copied) while the request is live,
+        /// so completion never reads a disposed <see cref="UHttpRequest"/> (#1053). Immutable.
+        /// </summary>
+        internal sealed class RequestCapture
+        {
+            internal static readonly RequestCapture Empty = new RequestCapture(
+                method: null,
+                url: string.Empty,
+                headers: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                body: ReadOnlyMemory<byte>.Empty,
+                bodyCaptureNote: string.Empty,
+                originalBodySize: 0,
+                isBodyTruncated: false,
+                isBodyBinary: false);
+
+            internal RequestCapture(
+                string method,
+                string url,
+                IReadOnlyDictionary<string, string> headers,
+                ReadOnlyMemory<byte> body,
+                string bodyCaptureNote,
+                int originalBodySize,
+                bool isBodyTruncated,
+                bool isBodyBinary)
+            {
+                Method = method;
+                Url = url;
+                Headers = headers;
+                Body = body;
+                BodyCaptureNote = bodyCaptureNote;
+                OriginalBodySize = originalBodySize;
+                IsBodyTruncated = isBodyTruncated;
+                IsBodyBinary = isBodyBinary;
+            }
+
+            internal string Method { get; }
+            internal string Url { get; }
+            internal IReadOnlyDictionary<string, string> Headers { get; }
+            internal ReadOnlyMemory<byte> Body { get; }
+            internal string BodyCaptureNote { get; }
+            internal int OriginalBodySize { get; }
+            internal bool IsBodyTruncated { get; }
+            internal bool IsBodyBinary { get; }
+        }
+
         private readonly struct BodySnapshot
         {
             public static readonly BodySnapshot Empty =
@@ -137,7 +183,8 @@ namespace TurboHTTP.Observability
         }
 
         /// <summary>
-        /// Redaction applied at capture time to URLs (query values, user-info) and header values.
+        /// Redaction applied at capture time to URLs (query values, user-info) and header values: the request
+        /// half is captured when the request enters the interceptor, the response half when it completes.
         /// Default <see cref="Observability.RedactionPolicy.Default"/>; setting <c>null</c> restores it.
         /// Opt out explicitly with <see cref="Observability.RedactionPolicy.None"/>.
         /// </summary>
@@ -282,30 +329,52 @@ namespace TurboHTTP.Observability
             };
         }
 
-        internal static void Capture(
-            UHttpRequest request,
-            int statusCode,
-            HttpHeaders responseHeaders,
-            ReadOnlySequence<byte> responseBody,
-            RequestContext context,
-            Exception exception)
+        /// <summary>
+        /// Captures the request half of a monitor event while <paramref name="request"/> is live. A
+        /// client-created request is disposed once a streamed response's headers arrive, before its body
+        /// completes, so the event must never read the request at completion (#1053). Headers and the URL
+        /// are redacted here with the current <see cref="RedactionPolicy"/>; the buffered body is copied
+        /// (bounded by the capture limits), so nothing references the request or its leased buffer.
+        /// Returns <c>null</c> after logging when the capture itself fails; the request is never affected.
+        /// </summary>
+        internal static RequestCapture CaptureRequest(UHttpRequest request)
         {
-            var originalResponseBodySize = responseBody.Length > int.MaxValue
-                ? int.MaxValue
-                : (int)responseBody.Length;
-            Capture(
-                request,
-                statusCode,
-                responseHeaders,
-                responseBody,
-                originalResponseBodySize,
-                responseBodyWasTruncated: false,
-                context,
-                exception);
+            if (request == null)
+                return RequestCapture.Empty;
+
+            try
+            {
+                var redactionPolicy = RedactionPolicy;
+                var requestHeaders = CopyHeaders(request.Headers, redactionPolicy);
+                var requestBodyCaptured = request.TryGetBufferedContent(out var requestBody);
+                var requestSnapshot = CreateBodySnapshot(
+                    requestBodyCaptured
+                        ? requestBody
+                        : ReadOnlyMemory<byte>.Empty,
+                    requestHeaders);
+                var requestBodyCaptureNote = requestBodyCaptured
+                    ? string.Empty
+                    : BuildRequestBodyCaptureNote(request.Content);
+
+                return new RequestCapture(
+                    request.Method.ToString(),
+                    redactionPolicy.RedactUrl(request.Uri),
+                    requestHeaders,
+                    requestSnapshot.Body,
+                    requestBodyCaptureNote,
+                    requestSnapshot.OriginalSize,
+                    requestSnapshot.IsTruncated,
+                    requestSnapshot.IsBinary);
+            }
+            catch (Exception captureEx)
+            {
+                LogCaptureFailure(captureEx);
+                return null;
+            }
         }
 
         internal static void Capture(
-            UHttpRequest request,
+            RequestCapture request,
             int statusCode,
             HttpHeaders responseHeaders,
             ReadOnlySequence<byte> responseBody,
@@ -335,7 +404,7 @@ namespace TurboHTTP.Observability
         }
 
         private static HttpMonitorEvent BuildMonitorEvent(
-            UHttpRequest request,
+            RequestCapture request,
             int statusCode,
             HttpHeaders responseHeaders,
             ReadOnlySequence<byte> responseBody,
@@ -344,19 +413,8 @@ namespace TurboHTTP.Observability
             RequestContext context,
             Exception exception)
         {
+            request ??= RequestCapture.Empty;
             var redactionPolicy = RedactionPolicy;
-            var requestHeaders = CopyHeaders(request?.Headers, redactionPolicy);
-            ReadOnlyMemory<byte> requestBody = ReadOnlyMemory<byte>.Empty;
-            var requestBodyCaptured = request != null && request.TryGetBufferedContent(out requestBody);
-            var requestSnapshot = CreateBodySnapshot(
-                requestBodyCaptured
-                    ? requestBody
-                    : ReadOnlyMemory<byte>.Empty,
-                requestHeaders);
-            var requestBodyCaptureNote = requestBodyCaptured
-                ? string.Empty
-                : BuildRequestBodyCaptureNote(request?.Content);
-
             var copiedResponseHeaders = CopyHeaders(responseHeaders, redactionPolicy);
             var responseSnapshot = CreateBodySnapshot(
                 responseBody,
@@ -372,14 +430,14 @@ namespace TurboHTTP.Observability
             return new HttpMonitorEvent(
                 id: Guid.NewGuid().ToString("N"),
                 timestamp: DateTime.UtcNow,
-                method: request?.Method.ToString(),
-                url: redactionPolicy.RedactUrl(request?.Uri),
-                requestHeaders: requestHeaders,
-                requestBody: requestSnapshot.Body,
-                requestBodyCaptureNote: requestBodyCaptureNote,
-                originalRequestBodySize: requestSnapshot.OriginalSize,
-                isRequestBodyTruncated: requestSnapshot.IsTruncated,
-                isRequestBodyBinary: requestSnapshot.IsBinary,
+                method: request.Method,
+                url: request.Url,
+                requestHeaders: request.Headers,
+                requestBody: request.Body,
+                requestBodyCaptureNote: request.BodyCaptureNote,
+                originalRequestBodySize: request.OriginalBodySize,
+                isRequestBodyTruncated: request.IsBodyTruncated,
+                isRequestBodyBinary: request.IsBodyBinary,
                 statusCode: statusCode,
                 statusText: statusText,
                 responseHeaders: copiedResponseHeaders,

@@ -76,40 +76,24 @@ namespace TurboHTTP.Cache
 
                         if (directive.StartsWith("s-maxage=", StringComparison.OrdinalIgnoreCase))
                         {
-                            var sharedSecondsPart = directive.Substring("s-maxage=".Length).Trim().Trim('"');
-                            if (!long.TryParse(sharedSecondsPart, NumberStyles.None, CultureInfo.InvariantCulture, out var sharedSeconds))
-                                continue;
-
-                            if (sharedSeconds < 0)
-                                continue;
-
-                            sharedMaxAge = TimeSpan.FromSeconds(sharedSeconds);
+                            // RFC 9111 section 1.2.2: delta-seconds saturate at 2^31 instead of overflowing.
+                            if (CacheDeltaSeconds.TryParseLifetime(directive.Substring("s-maxage=".Length), out var sharedLifetime))
+                                sharedMaxAge = sharedLifetime;
                             continue;
                         }
 
                         if (directive.StartsWith("max-age=", StringComparison.OrdinalIgnoreCase))
                         {
-                            var secondsPart = directive.Substring("max-age=".Length).Trim().Trim('"');
-                            if (!long.TryParse(secondsPart, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds))
-                                continue;
-
-                            if (seconds < 0)
-                                continue;
-
-                            maxAge = TimeSpan.FromSeconds(seconds);
+                            if (CacheDeltaSeconds.TryParseLifetime(directive.Substring("max-age=".Length), out var lifetime))
+                                maxAge = lifetime;
                             continue;
                         }
 
                         if (directive.StartsWith("stale-while-revalidate=", StringComparison.OrdinalIgnoreCase))
                         {
-                            var secondsPart = directive.Substring("stale-while-revalidate=".Length).Trim().Trim('"');
-                            if (!long.TryParse(secondsPart, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds))
-                                continue;
-
-                            if (seconds < 0)
-                                continue;
-
-                            staleWhileRevalidate = TimeSpan.FromSeconds(seconds);
+                            // RFC 5861 section 3: the window is delta-seconds too, so the same 2^31 clamp applies.
+                            if (CacheDeltaSeconds.TryParseLifetime(directive.Substring("stale-while-revalidate=".Length), out var window))
+                                staleWhileRevalidate = window;
                         }
                     }
                 }
@@ -199,13 +183,7 @@ namespace TurboHTTP.Cache
         // Peer-controlled lifetimes (Expires far from Date, huge max-age) must not overflow DateTime.
         private static DateTime AddClamped(DateTime utc, TimeSpan offset)
         {
-            if (offset > TimeSpan.Zero && offset.Ticks > DateTime.MaxValue.Ticks - utc.Ticks)
-                return DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc);
-
-            if (offset < TimeSpan.Zero && -offset.Ticks > utc.Ticks - DateTime.MinValue.Ticks)
-                return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
-
-            return utc.Add(offset);
+            return CacheDeltaSeconds.AddClamped(utc, offset);
         }
 
         private static bool IsNotModifiedMergeExcluded(string name)
@@ -325,7 +303,8 @@ namespace TurboHTTP.Cache
                 if (string.IsNullOrWhiteSpace(raw))
                     continue;
 
-                if (!long.TryParse(raw.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+                // Age is delta-seconds (RFC 9111 section 5.1): an oversize value saturates instead of being dropped.
+                if (!CacheDeltaSeconds.TryParse(raw, out var parsed))
                     continue;
 
                 if (parsed <= 0)

@@ -628,20 +628,10 @@ namespace TurboHTTP.Cache
             var pragmaNoCache = HasPragmaNoCache(responseHeadersForStorage);
             var mustRevalidate = responseCacheControl.NoCache || responseCacheControl.MustRevalidate || pragmaNoCache;
 
-            if (!expiresAtUtc.HasValue)
+            if (!expiresAtUtc.HasValue
+                && !TryResolveMissingFreshness(nowUtc, mustRevalidate, eTag, lastModified, out expiresAtUtc))
             {
-                if (mustRevalidate && (!string.IsNullOrEmpty(eTag) || !string.IsNullOrEmpty(lastModified)))
-                {
-                    // `no-cache` style entries can be stored without freshness metadata
-                    // as long as validators are present; middleware will revalidate on read.
-                }
-                else if (_policy.DoNotCacheWithoutFreshness)
-                {
-                    return default;
-                }
-
-                if (!expiresAtUtc.HasValue && _policy.EnableHeuristicFreshness)
-                    expiresAtUtc = nowUtc.Add(_policy.HeuristicFreshnessLifetime);
+                return default;
             }
 
             var varyKey = BuildVaryKey(requestHeaders, varyHeaders);
@@ -665,6 +655,43 @@ namespace TurboHTTP.Cache
                 trailers: trailers);
 
             return new PreparedCacheEntry(entry, signature);
+        }
+
+        // A response without explicit freshness (no max-age/s-maxage/Expires). Returns false when it must not be stored.
+        // - no-cache/must-revalidate with a validator: stored without an expiry; MustRevalidate makes every use revalidate.
+        // - DoNotCacheWithoutFreshness: not stored.
+        // - heuristic freshness on: the configured lifetime (RFC 9111 section 4.2.2).
+        // - otherwise the freshness lifetime is zero (RFC 9111 section 4.2: no explicit or heuristic lifetime means stale),
+        //   exactly like max-age=0: stored only with a validator and revalidated before every reuse. A null expiry would
+        //   mean "never expires" (CacheEntry.IsExpired) and serve the response as a HIT forever.
+        private bool TryResolveMissingFreshness(
+            DateTime nowUtc,
+            bool mustRevalidate,
+            string eTag,
+            string lastModified,
+            out DateTime? expiresAtUtc)
+        {
+            expiresAtUtc = null;
+            var hasValidator = !string.IsNullOrEmpty(eTag) || !string.IsNullOrEmpty(lastModified);
+            var revalidateOnEveryUse = mustRevalidate && hasValidator;
+            if (!revalidateOnEveryUse && _policy.DoNotCacheWithoutFreshness)
+                return false;
+
+            if (_policy.EnableHeuristicFreshness)
+            {
+                expiresAtUtc = AddClamped(nowUtc, _policy.HeuristicFreshnessLifetime);
+                return true;
+            }
+
+            if (revalidateOnEveryUse)
+                return true;
+
+            // A stale entry without a validator can never be reused (it is removed on lookup), so it is not stored.
+            if (!hasValidator)
+                return false;
+
+            expiresAtUtc = nowUtc;
+            return true;
         }
 
         private PreparedCacheEntry MergeNotModifiedEntry(
@@ -725,19 +752,10 @@ namespace TurboHTTP.Cache
             var lastModified = mergedHeaders.Get("Last-Modified");
             var mustRevalidate = cacheControl.NoCache || cacheControl.MustRevalidate || HasPragmaNoCache(mergedHeaders);
 
-            if (!expiresAtUtc.HasValue)
+            if (!expiresAtUtc.HasValue
+                && !TryResolveMissingFreshness(nowUtc, mustRevalidate, eTag, lastModified, out expiresAtUtc))
             {
-                if (mustRevalidate && (!string.IsNullOrEmpty(eTag) || !string.IsNullOrEmpty(lastModified)))
-                {
-                    // Validator-backed entries may remain freshness-less and revalidate on access.
-                }
-                else if (_policy.DoNotCacheWithoutFreshness)
-                {
-                    return default;
-                }
-
-                if (!expiresAtUtc.HasValue && _policy.EnableHeuristicFreshness)
-                    expiresAtUtc = nowUtc.Add(_policy.HeuristicFreshnessLifetime);
+                return default;
             }
 
             var varyKey = BuildVaryKey(request.Headers, varyHeaders);
