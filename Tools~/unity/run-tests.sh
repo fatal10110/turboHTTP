@@ -4,6 +4,17 @@
 #
 #   UNITY_PATH=<Unity 2021.3 editor binary> \
 #     Tools~/unity/run-tests.sh --platform EditMode|PlayMode [--filter <regex>] [--category <name>] [--integration] [--with-unitask[=local]]
+#     Tools~/unity/run-tests.sh --platform StandaloneWindows64 --backend Mono|IL2CPP [--filter <regex>] [--category <name>]
+#
+# --platform StandaloneWindows64 (#404) runs the PlayMode suite in a Windows x86_64 standalone test player: the
+# Unity Test Runner builds the player (-runTests -testPlatform StandaloneWindows64), starts it on the editor's host
+# and reads its results over the player connection. --backend picks the scripting backend: Mono (stripping
+# Disabled, Unity's default) or IL2CPP (stripping High; needs the Windows IL2CPP module and a Visual Studio C++
+# toolchain on the editor host). It needs a Windows editor (Unity.exe, driven from WSL), uses its own project
+# (UNITY_STANDALONE_TEST_PROJECT, default <cache>/standalone-testproj) so the scripting backend never changes the
+# host project, and writes results-StandaloneWindows64-<backend>-<ts>.xml, the name platform_matrix.py reads for
+# the standalone-windows cell. The player opens a window on the host's desktop: it is not headless. The gates use
+# the Player-StandaloneWindows64 entries of Tools~/unity/skip-baseline.txt.
 #
 # WSL with a Windows editor: point UNITY_PATH at Unity.exe under /mnt/<drive>/... The package copy,
 # test project, results and log then live under %LOCALAPPDATA%\turbohttp (Unity cannot run a project
@@ -35,7 +46,8 @@
 # Exit codes: 0 pass, 1 test failures, 2 usage/setup error (incl. a UniTask commit other than the pin), 3 Unity not installed (prints
 # UNITY_UNAVAILABLE; CI never runs Unity (no license, #188): this script in a host editor is the Unity gate), 4 skip gate
 # (a skipped test without an #issue or [env] reason, or an unfiltered run skipping more tests than
-# Tools~/unity/skip-baseline.txt allows; summarize_results.py, #151), 5 WSL interop unavailable (a Windows editor
+# Tools~/unity/skip-baseline.txt allows; summarize_results.py, #151) or total gate (no test ran, e.g. a filter
+# that matches nothing; or an unfiltered run below the min-total entry of that file, #903), 5 WSL interop unavailable (a Windows editor
 # driven from WSL: cmd.exe or Unity.exe did not start through about two minutes of retries, wsl-interop.sh, #355). Env: UNITY_TEST_PROJECT (default
 # <cache>/testproj), UNITY_PACKAGE_COPY (default <cache>/package), where <cache> is
 # ~/.cache/turbohttp, or %LOCALAPPDATA%\turbohttp for a Windows editor driven from WSL.
@@ -44,7 +56,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=Tools~/unity/wsl-interop.sh
 . "$repo/Tools~/unity/wsl-interop.sh"
-platform=""; filter=""; category=""; integration=0; unitask=0
+platform=""; filter=""; category=""; integration=0; unitask=0; backend=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --platform) platform="$2"; shift 2 ;;
@@ -53,10 +65,18 @@ while [ $# -gt 0 ]; do
     --integration) integration=1; shift ;;
     --with-unitask) unitask=git; shift ;;
     --with-unitask=local) unitask=local; shift ;;
-    *) echo "usage: $0 --platform EditMode|PlayMode [--filter regex] [--category name] [--integration] [--with-unitask[=local]]" >&2; exit 2 ;;
+    --backend) backend="$2"; shift 2 ;;
+    *) echo "usage: $0 --platform EditMode|PlayMode|StandaloneWindows64 [--backend Mono|IL2CPP] [--filter regex] [--category name] [--integration] [--with-unitask[=local]]" >&2; exit 2 ;;
   esac
 done
-case "$platform" in EditMode|PlayMode) ;; *) echo "run-tests: --platform EditMode|PlayMode required" >&2; exit 2 ;; esac
+case "$platform" in
+  EditMode|PlayMode)
+    [ -z "$backend" ] || { echo "run-tests: --backend applies to --platform StandaloneWindows64" >&2; exit 2; } ;;
+  StandaloneWindows64)
+    case "$backend" in Mono|IL2CPP) ;; *) echo "run-tests: --platform StandaloneWindows64 needs --backend Mono|IL2CPP" >&2; exit 2 ;; esac
+    [ "$unitask" = 0 ] || { echo "run-tests: --with-unitask applies to the editor platforms" >&2; exit 2; } ;;
+  *) echo "run-tests: --platform EditMode|PlayMode|StandaloneWindows64 required" >&2; exit 2 ;;
+esac
 if [ "$category" = ExternalNetwork ]; then integration=1; fi
 
 unity="${UNITY_PATH:-}"
@@ -72,6 +92,10 @@ case "$unity" in
     if command -v wslpath >/dev/null 2>&1; then win=1; fi ;;
 esac
 topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
+if [ "$platform" = StandaloneWindows64 ] && [ "$win" != 1 ]; then
+  echo "run-tests: --platform StandaloneWindows64 needs a Windows editor (UNITY_PATH=<...>/Unity.exe, driven from WSL)" >&2
+  exit 2
+fi
 
 if [ "$win" = 1 ]; then
   # A failed lookup is never exit 1 ("test failures"): exit 5 for an interop outage, else 2 (wsl-interop.sh).
@@ -81,6 +105,7 @@ else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi
 proj="${UNITY_TEST_PROJECT:-$cache/testproj}"
+if [ "$platform" = StandaloneWindows64 ]; then proj="${UNITY_STANDALONE_TEST_PROJECT:-$cache/standalone-testproj}"; fi
 pkg="${UNITY_PACKAGE_COPY:-$cache/package}"
 mkdir -p "$cache"
 
@@ -147,10 +172,48 @@ if new != text:
     open(path, "w", encoding="utf-8").write(new)
 PY
 
+# The Win64 test player's scripting backend and stripping level, set by the Test Runner's build hook (#404). Only
+# the standalone project gets the hook; the backend reaches it as -turbohttpBackend on the editor command line.
+if [ "$platform" = StandaloneWindows64 ]; then
+  mkdir -p "$proj/Assets/Editor"
+  cat > "$proj/Assets/Editor/TurboHttpStandaloneTestBuild.cs" <<'CS'
+// Written by Tools~/unity/run-tests.sh --platform StandaloneWindows64 (#404): the scripting backend and managed
+// stripping level of the Windows test player the Unity Test Runner builds, starts and reads over the player connection.
+using System;
+using UnityEditor;
+using UnityEditor.Build;
+using UnityEditor.TestTools;
+using UnityEngine;
+
+[assembly: TestPlayerBuildModifier(typeof(TurboHttpStandaloneTestBuild))]
+
+public class TurboHttpStandaloneTestBuild : ITestPlayerBuildModifier
+{
+    public BuildPlayerOptions ModifyOptions(BuildPlayerOptions options)
+    {
+        var args = Environment.GetCommandLineArgs();
+        var i = Array.IndexOf(args, "-turbohttpBackend");
+        var il2cpp = i >= 0 && i + 1 < args.Length && args[i + 1] == "IL2CPP";
+        PlayerSettings.SetScriptingBackend(NamedBuildTarget.Standalone,
+            il2cpp ? ScriptingImplementation.IL2CPP : ScriptingImplementation.Mono2x);
+        PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.Standalone,
+            il2cpp ? ManagedStrippingLevel.High : ManagedStrippingLevel.Disabled);
+        Debug.Log("TURBOHTTP_STANDALONE_BUILD target=" + options.target + " backend=" + (il2cpp ? "IL2CPP" : "Mono")
+            + " stripping=" + PlayerSettings.GetManagedStrippingLevel(NamedBuildTarget.Standalone)
+            + " unity=" + Application.unityVersion);
+        return options;
+    }
+}
+CS
+fi
+
 ts="$(date +%Y%m%d-%H%M%S)"
-xml="$cache/results-$platform-$ts.xml"; log="$cache/unity-$platform-$ts.log"
+# A standalone player's result name carries its backend: results-StandaloneWindows64-<backend>-<ts>.xml (platform_matrix.py).
+run_name="$platform${backend:+-$backend}"
+xml="$cache/results-$run_name-$ts.xml"; log="$cache/unity-$run_name-$ts.log"
 args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform "$platform"
       -testResults "$(topath "$xml")" -logFile "$(topath "$log")")
+if [ "$platform" = StandaloneWindows64 ]; then args+=(-buildTarget StandaloneWindows64 -turbohttpBackend "$backend"); fi
 # Editor-window tests need graphics in EditMode.
 [ "$platform" = PlayMode ] && args+=(-nographics)
 [ -n "$filter" ] && args+=(-testFilter "$filter")
@@ -177,9 +240,13 @@ fi
 is_filtered=0
 if [ -n "$filter" ] || [ -n "$category" ]; then is_filtered=1; fi
 # Failures keep exit 1; the skip gates (an unexplained skip, or more skips than Tools~/unity/skip-baseline.txt
-# allows for an unfiltered run, #151) exit 4 so a vanished test cannot pass silently.
+# allows for an unfiltered run, #151) and the total gates (no test ran, or an unfiltered run below its min-total,
+# #903) exit 4 so a vanished test cannot pass silently.
 set +e
-python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$platform" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"
+# A standalone player skips other platform-scoped [env] tests than the host editor: its own key (#341).
+baseline_key="$platform"
+if [ "$platform" = StandaloneWindows64 ]; then baseline_key=Player-StandaloneWindows64; fi
+python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$baseline_key" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"
 gate=$?
 # --with-unitask is the UniTask adapter gate: a run in which none of those tests ran proves nothing.
 if [ "$unitask" != 0 ] && ! python3 "$repo/Tools~/ci/unitask_pin.py" check-results "$xml" && [ "$gate" = 0 ]; then

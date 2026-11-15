@@ -65,6 +65,23 @@ Work from a clean worktree of the commit you will tag (normally `origin/main`).
    ```
 
    Record the results (commit, pass and skip counts, build sizes) in the release PR.
+
+   **Certification matrix (release candidates, #404).** On the same commit, run the certification suites on
+   every target at hand ([`agents/testing.md`](agents/testing.md), "Host-editor gates", item 8): the full
+   PlayMode run above, both Win64 standalone players, the Android emulator levels and the arm64 phone (the
+   Linux player when a Linux host is available), then gate the matrix over all their result files:
+
+   ```bash
+   './Tools~/unity/run-tests.sh' --platform StandaloneWindows64 --backend Mono
+   './Tools~/unity/run-tests.sh' --platform StandaloneWindows64 --backend IL2CPP
+   './Tools~/unity/run-emulator-tests.sh'
+   './Tools~/unity/run-device-tests.sh'
+   python3 'Tools~/unity/platform_matrix.py' --fresh --out TestResults~/unity-platform-matrix.json --gate <cache>/results-*.xml
+   ```
+
+   `--gate` exits 1 on a `fail` or `incomplete` cell; fix it before the version bump. Cells that read
+   `needs-device-validation` or `policy-disabled` are listed in the release notes. Keep
+   `TestResults~/unity-platform-matrix.json` for step 8.
 5. **Device matrix (GA only).** #99 is signed off. Pre-releases list it as pending in the release notes.
 6. **Version bump PR.** In one PR against `main`:
    - `package.json` `version` is the new version.
@@ -87,7 +104,9 @@ Work from a clean worktree of the commit you will tag (normally `origin/main`).
 
 8. The **Release** workflow (`.github/workflows/release.yml`) checks that the tag is on `main`, takes the
    notes from the CHANGELOG section, and creates the GitHub Release (a pre-release when the tag contains `-`).
-   If it fails, fix the cause on `main` and release the next version. Do not re-tag.
+   If it fails, fix the cause on `main` and release the next version. Do not re-tag. Once the Release exists,
+   attach the certification matrix of step 4:
+   `gh release upload vX.Y.Z TestResults~/unity-platform-matrix.json -R fatal10110/turboHTTP`.
 
 ## After the tag
 
