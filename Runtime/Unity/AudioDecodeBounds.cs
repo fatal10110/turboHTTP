@@ -8,14 +8,22 @@ namespace TurboHTTP.Unity
     /// </summary>
     internal readonly struct AudioDecodePlan
     {
-        public AudioDecodePlan(bool stream, bool allowInMemoryDecode)
+        public AudioDecodePlan(bool stream, bool allowInMemoryDecode, bool keepCompressed = false)
         {
             Stream = stream;
             AllowInMemoryDecode = allowInMemoryDecode;
+            KeepCompressed = keepCompressed;
         }
 
         /// <summary> Unity loads the clip with <c>streamAudio = true</c>. </summary>
         public bool Stream { get; }
+
+        /// <summary>
+        /// Unity loads a non-streamed clip with <c>DownloadHandlerAudioClip.compressed = true</c>,
+        /// so its memory stays proportional to the encoded bytes and its temp file is released
+        /// once loading ends.
+        /// </summary>
+        public bool KeepCompressed { get; }
 
         /// <summary> A fully in-memory decode (managed decoders) stays within the sample bound. </summary>
         public bool AllowInMemoryDecode { get; }
@@ -27,6 +35,13 @@ namespace TurboHTTP.Unity
     /// </summary>
     internal static class AudioDecodeBounds
     {
+        /// <summary>
+        /// Chunks a WAV or AIFF header walk inspects before giving up. Real files carry a handful
+        /// (fmt, fact, LIST, bext, data, ...); a cap keeps a body of millions of empty chunks from
+        /// costing quadratic segment seeks on the caller's thread.
+        /// </summary>
+        internal const int MaxChunksScanned = 64;
+
         internal static AudioDecodePlan Plan(
             ReadOnlySequence<byte> body,
             AudioClipType audioType,
@@ -68,17 +83,12 @@ namespace TurboHTTP.Unity
             if (compressed)
             {
                 // MP3 and OGG headers carry no reliable decoded length, and a crafted stream can
-                // expand by orders of magnitude, so only a streamed load is bounded.
-                if (!options.EnableStreamingForLargeClips)
-                {
-                    throw new InvalidOperationException(
-                        "Cannot decode " + audioType + " with MaxDecodedSamples set and streaming " +
-                        "disabled: compressed clips declare no reliable decoded size and must be " +
-                        "streamed. Enable AudioClipPipelineOptions.EnableStreamingForLargeClips or " +
-                        "set MaxDecodedSamples = null.");
-                }
-
-                return new AudioDecodePlan(stream: true, allowInMemoryDecode: false);
+                // expand by orders of magnitude, so they are never decoded to PCM up front: large
+                // clips stream as before, smaller ones stay compressed in memory (bounded by the
+                // source bytes) and release their temp file once loaded.
+                return streamBySize
+                    ? new AudioDecodePlan(stream: true, allowInMemoryDecode: false)
+                    : new AudioDecodePlan(stream: false, allowInMemoryDecode: false, keepCompressed: true);
             }
 
             var withinBound =
@@ -133,9 +143,9 @@ namespace TurboHTTP.Unity
             long dataSize = -1;
 
             long offset = 12;
-            while (offset + 8 <= body.Length)
+            for (var chunk = 0; offset + 8 <= body.Length; chunk++)
             {
-                if (!TryCopy(body, offset, header.Slice(0, 8)))
+                if (chunk >= MaxChunksScanned || !TryCopy(body, offset, header.Slice(0, 8)))
                     return false;
 
                 long chunkSize = ReadUInt32LittleEndian(header, 4);
@@ -191,9 +201,9 @@ namespace TurboHTTP.Unity
             }
 
             long offset = 12;
-            while (offset + 8 <= body.Length)
+            for (var chunk = 0; offset + 8 <= body.Length; chunk++)
             {
-                if (!TryCopy(body, offset, header.Slice(0, 8)))
+                if (chunk >= MaxChunksScanned || !TryCopy(body, offset, header.Slice(0, 8)))
                     return false;
 
                 long chunkSize = ReadUInt32BigEndian(header, 4);

@@ -89,12 +89,15 @@ namespace TurboHTTP.Unity
         /// sample count their header declares before decoding; a larger or unreadable header is
         /// rejected with <see cref="InvalidOperationException"/>. Managed threaded decode is skipped
         /// for such clips, so a streamed load can still take them.</description></item>
-        /// <item><description>MP3 and OGG clips declare no reliable decoded size, so Unity streams
-        /// them regardless of <see cref="StreamingThresholdBytes"/> (a streamed clip keeps its temp
-        /// file until it is destroyed). With <see cref="EnableStreamingForLargeClips"/> disabled
-        /// they are rejected.</description></item>
+        /// <item><description>MP3 and OGG clips declare no reliable decoded size, so they are never
+        /// decoded to PCM up front: clips streamed by <see cref="StreamingThresholdBytes"/> stream
+        /// as before, and every other clip is loaded compressed in memory
+        /// (<c>DownloadHandlerAudioClip.compressed</c>), so its memory stays proportional to
+        /// <see cref="MaxSourceBytes"/> and its temp file is released once loading
+        /// ends.</description></item>
         /// </list>
-        /// Set <c>null</c> to restore unbounded in-memory decoding of small compressed clips.
+        /// Set <c>null</c> to restore full PCM decoding of compressed clips below
+        /// <see cref="StreamingThresholdBytes"/>.
         /// </remarks>
         public long? MaxDecodedSamples { get; set; } = DefaultMaxDecodedSamples;
 
@@ -259,6 +262,7 @@ namespace TurboHTTP.Unity
                         audioType,
                         clipName,
                         plan.Stream,
+                        plan.KeepCompressed,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -379,6 +383,7 @@ namespace TurboHTTP.Unity
             AudioClipType audioType,
             string clipName,
             bool shouldStream,
+            bool keepCompressed,
             CancellationToken cancellationToken)
         {
             if (!UnityTempFileManager.Shared.TryReservePath(GetExtension(audioType), out var tempPath))
@@ -401,6 +406,7 @@ namespace TurboHTTP.Unity
                         audioType,
                         clipName,
                         shouldStream,
+                        keepCompressed,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -416,6 +422,7 @@ namespace TurboHTTP.Unity
             AudioClipType audioType,
             string clipName,
             bool streamAudio,
+            bool keepCompressed,
             CancellationToken cancellationToken)
         {
             var tcs = new TaskCompletionSource<AudioClip>(
@@ -439,6 +446,7 @@ namespace TurboHTTP.Unity
                             unityAudioType,
                             clipName,
                             streamAudio,
+                            keepCompressed,
                             cancellationToken,
                             tcs));
                 }, cancellationToken).ConfigureAwait(false);
@@ -457,6 +465,7 @@ namespace TurboHTTP.Unity
             UnityEngine.AudioType unityAudioType,
             string clipName,
             bool streamAudio,
+            bool keepCompressed,
             CancellationToken cancellationToken,
             TaskCompletionSource<AudioClip> tcs)
         {
@@ -465,6 +474,7 @@ namespace TurboHTTP.Unity
                 if (request.downloadHandler is DownloadHandlerAudioClip downloadHandler)
                 {
                     downloadHandler.streamAudio = streamAudio;
+                    downloadHandler.compressed = keepCompressed && !streamAudio;
                 }
 
                 var operation = request.SendWebRequest();

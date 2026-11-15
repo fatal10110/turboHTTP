@@ -78,32 +78,90 @@ namespace TurboHTTP.Tests.UnityModule
         }
 
         [Test]
-        public void AsAudioClipAsync_CompressedWithStreamingDisabled_RejectedWhileBounded()
-        {
-            AudioClipHandler.Configure(new AudioClipPipelineOptions { EnableStreamingForLargeClips = false });
-
-            var response = CreateResponse(new byte[] { 0x4F, 0x67, 0x67, 0x53, 0x00, 0x02 });
-            var ex = AssertAsync.ThrowsAsync<InvalidOperationException>(() =>
-                response.AsAudioClipAsync(AudioClipType.OGG));
-
-            StringAssert.Contains("MaxDecodedSamples", ex.Message);
-        }
-
-        [Test]
-        public void Plan_SmallCompressedClip_StreamsUnderDefaultBound()
+        public void Plan_SmallCompressedClip_LoadsCompressedUnderDefaultBound()
         {
             var body = new ReadOnlySequence<byte>(new byte[1024]);
 
+            // Default options: a small MP3 must not stream, because every streamed clip holds a
+            // temp-file slot until it is destroyed and MaxActiveFiles (128) would then fail
+            // every later audio load. It loads compressed in memory and releases its file.
             var bounded = AudioDecodeBounds.Plan(body, AudioClipType.MP3, new AudioClipPipelineOptions());
-            Assert.IsTrue(bounded.Stream, "compressed clips stream regardless of size while bounded");
+            Assert.IsFalse(bounded.Stream, "small compressed clips do not hold a temp file");
+            Assert.IsTrue(bounded.KeepCompressed, "never decoded to PCM up front while bounded");
             Assert.IsFalse(bounded.AllowInMemoryDecode);
+
+            var noStreaming = AudioDecodeBounds.Plan(
+                body,
+                AudioClipType.OGG,
+                new AudioClipPipelineOptions { EnableStreamingForLargeClips = false });
+            Assert.IsFalse(noStreaming.Stream);
+            Assert.IsTrue(noStreaming.KeepCompressed, "streaming disabled still loads, compressed");
 
             var unbounded = AudioDecodeBounds.Plan(
                 body,
                 AudioClipType.OGG,
                 new AudioClipPipelineOptions { MaxDecodedSamples = null });
             Assert.IsFalse(unbounded.Stream, "the explicit opt-out keeps the size threshold");
+            Assert.IsFalse(unbounded.KeepCompressed);
             Assert.IsTrue(unbounded.AllowInMemoryDecode);
+        }
+
+        [Test]
+        public void Plan_CompressedClipAtStreamingThreshold_StillStreams()
+        {
+            var body = new ReadOnlySequence<byte>(new byte[64]);
+            var options = new AudioClipPipelineOptions { StreamingThresholdBytes = 64 };
+
+            var plan = AudioDecodeBounds.Plan(body, AudioClipType.MP3, options);
+
+            Assert.IsTrue(plan.Stream);
+            Assert.IsFalse(plan.KeepCompressed);
+            Assert.IsFalse(plan.AllowInMemoryDecode);
+        }
+
+        [Test]
+        public void TryReadDeclaredPcmSamples_WavPastChunkCap_FailsClosedOnMultiSegmentBody()
+        {
+            // fmt and data come after more empty chunks than the walk inspects, spread over
+            // 16-byte segments so every chunk lookup seeks across segments.
+            var body = BuildSegmented(BuildWavAfterJunk(AudioDecodeBounds.MaxChunksScanned + 1), segmentSize: 16);
+            Assert.IsFalse(body.IsSingleSegment);
+            Assert.IsFalse(AudioDecodeBounds.TryReadDeclaredPcmSamples(body, AudioClipType.WAV, out _));
+
+            // The same layout with fewer empty chunks than the cap still reads.
+            Assert.IsTrue(AudioDecodeBounds.TryReadDeclaredPcmSamples(
+                BuildSegmented(BuildWavAfterJunk(1), segmentSize: 16), AudioClipType.WAV, out var samples));
+            Assert.AreEqual(4, samples);
+        }
+
+        [Test]
+        public void TryReadDeclaredPcmSamples_AiffPastChunkCap_FailsClosed()
+        {
+            var junkChunks = AudioDecodeBounds.MaxChunksScanned + 1;
+            var aiff = new byte[12 + junkChunks * 8 + 8 + 18];
+            WriteAscii(aiff, 0, "FORM");
+            WriteAscii(aiff, 8, "AIFF");
+            for (var i = 0; i < junkChunks; i++)
+                WriteAscii(aiff, 12 + i * 8, "JUNK");
+            var comm = 12 + junkChunks * 8;
+            WriteAscii(aiff, comm, "COMM");
+            aiff[comm + 7] = 18;   // chunk size
+            aiff[comm + 9] = 1;    // channels
+            aiff[comm + 13] = 1;   // numSampleFrames
+
+            Assert.IsFalse(AudioDecodeBounds.TryReadDeclaredPcmSamples(
+                BuildSegmented(aiff, segmentSize: 16), AudioClipType.AIFF, out _));
+        }
+
+        [Test]
+        public void Plan_WavPastChunkCap_RejectedWhenNotStreamed()
+        {
+            var body = BuildSegmented(BuildWavAfterJunk(AudioDecodeBounds.MaxChunksScanned + 1), segmentSize: 16);
+
+            Assert.Throws<InvalidOperationException>(() => AudioDecodeBounds.Plan(
+                body,
+                AudioClipType.WAV,
+                new AudioClipPipelineOptions { EnableStreamingForLargeClips = false }));
         }
 
         [Test]
@@ -178,6 +236,49 @@ namespace TurboHTTP.Tests.UnityModule
             bytes[offset + 1] = (byte)(value >> 8);
             bytes[offset + 2] = (byte)(value >> 16);
             bytes[offset + 3] = (byte)(value >> 24);
+        }
+
+        // A 16-bit mono WAV with 8 data bytes whose fmt and data chunks follow empty JUNK chunks.
+        private static byte[] BuildWavAfterJunk(int junkChunks)
+        {
+            var wav = BuildWavHeader(channels: 1, bitsPerSample: 16, dataBytes: 8, includeData: true);
+            var bytes = new byte[wav.Length + junkChunks * 8];
+            Array.Copy(wav, 0, bytes, 0, 12);
+            for (var i = 0; i < junkChunks; i++)
+                WriteAscii(bytes, 12 + i * 8, "JUNK");
+            Array.Copy(wav, 12, bytes, 12 + junkChunks * 8, wav.Length - 12);
+            return bytes;
+        }
+
+        private static ReadOnlySequence<byte> BuildSegmented(byte[] bytes, int segmentSize)
+        {
+            TestSegment first = null, last = null;
+            for (var offset = 0; offset < bytes.Length; offset += segmentSize)
+            {
+                var memory = new ReadOnlyMemory<byte>(bytes, offset, Math.Min(segmentSize, bytes.Length - offset));
+                var segment = new TestSegment(memory, offset);
+                if (first == null)
+                    first = segment;
+                else
+                    last.SetNext(segment);
+                last = segment;
+            }
+
+            return new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+        }
+
+        private sealed class TestSegment : ReadOnlySequenceSegment<byte>
+        {
+            public TestSegment(ReadOnlyMemory<byte> memory, long runningIndex)
+            {
+                Memory = memory;
+                RunningIndex = runningIndex;
+            }
+
+            public void SetNext(TestSegment next)
+            {
+                Next = next;
+            }
         }
 
         private static UHttpResponse CreateResponse(byte[] body)

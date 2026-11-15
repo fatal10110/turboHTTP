@@ -76,6 +76,12 @@ namespace TurboHTTP.Unity
         /// header is rejected (fails closed). The decoded size is checked again after decode.
         /// <c>null</c> removes the limit and the header requirement.
         /// </summary>
+        /// <remarks>
+        /// A custom <see cref="Decoders.IImageDecoder"/> for a format other than PNG or JPEG
+        /// (registered with <see cref="Decoders.DecoderRegistry.RegisterImageDecoder"/>) never
+        /// receives its payload while a limit is set, because the header check rejects it first.
+        /// Such a decoder needs <c>MaxPixels = null</c> and its own decoded-size bound.
+        /// </remarks>
         public long? MaxPixels { get; set; } = DefaultMaxPixels;
 
         /// <summary>
