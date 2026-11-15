@@ -176,6 +176,137 @@ namespace TurboHTTP.Tests.Transport
             });
         }
 
+        [Test]
+        public void Cancel_SendPending_FailsAtOnceAndHoldsTheDescriptorUntilTheSendEnded()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var pair = await SocketChannelLifecycleTests.LoopbackPair.CreateAsync(bufferSize: 4096);
+                var channel = new SaeaSocketChannel(pair.Client);
+                channel.SetDrainTimeoutForTest((int)(Guard + Guard).TotalMilliseconds);
+
+                // Every OS completion of a send is held back on its own thread. Once a chunk went pending
+                // it stays in flight for the channel, whether or not the OS already ended it.
+                using var sendMayEnd = new ManualResetEventSlim(false);
+                int ended = 0;
+                channel.TestHookSendEnded = _ =>
+                {
+                    Volatile.Write(ref ended, 1);
+                    sendMayEnd.Wait(Guard);
+                };
+
+                // More than the socket buffers hold and the server never reads, so some chunk goes
+                // pending (on Mono every SAEA send does) and the task cannot complete.
+                using var cts = new CancellationTokenSource();
+                var send = channel.SendAsync(new byte[16 * 1024 * 1024], cts.Token).AsTask();
+                Assert.IsFalse(send.IsCompleted, "the server does not read: a send chunk is pending");
+
+                cts.Cancel();
+                await AssertCompletesAsync(send, "the cancelled send did not fail at once");
+                try
+                {
+                    await send;
+                    Assert.Fail("the cancelled send completed");
+                }
+                catch (OperationCanceledException e)
+                {
+                    Assert.AreEqual(cts.Token, e.CancellationToken);
+                }
+
+                // The failed caller does not end the submitted send: the descriptor stays open.
+                Assert.IsTrue(IsOpen(pair.Client), "the descriptor was closed under a pending send");
+                Assert.IsFalse(channel.IsReleased);
+
+                // The peer's close with unread data resets the connection, which ends the send if the
+                // shutdown did not already.
+                pair.Server.Close();
+                if (!await WaitAsync(() => Volatile.Read(ref ended) != 0))
+                {
+                    Assert.IsTrue(IsOpen(pair.Client), "the socket was closed while the send was still pending");
+                    Assert.IsFalse(channel.IsReleased);
+                    TestRequirements.IgnoreEnvironment(
+                        "The pending send did not end on reset on this runtime; its descriptor is held (#384).");
+                }
+
+                Assert.IsTrue(IsOpen(pair.Client), "the descriptor was closed before the send ended");
+                Assert.IsFalse(channel.IsReleased);
+
+                sendMayEnd.Set();
+                await AbandonedSocketIoTests.WaitUntilAsync(() => channel.IsReleased, "the socket was never closed after the send ended");
+                Assert.IsFalse(IsOpen(pair.Client));
+                Assert.IsTrue(channel.BuffersReleased);
+            }, Guard + Guard + Guard);
+        }
+
+        [Test]
+        public void Dispose_AfterAReceiveSetItsInFlightFlag_FailsTheCallerWithoutSubmitting()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var pair = await SocketChannelLifecycleTests.LoopbackPair.CreateAsync();
+                var channel = new SaeaSocketChannel(pair.Client);
+                channel.SetDrainTimeoutForTest((int)(Guard + Guard).TotalMilliseconds);
+
+                // A receive that ended through its OS completion leaves the "completion arrived" mark
+                // of the previous operation behind until the next one resets it.
+                var first = channel.ReceiveAsync(new byte[16], 0, 16, CancellationToken.None).AsTask();
+                pair.Server.Send(new byte[] { 1 });
+                await AssertCompletesAsync(first, "the first receive never completed");
+                Assert.AreEqual(1, await first);
+
+                // Dispose lands after the receive set its in-flight flag, before it reset its source.
+                channel.TestHookActivated = () => channel.Dispose();
+                var second = channel.ReceiveAsync(new byte[16], 0, 16, CancellationToken.None).AsTask();
+                await AssertCompletesAsync(second, "the receive armed under Dispose was never failed");
+                await AssertDisposedAsync(second);
+
+                // Nothing was submitted, so nothing holds the descriptor.
+                Assert.IsTrue(channel.IsReleased, "the channel was not released after the caller gave up");
+                Assert.IsFalse(IsOpen(pair.Client));
+                Assert.IsTrue(channel.BuffersReleased);
+            }, Guard + Guard);
+        }
+
+        [Test]
+        public void Dispose_AfterASendSetItsInFlightFlag_FailsTheCallerWithoutSubmitting()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var pair = await SocketChannelLifecycleTests.LoopbackPair.CreateAsync();
+                var channel = new SaeaSocketChannel(pair.Client);
+                channel.SetDrainTimeoutForTest((int)(Guard + Guard).TotalMilliseconds);
+
+                var first = channel.SendAsync(new byte[16], CancellationToken.None).AsTask();
+                await AssertCompletesAsync(first, "the first send never completed");
+                await first;
+
+                channel.TestHookActivated = () => channel.Dispose();
+                var second = channel.SendAsync(new byte[16], CancellationToken.None).AsTask();
+                await AssertCompletesAsync(second, "the send armed under Dispose was never failed");
+                await AssertDisposedAsync(second);
+
+                Assert.IsTrue(channel.IsReleased, "the channel was not released after the caller gave up");
+                Assert.IsFalse(IsOpen(pair.Client));
+                Assert.IsTrue(channel.BuffersReleased);
+            }, Guard + Guard);
+        }
+
+        private static async Task AssertDisposedAsync(Task operation)
+        {
+            try
+            {
+                await operation;
+                Assert.Fail("the operation armed under Dispose completed");
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception e) when (!(e is AssertionException))
+            {
+                Assert.Fail($"the operation armed under Dispose reached the socket: {e.GetType().Name}: {e.Message}");
+            }
+        }
+
         private static async Task<bool> WaitAsync(Func<bool> condition)
         {
             var deadline = DateTime.UtcNow + Guard;

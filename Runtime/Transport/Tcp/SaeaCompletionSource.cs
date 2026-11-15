@@ -37,9 +37,10 @@ namespace TurboHTTP.Transport.Tcp
     {
         private ManualResetValueTaskSourceCore<int> _core;
 
-        // Interlocked: 0 until the current operation's result is set, 1 after. The OS completion and
-        // the channel's dispose (#384) may both try to end the same operation; the first one wins.
-        private int _completed;
+        // Interlocked: 0 from Reset until the current operation's result is set, 1 after and before the
+        // first Reset. The OS completion and the channel's dispose (#384) may both try to end the same
+        // operation; the first one wins, and a dispose before any operation started sets nothing.
+        private int _completed = 1;
 
         /// <summary>
         /// Prepares the source for a new operation. Must be called before each socket call.

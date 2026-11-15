@@ -17,7 +17,7 @@ namespace TurboHTTP.Tests.Transport
     public class SocketChannelLifecycleTests
     {
         [Test]
-        public void Saea_Dispose_CompletionNeverFires_ReturnsWithinBoundAndKeepsBuffers()
+        public void Saea_Dispose_CompletionNeverFires_ReturnsAndGivesUpTheBuffersAtTheBound()
         {
             AssertAsync.Run(async () =>
             {
@@ -31,7 +31,7 @@ namespace TurboHTTP.Tests.Transport
                 {
                     var dispose = Task.Run(() => channel.Dispose());
                     var finished = await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(10)));
-                    Assert.AreSame(dispose, finished, "Dispose did not return within its bound");
+                    Assert.AreSame(dispose, finished, "Dispose blocked on the operation that never ends");
                     await dispose;
 
                     // The buffers are given up at the bound, after Dispose returned (#384).

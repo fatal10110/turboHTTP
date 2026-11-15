@@ -54,7 +54,7 @@ namespace TurboHTTP.Tests.Transport.Http1
         {
             var tcp = new TcpClient();
             await tcp.ConnectAsync(IPAddress.Loopback, port);
-            var connection = new PooledConnection(tcp.Client, tcp.GetStream(), "127.0.0.1", port, false);
+            var connection = new PooledConnection(tcp.Client, new HoldingNetworkStream(tcp.Client), "127.0.0.1", port, false);
 
             var idleField = typeof(TcpConnectionPool).GetField(
                 "_idleConnections",

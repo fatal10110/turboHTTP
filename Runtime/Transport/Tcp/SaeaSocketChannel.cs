@@ -126,6 +126,25 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal Action<SocketError> TestHookReceiveEnded { get; set; }
 
+        /// <summary>
+        /// Test hook: runs on the completing thread right after the channel recorded that a pending
+        /// receive's OS completion arrived, before it resolves the caller. A <see cref="Dispose"/> from
+        /// here leaves the result to the completion, so its socket error stays the cause (#415).
+        /// </summary>
+        internal Action<SocketError> TestHookReceiveCompletionMarked { get; set; }
+
+        /// <summary>
+        /// Test hook: the send counterpart of <see cref="TestHookReceiveEnded"/>; runs on the completing
+        /// thread when a pending send ends, before the channel marks the send as ended (#384).
+        /// </summary>
+        internal Action<SocketError> TestHookSendEnded { get; set; }
+
+        /// <summary>
+        /// Test hook: runs right after an operation set its in-flight flag and before it resets its
+        /// completion source, so a test can dispose the channel inside that window (#384).
+        /// </summary>
+        internal Action TestHookActivated { get; set; }
+
         /// <summary>True once <see cref="Dispose"/> returned the pooled buffers (test hook, #168).</summary>
         internal bool BuffersReleased => Volatile.Read(ref _buffersReleased) != 0;
 
@@ -175,11 +194,14 @@ namespace TurboHTTP.Transport.Tcp
             if (Interlocked.CompareExchange(ref _recvActive, 1, 0) != 0)
                 throw new InvalidOperationException(
                     "SaeaSocketChannel does not support concurrent ReceiveAsync calls.");
+            TestHookActivated?.Invoke();
 
             int toRead = Math.Min(count, _recvBuffer.Length);
             _recvSaea.SetBuffer(_recvBuffer, 0, toRead);
             _recvSource.Reset();
-            _recvCompleting = 0;
+            Interlocked.Exchange(ref _recvCompleting, 0);
+            if (Volatile.Read(ref _disposed) != 0)
+                throw AbandonDisposedStart(receive: true, ct);
 
             CancellationTokenRegistration reg = default;
             if (ct.CanBeCanceled)
@@ -252,13 +274,16 @@ namespace TurboHTTP.Transport.Tcp
                 if (Interlocked.CompareExchange(ref _sendActive, 1, 0) != 0)
                     throw new InvalidOperationException(
                         "SaeaSocketChannel does not support concurrent SendAsync calls.");
+                TestHookActivated?.Invoke();
 
                 int toSend = Math.Min(remaining, _sendBuffer.Length);
                 data.Slice(offset, toSend).Span.CopyTo(_sendBuffer.AsSpan(0, toSend));
 
                 _sendSaea.SetBuffer(_sendBuffer, 0, toSend);
                 _sendSource.Reset();
-                _sendCompleting = 0;
+                Interlocked.Exchange(ref _sendCompleting, 0);
+                if (Volatile.Read(ref _disposed) != 0)
+                    throw AbandonDisposedStart(receive: false, ct);
 
                 CancellationTokenRegistration reg = default;
                 if (ct.CanBeCanceled)
@@ -305,8 +330,9 @@ namespace TurboHTTP.Transport.Tcp
 
         private void OnRecvCompleted(object sender, SocketAsyncEventArgs saea)
         {
-            _recvCompleting = 1;
             TestHookReceiveEnded?.Invoke(saea.SocketError);
+            _recvCompleting = 1;
+            TestHookReceiveCompletionMarked?.Invoke(saea.SocketError);
 
             // Interlocked (a full fence): Dispose sets _disposed and then reads this flag; this
             // thread clears the flag and then reads _disposed, so one of the two releases.
@@ -317,6 +343,7 @@ namespace TurboHTTP.Transport.Tcp
 
         private void OnSendCompleted(object sender, SocketAsyncEventArgs saea)
         {
+            TestHookSendEnded?.Invoke(saea.SocketError);
             _sendCompleting = 1;
             Interlocked.Exchange(ref _sendActive, 0);
             ResolveFromSaea(saea, _sendSource);
@@ -377,7 +404,9 @@ namespace TurboHTTP.Transport.Tcp
             if (boundMs < 0)
                 boundMs = shutdownFirst ? (int)SocketHandleHold.HoldTimeout.TotalMilliseconds : DisposeDrainTimeoutMs;
             var bound = new Timer(static state => ((SaeaSocketChannel)state).ReleaseAtBound(), this, boundMs, Timeout.Infinite);
-            Volatile.Write(ref _releaseBound, bound);
+            // Interlocked (a full fence): TryRelease sets _released and then reads _releaseBound, so
+            // one of the two disposes the timer.
+            Interlocked.Exchange(ref _releaseBound, bound);
             if (Volatile.Read(ref _released) != 0)
                 bound.Dispose();
         }
@@ -389,6 +418,29 @@ namespace TurboHTTP.Transport.Tcp
                 _recvSource.TrySetException(new OperationCanceledException("Socket I/O was cancelled (channel disposed)."));
             if (_sendActive != 0 && _sendCompleting == 0)
                 _sendSource.TrySetException(new OperationCanceledException("Socket I/O was cancelled (channel disposed)."));
+        }
+
+        /// <summary>
+        /// An operation that set its in-flight flag after <see cref="Dispose"/> began: Dispose may have
+        /// read a stale <c>_*Completing</c> mark or failed the source before its reset, so it never
+        /// fails this caller. The operation is not submitted; it clears its flag, releases like a
+        /// completion would, and returns what a call on a disposed channel throws (#384).
+        /// </summary>
+        /// <remarks>
+        /// The caller's <c>Interlocked</c> write of its <c>_*Completing</c> mark pairs with Dispose's
+        /// CAS on <c>_disposed</c>: either the caller sees <c>_disposed</c> here, or Dispose sees the
+        /// reset source and fails it.
+        /// </remarks>
+        private Exception AbandonDisposedStart(bool receive, CancellationToken ct)
+        {
+            if (receive)
+                Interlocked.Exchange(ref _recvActive, 0);
+            else
+                Interlocked.Exchange(ref _sendActive, 0);
+            TryRelease();
+            return ct.IsCancellationRequested
+                ? new OperationCanceledException(ct)
+                : new ObjectDisposedException(nameof(SaeaSocketChannel));
         }
 
         private void ReleaseIfDisposed()
@@ -437,6 +489,9 @@ namespace TurboHTTP.Transport.Tcp
 
             Volatile.Read(ref _releaseBound)?.Dispose();
             try { _socket.Dispose(); } catch { }
+
+            // No caller outlives the bound, even one Dispose did not reach.
+            FailPendingOperations();
 
             // The kernel may still write into the buffers, so returning them to the shared pool
             // could corrupt another renter's data: leak them on purpose.
