@@ -313,20 +313,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                     | goaway.Payload[7];
                 Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, errorCode);
 
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException)
-                {
-                }
-                catch (UHttpException)
-                {
-                }
-                catch (ObjectDisposedException)
-                {
-                }
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Http2FailureAssert.IsProtocolError(ex, Http2ErrorCode.ProtocolError);
 
                 conn.Dispose();
             });
@@ -366,20 +354,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                     | goaway.Payload[7];
                 Assert.AreEqual((uint)Http2ErrorCode.ProtocolError, errorCode);
 
-                try
-                {
-                    await responseTask;
-                    Assert.Fail("Expected exception");
-                }
-                catch (Http2ProtocolException)
-                {
-                }
-                catch (UHttpException)
-                {
-                }
-                catch (ObjectDisposedException)
-                {
-                }
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Http2FailureAssert.IsProtocolError(ex, Http2ErrorCode.ProtocolError);
 
                 conn.Dispose();
             });
@@ -573,8 +549,9 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 var request2 = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/new-stream"));
                 var ctx2 = new RequestContext(request2);
-                AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                var notSent = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                     await conn.SendRequestAsync(request2, ctx2, cts.Token));
+                Http2FailureAssert.IsNotProcessed(notSent, "connection is closed");
 
                 conn.Dispose();
             });

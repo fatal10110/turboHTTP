@@ -80,7 +80,9 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = 8
                 }, cts.Token);
 
-                AssertAsync.ThrowsAsync<UHttpException>(async () => await task2);
+                // RFC 9113 Section 6.8: the stream above last-stream-id was not processed.
+                var refused = AssertAsync.ThrowsAsync<UHttpException>(async () => await task2);
+                Http2FailureAssert.IsNotProcessed(refused, "GOAWAY");
 
                 await serverCodec.WriteFrameAsync(
                     BuildResponseHeadersFrame(sid1, 200, endStream: true),
@@ -159,7 +161,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                         continue;
                     }
 
-                    AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(() => responseTasks[i]);
+                    var refused = AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(() => responseTasks[i]);
+                    Http2FailureAssert.IsNotProcessed(refused, "GOAWAY");
                     failureCount++;
                 }
 
@@ -187,7 +190,7 @@ namespace TurboHTTP.Tests.Transport.Http2
                 int streamId = headersFrame.StreamId;
 
                 var rstPayload = new byte[4];
-                rstPayload[3] = 2;
+                rstPayload[3] = (byte)Http2ErrorCode.InternalError;
                 await serverCodec.WriteFrameAsync(new Http2Frame
                 {
                     Type = Http2FrameType.RstStream,
@@ -197,7 +200,11 @@ namespace TurboHTTP.Tests.Transport.Http2
                     Length = 4
                 }, cts.Token);
 
-                AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () => await responseTask);
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type, ex.ToString());
+                StringAssert.Contains("RST_STREAM: InternalError", ex.HttpError.Message);
+                Http2FailureAssert.IsNotMarkedUnprocessed(ex);
+                Assert.IsTrue(conn.IsAlive, "A stream error never ends the connection (RFC 9113 Section 5.4.2).");
 
                 conn.Dispose();
             });

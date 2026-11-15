@@ -2332,9 +2332,12 @@ namespace TurboHTTP.Tests.Transport.Http1
                 });
 
                 // CONNECT succeeds but TLS handshake cannot complete with this plain test server.
-                AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                     await client.Get("https://origin.example.com/secure").SendBufferedAsync());
 
+                // The tunnel opened (the 407 was answered); the failure is the TLS handshake on the
+                // closed tunnel, a network error, never a proxy-authentication error.
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type, ex.ToString());
                 Assert.AreEqual(2, connectCount);
                 Assert.AreEqual("keep-alive", firstConnection);
                 Assert.AreEqual("keep-alive", secondConnection);

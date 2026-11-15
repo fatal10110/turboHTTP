@@ -110,9 +110,12 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 using var client = CreateClient(proxy.Port, allowPlaintextProxyAuth: true, sslStreamOnly: true);
 
-                AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                     await client.Get("https://origin.example.com/secure").SendBufferedAsync());
 
+                // The tunnel opened (the 407 was answered); the failure is the TLS handshake on the
+                // closed tunnel, a network error, never a proxy-authentication error.
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type, ex.ToString());
                 var requests = proxy.Requests;
                 Assert.GreaterOrEqual(requests.Count, 2);
                 Assert.IsNull(requests[0].ProxyAuthorization);
