@@ -125,7 +125,7 @@ namespace TurboHTTP.Core.Internal
         /// <summary>
         /// Redacts the URI parts of a URL-valued header (see <see cref="IsUrlValuedHeader"/>): the whole
         /// value of <c>Location</c>, <c>Content-Location</c> and <c>Referer</c>, every <c>&lt;...&gt;</c>
-        /// target of <c>Link</c>, and the <c>url=</c> part of <c>Refresh</c>. Other headers are returned as is.
+        /// target of <c>Link</c>, and the target of <c>Refresh</c> (with or without the <c>url=</c> prefix). Other headers are returned as is.
         /// </summary>
         internal static string RedactUrlHeaderValue(
             string headerName,
@@ -141,28 +141,7 @@ namespace TurboHTTP.Core.Internal
                 return RedactLinkTargets(value, redactQueryName, placeholder);
 
             if (string.Equals(name, "Refresh", StringComparison.OrdinalIgnoreCase))
-            {
-                var urlIndex = value.IndexOf("url=", StringComparison.OrdinalIgnoreCase);
-                if (urlIndex < 0)
-                    return value;
-
-                // url=<target> or url='<target>' / url="<target>": only the target is redacted.
-                var targetStart = urlIndex + 4;
-                var targetEnd = value.Length;
-                if (targetStart < value.Length && (value[targetStart] == '\'' || value[targetStart] == '"'))
-                {
-                    var close = value.IndexOf(value[targetStart], targetStart + 1);
-                    targetStart++;
-                    if (close >= 0)
-                        targetEnd = close;
-                }
-
-                var target = value.Substring(targetStart, targetEnd - targetStart);
-                var redactedTarget = RedactUrl(target, redactQueryName, placeholder);
-                return ReferenceEquals(redactedTarget, target)
-                    ? value
-                    : value.Substring(0, targetStart) + redactedTarget + value.Substring(targetEnd);
-            }
+                return RedactRefreshTarget(value, redactQueryName, placeholder);
 
             return RedactUrl(value, redactQueryName, placeholder);
         }
@@ -180,6 +159,63 @@ namespace TurboHTTP.Core.Internal
                 return "(relative)";
 
             return uri.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped);
+        }
+
+        /// <summary>
+        /// Redacts the target of a declarative refresh value, parsed like the HTML "shared declarative
+        /// refresh steps": <c>time [;|,] [url =] ['|"]target['|"]</c>, where the <c>url=</c> prefix is
+        /// optional and may carry whitespace around <c>=</c>. A value that does not start with a time is
+        /// redacted as a whole URL (conservative).
+        /// </summary>
+        private static string RedactRefreshTarget(string value, Func<string, bool> redactQueryName, string placeholder)
+        {
+            var length = value.Length;
+            var i = SkipWhitespace(value, 0);
+            var timeStart = i;
+            while (i < length && ((value[i] >= '0' && value[i] <= '9') || value[i] == '.'))
+                i++;
+
+            if (i == timeStart)
+                return RedactUrl(value, redactQueryName, placeholder);
+
+            i = SkipWhitespace(value, i);
+            if (i < length && (value[i] == ';' || value[i] == ','))
+                i = SkipWhitespace(value, i + 1);
+
+            if (i >= length)
+                return value;
+
+            if (length - i >= 3 && string.Compare(value, i, "url", 0, 3, StringComparison.OrdinalIgnoreCase) == 0)
+            {
+                var afterKeyword = SkipWhitespace(value, i + 3);
+                if (afterKeyword < length && value[afterKeyword] == '=')
+                    i = SkipWhitespace(value, afterKeyword + 1);
+            }
+
+            var targetStart = i;
+            var targetEnd = length;
+            if (targetStart < length && (value[targetStart] == '\'' || value[targetStart] == '"'))
+            {
+                var close = value.IndexOf(value[targetStart], targetStart + 1);
+                targetStart++;
+                if (close >= 0)
+                    targetEnd = close;
+            }
+
+            var target = value.Substring(targetStart, targetEnd - targetStart);
+            var redactedTarget = RedactUrl(target, redactQueryName, placeholder);
+            return ReferenceEquals(redactedTarget, target)
+                ? value
+                : value.Substring(0, targetStart) + redactedTarget + value.Substring(targetEnd);
+        }
+
+        private static int SkipWhitespace(string value, int index)
+        {
+            while (index < value.Length
+                   && (value[index] == ' ' || value[index] == '\t' || value[index] == '\n'
+                       || value[index] == '\f' || value[index] == '\r'))
+                index++;
+            return index;
         }
 
         private static string RedactLinkTargets(string value, Func<string, bool> redactQueryName, string placeholder)
@@ -214,14 +250,24 @@ namespace TurboHTTP.Core.Internal
 
         private static void AppendWithoutUserInfo(StringBuilder builder, string url, int length, string placeholder)
         {
-            var schemeEnd = IndexOf(url, "://", 0, length);
-            if (schemeEnd < 0)
+            int authorityStart;
+            if (length >= 2 && url[0] == '/' && url[1] == '/')
             {
-                builder.Append(url, 0, length);
-                return;
+                // Network-path reference (RFC 3986 section 4.2): the authority follows the leading "//".
+                authorityStart = 2;
+            }
+            else
+            {
+                var schemeEnd = IndexOf(url, "://", 0, length);
+                if (schemeEnd < 0)
+                {
+                    builder.Append(url, 0, length);
+                    return;
+                }
+
+                authorityStart = schemeEnd + 3;
             }
 
-            var authorityStart = schemeEnd + 3;
             var authorityEnd = authorityStart < length ? url.IndexOf('/', authorityStart, length - authorityStart) : -1;
             if (authorityEnd < 0)
                 authorityEnd = length;

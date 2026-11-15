@@ -247,6 +247,20 @@ namespace TurboHTTP.Tests.Observability
                 policy.RedactHeaderValue("Link", "<https://h.test/1?a=1>; rel=next, <https://h.test/2>; rel=last"));
             Assert.AreEqual("0;URL=/x?t=[REDACTED]", policy.RedactHeaderValue("Refresh", "0;URL=/x?t=1"));
             Assert.AreEqual("0; url='/x?t=[REDACTED]'", policy.RedactHeaderValue("Refresh", "0; url='/x?t=1'"));
+            Assert.AreEqual(
+                "0; https://h.test/cb?code=[REDACTED]",
+                policy.RedactHeaderValue("Refresh", "0; https://h.test/cb?code=S"));
+            Assert.AreEqual(
+                "0; https://h.test/?code=[REDACTED]&redirect_url=[REDACTED]",
+                policy.RedactHeaderValue("Refresh", "0; https://h.test/?code=S&redirect_url=/x"));
+            Assert.AreEqual("0; url = /x?t=[REDACTED]", policy.RedactHeaderValue("Refresh", "0; url = /x?t=1"));
+            Assert.AreEqual(
+                "1.5, URL=\"https://h.test/?t=[REDACTED]\" ",
+                policy.RedactHeaderValue("Refresh", "1.5, URL=\"https://h.test/?t=1\" "));
+            Assert.AreEqual("5", policy.RedactHeaderValue("Refresh", "5"));
+            Assert.AreEqual(
+                "//[REDACTED]@h.test/p?t=[REDACTED]",
+                policy.RedactHeaderValue("Location", "//u:p@h.test/p?t=1"));
             Assert.AreEqual("a=1?b=2", policy.RedactHeaderValue("X-Other", "a=1?b=2"));
             Assert.AreEqual(
                 "https://h.test/?t=1",

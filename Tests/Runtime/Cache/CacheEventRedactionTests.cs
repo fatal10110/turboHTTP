@@ -21,7 +21,7 @@ namespace TurboHTTP.Tests.Cache
         [Test]
         public void MissHitAndRevalidate_EventsCarryNoQueryOrVarySecret()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var responseHeaders = new HttpHeaders();
                 responseHeaders.Set("Cache-Control", "max-age=60");
@@ -47,13 +47,13 @@ namespace TurboHTTP.Tests.Cache
                 AssertNoSecrets(missContext);
                 AssertNoSecrets(hitContext);
                 AssertNoSecrets(revalidateContext);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         [Test]
         public void UnsafeInvalidation_EventCarriesNoQuerySecret()
         {
-            Task.Run(async () =>
+            AssertAsync.Run(async () =>
             {
                 var transport = new MockTransport(HttpStatusCode.OK, new HttpHeaders(), Array.Empty<byte>());
                 var middleware = new CacheInterceptor(new CachePolicy { Storage = new MemoryCacheStorage() });
@@ -79,7 +79,7 @@ namespace TurboHTTP.Tests.Cache
 
                 Assert.IsTrue(found, "CacheInvalidated recorded");
                 AssertNoSecrets(context);
-            }).GetAwaiter().GetResult();
+            });
         }
 
         private static async Task<RequestContext> SendAsync(TestInterceptorPipeline pipeline, Uri uri, bool noCache)
