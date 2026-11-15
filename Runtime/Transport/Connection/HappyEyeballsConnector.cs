@@ -40,6 +40,10 @@ namespace TurboHTTP.Transport.Connection
         // RFC 8305 section 5 "Minimum Connection Attempt Delay": the floor of StalledAttemptAge.
         private static readonly TimeSpan MinStalledAttemptAge = TimeSpan.FromMilliseconds(100);
 
+        // Ceiling of the stalled age as it backs off: two initial retransmission timeouts of 1 s
+        // (RFC 6298 section 2.1), so a SYN and its first retransmission went unanswered.
+        private static readonly TimeSpan MaxBackedOffStalledAttemptAge = TimeSpan.FromSeconds(2);
+
         /// <summary>
         /// Connects to the first reachable address (RFC 8305 Happy Eyeballs v2). The address
         /// families interleave (RFC 8305 section 4): the first alternate-family address starts
@@ -147,6 +151,7 @@ namespace TurboHTTP.Transport.Connection
                 var failures = new List<Exception>();
                 var started = Stopwatch.StartNew();
                 var stalledAge = StalledAttemptAge(options);
+                var maxStalledAge = Max(stalledAge, MaxBackedOffStalledAttemptAge);
                 TimeSpan? lastStart = null;
                 int scheduleIndex = 0;
                 int cap = options.MaxConcurrentAttempts;
@@ -201,7 +206,15 @@ namespace TurboHTTP.Transport.Connection
                             // MaxConcurrentAttempts attempts are ever in flight.
                             var preemptAt = Max(Max(due, SaturatingAdd(activeStarts[0], stalledAge)), EarliestNextStart(lastStart));
                             if (preemptAt <= started.Elapsed)
+                            {
                                 activeCts[0].Cancel();
+                                // Each replacement doubles the age the next one needs: on a link whose
+                                // handshake takes longer than the first stalled age (high RTT, full SYN
+                                // queue) every live attempt would otherwise be cancelled just before it
+                                // completes. Blackholed addresses still get replaced, at most
+                                // maxStalledAge apart.
+                                stalledAge = DoubleUpTo(stalledAge, maxStalledAge);
+                            }
                             else
                                 wakeAt = preemptAt;
                         }
@@ -314,7 +327,8 @@ namespace TurboHTTP.Transport.Connection
         /// Delays (RFC 8305 section 5 sets that delay near the first SYN retransmission, so an attempt
         /// with no answer after two of them is stalled), never less than the RFC's 100 ms Minimum
         /// Connection Attempt Delay. A slow but live address is not cancelled the moment the next
-        /// one is due.
+        /// one is due. This is the initial age: RaceAsync doubles it after every replacement, up to
+        /// <see cref="MaxBackedOffStalledAttemptAge"/>.
         /// </summary>
         private static TimeSpan StalledAttemptAge(HappyEyeballsOptions options)
         {
@@ -324,6 +338,9 @@ namespace TurboHTTP.Transport.Connection
         }
 
         private static TimeSpan Max(TimeSpan a, TimeSpan b) => a >= b ? a : b;
+
+        private static TimeSpan DoubleUpTo(TimeSpan value, TimeSpan ceiling) =>
+            value.Ticks >= ceiling.Ticks / 2 ? ceiling : new TimeSpan(value.Ticks * 2);
 
         private static TimeSpan SaturatingAdd(TimeSpan a, TimeSpan b) =>
             a.Ticks > TimeSpan.MaxValue.Ticks - b.Ticks ? TimeSpan.MaxValue : a + b;

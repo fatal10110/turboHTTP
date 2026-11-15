@@ -88,6 +88,43 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
+        public void SlowHandshakeOnEveryAddress_DefaultOptions_DoesNotCancelEveryLiveAttempt()
+        {
+            // Every address answers after 700 ms, longer than the 500 ms initial stalled age. Without
+            // the back-off each attempt was cancelled at 500 ms and only the last ones, with nothing
+            // left to replace them, could complete (v4e, at about 1.7 s, after 4 cancellations).
+            // With it the first replacement doubles the age to 1 s, so a1 (started at 125 ms)
+            // completes at about 825 ms.
+            var addresses = new IPAddress[6];
+            var dialer = new ScriptedDialer();
+            for (int i = 0; i < addresses.Length; i++)
+            {
+                addresses[i] = IPAddress.Parse("192.0.2." + (i + 1));
+                dialer.Healthy(addresses[i], TimeSpan.FromMilliseconds(700));
+            }
+
+            IPAddress winnerAddress = null;
+            AssertAsync.Run(async () =>
+            {
+                using var watchdog = new CancellationTokenSource(Watchdog);
+                using var winner = await HappyEyeballsConnector.ConnectAsync(
+                    addresses,
+                    443,
+                    TimeSpan.FromSeconds(10),
+                    new HappyEyeballsOptions(),
+                    watchdog.Token,
+                    dialer.DialAsync);
+
+                winnerAddress = dialer.AddressOf(winner);
+            });
+
+            int winnerIndex = Array.IndexOf(addresses, winnerAddress);
+            Assert.That(winnerIndex, Is.InRange(0, 2), "a live attempt among the first three wins, got " + winnerAddress);
+            Assert.LessOrEqual(dialer.CancelledBeforeWin, 1, "at most one live attempt is replaced before the win");
+            Assert.LessOrEqual(dialer.MaxInFlight, 2);
+        }
+
+        [Test]
         public void OnlyAttemptRefused_NextStartsAtOnceAfterTheFloor()
         {
             // Before #815 the loop slept until the IPv4 due time (30 s here) and the 5 s deadline fired.
@@ -164,11 +201,38 @@ namespace TurboHTTP.Tests.Transport
             private readonly HashSet<IPAddress> _cancelled = new HashSet<IPAddress>();
             private readonly List<IPAddress> _order = new List<IPAddress>();
             private readonly Dictionary<IPAddress, TimeSpan> _starts = new Dictionary<IPAddress, TimeSpan>();
+            private readonly Dictionary<Socket, IPAddress> _socketAddresses = new Dictionary<Socket, IPAddress>();
             private readonly Stopwatch _clock = Stopwatch.StartNew();
             private int _inFlight;
             private int _maxInFlight;
+            private int _cancelledBeforeWin;
+            private Socket _healthySocket;
 
-            public Socket HealthySocket { get; private set; }
+            /// <summary>The socket of the most recent healthy completion.</summary>
+            public Socket HealthySocket
+            {
+                get
+                {
+                    lock (_lock)
+                        return _healthySocket;
+                }
+            }
+
+            /// <summary>Attempts cancelled while no attempt had produced a socket yet.</summary>
+            public int CancelledBeforeWin
+            {
+                get
+                {
+                    lock (_lock)
+                        return _cancelledBeforeWin;
+                }
+            }
+
+            public IPAddress AddressOf(Socket socket)
+            {
+                lock (_lock)
+                    return _socketAddresses[socket];
+            }
 
             public int MaxInFlight => Volatile.Read(ref _maxInFlight);
 
@@ -199,6 +263,16 @@ namespace TurboHTTP.Tests.Transport
                     return _starts[address];
             }
 
+            private void RecordCancelled(IPAddress address)
+            {
+                lock (_lock)
+                {
+                    _cancelled.Add(address);
+                    if (_healthySocket == null)
+                        _cancelledBeforeWin++;
+                }
+            }
+
             public async Task<Socket> DialAsync(IPAddress address, int port, CancellationToken ct)
             {
                 lock (_lock)
@@ -223,8 +297,7 @@ namespace TurboHTTP.Tests.Transport
                         }
                         catch (OperationCanceledException)
                         {
-                            lock (_lock)
-                                _cancelled.Add(address);
+                            RecordCancelled(address);
                             throw;
                         }
                     }
@@ -233,12 +306,30 @@ namespace TurboHTTP.Tests.Transport
                         throw new SocketException((int)SocketError.HostUnreachable);
 
                     if (delay.HasValue)
-                        await Task.Delay(delay.Value, ct);
+                    {
+                        try
+                        {
+                            await Task.Delay(delay.Value, ct);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            RecordCancelled(address);
+                            throw;
+                        }
+                    }
                     else
+                    {
                         await Task.Yield();
+                    }
 
-                    HealthySocket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-                    return HealthySocket;
+                    var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                    lock (_lock)
+                    {
+                        _socketAddresses[socket] = address;
+                        _healthySocket = socket;
+                    }
+
+                    return socket;
                 }
                 finally
                 {
