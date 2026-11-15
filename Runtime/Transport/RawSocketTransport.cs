@@ -29,6 +29,10 @@ namespace TurboHTTP.Transport
     {
         private readonly TcpConnectionPool _pool;
         private readonly Http2ConnectionManager _h2Manager;
+
+        // Asked by the pool once a request that waited for the per-host permit got it: true when an
+        // HTTP/2 connection the request can use was published meanwhile, so it skips its dial (#736).
+        private readonly Func<string, int, bool> _h2UsableAfterPermitWait;
         private readonly TlsBackend _tlsBackend;
         private readonly StreamingOptions _streamingOptions;
         // Fixed at construction from Http2Options.EnableHttp2ThroughConnectTunnels (#103); read-only
@@ -72,6 +76,7 @@ namespace TurboHTTP.Transport
                 tlsBackend: tlsBackend);
             _streamingOptions = streamingOptions.Clone();
             _h2Manager = new Http2ConnectionManager(http2Options, _streamingOptions);
+            _h2UsableAfterPermitWait = (h, p) => _h2Manager.GetIfExists(h, p) != null;
             _tlsBackend = tlsBackend;
             _http2ThroughConnectTunnels = http2Options.EnableHttp2ThroughConnectTunnels;
         }
@@ -577,73 +582,116 @@ namespace TurboHTTP.Transport
                     return;
                 }
 
-                // 4a. HTTP/2 fast path (TLS only). extraDial: this request dials the one extra
-                // connection of a saturated origin (MaxConnectionsPerOrigin > 1, #238); released as soon
-                // as the dial ended, and by the finally below on every other path.
+                // extraDial: this request dials the one extra connection of a saturated origin
+                // (MaxConnectionsPerOrigin > 1, #238). coldDial: this request dials the first connection of
+                // a cold origin and the others await it (#736). Both are released as soon as the dial
+                // ended, and by the finally below on every other path.
                 Http2ConnectionManager.ExtraDialClaim extraDial = null;
-                if (secure)
-                {
-                    var h2Conn = _h2Manager.GetIfExists(host, port, out extraDial);
-                    if (h2Conn != null)
-                    {
-                        context.RecordEvent("TransportH2Reuse");
-                        await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
-                            .ConfigureAwait(false);
-                        return;
-                    }
-                }
-
-                // 4b. Get connection lease (semaphore permit owned by lease)
-                context.RecordEvent("TransportConnecting");
+                Http2ConnectionManager.ColdDialClaim coldDial = null;
                 ConnectionLease lease = null;
                 try
                 {
-                    Http2Connection dialFallback = null;
-                    try
+                    bool dialOwn = false;
+                    while (true)
                     {
-                        lease = await _pool.GetConnectionAsync(host, port, secure, ct)
-                            .ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        dialFallback = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
-                        if (dialFallback == null)
-                            throw;
-                    }
+                        // 4a. HTTP/2 fast path (TLS only), checked again after awaiting another request's
+                        // dial and after a permit wait that an HTTP/2 publish made unnecessary.
+                        if (secure)
+                        {
+                            var h2Conn = _h2Manager.GetIfExists(host, port, out extraDial);
+                            if (h2Conn != null)
+                            {
+                                context.RecordEvent("TransportH2Reuse");
+                                await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
+                                    .ConfigureAwait(false);
+                                return;
+                            }
 
-                    if (dialFallback != null)
-                    {
-                        await DispatchOnH2ConnectionAsync(dialFallback, request, handler, context, ct, cancellationToken)
-                            .ConfigureAwait(false);
-                        return;
+                            // Cold origin: one dial at a time (RFC 9113 Section 9.1). A request whose
+                            // awaited dial did not yield HTTP/2 dials itself instead of awaiting again.
+                            if (extraDial == null && !dialOwn)
+                            {
+                                var pendingDial = _h2Manager.ClaimOrJoinColdDial(host, port, out coldDial);
+                                if (pendingDial != null)
+                                {
+                                    context.RecordEvent("TransportH2AwaitDial");
+                                    dialOwn = !await Http2ConnectionManager.WaitForColdDialAsync(pendingDial, ct)
+                                        .ConfigureAwait(false);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // 4b. Get connection lease (semaphore permit owned by lease)
+                        context.RecordEvent("TransportConnecting");
+                        Http2Connection dialFallback = null;
+                        try
+                        {
+                            lease = await _pool.GetConnectionOrSkipAsync(
+                                    host, port, secure, secure ? _h2UsableAfterPermitWait : null, ct)
+                                .ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            dialFallback = FallBackAfterFailedDial(ref extraDial, ref coldDial, host, port, secure, context, ct);
+                            if (dialFallback == null)
+                                throw;
+                        }
+
+                        if (dialFallback != null)
+                        {
+                            await DispatchOnH2ConnectionAsync(dialFallback, request, handler, context, ct, cancellationToken)
+                                .ConfigureAwait(false);
+                            return;
+                        }
+
+                        if (lease != null)
+                            break;
+
+                        // An HTTP/2 connection was published while this request waited for the per-host
+                        // permit: use it instead of dialing.
+                        _h2Manager.ReleaseExtraDial(ref extraDial);
+                        _h2Manager.CompleteColdDial(ref coldDial, Http2ConnectionManager.ColdDialOutcome.Http2);
                     }
 
                     // 4c. Protocol routing based on ALPN
                     if (lease.Connection.NegotiatedAlpnProtocol == "h2")
                     {
                         context.RecordEvent("TransportH2Init");
-                        lease.TransferOwnership();
+                        // The permit stays held until the connection is published or its preface failed:
+                        // a request woken by an earlier release would find no connection yet and dial a
+                        // redundant one (#736).
+                        lease.DetachConnection();
                         Http2Connection h2Conn;
                         try
                         {
-                            h2Conn = await _h2Manager.GetOrCreateAsync(
-                                host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                            try
+                            {
+                                h2Conn = await _h2Manager.GetOrCreateAsync(
+                                    host, port, lease.Connection.Stream, ct).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                lease.Dispose();
+                            }
                         }
                         catch
                         {
-                            h2Conn = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                            h2Conn = FallBackAfterFailedDial(ref extraDial, ref coldDial, host, port, secure, context, ct);
                             if (h2Conn == null)
                                 throw;
                         }
 
                         lease = null;
                         _h2Manager.ReleaseExtraDial(ref extraDial);
+                        _h2Manager.CompleteColdDial(ref coldDial, Http2ConnectionManager.ColdDialOutcome.Http2);
                         await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
                             .ConfigureAwait(false);
                         return;
                     }
 
                     _h2Manager.ReleaseExtraDial(ref extraDial);
+                    _h2Manager.CompleteColdDial(ref coldDial, Http2ConnectionManager.ColdDialOutcome.NotHttp2);
 
                     // 4d. HTTP/1.1 path
                     var requestWriteState = new Http11RequestWriteState();
@@ -686,9 +734,18 @@ namespace TurboHTTP.Transport
                             if (freshLease.Connection.NegotiatedAlpnProtocol == "h2")
                             {
                                 context.RecordEvent("TransportH2Init");
-                                freshLease.TransferOwnership();
-                                var h2Conn = await _h2Manager.GetOrCreateAsync(
-                                    host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
+                                freshLease.DetachConnection(); // permit held until publish (#736)
+                                Http2Connection h2Conn;
+                                try
+                                {
+                                    h2Conn = await _h2Manager.GetOrCreateAsync(
+                                        host, port, freshLease.Connection.Stream, ct).ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    freshLease.Dispose();
+                                }
+
                                 freshLease = null;
                                 await DispatchOnH2ConnectionAsync(h2Conn, request, handler, context, ct, cancellationToken)
                                     .ConfigureAwait(false);
@@ -741,6 +798,7 @@ namespace TurboHTTP.Transport
                 {
                     lease?.Dispose();
                     _h2Manager.ReleaseExtraDial(ref extraDial);
+                    _h2Manager.CompleteColdDial(ref coldDial, FailedColdDialOutcome(ct));
                 }
             }
             catch (Exception ex)
@@ -1016,6 +1074,44 @@ namespace TurboHTTP.Transport
                 lease?.Dispose();
                 _h2Manager.ReleaseExtraDial(ref extraDial);
             }
+        }
+
+        /// <summary>
+        /// A direct dial (or the HTTP/2 preface on it) failed. Completes the cold-dial claim, so the
+        /// requests awaiting it dial themselves (or claim again after a cancellation), then, unless this
+        /// request was cancelled or timed out, falls back to an HTTP/2 connection another request
+        /// published meanwhile (#736), or for an extra dial to the connection it would have queued on
+        /// (#238). The fallback is a connection the platform already validated, never this failed one.
+        /// Null when there is none: the caller rethrows the dial failure.
+        /// </summary>
+        private Http2Connection FallBackAfterFailedDial(
+            ref Http2ConnectionManager.ExtraDialClaim extraDial,
+            ref Http2ConnectionManager.ColdDialClaim coldDial,
+            string host,
+            int port,
+            bool secure,
+            RequestContext context,
+            CancellationToken ct)
+        {
+            _h2Manager.CompleteColdDial(ref coldDial, FailedColdDialOutcome(ct));
+            if (extraDial != null)
+                return FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+
+            if (!secure || ct.IsCancellationRequested)
+                return null;
+
+            var fallback = _h2Manager.GetAcceptingConnection(host, port);
+            if (fallback != null)
+                context.RecordEvent("TransportH2DialFallback");
+
+            return fallback;
+        }
+
+        private static Http2ConnectionManager.ColdDialOutcome FailedColdDialOutcome(CancellationToken ct)
+        {
+            return ct.IsCancellationRequested
+                ? Http2ConnectionManager.ColdDialOutcome.Abandoned
+                : Http2ConnectionManager.ColdDialOutcome.Failed;
         }
 
         /// <summary>

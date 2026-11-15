@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Auth;
 using TurboHTTP.Core;
+using TurboHTTP.Middleware;
 using TurboHTTP.Testing;
 
 namespace TurboHTTP.Tests.Auth
@@ -95,6 +96,85 @@ namespace TurboHTTP.Tests.Auth
 
                 Assert.AreEqual(0, idp.Forms.Count);
                 Assert.AreEqual("B", token.AccessToken);
+            });
+        }
+
+        [Test]
+        public void ForceRefresh_JoinedFlightReturnsPresentedToken_StartsOwnRefresh()
+        {
+            AssertAsync.Run(async () =>
+            {
+                // Flight A presents stale "X" while the store already holds "Z": A answers "Z"
+                // without a token request. B presents "Z" and joins A's flight while A's store
+                // read is held; "Z" is no answer for B, so B starts one refresh of its own.
+                var idp = new RotatingTokenEndpoint();
+                var store = new GatedTokenStore();
+                using var oauth = await idp.CreateClientAsync(new OAuthToken("Z", DateTime.UtcNow.AddHours(1), "refresh-1"), store);
+
+                var first = oauth.ForceRefreshTokenAsync(Key, NewRefreshRequest(), "X", CancellationToken.None);
+                await store.FirstGetEntered;
+                var second = oauth.ForceRefreshTokenAsync(Key, NewRefreshRequest(), "Z", CancellationToken.None);
+
+                Assert.AreEqual(1, oauth.InFlightRefreshCount, "B joined A's flight instead of starting one");
+                Assert.IsFalse(second.IsCompleted);
+
+                store.ReleaseFirstGet();
+                var tokenA = await first;
+                var tokenB = await second;
+
+                Assert.AreEqual("Z", tokenA.AccessToken);
+                Assert.AreEqual("access-1", tokenB.AccessToken);
+                Assert.AreEqual(1, idp.Forms.Count);
+                StringAssert.Contains("refresh_token=refresh-1", idp.Forms[0]);
+                Assert.AreEqual(0, oauth.InFlightRefreshCount);
+            });
+        }
+
+        [Test]
+        public void Interceptor_401FromCrossOriginRedirectHop_IsDeliveredWithoutRefresh()
+        {
+            AssertAsync.Run(async () =>
+            {
+                // The auth interceptor wraps the redirect interceptor, so it sees the final 401 of
+                // a hop to another origin. That origin never got this interceptor's token: the 401
+                // is about its own credentials and is delivered, with no refresh and no resend.
+                var idp = new RotatingTokenEndpoint();
+                using var oauth = await idp.CreateClientAsync(new OAuthToken("A", DateTime.UtcNow.AddHours(1), "refresh-1"));
+                var hops = new List<string>();
+                var transport = new MockTransport((req, ctx, ct) =>
+                {
+                    lock (hops)
+                        hops.Add(req.Uri.GetLeftPart(UriPartial.Path) + " " + (req.Headers.Get("Authorization") ?? "-"));
+
+                    if (req.Uri.Host == "api.example.com")
+                    {
+                        var redirectHeaders = new HttpHeaders();
+                        redirectHeaders.Set("Location", "https://other.example.com/final");
+                        return Task.FromResult(new UHttpResponse(
+                            HttpStatusCode.Found, redirectHeaders, Array.Empty<byte>(), ctx.Elapsed, req));
+                    }
+
+                    var headers = new HttpHeaders();
+                    headers.Set("WWW-Authenticate", "Bearer error=\"invalid_token\"");
+                    return Task.FromResult(new UHttpResponse(HttpStatusCode.Unauthorized, headers,
+                        Encoding.UTF8.GetBytes("denied"), ctx.Elapsed, req));
+                });
+
+                var options = new AuthInterceptorOptions { RetryOnUnauthorized = true };
+                options.AllowedOrigins.Add(new Uri(ApiOrigin));
+                var auth = new AuthInterceptor(new OAuthTokenProvider(oauth, Key, NewRefreshRequest()), options);
+                var pipeline = new TestInterceptorPipeline(
+                    new IHttpInterceptor[] { auth, new RedirectInterceptor() }, transport);
+                var request = new UHttpRequest(HttpMethod.GET, new Uri(ApiOrigin + "/start"));
+
+                using var response = await pipeline.ExecuteAsync(request, new RequestContext(request));
+
+                Assert.AreEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+                Assert.AreEqual("denied", response.GetBodyAsString());
+                CollectionAssert.AreEqual(
+                    new[] { "https://api.example.com/start Bearer A", "https://other.example.com/final -" },
+                    hops);
+                Assert.AreEqual(0, idp.Forms.Count, "a 401 from another origin refreshed this origin's token");
             });
         }
 
@@ -227,7 +307,7 @@ namespace TurboHTTP.Tests.Auth
                 }
             }
 
-            public async Task<OAuthClient> CreateClientAsync(OAuthToken stored, InMemoryTokenStore store = null)
+            public async Task<OAuthClient> CreateClientAsync(OAuthToken stored, ITokenStore store = null)
             {
                 store ??= new InMemoryTokenStore();
                 await store.SetAsync(Key, stored, CancellationToken.None);
@@ -296,6 +376,45 @@ namespace TurboHTTP.Tests.Auth
                 headers.Set("WWW-Authenticate", "Bearer error=\"invalid_token\"");
                 return Task.FromResult(new UHttpResponse(HttpStatusCode.Unauthorized, headers,
                     Encoding.UTF8.GetBytes("denied"), ctx.Elapsed, req));
+            }
+        }
+
+        // Token store whose first read waits until the test releases it.
+        private sealed class GatedTokenStore : ITokenStore
+        {
+            private readonly InMemoryTokenStore _inner = new InMemoryTokenStore();
+            private readonly TaskCompletionSource<bool> _entered =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly TaskCompletionSource<bool> _release =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _reads;
+
+            public Task FirstGetEntered => _entered.Task;
+
+            public void ReleaseFirstGet()
+            {
+                _release.TrySetResult(true);
+            }
+
+            public async Task<OAuthToken> GetAsync(string key, CancellationToken ct)
+            {
+                if (Interlocked.Increment(ref _reads) == 1)
+                {
+                    _entered.TrySetResult(true);
+                    await _release.Task.ConfigureAwait(false);
+                }
+
+                return await _inner.GetAsync(key, ct).ConfigureAwait(false);
+            }
+
+            public Task SetAsync(string key, OAuthToken token, CancellationToken ct)
+            {
+                return _inner.SetAsync(key, token, ct);
+            }
+
+            public Task RemoveAsync(string key, CancellationToken ct)
+            {
+                return _inner.RemoveAsync(key, ct);
             }
         }
 
