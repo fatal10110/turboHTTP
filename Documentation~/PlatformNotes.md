@@ -94,7 +94,11 @@ TurboHTTP applies its own policy instead, before it resolves or connects any add
 - **Platform policy:** when the switch is `true`, an installed `CleartextTrafficPolicy.PlatformPolicy`
   must also permit the host. On Android players the TurboHTTP Unity module installs one that asks
   `NetworkSecurityPolicy.isCleartextTrafficPermitted(host)`, so `android:usesCleartextTraffic` or a
-  network security config domain rule is still needed on Android 9+. On iOS no Info.plist key is
+  network security config domain rule is still needed on Android 9+. The TurboHTTP.Complete startup
+  hook installs it, and an app's own policy installed earlier is kept. If your build strips or
+  excludes TurboHTTP.Complete, call `AndroidCleartextTrafficPolicy.EnsureRegistered()`
+  (`TurboHTTP.Unity.Mobile.Android`) once at startup. Without a platform policy, `AllowCleartext = true`
+  permits cleartext to every host. On iOS no Info.plist key is
   read; `AllowCleartext = true` is the explicit opt-in, and ATS keys only affect `UnityWebRequest`
   and other OS stacks.
 - **Refusal:** HTTP throws `UHttpException` with `UHttpErrorType.InvalidRequest`; WebSocket throws

@@ -11,27 +11,48 @@ namespace TurboHTTP.Unity.Mobile.Android
     /// </summary>
     /// <remarks>
     /// Installed automatically on Android players before the first scene loads, unless the app has
-    /// already installed its own policy. Raw sockets are not covered by that configuration, so
+    /// already installed its own policy: the TurboHTTP.Complete bootstrap (an always-linked,
+    /// preserved startup hook) calls <see cref="EnsureRegistered"/>, so the install does not depend
+    /// on any other code or link.xml rule keeping this assembly in a stripped player (#875). Builds
+    /// that strip or exclude TurboHTTP.Complete call <see cref="EnsureRegistered"/> at startup
+    /// instead. Raw sockets are not covered by that configuration, so
     /// TurboHTTP applies it itself. The answer is cached per host (bounded) because the
     /// configuration cannot change while the process runs. The JNI query runs on
     /// <see cref="AndroidJniThread"/>, so the transport thread asking is never attached to the Java
     /// VM (#328). Any JNI failure propagates, and <see cref="CleartextTrafficPolicy"/> treats it as
     /// "not permitted". Needs device validation (#99).
     /// </remarks>
-    internal static class AndroidCleartextTrafficPolicy
+    public static class AndroidCleartextTrafficPolicy
     {
         private const int MaxCachedHosts = 64;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
         private static readonly ConcurrentDictionary<string, bool> s_cache = NewCache();
 
+        // Secondary path for players that keep this assembly but exclude TurboHTTP.Complete; the
+        // primary install is the Complete bootstrap's call to EnsureRegistered.
+        [UnityEngine.Scripting.Preserve]
         [UnityEngine.RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.SubsystemRegistration)]
-        private static void Install()
-        {
-            if (CleartextTrafficPolicy.PlatformPolicy == null)
-                CleartextTrafficPolicy.PlatformPolicy = IsCleartextTrafficPermitted;
-        }
+        private static void Install() => EnsureRegistered();
 #endif
+
+        /// <summary>
+        /// On Android players, installs the Android network security configuration as
+        /// <see cref="CleartextTrafficPolicy.PlatformPolicy"/> unless a policy is already installed
+        /// (the app's own policy is never replaced); elsewhere it does nothing. TurboHTTP.Complete
+        /// calls it at startup. A build that strips or excludes TurboHTTP.Complete must call it
+        /// once at startup (for example from a
+        /// <c>[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]</c>
+        /// method) before any cleartext request; without a platform policy, cleartext is permitted
+        /// to every host once <c>AllowCleartext</c> is <see langword="true"/>. Idempotent and safe
+        /// on any thread.
+        /// </summary>
+        public static void EnsureRegistered()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            CleartextTrafficPolicy.InstallPlatformPolicyIfUnset(IsCleartextTrafficPermitted);
+#endif
+        }
 
         /// <summary>
         /// Returns whether the Android network security configuration permits cleartext traffic to
