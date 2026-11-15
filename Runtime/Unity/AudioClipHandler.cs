@@ -158,11 +158,10 @@ namespace TurboHTTP.Unity
             lock (OptionsLock)
             {
                 _options = new AudioClipPipelineOptions();
-                var oldLimiter = _decodeLimiter;
+                // Never disposed: a load from before the reset may still hold or wait on it (#1006).
                 _decodeLimiter = new SemaphoreSlim(
                     _options.MaxConcurrentDecodes,
                     _options.MaxConcurrentDecodes);
-                oldLimiter?.Dispose();
             }
         }
 
@@ -193,11 +192,12 @@ namespace TurboHTTP.Unity
 
                 if (clone.MaxConcurrentDecodes != previousMax)
                 {
-                    var oldLimiter = _decodeLimiter;
+                    // The replaced limiter is left to the GC, never disposed: in-flight loads captured
+                    // it and still wait on or release it (#1006). Until they finish, old and new
+                    // limiters admit loads side by side.
                     _decodeLimiter = new SemaphoreSlim(
                         clone.MaxConcurrentDecodes,
                         clone.MaxConcurrentDecodes);
-                    oldLimiter?.Dispose();
                 }
             }
 
@@ -304,7 +304,9 @@ namespace TurboHTTP.Unity
             return UnityTempFileManager.Shared.GetMetrics();
         }
 
-        private static SemaphoreSlim GetDecodeLimiter()
+        // Each load waits on and releases the instance returned here, so a Configure in between
+        // cannot make it release a different semaphore.
+        internal static SemaphoreSlim GetDecodeLimiter()
         {
             lock (OptionsLock)
             {
