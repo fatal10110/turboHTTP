@@ -108,7 +108,7 @@ namespace TurboHTTP.Transport.Http1
                     ct).ConfigureAwait(false))
             {
                 writeState?.MarkMessageWritten();
-                await stream.FlushAsync(ct).ConfigureAwait(false);
+                await Http11RequestWriteRace.FlushAsync(stream, ct).ConfigureAwait(false);
                 return;
             }
 
@@ -142,7 +142,7 @@ namespace TurboHTTP.Transport.Http1
             }
 
             writeState?.MarkMessageWritten();
-            await stream.FlushAsync(ct).ConfigureAwait(false);
+            await Http11RequestWriteRace.FlushAsync(stream, ct).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -291,7 +291,7 @@ namespace TurboHTTP.Transport.Http1
             if (!bodyWriteMode.BufferedBody.IsEmpty)
             {
                 writeState?.RecordBodyBytesWritten(bodyWriteMode.BufferedBody.Length);
-                await stream.WriteAsync(bodyWriteMode.BufferedBody, ct).ConfigureAwait(false);
+                await Http11RequestWriteRace.WriteAsync(stream, bodyWriteMode.BufferedBody, ct, out _).ConfigureAwait(false);
                 return;
             }
 
@@ -405,6 +405,7 @@ namespace TurboHTTP.Transport.Http1
             CancellationToken ct)
         {
             var buffer = ByteArrayPool.Rent(streamingSendBufferBytes);
+            Task pendingWrite = null;
             try
             {
                 long remaining = knownLength;
@@ -435,7 +436,11 @@ namespace TurboHTTP.Transport.Http1
                             "Request body ended before the declared Content-Length was fully produced.");
                     }
 
-                    await stream.WriteAsync(new ReadOnlyMemory<byte>(buffer, 0, bytesRead), ct)
+                    await Http11RequestWriteRace.WriteAsync(
+                            stream,
+                            new ReadOnlyMemory<byte>(buffer, 0, bytesRead),
+                            ct,
+                            out pendingWrite)
                         .ConfigureAwait(false);
                     writeState?.RecordBodyBytesWritten(bytesRead);
                     remaining -= bytesRead;
@@ -443,7 +448,7 @@ namespace TurboHTTP.Transport.Http1
             }
             finally
             {
-                ByteArrayPool.Return(buffer);
+                Http11RequestWriteRace.ReleaseBuffer(buffer, pendingWrite);
             }
         }
 
@@ -457,6 +462,7 @@ namespace TurboHTTP.Transport.Http1
         {
             var bodyBuffer = ByteArrayPool.Rent(streamingSendBufferBytes);
             var headerBuffer = ByteArrayPool.Rent(MaxChunkHeaderBytes);
+            Task pendingWrite = null;
             try
             {
                 while (true)
@@ -479,12 +485,21 @@ namespace TurboHTTP.Transport.Http1
                         break;
 
                     int headerLength = FormatChunkHeader(bytesRead, headerBuffer);
-                    await stream.WriteAsync(new ReadOnlyMemory<byte>(headerBuffer, 0, headerLength), ct)
+                    await Http11RequestWriteRace.WriteAsync(
+                            stream,
+                            new ReadOnlyMemory<byte>(headerBuffer, 0, headerLength),
+                            ct,
+                            out pendingWrite)
                         .ConfigureAwait(false);
-                    await stream.WriteAsync(new ReadOnlyMemory<byte>(bodyBuffer, 0, bytesRead), ct)
+                    await Http11RequestWriteRace.WriteAsync(
+                            stream,
+                            new ReadOnlyMemory<byte>(bodyBuffer, 0, bytesRead),
+                            ct,
+                            out pendingWrite)
                         .ConfigureAwait(false);
                     writeState?.RecordBodyBytesWritten(bytesRead);
-                    await stream.WriteAsync(ChunkDataTerminator, ct).ConfigureAwait(false);
+                    await Http11RequestWriteRace.WriteAsync(stream, ChunkDataTerminator, ct, out _)
+                        .ConfigureAwait(false);
                 }
 
                 using var trailerWriter = new PooledHeaderWriter();
@@ -495,8 +510,9 @@ namespace TurboHTTP.Transport.Http1
             }
             finally
             {
-                ByteArrayPool.Return(bodyBuffer);
-                ByteArrayPool.Return(headerBuffer);
+                // An abandoned chunk-size or chunk-data write may still read either buffer.
+                Http11RequestWriteRace.ReleaseBuffer(bodyBuffer, pendingWrite);
+                Http11RequestWriteRace.ReleaseBuffer(headerBuffer, pendingWrite);
             }
         }
 
@@ -591,6 +607,10 @@ namespace TurboHTTP.Transport.Http1
         {
             private readonly PooledArrayBufferWriter _writer;
 
+            // The last raced write over the writer's buffer (#633): still running after an
+            // abandon, it keeps the buffer out of the pool.
+            private Task _pendingWrite;
+
             public PooledHeaderWriter(int initialCapacity = 1024)
             {
                 _writer = new PooledArrayBufferWriter(initialCapacity);
@@ -679,10 +699,17 @@ namespace TurboHTTP.Transport.Http1
                 if (_writer.WrittenCount == 0)
                     return;
 
-                await stream.WriteAsync(_writer.WrittenMemory, ct).ConfigureAwait(false);
+                await Http11RequestWriteRace.WriteAsync(stream, _writer.WrittenMemory, ct, out _pendingWrite)
+                    .ConfigureAwait(false);
             }
 
-            public void Dispose() => _writer.Dispose();
+            public void Dispose()
+            {
+                if (Http11RequestWriteRace.IsStillRunning(_pendingWrite))
+                    _writer.AbandonToGc();
+                else
+                    _writer.Dispose();
+            }
         }
 
         private readonly struct RequestBodyWriteMode
