@@ -18,11 +18,12 @@ namespace TurboHTTP.Core
         /// Opt-in high-performance mode. I/O is performed via
         /// <see cref="System.Net.Sockets.SocketAsyncEventArgs"/> (SAEA), avoiding per-operation
         /// <see cref="System.Threading.Tasks.Task"/> allocations on the hot receive path.
-        /// Uses IOCP on Windows, kqueue on macOS/iOS, and epoll on Android/Linux.
+        /// Completions come from the runtime's socket layer (Mono or IL2CPP), which waits on
+        /// kqueue on macOS/iOS, epoll on Android/Linux and Winsock readiness on Windows.
         /// Not available on WebGL (Transport assembly is excluded from WebGL builds).
         /// </summary>
         /// <remarks>
-        /// SAEA relies on the runtime's async I/O completion ports. Under IL2CPP on some
+        /// SAEA relies on the runtime's async socket completion callbacks. Under IL2CPP on some
         /// consoles and mobile targets, the translated async callback paths have historically
         /// been prone to edge-case bugs, memory leaks, or thread deadlocks. Consider
         /// <see cref="PollSelect"/> as a more stable alternative on those platforms.
@@ -206,7 +207,7 @@ namespace TurboHTTP.Core
         /// Socket I/O implementation to use for send and receive operations.
         /// Defaults to <see cref="SocketIoMode.NetworkStream"/> for maximum compatibility.
         /// Set to <see cref="SocketIoMode.Saea"/> to enable zero-allocation socket I/O on
-        /// platforms with native async socket support (IOCP/kqueue/epoll).
+        /// platforms with native async socket support.
         /// </summary>
         public SocketIoMode SocketIoMode
         {

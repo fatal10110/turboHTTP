@@ -49,14 +49,14 @@ namespace TurboHTTP.Transport.Tcp
         private const int BufferSize = 16 * 1024;
 
         /// <summary>
-        /// IOCP (Windows): how long after <see cref="Dispose"/> closed the socket an in-flight
+        /// Close-first platforms (Windows): how long after <see cref="Dispose"/> closed the socket an in-flight
         /// completion may take before the buffers are given up and leaked (#168). Selector platforms
         /// hold the descriptor for <see cref="SocketHandleHold.HoldTimeout"/> instead (#384).
         /// </summary>
         internal const int DisposeDrainTimeoutMs = 500;
 
         // Volatile: 1 = shut down, drain, then close (selector platforms end a pending operation on
-        // shutdown); 0 = close first (IOCP aborts it on close).
+        // shutdown); 0 = close first (Windows, SaeaPlatformDetection.CloseAbortsPendingIoFor).
         private static int s_shutdownBeforeClose = SaeaPlatformDetection.CloseAbortsPendingIo ? 0 : 1;
 
         private static long s_buffersLeakedOnDispose;
@@ -72,7 +72,7 @@ namespace TurboHTTP.Transport.Tcp
         // In-flight tracking: 0 = idle, 1 = operation submitted to OS.
         // Used to guard against concurrent same-direction calls (runtime detection)
         // and to defer ArrayPool.Return until the OS completion has fired (correct
-        // buffer lifetime on IOCP/kqueue/epoll where the kernel owns the buffer
+        // buffer lifetime on every platform, where the kernel owns the buffer
         // until the completion event is posted).
         private volatile int _recvActive;
         private volatile int _sendActive;
@@ -153,7 +153,7 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>
         /// The dispose order: true (selector platforms) shuts the socket down and closes it only once
-        /// every submitted operation ended (#384); false (IOCP) closes it first. Tests set it.
+        /// every submitted operation ended (#384); false (Windows) closes it first. Tests set it.
         /// </summary>
         internal static bool ShutdownBeforeClose
         {
@@ -391,8 +391,8 @@ namespace TurboHTTP.Transport.Tcp
             }
             else
             {
-                // IOCP (Windows): closing posts an OperationAborted completion for each pending
-                // operation. IOCP has no descriptor-keyed selector to go stale.
+                // Windows (close first): a shutdown did not end a pending receive in the Windows
+                // Editor (#405); the close aborts it. Windows IL2CPP is unmeasured (#843).
                 try { _socket.Dispose(); } catch { }
             }
 
