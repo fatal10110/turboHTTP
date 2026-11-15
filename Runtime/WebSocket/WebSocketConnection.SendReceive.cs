@@ -1180,7 +1180,7 @@ namespace TurboHTTP.WebSocket
 
         private static bool ApplicationResumedSince(long timestamp)
         {
-            return Volatile.Read(ref s_applicationResumedTimestamp) >= timestamp;
+            return Interlocked.Read(ref s_applicationResumedTimestamp) >= timestamp;
         }
 
         private TimeSpan GetKeepAliveGracePeriod()

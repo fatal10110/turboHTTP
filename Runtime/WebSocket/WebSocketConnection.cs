@@ -99,7 +99,7 @@ namespace TurboHTTP.WebSocket
         private long _keepAlivePongGraceWaits;
 
         // Stopwatch timestamp of the last application resume the platform layer reported (#1132). Process
-        // wide: a suspension freezes every connection. Interlocked written, Volatile read.
+        // wide: a suspension freezes every connection. Interlocked written and read (64-bit, 32-bit IL2CPP).
         private static long s_applicationResumedTimestamp;
         private TaskCompletionSource<long> _pongWaiter;
         private WebSocketMetricsCollector _metrics;
@@ -158,7 +158,8 @@ namespace TurboHTTP.WebSocket
         /// Reports that the application resumed from a suspension (iOS/Android backgrounding, #1132). A keep-alive
         /// deadline that was running during the suspension restarts instead of closing a live connection with
         /// PongTimeout: timers that expired while the process was frozen can fire before the read completion
-        /// carrying the Pong. Called by the Unity layer on OnApplicationPause(false); safe from any thread.
+        /// carrying the Pong. Called by the Unity layer on OnApplicationPause(false) (an always-on hidden listener in
+        /// TurboHTTP.Unity.WebSocket, so plain WebSocketClient users get it too); safe from any thread.
         /// </summary>
         internal static void NotifyApplicationResumed()
         {
@@ -166,7 +167,7 @@ namespace TurboHTTP.WebSocket
         }
 
         /// <summary>Stopwatch timestamp of the last <see cref="NotifyApplicationResumed"/> (zero if none).</summary>
-        internal static long ApplicationResumedTimestamp => Volatile.Read(ref s_applicationResumedTimestamp);
+        internal static long ApplicationResumedTimestamp => Interlocked.Read(ref s_applicationResumedTimestamp);
 
         // Diagnostics and tests only (#80): receive-loop parking and the delivery queue's byte budget.
         internal bool IsReceiveLoopParked => Volatile.Read(ref _receiveParked) != 0;

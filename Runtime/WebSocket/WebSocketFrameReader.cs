@@ -294,7 +294,7 @@ namespace TurboHTTP.WebSocket
         /// Stopwatch timestamp of the last read that returned bytes, partial frames included (#1131); zero
         /// before the first read.
         /// </summary>
-        internal long LastBytesReceivedTimestamp => Volatile.Read(ref _lastBytesReceivedTimestamp);
+        internal long LastBytesReceivedTimestamp => Interlocked.Read(ref _lastBytesReceivedTimestamp);
 
         private async Task<bool> ReadExactAsync(
             Stream stream,

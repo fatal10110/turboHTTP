@@ -196,7 +196,8 @@ namespace TurboHTTP.Unity.WebSocket
         internal void OnApplicationPause(bool pauseStatus)
         {
             // Keep-alive deadlines that ran across the suspension restart instead of closing live connections
-            // with PongTimeout (#1132). Process wide, so connections this component does not own benefit too.
+            // with PongTimeout (#1132). WebSocketResumeListener reports it for every connection; this call keeps the
+            // signal tied to the component's own pause handling (a second report is harmless).
             if (!pauseStatus)
                 WebSocketConnection.NotifyApplicationResumed();
 

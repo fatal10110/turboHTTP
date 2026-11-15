@@ -121,7 +121,9 @@ server as a sign of life, so a large message on a slow link does not end the con
 arriving. A ping that cannot be sent within `PongTimeout` because the server stopped reading ends the
 connection with `WebSocketError.PongTimeout`, and the send that was stuck fails. A pong timeout is checked
 again after a short grace period (at most one second) before the connection is closed, and
-`UnityWebSocketClient` reports app resume so that time spent suspended does not count against the timeout.
+in Unity players app resume is reported to every connection (`WebSocketClient`,
+`ResilientWebSocketClient` and `UnityWebSocketClient` alike), so time spent suspended does not count against
+the timeout.
 
 ### Message size limits
 
