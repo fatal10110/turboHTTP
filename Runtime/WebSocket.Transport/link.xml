@@ -4,8 +4,10 @@
     (TurboHTTP.Complete, [Preserve]) calls RawSocketWebSocketTransport.EnsureRegistered statically.
     WebSocketTransportModuleInitializer is the secondary path for runtimes that run module
     initializers; nothing references it statically.
+    ignoreIfMissing="1": the assembly is not compiled for WebGL (excludePlatforms), and with the
+    package under Assets/ Unity reads this file without TurboHttpLinkerProcessor's filtering (#871).
   -->
-  <assembly fullname="TurboHTTP.WebSocket.Transport">
+  <assembly fullname="TurboHTTP.WebSocket.Transport" ignoreIfMissing="1">
     <type fullname="TurboHTTP.WebSocket.Transport.WebSocketTransportModuleInitializer" preserve="all"/>
     <type fullname="TurboHTTP.WebSocket.Transport.RawSocketWebSocketTransport" preserve="all"/>
   </assembly>

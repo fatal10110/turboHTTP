@@ -10,7 +10,10 @@ namespace TurboHTTP.Tests.Editor
     /// Scripts in <c>Assets/</c> without an asmdef compile into Assembly-CSharp, which references
     /// only <c>autoReferenced</c> assemblies; asmdef references are not transitive, so an aggregate
     /// assembly cannot re-export the modules. Every user-facing module is therefore autoReferenced
-    /// (#7), and the test/opt-in assemblies stay explicit.
+    /// (#7), and the test/opt-in assemblies stay explicit. The UniTask adapters are define-gated
+    /// rather than opt-in by reference: once <c>TURBOHTTP_UNITASK</c> is defined (automatically for
+    /// the com.cysharp.unitask package, by hand for a UniTask copied into Assets/), Assembly-CSharp
+    /// must see them too (#944).
     /// </summary>
     [TestFixture]
     public class ModuleAutoReferenceTests
@@ -57,14 +60,14 @@ namespace TurboHTTP.Tests.Editor
         [TestCase("WebSocket/TurboHTTP.WebSocket.asmdef")]
         [TestCase("WebSocket.Transport/TurboHTTP.WebSocket.Transport.asmdef")]
         [TestCase("Unity.WebSocket/TurboHTTP.Unity.WebSocket.asmdef")]
+        [TestCase("UniTask/TurboHTTP.UniTask.asmdef")]
+        [TestCase("UniTask.WebSocket/TurboHTTP.UniTask.WebSocket.asmdef")]
         public void UserFacingModule_IsVisibleToAssemblyCSharp(string relativePath)
         {
             Assert.That(Read(relativePath).autoReferenced, Is.True, relativePath);
         }
 
         [TestCase("Testing/TurboHTTP.Testing.asmdef")]
-        [TestCase("UniTask/TurboHTTP.UniTask.asmdef")]
-        [TestCase("UniTask.WebSocket/TurboHTTP.UniTask.WebSocket.asmdef")]
         [TestCase("Transport/BouncyCastle/TurboHTTP.Transport.BouncyCastle.asmdef")]
         public void OptInModule_StaysExplicit(string relativePath)
         {

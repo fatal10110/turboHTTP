@@ -87,16 +87,23 @@ namespace TurboHTTP.Tests.Editor
         /// (the Editor's unityjit profile places these types exactly like the players' unityaot
         /// profile). A facade name resolves through a type forward but preserves nothing, and an
         /// assembly that does not exist would fail UnityLinker, so both are rejected unless the
-        /// entry opts out with ignoreIfMissing="1".
+        /// entry opts out with ignoreIfMissing="1". A package assembly that a define or a platform
+        /// list can leave out must carry ignoreIfMissing="1": with the package under Assets/,
+        /// Unity passes the file to UnityLinker without the processor's filtering (#871).
         /// </summary>
         [Test]
         public void PackageLinkXml_FrameworkRulesNameTheImplementingAssembly()
         {
             var packageAssemblies = PackageAssemblyNames();
+            var gatedAssemblies = GatedPackageAssemblyNames();
+            Assert.That(gatedAssemblies, Does.Contain(BouncyCastleAssembly), "precondition: the define-gated glue");
 
             foreach (var file in TurboHttpLinkerProcessor.FindLinkXmlFiles(_packageRoot))
             {
-                foreach (var assembly in XDocument.Load(file).Descendants("assembly"))
+                var document = XDocument.Load(file);
+                Assert.That(GatedRulesWithoutIgnoreIfMissing(document, gatedAssemblies), Is.Empty,
+                    file + ": rules for define- or platform-gated assemblies need ignoreIfMissing=\"1\"");
+                foreach (var assembly in document.Descendants("assembly"))
                 {
                     var name = (string)assembly.Attribute("fullname");
                     Assert.That(name, Is.Not.Null.And.Not.Empty, file);
@@ -121,6 +128,19 @@ namespace TurboHTTP.Tests.Editor
                     }
                 }
             }
+        }
+
+        [Test]
+        public void GatedRuleCheck_FlagsAGatedAssemblyWithoutIgnoreIfMissing()
+        {
+            var gated = new HashSet<string>(StringComparer.Ordinal) { BouncyCastleAssembly };
+            var bare = XDocument.Parse("<linker><assembly fullname=\"" + BouncyCastleAssembly + "\"/>" +
+                                       "<assembly fullname=\"TurboHTTP.Core\"/></linker>");
+            var optedOut = XDocument.Parse("<linker><assembly fullname=\"" + BouncyCastleAssembly +
+                                           "\" ignoreIfMissing=\"1\"/></linker>");
+
+            Assert.That(GatedRulesWithoutIgnoreIfMissing(bare, gated), Is.EqualTo(new[] { BouncyCastleAssembly }));
+            Assert.That(GatedRulesWithoutIgnoreIfMissing(optedOut, gated), Is.Empty);
         }
 
         [Test]
@@ -275,6 +295,39 @@ namespace TurboHTTP.Tests.Editor
         private static List<string> AssemblyNames(XDocument linkXml)
         {
             return linkXml.Descendants("assembly").Select(a => (string)a.Attribute("fullname")).ToList();
+        }
+
+        [Serializable]
+        private sealed class AsmdefGates
+        {
+            public string name;
+            public string[] defineConstraints;
+            public string[] includePlatforms;
+            public string[] excludePlatforms;
+        }
+
+        private static List<string> GatedRulesWithoutIgnoreIfMissing(XDocument document, ISet<string> gatedAssemblies)
+        {
+            return document.Descendants("assembly")
+                .Where(a => gatedAssemblies.Contains((string)a.Attribute("fullname") ?? string.Empty))
+                .Where(a => (string)a.Attribute(IgnoreIfMissing) != "1")
+                .Select(a => (string)a.Attribute("fullname"))
+                .ToList();
+        }
+
+        // Package assemblies a build can lack: compiled only under a define, or not for every platform.
+        private HashSet<string> GatedPackageAssemblyNames()
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var asmdef in Directory.GetFiles(Path.Combine(_packageRoot, "Runtime"), "*.asmdef", SearchOption.AllDirectories))
+            {
+                var gates = UnityEngine.JsonUtility.FromJson<AsmdefGates>(File.ReadAllText(asmdef));
+                if ((gates.defineConstraints?.Length ?? 0) > 0 || (gates.includePlatforms?.Length ?? 0) > 0 ||
+                    (gates.excludePlatforms?.Length ?? 0) > 0)
+                    names.Add(gates.name);
+            }
+
+            return names;
         }
 
         private HashSet<string> PackageAssemblyNames()

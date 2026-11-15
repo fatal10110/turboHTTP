@@ -9,7 +9,8 @@
 //   TURBOHTTP_SMOKE FAIL rows=<failed row ids>
 // Rows: registration (#1: the bootstrap registered the default transports by itself in a player),
 // reflection-targets (#8), ws-json (#192), net-config (#450: ServicePointManager's configuration init,
-// which every SslStream handshake runs first, survives the stripping level), oauth-refresh (#67), json-coroutine-class/-struct (#95), and
+// which every SslStream handshake runs first, survives the stripping level), android-cleartext-policy (#875:
+// on Android the Complete bootstrap installed the cleartext platform policy; SKIP elsewhere), oauth-refresh (#67), json-coroutine-class/-struct (#95), and
 // tls-sslstream / tls-bouncycastle (#141, #258 AC2). Every row but the TLS rows is offline: the HTTP rows
 // use an in-process transport (TurboHttpSmokeRows.OfflineTransport). The TLS rows send one HTTPS request
 // per provider to a public host with default certificate validation, require a 200 (#450) and log the protocol an h2 host
@@ -62,6 +63,11 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
         Row("reflection-targets", "#8", TurboHttpSmokeRows.ReflectionTargets);
         Row("ws-json", "#192", TurboHttpSmokeRows.WebSocketJson);
         Row("net-config", "#450", TurboHttpSmokeRows.NetworkConfiguration);
+#if UNITY_ANDROID && !UNITY_EDITOR
+        Row("android-cleartext-policy", "#875", TurboHttpSmokeRows.AndroidCleartextPolicy);
+#else
+        Skip("android-cleartext-policy", "#875", "Android players only");
+#endif
         yield return AsyncRow("oauth-refresh", "#67", TurboHttpSmokeRows.OAuthRefreshAsync);
         yield return JsonCoroutineRow<TurboHttpSmokeRows.ClassPayload>(
             "json-coroutine-class", TurboHttpSmokeRows.ClassPath, TurboHttpSmokeRows.VerifyClassPayload);

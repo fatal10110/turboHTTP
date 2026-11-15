@@ -37,6 +37,17 @@ public static class TurboHttpSmokeRows
     private const string BouncyCastleProvider =
         "TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider, TurboHTTP.Transport.BouncyCastle";
 
+    // #875: on an Android player the Complete bootstrap installs the Android cleartext policy at
+    // SubsystemRegistration. This smoke names no TurboHTTP.Unity.Mobile.Android type, so only that
+    // bootstrap's call (or the module's own startup hook) can have installed it in a stripped player.
+    public static string AndroidCleartextPolicy()
+    {
+        if (CleartextTrafficPolicy.PlatformPolicy == null)
+            throw new InvalidOperationException(
+                "CleartextTrafficPolicy.PlatformPolicy is null: AllowCleartext=true would permit every host");
+        return "PlatformPolicy installed";
+    }
+
     // link.xml targets begin
     // Every <type> of the link.xml files whose assembly is in every smoke build (Runtime/Core, JSON, Transport,
     // Unity, WebSocket and WebSocket.Transport; Testing and Observability are not referenced, so their rules
