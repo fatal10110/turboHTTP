@@ -92,17 +92,34 @@ namespace TurboHTTP.RateLimit
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken, _disposeCts.Token);
 
-                // Acquire global permit first to prevent starvation.
-                await _globalSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
-                globalAcquired = true;
-
+                // Per-host permit first, global second: a waiter queued behind a saturated host holds
+                // nothing global, so requests to idle hosts are still admitted (#508). A waiter that
+                // holds a host permit while waiting for a global one only delays its own host.
                 hostEntry = PinHostEntry(host);
 
                 await hostEntry.Semaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
                 hostAcquired = true;
+
+                await _globalSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+                globalAcquired = true;
             }
             catch (Exception ex)
             {
+                // If the global acquire fails/cancels after the host acquire, release the host permit.
+                // The entry is still pinned (unpinned in finally), so it cannot have been evicted, and
+                // this operation still counts in _activeOperations, so it has not been disposed.
+                if (hostAcquired && !globalAcquired)
+                {
+                    try
+                    {
+                        hostEntry.Semaphore.Release();
+                    }
+                    catch (ObjectDisposedException) when (IsDisposingOrDisposed())
+                    {
+                        // Disposer owns semaphore lifetime once shutdown starts.
+                    }
+                }
+
                 // One clause: under IL2CPP an exception thrown by an earlier clause of a filtered try is
                 // caught by a later one (#320).
                 if (ex is OperationCanceledException &&
@@ -112,25 +129,12 @@ namespace TurboHTTP.RateLimit
                     throw new ObjectDisposedException(nameof(ConcurrencyLimiter));
                 }
 
-                // If per-host acquire fails/cancels after global acquire, release global permit.
-                if (globalAcquired && !hostAcquired)
-                {
-                    try
-                    {
-                        _globalSemaphore.Release();
-                    }
-                    catch (ObjectDisposedException) when (IsDisposingOrDisposed())
-                    {
-                        // Disposer owns semaphore lifetime once shutdown starts.
-                    }
-                }
-
                 throw;
             }
             finally
             {
                 // Failed acquires still consume an active-operation slot that must be released.
-                if (!hostAcquired)
+                if (!globalAcquired)
                 {
                     if (hostEntry != null)
                         UnpinHostEntry(hostEntry);

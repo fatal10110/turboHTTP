@@ -47,6 +47,11 @@ namespace TurboHTTP.Middleware
 
         private readonly IRedirectResponseObserver[] _responseObservers;
         private UHttpRequest _currentRequest;
+
+        // Next hop recorded by OnResponseStartAsync, dispatched by RunPendingHopsAsync. Written in
+        // the hop's response callback and read after that hop's dispatch task completed (the await
+        // orders the accesses); hops of one request run sequentially.
+        private UHttpRequest _pendingHop;
         private int _redirectCount;
         private bool _sawInnerRequestStart;
 
@@ -237,23 +242,11 @@ namespace TurboHTTP.Middleware
                 _context.UpdateRequest(newRequest);
                 _currentRequest = newRequest;
 
-                try
-                {
-                    await _dispatch(newRequest, this, _context, _cancellationToken).ConfigureAwait(false);
-                    if (!_completion.Task.IsCompleted)
-                    {
-                        _completion.TrySetException(new InvalidOperationException(
-                            "Redirect pipeline completed without delivering a terminal callback."));
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    _completion.TrySetCanceled();
-                }
-                catch (Exception ex)
-                {
-                    CompleteWithDispatchException(ex);
-                }
+                // Do not dispatch the next hop from inside this callback: the interceptors inside
+                // the redirect interceptor (e.g. ConcurrencyInterceptor's permit) still hold this
+                // hop's resources until its dispatch returns. RunPendingHopsAsync dispatches it
+                // after that (#797).
+                _pendingHop = newRequest;
             }
             catch (OperationCanceledException)
             {
@@ -268,6 +261,43 @@ namespace TurboHTTP.Middleware
         public void OnResponseError(UHttpException error, RequestContext context)
         {
             CompleteWithError(error, context);
+        }
+
+        /// <summary>
+        /// Dispatches the hop recorded by the previous hop's redirect response, one at a time,
+        /// after the previous hop's dispatch has returned, so every hop releases what the
+        /// interceptors inside the redirect interceptor hold before the next hop starts. Called by
+        /// <see cref="RedirectInterceptor"/> once its first <c>next</c> call has returned.
+        /// </summary>
+        internal async Task RunPendingHopsAsync()
+        {
+            while (true)
+            {
+                var hop = _pendingHop;
+                if (hop == null || _completion.Task.IsCompleted)
+                    return;
+
+                _pendingHop = null;
+                try
+                {
+                    await _dispatch(hop, this, _context, _cancellationToken).ConfigureAwait(false);
+                    if (_pendingHop == null && !_completion.Task.IsCompleted)
+                    {
+                        _completion.TrySetException(new InvalidOperationException(
+                            "Redirect pipeline completed without delivering a terminal callback."));
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    _completion.TrySetCanceled();
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    CompleteWithDispatchException(ex);
+                    return;
+                }
+            }
         }
 
         private void NotifyResponseObservers(HttpHeaders headers, RequestContext context)
