@@ -1,31 +1,43 @@
 {
   "version": 1,
-  "capturedAtUtc": "2026-02-21T00:00:00Z",
+  "capturedAtUtc": "2026-11-15T22:47:00Z",
   "defaultThresholdPercent": 10,
+  "profile": "OptimizedFrame",
+  "counter": "ProfilerRecorder(GC Allocated In Frame)",
+  "recordedRuns": 5,
+  "notes": "Host editor 2021.3.45f2 through Tools~/unity/run-tests.sh PlayMode. maxBytesPerOperation = observedMaxBytesPerOperation + 16 (BaselineMarginBytes). Re-record procedure: Phase19AllocationGateTests remarks.",
   "scenarios": [
     {
       "name": "http11_warm_request_mock_transport",
-      "maxBytesPerOperation": 32768,
+      "maxBytesPerOperation": 4352,
       "minSamples": 384,
-      "notes": "Warm UHttpClient request path over MockTransport."
+      "observedMinBytesPerOperation": 4336,
+      "observedMaxBytesPerOperation": 4336,
+      "notes": "Warm UHttpClient request path over MockTransport (includes MockTransport's request snapshot). Rounds 4336-4358 B/op in every run."
     },
     {
       "name": "middleware_chain_sync_fast_path_mock_transport",
-      "maxBytesPerOperation": 49152,
+      "maxBytesPerOperation": 25256,
       "minSamples": 320,
-      "notes": "Request path with 8 synchronous fast-path middleware."
+      "observedMinBytesPerOperation": 25240,
+      "observedMaxBytesPerOperation": 25240,
+      "notes": "Request path with 8 synchronous fast-path middleware, each cloning the request. Rounds 25240-25267 B/op in every run."
     },
     {
       "name": "http2_poolable_source_single_completion",
-      "maxBytesPerOperation": 2048,
+      "maxBytesPerOperation": 16,
       "minSamples": 1024,
-      "notes": "Poolable IValueTaskSource single completion hot-path proxy."
+      "observedMinBytesPerOperation": 0,
+      "observedMaxBytesPerOperation": 0,
+      "notes": "Poolable IValueTaskSource single completion hot-path proxy. Rounds 0 B/op in every run."
     },
     {
       "name": "http2_poolable_source_multiplexed_burst_100",
-      "maxBytesPerOperation": 8192,
+      "maxBytesPerOperation": 16,
       "minSamples": 160,
-      "notes": "Poolable IValueTaskSource burst completion proxy for multiplexed streams."
+      "observedMinBytesPerOperation": 0,
+      "observedMaxBytesPerOperation": 0,
+      "notes": "Poolable IValueTaskSource burst completion proxy for multiplexed streams (one operation is a burst of 100). Rounds 0 B/op in every run."
     }
   ]
 }
