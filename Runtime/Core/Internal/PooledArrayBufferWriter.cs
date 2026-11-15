@@ -199,6 +199,25 @@ namespace TurboHTTP.Core.Internal
                 ByteArrayPool.Return(buffer);
         }
 
+        /// <summary>
+        /// <see cref="Dispose"/> for a writer whose buffer an abandoned write may still read (#633):
+        /// the array is counted with <see cref="ByteArrayPool.Abandon"/> and left to the garbage
+        /// collector instead of going back to the shared pool. After this the writer must not be used.
+        /// </summary>
+        public void AbandonToGc()
+        {
+            if (_detached)
+                return;
+
+            var buffer = _buffer;
+            _buffer = null;
+            _written = 0;
+            _detached = true;
+
+            if (buffer != null && buffer.Length > 0)
+                ByteArrayPool.Abandon(buffer);
+        }
+
         // ── Internal helpers ──────────────────────────────────────────────────────
 
         private void EnsureCapacity(int sizeHint)
