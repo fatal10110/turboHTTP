@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
@@ -21,8 +20,16 @@ namespace TurboHTTP.Auth
         private readonly ITokenStore _tokenStore;
         private readonly Func<DateTime> _utcNow;
         private readonly TimeSpan _defaultRefreshSkew;
-        private readonly ConcurrentDictionary<string, SemaphoreSlim> _refreshGuards
-            = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.Ordinal);
+
+        // One in-flight refresh per token-store key (#744). _refreshLock owns _refreshFlights: the
+        // caller that finds no entry adds one and starts RunRefreshFlightAsync, which removes the entry
+        // before it completes the shared task, so a key holds state only while its refresh runs (#743).
+        // Every waiter awaits the same task with its own token, so one caller's cancellation never
+        // cancels the refresh for the others; the refresh itself runs on _lifetimeCts (Dispose).
+        private readonly object _refreshLock = new object();
+        private readonly Dictionary<string, Task<OAuthToken>> _refreshFlights
+            = new Dictionary<string, Task<OAuthToken>>(StringComparer.Ordinal);
+        private readonly CancellationTokenSource _lifetimeCts = new CancellationTokenSource();
         private int _disposed;
 
         /// <summary> Initializes a new instance of <see cref="OAuthClient"/>. </summary>
@@ -64,7 +71,9 @@ namespace TurboHTTP.Auth
             {
                 ["response_type"] = "code",
                 ["client_id"] = config.ClientId,
-                ["redirect_uri"] = config.RedirectUri.ToString(),
+                // RFC 6749 3.1.2.3 / 4.1.3: the registered string, not Uri.ToString() (which adds a
+                // trailing "/" to authority-only URIs and unescapes) (#741).
+                ["redirect_uri"] = config.RedirectUri.OriginalString,
                 ["scope"] = string.Join(" ", config.Scopes ?? Array.Empty<string>()),
                 ["state"] = state
             };
@@ -130,7 +139,7 @@ namespace TurboHTTP.Auth
                 ["grant_type"] = "authorization_code",
                 ["code"] = request.AuthorizationCode,
                 ["client_id"] = request.Config.ClientId,
-                ["redirect_uri"] = request.RedirectUri ?? request.Config.RedirectUri.ToString()
+                ["redirect_uri"] = request.RedirectUri ?? request.Config.RedirectUri.OriginalString
             };
 
             if (!string.IsNullOrEmpty(request.CodeVerifier))
@@ -145,7 +154,18 @@ namespace TurboHTTP.Auth
             return token;
         }
 
-        /// <summary> Refreshes an expired or expiring OAuth token. </summary>
+        /// <summary>
+        /// Refreshes the token stored under the request's key (or the key built from its config and
+        /// scope) through the token endpoint, whether or not the stored token has expired locally.
+        /// </summary>
+        /// <remarks>
+        /// Concurrent refreshes for one key share a single token request: every caller receives its
+        /// token or its failure, and a failed refresh is not repeated by the waiters (#744). The
+        /// refresh token sent is the stored one when the store holds a token, so a token rotated by
+        /// an earlier refresh is never presented again; <see cref="OAuthRefreshRequest.RefreshToken"/>
+        /// is used only while the store is empty (#746). Cancelling <paramref name="ct"/> stops this
+        /// caller's wait; the shared refresh continues for the other callers.
+        /// </remarks>
         public async Task<OAuthToken> RefreshTokenAsync(
             OAuthRefreshRequest request,
             CancellationToken ct)
@@ -161,64 +181,55 @@ namespace TurboHTTP.Auth
             var key = string.IsNullOrWhiteSpace(request.TokenStoreKey)
                 ? BuildTokenStoreKey(request.Config, request.Scope)
                 : request.TokenStoreKey;
-            var gate = _refreshGuards.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
 
-            await gate.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                ThrowIfDisposed();
-                var existing = await _tokenStore.GetAsync(key, ct).ConfigureAwait(false);
-                if (existing != null && !existing.IsExpired(_utcNow(), _defaultRefreshSkew))
-                    return existing;
+            return await RefreshSharedAsync(
+                    key, request.Config, request.Scope, request.RefreshToken, presentedAccessToken: null, ct)
+                .ConfigureAwait(false);
+        }
 
-                var form = new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    ["grant_type"] = "refresh_token",
-                    ["refresh_token"] = request.RefreshToken,
-                    ["client_id"] = request.Config.ClientId
-                };
+        /// <summary>
+        /// Refreshes the token stored under <paramref name="key"/> through the token endpoint after a
+        /// resource server rejected <paramref name="rejectedAccessToken"/> (RFC 6750 section 3.1),
+        /// regardless of the token's local expiry time.
+        /// </summary>
+        /// <param name="key">Token-store key of the token to replace.</param>
+        /// <param name="refreshRequest">Config and scope for the refresh; its
+        /// <see cref="OAuthRefreshRequest.RefreshToken"/> is used only when the store holds no token,
+        /// and its <see cref="OAuthRefreshRequest.TokenStoreKey"/> is ignored. The object is not
+        /// modified.</param>
+        /// <param name="rejectedAccessToken">The access token the server rejected. When the stored
+        /// token's access token already differs from it, another caller has replaced it and the
+        /// stored token is returned without a token request. When the store holds no token, the
+        /// method returns <c>null</c>. Pass <c>null</c> to refresh unconditionally.</param>
+        /// <param name="ct">Cancels this caller's wait; a refresh shared with other callers continues.</param>
+        /// <returns>The replacement token, or <c>null</c> when the store holds no token for
+        /// <paramref name="key"/> and <paramref name="rejectedAccessToken"/> is set.</returns>
+        /// <exception cref="InvalidOperationException">No refresh token is available, or the token
+        /// endpoint rejected it (<c>invalid_grant</c>, after which the stored token is removed).
+        /// Reauthorization is required.</exception>
+        public async Task<OAuthToken> ForceRefreshTokenAsync(
+            string key,
+            OAuthRefreshRequest refreshRequest,
+            string rejectedAccessToken,
+            CancellationToken ct)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(key))
+                throw new ArgumentException("Token store key is required.", nameof(key));
+            if (refreshRequest == null) throw new ArgumentNullException(nameof(refreshRequest));
+            if (refreshRequest.Config == null)
+                throw new ArgumentException("Config is required.", nameof(refreshRequest));
 
-                if (!string.IsNullOrWhiteSpace(request.Scope))
-                    form["scope"] = request.Scope;
+            refreshRequest.Config.Validate();
 
-                using var response = await SendTokenRequestAsync(request.Config.TokenEndpoint, form, ct)
-                    .ConfigureAwait(false);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    var body = response.GetBodyAsString() ?? string.Empty;
-                    if (response.StatusCode == HttpStatusCode.BadRequest &&
-                        body.IndexOf("invalid_grant", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        await _tokenStore.RemoveAsync(key, ct).ConfigureAwait(false);
-                        throw new InvalidOperationException("Refresh token invalid. Reauthorization is required.");
-                    }
-
-                    response.EnsureSuccessStatusCode();
-                }
-
-                var token = ParseTokenResponse(response.GetBodyAsString());
-
-                // RFC 6749 section 6: the server MAY issue a new refresh token; when it does not,
-                // the client keeps using the one it just presented.
-                if (string.IsNullOrEmpty(token.RefreshToken))
-                {
-                    token = new OAuthToken(
-                        token.AccessToken,
-                        token.ExpiresAtUtc,
-                        request.RefreshToken,
-                        token.TokenType,
-                        token.IdToken,
-                        token.Scope);
-                }
-
-                await _tokenStore.SetAsync(key, token, ct).ConfigureAwait(false);
-                return token;
-            }
-            finally
-            {
-                gate.Release();
-            }
+            return await RefreshSharedAsync(
+                    key,
+                    refreshRequest.Config,
+                    refreshRequest.Scope,
+                    refreshRequest.RefreshToken,
+                    string.IsNullOrEmpty(rejectedAccessToken) ? null : rejectedAccessToken,
+                    ct)
+                .ConfigureAwait(false);
         }
 
         public async Task<OpenIdProviderMetadata> DiscoverAsync(Uri discoveryEndpoint, CancellationToken ct)
@@ -231,7 +242,7 @@ namespace TurboHTTP.Auth
                 throw new ArgumentException("OIDC discovery endpoint must use HTTPS.", nameof(discoveryEndpoint));
             }
 
-            using var response = await _client.Get(discoveryEndpoint.ToString())
+            using var response = await _client.Get(discoveryEndpoint.OriginalString)
                 .WithMetadata(AuthInterceptor.SkipAuthMetadataKey, true)
                 .SendBufferedAsync(ct)
                 .ConfigureAwait(false);
@@ -267,10 +278,15 @@ namespace TurboHTTP.Auth
             if (refreshRequest == null || string.IsNullOrWhiteSpace(token.RefreshToken))
                 return token;
 
-            refreshRequest.RefreshToken = token.RefreshToken;
-            refreshRequest.TokenStoreKey = key;
+            if (refreshRequest.Config == null)
+                throw new ArgumentException("Config is required.", nameof(refreshRequest));
+            refreshRequest.Config.Validate();
 
-            return await RefreshTokenAsync(refreshRequest, ct).ConfigureAwait(false);
+            // Present the expired access token: when another caller has already replaced it, the
+            // refresh returns the stored token without a token request (#745).
+            return await RefreshSharedAsync(
+                    key, refreshRequest.Config, refreshRequest.Scope, token.RefreshToken, token.AccessToken, ct)
+                .ConfigureAwait(false);
         }
 
         public static string BuildTokenStoreKey(OAuthConfig config, string audienceOrScope)
@@ -304,12 +320,183 @@ namespace TurboHTTP.Auth
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
+            // Stops in-flight refreshes; their waiters observe the cancellation. The source is not
+            // disposed: a refresh that is still unwinding may read its token.
+            _lifetimeCts.Cancel();
+
             if (_ownsClient)
                 _client.Dispose();
+        }
 
-            // Do not dispose semaphore instances here: refresh operations may still
-            // be completing on other threads, and disposal can race with Release().
-            // Keep the dictionary intact so in-flight operations can release safely.
+        /// <summary>Number of keys with a refresh in flight (tests, #743).</summary>
+        internal int InFlightRefreshCount
+        {
+            get
+            {
+                lock (_refreshLock)
+                    return _refreshFlights.Count;
+            }
+        }
+
+        private async Task<OAuthToken> RefreshSharedAsync(
+            string key,
+            OAuthConfig config,
+            string scope,
+            string fallbackRefreshToken,
+            string presentedAccessToken,
+            CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // A joined refresh that returns the very token this caller presented (a refresh that
+            // started from an older token and found the presented one in the store) is not an
+            // answer for this caller: start one refresh of its own. Bounded to one extra round.
+            for (var round = 0; ; round++)
+            {
+                TaskCompletionSource<OAuthToken> started = null;
+                Task<OAuthToken> flight;
+                lock (_refreshLock)
+                {
+                    ThrowIfDisposed();
+                    if (!_refreshFlights.TryGetValue(key, out flight))
+                    {
+                        started = new TaskCompletionSource<OAuthToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        flight = started.Task;
+                        _refreshFlights.Add(key, flight);
+                    }
+                }
+
+                if (started != null)
+                {
+                    // Owned by `started`: RunRefreshFlightAsync never throws, it completes `started`
+                    // on every path and removes the map entry first.
+                    _ = RunRefreshFlightAsync(key, config, scope, fallbackRefreshToken, presentedAccessToken, started);
+                }
+
+                var token = await AuthTaskWait.WaitAsync(flight, ct).ConfigureAwait(false);
+                if (started != null || round > 0 || presentedAccessToken == null || token == null ||
+                    !string.Equals(token.AccessToken, presentedAccessToken, StringComparison.Ordinal))
+                {
+                    return token;
+                }
+            }
+        }
+
+        private async Task RunRefreshFlightAsync(
+            string key,
+            OAuthConfig config,
+            string scope,
+            string fallbackRefreshToken,
+            string presentedAccessToken,
+            TaskCompletionSource<OAuthToken> flight)
+        {
+            OAuthToken token = null;
+            Exception failure = null;
+            try
+            {
+                token = await RefreshCoreAsync(
+                        key, config, scope, fallbackRefreshToken, presentedAccessToken, _lifetimeCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+
+            // Remove before completing so a caller that sees the result and asks again starts anew.
+            lock (_refreshLock)
+            {
+                if (_refreshFlights.TryGetValue(key, out var current) && ReferenceEquals(current, flight.Task))
+                    _refreshFlights.Remove(key);
+            }
+
+            if (failure == null)
+            {
+                flight.TrySetResult(token);
+            }
+            else if (failure is OperationCanceledException)
+            {
+                flight.TrySetCanceled();
+            }
+            else
+            {
+                flight.TrySetException(failure);
+                // Mark the failure observed: every waiter may have stopped waiting already.
+                _ = flight.Task.Exception;
+            }
+        }
+
+        private async Task<OAuthToken> RefreshCoreAsync(
+            string key,
+            OAuthConfig config,
+            string scope,
+            string fallbackRefreshToken,
+            string presentedAccessToken,
+            CancellationToken ct)
+        {
+            ThrowIfDisposed();
+            var existing = await _tokenStore.GetAsync(key, ct).ConfigureAwait(false);
+
+            // De-duplicate by token, not by clock (#745): the caller's token was already replaced.
+            if (presentedAccessToken != null)
+            {
+                if (existing == null)
+                    return null;
+                if (!string.Equals(existing.AccessToken, presentedAccessToken, StringComparison.Ordinal))
+                    return existing;
+            }
+
+            // The stored refresh token wins over the one the caller captured earlier, which an
+            // earlier rotation may have retired (RFC 6749 section 6, #746).
+            var refreshToken = existing != null && !string.IsNullOrWhiteSpace(existing.RefreshToken)
+                ? existing.RefreshToken
+                : fallbackRefreshToken;
+            if (string.IsNullOrWhiteSpace(refreshToken))
+                throw new InvalidOperationException("No refresh token is available. Reauthorization is required.");
+
+            var form = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["grant_type"] = "refresh_token",
+                ["refresh_token"] = refreshToken,
+                ["client_id"] = config.ClientId
+            };
+
+            if (!string.IsNullOrWhiteSpace(scope))
+                form["scope"] = scope;
+
+            using var response = await SendTokenRequestAsync(config.TokenEndpoint, form, ct)
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = response.GetBodyAsString() ?? string.Empty;
+                if (response.StatusCode == HttpStatusCode.BadRequest &&
+                    body.IndexOf("invalid_grant", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    await _tokenStore.RemoveAsync(key, ct).ConfigureAwait(false);
+                    throw new InvalidOperationException("Refresh token invalid. Reauthorization is required.");
+                }
+
+                response.EnsureSuccessStatusCode();
+            }
+
+            var token = ParseTokenResponse(response.GetBodyAsString());
+
+            // RFC 6749 section 6: the server MAY issue a new refresh token; when it does not,
+            // the client keeps using the one it just presented.
+            if (string.IsNullOrEmpty(token.RefreshToken))
+            {
+                token = new OAuthToken(
+                    token.AccessToken,
+                    token.ExpiresAtUtc,
+                    refreshToken,
+                    token.TokenType,
+                    token.IdToken,
+                    token.Scope);
+            }
+
+            await _tokenStore.SetAsync(key, token, ct).ConfigureAwait(false);
+            return token;
         }
 
         private async ValueTask<UHttpResponse> SendTokenRequestAsync(
@@ -319,7 +506,7 @@ namespace TurboHTTP.Auth
         {
             var formBody = BuildFormBody(formFields);
             var response = await _client
-                .Post(endpoint.ToString())
+                .Post(endpoint.OriginalString)
                 .WithHeader("Content-Type", "application/x-www-form-urlencoded")
                 .WithBody(formBody)
                 // Never attach (or fetch) the access token on token-endpoint requests: an OAuth
@@ -378,19 +565,19 @@ namespace TurboHTTP.Auth
 
         private static Uri AppendQuery(Uri baseUri, IDictionary<string, string> query)
         {
-            var sb = new StringBuilder();
-            var hasQuery = !string.IsNullOrEmpty(baseUri.Query);
-            sb.Append(baseUri.GetLeftPart(UriPartial.Path));
+            // Start from the configured string: GetLeftPart/Query/ToString re-encode or unescape it
+            // (#741). RFC 6749 section 3.1 keeps the endpoint's own query; a fragment is not allowed.
+            var endpoint = baseUri.OriginalString.Trim();
+            var fragment = endpoint.IndexOf('#');
+            if (fragment >= 0)
+                endpoint = endpoint.Substring(0, fragment);
 
-            if (hasQuery)
-            {
-                sb.Append(baseUri.Query);
-                sb.Append('&');
-            }
-            else
-            {
+            var sb = new StringBuilder(endpoint);
+            var queryStart = endpoint.IndexOf('?');
+            if (queryStart < 0)
                 sb.Append('?');
-            }
+            else if (queryStart < endpoint.Length - 1 && endpoint[endpoint.Length - 1] != '&')
+                sb.Append('&');
 
             var first = true;
             foreach (var pair in query)

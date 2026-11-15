@@ -136,7 +136,7 @@ namespace TurboHTTP.Tests.Transport
                 using var cts = new CancellationTokenSource();
                 try
                 {
-                    channel.TestHookReceiveEnded = _ => cts.Cancel();
+                    channel.TestHookReceiveCompletionMarked = _ => cts.Cancel();
                     var receive = channel.ReceiveAsync(new byte[16], 0, 16, cts.Token).AsTask();
                     Assert.IsFalse(receive.IsCompleted, "nothing was sent: the receive is pending");
 
