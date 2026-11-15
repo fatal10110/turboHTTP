@@ -25,7 +25,7 @@ plus `"body"`: GitHub markdown string.
 - type: `type:bug` `type:security` `type:enhancement` `type:docs` `type:chore` `type:test` `type:phase` `type:plan` `type:architecture`
 - area: `area:tls` `area:http1` `area:http2` `area:transport` `area:proxy` `area:websocket` `area:core` `area:cache` `area:auth` `area:retry` `area:files` `area:middleware` `area:observability` `area:unity` `area:mobile` `area:json` `area:ratelimit` `area:testing` `area:editor` `area:packaging` `area:docs` `area:ci`
 - priority: `priority:P0` (release blocker / critical) `priority:P1` (high) `priority:P2` (medium) `priority:P3` (low)
-- source: `source:review-2026-10` (finding from the 2026-10 review) `source:roadmap` (existing plan phase)
+- source: `source:review-2026-10` (finding from the 2026-10 review) `source:review-2026-11` (finding from the 2026-11 review, `Development~/docs/review-2026-11/`) `source:roadmap` (existing plan phase)
 - optional: `platform:il2cpp` `needs-device-validation` `confidence:plausible`
 
 ## Body template (findings)
