@@ -226,7 +226,9 @@ namespace TurboHTTP.Observability
                 .Append(" -> ERROR (")
                 .Append(elapsed.TotalMilliseconds.ToString("F0"))
                 .Append("ms)\n  ")
-                .Append(error?.Message ?? "Unknown error");
+                .Append(error != null
+                    ? _redactionPolicy.RedactText(error.Message) ?? "Unknown error"
+                    : "Unknown error");
 
             _log("[TurboHTTP][ERROR] " + builder);
         }

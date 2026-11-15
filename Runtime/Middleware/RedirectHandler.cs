@@ -75,7 +75,8 @@ namespace TurboHTTP.Middleware
 
             _responseDiscardTimeout = responseDiscardTimeout;
             _totalTimeoutBudget = initialRequest.Timeout;
-            _redirectChain.Add(initialRequest.Uri.AbsoluteUri);
+            // Hops recorded in context state and timeline events never carry user-info or query values (#795).
+            _redirectChain.Add(UrlRedaction.RedactUrl(initialRequest.Uri.AbsoluteUri));
 
             // Snapshot: only observers registered by interceptors outside this redirect interceptor
             // (they ran first). Interceptors inside it see every hop response themselves.
@@ -188,7 +189,7 @@ namespace TurboHTTP.Middleware
                     CompleteWithError(
                         RedirectInterceptor.CreateRedirectError(
                             UHttpErrorType.InvalidRequest,
-                            $"Blocked insecure redirect downgrade from '{_currentRequest.Uri}' to '{targetUri}'."),
+                            $"Blocked insecure redirect downgrade from '{UrlRedaction.Origin(_currentRequest.Uri)}' to '{UrlRedaction.Origin(targetUri)}'."),
                         context);
                     return;
                 }
@@ -200,7 +201,7 @@ namespace TurboHTTP.Middleware
                     CompleteWithError(
                         RedirectInterceptor.CreateRedirectError(
                             UHttpErrorType.InvalidRequest,
-                            $"Redirect loop detected for target '{targetUri}'."),
+                            $"Redirect loop detected for target '{UrlRedaction.Origin(targetUri)}'."),
                         context);
                     return;
                 }
@@ -230,12 +231,12 @@ namespace TurboHTTP.Middleware
                 await DiscardBodyAsync(body).ConfigureAwait(false);
 
                 _redirectCount++;
-                _redirectChain.Add(targetUri.AbsoluteUri);
+                _redirectChain.Add(UrlRedaction.RedactUrl(targetUri.AbsoluteUri));
                 _context.SetState("RedirectChain", _redirectChain.ToArray());
                 _context.RecordEvent("Redirect", new Dictionary<string, object>
                 {
-                    { "from", _currentRequest.Uri.AbsoluteUri },
-                    { "to", targetUri.AbsoluteUri },
+                    { "from", UrlRedaction.RedactUrl(_currentRequest.Uri.AbsoluteUri) },
+                    { "to", UrlRedaction.RedactUrl(targetUri.AbsoluteUri) },
                     { "status", statusCode },
                     { "hop", _redirectCount }
                 });

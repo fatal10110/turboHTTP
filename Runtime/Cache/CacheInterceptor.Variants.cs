@@ -151,6 +151,14 @@ namespace TurboHTTP.Cache
             return method.ToUpperString() + " " + NormalizeUri(uri);
         }
 
+        // Timeline events carry the base key with query values redacted and never the storage key: its
+        // Vary part holds request header values (API keys, tokens). Storage keys stay raw (#478).
+        // BuildBaseKey has no user-info, so this only redacts query values (no allocation without a query).
+        private static string BuildEventKey(string baseKey)
+        {
+            return UrlRedaction.RedactUrl(baseKey);
+        }
+
         private static string BuildStorageKey(string baseKey, string varyKey)
         {
             return baseKey + "|" + (string.IsNullOrEmpty(varyKey) ? EmptyVaryKeyToken : varyKey);
