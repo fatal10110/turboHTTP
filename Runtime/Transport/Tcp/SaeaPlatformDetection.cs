@@ -93,7 +93,9 @@ namespace TurboHTTP.Transport.Tcp
         {
             get
             {
-#if ENABLE_IL2CPP
+                // In Editor compilations ENABLE_IL2CPP follows the Player Settings scripting
+                // backend, but the Editor itself always runs Mono.
+#if ENABLE_IL2CPP && !UNITY_EDITOR
                 return SocketRuntimeKind.Il2Cpp;
 #elif ENABLE_MONO
                 return SocketRuntimeKind.Mono;

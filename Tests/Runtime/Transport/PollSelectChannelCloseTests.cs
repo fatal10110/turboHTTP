@@ -68,6 +68,9 @@ namespace TurboHTTP.Tests.Transport
                 var channel = new PollSelectSocketChannel(pair.Client);
                 var pending = channel.ReceiveAsync(new byte[16], 0, 16, CancellationToken.None).AsTask();
 
+                // The assertion below must not depend on the poll thread exiting within the
+                // production join bound on a loaded machine.
+                channel.SetDisposeJoinTimeoutForTest((int)Guard.TotalMilliseconds);
                 channel.Dispose();
 
                 Assert.AreEqual(PollSelectSocketChannel.BuffersReturned, channel.BufferState,
