@@ -1797,6 +1797,11 @@ namespace TurboHTTP.Transport
 
             using var head = parsedHead;
 
+            // RFC 9112 Section 9.6: a client that sent "close" sends no further request on this
+            // connection, whatever the response says, so it never reaches the pool (#672).
+            if (RequestAsksToCloseConnection(request))
+                head.KeepAlive = false;
+
             if (ShouldRetryWithoutExpectation(head, request, requestWriteState))
             {
                 // RFC 9110 Section 10.1.1 (#214): the 417 never reaches the handler. The head and its
@@ -1920,6 +1925,7 @@ namespace TurboHTTP.Transport
                     .ConfigureAwait(false);
             }
 
+            Exception sendException = null;
             try
             {
                 await Http11RequestSerializer.SerializeAsync(
@@ -1930,12 +1936,29 @@ namespace TurboHTTP.Transport
                         _streamingOptions)
                     .ConfigureAwait(false);
             }
+            catch (Exception ex) when (!ct.IsCancellationRequested
+                && !(requestWriteState?.BodySourceFailed ?? false)
+                && IsConnectionWriteFailure(ex))
+            {
+                sendException = ex;
+            }
             finally
             {
                 RecordRequestBodyBytesSent(context, requestWriteState);
             }
 
             context.RecordEvent("TransportReceiving");
+            if (sendException != null)
+            {
+                return await ReadFinalHeadAfterSendFailureAsync(
+                        lease.Connection.Stream,
+                        request,
+                        context,
+                        sendException,
+                        ct)
+                    .ConfigureAwait(false);
+            }
+
             if (firstByteTimeout <= TimeSpan.Zero || firstByteTimeout == Timeout.InfiniteTimeSpan)
             {
                 return await Http11ResponseParser.ParseHeadAsync(
@@ -2220,6 +2243,68 @@ namespace TurboHTTP.Transport
                 bodyComplete: bodySendException == null,
                 bodySendException,
                 context);
+        }
+
+        /// <summary>
+        /// The one-shot path's answer to a failed request write (RFC 9112 Section 9.5, #837): a
+        /// server that rejects an upload early (413, 401, ...) and closes has usually sent its final
+        /// response before the reset, so the transport tries to read it (bounded by the request
+        /// token) before it surfaces the send failure. The rule for the head is the expect-continue
+        /// one: a non-2xx head is returned with KeepAlive=false, a 1xx/2xx head or no head at all
+        /// rethrows the original send failure, which keeps the stale-connection replay decision of
+        /// DispatchAttemptAsync unchanged.
+        /// </summary>
+        private static async Task<ParsedResponseHead> ReadFinalHeadAfterSendFailureAsync(
+            Stream stream,
+            UHttpRequest request,
+            RequestContext context,
+            Exception sendException,
+            CancellationToken ct)
+        {
+            ParsedResponseHead finalHead;
+            try
+            {
+                finalHead = await Http11ResponseParser.ParseHeadAsync(stream, request.Method, ct, context)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception responseReadException)
+            {
+                ThrowCapturedBodySendException(sendException, context, responseReadException);
+                throw;
+            }
+
+            return CompleteExpectContinueHead(finalHead, bodyComplete: false, sendException, context);
+        }
+
+        /// <summary>
+        /// True when <paramref name="ex"/> looks like a failed write to the connection (a reset or
+        /// broken pipe carries a <see cref="SocketException"/> somewhere in its chain). The caller
+        /// also requires <see cref="Http11RequestWriteState.BodySourceFailed"/> to be unset: a body
+        /// source backed by another socket fails with the same exception shape, and a source
+        /// failure leaves the server waiting for the rest of the body, so reading a response would
+        /// only wait for the request timeout.
+        /// </summary>
+        private static bool IsConnectionWriteFailure(Exception ex)
+        {
+            for (var current = ex; current != null; current = current.InnerException)
+            {
+                if (current is SocketException)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool RequestAsksToCloseConnection(UHttpRequest request)
+        {
+            var values = request.Headers.GetValues("Connection");
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (ExpectContinueHelper.HeaderValueContainsToken(values[i], "close"))
+                    return true;
+            }
+
+            return false;
         }
 
         /// <summary>
