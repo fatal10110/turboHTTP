@@ -7,8 +7,10 @@ import androidx.work.WorkerParameters;
 
 /**
  * Placeholder WorkManager job for a request the managed side queued for deferred replay. Replay
- * itself is orchestrated in C# while the process is alive; after a cold start the worker asks
- * WorkManager to retry so the host app can rehydrate its policy and state first.
+ * itself is orchestrated in C# from an in-memory queue of the process that enqueued the job, so
+ * this worker cannot replay anything and ends on its first run (#940): retrying would reschedule
+ * the job forever (WorkManager persists it across reboots) after that process died. It succeeds
+ * while the enqueuing process is alive and fails for an orphan a dead process left behind.
  */
 public final class TurboHttpBackgroundWorker extends Worker {
     static final String KEY_DEDUPE = "dedupeKey";
@@ -20,7 +22,8 @@ public final class TurboHttpBackgroundWorker extends Worker {
     @Override
     public Result doWork() {
         String dedupeKey = getInputData().getString(KEY_DEDUPE);
-        TurboHttpBackgroundPlugin.reportDeferredWorkStatus(dedupeKey, "RETRY");
-        return Result.retry();
+        boolean ownedByThisProcess = TurboHttpBackgroundPlugin.reportDeferredWorkStatus(dedupeKey, "COMPLETED");
+        // Terminal either way: never Result.retry().
+        return ownedByThisProcess ? Result.success() : Result.failure();
     }
 }

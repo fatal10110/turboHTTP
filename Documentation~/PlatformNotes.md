@@ -159,6 +159,13 @@ The budget starts at `OnApplicationPause` and is timed off the player loop. With
 library is left out of the build and requests keep foreground semantics. Device validation is
 pending (#266).
 
+The replay queue lives in the app process only, so the WorkManager job is a placeholder that ends
+on its first run instead of retrying, and every deferred job carries the `turbohttp-deferred` tag.
+When the bridge is created (`UseBackgroundNetworking()`), the plugin's first initialization in the
+process cancels all tagged jobs an earlier process left behind, before anything new is enqueued, so
+a killed app does not leave jobs rescheduled across restarts and reboots (#940). Jobs enqueued by
+an older TurboHTTP version have no tag; they run the new worker once and end.
+
 #### Background networking opt-in
 1. Add `TURBOHTTP_BACKGROUND_NETWORKING` to **Player Settings > Other Settings > Scripting Define
    Symbols** for each target (iOS, Android). Defines passed only through
