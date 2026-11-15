@@ -185,20 +185,6 @@ namespace TurboHTTP.Transport.Tcp
         }
 
         /// <summary>
-        /// Moves the connection to another owner like <see cref="TransferOwnership"/>, but keeps the
-        /// per-host permit until <see cref="Dispose"/>. An HTTP/2 dialer holds the permit until its
-        /// connection is published or its preface failed, so a request waiting for that permit sees the
-        /// published connection instead of dialing a redundant one (#736).
-        /// </summary>
-        internal void DetachConnection()
-        {
-            lock (_lock)
-            {
-                _released = true;
-            }
-        }
-
-        /// <summary>
         /// Return the connection to the pool for keep-alive reuse.
         /// Calling this method both enqueues the connection for reuse and releases the semaphore permit.
         /// If not called, Dispose() will destroy the connection (and release the semaphore instead).
@@ -397,9 +383,8 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal TcpConnectionPool(
             Func<TlsBackend, ITlsProvider> tlsProviderResolver,
-            TlsBackend tlsBackend = TlsBackend.Auto,
-            int maxConnectionsPerHost = 6)
-            : this(maxConnectionsPerHost: maxConnectionsPerHost, tlsBackend: tlsBackend)
+            TlsBackend tlsBackend = TlsBackend.Auto)
+            : this(tlsBackend: tlsBackend)
         {
             _tlsProviderResolver = tlsProviderResolver
                 ?? throw new ArgumentNullException(nameof(tlsProviderResolver));
@@ -436,24 +421,7 @@ namespace TurboHTTP.Transport.Tcp
             string poolKeyOverride,
             CancellationToken ct)
         {
-            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride, skipIdle: false, skipAfterPermitWait: null, ct);
-        }
-
-        /// <summary>
-        /// As <see cref="GetConnectionAsync(string, int, bool, CancellationToken)"/>, except that a caller
-        /// who had to wait for the per-host permit asks <paramref name="skipAfterPermitWait"/> (with host
-        /// and port) once the permit is granted: when it returns true the permit is released at once and
-        /// the result is null, because the connection is no longer needed (an HTTP/2 connection to the
-        /// origin was published while the caller waited, #736).
-        /// </summary>
-        internal ValueTask<ConnectionLease> GetConnectionOrSkipAsync(
-            string host,
-            int port,
-            bool secure,
-            Func<string, int, bool> skipAfterPermitWait,
-            CancellationToken ct)
-        {
-            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride: null, skipIdle: false, skipAfterPermitWait, ct);
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride, skipIdle: false, ct);
         }
 
         /// <summary>
@@ -466,7 +434,7 @@ namespace TurboHTTP.Transport.Tcp
         internal ValueTask<ConnectionLease> GetNewConnectionAsync(
             string host, int port, bool secure, CancellationToken ct)
         {
-            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride: null, skipIdle: true, skipAfterPermitWait: null, ct);
+            return GetConnectionCoreAsync(host, port, secure, poolKeyOverride: null, skipIdle: true, ct);
         }
 
         private ValueTask<ConnectionLease> GetConnectionCoreAsync(
@@ -475,7 +443,6 @@ namespace TurboHTTP.Transport.Tcp
             bool secure,
             string poolKeyOverride,
             bool skipIdle,
-            Func<string, int, bool> skipAfterPermitWait,
             CancellationToken ct)
         {
             if (Volatile.Read(ref _disposed) != 0)
@@ -506,7 +473,6 @@ namespace TurboHTTP.Transport.Tcp
                 secure,
                 semaphore,
                 skipIdle,
-                skipAfterPermitWait,
                 ct));
         }
 
@@ -518,32 +484,9 @@ namespace TurboHTTP.Transport.Tcp
             bool secure,
             SemaphoreSlim semaphore,
             bool skipIdle,
-            Func<string, int, bool> skipAfterPermitWait,
             CancellationToken ct)
         {
             await waitTask.ConfigureAwait(false);
-
-            // The permit is owned from here: a skip returns it at once.
-            if (skipAfterPermitWait != null)
-            {
-                bool skip;
-                try
-                {
-                    skip = skipAfterPermitWait(host, port);
-                }
-                catch
-                {
-                    semaphore.Release();
-                    throw;
-                }
-
-                if (skip)
-                {
-                    semaphore.Release();
-                    return null;
-                }
-            }
-
             return await AcquireConnectionWithOwnedPermit(poolKey, host, port, secure, semaphore, skipIdle, ct).ConfigureAwait(false);
         }
 

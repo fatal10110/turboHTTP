@@ -132,6 +132,26 @@ public static class OAuthSetup
 
 Set `OAuthConfig.UseOidcDiscovery` to resolve the endpoints from the issuer's discovery document. Endpoints must use HTTPS; `AllowInsecureEndpointsForDevelopment` relaxes that for local test servers only.
 
+### Rejected tokens and refresh
+
+The provider refreshes on the local clock, so a token the server revokes early still looks valid. Set `AuthInterceptorOptions.RetryOnUnauthorized` to recover from that: when a request that carried the interceptor's token gets `401 Unauthorized` from the same origin, the interceptor asks the provider for a replacement and sends the request once more (RFC 6750 section 3.1). The second response is returned as is, including a second `401`. Requests whose body cannot be sent twice (a non-seekable stream) are not retried.
+
+```csharp
+using TurboHTTP.Auth;
+
+public static class RetryingAuth
+{
+    public static AuthInterceptor Create(OAuthTokenProvider provider)
+    {
+        var options = new AuthInterceptorOptions { RetryOnUnauthorized = true };
+        options.AllowedOrigins.Add(new System.Uri("https://api.example.com"));
+        return new AuthInterceptor(provider, options);
+    }
+}
+```
+
+The provider must implement `IAuthTokenInvalidator` (`Task<string> InvalidateTokenAsync(string rejectedToken, CancellationToken)`), or the constructor throws `ArgumentException`. `OAuthTokenProvider` implements it with `OAuthClient.ForceRefreshTokenAsync(key, refreshRequest, rejectedAccessToken, ct)`, which refreshes through the token endpoint unless another request has already replaced the rejected token. `OAuthClient.RefreshTokenAsync` also always calls the token endpoint. Concurrent refreshes for one key share one token request, and its failure reaches every waiter without a retry per waiter. The interceptor waits for the provider at most the request's `Timeout`, then fails the request with `UHttpErrorType.Timeout`.
+
 ## Token stores
 
 *   `InMemoryTokenStore`: keeps tokens for the lifetime of the process.
