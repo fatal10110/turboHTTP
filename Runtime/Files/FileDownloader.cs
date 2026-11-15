@@ -31,11 +31,48 @@ namespace TurboHTTP.Files
     /// </summary>
     public class DownloadOptions
     {
+        /// <summary>
+        /// Resume an interrupted download from its <c>.part</c> file when the server's strong
+        /// validator still matches. Defaults to <c>true</c>.
+        /// </summary>
         public bool EnableResume { get; set; } = true;
+
+        /// <summary>
+        /// Obsolete: setting <see cref="ExpectedSha256"/> or <see cref="ExpectedMd5"/> turns
+        /// verification on by itself, so this flag is no longer needed.
+        /// <para>Setting it to <c>true</c> without an expected hash throws
+        /// <see cref="ArgumentException"/> from
+        /// <see cref="FileDownloader.DownloadFileAsync"/>, because there is nothing to verify
+        /// against. Setting it to <c>false</c> does not turn off verification of an expected
+        /// hash.</para>
+        /// </summary>
+        [Obsolete("Setting ExpectedSha256 or ExpectedMd5 enables verification; this flag is no longer needed.")]
         public bool VerifyChecksum { get; set; }
+
+        /// <summary>
+        /// Expected MD5 of the complete file as hex (case-insensitive). When set, the download is
+        /// verified and a mismatch throws <see cref="ChecksumMismatchException"/>. MD5 is not
+        /// collision-resistant: prefer <see cref="ExpectedSha256"/>; keep this only for existing
+        /// manifests that publish MD5. <c>null</c> or empty means unset.
+        /// </summary>
         public string ExpectedMd5 { get; set; }
+
+        /// <summary>
+        /// Expected SHA-256 of the complete file as hex (case-insensitive). When set, the download
+        /// is verified before it is moved to the destination, and a mismatch deletes the partial
+        /// and throws <see cref="ChecksumMismatchException"/>. <c>null</c> or empty means unset.
+        /// </summary>
         public string ExpectedSha256 { get; set; }
+
+        /// <summary>Receives progress as bytes are written to disk; <c>null</c> for none.</summary>
         public IProgress<DownloadProgress> Progress { get; set; }
+
+#pragma warning disable CS0618 // reads the obsolete flag only to reject a meaningless combination
+        internal bool HasVerifyFlagWithoutExpectedHash =>
+            VerifyChecksum &&
+            string.IsNullOrEmpty(ExpectedMd5) &&
+            string.IsNullOrEmpty(ExpectedSha256);
+#pragma warning restore CS0618
     }
 
     /// <summary>
@@ -50,16 +87,28 @@ namespace TurboHTTP.Files
     }
 
     /// <summary>
-    /// Thrown when a downloaded file's checksum does not match the expected value.
+    /// Thrown when a downloaded file's checksum does not match the expected value. It is a
+    /// <see cref="UHttpException"/> with <see cref="UHttpErrorType.Unknown"/> (not retryable):
+    /// the partial file has already been deleted and the destination is untouched.
     /// </summary>
-    public class ChecksumMismatchException : Exception
+    public class ChecksumMismatchException : UHttpException
     {
+        /// <summary>The hash algorithm that failed: <c>"MD5"</c> or <c>"SHA256"</c>.</summary>
         public string Algorithm { get; }
+
+        /// <summary>The expected hex digest from <see cref="DownloadOptions"/>.</summary>
         public string Expected { get; }
+
+        /// <summary>The hex digest of the downloaded bytes.</summary>
         public string Actual { get; }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="ChecksumMismatchException"/> class.
+        /// </summary>
         public ChecksumMismatchException(string algorithm, string expected, string actual)
-            : base($"{algorithm} checksum mismatch. Expected: {expected}, Actual: {actual}")
+            : base(new UHttpError(
+                UHttpErrorType.Unknown,
+                $"{algorithm} checksum mismatch. Expected: {expected}, Actual: {actual}"))
         {
             Algorithm = algorithm;
             Expected = expected;
@@ -121,7 +170,14 @@ namespace TurboHTTP.Files
         /// untouched. Partials without a strong validator are not resumed.</para>
         /// </summary>
         /// <exception cref="UHttpException">HTTP request failed</exception>
-        /// <exception cref="ChecksumMismatchException">Checksum verification failed</exception>
+        /// <exception cref="ChecksumMismatchException">
+        /// <see cref="DownloadOptions.ExpectedSha256"/> or <see cref="DownloadOptions.ExpectedMd5"/>
+        /// is set and the downloaded bytes do not match; the partial is deleted.
+        /// </exception>
+        /// <exception cref="ArgumentException">
+        /// The obsolete <c>VerifyChecksum</c> flag is set without an expected hash, or
+        /// <paramref name="destinationPath"/> escapes <see cref="BasePath"/>.
+        /// </exception>
         public async Task<DownloadResult> DownloadFileAsync(
             string url,
             string destinationPath,
@@ -131,6 +187,14 @@ namespace TurboHTTP.Files
             if (url == null) throw new ArgumentNullException(nameof(url));
             if (destinationPath == null) throw new ArgumentNullException(nameof(destinationPath));
             if (options == null) options = new DownloadOptions();
+            if (options.HasVerifyFlagWithoutExpectedHash)
+            {
+                // Fail closed: the caller asked for verification but gave nothing to verify against.
+                throw new ArgumentException(
+                    "VerifyChecksum is set but neither ExpectedSha256 nor ExpectedMd5 is; " +
+                    "set an expected hash (it enables verification by itself) or clear the flag.",
+                    nameof(options));
+            }
 
             // Path traversal protection: canonicalize and validate against BasePath
             destinationPath = Path.GetFullPath(destinationPath);
@@ -656,13 +720,10 @@ namespace TurboHTTP.Files
 
         private static DownloadHashState CreateHashState(DownloadOptions options)
         {
+            // An expected hash alone enables verification (#1018); the obsolete flag plays no part.
             return new DownloadHashState(
-                options != null &&
-                options.VerifyChecksum &&
-                !string.IsNullOrEmpty(options.ExpectedMd5),
-                options != null &&
-                options.VerifyChecksum &&
-                !string.IsNullOrEmpty(options.ExpectedSha256));
+                options != null && !string.IsNullOrEmpty(options.ExpectedMd5),
+                options != null && !string.IsNullOrEmpty(options.ExpectedSha256));
         }
 
         private static async Task SeedHashStateFromExistingFileAsync(
@@ -704,7 +765,7 @@ namespace TurboHTTP.Files
 
         private static void VerifyHashes(DownloadOptions options, DownloadHashState hashState)
         {
-            if (options == null || !options.VerifyChecksum || hashState == null)
+            if (options == null || hashState == null)
                 return;
 
             if (!string.IsNullOrEmpty(options.ExpectedMd5))

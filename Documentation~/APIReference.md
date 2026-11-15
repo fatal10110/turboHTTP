@@ -304,15 +304,14 @@ var downloader = new FileDownloader(client);
 var downloadOptions = new DownloadOptions
 {
     EnableResume = true,
-    VerifyChecksum = true,
-    ExpectedMd5 = "abc123...",
+    ExpectedSha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
     Progress = new Progress<DownloadProgress>(p => Debug.Log($"{p.Percentage:F1}%"))
 };
 
 DownloadResult result = await downloader.DownloadFileAsync(url, savePath, downloadOptions);
 ```
 
-Downloads are written to `savePath + ".part"` and moved to `savePath` only after the body completed and the checksum (if any) matched; an existing file at `savePath` is replaced atomically and is never touched by a failed download. With `EnableResume`, the response's strong validator (strong `ETag`, or a `Last-Modified` at least one second older than `Date`) is stored in `savePath + ".part.validator"`, and the next call resumes with `Range`, `If-Range` and `Accept-Encoding: identity`. A changed resource (200), a 416, or a 206 whose `Content-Range` does not continue the partial restarts from scratch; 4xx/5xx responses throw and leave the partial and the destination untouched. A checksum mismatch deletes the partial.
+Downloads are written to `savePath + ".part"` and moved to `savePath` only after the body completed and the checksum (if any) matched; an existing file at `savePath` is replaced atomically and is never touched by a failed download. With `EnableResume`, the response's strong validator (strong `ETag`, or a `Last-Modified` at least one second older than `Date`) is stored in `savePath + ".part.validator"`, and the next call resumes with `Range`, `If-Range` and `Accept-Encoding: identity`. A changed resource (200), a 416, or a 206 whose `Content-Range` does not continue the partial restarts from scratch; 4xx/5xx responses throw and leave the partial and the destination untouched. Setting `ExpectedSha256` turns verification on by itself; a mismatch deletes the partial and throws `ChecksumMismatchException` (a `UHttpException`), leaving `savePath` untouched. `ExpectedMd5` is a legacy option for existing manifests that only publish MD5; prefer SHA-256. The obsolete `VerifyChecksum` flag is no longer needed, and setting it without an expected hash throws `ArgumentException`.
 
 ### Multipart Uploads
 
