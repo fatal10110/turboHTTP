@@ -100,8 +100,10 @@ namespace TurboHTTP.Unity
 
                 if (CoroutineWrapper.IsCallbackSuppressed(_callbackOwner, binding))
                 {
-                    // The owner died before LifecycleCancellation.Poll saw it: stop the request now.
-                    binding.Cancel(LifecycleCancellationReason.OwnerDestroyed);
+                    // The binding is already canceled (caller token, LifecycleCancellation.Poll or
+                    // Dispose): the request is stopping, so drop the wait. The owner check alone never
+                    // gets here before Poll does, because the Unity == overload treats a destroyed
+                    // owner as null (#957).
                     return Finish();
                 }
 
