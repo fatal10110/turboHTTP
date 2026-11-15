@@ -116,6 +116,13 @@ pull API (`ReceiveAsync` / `ReceiveAllAsync`), or both:
   `ReceiveQueueMaxBytes`; older unread messages are discarded. Each handler gets its own copy of the
   message.
 
+Keep-alive (`PingInterval`, default 25 s; `PongTimeout`, default 10 s) treats any bytes arriving from the
+server as a sign of life, so a large message on a slow link does not end the connection while it is still
+arriving. A ping that cannot be sent within `PongTimeout` because the server stopped reading ends the
+connection with `WebSocketError.PongTimeout`, and the send that was stuck fails. A pong timeout is checked
+again after a short grace period (at most one second) before the connection is closed, and
+`UnityWebSocketClient` reports app resume so that time spent suspended does not count against the timeout.
+
 ### Message size limits
 
 `MaxMessageSize` (default 4 MB) bounds every received message: single-frame, reassembled from

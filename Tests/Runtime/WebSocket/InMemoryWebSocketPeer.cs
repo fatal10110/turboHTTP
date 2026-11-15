@@ -56,6 +56,13 @@ namespace TurboHTTP.Tests.WebSocket
         /// </summary>
         public bool ReplyToClose { get; set; } = true;
 
+        /// <summary>
+        /// When true (the default) the server answers every Ping with a Pong. Set false to withhold Pongs (or
+        /// to keep a hand-built frame contiguous): Pings are then recorded and returned by
+        /// <see cref="ReadFrameAsync"/> like any other frame.
+        /// </summary>
+        public bool AnswerPings { get; set; } = true;
+
         /// <summary>Completes when the server stops reading (client EOF, close or error).</summary>
         public Task ReaderCompleted => _readerDone.Task;
 
@@ -105,7 +112,7 @@ namespace TurboHTTP.Tests.WebSocket
             return WriteRawAsync(bytes);
         }
 
-        /// <summary>Returns the next recorded client frame (pings are answered, not recorded).</summary>
+        /// <summary>Returns the next recorded client frame (pings are answered, not recorded, unless <see cref="AnswerPings"/> is false).</summary>
         public async Task<ReceivedFrame> ReadFrameAsync(TimeSpan timeout)
         {
             if (!await _frameSignal.WaitAsync(timeout).ConfigureAwait(false))
@@ -159,7 +166,7 @@ namespace TurboHTTP.Tests.WebSocket
                     using (lease)
                     {
                         var frame = lease.Frame;
-                        if (frame.Opcode == WebSocketOpcode.Ping)
+                        if (frame.Opcode == WebSocketOpcode.Ping && AnswerPings)
                         {
                             await SendFrameAsync(WebSocketOpcode.Pong, frame.Payload.ToArray(), fin: true)
                                 .ConfigureAwait(false);

@@ -192,8 +192,14 @@ namespace TurboHTTP.Unity.WebSocket
             componentCts?.Dispose();
         }
 
-        private void OnApplicationPause(bool pauseStatus)
+        // Internal for tests; Unity calls it as a player message regardless of access.
+        internal void OnApplicationPause(bool pauseStatus)
         {
+            // Keep-alive deadlines that ran across the suspension restart instead of closing live connections
+            // with PongTimeout (#1132). Process wide, so connections this component does not own benefit too.
+            if (!pauseStatus)
+                WebSocketConnection.NotifyApplicationResumed();
+
             if (!_disconnectOnPause)
                 return;
 
