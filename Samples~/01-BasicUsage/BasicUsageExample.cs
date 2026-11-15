@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
@@ -32,28 +33,42 @@ namespace TurboHTTP.Samples.BasicUsage
         }
 
         private UHttpClient _client;
+        private CancellationTokenSource _cts;
 
         void Start()
         {
             _client = new UHttpClient();
+            _cts = new CancellationTokenSource();
             RunExamples();
         }
 
+        // async void is only the Unity entry point: everything that can throw is caught here.
         async void RunExamples()
         {
-            await Example1_SimpleGet();
-            await Example2_GetWithHeaders();
-            await Example3_Post();
-            await Example4_Put();
-            await Example5_Delete();
-            await Example6_ErrorHandling();
+            try
+            {
+                await Example1_SimpleGet();
+                await Example2_GetWithHeaders();
+                await Example3_Post();
+                await Example4_Put();
+                await Example5_Delete();
+                await Example6_ErrorHandling();
+            }
+            catch (UHttpException ex)
+            {
+                Debug.LogError($"Request failed: {ex.HttpError.Type} - {ex.Message}");
+            }
+            catch (OperationCanceledException)
+            {
+                // Destroyed while a request was in flight.
+            }
         }
 
         async Task Example1_SimpleGet()
         {
             Debug.Log("=== Example 1: Simple GET ===");
 
-            using var response = await _client.Get("https://httpbin.org/get").SendBufferedAsync();
+            using var response = await _client.Get("https://httpbin.org/get").SendBufferedAsync(_cts.Token);
 
             Debug.Log($"Status: {response.StatusCode}");
             Debug.Log($"Body: {response.GetBodyAsString()}");
@@ -67,7 +82,7 @@ namespace TurboHTTP.Samples.BasicUsage
                 .Get("https://httpbin.org/headers")
                 .WithHeader("X-Custom-Header", "my-value")
                 .WithHeader("Accept", "application/json")
-                .SendBufferedAsync();
+                .SendBufferedAsync(_cts.Token);
 
             Debug.Log(response.GetBodyAsString());
         }
@@ -81,7 +96,7 @@ namespace TurboHTTP.Samples.BasicUsage
             using var response = await _client
                 .Post("https://httpbin.org/post")
                 .WithJsonBody(data)
-                .SendBufferedAsync();
+                .SendBufferedAsync(_cts.Token);
 
             Debug.Log(response.GetBodyAsString());
         }
@@ -95,7 +110,7 @@ namespace TurboHTTP.Samples.BasicUsage
             using var response = await _client
                 .Put("https://httpbin.org/put")
                 .WithJsonBody(data)
-                .SendBufferedAsync();
+                .SendBufferedAsync(_cts.Token);
 
             Debug.Log($"Status: {response.StatusCode}");
         }
@@ -106,7 +121,7 @@ namespace TurboHTTP.Samples.BasicUsage
 
             using var response = await _client
                 .Delete("https://httpbin.org/delete")
-                .SendBufferedAsync();
+                .SendBufferedAsync(_cts.Token);
 
             Debug.Log($"Status: {response.StatusCode}");
         }
@@ -119,7 +134,7 @@ namespace TurboHTTP.Samples.BasicUsage
             {
                 using var response = await _client
                     .Get("https://httpbin.org/status/404")
-                    .SendBufferedAsync();
+                    .SendBufferedAsync(_cts.Token);
 
                 response.EnsureSuccessStatusCode();
             }
@@ -131,6 +146,9 @@ namespace TurboHTTP.Samples.BasicUsage
 
         void OnDestroy()
         {
+            // Cancel in-flight requests before disposing the client under them.
+            _cts?.Cancel();
+            _cts?.Dispose();
             _client?.Dispose();
         }
     }

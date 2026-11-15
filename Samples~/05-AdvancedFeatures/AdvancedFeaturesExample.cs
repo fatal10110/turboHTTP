@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Cache;
 using TurboHTTP.Core;
@@ -25,6 +26,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
     {
         private UHttpClient _client;
         private MetricsInterceptor _metrics;
+        private CancellationTokenSource _cts;
 
         void Start()
         {
@@ -63,17 +65,30 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             options.Interceptors.Add(new ConcurrencyInterceptor(maxConnectionsPerHost: 2, maxTotalConnections: 8));
 
             _client = new UHttpClient(options);
+            _cts = new CancellationTokenSource();
 
             RunExamples();
         }
 
+        // async void is only the Unity entry point: everything that can throw is caught here.
         async void RunExamples()
         {
-            await Example1_Caching();
-            await Example2_Retries();
-            await Example3_ConcurrencyLimit();
+            try
+            {
+                await Example1_Caching();
+                await Example2_Retries();
+                await Example3_ConcurrencyLimit();
 
-            PrintMetrics();
+                PrintMetrics();
+            }
+            catch (UHttpException ex)
+            {
+                Debug.LogError($"Request failed: {ex.HttpError.Type} - {ex.Message}");
+            }
+            catch (OperationCanceledException)
+            {
+                // Destroyed while a request was in flight.
+            }
         }
 
         async Task Example1_Caching()
@@ -82,11 +97,11 @@ namespace TurboHTTP.Samples.AdvancedFeatures
 
             // httpbin.org/cache/60 answers with Cache-Control: public, max-age=60.
             Debug.Log("Request 1 (network)...");
-            using var r1 = await _client.Get("/cache/60").SendBufferedAsync();
+            using var r1 = await _client.Get("/cache/60").SendBufferedAsync(_cts.Token);
             Debug.Log($"Status: {r1.StatusCode}, Time: {r1.ElapsedTime.TotalMilliseconds}ms");
 
             Debug.Log("Request 2 (cache)...");
-            using var r2 = await _client.Get("/cache/60").SendBufferedAsync();
+            using var r2 = await _client.Get("/cache/60").SendBufferedAsync(_cts.Token);
             Debug.Log($"Status: {r2.StatusCode}, Time: {r2.ElapsedTime.TotalMilliseconds}ms");
         }
 
@@ -99,7 +114,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
                 // 503 is retryable: the interceptor retries with backoff before giving up.
                 using var response = await _client.Get("/status/503")
                     .WithTimeout(TimeSpan.FromSeconds(5))
-                    .SendBufferedAsync();
+                    .SendBufferedAsync(_cts.Token);
 
                 Debug.Log($"Final status: {response.StatusCode}");
             }
@@ -116,7 +131,7 @@ namespace TurboHTTP.Samples.AdvancedFeatures
             // Six requests start together, but at most two are on the wire to the host at a time.
             var tasks = Enumerable.Range(0, 6).Select(async i =>
             {
-                using var response = await _client.Get("/delay/1").SendBufferedAsync();
+                using var response = await _client.Get("/delay/1").SendBufferedAsync(_cts.Token);
                 Debug.Log($"Request {i + 1}: {response.StatusCode}");
             });
             await Task.WhenAll(tasks);
@@ -134,6 +149,10 @@ namespace TurboHTTP.Samples.AdvancedFeatures
 
         void OnDestroy()
         {
+            // Cancel first: DisposeInterceptors = true disposes the cache and the concurrency limiter
+            // with the client, which must not happen under requests that are still running.
+            _cts?.Cancel();
+            _cts?.Dispose();
             _client?.Dispose();
         }
     }
