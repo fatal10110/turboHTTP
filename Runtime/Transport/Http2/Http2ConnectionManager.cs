@@ -11,8 +11,10 @@ namespace TurboHTTP.Transport.Http2
     /// <summary>
     /// Per-host HTTP/2 connection cache. Keeps up to <see cref="Http2Options.MaxConnectionsPerOrigin"/>
     /// active Http2Connections per origin (one by default, RFC 9113 Section 9.1); another opens only
-    /// when every connection of the origin is saturated. Thread-safe with thundering herd prevention
-    /// via per-key locking.
+    /// when every connection of the origin is saturated. Thread-safe. A cold origin is dialed once: the
+    /// first request claims the dial (<see cref="ClaimOrJoinColdDial"/>) and the others await it instead
+    /// of each opening a TCP+TLS connection (#736); the per-key init lock only serializes the HTTP/2
+    /// connection preface of connections that were dialed anyway.
     /// </summary>
     internal class Http2ConnectionManager : IDisposable
     {
@@ -35,6 +37,22 @@ namespace TurboHTTP.Transport.Http2
         // a time instead of one per request. Removed instance-exact by ReleaseExtraDial.
         private readonly ConcurrentDictionary<string, ExtraDialClaim> _extraDials
             = new ConcurrentDictionary<string, ExtraDialClaim>(StringComparer.OrdinalIgnoreCase);
+
+        // Per key, the pending dial of the first request to a cold origin (no connection accepts streams,
+        // #736). TryAdd is the atomic claim: its winner dials, every later request for the key awaits the
+        // claim's completion instead of dialing its own TCP+TLS connection (RFC 9113 Section 9.1), then
+        // looks for a connection again (HTTP/2 published) or dials itself (the dial failed or negotiated
+        // another protocol). Removed instance-exact by CompleteColdDial; completed by Dispose too.
+        private readonly ConcurrentDictionary<string, ColdDialClaim> _coldDials
+            = new ConcurrentDictionary<string, ColdDialClaim>(StringComparer.OrdinalIgnoreCase);
+
+        // Keys whose last cold dial negotiated another protocol than h2 (HTTP/1.1 ALPN): their requests
+        // skip the cold-dial gate, so an HTTP/1.1 origin keeps dialing in parallel. A publish for the key
+        // removes it; the set is cleared once it holds MaxRememberedNonHttp2Origins keys.
+        private readonly ConcurrentDictionary<string, byte> _nonHttp2Origins
+            = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+
+        private const int MaxRememberedNonHttp2Origins = 256;
 
         // Connections evicted after GOAWAY that still drain in-flight streams (RFC 9113 Section 6.8).
         // Each closes itself once drained; the manager only keeps them to dispose them on its own Dispose.
@@ -160,7 +178,106 @@ namespace TurboHTTP.Transport.Http2
         /// <summary>True when a connection for this host:port accepts new streams (saturated or not).</summary>
         internal bool HasConnection(string host, int port)
         {
-            return Volatile.Read(ref _disposed) == 0 && SelectConnection($"{host}:{port}", out _) != null;
+            return GetAcceptingConnection(host, port) != null;
+        }
+
+        /// <summary>
+        /// The connection a request for this host:port can still queue on after its own dial failed (the
+        /// least-queued one that accepts streams, saturated or not), or null when none is left.
+        /// </summary>
+        internal Http2Connection GetAcceptingConnection(string host, int port)
+        {
+            return Volatile.Read(ref _disposed) == 0 ? SelectConnection($"{host}:{port}", out _) : null;
+        }
+
+        /// <summary>
+        /// For a request that found no connection for this host:port and holds no extra-dial claim, i.e.
+        /// the origin is cold (#736). Returns null with <paramref name="coldDial"/> set when the caller is
+        /// the first and dials: it owns the claim and completes it through <see cref="CompleteColdDial"/>
+        /// on every path. Returns null without a claim when the origin last negotiated another protocol
+        /// than h2 (an HTTP/1.1 origin dials in parallel) or the manager is disposed: the caller dials.
+        /// Otherwise returns the first caller's pending dial (await it with
+        /// <see cref="WaitForColdDialAsync"/>): true when the caller should look for a connection again
+        /// (the dial yielded HTTP/2, or its owner was cancelled), false when it should dial itself (the
+        /// dial failed or negotiated another protocol). Fast path — no async.
+        /// </summary>
+        public Task<bool> ClaimOrJoinColdDial(string host, int port, out ColdDialClaim coldDial)
+        {
+            coldDial = null;
+            if (Volatile.Read(ref _disposed) != 0)
+                return null;
+
+            string key = $"{host}:{port}";
+            if (_nonHttp2Origins.ContainsKey(key))
+                return null;
+
+            while (true)
+            {
+                if (_coldDials.TryGetValue(key, out var pending))
+                    return pending.Completion;
+
+                var claim = new ColdDialClaim(key);
+                if (!_coldDials.TryAdd(key, claim))
+                    continue;
+
+                // Dispose may have completed the pending dials before this TryAdd: never leave a claim
+                // that nothing completes.
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    CompleteColdDial(ref claim, ColdDialOutcome.Failed);
+                    return null;
+                }
+
+                coldDial = claim;
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Completes a cold-dial claim with the outcome of its dial and wakes the requests awaiting it
+        /// (idempotent: <paramref name="coldDial"/> is cleared, and removal is instance-exact, so a later
+        /// claim of the same key is never completed by mistake).
+        /// </summary>
+        public void CompleteColdDial(ref ColdDialClaim coldDial, ColdDialOutcome outcome)
+        {
+            var claim = coldDial;
+            coldDial = null;
+            if (claim == null)
+                return;
+
+            ((ICollection<KeyValuePair<string, ColdDialClaim>>)_coldDials).Remove(
+                new KeyValuePair<string, ColdDialClaim>(claim.Key, claim));
+
+            if (outcome == ColdDialOutcome.NotHttp2 && Volatile.Read(ref _disposed) == 0)
+            {
+                if (_nonHttp2Origins.Count >= MaxRememberedNonHttp2Origins)
+                    _nonHttp2Origins.Clear();
+                _nonHttp2Origins[claim.Key] = 0;
+            }
+
+            claim.Complete(outcome == ColdDialOutcome.Http2 || outcome == ColdDialOutcome.Abandoned);
+        }
+
+        /// <summary>
+        /// Awaits a pending cold dial returned by <see cref="ClaimOrJoinColdDial"/>; throws
+        /// <see cref="OperationCanceledException"/> as soon as <paramref name="ct"/> fires (the request
+        /// timeout is enforced by transport cancellation). The cancellation registration is released on
+        /// every path; the pending dial itself never faults.
+        /// </summary>
+        internal static async Task<bool> WaitForColdDialAsync(Task<bool> pendingDial, CancellationToken ct)
+        {
+            if (!ct.CanBeCanceled || pendingDial.IsCompleted)
+                return await pendingDial.ConfigureAwait(false);
+
+            var cancelSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (ct.Register(static state => ((TaskCompletionSource<bool>)state).TrySetResult(true), cancelSignal))
+            {
+                var completed = await Task.WhenAny(pendingDial, cancelSignal.Task).ConfigureAwait(false);
+                if (!ReferenceEquals(completed, pendingDial))
+                    throw new OperationCanceledException(ct);
+            }
+
+            return await pendingDial.ConfigureAwait(false);
         }
 
         internal bool HasConnection(
@@ -348,6 +465,7 @@ namespace TurboHTTP.Transport.Http2
                     }
 
                     published = true;
+                    _nonHttp2Origins.TryRemove(key, out _);
                     return newConnection;
                 }
                 finally
@@ -486,6 +604,13 @@ namespace TurboHTTP.Transport.Http2
             }
             _initLocks.Clear();
             _extraDials.Clear();
+
+            // Wake the requests awaiting a cold dial: they look again, find the manager disposed and fail
+            // on their own dial. The claim owners still complete their (removed) claims, idempotently.
+            foreach (var kvp in _coldDials)
+                kvp.Value.Complete(true);
+            _coldDials.Clear();
+            _nonHttp2Origins.Clear();
         }
 
         private static string BuildTunnelKey(
@@ -513,11 +638,13 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
-            // Prune drained or failed connections, so the set only holds connections still draining.
+            // Prune drained or failed connections, so the set only holds connections still draining. A
+            // pruned connection is disposed (idempotent): it may have failed without closing its
+            // transport stream yet (#694).
             foreach (var kvp in _draining)
             {
-                if (!kvp.Key.IsAlive)
-                    _draining.TryRemove(kvp.Key, out _);
+                if (!kvp.Key.IsAlive && _draining.TryRemove(kvp.Key, out _))
+                    kvp.Key.Dispose();
             }
 
             _draining[connection] = 0;
@@ -580,6 +707,46 @@ namespace TurboHTTP.Transport.Http2
             }
 
             internal string Key { get; }
+        }
+
+        /// <summary>How the dial of a <see cref="ColdDialClaim"/> ended.</summary>
+        internal enum ColdDialOutcome
+        {
+            /// <summary>An HTTP/2 connection was published (or found): waiters look again.</summary>
+            Http2,
+
+            /// <summary>The dial negotiated another protocol (HTTP/1.1): waiters dial themselves.</summary>
+            NotHttp2,
+
+            /// <summary>The dial failed: waiters dial themselves (RFC 9113 Section 9.1 still applies).</summary>
+            Failed,
+
+            /// <summary>The owner was cancelled or timed out: waiters look again, one claims a new dial.</summary>
+            Abandoned
+        }
+
+        /// <summary>
+        /// The right to dial the first connection of a cold origin; see <see cref="ClaimOrJoinColdDial"/>.
+        /// </summary>
+        internal sealed class ColdDialClaim
+        {
+            private readonly TaskCompletionSource<bool> _completion =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            internal ColdDialClaim(string key)
+            {
+                Key = key;
+            }
+
+            internal string Key { get; }
+
+            /// <summary>True: look for a connection again; false: dial yourself.</summary>
+            internal Task<bool> Completion => _completion.Task;
+
+            internal void Complete(bool lookAgain)
+            {
+                _completion.TrySetResult(lookAgain);
+            }
         }
     }
 }

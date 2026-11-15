@@ -172,7 +172,14 @@ namespace TurboHTTP.WebSocket
             _frameWriter = new WebSocketFrameWriter(options.FragmentationThreshold);
             _messageAssembler = new MessageAssembler(options.MaxMessageSize, options.MaxFragmentCount);
             _receiveQueue = WebSocketMessageQueue.Create(options);
-            _lifecycleCts = new CancellationTokenSource();
+            // #1135: Abort or Dispose during the connect cancels the transport connect and the handshake
+            // through this token. Published before the finalized flag is read: an abort that already ran
+            // found no source to cancel, so it is canceled here; otherwise the abort cancels it.
+            var lifecycleCts = new CancellationTokenSource();
+            var lifecycleToken = lifecycleCts.Token;
+            Interlocked.Exchange(ref _lifecycleCts, lifecycleCts);
+            if (Volatile.Read(ref _finalized) != 0)
+                CancelAndDisposeAfterTaskCompletion(ref _lifecycleCts, null);
 
             List<IWebSocketExtension> configuredExtensions = null;
             var handshakeToken = CancellationToken.None;
@@ -185,12 +192,16 @@ namespace TurboHTTP.WebSocket
                 if (!WireHost.TryFromUri(uri, out _, out var hostError))
                     throw new WebSocketException(WebSocketError.HandshakeFailed, hostError);
 
-                using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(ct, lifecycleToken);
                 handshakeCts.CancelAfter(options.HandshakeTimeout);
 
                 handshakeToken = handshakeCts.Token;
 
                 _stream = await transport.ConnectAsync(uri, options, handshakeToken).ConfigureAwait(false);
+
+                // #1135: a transport that ignored the token returns its stream after an abort; the
+                // catch below disposes it (FinalizeClose already ran without it).
+                lifecycleToken.ThrowIfCancellationRequested();
 
                 // #226: Mono/IL2CPP NetworkStream ignores the token once a read is pending, so a server
                 // that accepts and never sends the 101 would hold this call past HandshakeTimeout.
@@ -295,11 +306,16 @@ namespace TurboHTTP.WebSocket
                         "Failed to transition connection from Connecting to Open. Current state: " + State + ".");
                 }
 
-                _receiveLoopTask = ReceiveLoopAsync(_lifecycleCts.Token);
+                // An abort that won the race right after the transition already finalized the connection
+                // (and disposed the stream): report it instead of starting the loops on it (#1135).
+                lifecycleToken.ThrowIfCancellationRequested();
+
+                // The captured token: an abort from here on clears _lifecycleCts.
+                _receiveLoopTask = ReceiveLoopAsync(lifecycleToken);
 
                 if (_options.PingInterval > TimeSpan.Zero)
                 {
-                    _keepAliveCts = CancellationTokenSource.CreateLinkedTokenSource(_lifecycleCts.Token);
+                    _keepAliveCts = CancellationTokenSource.CreateLinkedTokenSource(lifecycleToken);
                     _keepAliveTask = RunKeepAliveLoopAsync(_keepAliveCts.Token);
                 }
             }
@@ -313,6 +329,7 @@ namespace TurboHTTP.WebSocket
                 FinalizeClose(
                     new WebSocketCloseStatus(WebSocketCloseCode.AbnormalClosure),
                     new WebSocketException(WebSocketError.ConnectionClosed, "WebSocket connect was canceled."));
+                DisposeLateStream();
                 await ObserveReceiveLoopTerminationAsync().ConfigureAwait(false);
                 if (ex is OperationCanceledException)
                     throw;
@@ -334,6 +351,14 @@ namespace TurboHTTP.WebSocket
                         ex.Message,
                         ex,
                         statusCode > 0 ? statusCode : (int?)null);
+                }
+                else if (lifecycleToken.IsCancellationRequested)
+                {
+                    // #1135: Abort or Dispose ended the connect (not the caller token, not the timer).
+                    mapped = new WebSocketException(
+                        WebSocketError.ConnectionClosed,
+                        "WebSocket connection aborted.",
+                        ex);
                 }
                 else if (handshakeToken.IsCancellationRequested)
                 {
@@ -361,9 +386,19 @@ namespace TurboHTTP.WebSocket
                 FinalizeClose(
                     closeStatus,
                     mapped);
+                DisposeLateStream();
                 await ObserveReceiveLoopTerminationAsync().ConfigureAwait(false);
                 throw mapped;
             }
+        }
+
+        /// <summary>
+        /// Disposes a stream the transport handed over after an abort had already finalized the
+        /// connection without it (#1135). A no-op when <see cref="FinalizeClose"/> took the stream.
+        /// </summary>
+        private void DisposeLateStream()
+        {
+            SafeDispose(Interlocked.Exchange(ref _stream, null));
         }
 
         private static CancellationTokenRegistration RegisterDisposeOnCancel(Stream stream, CancellationToken ct)

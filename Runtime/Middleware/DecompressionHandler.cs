@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,9 +10,20 @@ namespace TurboHTTP.Middleware
 {
     internal sealed class DecompressionHandler : IHttpHandler
     {
+        /// <summary>
+        /// Most content codings a response may stack (#783), counted over every <c>Content-Encoding</c> field line;
+        /// <c>identity</c> does not count. Real servers apply one coding, rarely two; a longer chain only multiplies
+        /// decoder state and work, so it fails before any decoder is created.
+        /// </summary>
+        internal const int MaxContentCodings = 3;
+
+        private const int PartialContentStatusCode = 206;
+
         private readonly IHttpHandler _inner;
         private readonly long _maxDecompressedBodySizeBytes;
         private readonly long _maxCompressedBodySizeBytes;
+        private readonly long _maxIntermediateBytes;
+        private readonly CancellationToken _cancellationToken;
 
         // Written by OnRequestStart, read by OnResponseStartAsync of the same dispatch.
         private int _isHeadRequest;
@@ -24,7 +34,22 @@ namespace TurboHTTP.Middleware
             Deflate
         }
 
-        internal DecompressionHandler(IHttpHandler inner, long maxDecompressedBodySizeBytes)
+        private enum CompressionResolution
+        {
+            PassThrough,
+            Decode,
+            TooManyCodings
+        }
+
+        /// <param name="inner">The next handler.</param>
+        /// <param name="maxDecompressedBodySizeBytes">Decoded-size limit; also caps the compressed input.</param>
+        /// <param name="cancellationToken">
+        /// The dispatch token, observed while a buffered body is decoded inside <see cref="OnResponseStartAsync"/>.
+        /// </param>
+        internal DecompressionHandler(
+            IHttpHandler inner,
+            long maxDecompressedBodySizeBytes,
+            CancellationToken cancellationToken = default)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             if (maxDecompressedBodySizeBytes <= 0)
@@ -37,6 +62,12 @@ namespace TurboHTTP.Middleware
 
             _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
             _maxCompressedBodySizeBytes = maxDecompressedBodySizeBytes;
+            // #774: the inner layers of a chain may together inflate MaxContentCodings times the decoded limit, room
+            // for every inner layer of an allowed chain even when a coding grows its input (incompressible data).
+            _maxIntermediateBytes = maxDecompressedBodySizeBytes > long.MaxValue / MaxContentCodings
+                ? long.MaxValue
+                : maxDecompressedBodySizeBytes * MaxContentCodings;
+            _cancellationToken = cancellationToken;
         }
 
         public void OnRequestStart(UHttpRequest request, RequestContext context)
@@ -51,15 +82,32 @@ namespace TurboHTTP.Middleware
             IResponseBodySource body,
             RequestContext context)
         {
-            CompressionKind[] compressionChain;
-            if (body == null ||
-                HasNoContent(statusCode, body, context) ||
-                !TryResolveCompression(headers, out compressionChain))
+            CompressionKind[] compressionChain = null;
+            var resolution = CompressionResolution.PassThrough;
+            if (body != null && statusCode != PartialContentStatusCode && !HasNoContent(statusCode, body, context))
+                resolution = ResolveCompression(headers, out compressionChain);
+
+            if (resolution == CompressionResolution.PassThrough)
             {
                 // RFC 9110 sections 6.4.1, 9.3.2, 15.4.5: HEAD responses and 1xx/204/304 carry no content, so
                 // Content-Encoding describes the selected representation, not bytes on the wire. Forward the
                 // response and its headers untouched instead of failing to decode an empty body.
+                // RFC 9110 sections 14.2 and 15.3.7: a 206 carries a part of the (coded) selected representation,
+                // which cannot be decoded on its own; it is forwarded undecoded with Content-Encoding,
+                // Content-Range and Content-Length intact (#784).
                 await _inner.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
+                return;
+            }
+
+            if (resolution == CompressionResolution.TooManyCodings)
+            {
+                // #783: fail before any decoder (and its buffers) exists; the body is never read.
+                body.Abort();
+                _inner.OnResponseError(
+                    CreateDecompressionError(
+                        new InvalidDataException(
+                            $"Content-Encoding lists more than {MaxContentCodings} content codings.")),
+                    context);
                 return;
             }
 
@@ -87,7 +135,8 @@ namespace TurboHTTP.Middleware
                     var decompressed = DecompressBufferedBody(
                         compressed,
                         compressionChain,
-                        _maxDecompressedBodySizeBytes);
+                        _maxDecompressedBodySizeBytes,
+                        CreateBudget(_cancellationToken));
                     try
                     {
                         bufferedBody = new SegmentedResponseBodySource(decompressed, trailers);
@@ -137,7 +186,8 @@ namespace TurboHTTP.Middleware
             var decompressedBody = new DecompressionBodySource(
                 body,
                 compressionChain,
-                _maxDecompressedBodySizeBytes);
+                _maxDecompressedBodySizeBytes,
+                CreateBudget(CancellationToken.None));
 
             try
             {
@@ -178,27 +228,36 @@ namespace TurboHTTP.Middleware
             return body.TryGetBufferedData(out var buffered) && buffered.IsEmpty;
         }
 
+        private DecompressionBudget CreateBudget(CancellationToken cancellationToken)
+        {
+            return new DecompressionBudget(_maxCompressedBodySizeBytes, _maxIntermediateBytes, cancellationToken);
+        }
+
         /// <summary>
         /// Decodes a buffered body into pooled 16 KB segments (#74): no growing contiguous buffer and no final
         /// copy, so the peak is the decoded size plus one segment. The limit is checked before a segment is
         /// added; at the limit a one-byte probe tells a complete body from one that would exceed it. The caller
-        /// owns the returned buffer; on failure its segments are returned here.
+        /// owns the returned buffer; on failure its segments are returned here. The budget bounds the input and
+        /// intermediate work of every layer and carries the dispatch token, checked before every source read
+        /// and every output step (#774).
         /// </summary>
         private static SegmentedBuffer DecompressBufferedBody(
             ReadOnlyMemory<byte> compressed,
             CompressionKind[] compressionChain,
-            long maxDecompressedBodySizeBytes)
+            long maxDecompressedBodySizeBytes,
+            DecompressionBudget budget)
         {
             var output = new SegmentedBuffer();
             try
             {
                 // Every gzip/zlib layer validates its trailers and reads its input to the end (InflateLayerStream).
                 using var compressedStream = new ReadOnlySequenceStream(new ReadOnlySequence<byte>(compressed));
-                using var decompressionStream = CreateDecompressionStream(compressedStream, compressionChain);
+                using var decompressionStream = CreateDecompressionStream(compressedStream, compressionChain, budget);
 
                 Span<byte> probe = stackalloc byte[1];
                 while (true)
                 {
+                    budget.ThrowIfCancellationRequested();
                     var remainingBudget = maxDecompressedBodySizeBytes - output.Length;
                     if (remainingBudget <= 0)
                     {
@@ -242,18 +301,28 @@ namespace TurboHTTP.Middleware
             private readonly BodySourceStream _compressedStream;
             private readonly BufferedStream _readAheadStream;
             private readonly Stream _decompressionStream;
+            private readonly DecompressionBudget _budget;
+
+            // Lifecycle (#779): Open -> Draining (DisposeAsync) -> Closed, or Open/Draining -> Closed (Abort). Whoever
+            // moves it to Closed ends the inner source, so it is aborted or disposed exactly once, and Abort still
+            // reaches it while DisposeAsync drains.
+            private const int LifecycleOpen = 0;
+            private const int LifecycleDraining = 1;
+            private const int LifecycleClosed = 2;
 
             private long _bytesRead;
             private int _completed;
-            private int _disposeStarted;
+            private int _lifecycle;
             private int _disposed;
 
             internal DecompressionBodySource(
                 IResponseBodySource inner,
                 CompressionKind[] compressionChain,
-                long maxDecompressedBodySizeBytes)
+                long maxDecompressedBodySizeBytes,
+                DecompressionBudget budget)
             {
                 _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                _budget = budget ?? throw new ArgumentNullException(nameof(budget));
                 if (compressionChain == null)
                     throw new ArgumentNullException(nameof(compressionChain));
                 if (maxDecompressedBodySizeBytes <= 0)
@@ -265,9 +334,9 @@ namespace TurboHTTP.Middleware
                 }
 
                 _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
-                _compressedStream = new BodySourceStream(inner);
+                _compressedStream = new BodySourceStream(inner, budget);
                 _readAheadStream = new BufferedStream(_compressedStream, ReadAheadBufferBytes);
-                _decompressionStream = CreateDecompressionStream(_readAheadStream, compressionChain);
+                _decompressionStream = CreateDecompressionStream(_readAheadStream, compressionChain, budget);
             }
 
             public long? Length
@@ -304,6 +373,8 @@ namespace TurboHTTP.Middleware
                 if (Volatile.Read(ref _completed) != 0)
                     return 0;
 
+                // Synchronous source reads inside the chain have no token argument; they observe this read's (#774).
+                _budget.CancellationToken = ct;
                 try
                 {
                     var remainingBudget = _maxDecompressedBodySizeBytes - Interlocked.Read(ref _bytesRead);
@@ -371,12 +442,23 @@ namespace TurboHTTP.Middleware
 
             public void Abort()
             {
-                if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+                var previous = Interlocked.CompareExchange(ref _lifecycle, LifecycleClosed, LifecycleOpen);
+                if (previous == LifecycleOpen)
+                {
+                    Interlocked.Exchange(ref _disposed, 1);
+                    DisposeStreams();
+                    _inner.Abort();
                     return;
+                }
 
-                Interlocked.Exchange(ref _disposed, 1);
-                DisposeStreams();
-                _inner.Abort();
+                // While DisposeAsync drains, Abort still tears the inner source down (#779): that ends the pending drain
+                // read at once instead of after the drain bound. DisposeAsync owns the decoder streams and disposes them
+                // once the drain has unwound.
+                if (previous == LifecycleDraining &&
+                    Interlocked.CompareExchange(ref _lifecycle, LifecycleClosed, LifecycleDraining) == LifecycleDraining)
+                {
+                    _inner.Abort();
+                }
             }
 
             public async ValueTask<HttpHeaders> GetTrailersAsync(CancellationToken ct)
@@ -392,7 +474,7 @@ namespace TurboHTTP.Middleware
 
             public async ValueTask DisposeAsync()
             {
-                if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+                if (Interlocked.CompareExchange(ref _lifecycle, LifecycleDraining, LifecycleOpen) != LifecycleOpen)
                     return;
 
                 var drained = false;
@@ -409,10 +491,7 @@ namespace TurboHTTP.Middleware
                 }
                 catch
                 {
-                    // Abort is the terminal transport-side release primitive for failed drain paths.
-                    // The response-body source contract requires Abort() to tear down remaining
-                    // transport state when DisposeAsync cannot complete a clean drain.
-                    _inner.Abort();
+                    // Handled below: a drain that cannot complete cleanly aborts the inner source.
                 }
                 finally
                 {
@@ -421,16 +500,26 @@ namespace TurboHTTP.Middleware
                     DisposeStreams();
                 }
 
-                if (drained)
+                // An Abort during the drain (from a caller, or from a failed drain read) already ended the inner source.
+                if (Interlocked.CompareExchange(ref _lifecycle, LifecycleClosed, LifecycleDraining) != LifecycleDraining)
+                    return;
+
+                if (!drained)
                 {
-                    try
-                    {
-                        await _inner.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        _inner.Abort();
-                    }
+                    // Abort is the terminal transport-side release primitive for failed drain paths.
+                    // The response-body source contract requires Abort() to tear down remaining
+                    // transport state when DisposeAsync cannot complete a clean drain.
+                    _inner.Abort();
+                    return;
+                }
+
+                try
+                {
+                    await _inner.DisposeAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    _inner.Abort();
                 }
             }
 
@@ -514,11 +603,13 @@ namespace TurboHTTP.Middleware
             private sealed class BodySourceStream : Stream
             {
                 private readonly IResponseBodySource _inner;
+                private readonly DecompressionBudget _budget;
                 private int _disposed;
 
-                internal BodySourceStream(IResponseBodySource inner)
+                internal BodySourceStream(IResponseBodySource inner, DecompressionBudget budget)
                 {
                     _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                    _budget = budget ?? throw new ArgumentNullException(nameof(budget));
                 }
 
                 public override bool CanRead => Volatile.Read(ref _disposed) == 0;
@@ -555,10 +646,11 @@ namespace TurboHTTP.Middleware
                     // GZipStream/DeflateStream still call the synchronous Stream.Read path internally
                     // on some runtimes. DecompressionBodySource.ReadAsync offloads those calls when it
                     // detects a SynchronizationContext, so this sync bridge only blocks worker-thread
-                    // consumers or explicit synchronous callers.
+                    // consumers or explicit synchronous callers. The wait observes the token of the read in
+                    // progress (#774).
                     return _inner.ReadAsync(
                             new Memory<byte>(buffer, offset, count),
-                            CancellationToken.None)
+                            _budget.CancellationToken)
                         .GetAwaiter()
                         .GetResult();
                 }
@@ -579,7 +671,7 @@ namespace TurboHTTP.Middleware
                     {
                         var read = _inner.ReadAsync(
                                 rented.AsMemory(0, buffer.Length),
-                                CancellationToken.None)
+                                _budget.CancellationToken)
                             .GetAwaiter()
                             .GetResult();
                         if (read > 0)
@@ -683,17 +775,19 @@ namespace TurboHTTP.Middleware
 
         private static Stream CreateDecompressionStream(
             Stream compressedStream,
-            CompressionKind[] compressionChain)
+            CompressionKind[] compressionChain,
+            DecompressionBudget budget)
         {
             // Content-Encoding lists codings in the order they were applied (RFC 9110 section 8.4), so the last
             // one wraps the wire bytes. The caller owns compressedStream; every decoder created here owns the
-            // decoder below it, so disposing the returned stream releases the whole chain.
+            // decoder below it, so disposing the returned stream releases the whole chain. The first decoder reads
+            // the wire bytes; every later one reads intermediate output, both charged to the shared budget.
             Stream current = compressedStream;
-            var leaveOpen = true;
+            var wire = true;
             for (int i = compressionChain.Length - 1; i >= 0; i--)
             {
-                current = CreateSingleDecompressionStream(current, compressionChain[i], leaveOpen);
-                leaveOpen = false;
+                current = CreateSingleDecompressionStream(current, compressionChain[i], wire, budget);
+                wire = false;
             }
 
             return current;
@@ -702,17 +796,19 @@ namespace TurboHTTP.Middleware
         private static Stream CreateSingleDecompressionStream(
             Stream compressedStream,
             CompressionKind compression,
-            bool leaveOpen)
+            bool wire,
+            DecompressionBudget budget)
         {
+            // Only the wire stream is owned by the caller (leaveOpen); every decoder owns the decoder below it.
             switch (compression)
             {
                 case CompressionKind.Gzip:
                     // Member-aware gzip decoder (RFC 1952 section 2.2): checks every member's CRC32 + ISIZE itself,
                     // because Unity's Mono GZipStream can report a truncated member as a clean end of stream.
-                    return new InflateLayerStream(compressedStream, leaveOpen, gzip: true);
+                    return new InflateLayerStream(compressedStream, leaveOpen: wire, gzip: true, budget, wire);
                 case CompressionKind.Deflate:
                     // RFC 9110 section 8.4.1.2: zlib (RFC 1950) with its Adler-32 checked; raw DEFLATE as fallback.
-                    return new InflateLayerStream(compressedStream, leaveOpen, gzip: false);
+                    return new InflateLayerStream(compressedStream, leaveOpen: wire, gzip: false, budget, wire);
                 default:
                     throw new InvalidOperationException("Compression mode is not active.");
             }
@@ -724,61 +820,88 @@ namespace TurboHTTP.Middleware
                 new UHttpError(UHttpErrorType.Unknown, "Response decompression failed.", ex));
         }
 
-        private static bool TryResolveCompression(HttpHeaders headers, out CompressionKind[] compressionChain)
+        /// <summary>
+        /// Builds the coding chain from every <c>Content-Encoding</c> field line in order: RFC 9110 section 5.3
+        /// combines field lines of one name into a single comma-separated list, and section 8.4 lists the codings
+        /// in the order they were applied (#782). Any coding this handler cannot decode passes the response through
+        /// untouched; a chain longer than <see cref="MaxContentCodings"/> (<c>identity</c> not counted) resolves to
+        /// <see cref="CompressionResolution.TooManyCodings"/> without growing past the cap (#783).
+        /// </summary>
+        private static CompressionResolution ResolveCompression(
+            HttpHeaders headers,
+            out CompressionKind[] compressionChain)
         {
+            compressionChain = Array.Empty<CompressionKind>();
             if (headers == null)
+                return CompressionResolution.PassThrough;
+
+            var fieldLines = headers.GetValues("Content-Encoding");
+            if (fieldLines.Count == 0)
+                return CompressionResolution.PassThrough;
+
+            CompressionKind[] resolved = null;
+            var count = 0;
+            for (var line = 0; line < fieldLines.Count; line++)
             {
-                compressionChain = Array.Empty<CompressionKind>();
-                return false;
-            }
+                var contentEncoding = fieldLines[line];
+                if (string.IsNullOrEmpty(contentEncoding))
+                    continue;
 
-            var contentEncoding = headers.Get("Content-Encoding");
-            if (string.IsNullOrWhiteSpace(contentEncoding))
-            {
-                compressionChain = Array.Empty<CompressionKind>();
-                return false;
-            }
-
-            var resolved = new List<CompressionKind>(4);
-            var start = 0;
-            while (start < contentEncoding.Length)
-            {
-                var end = contentEncoding.IndexOf(',', start);
-                if (end < 0)
-                    end = contentEncoding.Length;
-
-                var tokenStart = start;
-                var tokenEnd = end;
-                while (tokenStart < tokenEnd && char.IsWhiteSpace(contentEncoding[tokenStart]))
-                    tokenStart++;
-                while (tokenEnd > tokenStart && char.IsWhiteSpace(contentEncoding[tokenEnd - 1]))
-                    tokenEnd--;
-
-                if (tokenEnd > tokenStart)
+                var start = 0;
+                while (start < contentEncoding.Length)
                 {
-                    if (!TryParseCompressionKind(
-                            contentEncoding.Substring(tokenStart, tokenEnd - tokenStart),
-                            out var compression))
+                    var end = contentEncoding.IndexOf(',', start);
+                    if (end < 0)
+                        end = contentEncoding.Length;
+
+                    var tokenStart = start;
+                    var tokenEnd = end;
+                    while (tokenStart < tokenEnd && char.IsWhiteSpace(contentEncoding[tokenStart]))
+                        tokenStart++;
+                    while (tokenEnd > tokenStart && char.IsWhiteSpace(contentEncoding[tokenEnd - 1]))
+                        tokenEnd--;
+
+                    if (tokenEnd > tokenStart)
                     {
-                        compressionChain = Array.Empty<CompressionKind>();
-                        return false;
+                        if (!TryParseCompressionKind(
+                                contentEncoding.Substring(tokenStart, tokenEnd - tokenStart),
+                                out var compression))
+                        {
+                            // An unknown coding anywhere in the combined list: the body cannot be decoded here.
+                            return CompressionResolution.PassThrough;
+                        }
+
+                        if (compression.HasValue)
+                        {
+                            // Keep scanning past the cap: an unknown coding later in the list still passes through.
+                            if (count < MaxContentCodings)
+                            {
+                                resolved ??= new CompressionKind[MaxContentCodings];
+                                resolved[count] = compression.Value;
+                                count++;
+                            }
+                            else
+                            {
+                                count = MaxContentCodings + 1;
+                            }
+                        }
                     }
 
-                    if (compression.HasValue)
-                        resolved.Add(compression.Value);
+                    start = end + 1;
                 }
-
-                start = end + 1;
             }
 
-            if (resolved.Count == 0)
-            {
-                compressionChain = Array.Empty<CompressionKind>();
-                return false;
-            }
+            if (count == 0)
+                return CompressionResolution.PassThrough;
 
-            compressionChain = resolved.ToArray();
-            return true;
+            if (count > MaxContentCodings)
+                return CompressionResolution.TooManyCodings;
+
+            if (count < resolved.Length)
+                Array.Resize(ref resolved, count);
+
+            compressionChain = resolved;
+            return CompressionResolution.Decode;
         }
 
         private static bool TryParseCompressionKind(string token, out CompressionKind? compression)

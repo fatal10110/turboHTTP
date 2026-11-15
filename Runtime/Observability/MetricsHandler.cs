@@ -14,7 +14,9 @@ namespace TurboHTTP.Observability
         private readonly Func<int, long, long> _incrementStatusCodeCount;
         private readonly Action<ReadOnlyMemory<byte>> _onObservedChunkRead;
         private readonly Action<ObservedResponseBodyCompletion> _onObservedBodyDispose;
-        private readonly UHttpRequest _request;
+        // Read in the constructor, while the request is live: a client-created request is disposed once
+        // streamed headers arrive, before the body-dispose callback runs CompleteResponse (#1053).
+        private readonly long _requestContentLength;
 
         private int _statusCode;
         private int _completionRecorded;
@@ -31,7 +33,9 @@ namespace TurboHTTP.Observability
             _owner = owner ?? throw new ArgumentNullException(nameof(owner));
             _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
             _incrementStatusCodeCount = incrementStatusCodeCount ?? throw new ArgumentNullException(nameof(incrementStatusCodeCount));
-            _request = request ?? throw new ArgumentNullException(nameof(request));
+            if (request == null)
+                throw new ArgumentNullException(nameof(request));
+            _requestContentLength = request.Content.Length.GetValueOrDefault();
             _onObservedChunkRead = OnObservedChunkRead;
             _onObservedBodyDispose = OnObservedBodyDispose;
         }
@@ -98,9 +102,9 @@ namespace TurboHTTP.Observability
             {
                 Interlocked.Add(ref _metrics.TotalBytesSent, sentBytes);
             }
-            else if (_request.Content.Length.GetValueOrDefault() > 0)
+            else if (_requestContentLength > 0)
             {
-                Interlocked.Add(ref _metrics.TotalBytesSent, _request.Content.Length.Value);
+                Interlocked.Add(ref _metrics.TotalBytesSent, _requestContentLength);
             }
 
             if (error == null && _statusCode >= 200 && _statusCode < 400)

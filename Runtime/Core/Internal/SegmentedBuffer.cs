@@ -26,7 +26,7 @@ namespace TurboHTTP.Core.Internal
     /// <b>Thread safety:</b> Single-writer/single-reader by design. Not thread-safe.
     /// </para>
     /// </remarks>
-    internal sealed class SegmentedBuffer : IDisposable
+    internal sealed class SegmentedBuffer : IDisposable, IAbandonableBufferOwner
     {
         /// <summary>
         /// Default segment size: 16 KB. Stays well below the 85 KB LOH threshold.
@@ -188,6 +188,27 @@ namespace TurboHTTP.Core.Internal
             if (_disposed) return;
             _disposed = true;
             ReturnAllSegments();
+            _head = null;
+            _tail = null;
+        }
+
+        /// <inheritdoc/>
+        /// <remarks>
+        /// The segment chain stays linked, so a <see cref="System.Buffers.ReadOnlySequence{T}"/> obtained from
+        /// <see cref="AsSequence"/> remains readable after this call (#582).
+        /// </remarks>
+        public void AbandonToGc()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            var seg = _head;
+            while (seg != null)
+            {
+                var next = (PooledSegment)seg.Next;
+                seg.AbandonToGc();
+                seg = next;
+            }
+
             _head = null;
             _tail = null;
         }

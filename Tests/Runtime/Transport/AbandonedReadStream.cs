@@ -22,6 +22,7 @@ namespace TurboHTTP.Tests.Transport
         private TaskCompletionSource<int> _read;
         private int _answerOffset;
         private int _disposed;
+        private int _readCount;
 
         public AbandonedReadStream(params string[] answers)
         {
@@ -45,6 +46,15 @@ namespace TurboHTTP.Tests.Transport
         public int ReadOffset { get; private set; }
 
         public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+        /// <summary>Number of <see cref="ReadAsync(byte[], int, int, CancellationToken)"/> calls so far.</summary>
+        public int ReadCount => Volatile.Read(ref _readCount);
+
+        /// <summary>
+        /// Called at the start of each <see cref="ReadAsync(byte[], int, int, CancellationToken)"/>; it may
+        /// throw, which makes the read fail synchronously (a closed socket racing the read start).
+        /// </summary>
+        public Action OnRead { get; set; }
 
         /// <summary>
         /// Called with each write as ASCII text (a handshake request, say), before the write returns; it
@@ -72,6 +82,8 @@ namespace TurboHTTP.Tests.Transport
 
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref _readCount);
+            OnRead?.Invoke();
             TaskCompletionSource<bool> started;
             TaskCompletionSource<int> read;
             lock (_gate)

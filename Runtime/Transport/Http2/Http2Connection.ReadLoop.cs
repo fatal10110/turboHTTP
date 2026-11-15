@@ -601,6 +601,33 @@ namespace TurboHTTP.Transport.Http2
                 ByteArrayPool.Return(buffer);
         }
 
+        /// <summary>
+        /// RFC 9113 Section 8.3.2 and RFC 9110 Section 15: <c>:status</c> is exactly three ASCII digits
+        /// (100-999), so a sign, whitespace, a leading zero padding ("0200") or more digits are malformed.
+        /// </summary>
+        internal static bool TryParseStatusCode(string value, out int statusCode)
+        {
+            statusCode = 0;
+            if (value == null || value.Length != 3)
+                return false;
+
+            int code = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                char c = value[i];
+                if (c < '0' || c > '9')
+                    return false;
+
+                code = (code * 10) + (c - '0');
+            }
+
+            if (code < 100)
+                return false;
+
+            statusCode = code;
+            return true;
+        }
+
         private void ApplyDecodedHeaders(Http2Stream stream, bool isTrailingHeaders, bool endStream)
         {
             var decoded = _decodedHeaderScratch;
@@ -623,6 +650,7 @@ namespace TurboHTTP.Transport.Http2
                 var responseHeaders = new HttpHeaders();
                 var statusCode = 0;
                 var hasStatus = false;
+                var sawRegularField = false;
                 foreach (var (name, value) in decoded)
                 {
                     if (name == ":status")
@@ -633,19 +661,31 @@ namespace TurboHTTP.Transport.Http2
                             return;
                         }
 
-                        if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out statusCode)
-                            && statusCode >= 100 && statusCode <= 999)
+                        // RFC 9113 Section 8.3: pseudo-header fields precede every regular field.
+                        if (sawRegularField)
                         {
-                            hasStatus = true;
+                            RejectMalformedResponse(stream, "Pseudo-header :status after a regular header field");
+                            return;
                         }
-                        else
+
+                        // RFC 9113 Section 8.3.2: exactly one :status per response header block.
+                        if (hasStatus)
+                        {
+                            RejectMalformedResponse(stream, "Repeated :status pseudo-header");
+                            return;
+                        }
+
+                        if (!TryParseStatusCode(value, out statusCode))
                         {
                             RejectMalformedResponse(stream, $"Invalid :status value: {value}");
                             return;
                         }
+
+                        hasStatus = true;
                     }
                     else if (!name.StartsWith(":", StringComparison.Ordinal))
                     {
+                        sawRegularField = true;
                         // RFC 9113 Section 8.2.1 / 8.2.2: malformed fields are a stream error.
                         var malformed = GetMalformedResponseFieldReason(name, value);
                         if (malformed != null)
@@ -852,8 +892,9 @@ namespace TurboHTTP.Transport.Http2
                     _remoteSettings.Apply(id, value);
 
                     // RFC 7541 Section 4.2: every HEADER_TABLE_SIZE value counts toward the smallest size
-                    // the encoder must signal before its next block. The encoder only records the change;
-                    // it resizes its table inside Encode, under _writeLock.
+                    // the encoder must signal before its next block. The encoder clamps it to its local cap
+                    // (the peer may advertise up to 2^31-1) and only records the change; it resizes its
+                    // table inside Encode, under _writeLock.
                     if (id == Http2SettingId.HeaderTableSize)
                         _hpackEncoder.SetMaxDynamicTableSize(_remoteSettings.HeaderTableSize);
                 }
