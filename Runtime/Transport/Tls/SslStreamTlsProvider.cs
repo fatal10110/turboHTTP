@@ -32,9 +32,9 @@ namespace TurboHTTP.Transport.Tls
         private const string Http11Protocol = "http/1.1";
 
         /// <summary>
-        /// Protocol versions passed to the handshake: <see cref="SslProtocols.None"/> lets the OS
-        /// pick its best supported version (TLS 1.3 where available) without enabling flag bits
-        /// an older runtime may not recognize. The TLS 1.2 floor is enforced after the handshake
+        /// Protocol versions passed to the handshake: <see cref="SslProtocols.None"/> lets the
+        /// runtime TLS stack (UnityTls on Unity) pick its version without enabling flag bits
+        /// an older runtime may not recognize; no TLS 1.3 support is claimed. The TLS 1.2 floor is enforced after the handshake
         /// by <see cref="EnsureMinimumTlsVersion"/>.
         /// </summary>
         internal const SslProtocols HandshakeProtocols = SslProtocols.None;
@@ -255,9 +255,10 @@ namespace TurboHTTP.Transport.Tls
         /// </summary>
         internal static bool IsAlpnSetupFailure(Exception ex)
         {
-            // TargetInvocationException and MemberAccessException are legacy arms from the former
-            // reflection-based ALPN setup (#303); kept so a runtime that still throws them is classified
-            // as a setup failure.
+            // TargetInvocationException is a legacy arm from the former reflection-based ALPN setup
+            // (#303), kept because SslStreamSingleHandshakeTests asserts it. MemberAccessException is the
+            // base of MissingMemberException/MissingFieldException/MethodAccessException, which a direct
+            // call raises when stripping removed metadata.
             return ex is System.Reflection.TargetInvocationException
                 || ex is MemberAccessException
                 || ex is TypeLoadException

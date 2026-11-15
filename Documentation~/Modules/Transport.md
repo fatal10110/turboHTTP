@@ -58,7 +58,7 @@ options.Http2.EnableHttp2ThroughConnectTunnels = true;   // default false: HTTP/
 
 ## HTTP/2
 
-HTTP/2 over TLS is selected only through ALPN (RFC 9113 section 3.2), and Unity's `SslStream` cannot send or report ALPN. It therefore needs the BouncyCastle backend: add `TURBOHTTP_BOUNCYCASTLE` to Player Settings > Scripting Define Symbols and set `UHttpClientOptions.TlsBackend = TlsBackend.BouncyCastle`. With `Auto` or `SslStream` every HTTPS connection uses HTTP/1.1, and on Linux there is no HTTP/2 at all because `BouncyCastle` rejects every certificate there (see "TLS backends"). Check `HttpTransportFactory.Capabilities.Http2` at run time. When active, concurrent requests to the same origin share a TCP connection. Tune it with `UHttpClientOptions.Http2`, and the connection pool with `UHttpClientOptions.ConnectionPool`:
+HTTP/2 over TLS is selected only through ALPN (RFC 9113 section 3.2), and Unity's `SslStream` cannot send or report ALPN. It therefore needs the BouncyCastle backend: add `TURBOHTTP_BOUNCYCASTLE` to Player Settings > Scripting Define Symbols and set `UHttpClientOptions.TlsBackend = TlsBackend.BouncyCastle`. With `Auto` or `SslStream` every HTTPS connection uses HTTP/1.1, and on Linux there is no HTTP/2 at all because `BouncyCastle` rejects every certificate there (see "TLS backends"). Check `(HttpTransportFactory.Capabilities & TransportCapabilities.Http2) != 0` at run time. When active, concurrent requests to the same origin share a TCP connection. Tune it with `UHttpClientOptions.Http2`, and the connection pool with `UHttpClientOptions.ConnectionPool`:
 
 <!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
 ```csharp

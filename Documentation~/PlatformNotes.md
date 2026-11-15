@@ -6,9 +6,9 @@ TurboHTTP is designed to run reliably across major Unity platforms, supporting b
 
 | Platform | Scripting Backend | Status | HTTP/2 | Notes | Validation |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` | `SslStream` negotiates whatever the OS offers (TLS 1.2 floor enforced by TurboHTTP); the negotiated version on desktop Unity 2021.3 is not recorded (needs-device-validation). BouncyCastle negotiated TLS 1.3 on an Android API 23 emulator. | Windows Mono player run done (#404); IL2CPP player rows pending |
+| **Windows** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` | `SslStream` uses the runtime TLS stack (UnityTls) with a TLS 1.2 floor enforced by TurboHTTP; the negotiated version on desktop Unity 2021.3 is not recorded (needs-device-validation). See "Negotiated TLS versions" below. | Windows Mono player run done (#404); IL2CPP player rows pending (#1225) |
 | **macOS** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (SecTrust verifier not yet validated on a Mac, #33) | As Windows. | Needs a Mac (#33) |
-| **Linux** | Mono / IL2CPP | ⚠️ Partly validated | Unavailable (BouncyCastle rejects every certificate on Linux) | Only a Mono standalone player under WSL2 (Ubuntu) was run, with `SslStream`; that Unity runtime crashed in its Boehm GC in 10 of 140 launches before any test ran (a runtime issue, #423). No IL2CPP Linux run, no native Ubuntu or other-distribution run. | Open: #99, #436 |
+| **Linux** | Mono / IL2CPP | ⚠️ Partly validated | Unavailable (BouncyCastle rejects every certificate on Linux) | Only a Mono standalone player under WSL2 (Ubuntu) was run, with `SslStream`; that Unity runtime crashed in its Boehm GC in 10 of 140 launches before any test ran (a runtime issue, #423). No IL2CPP Linux run, no native Ubuntu or other-distribution run. | Open: #436 |
 | **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | Requires AOT-safe configuration. | Open: #99 |
 | **Android** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | ARM64/ARMv7. Restrictions on cleartext apply. | Open: #99 |
 | **WebGL** | IL2CPP | ❌ Unsupported in v1.0 | n/a | Browsers provide no raw sockets. A WebGL player build fails at build time with an explanatory error instead of failing every request at runtime. Support is planned for a later release. | n/a |
@@ -52,13 +52,17 @@ bound is a time to first byte: a server slower than it to start answering a requ
 connection receives the request twice, and the response arrives after the bound plus its time to first byte.
 A POST is never replayed and keeps waiting until the request timeout. `Timeout.InfiniteTimeSpan` turns this off.
 
+## Negotiated TLS versions
+
+Recorded on the Android API 23 emulator against www.google.com (run w1108): `SslStream` (UnityTls, with the TLS 1.2 floor enforced by TurboHTTP) negotiated TLS 1.2, and the BouncyCastle backend negotiated TLS 1.3. The desktop 2021.3 `SslStream` version is not recorded (needs-device-validation).
+
 ## HTTP/2 needs the BouncyCastle backend
 
 HTTP/2 over TLS is selected only through ALPN (RFC 9113 section 3.2). Unity's `SslStream` (Mono with
 UnityTls, in the Editor and in Mono and IL2CPP players on every platform) accepts the ALPN options but
 never sends them and cannot report a negotiated protocol (mono#12880). With the default `TlsBackend.Auto`
 (or `TlsBackend.SslStream`) every HTTPS connection therefore uses HTTP/1.1, and TurboHTTP reports no
-ALPN and no HTTP/2 capability for it (`HttpTransportFactory.Capabilities.Http2` is false without BouncyCastle).
+ALPN and no HTTP/2 capability for it (`(HttpTransportFactory.Capabilities & TransportCapabilities.Http2) != 0` is false without BouncyCastle).
 `Auto` never switches to BouncyCastle by itself.
 
 To use HTTP/2, add `TURBOHTTP_BOUNCYCASTLE` to Player Settings > Scripting Define Symbols and set
