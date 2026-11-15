@@ -110,6 +110,13 @@ namespace TurboHTTP.Testing
                     file.Entries.Add(FromSerializableEntry(entries[i]));
                 }
             }
+            else if (entriesObject != null)
+            {
+                // Never load an unreadable recording as an empty one (#1034).
+                throw new InvalidOperationException(
+                    "Recording payload field 'Entries' must be a JSON array, but deserialized into " +
+                    entriesObject.GetType().Name + ".");
+            }
 
             return file;
         }
@@ -255,12 +262,14 @@ namespace TurboHTTP.Testing
             return 0L;
         }
 
-        private static string SerializeJson(object value, Type type)
+        // Recording files and redacted bodies are walked as the LiteJson tree, so they go through the
+        // bridge's document model, never through the replaceable JsonSerializer.Default (#1034).
+        private static string SerializeJson(object value)
         {
-            var bridge = ProjectJsonBridge.GetRequired("RecordReplayTransport serialization");
+            var bridge = ProjectJsonBridge.GetRequiredDom("RecordReplayTransport serialization");
             try
             {
-                return bridge.Serialize(value, type);
+                return bridge.WriteDom(value);
             }
             catch (Exception ex)
             {
@@ -268,12 +277,14 @@ namespace TurboHTTP.Testing
             }
         }
 
-        private static object DeserializeJson(string json, Type type)
+        // maxInputBytes raises the parser's 16 MiB cap to the size of input already held in memory (a
+        // recording file, a body bounded by MaxRecordBytes) so whatever Record wrote, Replay loads (#1084).
+        private static object DeserializeJson(string json, int maxInputBytes)
         {
-            var bridge = ProjectJsonBridge.GetRequired("RecordReplayTransport deserialization");
+            var bridge = ProjectJsonBridge.GetRequiredDom("RecordReplayTransport deserialization");
             try
             {
-                return bridge.Deserialize(json, type);
+                return bridge.ParseDom(json, maxInputBytes);
             }
             catch (Exception ex)
             {

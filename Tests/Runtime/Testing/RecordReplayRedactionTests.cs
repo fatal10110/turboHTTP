@@ -102,18 +102,20 @@ namespace TurboHTTP.Tests.Testing
             AssertRecordingHasNoSecrets(AccessSecret);
         }
 
-        [TestCase(false, TestName = "UnknownJsonNode_AtRoot_IsNotRecordedRaw")]
-        [TestCase(true, TestName = "UnknownJsonNode_Nested_IsNotRecordedRaw")]
-        public void UnknownJsonNodeFromCustomSerializer_IsNotRecordedRaw(bool nested)
+        [TestCase(false, TestName = "CustomDefaultSerializer_OpaqueRoot_StillRedactsFields")]
+        [TestCase(true, TestName = "CustomDefaultSerializer_OpaqueNested_StillRedactsFields")]
+        public void CustomDefaultSerializer_DoesNotChangeBodyRedaction(bool nested)
         {
-            // A custom IJsonSerializer (e.g. Newtonsoft returning JObject) yields a tree the walker
-            // cannot inspect; the body must be recorded as the placeholder, never raw.
+            // A custom IJsonSerializer (e.g. Newtonsoft returning JObject) once reached the redaction
+            // walker, which then recorded the whole body as the placeholder (#93). Bodies are now parsed
+            // with the bridge's LiteJson document model whatever the default is (#1034): the secrets are
+            // still redacted, and the other fields are kept.
             JsonSerializer.SetDefault(new OpaqueTreeSerializer(nested));
 
             RecordTokenExchange("application/json", "{}", "application/json");
 
             AssertRecordingHasNoSecrets(AccessSecret, RefreshSecret, IdTokenSecret);
-            StringAssert.Contains("[REDACTED]", DecodedRecording());
+            StringAssert.Contains("\"token_type\":\"Bearer\"", DecodedRecording());
         }
 
         [Test]
