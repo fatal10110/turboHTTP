@@ -90,5 +90,19 @@ namespace TurboHTTP.Core.Internal
             if (array != null)
                 ByteArrayPool.Return(array);
         }
+
+        /// <summary>
+        /// Gives up the rented array without returning it: it is counted with
+        /// <see cref="ByteArrayPool.Abandon"/> and left to the garbage collector.
+        /// <see cref="ReadOnlySequenceSegment{T}.Memory"/> keeps pointing at it, so a sequence over this
+        /// segment stays readable (#582).
+        /// </summary>
+        internal void AbandonToGc()
+        {
+            var array = _array;
+            _array = null;
+            if (array != null)
+                ByteArrayPool.Abandon(array);
+        }
     }
 }

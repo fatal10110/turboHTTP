@@ -9,7 +9,10 @@ namespace TurboHTTP.Core
     /// </summary>
     /// <remarks>
     /// The optional <paramref name="owner"/> is transferred to the eventual
-    /// <see cref="UHttpResponse"/> and must be safe to dispose from the response finalizer path.
+    /// <see cref="UHttpResponse"/> and is disposed when that response is disposed. A response that is
+    /// finalized without being disposed never disposes the owner: the detached body may still be read
+    /// through a copied-out <see cref="UHttpResponse.Body"/>, so the owner and its buffers are left to
+    /// the garbage collector.
     /// Owner transfer state is shared through a reference-type token so defensive copies of this
     /// value remain safe even when methods are invoked through readonly fields or interface flows.
     /// </remarks>
