@@ -71,16 +71,26 @@ namespace TurboHTTP.WebSocket
 
         private bool TryTransitionState(WebSocketState expected, WebSocketState next)
         {
+            if (!TrySetState(expected, next))
+                return false;
+
+            RaiseStateChanged(next);
+            return true;
+        }
+
+        /// <summary>Moves the state without raising <see cref="StateChanged"/> (the caller raises it).</summary>
+        private bool TrySetState(WebSocketState expected, WebSocketState next)
+        {
             if (!IsTransitionAllowed(expected, next))
                 return false;
 
             int previous = Interlocked.CompareExchange(ref _state, (int)next, (int)expected);
-            if (previous != (int)expected)
-                return false;
+            return previous == (int)expected;
+        }
 
-            var handler = StateChanged;
-            handler?.Invoke(this, next);
-            return true;
+        private void RaiseStateChanged(WebSocketState state)
+        {
+            WebSocketCallbacks.Invoke(StateChanged, this, state, "[TurboHTTP] A WebSocket StateChanged handler threw.");
         }
 
         /// <summary>
@@ -105,12 +115,10 @@ namespace TurboHTTP.WebSocket
             _closeStatus = status;
 
             if (terminalError != null)
-            {
                 _terminalError = terminalError;
-                var errorHandler = Error;
-                errorHandler?.Invoke(this, terminalError);
-            }
 
+            // #1116: Error and StateChanged(Closed) are raised once the teardown below is done, so a
+            // throwing (or re-entrant) handler cannot leave the connection half finalized.
             _remoteCloseTcs.TrySetResult(status);
 
             CancelAndDisposeAfterTaskCompletion(ref _keepAliveCts, _keepAliveTask);
@@ -119,28 +127,41 @@ namespace TurboHTTP.WebSocket
 
             _receiveQueue?.Complete(terminalError);
 
+            bool closedHere = false;
             var state = State;
             while (state != WebSocketState.Closed)
             {
                 if (state == WebSocketState.Open)
                 {
-                    if (TryTransitionState(WebSocketState.Open, WebSocketState.Closed))
+                    if (TrySetState(WebSocketState.Open, WebSocketState.Closed))
+                    {
+                        closedHere = true;
                         break;
+                    }
                 }
                 else if (state == WebSocketState.Closing)
                 {
-                    if (TryTransitionState(WebSocketState.Closing, WebSocketState.Closed))
+                    if (TrySetState(WebSocketState.Closing, WebSocketState.Closed))
+                    {
+                        closedHere = true;
                         break;
+                    }
                 }
                 else if (state == WebSocketState.Connecting)
                 {
-                    if (TryTransitionState(WebSocketState.Connecting, WebSocketState.Closed))
+                    if (TrySetState(WebSocketState.Connecting, WebSocketState.Closed))
+                    {
+                        closedHere = true;
                         break;
+                    }
                 }
                 else if (state == WebSocketState.None)
                 {
-                    if (TryTransitionState(WebSocketState.None, WebSocketState.Closed))
+                    if (TrySetState(WebSocketState.None, WebSocketState.Closed))
+                    {
+                        closedHere = true;
                         break;
+                    }
                 }
                 else
                 {
@@ -161,6 +182,12 @@ namespace TurboHTTP.WebSocket
                 _healthMonitor.OnQualityChanged -= HandleHealthQualityChanged;
                 _healthMonitor = null;
             }
+
+            if (terminalError != null)
+                WebSocketCallbacks.Invoke(Error, this, terminalError, "[TurboHTTP] A WebSocket Error handler threw.");
+
+            if (closedHere)
+                RaiseStateChanged(WebSocketState.Closed);
         }
 
         private bool TryAcquireResources()
@@ -264,14 +291,16 @@ namespace TurboHTTP.WebSocket
             var snapshot = metrics.GetSnapshot();
             _healthMonitor?.RecordMetricsSnapshot(snapshot);
 
-            var handler = MetricsUpdated;
-            handler?.Invoke(this, snapshot);
+            WebSocketCallbacks.Invoke(MetricsUpdated, this, snapshot, "[TurboHTTP] A WebSocket MetricsUpdated handler threw.");
         }
 
         private void HandleHealthQualityChanged(ConnectionQuality quality)
         {
-            var handler = ConnectionQualityChanged;
-            handler?.Invoke(this, quality);
+            WebSocketCallbacks.Invoke(
+                ConnectionQualityChanged,
+                this,
+                quality,
+                "[TurboHTTP] A WebSocket ConnectionQualityChanged handler threw.");
         }
 
         private static void CalculateMessageWireStats(
