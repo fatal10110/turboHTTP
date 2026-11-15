@@ -73,6 +73,8 @@ namespace TurboHTTP.Cache
         private async ValueTask CompleteModifiedRevalidationAsync(
             IHttpHandler handler,
             UHttpRequest request,
+            UHttpRequest effectiveRequest,
+            bool effectiveTargetChanged,
             RequestContext context,
             int statusCode,
             HttpHeaders headers,
@@ -100,6 +102,12 @@ namespace TurboHTTP.Cache
             // Built after the response arrived: request_time is the conditional request's send time.
             var storingHandler = new CacheStoringHandler(handler, this, request, baseKey, context, requestTimeUtc);
             storingHandler.OnRequestStart(request, context);
+            // The caller's lifecycle starts with the original request; the storage guards use the conditional
+            // request as it was sent (#495) and nothing is stored when it went to another target (#494).
+            if (effectiveRequest != null)
+                storingHandler.CaptureEffectiveRequest(effectiveRequest);
+            if (effectiveTargetChanged)
+                storingHandler.MarkTargetChanged();
             await storingHandler.OnResponseStartAsync(statusCode, headers, body, context).ConfigureAwait(false);
         }
 
@@ -181,6 +189,11 @@ namespace TurboHTTP.Cache
             private readonly DateTime _requestTimeUtc;
             private int _transportRequestStarted;
             private int _innerRequestStarted;
+            // The conditional request as the interceptors inside the cache sent it (last attempt or hop), and whether
+            // any of them had another target than _request (#494, #495). Written by OnRequestStart, read by
+            // OnResponseStartAsync of the same dispatch.
+            private UHttpRequest _effectiveRequest;
+            private int _effectiveTargetChanged;
 
             internal RevalidationHandler(
                 CacheInterceptor owner,
@@ -201,6 +214,13 @@ namespace TurboHTTP.Cache
 
             public void OnRequestStart(UHttpRequest request, RequestContext context)
             {
+                if (request != null)
+                {
+                    if (!CacheStoringHandler.IsSameTarget(request, _request.Method, _request.Uri))
+                        Volatile.Write(ref _effectiveTargetChanged, 1);
+                    Volatile.Write(ref _effectiveRequest, request);
+                }
+
                 Volatile.Write(ref _transportRequestStarted, 1);
             }
 
@@ -231,6 +251,8 @@ namespace TurboHTTP.Cache
                 return _owner.CompleteModifiedRevalidationAsync(
                     _inner,
                     _request,
+                    Volatile.Read(ref _effectiveRequest),
+                    Volatile.Read(ref _effectiveTargetChanged) != 0,
                     context,
                     statusCode,
                     headers,
