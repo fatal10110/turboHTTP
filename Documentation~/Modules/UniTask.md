@@ -4,13 +4,13 @@ TurboHTTP's async methods return `ValueTask`/`Task`. If you use [UniTask](https:
 
 ## Enabling UniTask support
 
-Both assemblies compile only when `TURBOHTTP_UNITASK` is defined. Installing UniTask as the `com.cysharp.unitask` package (2.0.0 or newer) defines it automatically. A UniTask copied into `Assets/` or imported from a `.unitypackage` does not: add `TURBOHTTP_UNITASK` to **Project Settings > Player > Scripting Define Symbols** yourself (UniTask's assembly must be named `UniTask`, as it is in the official releases). Both assemblies are auto-referenced, so scripts without their own `.asmdef` (compiled into `Assembly-CSharp`) can call the adapters as soon as `TURBOHTTP_UNITASK` is defined; without the define they compile to nothing. Code in your own `.asmdef` references `TurboHTTP.UniTask` explicitly, and adds `TurboHTTP.UniTask.WebSocket` only if it uses the WebSocket adapters. Both put their types in the `TurboHTTP.UniTask` namespace. Because of that namespace, the bare name `UniTask` binds to `TurboHTTP.UniTask` (not to Cysharp's non-generic `UniTask` type) inside any namespace that starts with `TurboHTTP`, such as `TurboHTTP.Samples.*`. Keep your own code, including code copied from the samples, out of `TurboHTTP.*` namespaces, or write `Cysharp.Threading.Tasks.UniTask` in full there (`UniTask<T>` is not affected). The adapters need UniTask, so these snippets are not compiled with the rest of the documentation.
+Both assemblies compile only when `TURBOHTTP_UNITASK` is defined. Installing UniTask as the `com.cysharp.unitask` package (2.0.0 or newer) defines it automatically. A UniTask copied into `Assets/` or imported from a `.unitypackage` does not: add `TURBOHTTP_UNITASK` to **Project Settings > Player > Scripting Define Symbols** yourself (UniTask's assembly must be named `UniTask`, as it is in the official releases). Both assemblies are auto-referenced, so scripts without their own `.asmdef` (compiled into `Assembly-CSharp`) can call the adapters as soon as `TURBOHTTP_UNITASK` is defined; without the define they compile to nothing. Code in your own `.asmdef` references `TurboHTTP.UniTask` explicitly, and adds `TurboHTTP.UniTask.WebSocket` only if it uses the WebSocket adapters. Both put their types in the `TurboHTTP.UniTask` namespace. Because of that namespace, the bare name `UniTask` binds to `TurboHTTP.UniTask` (not to Cysharp's non-generic `UniTask` type) inside any namespace that starts with `TurboHTTP`, such as `TurboHTTP.Samples.*`. Keep your own code, including code copied from the samples, out of `TurboHTTP.*` namespaces, or write `Cysharp.Threading.Tasks.UniTask` in full there (`UniTask<T>` is not affected). The snippets on this page are compiled against UniTask by the repository's CI with the rest of the documentation.
 
 ## Usage
 
 `GetAsync`, `PostAsync`, `PutAsync`, `PatchAsync`, `DeleteAsync`, `HeadAsync` and `OptionsAsync` on `UHttpClient` return `UniTask<UHttpResponse>` (buffered), and `AsUniTask()` converts any request. Where your code resumes depends on the thread you call from; see [Which thread you resume on](#which-thread-you-resume-on).
 
-<!-- snippet: skip needs UniTask: the shadow build compiles the adapters against it (#311) but keeps it out of the documentation build, which also runs offline (--no-unitask) -->
+<!-- snippet: requires unitask -->
 ```csharp
 using Cysharp.Threading.Tasks;
 using TurboHTTP.Core;
@@ -43,8 +43,11 @@ To touch Unity objects after working off the main thread, call `await UniTask.Sw
 
 Cancel or time out the request itself, not the `UniTask` that waits for it. The `CancellationToken` you pass to `GetAsync`/`AsUniTask` reaches the transport, so cancelling it aborts the request and releases its connection. A deadline set with `UHttpRequest.WithTimeout` is enforced by the transport and fails with `UHttpErrorType.Timeout`:
 
-<!-- snippet: skip needs UniTask: the shadow build compiles the adapters against it (#311) but keeps it out of the documentation build, which also runs offline (--no-unitask) -->
+<!-- snippet: requires unitask -->
+<!-- snippet: with UHttpClient _client = null; string url = ""; CancellationToken ct = default; -->
 ```csharp
+using TurboHTTP.UniTask;
+
 // Deadline enforced by the transport.
 using var response = await _client.Get(url).WithTimeout(TimeSpan.FromSeconds(5)).AsUniTask(ct);
 
@@ -60,7 +63,7 @@ UniTask's `Timeout()` and `AttachExternalCancellation()` operators only stop wai
 
 The WebSocket adapters are in the `TurboHTTP.UniTask.WebSocket` assembly; add it to your `.asmdef` references. `ConnectAsUniTask` connects an `IWebSocketClient` as a `UniTask`.
 
-<!-- snippet: skip needs UniTask: the shadow build compiles the adapters against it (#311) but keeps it out of the documentation build, which also runs offline (--no-unitask) -->
+<!-- snippet: requires unitask -->
 ```csharp
 using System;
 using System.Threading;

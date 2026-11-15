@@ -5,12 +5,19 @@ name: fuzz
 # needed. One job per target. Pull requests that touch a parser get a bounded run (up to 1M execs or
 # 10 minutes per target); the weekly and manual runs take the full budget. A crash, hang or memory
 # blow-up fails the job and uploads the input; file it as an issue (README.md, "Findings").
+# Advisory, not required (#880): a path-filtered workflow cannot be a required check (it never reports on
+# PRs it skips) nor a `needs` of ci.yml's required `ci` job. The required gate is the corpus replay of every
+# target in ci.yml's lint job (Tools~/ci/check.sh --full), so a committed crashing seed fails every PR.
 on:
   pull_request:
     paths:
       - "Tools~/fuzz/**"
       - "Runtime/Transport/Http1/**"
       - "Runtime/Transport/Http2/**"
+      # Buffers, pooling, header storage and helpers the parsers call (#880).
+      - "Runtime/Transport/Internal/**"
+      - "Runtime/Core/Internal/**"
+      - "Runtime/Core/HttpHeaders*.cs"
       - "Runtime/WebSocket/**"
       - "Runtime/JSON/**"
       - ".github/workflows/fuzz.yml"

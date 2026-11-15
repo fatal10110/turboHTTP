@@ -9,6 +9,10 @@ from Unity's NUnit) and an unresolvable reference each fail the build, which fai
 a test using Assert.Throws, [UnityTest] and LogAssert compiles in the editor and in a player variant.
 Before #297 the shadow build never compiled Tests/, so none of these failures surfaced.
 
+The compile-only editor-opt-in variant (#898) must fail on a compile error inside
+#if TURBOHTTP_INTEGRATION_TESTS that the editor variant never sees, and compile System.Text.Json code
+behind TURBOHTTP_USE_SYSTEM_TEXT_JSON against the DEFINE_PACKAGES package.
+
 Needs the .NET SDK and the fetched Unity DLLs + packages (Tools~/ci/fetch-unity-dlls.sh). Skips when
 they are missing locally; fails under CI, where check.sh --full always has them.
 Builds in .build/shadow-tests-selftest.
@@ -72,6 +76,22 @@ VALID = """        [Test]
         }
 """
 
+# Guarded like Tests/Runtime/Transport/Tls/TlsIntegrationTests.cs and Runtime/JSON (#898).
+GUARDED_ERROR = """#if TURBOHTTP_INTEGRATION_TESTS
+        [Test]
+        public void Guarded() { Assert.AreEqual(1, notDeclaredAnywhere); }
+#endif
+"""
+SYSTEM_TEXT_JSON = """#if TURBOHTTP_USE_SYSTEM_TEXT_JSON
+        [Test]
+        public void Serializes()
+        {
+            var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = false };
+            Assert.AreEqual("1", System.Text.Json.JsonSerializer.Serialize(1, options));
+        }
+#endif
+"""
+
 
 def write_case(src, name, body, references=("UnityEngine.TestRunner", "UnityEditor.TestRunner")):
     d = os.path.join(src, "Tests", name)
@@ -128,6 +148,19 @@ class ShadowBuildTestsTest(unittest.TestCase):
     def test_unity_nunit_and_test_runner_apis_compile(self):
         # ios: the editor-only UnityEditor.TestRunner reference is ignored, as in a Unity player build.
         failed, _, errors = self.build("good", [("ValidTests", VALID)], variants=("editor", "ios"))
+        self.assertFalse(failed, errors)
+        self.assertEqual([], errors)
+
+    def test_opt_in_define_variant_compiles_guarded_blocks(self):
+        # The editor variant never defines TURBOHTTP_INTEGRATION_TESTS, so the error stays hidden there.
+        failed, _, errors = self.build("optin-editor", [("GuardedError", GUARDED_ERROR)])
+        self.assertFalse(failed, errors)
+        self.assertIn("editor-opt-in", shadow_build.ALL_VARIANTS, "--variant all (check.sh --full) must build it")
+        failed, _, errors = self.build("optin-bad", [("GuardedError", GUARDED_ERROR)], variants=("editor-opt-in",))
+        self.assertTrue(failed, "a compile error behind TURBOHTTP_INTEGRATION_TESTS must fail check.sh --full")
+        self.assertTrue([e for e in errors if os.path.basename(e["file"]) == "GuardedError.cs" and e["rule"] == "CS0103"],
+                        errors)
+        failed, _, errors = self.build("optin-good", [("SystemTextJson", SYSTEM_TEXT_JSON)], variants=("editor-opt-in",))
         self.assertFalse(failed, errors)
         self.assertEqual([], errors)
 

@@ -3,7 +3,11 @@
 
 Checks (all on git-tracked files):
   meta      every asset Unity imports has a sibling .meta; no orphan .meta; GUIDs unique
-  asmdef    assembly dependency graph follows the module rules in Development~/docs/agents/architecture.md
+  asmdef    assembly dependency graph follows the module rules in Development~/docs/agents/architecture.md;
+            each assembly keeps its expected autoReferenced, defineConstraints and include/excludePlatforms
+            (ASMDEF_EXPECTED), TurboHTTP.Complete references exactly COMPLETE_REFS, every Tests/ asmdef is
+            constrained to UNITY_INCLUDE_TESTS, a TURBOHTTP_UNITASK constraint comes with its versionDefines
+            entry, and an assembly builds on no platform an assembly it references excludes (#877)
   json      every .json/.asmdef parses; package.json has the required UPM fields
   unitynunit  tests use only what Unity 2021.3's NUnit (com.unity.ext.nunit 1.0.6) provides; PR CI
             cannot compile the Unity test assemblies without a license, so this is the only guard
@@ -24,7 +28,10 @@ Checks (all on git-tracked files):
   native    every DllImport("__Internal") resolves to a native plugin under Plugins/, and on each player
             platform the plugin importer (platforms + define constraints) includes the plugin exactly when
             the managed #if guard compiles its callers (#176): a caller without the plugin fails the
-            Xcode link, a plugin without a caller ships dead native code
+            Xcode link, a plugin without a caller ships dead native code. Unity 2021.3 ignores a native
+            plugin's importer define constraints, so a plugin (.androidlib folders included) with one must
+            be listed in GatedPluginPaths of Editor/TurboHttpBackgroundPluginGate.cs, which applies exactly
+            its Define, and every listed path must be such a plugin (#877)
 
 Usage: Tools~/ci/check_repo.py [meta|asmdef|json|unitynunit|ignores|reflect|il2cppfilter|coreapi|native|docs ...]   (default: all)
 """
@@ -54,11 +61,55 @@ ALLOWED_REFS = {
     "TurboHTTP.UniTask": {"TurboHTTP.Core", "UniTask"},
     "TurboHTTP.UniTask.WebSocket": {"TurboHTTP.Core", "TurboHTTP.WebSocket", "UniTask"},  # split out of TurboHTTP.UniTask (#116)
     "TurboHTTP.Editor": {"TurboHTTP.Core", "TurboHTTP.Observability"},
-    "TurboHTTP.Complete": None,  # aggregation assembly: any TurboHTTP.* runtime module
+    "TurboHTTP.Complete": None,  # aggregation assembly: exactly COMPLETE_REFS (checked separately)
     "TurboHTTP.Tests.Runtime": None,
     "TurboHTTP.Tests.Editor": None,
     "TurboHTTP.Tests.UniTask": None,  # compiled only with com.cysharp.unitask installed
 }
+# TurboHTTP.Complete's exact references (architecture.md, TurboHTTP.Complete row): every runtime module
+# except the opt-in Transport.BouncyCastle, UniTask and UniTask.WebSocket (#877).
+COMPLETE_REFS = {
+    "TurboHTTP.Core", "TurboHTTP.Transport", "TurboHTTP.WebSocket", "TurboHTTP.WebSocket.Transport",
+    "TurboHTTP.Unity.WebSocket", "TurboHTTP.Retry", "TurboHTTP.Cache", "TurboHTTP.Auth", "TurboHTTP.Observability",
+    "TurboHTTP.Files", "TurboHTTP.Unity", "TurboHTTP.Testing", "TurboHTTP.RateLimit", "TurboHTTP.JSON",
+    "TurboHTTP.Middleware",
+}
+# Who sees an assembly and when Unity compiles it (#877): name -> (autoReferenced, defineConstraints,
+# includePlatforms, excludePlatforms). PR CI has no Unity, so this mirrors Tests/Editor/ModuleAutoReferenceTests.cs
+# and BackgroundPluginPackagingTests.cs: user-facing modules are visible to Assembly-CSharp, the opt-in ones
+# (Testing, BouncyCastle) stay explicit, BouncyCastle and the UniTask adapters compile only with their define,
+# socket assemblies skip WebGL. Every Runtime/, Editor/ and Tests/ asmdef needs an entry (the vendored
+# SecureProtocol asmdef included: its settings are ours to check, its code is not). Samples~ asmdefs are
+# customer copies checked by the sample rules in check_asmdef and check_docs instead.
+_WEBGL = ["WebGL"]
+ASMDEF_EXPECTED = {
+    "TurboHTTP.Core": (True, [], [], []),
+    "TurboHTTP.Transport": (True, [], [], _WEBGL),
+    "TurboHTTP.Transport.BouncyCastle": (False, ["TURBOHTTP_BOUNCYCASTLE"], [], _WEBGL),
+    "TurboHTTP.SecureProtocol": (False, [], [], _WEBGL),
+    "TurboHTTP.WebSocket": (True, [], [], []),
+    "TurboHTTP.WebSocket.Transport": (True, [], [], _WEBGL),
+    "TurboHTTP.Unity.WebSocket": (True, [], [], []),
+    "TurboHTTP.Unity": (True, [], [], []),
+    "TurboHTTP.UniTask": (True, ["TURBOHTTP_UNITASK"], [], []),
+    "TurboHTTP.UniTask.WebSocket": (True, ["TURBOHTTP_UNITASK"], [], []),
+    "TurboHTTP.Auth": (True, [], [], []),
+    "TurboHTTP.Cache": (True, [], [], []),
+    "TurboHTTP.Files": (True, [], [], []),
+    "TurboHTTP.JSON": (True, [], [], []),
+    "TurboHTTP.Middleware": (True, [], [], []),
+    "TurboHTTP.Observability": (True, [], [], []),
+    "TurboHTTP.RateLimit": (True, [], [], []),
+    "TurboHTTP.Retry": (True, [], [], []),
+    "TurboHTTP.Testing": (False, [], [], []),
+    "TurboHTTP.Complete": (True, [], [], _WEBGL),
+    "TurboHTTP.Editor": (False, [], ["Editor"], []),
+    "TurboHTTP.Tests.Editor": (False, ["UNITY_INCLUDE_TESTS"], ["Editor"], []),
+    "TurboHTTP.Tests.Runtime": (False, ["UNITY_INCLUDE_TESTS"], [], _WEBGL),
+    "TurboHTTP.Tests.UniTask": (False, ["UNITY_INCLUDE_TESTS", "TURBOHTTP_UNITASK"], [], _WEBGL),
+}
+# A define constraint a package's versionDefines must supply, or the assembly never compiles.
+VERSION_DEFINES = {"TURBOHTTP_UNITASK": ("com.cysharp.unitask", "2.0.0")}
 UNSAFE_ALLOWED = {"TurboHTTP.Transport"}
 ENGINE_FREE = {"TurboHTTP.Transport", "TurboHTTP.SecureProtocol", "TurboHTTP.JSON", "TurboHTTP.WebSocket", "TurboHTTP.WebSocket.Transport"}
 
@@ -107,13 +158,73 @@ def check_meta(files):
     return errors
 
 
+def asmdef_platforms(a):
+    """(includePlatforms, excludePlatforms) as sets; Unity uses one or the other."""
+    return set(a.get("includePlatforms") or []), set(a.get("excludePlatforms") or [])
+
+
+def check_asmdef_settings(f, a):
+    """autoReferenced, defineConstraints, platforms and versionDefines of one non-sample asmdef (#877)."""
+    errors = []
+    name = a["name"]
+    constraints = a.get("defineConstraints") or []
+    if f.startswith("Tests/") and "UNITY_INCLUDE_TESTS" not in constraints:
+        errors.append(f"asmdef: {f} must keep defineConstraints UNITY_INCLUDE_TESTS (test code never reaches a player)")
+    for define in constraints:
+        package = VERSION_DEFINES.get(define)
+        if package and not any(v.get("define") == define and v.get("name") == package[0]
+                               and v.get("expression") == package[1] for v in a.get("versionDefines") or []):
+            errors.append(f"asmdef: {name} is constrained to {define} but has no versionDefines entry "
+                          f"{{name: {package[0]}, expression: {package[1]}, define: {define}}}; it would never compile")
+    expected = ASMDEF_EXPECTED.get(name)
+    if expected is None:
+        return errors + [f"asmdef: {f} ({name}) has no ASMDEF_EXPECTED entry in Tools~/ci/check_repo.py; add its "
+                         "autoReferenced, defineConstraints and platforms there"]
+    auto, want_constraints, include, exclude = expected
+    if a.get("autoReferenced", True) is not auto:
+        errors.append(f"asmdef: {name} must keep autoReferenced: {str(auto).lower()}")
+    if sorted(constraints) != sorted(want_constraints):
+        errors.append(f"asmdef: {name} must keep defineConstraints {want_constraints} (has {constraints})")
+    if asmdef_platforms(a) != (set(include), set(exclude)):
+        errors.append(f"asmdef: {name} must keep includePlatforms {include} and excludePlatforms {exclude} "
+                      f"(has {a.get('includePlatforms') or []} and {a.get('excludePlatforms') or []})")
+    return errors
+
+
+def check_reference_platforms(asmdefs):
+    """An assembly must not build on a platform where an assembly it references is not built (#877)."""
+    errors = []
+    for f, a in sorted(asmdefs.items()):
+        inc, exc = asmdef_platforms(a)
+        for r in a.get("references") or []:
+            target = next((t for t in asmdefs.values() if t["name"] == r), None)
+            if target is None:
+                continue  # Unity's TestRunner assemblies, UniTask
+            r_inc, r_exc = asmdef_platforms(target)
+            if r_inc and not (inc and inc <= r_inc):
+                errors.append(f"asmdef: {a['name']} references {r}, which builds only for {sorted(r_inc)}; "
+                              f"set includePlatforms to a subset of it")
+            missing = sorted((inc & r_exc) if inc else (r_exc - exc))
+            if missing:
+                errors.append(f"asmdef: {a['name']} references {r}, which excludes {missing}; exclude them too")
+    return errors
+
+
 def check_asmdef(files):
     errors = []
+    settings_checked = {}
     for f in files:
         if not f.endswith(".asmdef"):
             continue
         a = json.load(open(os.path.join(ROOT, f), encoding="utf-8-sig"))
         name, refs = a["name"], a.get("references") or []
+        if not f.startswith("Samples~/"):
+            errors += check_asmdef_settings(f, a)
+            settings_checked[f] = a
+        if name == "TurboHTTP.Complete" and (set(refs) != COMPLETE_REFS or len(refs) != len(set(refs))):
+            errors.append(f"asmdef: TurboHTTP.Complete must reference exactly {sorted(COMPLETE_REFS)} "
+                          f"(missing {sorted(COMPLETE_REFS - set(refs))}, extra {sorted(set(refs) - COMPLETE_REFS)}; "
+                          "see the TurboHTTP.Complete row of Development~/docs/agents/architecture.md)")
         for r in refs:
             if r.startswith("GUID:"):
                 errors.append(f"asmdef: {f} uses a GUID reference ({r}); use the assembly name")
@@ -135,7 +246,9 @@ def check_asmdef(files):
             errors.append(f"asmdef: {name} enables allowUnsafeCode; only {sorted(UNSAFE_ALLOWED)} may")
         if name in ENGINE_FREE and not a.get("noEngineReferences"):
             errors.append(f"asmdef: {name} must keep noEngineReferences: true")
-    return errors
+    for name in sorted(set(ASMDEF_EXPECTED) - {a["name"] for a in settings_checked.values()}):
+        errors.append(f"asmdef: ASMDEF_EXPECTED lists {name}, but no asmdef declares it (remove or rename the entry)")
+    return errors + check_reference_platforms(settings_checked)
 
 
 def check_json(files):
@@ -495,6 +608,23 @@ def check_core_api(files):
 # tvOS defines UNITY_TVOS, not UNITY_IOS, which is why plugins guarded by UNITY_IOS must not ship to tvOS.
 NATIVE_PLATFORMS = {"iPhone": {"UNITY_IOS", "UNITY_IPHONE"}, "tvOS": {"UNITY_TVOS"}, "Android": {"UNITY_ANDROID"}}
 NATIVE_SOURCES = (".mm", ".m", ".c", ".cpp")
+# Android library folders are plugins too: Unity imports the folder (its .meta holds the PluginImporter).
+NATIVE_FOLDERS = (".androidlib",)
+# Unity 2021.3 ignores a native plugin importer's defineConstraints (an Android build without the define
+# still packaged the .androidlib), so this editor gate is what keeps a constrained plugin out of a build.
+PLUGIN_GATE = "Editor/TurboHttpBackgroundPluginGate.cs"
+
+
+def plugin_gate(files):
+    """(Define, [package-relative GatedPluginPaths]) parsed from PLUGIN_GATE, or None when it is missing."""
+    if PLUGIN_GATE not in files:
+        return None
+    text = open(os.path.join(ROOT, PLUGIN_GATE), encoding="utf-8").read()
+    define = re.search(r'\bconst\s+string\s+Define\s*=\s*"(\w+)"\s*;', text)
+    paths = re.search(r"\bGatedPluginPaths\s*=\s*(?:new\s*(?:string\s*)?\[\s*\]\s*)?\{(.*?)\}\s*;", text, re.S)
+    if not define or not paths:
+        return define and define.group(1), None
+    return define.group(1), re.findall(r'"([^"]+)"', paths.group(1))
 
 
 def plugin_importer(meta_text):
@@ -549,14 +679,19 @@ def check_native(files):
     errors = []
     exports = {}  # native symbol -> plugin path
     importers = {}
-    for f in files:
-        if not f.startswith("Plugins/") or not f.endswith(NATIVE_SOURCES) or f + ".meta" not in files:
+    folders = sorted({f[:-len(".meta")] for f in files if f.startswith("Plugins/") and f.endswith(".meta")
+                      and f[:-len(".meta")].endswith(NATIVE_FOLDERS)})
+    for f in list(files) + folders:
+        is_folder = f in folders
+        if not f.startswith("Plugins/") or not (is_folder or f.endswith(NATIVE_SOURCES)) or f + ".meta" not in files:
             continue
         info = plugin_importer(open(os.path.join(ROOT, f + ".meta"), encoding="utf-8").read())
         if info is None:
             errors.append(f"native: {f}.meta is not a PluginImporter")
             continue
         importers[f] = info
+        if is_folder:
+            continue  # Java/Kotlin: reached through AndroidJavaObject, not DllImport
         src = open(os.path.join(ROOT, f), encoding="utf-8", errors="replace").read()
         for name in re.findall(r'extern\s+"C"\s+[^;{(]*?\b(\w+)\s*\(', src):
             exports[name] = f
@@ -600,7 +735,29 @@ def check_native(files):
                 elif included and not called and uses:
                     errors.append(f"native: {plugin} ships to {where}, but no managed caller compiles there "
                                   "(disable that platform or the define constraint in its .meta, or extend the #if)")
-    return errors + check_result_codes(files)
+    return errors + check_plugin_gate(files, importers) + check_result_codes(files)
+
+
+def check_plugin_gate(files, importers):
+    """The importer define constraints check_native evaluates take effect only through PLUGIN_GATE (#877)."""
+    gate = plugin_gate(files)
+    if gate is None:
+        return [f"native: {PLUGIN_GATE} is missing; it gates the plugins whose importer has define constraints"]
+    define, gated = gate
+    if not define or gated is None:
+        return [f"native: cannot parse the Define const and the GatedPluginPaths list of {PLUGIN_GATE}"]
+    errors = []
+    for path in gated:
+        if path not in importers:
+            errors.append(f"native: {PLUGIN_GATE} gates {path}, which is not a native plugin under Plugins/")
+        elif importers[path][1] != [define]:
+            errors.append(f"native: {path} is gated by {define}; its .meta defineConstraints must be exactly "
+                          f"[{define}] (has {importers[path][1]})")
+    for plugin, (_, constraints) in sorted(importers.items()):
+        if constraints and plugin not in gated:
+            errors.append(f"native: {plugin}.meta has defineConstraints {constraints}, which Unity 2021.3 ignores for "
+                          f"native plugins; add it to GatedPluginPaths in {PLUGIN_GATE} or drop the constraint")
+    return errors
 
 
 # Native bridge result codes mirrored in C# (#278): same names and values on both sides, 0 reserved for
@@ -662,6 +819,8 @@ def check_docs(files):
         errors.append(f"docs: package.json sample {folder} has no .asmdef (each sample compiles in the shadow build)")
     for folder in sorted({os.path.dirname(f) for f in files if f.startswith("Samples~/") and f.endswith(".cs")} - folders):
         errors.append(f"docs: {folder} has C# files but no .asmdef")
+    for folder in sorted(folders - samples):
+        errors.append(f"docs: {folder} has an .asmdef but package.json does not list it under samples (#877)")
     return errors
 
 

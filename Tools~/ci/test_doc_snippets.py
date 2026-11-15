@@ -2,6 +2,7 @@
 """Tests for the documentation snippet harness (doc_snippets.py) and the stale-name check (check_repo.py docs)."""
 import importlib.util
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -74,6 +75,65 @@ class RenderTests(unittest.TestCase):
         sn, _ = snippets_of("```csharp\nusing var r = await Foo();\n```\n")
         code = doc_snippets.render(1, sn[0])
         self.assertGreater(code.index("using var r"), code.index("static async Task Run()"))
+
+
+class PreludeTests(unittest.TestCase):
+    """#621: the ambient usings are exactly the script header the docs tell readers to assume."""
+
+    def documented_header(self, rel):
+        with open(os.path.join(doc_snippets.ROOT, rel), encoding="utf-8") as f:
+            for line in f:
+                m = re.search(r"script header[^`]*`((?:\s*using\s+[\w.]+\s*;)+)\s*`", line)
+                if m:
+                    return re.findall(r"using\s+([\w.]+)\s*;", m.group(1))
+        self.fail(f"{rel} no longer states the script header snippets assume")
+
+    def test_prelude_matches_the_documented_header(self):
+        for rel in ("Documentation~/APIReference.md", "Documentation~/Modules/Core.md"):
+            self.assertEqual(self.documented_header(rel), doc_snippets.PRELUDE, rel)
+
+    def test_a_different_documented_header_is_reported(self):
+        _, problems = snippets_of("Snippets assume the usual Unity script header (`using System; using System.IO;`).\n")
+        self.assertTrue(any("documented script header" in p for p in problems), problems)
+        _, problems = snippets_of("Snippets assume the usual Unity script header (`using System; using System.Threading; "
+                                  "using System.Threading.Tasks; using UnityEngine; using TurboHTTP.Core;`).\n")
+        self.assertEqual(problems, [])
+
+
+class RequiresTests(unittest.TestCase):
+    """#621: UniTask snippets compile when the build has UniTask and are reported, never silently dropped, without it."""
+
+    MD = "<!-- snippet: requires unitask -->\n```csharp\nawait Foo().AsUniTask();\n```\n```csharp\nvar x = 1;\n```\n"
+
+    def test_requires_applies_to_the_next_block_only(self):
+        sn, problems = snippets_of(self.MD)
+        self.assertEqual(problems, [])
+        self.assertEqual(sn[0].requires, ["unitask"])
+        self.assertIsNone(sn[0].skip)
+        self.assertEqual(sn[1].requires, [])
+
+    def test_unknown_requirement_is_reported(self):
+        _, problems = snippets_of("<!-- snippet: requires bestplugin -->\n```csharp\nx();\n```\n")
+        self.assertTrue(any("unknown 'bestplugin'" in p for p in problems), problems)
+
+    def test_written_only_when_available_and_reported_otherwise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = os.path.join(tmp, "docs")
+            os.makedirs(docs)
+            with open(os.path.join(docs, "README.md"), "w", encoding="utf-8") as f:
+                f.write(self.MD)
+            old_root, old_roots = doc_snippets.ROOT, doc_snippets.DOC_ROOTS
+            doc_snippets.ROOT, doc_snippets.DOC_ROOTS = docs, ["README.md"]
+            try:
+                files, skipped, _ = doc_snippets.write_project_sources(os.path.join(tmp, "without"))
+                self.assertEqual(len(files), 2)  # Ambient.cs + the plain block
+                self.assertEqual([(s.line, r) for s, r in skipped],
+                                 [(3, "requires " + doc_snippets.REQUIREMENTS["unitask"])])
+                files, skipped, _ = doc_snippets.write_project_sources(os.path.join(tmp, "with"), {"unitask"})
+                self.assertEqual(len(files), 3)
+                self.assertEqual(skipped, [])
+            finally:
+                doc_snippets.ROOT, doc_snippets.DOC_ROOTS = old_root, old_roots
 
 
 class StaleNameTests(unittest.TestCase):
