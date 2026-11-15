@@ -17,7 +17,7 @@ await ws.CloseAsync(WebSocketCloseCode.NormalClosure, "bye", ct);
 ws.Dispose();
 ```
 
-The `TurboHTTP.Unity.WebSocket` module adds `client.WebSocket(url)` on `UHttpClient`, which connects a client that raises its events on the Unity main thread and inherits the TLS backend and cleartext setting of the HTTP client:
+The `TurboHTTP.Unity.WebSocket` module adds `client.WebSocket(url)` on `UHttpClient`, which connects a client that raises its events on the Unity main thread and inherits these settings of the HTTP client:
 
 <!-- snippet: with UHttpClient httpClient = null; -->
 ```csharp
@@ -27,6 +27,32 @@ using TurboHTTP.WebSocket;
 IWebSocketClient ws = await httpClient.WebSocket("wss://echo.websocket.events");
 ws.OnMessage += message => Debug.Log(message.Text);
 ```
+
+What the connection inherits from `UHttpClientOptions`, and nothing else:
+
+- `TlsBackend` and `AllowCleartext`.
+- From `DefaultHeaders`, only `User-Agent`, `Accept-Language` and `Origin`. Every other default
+  header stays on the HTTP client: credentials (`Authorization`, `Cookie`, API-key headers) are never
+  forwarded, to the `BaseUrl` origin or any other host, and `Proxy-Authorization`, hop-by-hop and
+  handshake headers (`Host`, `Connection`, `Upgrade`, `Sec-WebSocket-*`) are never copied.
+- `Proxy`: the proxy is chosen for the WebSocket URL as for an HTTP request to the same host and port
+  (`wss` as `https`), so `BypassList` (all its rule forms) and, unless
+  `UseEnvironmentVariables = false`, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` apply. The proxy
+  credentials are sent only when `AllowPlaintextProxyAuth` is `true` (the leg to an `http://` proxy
+  is cleartext). A proxy variable that names a non-`http://` proxy fails with `UHttpException`.
+
+To send other headers (for example a token), create the client with
+`WebSocketClient.Create(options)`, set `WebSocketConnectionOptions.CustomHeaders`, and wrap it in
+`new UnityWebSocketBridge(client)` for main-thread events.
+
+**Subscription order.** The task completes once the handshake has, so `OnConnected` has already
+been raised and a handler you attach afterwards does not see it: the returned client is open. Messages
+are not lost before you subscribe: the client holds the messages received before the first
+`OnMessage` subscription (at most 100 messages or 8 MB, oldest dropped first with
+`OnMessageDropped`) and delivers them, in order, to that subscriber. The hold also ends, and its
+messages are disposed, when you start pulling instead (`ReceiveAsync`, `ReceiveAllAsync`,
+`ReceiveAsCoroutine`, whose queue already has them) and when you dispose the client. If the connect
+fails, the created client is disposed before the exception reaches you.
 
 ### Main-thread delivery under load
 
