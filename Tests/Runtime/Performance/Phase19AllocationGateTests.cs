@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -7,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
 using TurboHTTP.Testing;
@@ -15,84 +17,245 @@ using TurboHTTP.Transport.Http2;
 
 namespace TurboHTTP.Tests.Performance
 {
+    /// <summary>
+    /// Phase 19 allocation gate and throughput report over <see cref="MockTransport"/> and the HTTP/2 pooled
+    /// completion sources.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What the gate measures.</b> <see cref="AllocationScenarios_RespectBaselineBudget"/> counts the managed
+    /// bytes each scenario allocates per operation with <see cref="AllocationMeter"/>. On the Editor's Mono that
+    /// is the profiler's "GC Allocated In Frame" counter around a frame that runs only the measured operations:
+    /// an upper bound (other work in that frame adds to it), so each scenario runs
+    /// <see cref="RoundsPerScenario"/> rounds, each alone in its frame, and the smallest round is the reading;
+    /// idle frames show what the rest of a frame costs. The gate fails when the reading exceeds
+    /// <c>maxBytesPerOperation</c> plus <c>defaultThresholdPercent</c> (10%) of it. It used to compare
+    /// <c>GC.GetTotalMemory(true)</c> before and after, which sees only memory still reachable after a full
+    /// collection (mostly <see cref="MockTransport"/>'s captured-request queue), so a transient per-request
+    /// allocation never showed (#881).
+    /// </para>
+    /// <para>
+    /// <b>Baselines</b> (<c>Tests/Benchmarks/phase19-allocation-baselines.json</c>) are measured numbers from the
+    /// reference editor: the host editor at the Unity version in <c>Tools~/ci/unity-version</c>, driven by
+    /// <c>Tools~/unity/run-tests.sh</c>, which compiles the package with code optimization on. The file's
+    /// <c>profile</c> names the counter profile they were recorded on
+    /// (<see cref="AllocationBudget.CurrentProfile"/>); an editor that measures on another profile (code
+    /// optimization off, a precise per-thread counter) skips the gate instead of judging against numbers it
+    /// cannot reproduce. <see cref="CommittedBaselines_LeaveNoRoomForA4KiBPerOperationRegression"/> keeps the
+    /// committed budgets tight enough that a 4 KiB per-operation allocation fails the gate.
+    /// </para>
+    /// <para>
+    /// <b>Re-record procedure</b> (after a deliberate change moves a number, or when the reference editor
+    /// changes):
+    /// <list type="number">
+    /// <item><description>On the reference editor run the gate in record mode at least five times, each with its
+    /// own output file outside the repository:
+    /// <c>TURBOHTTP_ALLOCATION_BASELINE_RECORD=1 TURBOHTTP_ALLOCATION_BASELINE_OUTPUT=&lt;file&gt;
+    /// './Tools~/unity/run-tests.sh' --platform PlayMode --filter
+    /// 'Phase19AllocationGateTests.AllocationScenarios_RespectBaselineBudget'</c>. A Windows <c>Unity.exe</c>
+    /// started from WSL sees the variables only when they are forwarded:
+    /// <c>WSLENV=TURBOHTTP_ALLOCATION_BASELINE_RECORD:TURBOHTTP_ALLOCATION_BASELINE_OUTPUT/p</c>. Record mode
+    /// writes the readings and passes without judging them.</description></item>
+    /// <item><description>Per scenario, copy the lowest and the highest <c>observedBytesPerOperation</c> of the
+    /// runs into <c>observedMinBytesPerOperation</c> and <c>observedMaxBytesPerOperation</c>, and set
+    /// <c>maxBytesPerOperation</c> to the highest reading plus <see cref="BaselineMarginBytes"/> (the margin
+    /// covers rounding, the 10% threshold covers run-to-run noise). Update <c>capturedAtUtc</c>,
+    /// <c>recordedRuns</c> and <c>profile</c> (the <c>profile</c> every recorded file reports).</description></item>
+    /// <item><description>Run the gate again without the record variables (it must pass), and
+    /// <see cref="CommittedBaselines_LeaveNoRoomForA4KiBPerOperationRegression"/>. Say in the PR which
+    /// change moved the numbers.</description></item>
+    /// </list>
+    /// </para>
+    /// </remarks>
     [TestFixture]
     [Category("Benchmark")]
     public sealed class Phase19AllocationGateTests
     {
-        private const int RunsPerScenario = 3;
+        private const int RoundsPerScenario = 5;
         private const int WarmupIterations = 32;
+
+        /// <summary>Bytes added to the highest recorded reading to form a committed budget (re-record step 2).</summary>
+        private const long BaselineMarginBytes = 16;
+
+        /// <summary>The per-operation regression the committed budgets must catch (#881).</summary>
+        private const long DetectableRegressionBytes = 4096;
+
         private const string ThresholdPercentEnvVar = "TURBOHTTP_ALLOCATION_REGRESSION_THRESHOLD_PERCENT";
         private const string BaselineRecordEnvVar = "TURBOHTTP_ALLOCATION_BASELINE_RECORD";
         private const string BaselineOutputEnvVar = "TURBOHTTP_ALLOCATION_BASELINE_OUTPUT";
 
-        [Test]
-        public void AllocationScenarios_RespectBaselineBudget()
+        private static readonly Func<AllocationScenario>[] s_allocationScenarios =
         {
-            // The budgets are calibrated on the Editor's Mono GC and the baseline JSON is read from
-            // the project tree, which a player does not have (#321).
+            CreateHttp11WarmRequestScenario,
+            CreateMiddlewareFastPathScenario,
+            CreateHttp2PoolSingleCompletionScenario,
+            CreateHttp2PoolBurstScenario
+        };
+
+        [UnityTest]
+        public IEnumerator AllocationScenarios_RespectBaselineBudget()
+        {
+            // The budgets are calibrated on the Editor's Mono and the baseline JSON is read from the project
+            // tree, which a player does not have (#321).
             if (!Application.isEditor)
                 TestRequirements.IgnoreEnvironment(
-                    "The allocation budgets are Editor (Mono GC) baselines read from Tests/Benchmarks; a player has neither.");
+                    "The allocation budgets are Editor (Mono) baselines read from Tests/Benchmarks; a player has neither.");
 
-            Task.Run(async () =>
+            var baselinePath = ResolveBaselinePath();
+            var baseline = LoadBaselineDocument(baselinePath);
+            var recordMode = IsBaselineRecordMode();
+
+            using var meter = new AllocationMeter();
+            yield return meter.Calibrate();
+
+            var profile = AllocationBudget.CurrentProfile(meter.IsPrecise).ToString();
+            if (!recordMode && !string.Equals(profile, baseline.Profile, StringComparison.Ordinal))
             {
-                var baselinePath = ResolveBaselinePath();
-                var baseline = LoadBaselineDocument(baselinePath);
+                TestRequirements.IgnoreEnvironment(
+                    "The Phase 19 allocation baselines were recorded on profile '" + baseline.Profile +
+                    "'; this editor measures on '" + profile + "' (counter " + meter.Name +
+                    "). Re-record them as the fixture's remarks describe to gate this profile.");
+            }
 
-                var measurements = new List<ScenarioMeasurement>
-                {
-                    await MeasureHttp11WarmRequestScenarioAsync().ConfigureAwait(false),
-                    await MeasureMiddlewareFastPathScenarioAsync().ConfigureAwait(false),
-                    await MeasureHttp2PoolSingleCompletionScenarioAsync().ConfigureAwait(false),
-                    await MeasureHttp2PoolBurstScenarioAsync().ConfigureAwait(false)
-                };
+            var measurements = new List<ScenarioMeasurement>(s_allocationScenarios.Length);
+            foreach (var factory in s_allocationScenarios)
+            {
+                using var scenario = factory();
+                var rounds = new AllocationRounds();
+                yield return RecordIdleFrames(meter, rounds);
 
-                foreach (var measurement in measurements)
+                var completedSynchronously = true;
+                for (var round = 0; round < RoundsPerScenario; round++)
                 {
-                    TestContext.Progress.WriteLine(
-                        "[Phase19][Allocation] " + measurement.Name +
-                        " bytes/op=" + measurement.BytesPerOperation +
-                        " gen0=" + measurement.Gen0Collections +
-                        " sampleCount=" + measurement.SampleCount +
-                        " medianDurationMs=" + measurement.MedianDurationMs.ToString("F3"));
+                    RunOperations(scenario, WarmupIterations);
+
+                    yield return null;
+                    meter.Begin();
+                    completedSynchronously &= RunOperations(scenario, scenario.SampleCount);
+                    meter.End();
+                    yield return null;
+
+                    rounds.AddRound(meter.Allocated, scenario.SampleCount);
                 }
 
-                if (IsBaselineRecordMode())
+                // A per-thread counter sees only this thread: operations that finished on the thread pool
+                // would read as free.
+                if (meter.IsPrecise && !completedSynchronously)
                 {
-                    var outputPath = ResolveBaselineOutputPath(baselinePath);
-                    WriteObservedBaseline(outputPath, baseline.DefaultThresholdPercent, measurements);
-                    TestContext.Progress.WriteLine(
-                        "[Phase19][Allocation] Recorded observed baselines to: " + outputPath);
-                    return;
+                    TestRequirements.IgnoreEnvironment(
+                        "Scenario '" + scenario.Name + "' completed operations on the thread pool, which the " +
+                        "per-thread counter " + meter.Name + " does not see.");
                 }
 
-                var thresholdPercent = ResolveThresholdPercent(baseline.DefaultThresholdPercent);
+                var measurement = new ScenarioMeasurement(scenario.Name, scenario.SampleCount, rounds);
+                measurements.Add(measurement);
+                TestContext.Progress.WriteLine(
+                    "[Phase19][Allocation] " + measurement.Name +
+                    " bytes/op=" + measurement.BytesPerOperation +
+                    " counter=" + meter.Name +
+                    " profile=" + profile +
+                    " sampleCount=" + measurement.SampleCount +
+                    " " + rounds.Describe());
+            }
 
-                foreach (var measurement in measurements)
+            if (recordMode)
+            {
+                var outputPath = ResolveBaselineOutputPath(baselinePath);
+                WriteObservedBaseline(outputPath, baseline.DefaultThresholdPercent, profile, meter.Name, measurements);
+                TestContext.Progress.WriteLine(
+                    "[Phase19][Allocation] Recorded observed baselines to: " + outputPath);
+                yield break;
+            }
+
+            var thresholdPercent = ResolveThresholdPercent(baseline.DefaultThresholdPercent);
+            var failures = new List<string>();
+            var unresolved = new List<string>();
+
+            foreach (var measurement in measurements)
+            {
+                if (!baseline.Scenarios.TryGetValue(measurement.Name, out var scenario))
                 {
-                    if (!baseline.Scenarios.TryGetValue(measurement.Name, out var scenario))
-                    {
-                        Assert.Fail(
-                            "Missing baseline scenario '" + measurement.Name + "' in " + baselinePath + ".");
-                    }
-
-                    Assert.GreaterOrEqual(
-                        measurement.SampleCount,
-                        scenario.MinSamples,
-                        "Scenario '" + measurement.Name + "' ran too few samples.");
-
-                    var allowedBytesPerOp = (long)Math.Ceiling(
-                        scenario.MaxBytesPerOperation * (1.0 + (thresholdPercent / 100.0)));
-
-                    Assert.LessOrEqual(
-                        measurement.BytesPerOperation,
-                        allowedBytesPerOp,
-                        "Allocation regression in scenario '" + measurement.Name + "'. " +
-                        "Observed=" + measurement.BytesPerOperation + " bytes/op, " +
-                        "Baseline=" + scenario.MaxBytesPerOperation + " bytes/op, " +
-                        "Threshold=" + thresholdPercent + "%.");
+                    Assert.Fail(
+                        "Missing baseline scenario '" + measurement.Name + "' in " + baselinePath + ".");
                 }
-            }).GetAwaiter().GetResult();
+
+                Assert.GreaterOrEqual(
+                    measurement.SampleCount,
+                    scenario.MinSamples,
+                    "Scenario '" + measurement.Name + "' ran too few samples.");
+
+                var allowedBytesPerOp = AllowedBytesPerOperation(scenario.MaxBytesPerOperation, thresholdPercent);
+                var reading =
+                    "'" + measurement.Name + "': observed=" + measurement.BytesPerOperation + " bytes/op " +
+                    "(smallest of " + RoundsPerScenario + " rounds), baseline=" + scenario.MaxBytesPerOperation +
+                    " bytes/op, threshold=" + thresholdPercent + "%, allowed=" + allowedBytesPerOp +
+                    " bytes/op, counter=" + meter.Name + ", foreign floor=" + measurement.Rounds.ForeignFloorBytes +
+                    " bytes/frame, " + measurement.Rounds.Describe();
+
+                switch (measurement.Rounds.Judge(allowedBytesPerOp))
+                {
+                    case AllocationVerdict.Within:
+                        break;
+                    case AllocationVerdict.Unresolved:
+                        unresolved.Add(reading);
+                        break;
+                    default:
+                        failures.Add(reading);
+                        break;
+                }
+            }
+
+            if (failures.Count > 0)
+                Assert.Fail("Allocation regression in " + string.Join("; ", failures) + ".");
+
+            if (unresolved.Count > 0)
+            {
+                TestRequirements.IgnoreEnvironment(
+                    "Other work in the measured frames allocates enough to hide whether these scenarios are " +
+                    "within budget: " + string.Join("; ", unresolved) + ".");
+            }
+        }
+
+        /// <summary>
+        /// #881: the committed budgets are measured numbers with a small margin, so an operation that starts
+        /// allocating 4 KiB more than the lowest recorded reading fails the gate. Round ceilings far above the
+        /// real cost let such a regression pass.
+        /// </summary>
+        [Test]
+        public void CommittedBaselines_LeaveNoRoomForA4KiBPerOperationRegression()
+        {
+            if (!Application.isEditor)
+                TestRequirements.IgnoreEnvironment(
+                    "The baseline JSON is read from Tests/Benchmarks, which a player does not have.");
+
+            var baselinePath = ResolveBaselinePath();
+            var baseline = LoadBaselineDocument(baselinePath);
+
+            Assert.IsFalse(string.IsNullOrEmpty(baseline.Profile), "The baseline file names no recording profile.");
+            Assert.GreaterOrEqual(baseline.RecordedRuns, 2, "The baselines must come from several recording runs.");
+            Assert.AreEqual(s_allocationScenarios.Length, baseline.Scenarios.Count, "One baseline per scenario.");
+
+            foreach (var scenario in baseline.Scenarios.Values)
+            {
+                Assert.GreaterOrEqual(
+                    scenario.ObservedMinBytesPerOperation, 0, "'" + scenario.Name + "' has no recorded minimum.");
+                Assert.GreaterOrEqual(
+                    scenario.ObservedMaxBytesPerOperation,
+                    scenario.ObservedMinBytesPerOperation,
+                    "'" + scenario.Name + "' recorded spread is inverted.");
+                Assert.GreaterOrEqual(
+                    scenario.MaxBytesPerOperation,
+                    scenario.ObservedMaxBytesPerOperation,
+                    "'" + scenario.Name + "' budget is below its own recorded spread.");
+
+                var allowed = AllowedBytesPerOperation(scenario.MaxBytesPerOperation, baseline.DefaultThresholdPercent);
+                Assert.Less(
+                    allowed,
+                    scenario.ObservedMinBytesPerOperation + DetectableRegressionBytes,
+                    "'" + scenario.Name + "' allows " + allowed + " bytes/op, so a " + DetectableRegressionBytes +
+                    " B/op regression on its lowest recorded reading (" + scenario.ObservedMinBytesPerOperation +
+                    ") would pass.");
+            }
         }
 
         [Test]
@@ -118,20 +281,18 @@ namespace TurboHTTP.Tests.Performance
             }).GetAwaiter().GetResult();
         }
 
-        private static async Task<ScenarioMeasurement> MeasureHttp11WarmRequestScenarioAsync()
+        private static AllocationScenario CreateHttp11WarmRequestScenario()
         {
-            const int sampleCount = 384;
-
             var transport = new MockTransport(HttpStatusCode.OK, body: Array.Empty<byte>());
-            using var client = new UHttpClient(new UHttpClientOptions
+            var client = new UHttpClient(new UHttpClientOptions
             {
                 Transport = transport,
                 DisposeTransport = false
             });
 
-            return await MeasureScenarioAsync(
+            return new AllocationScenario(
                 "http11_warm_request_mock_transport",
-                sampleCount,
+                384,
                 async _ =>
                 {
                     using var response = await client.Get("https://phase19.local/http11")
@@ -139,12 +300,13 @@ namespace TurboHTTP.Tests.Performance
                         .ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode)
                         throw new InvalidOperationException("Unexpected non-success in HTTP/1.1 warm request scenario.");
-                }).ConfigureAwait(false);
+                },
+                transport.ClearCapturedRequests,
+                client);
         }
 
-        private static async Task<ScenarioMeasurement> MeasureMiddlewareFastPathScenarioAsync()
+        private static AllocationScenario CreateMiddlewareFastPathScenario()
         {
-            const int sampleCount = 320;
             var transport = new MockTransport(HttpStatusCode.OK, body: Array.Empty<byte>());
             var middleware = new List<IHttpInterceptor>(8)
             {
@@ -158,16 +320,16 @@ namespace TurboHTTP.Tests.Performance
                 new HeaderTagInterceptor("X-P19-H")
             };
 
-            using var client = new UHttpClient(new UHttpClientOptions
+            var client = new UHttpClient(new UHttpClientOptions
             {
                 Transport = transport,
                 DisposeTransport = false,
                 Interceptors = middleware
             });
 
-            return await MeasureScenarioAsync(
+            return new AllocationScenario(
                 "middleware_chain_sync_fast_path_mock_transport",
-                sampleCount,
+                320,
                 async _ =>
                 {
                     using var response = await client.Get("https://phase19.local/middleware")
@@ -175,17 +337,18 @@ namespace TurboHTTP.Tests.Performance
                         .ConfigureAwait(false);
                     if (!response.IsSuccessStatusCode)
                         throw new InvalidOperationException("Unexpected non-success in middleware fast-path scenario.");
-                }).ConfigureAwait(false);
+                },
+                transport.ClearCapturedRequests,
+                client);
         }
 
-        private static async Task<ScenarioMeasurement> MeasureHttp2PoolSingleCompletionScenarioAsync()
+        private static AllocationScenario CreateHttp2PoolSingleCompletionScenario()
         {
-            const int sampleCount = 1024;
             var pool = new PoolableValueTaskSourcePool<bool>(maxSize: 256);
 
-            return await MeasureScenarioAsync(
+            return new AllocationScenario(
                 "http2_poolable_source_single_completion",
-                sampleCount,
+                1024,
                 async _ =>
                 {
                     var source = pool.Rent();
@@ -193,21 +356,22 @@ namespace TurboHTTP.Tests.Performance
                     source.SetResult(true);
                     if (!await pending.ConfigureAwait(false))
                         throw new InvalidOperationException("Unexpected false completion from poolable source.");
-                }).ConfigureAwait(false);
+                },
+                null,
+                null);
         }
 
-        private static async Task<ScenarioMeasurement> MeasureHttp2PoolBurstScenarioAsync()
+        private static AllocationScenario CreateHttp2PoolBurstScenario()
         {
-            const int sampleCount = 160;
             const int burstSize = 100;
 
             var pool = new PoolableValueTaskSourcePool<bool>(maxSize: 256);
             var sources = new PoolableValueTaskSource<bool>[burstSize];
             var pending = new ValueTask<bool>[burstSize];
 
-            return await MeasureScenarioAsync(
+            return new AllocationScenario(
                 "http2_poolable_source_multiplexed_burst_100",
-                sampleCount,
+                160,
                 async _ =>
                 {
                     for (int i = 0; i < burstSize; i++)
@@ -226,7 +390,9 @@ namespace TurboHTTP.Tests.Performance
                         if (!await pending[i].ConfigureAwait(false))
                             throw new InvalidOperationException("Unexpected false completion in burst scenario.");
                     }
-                }).ConfigureAwait(false);
+                },
+                null,
+                null);
         }
 
         private static async Task<ThroughputMeasurement> RunHttp11SequentialThroughputAsync()
@@ -415,55 +581,61 @@ namespace TurboHTTP.Tests.Performance
                 " p99ms=" + measurement.P99LatencyMs.ToString("F3"));
         }
 
-        private static async Task<ScenarioMeasurement> MeasureScenarioAsync(
-            string name,
-            int sampleCount,
-            Func<int, ValueTask> operation)
+        /// <summary>
+        /// Runs <paramref name="count"/> operations on the calling thread. The synchronization context is
+        /// cleared meanwhile, so an operation that does not complete synchronously continues on the thread pool
+        /// instead of waiting for this blocked thread. Returns false when any operation did not complete
+        /// synchronously.
+        /// </summary>
+        private static bool RunOperations(AllocationScenario scenario, int count)
         {
-            if (sampleCount <= 0)
-                throw new ArgumentOutOfRangeException(nameof(sampleCount));
-            if (operation == null)
-                throw new ArgumentNullException(nameof(operation));
-
-            var bytesPerOpSamples = new long[RunsPerScenario];
-            var gen0Samples = new int[RunsPerScenario];
-            var durationSamplesMs = new double[RunsPerScenario];
-
-            for (int run = 0; run < RunsPerScenario; run++)
+            var previous = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(null);
+            try
             {
-                for (int i = 0; i < WarmupIterations; i++)
-                    await operation(i).ConfigureAwait(false);
+                var completedSynchronously = true;
+                for (int i = 0; i < count; i++)
+                {
+                    var pending = scenario.Operation(i);
+                    if (pending.IsCompleted)
+                    {
+                        pending.GetAwaiter().GetResult();
+                        continue;
+                    }
 
-                ForceGc();
-                var beforeBytes = GC.GetTotalMemory(true);
-                var beforeGen0 = GC.CollectionCount(0);
+                    completedSynchronously = false;
+                    pending.AsTask().GetAwaiter().GetResult();
+                }
 
-                var stopwatch = Stopwatch.StartNew();
-                for (int i = 0; i < sampleCount; i++)
-                    await operation(i).ConfigureAwait(false);
-                stopwatch.Stop();
-
-                ForceGc();
-                var afterBytes = GC.GetTotalMemory(true);
-                var afterGen0 = GC.CollectionCount(0);
-
-                var bytesDelta = Math.Max(0L, afterBytes - beforeBytes);
-                bytesPerOpSamples[run] = bytesDelta / sampleCount;
-                gen0Samples[run] = Math.Max(0, afterGen0 - beforeGen0);
-                durationSamplesMs[run] = stopwatch.Elapsed.TotalMilliseconds;
+                return completedSynchronously;
             }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(previous);
+                scenario.AfterRun?.Invoke();
+            }
+        }
 
-            Array.Sort(bytesPerOpSamples);
-            Array.Sort(gen0Samples);
-            Array.Sort(durationSamplesMs);
+        /// <summary>
+        /// Frames that run nothing but this coroutine: the smallest is what the rest of a frame allocates on its
+        /// own. A precise counter sees only the section, so it needs none.
+        /// </summary>
+        private static IEnumerator RecordIdleFrames(AllocationMeter meter, AllocationRounds rounds)
+        {
+            if (meter.IsPrecise)
+                yield break;
 
-            var medianIndex = RunsPerScenario / 2;
-            return new ScenarioMeasurement(
-                name,
-                sampleCount,
-                bytesPerOpSamples[medianIndex],
-                gen0Samples[medianIndex],
-                durationSamplesMs[medianIndex]);
+            yield return null;
+            for (var i = 0; i < RoundsPerScenario; i++)
+            {
+                yield return null;
+                rounds.AddIdleFrame(meter.Allocated);
+            }
+        }
+
+        private static long AllowedBytesPerOperation(long baselineBytesPerOperation, int thresholdPercent)
+        {
+            return (long)Math.Ceiling(baselineBytesPerOperation * (1.0 + (thresholdPercent / 100.0)));
         }
 
         private static double ComputePercentile(double[] samples, double percentile)
@@ -497,6 +669,8 @@ namespace TurboHTTP.Tests.Performance
             var baseline = new BaselineDocument
             {
                 DefaultThresholdPercent = ReadInt(root, "defaultThresholdPercent", 10),
+                Profile = root.TryGetValue("profile", out var profile) ? profile as string : null,
+                RecordedRuns = ReadInt(root, "recordedRuns", 0),
                 Scenarios = new Dictionary<string, BaselineScenario>(StringComparer.Ordinal)
             };
 
@@ -512,7 +686,9 @@ namespace TurboHTTP.Tests.Performance
                 {
                     Name = name,
                     MaxBytesPerOperation = ReadLong(scenarioMap, "maxBytesPerOperation"),
-                    MinSamples = ReadInt(scenarioMap, "minSamples", 1)
+                    MinSamples = ReadInt(scenarioMap, "minSamples", 1),
+                    ObservedMinBytesPerOperation = ReadInt(scenarioMap, "observedMinBytesPerOperation", -1),
+                    ObservedMaxBytesPerOperation = ReadInt(scenarioMap, "observedMaxBytesPerOperation", -1)
                 };
             }
 
@@ -575,6 +751,8 @@ namespace TurboHTTP.Tests.Performance
         private static void WriteObservedBaseline(
             string outputPath,
             int defaultThresholdPercent,
+            string profile,
+            string counter,
             IReadOnlyList<ScenarioMeasurement> measurements)
         {
             var scenarioList = new List<object>(measurements.Count);
@@ -584,9 +762,10 @@ namespace TurboHTTP.Tests.Performance
                 scenarioList.Add(new Dictionary<string, object>
                 {
                     { "name", measurement.Name },
-                    { "maxBytesPerOperation", measurement.BytesPerOperation },
+                    { "observedBytesPerOperation", measurement.BytesPerOperation },
                     { "minSamples", measurement.SampleCount },
-                    { "notes", "Recorded via TURBOHTTP_ALLOCATION_BASELINE_RECORD=1" }
+                    { "foreignFloorBytesPerFrame", measurement.Rounds.ForeignFloorBytes },
+                    { "rounds", measurement.Rounds.Describe() }
                 });
             }
 
@@ -595,6 +774,9 @@ namespace TurboHTTP.Tests.Performance
                 { "version", 1 },
                 { "capturedAtUtc", DateTime.UtcNow.ToString("o") },
                 { "defaultThresholdPercent", defaultThresholdPercent },
+                { "profile", profile },
+                { "counter", counter },
+                { "notes", "Recorded via " + BaselineRecordEnvVar + "=1; merge several runs as the fixture's remarks describe." },
                 { "scenarios", scenarioList }
             };
 
@@ -674,13 +856,6 @@ namespace TurboHTTP.Tests.Performance
             }
         }
 
-        private static void ForceGc()
-        {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-        }
-
         private sealed class HeaderTagInterceptor : IHttpInterceptor
         {
             private readonly string _headerName;
@@ -705,6 +880,8 @@ namespace TurboHTTP.Tests.Performance
         private sealed class BaselineDocument
         {
             public int DefaultThresholdPercent;
+            public string Profile;
+            public int RecordedRuns;
             public Dictionary<string, BaselineScenario> Scenarios;
         }
 
@@ -713,29 +890,57 @@ namespace TurboHTTP.Tests.Performance
             public string Name;
             public long MaxBytesPerOperation;
             public int MinSamples;
+            public long ObservedMinBytesPerOperation;
+            public long ObservedMaxBytesPerOperation;
         }
 
-        private readonly struct ScenarioMeasurement
+        /// <summary>One gate scenario: an operation and the objects it keeps alive across rounds.</summary>
+        private sealed class AllocationScenario : IDisposable
         {
-            public ScenarioMeasurement(
+            private readonly IDisposable _owned;
+
+            public AllocationScenario(
                 string name,
                 int sampleCount,
-                long bytesPerOperation,
-                int gen0Collections,
-                double medianDurationMs)
+                Func<int, ValueTask> operation,
+                Action afterRun,
+                IDisposable owned)
             {
                 Name = name;
                 SampleCount = sampleCount;
-                BytesPerOperation = bytesPerOperation;
-                Gen0Collections = gen0Collections;
-                MedianDurationMs = medianDurationMs;
+                Operation = operation;
+                AfterRun = afterRun;
+                _owned = owned;
             }
 
             public string Name { get; }
             public int SampleCount { get; }
-            public long BytesPerOperation { get; }
-            public int Gen0Collections { get; }
-            public double MedianDurationMs { get; }
+            public Func<int, ValueTask> Operation { get; }
+
+            /// <summary>Runs after every batch of operations, e.g. to drop the transport's captured requests.</summary>
+            public Action AfterRun { get; }
+
+            public void Dispose()
+            {
+                _owned?.Dispose();
+            }
+        }
+
+        private readonly struct ScenarioMeasurement
+        {
+            public ScenarioMeasurement(string name, int sampleCount, AllocationRounds rounds)
+            {
+                Name = name;
+                SampleCount = sampleCount;
+                Rounds = rounds;
+            }
+
+            public string Name { get; }
+            public int SampleCount { get; }
+            public AllocationRounds Rounds { get; }
+
+            /// <summary>Bytes per operation of the smallest round.</summary>
+            public long BytesPerOperation => Rounds.BytesPerUnit;
         }
 
         private readonly struct ThroughputMeasurement
