@@ -16,6 +16,13 @@ namespace TurboHTTP.Core
         public const string ProxyDisabled = "turbohttp.proxy.disabled";
 
         /// <summary>
+        /// <see cref="ClientProxyPolicy"/>: the client proxy configuration behind a
+        /// <see cref="ProxySettings"/> value <see cref="UHttpClient"/> resolved itself, so a dispatch to
+        /// another URI (a redirect hop) re-resolves it for that URI (#832).
+        /// </summary>
+        internal const string ClientProxyPolicy = "turbohttp.proxy.client_policy";
+
+        /// <summary>
         /// <see cref="bool"/>: whether the transport may send this request in cleartext (an
         /// <c>http://</c> target or an <c>http://</c> proxy leg). <see cref="UHttpClient"/> sets
         /// it from <see cref="UHttpClientOptions.AllowCleartext"/> on every request it sends that does

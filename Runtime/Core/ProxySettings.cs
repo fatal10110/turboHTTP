@@ -222,6 +222,107 @@ namespace TurboHTTP.Core
         }
     }
 
+    /// <summary>
+    /// The client proxy configuration behind a <see cref="RequestMetadataKeys.ProxySettings"/> value
+    /// <see cref="UHttpClient"/> resolved for <see cref="ResolvedFor"/> (#832). Immutable: redirect
+    /// follow-ups share it through cloned metadata.
+    /// </summary>
+    internal sealed class ClientProxyPolicy
+    {
+        internal ClientProxyPolicy(ProxySettings configured, Uri resolvedFor, ProxySettings resolved)
+        {
+            Configured = configured;
+            ResolvedFor = resolvedFor;
+            Resolved = resolved;
+        }
+
+        /// <summary>The client's <see cref="UHttpClientOptions.Proxy"/> (null: environment defaults).</summary>
+        internal ProxySettings Configured { get; }
+
+        internal Uri ResolvedFor { get; }
+
+        /// <summary>The proxy resolved for <see cref="ResolvedFor"/>, or null for a direct connection.</summary>
+        internal ProxySettings Resolved { get; }
+    }
+
+    /// <summary>
+    /// The proxy decision for one dispatch, made against the URI actually sent (#828, #832).
+    /// </summary>
+    internal static class RequestProxyResolver
+    {
+        /// <summary>
+        /// The proxy for this dispatch of <paramref name="request"/>, or null for a direct connection:
+        /// <list type="bullet">
+        /// <item><see cref="RequestMetadataKeys.ProxyDisabled"/> wins.</item>
+        /// <item>A value <see cref="UHttpClient"/> resolved itself is re-resolved from the client
+        /// configuration when the request now targets another scheme, host or port (a redirect hop),
+        /// so <c>NO_PROXY</c>/<see cref="ProxySettings.BypassList"/> and the
+        /// <c>HTTPS_PROXY</c>/<see cref="ProxySettings.AllowHttpProxyFallbackForHttps"/> rule apply to
+        /// that URI.</item>
+        /// <item>Any other value is request-level: a null <see cref="ProxySettings.Address"/> means no
+        /// proxy, a non-<c>http://</c> address is rejected, and the
+        /// <see cref="ProxySettings.BypassList"/> is checked against the request URI.</item>
+        /// </list>
+        /// </summary>
+        /// <exception cref="UHttpException"><see cref="UHttpErrorType.InvalidRequest"/>: the proxy
+        /// address is not <c>http://</c>. The message never contains the address (it can carry
+        /// user:password).</exception>
+        internal static ProxySettings ResolveForDispatch(UHttpRequest request)
+        {
+            var metadata = request?.Metadata;
+            if (metadata == null)
+                return null;
+
+            if (metadata.TryGetValue(RequestMetadataKeys.ProxyDisabled, out var disabledObj) &&
+                disabledObj is bool disabled &&
+                disabled)
+            {
+                return null;
+            }
+
+            var hasSettings = metadata.TryGetValue(RequestMetadataKeys.ProxySettings, out var settingsObj);
+            var settings = settingsObj as ProxySettings;
+
+            // The client's own resolution, unless something replaced the value since (WithProxy, an
+            // interceptor): then it is a request-level override.
+            if (metadata.TryGetValue(RequestMetadataKeys.ClientProxyPolicy, out var policyObj) &&
+                policyObj is ClientProxyPolicy policy &&
+                (hasSettings ? settings != null && ReferenceEquals(settings, policy.Resolved) : policy.Resolved == null))
+            {
+                return SameProxyTarget(policy.ResolvedFor, request.Uri)
+                    ? policy.Resolved
+                    : ProxyEnvironmentResolver.Resolve(request.Uri, policy.Configured);
+            }
+
+            if (settings?.Address == null)
+                return null;
+
+            if (!string.Equals(settings.Address.Scheme, "http", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new UHttpException(new UHttpError(
+                    UHttpErrorType.InvalidRequest,
+                    "The request's proxy address is not http://; only http:// proxies are supported."));
+            }
+
+            if (ProxyBypassMatcher.IsBypassed(WireHost.LookupHost(request.Uri), request.Uri.Port, settings.BypassList))
+                return null;
+
+            return settings;
+        }
+
+        // Proxy selection depends only on the scheme (HTTPS_PROXY), host and port (bypass rules).
+        private static bool SameProxyTarget(Uri resolvedFor, Uri target)
+        {
+            if (ReferenceEquals(resolvedFor, target))
+                return true;
+
+            return resolvedFor != null && target != null &&
+                resolvedFor.Port == target.Port &&
+                string.Equals(resolvedFor.Scheme, target.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(resolvedFor.Host, target.Host, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     public static class ProxyEnvironmentResolver
     {
         public static ProxySettings Resolve(Uri targetUri, ProxySettings configured)

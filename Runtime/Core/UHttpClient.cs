@@ -876,6 +876,12 @@ namespace TurboHTTP.Core
                 var resolvedProxy = ProxyEnvironmentResolver.Resolve(request.Uri, _options.Proxy);
                 if (resolvedProxy != null)
                     request.WithMetadata(RequestMetadataKeys.ProxySettings, resolvedProxy);
+
+                // #832: the transport re-resolves this policy when it dispatches another URI (a
+                // redirect hop), so bypass and scheme rules apply to the URI actually sent.
+                request.WithMetadata(
+                    RequestMetadataKeys.ClientProxyPolicy,
+                    new ClientProxyPolicy(_options.Proxy, request.Uri, resolvedProxy));
             }
         }
 

@@ -484,7 +484,9 @@ namespace TurboHTTP.Transport
             var host = WireHost.LookupHost(request.Uri, wireHost);
             var port = request.Uri.Port;
             var secure = string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase);
-            var proxy = ResolveProxySettings(request);
+            // #828/#832: decided per dispatch against the URI actually sent (a redirect hop re-resolves
+            // the client policy; a request-level BypassList applies; a non-http:// proxy is rejected).
+            var proxy = RequestProxyResolver.ResolveForDispatch(request);
 
             // #85: raw sockets are not covered by iOS App Transport Security or the Android
             // cleartext policy, so the policy is applied here, before any socket. The leg to an
@@ -831,9 +833,8 @@ namespace TurboHTTP.Transport
 
             // Same lookup host as the cleartext check (#378): pool key and DNS use the A-label.
             var proxyHost = WireHost.LookupHost(proxy.Address);
-            var proxyPort = proxy.Address.IsDefaultPort
-                ? 80
-                : proxy.Address.Port;
+            // An http:// address (RequestProxyResolver): Port is 80 when the URI names none (#828).
+            var proxyPort = proxy.Address.Port;
 
             Http2ConnectionManager.ExtraDialClaim extraDial = null;
             if (secure)
@@ -1470,24 +1471,6 @@ namespace TurboHTTP.Transport
             }
 
             return CleartextTrafficPolicy.DefaultAllowCleartext;
-        }
-
-        private static ProxySettings ResolveProxySettings(UHttpRequest request)
-        {
-            if (request?.Metadata == null)
-                return null;
-
-            if (request.Metadata.TryGetValue(RequestMetadataKeys.ProxyDisabled, out var disabledObj) &&
-                disabledObj is bool disabled &&
-                disabled)
-            {
-                return null;
-            }
-
-            if (request.Metadata.TryGetValue(RequestMetadataKeys.ProxySettings, out var settingsObj))
-                return settingsObj as ProxySettings;
-
-            return null;
         }
 
         /// <summary>
