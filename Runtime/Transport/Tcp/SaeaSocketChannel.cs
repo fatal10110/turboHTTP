@@ -30,11 +30,17 @@ namespace TurboHTTP.Transport.Tcp
     /// the caller-side ArrayPool return.
     /// </para>
     /// <para>
-    /// <b>Cancellation:</b> <see cref="CancellationToken"/> cancellation is implemented by
-    /// registering a callback that disposes the underlying socket. This triggers
-    /// <see cref="SocketError.OperationAborted"/>, which the Completed handler maps to
-    /// <see cref="OperationCanceledException"/>. Double-dispose of the socket is safe
-    /// (idempotent on all .NET platforms).
+    /// <b>Cancellation:</b> <see cref="CancellationToken"/> cancellation disposes the channel
+    /// (<see cref="Dispose"/>), which fails the pending operation with
+    /// <see cref="OperationCanceledException"/> at once, without waiting for an OS completion that
+    /// IL2CPP may never post (#384).
+    /// </para>
+    /// <para>
+    /// <b>Descriptor lifetime (#384):</b> on selector platforms (kqueue/epoll) the socket is shut
+    /// down on dispose and closed only once every submitted operation ended, or at
+    /// <see cref="SocketHandleHold.HoldTimeout"/>. IL2CPP's close does not remove a pending job from
+    /// its selector, so a descriptor closed under a pending receive could be reused by the next
+    /// socket and its first receive dispatched to the stale job.
     /// </para>
     /// </remarks>
     internal sealed class SaeaSocketChannel : IDisposable
@@ -43,8 +49,9 @@ namespace TurboHTTP.Transport.Tcp
         private const int BufferSize = 16 * 1024;
 
         /// <summary>
-        /// How long <see cref="Dispose"/> waits for in-flight completions before it gives up and
-        /// leaks the buffers (#168). Matches the PollSelect poll-thread join bound.
+        /// IOCP (Windows): how long after <see cref="Dispose"/> closed the socket an in-flight
+        /// completion may take before the buffers are given up and leaked (#168). Selector platforms
+        /// hold the descriptor for <see cref="SocketHandleHold.HoldTimeout"/> instead (#384).
         /// </summary>
         internal const int DisposeDrainTimeoutMs = 500;
 
@@ -70,8 +77,18 @@ namespace TurboHTTP.Transport.Tcp
         private volatile int _recvActive;
         private volatile int _sendActive;
 
+        // 1 once the OS completion of the current operation arrived: Dispose then leaves the result
+        // to it, so the operation's own error stays the cause (#415). Reset when an operation starts.
+        private volatile int _recvCompleting;
+        private volatile int _sendCompleting;
+
         private int _disposed;
-        private int _drainTimeoutMs = DisposeDrainTimeoutMs;
+        // Interlocked: 1 once the socket was closed and the buffers released or given up (exactly once).
+        private int _released;
+        // The fallback bound for an operation that never ends; set by Dispose, disposed on release.
+        private Timer _releaseBound;
+        // Test override of the release bound in milliseconds, or -1 for the platform default.
+        private int _boundOverrideMs = -1;
         private int _buffersReleased;
 
         public SaeaSocketChannel(Socket socket)
@@ -109,6 +126,25 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal Action<SocketError> TestHookReceiveEnded { get; set; }
 
+        /// <summary>
+        /// Test hook: runs on the completing thread right after the channel recorded that a pending
+        /// receive's OS completion arrived, before it resolves the caller. A <see cref="Dispose"/> from
+        /// here leaves the result to the completion, so its socket error stays the cause (#415).
+        /// </summary>
+        internal Action<SocketError> TestHookReceiveCompletionMarked { get; set; }
+
+        /// <summary>
+        /// Test hook: the send counterpart of <see cref="TestHookReceiveEnded"/>; runs on the completing
+        /// thread when a pending send ends, before the channel marks the send as ended (#384).
+        /// </summary>
+        internal Action<SocketError> TestHookSendEnded { get; set; }
+
+        /// <summary>
+        /// Test hook: runs right after an operation set its in-flight flag and before it resets its
+        /// completion source, so a test can dispose the channel inside that window (#384).
+        /// </summary>
+        internal Action TestHookActivated { get; set; }
+
         /// <summary>True once <see cref="Dispose"/> returned the pooled buffers (test hook, #168).</summary>
         internal bool BuffersReleased => Volatile.Read(ref _buffersReleased) != 0;
 
@@ -117,7 +153,7 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>
         /// The dispose order: true (selector platforms) shuts the socket down and closes it only once
-        /// pending operations drained (#384); false (IOCP) closes it first. Tests set it.
+        /// every submitted operation ended (#384); false (IOCP) closes it first. Tests set it.
         /// </summary>
         internal static bool ShutdownBeforeClose
         {
@@ -125,8 +161,11 @@ namespace TurboHTTP.Transport.Tcp
             set => Volatile.Write(ref s_shutdownBeforeClose, value ? 1 : 0);
         }
 
-        /// <summary>Test hook: the bound <see cref="Dispose"/> waits for in-flight operations, per drain.</summary>
-        internal void SetDrainTimeoutForTest(int drainTimeoutMs) => Volatile.Write(ref _drainTimeoutMs, drainTimeoutMs);
+        /// <summary>Test hook: the bound after which a dispose with an operation still in flight gives up waiting for it.</summary>
+        internal void SetDrainTimeoutForTest(int drainTimeoutMs) => Volatile.Write(ref _boundOverrideMs, drainTimeoutMs);
+
+        /// <summary>True once the channel closed its socket and released or gave up its buffers (test hook, #384).</summary>
+        internal bool IsReleased => Volatile.Read(ref _released) != 0;
 
         /// <summary>
         /// Test hook: marks a receive as submitted to the OS without submitting one, i.e. a
@@ -134,7 +173,7 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         internal void SimulateStuckReceiveForTest(int drainTimeoutMs)
         {
-            _drainTimeoutMs = drainTimeoutMs;
+            Volatile.Write(ref _boundOverrideMs, drainTimeoutMs);
             _recvActive = 1;
         }
 
@@ -155,24 +194,27 @@ namespace TurboHTTP.Transport.Tcp
             if (Interlocked.CompareExchange(ref _recvActive, 1, 0) != 0)
                 throw new InvalidOperationException(
                     "SaeaSocketChannel does not support concurrent ReceiveAsync calls.");
+            TestHookActivated?.Invoke();
+
+            // Before the buffer is touched: a Dispose that already released it is seen here.
+            _recvSource.Reset();
+            Interlocked.Exchange(ref _recvCompleting, 0);
+            if (Volatile.Read(ref _disposed) != 0)
+                throw AbandonDisposedStart(receive: true, ct);
 
             int toRead = Math.Min(count, _recvBuffer.Length);
             _recvSaea.SetBuffer(_recvBuffer, 0, toRead);
-            _recvSource.Reset();
 
             CancellationTokenRegistration reg = default;
             if (ct.CanBeCanceled)
             {
                 TestHookBeforeRegister?.Invoke();
-                // Cancellation: dispose the socket. Double-dispose is safe (idempotent).
-                // The disposal triggers OperationAborted on the pending SAEA, which
-                // OnRecvCompleted maps to OperationCanceledException.
-                reg = ct.Register(static state =>
-                {
-                    try { ((Socket)state).Dispose(); } catch { }
-                }, _socket);
+                // Cancellation disposes the channel: the pending receive fails at once, and the
+                // descriptor stays open until the OS operation ended (#384).
+                reg = ct.Register(static state => ((SaeaSocketChannel)state).Dispose(), this);
             }
 
+            bool submitted = false;
             try
             {
                 bool isPending = _socket.ReceiveAsync(_recvSaea);
@@ -180,8 +222,12 @@ namespace TurboHTTP.Transport.Tcp
                 {
                     // Synchronous completion — the Completed event is NOT raised (BCL contract).
                     // Clear the active flag and resolve the source inline.
-                    _recvActive = 0;
+                    Interlocked.Exchange(ref _recvActive, 0);
                     ResolveFromSaea(_recvSaea, _recvSource);
+                }
+                else
+                {
+                    submitted = true;
                 }
 
                 int bytesRead = await _recvSource.AsValueTask().ConfigureAwait(false);
@@ -193,9 +239,10 @@ namespace TurboHTTP.Transport.Tcp
             }
             catch (Exception ex)
             {
-                // If the async path never started (exception before ReceiveAsync),
-                // ensure the active flag is cleared so the channel is reusable.
-                Interlocked.CompareExchange(ref _recvActive, 0, 1);
+                // Only an operation the OS never took is over here. A submitted one failed by
+                // Dispose is still in flight: its completion clears the flag (#384).
+                if (!submitted)
+                    Interlocked.CompareExchange(ref _recvActive, 0, 1);
                 if (IsCancellationRace(ex, ct))
                     throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
                 throw;
@@ -203,6 +250,8 @@ namespace TurboHTTP.Transport.Tcp
             finally
             {
                 reg.Dispose();
+                // After the copy above: releasing returns the receive buffer to the pool.
+                ReleaseIfDisposed();
             }
         }
 
@@ -227,30 +276,37 @@ namespace TurboHTTP.Transport.Tcp
                 if (Interlocked.CompareExchange(ref _sendActive, 1, 0) != 0)
                     throw new InvalidOperationException(
                         "SaeaSocketChannel does not support concurrent SendAsync calls.");
+                TestHookActivated?.Invoke();
+
+                // Before the buffer is touched: a Dispose that already released it is seen here.
+                _sendSource.Reset();
+                Interlocked.Exchange(ref _sendCompleting, 0);
+                if (Volatile.Read(ref _disposed) != 0)
+                    throw AbandonDisposedStart(receive: false, ct);
 
                 int toSend = Math.Min(remaining, _sendBuffer.Length);
                 data.Slice(offset, toSend).Span.CopyTo(_sendBuffer.AsSpan(0, toSend));
-
                 _sendSaea.SetBuffer(_sendBuffer, 0, toSend);
-                _sendSource.Reset();
 
                 CancellationTokenRegistration reg = default;
                 if (ct.CanBeCanceled)
                 {
                     TestHookBeforeRegister?.Invoke();
-                    reg = ct.Register(static state =>
-                    {
-                        try { ((Socket)state).Dispose(); } catch { }
-                    }, _socket);
+                    reg = ct.Register(static state => ((SaeaSocketChannel)state).Dispose(), this);
                 }
 
+                bool submitted = false;
                 try
                 {
                     bool isPending = _socket.SendAsync(_sendSaea);
                     if (!isPending)
                     {
-                        _sendActive = 0;
+                        Interlocked.Exchange(ref _sendActive, 0);
                         ResolveFromSaea(_sendSaea, _sendSource);
+                    }
+                    else
+                    {
+                        submitted = true;
                     }
 
                     int sent = await _sendSource.AsValueTask().ConfigureAwait(false);
@@ -259,7 +315,8 @@ namespace TurboHTTP.Transport.Tcp
                 }
                 catch (Exception ex)
                 {
-                    Interlocked.CompareExchange(ref _sendActive, 0, 1);
+                    if (!submitted)
+                        Interlocked.CompareExchange(ref _sendActive, 0, 1);
                     if (IsCancellationRace(ex, ct))
                         throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
                     throw;
@@ -267,6 +324,7 @@ namespace TurboHTTP.Transport.Tcp
                 finally
                 {
                     reg.Dispose();
+                    ReleaseIfDisposed();
                 }
             }
         }
@@ -276,16 +334,23 @@ namespace TurboHTTP.Transport.Tcp
         private void OnRecvCompleted(object sender, SocketAsyncEventArgs saea)
         {
             TestHookReceiveEnded?.Invoke(saea.SocketError);
+            _recvCompleting = 1;
+            TestHookReceiveCompletionMarked?.Invoke(saea.SocketError);
 
-            // Clear active flag BEFORE delivering result so Dispose()'s spin-wait unblocks.
-            _recvActive = 0;
+            // Interlocked (a full fence): Dispose sets _disposed and then reads this flag; this
+            // thread clears the flag and then reads _disposed, so one of the two releases.
+            Interlocked.Exchange(ref _recvActive, 0);
             ResolveFromSaea(saea, _recvSource);
+            ReleaseIfDisposed();
         }
 
         private void OnSendCompleted(object sender, SocketAsyncEventArgs saea)
         {
-            _sendActive = 0;
+            TestHookSendEnded?.Invoke(saea.SocketError);
+            _sendCompleting = 1;
+            Interlocked.Exchange(ref _sendActive, 0);
             ResolveFromSaea(saea, _sendSource);
+            ReleaseIfDisposed();
         }
 
         private static void ResolveFromSaea(SocketAsyncEventArgs saea, SaeaCompletionSource source)
@@ -293,15 +358,15 @@ namespace TurboHTTP.Transport.Tcp
             switch (saea.SocketError)
             {
                 case SocketError.Success:
-                    source.SetResult(saea.BytesTransferred);
+                    source.TrySetResult(saea.BytesTransferred);
                     break;
                 case SocketError.OperationAborted:
                 case SocketError.Interrupted:
-                    source.SetException(new OperationCanceledException(
+                    source.TrySetException(new OperationCanceledException(
                         "Socket I/O was cancelled (socket closed or operation aborted)."));
                     break;
                 default:
-                    source.SetException(new SocketException((int)saea.SocketError));
+                    source.TrySetException(new SocketException((int)saea.SocketError));
                     break;
             }
         }
@@ -313,71 +378,133 @@ namespace TurboHTTP.Transport.Tcp
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
                 return;
 
-            int drainTimeoutMs = Volatile.Read(ref _drainTimeoutMs);
-            bool drained;
-            if (!ShutdownBeforeClose)
+            bool shutdownFirst = ShutdownBeforeClose;
+            if (shutdownFirst)
             {
-                // IOCP (Windows): disposing the socket posts an OperationAborted completion that
-                // fires OnRecv/OnSendCompleted, clearing the active flags and delivering an
-                // exception to any awaiter. IOCP has no descriptor-keyed selector to go stale.
-                try { _socket.Dispose(); } catch { }
-                drained = WaitForInFlightOperations(drainTimeoutMs);
+                // Selector platforms (Mono/IL2CPP on kqueue/epoll): shut down now, so the peer sees
+                // the close and a pending receive ends while the descriptor is still open. The
+                // receive reports Interrupted there, not end of stream: the Mono and IL2CPP socket
+                // layers turn a 0-byte read after a local SHUT_RD into EINTR (#410). The socket is
+                // closed only once every submitted operation ended: IL2CPP's close does not remove
+                // a pending job from its selector, and a new socket would get the same number (#384).
+                try { _socket.Shutdown(SocketShutdown.Both); } catch { }
             }
             else
             {
-                // Selector platforms (Mono/IL2CPP on kqueue/epoll): shut down first, so a pending
-                // receive ends while the descriptor is still open, and close only after it ended.
-                // The receive reports Interrupted there, not end of stream: the Mono and IL2CPP
-                // socket layers turn a 0-byte read after a local SHUT_RD into EINTR, which maps to
-                // OperationCanceledException like an abort (#410). IL2CPP's close does not remove
-                // a pending job from its selector, so closing first would let a new socket reuse
-                // the number behind the stale job (#384). An operation that did not end within the
-                // drain bound falls back to closing it (the pre-#384 order) before draining once more.
-                try { _socket.Shutdown(SocketShutdown.Both); } catch { }
-                drained = WaitForInFlightOperations(drainTimeoutMs);
+                // IOCP (Windows): closing posts an OperationAborted completion for each pending
+                // operation. IOCP has no descriptor-keyed selector to go stale.
                 try { _socket.Dispose(); } catch { }
-                if (!drained)
-                    drained = WaitForInFlightOperations(drainTimeoutMs);
             }
 
-            // We must not return the ArrayPool buffers while the OS/IOCP thread still holds a
-            // reference to them.
-            if (!drained)
-            {
-                // Some runtimes (Mono/IL2CPP) may never post the aborted completion (#168).
-                // Leak the SAEAs and buffers on purpose: the kernel may still write into them,
-                // so returning them to the shared pool could corrupt another renter's data.
-                Interlocked.Increment(ref s_buffersLeakedOnDispose);
-                ByteArrayPool.Abandon(_recvBuffer);
-                ByteArrayPool.Abandon(_sendBuffer);
-                TurboDiagnostics.LogOnce(
-                    TurboDiagnostics.OnceSaeaDisposeDrainTimeout,
-                    "[TurboHTTP] SAEA socket operation did not complete within " + DisposeDrainTimeoutMs +
-                    "ms of socket disposal; its buffers were not returned to the pool (logged once).");
+            // Callers waiting on an operation get their failure now, not when (or if) the OS posts
+            // its completion: IL2CPP did not end about 9% of abandoned reads (#384, #168).
+            FailPendingOperations();
+
+            if (TryRelease())
                 return;
-            }
+
+            int boundMs = Volatile.Read(ref _boundOverrideMs);
+            if (boundMs < 0)
+                boundMs = shutdownFirst ? (int)SocketHandleHold.HoldTimeout.TotalMilliseconds : DisposeDrainTimeoutMs;
+            var bound = new Timer(static state => ((SaeaSocketChannel)state).ReleaseAtBound(), this, boundMs, Timeout.Infinite);
+            // Interlocked (a full fence): TryRelease sets _released and then reads _releaseBound, so
+            // one of the two disposes the timer.
+            Interlocked.Exchange(ref _releaseBound, bound);
+            if (Volatile.Read(ref _released) != 0)
+                bound.Dispose();
+        }
+
+        private void FailPendingOperations()
+        {
+            // An operation whose completion already arrived ends with its own result.
+            if (_recvActive != 0 && _recvCompleting == 0)
+                _recvSource.TrySetException(new OperationCanceledException("Socket I/O was cancelled (channel disposed)."));
+            if (_sendActive != 0 && _sendCompleting == 0)
+                _sendSource.TrySetException(new OperationCanceledException("Socket I/O was cancelled (channel disposed)."));
+        }
+
+        /// <summary>
+        /// An operation that set its in-flight flag after <see cref="Dispose"/> began: Dispose may have
+        /// read a stale <c>_*Completing</c> mark or failed the source before its reset, so it never
+        /// fails this caller. The operation is not submitted; it clears its flag, releases like a
+        /// completion would, and returns what a call on a disposed channel throws (#384).
+        /// </summary>
+        /// <remarks>
+        /// The caller's <c>Interlocked</c> write of its <c>_*Completing</c> mark pairs with Dispose's
+        /// CAS on <c>_disposed</c>: either the caller sees <c>_disposed</c> here, or Dispose sees the
+        /// reset source and fails it.
+        /// </remarks>
+        private Exception AbandonDisposedStart(bool receive, CancellationToken ct)
+        {
+            if (receive)
+                Interlocked.Exchange(ref _recvActive, 0);
+            else
+                Interlocked.Exchange(ref _sendActive, 0);
+            TryRelease();
+            return ct.IsCancellationRequested
+                ? new OperationCanceledException(ct)
+                : new ObjectDisposedException(nameof(SaeaSocketChannel));
+        }
+
+        private void ReleaseIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                TryRelease();
+        }
+
+        /// <summary>
+        /// Closes the socket and returns the buffers once no submitted operation is in flight; false
+        /// while one still is. Runs exactly once, on whichever thread sees the last operation end.
+        /// </summary>
+        private bool TryRelease()
+        {
+            if (Volatile.Read(ref _recvActive) != 0 || Volatile.Read(ref _sendActive) != 0)
+                return false;
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+                return true;
+
+            Volatile.Read(ref _releaseBound)?.Dispose();
+            try { _socket.Dispose(); } catch { }
 
             // Safe to dispose SAEAs and return buffers — all completions have fired.
             _recvSaea.Dispose();
             _sendSaea.Dispose();
-
             ByteArrayPool.Return(_recvBuffer);
             ByteArrayPool.Return(_sendBuffer);
             Volatile.Write(ref _buffersReleased, 1);
+            return true;
         }
 
-        private bool WaitForInFlightOperations(int timeoutMs)
+        /// <summary>
+        /// The fallback for an operation that never ended (#168, Mono #293): close the socket
+        /// anyway, accepting the descriptor-reuse risk the hold avoids, and give up the buffers.
+        /// </summary>
+        private void ReleaseAtBound()
         {
-            var deadline = System.Diagnostics.Stopwatch.StartNew();
-            var sw = new SpinWait();
-            while (Volatile.Read(ref _recvActive) != 0 || Volatile.Read(ref _sendActive) != 0)
+            if (Volatile.Read(ref _recvActive) == 0 && Volatile.Read(ref _sendActive) == 0)
             {
-                if (deadline.ElapsedMilliseconds >= timeoutMs)
-                    return false;
-                sw.SpinOnce();
+                TryRelease();
+                return;
             }
 
-            return true;
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+                return;
+
+            Volatile.Read(ref _releaseBound)?.Dispose();
+            try { _socket.Dispose(); } catch { }
+
+            // No caller outlives the bound, even one Dispose did not reach.
+            FailPendingOperations();
+
+            // The kernel may still write into the buffers, so returning them to the shared pool
+            // could corrupt another renter's data: leak them on purpose.
+            Interlocked.Increment(ref s_buffersLeakedOnDispose);
+            ByteArrayPool.Abandon(_recvBuffer);
+            ByteArrayPool.Abandon(_sendBuffer);
+            TurboDiagnostics.LogOnce(
+                TurboDiagnostics.OnceSaeaDisposeDrainTimeout,
+                "[TurboHTTP] A SAEA socket operation did not end after the socket was disposed; the socket was " +
+                "closed at the bound and its buffers were not returned to the pool (logged once).");
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
