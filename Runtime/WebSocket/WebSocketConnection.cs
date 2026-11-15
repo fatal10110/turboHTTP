@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core;
 using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
@@ -177,6 +180,38 @@ namespace TurboHTTP.WebSocket
         internal long ReceiveQueueBytes => _receiveQueue?.QueuedBytes ?? 0;
 
         public WebSocketCloseStatus? CloseStatus => _hasCloseStatus ? _closeStatus : (WebSocketCloseStatus?)null;
+
+        /// <summary>
+        /// Maps a connect failure that is neither a handshake rejection, an abort nor the handshake timer
+        /// by its cause (#1139), as the HTTP transport does: a TLS authentication failure is a
+        /// certificate error, a connect timeout a timeout, an argument the transport rejects (for example
+        /// a non-ws scheme) an invalid request, a resolver failure a DNS failure; a
+        /// <see cref="WebSocketException"/> keeps its error, and anything else is a dropped connection.
+        /// </summary>
+        internal static WebSocketException MapConnectFailure(Exception ex)
+        {
+            switch (ex)
+            {
+                case WebSocketException wsEx:
+                    return wsEx;
+                case AuthenticationException _:
+                    return new WebSocketException(WebSocketError.CertificateError, ex.Message, ex);
+                case TimeoutException _:
+                    return new WebSocketException(WebSocketError.Timeout, ex.Message, ex);
+                case SocketException socket when socket.SocketErrorCode == SocketError.HostNotFound ||
+                                                 socket.SocketErrorCode == SocketError.NoData ||
+                                                 socket.SocketErrorCode == SocketError.TryAgain:
+                    return new WebSocketException(WebSocketError.DnsResolutionFailed, ex.Message, ex);
+                case ArgumentException _:
+                    return new WebSocketException(WebSocketError.InvalidRequest, ex.Message, ex);
+                case UHttpException http when http.HttpError?.Type == UHttpErrorType.CertificateError:
+                    return new WebSocketException(WebSocketError.CertificateError, ex.Message, ex);
+                case UHttpException http when http.HttpError?.Type == UHttpErrorType.Timeout:
+                    return new WebSocketException(WebSocketError.Timeout, ex.Message, ex);
+                default:
+                    return new WebSocketException(WebSocketError.ConnectionClosed, ex.Message, ex);
+            }
+        }
 
         public WebSocketMetrics Metrics => _metrics?.GetSnapshot() ?? default;
 
@@ -402,18 +437,14 @@ namespace TurboHTTP.WebSocket
                     // HandshakeTimeout expired (the caller token did not fire): the connect phase,
                     // CONNECT tunnel, TLS or the upgrade exchange did not finish in time.
                     mapped = new WebSocketException(
-                        WebSocketError.ConnectionClosed,
+                        WebSocketError.Timeout,
                         "WebSocket opening handshake timed out after " +
                         options.HandshakeTimeout.TotalMilliseconds + " ms.",
                         ex);
                 }
-                else if (ex is WebSocketException wsEx)
-                {
-                    mapped = wsEx;
-                }
                 else
                 {
-                    mapped = new WebSocketException(WebSocketError.ConnectionClosed, ex.Message, ex);
+                    mapped = MapConnectFailure(ex);
                 }
 
                 var closeStatus = mapped.CloseCode.HasValue

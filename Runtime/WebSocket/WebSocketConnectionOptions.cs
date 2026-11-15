@@ -23,7 +23,13 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public int MaxMessageSize { get; set; } = WebSocketConstants.DefaultMaxMessageSize;
 
-        /// <summary> Maximum number of fragments allowed for a single message. </summary>
+        /// <summary>
+        /// Maximum number of frames (fragments) one received message may arrive in. Default 4096. The
+        /// message bytes are bounded by <see cref="MaxMessageSize"/>; this bounds a message that never ends
+        /// in empty or tiny fragments (RFC 6455 section 5.4 sets no fragment limit). The fragment after the
+        /// limit fails the connection with close code 1009. Raise it with <see cref="MaxMessageSize"/> for
+        /// peers that send large messages in small frames.
+        /// </summary>
         public int MaxFragmentCount { get; set; } = WebSocketConstants.DefaultMaxFragmentCount;
 
         /// <summary> Frame payload size at which automatic fragmentation triggers. </summary>
@@ -118,6 +124,12 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public object TlsProvider { get; set; }
 
+        /// <summary>
+        /// TLS backend for <c>wss://</c> connections. A value other than <see cref="TlsBackend.Auto"/>
+        /// (the default) wins over the backend the transport was created with; <see cref="TlsBackend.Auto"/>
+        /// leaves that choice to the transport (for <c>RawSocketWebSocketTransport</c>, its constructor
+        /// argument, #1091). <see cref="TlsProvider"/>, when set, overrides both.
+        /// </summary>
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 
         public WebSocketProxySettings ProxySettings { get; set; } = WebSocketProxySettings.None;

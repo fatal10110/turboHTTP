@@ -120,7 +120,7 @@ IWebSocketTransport (transport abstraction — in TurboHTTP.WebSocket)
 |---------|---------|-------|
 | `MaxFrameSize` | 4 MB | Max bytes in a single frame (was 16 MB; lowered to fit `MaxMessageSize`, #80) |
 | `MaxMessageSize` | 4 MB | Max bytes in a message: single-frame (checked from the frame header), reassembled, or decompressed (#80) |
-| `MaxFragmentCount` | 64 | Max fragments per message (bounds metadata overhead) |
+| `MaxFragmentCount` | 4096 | Max fragments per message; bounds a never-ending message of empty or tiny fragments (bytes are bounded by `MaxMessageSize`; was 64, which rejected 600 KB in 8 KiB frames, #1144) |
 | `FragmentationThreshold` | 64 KB | When to fragment outgoing messages |
 | `ReceiveQueueCapacity` | 100 | Message count bound of each delivery queue (connection and client) |
 | `ReceiveQueueMaxBytes` | 8 MB | Byte bound of each delivery queue; an empty queue always admits one message (#80) |

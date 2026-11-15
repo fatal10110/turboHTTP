@@ -695,22 +695,13 @@ namespace TurboHTTP.WebSocket
 
         /// <summary>
         /// A 4xx rejection of the opening handshake, other than 408 Request Timeout and 429 Too Many
-        /// Requests, and a 407 from the proxy repeat on every attempt (RFC 9110 section 15.5): reconnecting
-        /// would only replay the failure (#83).
+        /// Requests, a 407 from the proxy (RFC 9110 section 15.5, #83), a rejected server certificate, an
+        /// invalid request and a cleartext policy refusal (#1139) repeat on every attempt: reconnecting
+        /// would only replay the failure. The rule lives beside <see cref="WebSocketException.IsRetryable"/>.
         /// </summary>
         internal static bool IsPermanentConnectFailure(WebSocketException error)
         {
-            if (error == null)
-                return false;
-
-            if (error.Error == WebSocketError.ProxyAuthenticationRequired)
-                return true;
-
-            if (error.Error != WebSocketError.HandshakeFailed || !error.HandshakeStatusCode.HasValue)
-                return false;
-
-            int status = error.HandshakeStatusCode.Value;
-            return status >= 400 && status < 500 && status != 408 && status != 429;
+            return error != null && error.IsPermanentConnectFailure();
         }
 
         private Exception CreateReplacedClientException(ObjectDisposedException ex)
