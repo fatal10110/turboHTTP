@@ -9,19 +9,28 @@ skip gates:
     baseline file (Tools~/unity/skip-baseline.txt). A filtered run covers part of the suite, so the
     count is only listed.
 
+and the total gates (#903):
+  * a run in which no test ran fails, filtered or not: a --filter that matches nothing (a typo, or an EditMode
+    filter for runtime tests) writes a result file with total=0 that would otherwise read as a pass;
+  * an unfiltered run may not run fewer cases than the run target's "min-total <key> <n>" line in the same
+    baseline file: a fixture that is deleted or compiled out lowers the total and the skips together, which
+    no skip gate notices. The shortfall is printed.
+
 The baseline key names the run target, because a player skips more platform-scoped [env] tests than
 the host editor (#341): EditMode and PlayMode for the host editor (run-tests.sh), Player-Android for
-an Android player (run-device-tests.sh, run-emulator-tests.sh). A key without an entry fails an
+an Android player (run-device-tests.sh, run-emulator-tests.sh), Player-StandaloneWindows64 for a Windows
+standalone player (run-tests.sh --platform StandaloneWindows64). A key without a skip or min-total entry fails an
 unfiltered run.
 
 Usage: summarize_results.py <results.xml> <baseline key: EditMode|PlayMode|Player-Android|...> <filtered:0|1> <baseline-file>
-Exit: 0 gates pass, 4 a skip gate failed. (Test failures are reported by the caller via Unity's exit code.)
+Exit: 0 gates pass, 4 a skip or total gate failed, 2 bad arguments. (Test failures are reported by the caller via Unity's exit code.)
 """
 import re
 import sys
 import xml.etree.ElementTree as ET
 
 SKIP_GATE_EXIT = 4
+MIN_TOTAL_KEY = "min-total"
 REASON_OK = re.compile(r"#\d+|\[env\]")
 
 
@@ -37,6 +46,27 @@ def read_baseline(path, platform):
     except FileNotFoundError:
         return None
     return None
+
+
+def read_min_total(path, platform):
+    """Minimum total cases an unfiltered run of the key must reach ("min-total <key> <n>"), or None without an entry."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split("#", 1)[0].split()
+                if len(parts) == 3 and parts[0] == MIN_TOTAL_KEY and parts[1] == platform:
+                    return int(parts[2])
+    except FileNotFoundError:
+        return None
+    return None
+
+
+def total_cases(run):
+    """The run's total: the test-run total attribute, else the number of test-case elements."""
+    try:
+        return int(run.get("total"))
+    except (TypeError, ValueError):
+        return sum(1 for _ in run.iter("test-case"))
 
 
 def skipped_cases(root):
@@ -80,6 +110,26 @@ def summarize(xml_path, platform, filtered, baseline_path, out=sys.stdout):
         gate_failed = True
     else:
         print(f"run-tests: skipped={len(skipped)} within baseline {baseline} for {platform}", file=out)
+
+    total = total_cases(run)
+    minimum = read_min_total(baseline_path, platform)
+    if total == 0:
+        print("run-tests: TOTAL GATE FAILED: no test ran (total=0); the filter or category matches no test of this "
+              "platform (runtime tests run in PlayMode and players, editor tests in EditMode)", file=out)
+        gate_failed = True
+    elif filtered:
+        print(f"run-tests: total={total} (filtered run; the {platform} min-total applies to unfiltered runs only)",
+              file=out)
+    elif minimum is None:
+        print(f"run-tests: TOTAL GATE FAILED: no {MIN_TOTAL_KEY} {platform} entry in {baseline_path}", file=out)
+        gate_failed = True
+    elif total < minimum:
+        print(f"run-tests: TOTAL GATE FAILED: total {total} < {MIN_TOTAL_KEY} {minimum} for {platform} "
+              f"({minimum - total} fewer, {baseline_path}); find the tests that stopped running, or lower the "
+              f"minimum with the reason in the PR", file=out)
+        gate_failed = True
+    else:
+        print(f"run-tests: total={total} reaches {MIN_TOTAL_KEY} {minimum} for {platform}", file=out)
     return SKIP_GATE_EXIT if gate_failed else 0
 
 

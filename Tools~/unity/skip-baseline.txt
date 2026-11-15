@@ -66,3 +66,18 @@ PlayMode 3
 Player-Android 16
 Player-iOS 21
 Player-iOS-2021.3 33
+
+# Minimum test cases in an unfiltered run, per run target (#903): summarize_results.py fails an unfiltered run that
+# ran fewer (exit 4) and prints the shortfall, so a fixture that is deleted or compiled out on a target cannot pass
+# with its skips gone too. Any run in which no test ran fails as well, filtered or not. Each number is the total of
+# a complete unfiltered run; raise it when a periodic host-editor or device run reports more (note it in that
+# run's record), and lower it only with the removed tests and the reason in the PR.
+#   EditMode 71        periodic host-editor run w1110 (main 77ebc04, 2026-11-08, Unity 2021.3.45f2, Mono)
+#   PlayMode 2923      the same run
+#   Player-Android 2628  #365 run on main e0a5bf7 (API 29 x86_64 emulator, Stripping High, 2026-11-04)
+# Player-iOS, Player-iOS-2021.3 and Player-StandaloneWindows64 have no entry yet (no complete unfiltered run of
+# them is recorded), so an unfiltered run of them fails until its total is recorded here (Win64: #1219).
+# min-total <run target> <min cases>
+min-total EditMode 71
+min-total PlayMode 2923
+min-total Player-Android 2628

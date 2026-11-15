@@ -26,8 +26,8 @@
 # process runs but logs no TURBOHTTP_DEVICE_RUN within about a minute while another app holds the focus is
 # relaunched once, then exits 2; a player that dies is reported about a minute after its process is gone (three
 # complete process listings without it, device_poll_s apart).
-# Exit codes as run-tests.sh: 0 pass, 1 failures, 2 setup error, 3 Unity unavailable, 4 skip gate (an unfiltered
-# run is held to the Player-Android entry of Tools~/unity/skip-baseline.txt, #341), 5 WSL interop unavailable
+# Exit codes as run-tests.sh: 0 pass, 1 failures, 2 setup error, 3 Unity unavailable, 4 skip or total gate (an unfiltered
+# run is held to the Player-Android entries of Tools~/unity/skip-baseline.txt, #341, #903), 5 WSL interop unavailable
 # (from WSL: cmd.exe, adb.exe or Unity.exe did not start through about two minutes of retries, wsl-interop.sh, #355).
 set -euo pipefail
 
@@ -506,12 +506,53 @@ if [ -n "$serial" ]; then
   echo "run-device-tests: installed and launched on $serial"
 fi
 
+# The device log of the run (#419), polled through the wait below: a full suite logs far more than the 16M ring
+# buffer holds, so one dump at the end keeps only its last part. Each poll appends what was logged since the newest
+# timestamp already in the file (logcat -t <epoch time>, which implies -d and includes that timestamp, so the lines
+# of that timestamp already written are dropped). Every poll is a foreground adb call bounded like any other, so no
+# log process runs in the background and none can outlive the script (Ctrl-C, exit 2, emulator gone). The first
+# poll returns everything since the logcat -c before the launch.
+devlog="$cache/logcat-Android-$tag-$ts.txt"
+devlog_since=""; devlog_edge=""; devlog_polls=0; devlog_stamped=$'(^|\n) *[0-9]+\\.[0-9]+ '
+poll_devlog() {
+  local chunk rc=0 res
+  if [ -n "$devlog_since" ]; then
+    chunk="$(adbr logcat -v epoch -b main -b system -b crash -b events -t "$devlog_since")" || rc=$?
+  else
+    chunk="$(adbr logcat -d -v epoch -b main -b system -b crash -b events)" || rc=$?
+  fi
+  # A failed poll (adb or interop outage, emulator gone) loses nothing still in the ring: the next one asks again.
+  [ "$rc" = 0 ] || return 0
+  # Only epoch-stamped lines are an answer: a logcat without -v epoch (before Android 7) prints its usage error, on
+  # stdout through adb without the shell protocol, and the end-of-run dump below takes over.
+  [[ "$chunk" =~ $devlog_stamped ]] || return 0
+  devlog_polls=$((devlog_polls + 1))
+  # awk appends the new lines to the devlog and prints the newest timestamp, then the lines written with it.
+  res="$(printf '%s\n' "$chunk" | DEVLOG_EDGE="$devlog_edge" awk -v since="$devlog_since" -v out="$devlog" '
+    BEGIN { last = since; n = 0
+            if (since != "") { k = split(ENVIRON["DEVLOG_EDGE"], e, "\n")
+                               for (i = 1; i <= k; i++) if (e[i] != "") { seen[e[i]] = 1; edge[++n] = e[i] } } }
+    /^--------- / { next }
+    $1 ~ /^[0-9]+\.[0-9]+$/ {
+      if (since != "" && $1 + 0 < since + 0) next
+      if ($1 == since && ($0 in seen)) next
+      if ($1 != last) { n = 0; last = $1 }
+      edge[++n] = $0
+    }
+    { print >> out }
+    END { print last; for (i = 1; i <= n; i++) print edge[i] }')" || return 0
+  devlog_since="${res%%$'\n'*}"
+  devlog_edge=""
+  case "$res" in *$'\n'*) devlog_edge="${res#*$'\n'}" ;; esac
+}
+
 # The player keeps running when the editor gives up on the player connection: wait for the device-side
 # result file and pull it. The wait ends early when the player process is gone (never installed after a
 # compile or build error, or crashed); TURBOHTTP_DEVICE_TEST_WAIT_MIN (default 120 minutes, the full suite
 # took 70 on a OnePlus 7) only bounds a player that hangs.
 if [ ! -f "$xml" ]; then
   echo "run-device-tests: no results over the player connection; waiting for the device-side result file"
+  : > "$devlog"
   deadline=$(( $(date +%s) + ${TURBOHTTP_DEVICE_TEST_WAIT_MIN:-120} * 60 ))
   left=0; gone=0; unknown=0; found=0
   while :; do
@@ -532,6 +573,7 @@ if [ ! -f "$xml" ]; then
       continue
     fi
     left=0
+    poll_devlog
     if results_on_device; then found=1; break; fi
     # Only complete answers without the process mean the player is gone, three in a row; an unknown answer
     # (adb failed, empty or truncated output) neither counts nor resets, and keeps waiting.
@@ -562,13 +604,21 @@ if [ ! -f "$xml" ]; then
   if [ -s "$xml" ]; then adbr shell am force-stop "$pkg_id" >/dev/null || true; fi
   if [ "$left" -lt 2 ]; then
     adbr logcat -d -s Unity:V | grep -E "TURBOHTTP_DEVICE_(RUN|FAIL)" | sed 's/^/  device: /' | head -60 || true
-    # Keep the device log of every run, taken when it ended: the device (an emulator) may be gone afterwards.
-    devlog="$cache/logcat-Android-$tag-$ts.txt"
-    adbr logcat -d -b main -b system -b crash -b events > "$devlog" || true
+    # The last poll, up to the end of the run. When no poll got an answer, one end-of-run dump is the fallback.
+    poll_devlog
+    if [ "$devlog_polls" = 0 ]; then
+      adbr logcat -d -b main -b system -b crash -b events > "$devlog" || true
+    fi
+  fi
+  # Keep the device log of every run: the device (an emulator) may be gone afterwards, and a device that left
+  # adb still leaves what the polls took before it went.
+  if [ "$left" -lt 2 ] || [ -s "$devlog" ]; then
     echo "run-device-tests: device log $devlog"
     if [ ! -s "$xml" ]; then
       grep -E "Fatal signal|FATAL EXCEPTION|DEBUG +: |lowmemorykiller|lmkd|am_proc_died|am_kill|Process $pkg_id .*died" "$devlog" | head -20 || true
     fi
+  else
+    rm -f "$devlog"
   fi
   if [ -s "$xml" ]; then
     code="$(python3 -c 'import sys, xml.etree.ElementTree as ET; print(0 if ET.parse(sys.argv[1]).getroot().get("failed") == "0" else 1)' "$xml" 2>/dev/null || echo 2)"
@@ -585,7 +635,8 @@ fi
 is_filtered=0
 if [ -n "$filter" ] || [ -n "$category" ]; then is_filtered=1; fi
 # Failures keep exit 1; the skip gates (an unexplained skip, or more skips than Tools~/unity/skip-baseline.txt
-# allows for an unfiltered run, #151) exit 4 so a vanished test cannot pass silently.
+# allows for an unfiltered run, #151) and the total gates (no test ran, or an unfiltered run below the
+# Player-Android min-total, #903) exit 4 so a vanished test cannot pass silently.
 set +e
 # A player skips more platform-scoped [env] tests than the host editor: its own baseline key (#341).
 python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$baseline_key" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"

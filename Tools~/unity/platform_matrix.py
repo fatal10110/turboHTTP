@@ -7,6 +7,9 @@ stripping, architecture and API level come from the file name the runners write:
 
   results-EditMode-<ts>.xml, results-PlayMode-<ts>.xml          Editor, Mono
   results-Android-<Low|High>-<arch>-api<sdk>[-<serial>]-<ts>.xml Android, IL2CPP
+  results-StandaloneWindows64-<Mono|IL2CPP>-<ts>.xml             Windows x86_64 player (run-tests.sh --platform
+                                                                 StandaloneWindows64, #404); also read for
+                                                                 StandaloneLinux64 and StandaloneOSX
 
 Anything else (or a correction) is given with --set key=value (target, run, backend, stripping, arch,
 api, device, unity_version, filter, commit), applied to every XML of that invocation.
@@ -54,12 +57,13 @@ CELLS = (
      "match": {"target": "Editor", "run": "PlayMode"}, "absent": "not-run"},
     {"id": "standalone-windows", "target": "StandaloneWindows64", "backend": "Mono|IL2CPP",
      "match": {"target": "StandaloneWindows64"}, "absent": "not-run",
-     "reason": "no script runs the test suite in a standalone player yet (#404); build-player.sh runs the smoke rows"},
+     "reason": "run Tools~/unity/run-tests.sh --platform StandaloneWindows64 --backend Mono|IL2CPP (#404)"},
     {"id": "standalone-macos", "target": "StandaloneOSX", "backend": "Mono|IL2CPP",
      "match": {"target": "StandaloneOSX"}, "absent": "needs-device-validation", "reason": "needs a Mac (#99)"},
     {"id": "standalone-linux", "target": "StandaloneLinux64", "backend": "Mono|IL2CPP",
      "match": {"target": "StandaloneLinux64"}, "absent": "not-run",
-     "reason": "no script runs the test suite in a standalone player yet (#404)"},
+     "reason": "run Tools~/unity/run-linux-player-tests.sh and add its results.xml with "
+               "--set target=StandaloneLinux64 --set backend=Mono (#404)"},
     {"id": "android-il2cpp-arm64", "target": "Android", "backend": "IL2CPP",
      "match": {"target": "Android", "arch": "arm64"}, "absent": "needs-device-validation",
      "reason": "physical arm64 device run (#99)"},
@@ -76,6 +80,11 @@ EDITOR_NAME = re.compile(r"^results-(EditMode|PlayMode)-")
 ANDROID_NAME = re.compile(
     r"^results-Android-(?P<stripping>Low|High)-(?P<arch>arm64|armv7|x86_64)-api(?P<api>[^-]+)"
     r"(?:-(?P<serial>.+?))?-(?P<ts>\d{8}-\d{6})\.xml$")
+STANDALONE_NAME = re.compile(
+    r"^results-(?P<target>StandaloneWindows64|StandaloneLinux64|StandaloneOSX)-(?P<backend>Mono|IL2CPP)"
+    r"-(?P<ts>\d{8}-\d{6})\.xml$")
+# The stripping level a standalone runner builds with: IL2CPP High, Mono Unity's default Disabled (build-player.sh).
+STANDALONE_STRIPPING = {"Mono": "Disabled", "IL2CPP": "High"}
 METADATA_KEYS = ("target", "run", "backend", "stripping", "arch", "api", "device", "unity_version", "filter", "commit")
 
 
@@ -110,6 +119,14 @@ def metadata_from_name(path):
                 "arch": m.group("arch"), "api": m.group("api"), "device": "emulator" if emulator else "device"}
         if serial:
             meta["serial"] = serial
+        return meta
+    m = STANDALONE_NAME.match(name)
+    if m:
+        backend = m.group("backend")
+        meta = {"target": m.group("target"), "run": "Player", "backend": backend,
+                "stripping": STANDALONE_STRIPPING[backend], "device": "host"}
+        if m.group("target") != "StandaloneOSX":
+            meta["arch"] = "x86_64"
         return meta
     return {}
 
@@ -206,7 +223,8 @@ def build_row(xml_path, overrides=None, unity_version=None, commit=None):
     meta.update(metadata_from_name(xml_path))
     meta.update({k: v for k, v in (overrides or {}).items() if v is not None})
     if not meta.get("target"):
-        raise ValueError(f"{xml_path}: target unknown; name it results-<EditMode|PlayMode|Android-...>-<ts>.xml "
+        raise ValueError(f"{xml_path}: target unknown; name it results-<EditMode|PlayMode|Android-...|"
+                         f"StandaloneWindows64-<Mono|IL2CPP>>-<ts>.xml "
                          f"or pass --set target=<Editor|Android|iOS|...>")
     row = {"id": row_id(meta)}
     for key in METADATA_KEYS + ("serial",):
