@@ -192,18 +192,14 @@ namespace TurboHTTP.Tests.Transport.Tls
         {
             // The production configuration: no test anchors (SetUp cleared them), the platform root
             // store. The root is not committed, so Trusted means the store supplied it (#248).
-            var at = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc);
-            Assert.That(at, Is.InRange(Public.LeafNotBeforeUtc, Public.LeafNotAfterUtc));
+            // Android's TrustManager ignores the time it is given and evaluates at the device clock
+            // (#897): there the verdict follows the clock, Trusted only while the leaf is valid.
+            DateTime evaluatedAt = Public.VerifierUsesDeviceClock ? DateTime.UtcNow : Public.VerificationTimeUtc;
 
-            var result = ServerCertificateVerifier.Verify(new[] { Public.Leaf, Public.Intermediate }, "www.digicert.com", at);
+            var result = ServerCertificateVerifier.Verify(
+                new[] { Public.Leaf, Public.Intermediate }, Public.Host, Public.VerificationTimeUtc);
 
-            AssertStatus(CertificateVerificationStatus.Trusted, result);
-            Assert.AreEqual(3, result.Path.Length, "leaf + intermediate + platform root");
-            CollectionAssert.AreEqual(Public.Leaf, result.Path[0]);
-            CollectionAssert.AreEqual(Public.Intermediate, result.Path[1]);
-            using var root = new X509Certificate2(result.Path[2]);
-            StringAssert.Contains("CN=" + Public.RootCommonName, root.Subject);
-            Assert.AreEqual(root.Subject, root.Issuer, "the path ends at a self-signed root");
+            Public.AssertVerdict(result, evaluatedAt);
         }
 
         [Test]
