@@ -10,7 +10,9 @@ namespace TurboHTTP.Observability
     internal sealed class MonitorHandler : IHttpHandler
     {
         private readonly IHttpHandler _inner;
-        private readonly UHttpRequest _request;
+        // Captured in the constructor, while the request is live: a client-created request is disposed
+        // once streamed headers arrive, before the body-dispose callback runs CaptureOnce (#1053).
+        private readonly MonitorInterceptor.RequestCapture _request;
         private readonly Action<ReadOnlyMemory<byte>> _onObservedChunkRead;
         private readonly Action<ObservedResponseBodyCompletion> _onObservedBodyDispose;
 
@@ -27,7 +29,9 @@ namespace TurboHTTP.Observability
         internal MonitorHandler(IHttpHandler inner, UHttpRequest request)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
-            _request = request ?? throw new ArgumentNullException(nameof(request));
+            if (request == null)
+                throw new ArgumentNullException(nameof(request));
+            _request = MonitorInterceptor.CaptureRequest(request);
             _onObservedChunkRead = CaptureBody;
             _onObservedBodyDispose = OnObservedBodyDispose;
         }
