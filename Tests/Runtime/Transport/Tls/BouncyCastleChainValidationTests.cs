@@ -76,9 +76,10 @@ namespace TurboHTTP.Tests.Transport.Tls
         }
 
         [Test]
-        public void Leaf_CommonName_OnlyWithoutSubjectAltName()
+        public void Leaf_CommonName_NeverIdentifiesHost()
         {
-            AssertLeafAccepted(Certs.LeafCnOnly, "example.com");
+            // #929: a CN-only leaf is rejected (RFC 9525 section 6), as Android's HostnameVerifier does.
+            AssertLeafRejected(Certs.LeafCnOnly, "example.com", "bad_certificate");
             AssertLeafRejected(Certs.LeafCnWithSan, "example.com", "bad_certificate");
             AssertLeafAccepted(Certs.LeafCnWithSan, "other.example");
         }
