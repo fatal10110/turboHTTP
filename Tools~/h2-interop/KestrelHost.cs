@@ -13,7 +13,11 @@ using TurboHTTP.Tools.TlsInterop;
 
 namespace TurboHTTP.Tools.H2Interop
 {
-    /// <summary>Kestrel (ASP.NET Core 8) as an in-process HTTP/2-only TLS server on an ephemeral loopback port.</summary>
+    /// <summary>
+    /// Kestrel (ASP.NET Core 8) as an in-process TLS server on loopback: HTTP/2 only for the interop rows; HTTP/2 and
+    /// HTTP/1.1 for <c>serve</c> (#885), so a client that falls back to HTTP/1.1 is still served and only the Unity rows'
+    /// protocol assertion catches it.
+    /// </summary>
     internal sealed class KestrelHost : IAsyncDisposable
     {
         private readonly WebApplication _app;
@@ -26,7 +30,7 @@ namespace TurboHTTP.Tools.H2Interop
 
         public int Port { get; }
 
-        public static async Task<KestrelHost> StartAsync(string dir)
+        public static async Task<KestrelHost> StartAsync(string dir, int port = 0, bool allowHttp1 = false)
         {
             using var pem = X509Certificate2.CreateFromPemFile(TestPki.Leaf(dir, "valid"), Path.Combine(dir, TestPki.KeyFile));
             var certificate = new X509Certificate2(pem.Export(X509ContentType.Pkcs12));
@@ -35,9 +39,9 @@ namespace TurboHTTP.Tools.H2Interop
             builder.WebHost.ConfigureKestrel(kestrel =>
             {
                 kestrel.Limits.Http2.MaxStreamsPerConnection = 100;
-                kestrel.Listen(IPAddress.Loopback, 0, listen =>
+                kestrel.Listen(IPAddress.Loopback, port, listen =>
                 {
-                    listen.Protocols = HttpProtocols.Http2;
+                    listen.Protocols = allowHttp1 ? HttpProtocols.Http1AndHttp2 : HttpProtocols.Http2;
                     listen.UseHttps(certificate);
                 });
             });
@@ -62,8 +66,7 @@ namespace TurboHTTP.Tools.H2Interop
             });
 
             await app.StartAsync().ConfigureAwait(false);
-            int port = new Uri(app.Urls.First()).Port;
-            return new KestrelHost(app, port);
+            return new KestrelHost(app, new Uri(app.Urls.First()).Port);
         }
 
         public async ValueTask DisposeAsync()

@@ -98,6 +98,45 @@ namespace TurboHTTP.Tests.Transport.Tls
             Assert.IsTrue(usedHttp2, "ALPN selected h2 but the request did not run on an HTTP/2 connection.");
         }
 
+        /// <summary>
+        /// #885: the strict form of <see cref="UsedHttp2"/> for a backend that always offers ALPN h2
+        /// (BouncyCastle, on every runtime): the request must have run on an HTTP/2 connection. The
+        /// HTTP/1.1 fallback that <see cref="UsedHttp2"/> accepts where the runtime has no ALPN is a
+        /// failure here, so an h2 regression cannot pass as a fallback.
+        /// </summary>
+        /// <param name="idleAlpn">The ALPN result of the pooled (HTTP/1.1) connection, for the message only.</param>
+        public static void RequireHttp2(ITlsProvider provider, bool usedHttp2, string idleAlpn, string host)
+        {
+            TestContext.WriteLine(
+                $"ALPN strict {provider.ProviderName} host={host} runtime={CanNegotiate(provider)} " +
+                $"http2-connection={usedHttp2} pooled-alpn={idleAlpn ?? "none"}");
+            var violation = StrictHttp2Violation(provider, usedHttp2, idleAlpn);
+            if (violation != null)
+                Assert.Fail(violation);
+        }
+
+        /// <summary>
+        /// Why <see cref="RequireHttp2"/> fails, or null when it passes. RawSocketTransport opens an
+        /// HTTP/2 connection only when ALPN selected <c>h2</c> (RFC 9113 section 3.2), so an HTTP/2
+        /// connection also proves the ALPN result.
+        /// </summary>
+        public static string StrictHttp2Violation(ITlsProvider provider, bool usedHttp2, string idleAlpn)
+        {
+            if (!CanNegotiate(provider))
+            {
+                return provider.ProviderName + " cannot negotiate ALPN on this runtime, so it cannot be held to h2: " +
+                       "the strict assert is for backends that always offer ALPN (BouncyCastle).";
+            }
+
+            if (!usedHttp2)
+            {
+                return provider.ProviderName + " offered ALPN h2 to a server that serves h2, but the request ran on " +
+                       "HTTP/1.1 (pooled connection ALPN: " + (idleAlpn ?? "none") + "). The HTTP/1.1 fallback fails here.";
+            }
+
+            return null;
+        }
+
         private static bool ProbeSslStreamReportsAlpn()
         {
             using var sslStream = new SslStream(new MemoryStream());
